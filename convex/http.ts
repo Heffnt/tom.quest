@@ -807,6 +807,11 @@ function slackReplyChannels(): Set<string> {
       // objection to it (convex/ttsSync.ts sendRemoval). Without this line
       // the thread would look answerable and every reply would be dropped.
       process.env.SLACK_TTS_SIMPLIFY_CHANNEL_ID,
+      // A runner's check-in thread (convex/ttsSync.ts sendRunnerCheckIn): his
+      // reply there is the runner's next turn and, when it starts with
+      // "ceiling", his ruling on what one launch may ask for. Without this
+      // line every reply under a check-in was dropped.
+      process.env.SLACK_TTS_RUNNERS_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
   );
 }
@@ -3284,7 +3289,6 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
   if (b.model !== undefined && !isSessionModel(b.model)) return "model is not a session model.";
   if (b.delegateAllowed !== undefined && typeof b.delegateAllowed !== "boolean") return "delegateAllowed must be true or false.";
   if (b.budgetGpuHours !== undefined && typeof b.budgetGpuHours !== "number") return "budgetGpuHours must be a number.";
-  if (b.ceiling !== undefined && !ceilingShape(b.ceiling)) return "ceiling must be { gpus, minutes, memoryMb }, three numbers.";
   if (b.specs !== undefined && (!Array.isArray(b.specs) || !b.specs.every((spec) => typeof spec === "string"))) return "specs must be a list of glob patterns.";
   if (b.runId !== undefined && !validRunId(b.runId)) return "runId is not a run id.";
   if (b.askOverrides !== undefined) {
@@ -3314,13 +3318,6 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
 
 http.route({ path: "/tts/runner", method: "POST", handler: ttsRunner });
 
-/** Whether a value is a ceiling's three numbers and nothing else. Their range
- *  is runnerCeilingFaults' to judge. */
-function ceilingShape(c: unknown): c is { gpus: number; minutes: number; memoryMb: number } {
-  if (c === null || typeof c !== "object" || Array.isArray(c)) return false;
-  const keys = Object.keys(c).sort();
-  return keys.join(",") === "gpus,memoryMb,minutes" && keys.every((k) => typeof (c as Record<string, unknown>)[k] === "number");
-}
 
 // POST /tts/runner-step — a runner step's check-in, through tts-runner-step.
 // Body { runnerId, stepRunId, decision, checkIn, document, asks: [{ tier,

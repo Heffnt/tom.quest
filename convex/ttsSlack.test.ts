@@ -1109,6 +1109,27 @@ describe("threaded replies from Tom", () => {
     expect(await events(t, "slack-event")).toHaveLength(1);
   });
 
+  // witness: drop SLACK_TTS_RUNNERS_CHANNEL_ID from slackReplyChannels and
+  // Tom's reply under a runner's check-in, a ceiling ruling included, is
+  // ignored before it reaches the runner.
+  it("acts on Tom's reply in a runner's check-in thread in #tts-runners, a ceiling ruling included", async () => {
+    slackEnv();
+    vi.stubEnv("SLACK_TTS_RUNNERS_CHANNEL_ID", "C0RUNNERS");
+    const t = convexTest(schema, modules);
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, {
+      seed: {
+        title: "TRAIN25 campaign", type: "probe", experimentHost: "turing", repo: "ComplexMultiTrigger",
+        stepMs: 600_000, delegateAllowed: false, from: { kind: "document", text: "# TRAIN25\n" },
+      },
+    });
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
+      channel: "C0RUNNERS", ts: "960.1", subject: { kind: "runner", id: runnerId }, text: "first check-in",
+    });
+    const reply = await postEvent(t, { channel: "C0RUNNERS", ts: "960.2", thread_ts: "960.1", text: "ceiling 16 GPUs" });
+    expect(reply.outcome).toBe("runner-reply");
+    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toEqual({ gpus: 16, minutes: 240, memoryMb: 128000 });
+  });
+
   // witness: restore the `dumpChannel !== undefined &&` guard and an unset id
   // turns every channel the app is in into #dump — a top-level message
   // anywhere becomes a todo AND gets a bot reply posted under it.

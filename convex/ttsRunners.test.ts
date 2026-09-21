@@ -128,7 +128,7 @@ describe("the create door", () => {
       [seed({ askOverrides: [{ tier: "plan", answerer: "delegate" }] }), "may not call it"],
       [{ ...seed(), from: { kind: "letter" } }, "from.kind"],
       [seed({ ceiling: { gpus: 17, minutes: 240, memoryMb: 128000 } }), "at most 16"],
-      [{ ...seed(), ceiling: { gpus: 4 } }, "ceiling must be"],
+      [{ ...seed(), ceiling: { gpus: 4 } }, "Missing required field"],
     ] as const;
     for (const [body, words] of refusals) {
       const response = await post(t, body);
@@ -209,11 +209,12 @@ describe("the ceiling", () => {
     expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toEqual({ gpus: 16, minutes: 1440, memoryMb: 128000 });
     await reply("ceiling 20 GPUs", "3.0");
     expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toEqual({ gpus: 16, minutes: 1440, memoryMb: 128000 });
-    const events = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "ceiling")).collect());
-    expect(events).toHaveLength(1);
-    expect(events[0].data).toMatchObject({ from: { gpus: 2, minutes: 240 }, to: { gpus: 16, minutes: 1440 } });
-    expect(events[0].slackTs).toBe("2.0");
-    expect(events[0].text).toBe("The ceiling moved from 2 GPUs, 240 minutes and 128000 MB of memory per request to 16 GPUs, 1440 minutes and 128000 MB of memory per request.");
+    const replies = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "reply")).collect());
+    expect(replies).toHaveLength(2);
+    expect(replies[0].data).toMatchObject({ ceiling: { from: { gpus: 2, minutes: 240 }, to: { gpus: 16, minutes: 1440 } } });
+    expect(replies[0].slackTs).toBe("2.0");
+    expect(replies[1].data.ceiling).toBeUndefined();
+    expect(replies[1].data.ceilingRefused).toContain("at most 16");
     const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
     const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
     if (!claim.admitted) throw new Error(claim.reason);
@@ -237,6 +238,7 @@ describe("the ceiling", () => {
     const runnerId = (await (await post(t, seed())).json()).runnerId as Id<"runners">;
     const response = await ceilingPost(t, { runnerId, runId: "claude:box:session-1", why: "x", ceiling: { gpus: 16 } });
     expect(response.status).toBe(404);
+    // The step pen takes no ceiling field either: the check-in body has none.
     expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toBeUndefined();
   });
 });

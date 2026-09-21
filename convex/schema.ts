@@ -1543,7 +1543,7 @@ export default defineSchema({
     budgetGpuHours: v.optional(v.number()),
     // What one launch may ask for; absent is RUNNER_CEILING_DEFAULT
     // (convex/ttsShared.ts). Set at creation, inherited by a hand-off, and
-    // after that moved only by Tom's reply (setCeiling in convex/ttsRunners.ts).
+    // after that moved only by Tom's reply (recordRunnerReply in convex/ttsRunners.ts).
     ceiling: v.optional(RUNNER_CEILING),
     // The sweep specs the experiment drains, as glob patterns relative to the
     // repo (`sweeps/train/train25_*.yaml`). The step's sensor expands them to
@@ -1584,15 +1584,13 @@ export default defineSchema({
     kind: v.union(
       v.literal("check-in"), // one per step, always
       v.literal("ask"), // a ruling requested
-      v.literal("reply"), // Tom's answer, from the needs-you thread
+      v.literal("reply"), // Tom's answer, from a runner's thread; a ceiling ruling adds data.ceiling { from, to }
       v.literal("step-failed"), // an expired lease, or a step that exited without checking in
       v.literal("document"), // a document rewrite; `text` holds the new document
       // One launch or cancel on the experiment, recorded by the step pen beside
       // the check-in; `data` holds { verb, jobId }, `text` what it was for and
       // how it was verified. turing-api keeps the independent server-side log.
       v.literal("act"),
-      // The ceiling moved, by Tom's reply; `data` holds { from, to }.
-      v.literal("ceiling"),
     ),
     stepRunId: v.optional(v.string()),
     text: v.optional(v.string()),

@@ -546,7 +546,7 @@ raises it. The ceiling is a field of the runner row (default 2 GPUs, 240
 minutes, 128000 MB), set at creation, inherited by a hand-off, and changed
 after that only by Tom's own reply in the runner's thread that starts with the
 word "ceiling" (`ceiling 8 GPUs, 12 hours, 256 GB`); each change is a
-`ceiling` event naming the old and new numbers. There is no door for a
+reply event naming the old and new numbers. There is no door for a
 session: every run on the box holds the same worker key, so a door could not
 tell a session acting for Tom from a step raising its own ceiling. A step
 asks for a raise under Rulings requested. The API's hard maximum is the only

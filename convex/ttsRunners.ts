@@ -308,8 +308,10 @@ async function insertRunner(
   const faults = runnerSeedFaults(seed);
   if (faults.length > 0) throw new Error(faults.join(" "));
   let document: string;
-  // A successor keeps its predecessor's ceiling unless the seed names one, so
-  // a hand-off never quietly drops a ceiling Tom raised back to the default.
+  // A successor keeps its predecessor's ceiling, so a hand-off never quietly
+  // drops a ceiling Tom raised back to the default. A seed that names one
+  // still wins: a hand-off is a creation, and whoever creates a runner may
+  // set its ceiling, as the brief for Tom's ruling has it.
   let ceiling = seed.ceiling;
   if (seed.from.kind === "handoff") {
     const from = await ctx.db.get(seed.from.runnerId);
@@ -1075,11 +1077,19 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
     .first();
   if (open) await ctx.db.patch(open._id, { answeredAt: now, answerText: text });
   // A reply that starts with "ceiling" is Tom's ruling on what one launch may
-  // ask for. It is still a reply the next step reads, with what it did noted.
+  // ask for, and THE ONE PLACE a runner's ceiling moves after its creation:
+  // the events route admits only his Slack user. There is no door for a
+  // session. Every run on the box holds the same worker key, a runner step
+  // included, so a door could not tell a session acting for Tom from a step
+  // raising its own ceiling, and an agent never widens its own permissions.
+  // The reply event records the old and new numbers, and the next step reads
+  // under his words what they did.
   const ruled = parseCeilingReply(text, ceilingOf(runner));
-  const ceiling = ruled && "ceiling" in ruled
-    ? await setCeiling(ctx, runner, ruled.ceiling, at.ts, now)
-    : undefined;
+  let ceiling: { from: RunnerCeiling; to: RunnerCeiling } | undefined;
+  if (ruled && "ceiling" in ruled) {
+    ceiling = { from: ceilingOf(runner), to: ruled.ceiling };
+    await ctx.db.patch(runnerId, { ceiling: ruled.ceiling });
+  }
   await ctx.db.insert("runnerEvents", {
     runnerId,
     at: now,
@@ -1098,32 +1108,6 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
 }
 
 // ── The ceiling ──────────────────────────────────────────────────────────────
-
-/**
- * THE ONE WRITER of a runner's ceiling after its creation, and its one caller
- * is Tom's own reply in the runner's thread (recordRunnerReply): the events
- * route admits only his Slack user. There is no door for a session. Every run
- * on the box holds the same worker key, a runner step included, so a door
- * could not tell a session acting for Tom from a step raising its own
- * ceiling, and an agent never widens its own permissions. A session he is in
- * asks him to reply. The change is a `ceiling` event naming the old and new
- * numbers.
- */
-async function setCeiling(ctx: MutationCtx, runner: Doc<"runners">, next: RunnerCeiling, slackTs: string, now: number) {
-  const faults = runnerCeilingFaults(next);
-  if (faults.length > 0) throw new Error(faults.join(" "));
-  const from = ceilingOf(runner);
-  await ctx.db.patch(runner._id, { ceiling: next });
-  await ctx.db.insert("runnerEvents", {
-    runnerId: runner._id,
-    at: now,
-    kind: "ceiling",
-    text: `The ceiling moved from ${runnerCeilingWords(from)} to ${runnerCeilingWords(next)}.`,
-    slackTs,
-    data: { from, to: next },
-  });
-  return { from, to: next };
-}
 
 /** What a reply did to the ceiling, as the next step reads it under the reply. */
 function ceilingReplyNote(data: unknown): string {
