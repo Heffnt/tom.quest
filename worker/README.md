@@ -543,8 +543,9 @@ recorded cannot launch at all. From the same cache it reads the runner's
 **ceiling**, what one launch may ask for in GPUs, minutes and memory, and
 refuses a request above it with a sentence naming the ceiling and how Tom
 raises it. The ceiling is a field of the runner row (default 2 GPUs, 240
-minutes, 128000 MB), set at creation, inherited by a hand-off, and changed
-after that only by Tom's own reply in the runner's thread that starts with the
+minutes, 128000 MB), set at creation only on Tom's own New runner form (the
+`POST /tts/runner` pen refuses one, and a hand-off successor starts at the
+default), and changed after that only by Tom's own reply in the runner's thread that starts with the
 word "ceiling" (`ceiling 8 GPUs, 12 hours, 256 GB`); each change is a
 reply event naming the old and new numbers. There is no door for a
 session: every run on the box holds the same worker key, so a door could not

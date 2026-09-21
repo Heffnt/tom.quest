@@ -1542,7 +1542,7 @@ export default defineSchema({
     lease: v.optional(v.object({ stepRunId: v.string(), deadline: v.number(), takenAt: v.number() })),
     budgetGpuHours: v.optional(v.number()),
     // What one launch may ask for; absent is RUNNER_CEILING_DEFAULT
-    // (convex/ttsShared.ts). Set at creation, inherited by a hand-off, and
+    // (convex/ttsShared.ts). Set at creation on Tom's own form only, and
     // after that moved only by Tom's reply (recordRunnerReply in convex/ttsRunners.ts).
     ceiling: v.optional(RUNNER_CEILING),
     // The sweep specs the experiment drains, as glob patterns relative to the

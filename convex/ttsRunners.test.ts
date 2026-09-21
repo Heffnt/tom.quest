@@ -127,8 +127,8 @@ describe("the create door", () => {
       [seed({ model: "gpt-5.6-sol" }), "run on Claude"],
       [seed({ askOverrides: [{ tier: "plan", answerer: "delegate" }] }), "may not call it"],
       [{ ...seed(), from: { kind: "letter" } }, "from.kind"],
-      [seed({ ceiling: { gpus: 17, minutes: 240, memoryMb: 128000 } }), "at most 16"],
-      [{ ...seed(), ceiling: { gpus: 4 } }, "Missing required field"],
+      // The pen's key is every run's on the box, a runner step's included.
+      [seed({ ceiling: { gpus: 16, minutes: 240, memoryMb: 128000 } }), "ceiling is Tom's to set"],
     ] as const;
     for (const [body, words] of refusals) {
       const response = await post(t, body);
@@ -158,12 +158,12 @@ describe("the ceiling", () => {
     });
   }
 
-  it("holds a new runner to the default, takes one a session sets at creation, and hands it to the box with the claim", async () => {
+  it("holds a new runner to the default, takes one from Tom's form, and hands it to the box with the claim", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest(schema, modules);
     const { internal } = await import("./_generated/api");
     const plain = (await (await post(t, seed())).json()).runnerId as Id<"runners">;
-    const wide = (await (await post(t, seed({ title: "wide", ceiling: { gpus: 8, minutes: 720, memoryMb: 256000 } }))).json()).runnerId as Id<"runners">;
+    const wide = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ title: "wide", ceiling: { gpus: 8, minutes: 720, memoryMb: 256000 } }) });
     expect((await t.run((ctx) => ctx.db.get(plain)))?.ceiling).toBeUndefined();
     expect((await t.run((ctx) => ctx.db.get(wide)))?.ceiling).toEqual({ gpus: 8, minutes: 720, memoryMb: 256000 });
     const steps = await t.run((ctx) => ctx.db.query("runnerSteps").collect());
@@ -230,13 +230,19 @@ describe("the ceiling", () => {
     expect(claim.prompt).toContain("(This reply did not change the ceiling: The ceiling's GPUs may be at most 16");
   });
 
-  it("passes to a hand-off successor unless its seed names one", async () => {
+  it("refuses a ceiling above the maximum even on Tom's form", async () => {
+    const t = convexTest(schema, modules);
+    const { internal } = await import("./_generated/api");
+    await expect(t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ ceiling: { gpus: 17, minutes: 240, memoryMb: 128000 } }) })).rejects.toThrow(/at most 16/);
+  });
+
+  it("starts a hand-off successor at the default, whatever its predecessor held", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest(schema, modules);
-    const wide = { gpus: 16, minutes: 1440, memoryMb: 512000 };
-    const first = (await (await post(t, seed({ ceiling: wide }))).json()).runnerId as Id<"runners">;
+    const { internal } = await import("./_generated/api");
+    const first = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ ceiling: { gpus: 16, minutes: 1440, memoryMb: 512000 } }) });
     const next = (await (await post(t, seed({ title: "next", from: { kind: "handoff", runnerId: first } }))).json()).runnerId as Id<"runners">;
-    expect((await t.run((ctx) => ctx.db.get(next)))?.ceiling).toEqual(wide);
+    expect((await t.run((ctx) => ctx.db.get(next)))?.ceiling).toBeUndefined();
   });
 
   it("has no door for a session or a step", async () => {

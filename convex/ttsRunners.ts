@@ -308,16 +308,10 @@ async function insertRunner(
   const faults = runnerSeedFaults(seed);
   if (faults.length > 0) throw new Error(faults.join(" "));
   let document: string;
-  // A successor keeps its predecessor's ceiling, so a hand-off never quietly
-  // drops a ceiling Tom raised back to the default. A seed that names one
-  // still wins: a hand-off is a creation, and whoever creates a runner may
-  // set its ceiling, as the brief for Tom's ruling has it.
-  let ceiling = seed.ceiling;
   if (seed.from.kind === "handoff") {
     const from = await ctx.db.get(seed.from.runnerId);
     if (!from) throw new Error("The runner named to hand off from does not exist.");
     document = handoffDocument(from);
-    ceiling ??= from.ceiling;
   } else if (seed.from.kind === "prompt") {
     document = promptDocument(seed.title.trim(), seed.from.text);
   } else {
@@ -334,7 +328,10 @@ async function insertRunner(
     stepMs: seed.stepMs,
     nextStepAt: now,
     ...(seed.budgetGpuHours !== undefined ? { budgetGpuHours: seed.budgetGpuHours } : {}),
-    ...(ceiling !== undefined ? { ceiling } : {}),
+    // Named only on Tom's own form (createRunner); the pen refuses one, and a
+    // hand-off successor starts at the default like any runner, since anyone
+    // holding the pen's key could otherwise hand off from a raised runner.
+    ...(seed.ceiling !== undefined ? { ceiling: seed.ceiling } : {}),
     ...(seed.specs !== undefined ? { specs: seed.specs } : {}),
     ...(seed.model !== undefined ? { model: seed.model } : {}),
     delegateAllowed: seed.delegateAllowed ?? true,

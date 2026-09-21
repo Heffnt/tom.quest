@@ -3219,8 +3219,7 @@ http.route({ path: "/tts/session", method: "POST", handler: ttsSession });
 
 // POST /tts/runner — open a runner (convex/ttsRunners.ts). Body: { title,
 // type, experimentHost, repo, ref?, stepMs, model?, delegateAllowed?,
-// budgetGpuHours?, ceiling?: { gpus, minutes, memoryMb }, specs?, askOverrides?,
-// subject?, from, runId? }, where `from` is
+// budgetGpuHours?, specs?, askOverrides?, subject?, from, runId? }, where `from` is
 // { kind: "prompt", text } | { kind: "handoff", runnerId } | { kind:
 // "document", text }. A `document` is taken as given: that is how a CMT
 // dev/handoff file becomes a runner, the calling run having read the file.
@@ -3254,7 +3253,6 @@ const ttsRunner = httpAction(async (ctx, request) => {
       ...(b.model !== undefined ? { model: b.model as never } : {}),
       ...(b.delegateAllowed !== undefined ? { delegateAllowed: b.delegateAllowed as boolean } : {}),
       ...(b.budgetGpuHours !== undefined ? { budgetGpuHours: b.budgetGpuHours as number } : {}),
-      ...(b.ceiling !== undefined ? { ceiling: b.ceiling as { gpus: number; minutes: number; memoryMb: number } } : {}),
       ...(b.specs !== undefined ? { specs: b.specs as string[] } : {}),
       ...(b.askOverrides !== undefined ? { askOverrides: b.askOverrides as never } : {}),
       ...(subject !== undefined
@@ -3291,6 +3289,11 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
   if (b.budgetGpuHours !== undefined && typeof b.budgetGpuHours !== "number") return "budgetGpuHours must be a number.";
   if (b.specs !== undefined && (!Array.isArray(b.specs) || !b.specs.every((spec) => typeof spec === "string"))) return "specs must be a list of glob patterns.";
   if (b.runId !== undefined && !validRunId(b.runId)) return "runId is not a run id.";
+  // Refused, not ignored: a caller that sent a ceiling must learn it was not
+  // taken. Every run on the box holds this pen's key, a runner step included,
+  // so a ceiling set here would be an agent widening its own reach; a runner
+  // opened here holds the default, Tom's form or his reply sets more.
+  if (b.ceiling !== undefined) return "ceiling is Tom's to set, on the New runner form or by his reply in the runner's thread; a runner opened here holds the default.";
   if (b.askOverrides !== undefined) {
     const cells = b.askOverrides;
     const tiers = ["routine", "plan", "setup"];
