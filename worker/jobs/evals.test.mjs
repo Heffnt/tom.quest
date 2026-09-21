@@ -578,6 +578,8 @@ describe("the head trials", () => {
     expect(calls.count).toBe(2);
     expect(result.judged).toBe("pass");
     expect(result.trials).toEqual({ head: 2, headPassed: 1 });
+    // The reason kept for the row is the failed trial's, not the pass's.
+    expect(result.failedReason).toBe("trial 1");
     expect(isFlaky(result)).toBe(true);
     const stamped = await stampAgainstBase(rowFor(result), basePassing);
     expect(stamped).toMatchObject({ pass: 1, fail: 0, flaky: 1, regressions: 0 });

@@ -1826,6 +1826,9 @@ export async function runTrials(id, basePassed, once) {
   const passing = results.find((result) => result.judged === "pass");
   return {
     ...(passing ?? first),
+    // A retry that passed is a flaky case, and the first trial is the one that
+    // failed: its reason is the one worth keeping (the row's result entry).
+    ...(passing ? { failedReason: first.reason } : {}),
     trials: { head: results.length, headPassed: results.filter((result) => result.judged === "pass").length },
   };
 }
@@ -2760,12 +2763,12 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // the cases that were asked.
       //
       // `reason` is the scorer's own sentence, the failing trial's when one
-      // failed, so a flaky case can be told from a failing one without
+      // failed (runCase's reason, runTrials's failedReason), so a flaky case can be told from a failing one without
       // re-running it. Bounded, because the row holds every scored case.
       results: scoredAll.map((result) => ({
         id: result.id,
         judged: result.judged,
-        ...resultReason(result.reason),
+        ...resultReason(result.failedReason ?? result.reason),
         ...(result.errored === true ? { errored: true } : {}),
         ...(result.method === undefined ? {} : { method: result.method }),
         passK: result.passK ?? (result.trials === undefined
