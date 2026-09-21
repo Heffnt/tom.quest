@@ -79,8 +79,15 @@ function readState(stateDir, runId, fs) {
   return landed;
 }
 
+// THE BACKLOG MARKER OUTLIVES EVERY REWRITE. Most writers here rebuild the
+// entry from scratch, and a backlog-imported file whose run is marked
+// abandoned is rewritten that way with no rows sent; losing the marker then
+// would let deletable() free the only copy of its transcript. So it is carried
+// here, in the one writer, rather than by each caller.
 function writeState(stateDir, runId, value, fs) {
-  atomicJson(stateFileFor(stateDir, runId), value, fs);
+  const file = stateFileFor(stateDir, runId);
+  const sticky = value?.backlog !== true && readJson(file, fs)?.backlog === true ? { backlog: true } : {};
+  atomicJson(file, { ...value, ...sticky }, fs);
 }
 
 function completeLines(bytes) {

@@ -620,6 +620,22 @@ describe("run sweep", () => {
     expect(deletable(laptopSession, { ...uploaded, backlog: true }, { now: NOW })).toEqual({ ok: false, reason: "backlog" });
   });
 
+  // witness: the fourth audit of PR #207 — the abandonment pass rebuilt the
+  // state entry from scratch and dropped the marker, so the next check
+  // allowed the deletion.
+  it("keeps the backlog marker when a pass rewrites the file's state", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "hello" })]);
+    const post = async (route, body) => route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(stateFile, "utf8")), backlog: true }));
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW + 1, markAbandoned: true });
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    expect(state).toMatchObject({ reportedAbandoned: true, backlog: true });
+    expect(deletable({ host: "laptop", kind: "session" }, { ...state, gitTracked: false }, { now: NOW + 1 })).toEqual({ ok: false, reason: "backlog" });
+  });
+
   it("keeps only stale claim pointers with a readable live target envelope", async () => {
     const dir = temp(); const item = runFile(dir); const cfg = config(dir, item);
     const registrationDir = path.join(cfg.stateDir, "registration");
