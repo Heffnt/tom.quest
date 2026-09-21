@@ -347,6 +347,19 @@ export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, memoryMb, 
   return { ok: true, ...numbers };
 }
 
+/**
+ * Why a launch that went out fell short, or null when every job asked for was
+ * launched. turing-api answers a partial allocation as a success, and the
+ * cluster's default partition caps one account's GPUs below the maximum a
+ * ruling may reach (12 on `short`, turing-api/spec.md §1.4, where Tom's limit
+ * is 16), so a launch of 16 can start 12. A step must not read that as done.
+ */
+export function launchShortfall({ asked, ids, errors }) {
+  if (ids.length >= asked) return null;
+  const said = errors.length > 0 ? ` The cluster said: ${errors.join("; ")}.` : "";
+  return `the cluster launched ${ids.length} of the ${asked} jobs asked for, so the launch is not what was planned.${said} Say in the check-in how many started and what this runner will do about the rest; a shortfall at twelve or more GPUs is likely the account's cap on the cluster's default partition, which a ruling does not raise`;
+}
+
 function gpuHoursFact(jobs, cache, runnerId, budget, now) {
   if (jobs.unavailable) {
     const spent = spentGpuHours(cache.jobs, [], runnerId, now);

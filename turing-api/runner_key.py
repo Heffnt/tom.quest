@@ -33,6 +33,9 @@ RUNNER_PREFIX = "runner:"
 # partition, where every allocation lands (spec.md §1.4). 1536000 MB is the
 # largest node in that partition, the eight-GPU H200 node, from the GPU report
 # of 2026-09-21. convex/ttsShared.ts RUNNER_CEILING_MAX holds the same three.
+# spec.md §1.4 records the short QOS capping one account at 12 GPUs, below
+# Tom's 16; SLURM refuses the jobs past it, and tts-turing-act reports the
+# shortfall as a failed launch.
 MAX_RUNNER_MINUTES = 1440
 MAX_RUNNER_COUNT = 16
 MAX_RUNNER_MEMORY_MB = 1536000

@@ -760,7 +760,7 @@ export const RUNNER_ACT_PARAGRAPH = [
   "One command acts on the cluster, and only a runner step has its key:",
   "- `tts-turing-act launch --runner <runner id> --label <short label> --gpu-type <type> --minutes <n> --command '<command>' [--command ...] [--project-dir <dir in the CMT checkout>] [--count <n>] [--memory-mb <n>]` starts a job named for this runner. Every command must run a script file inside the CMT checkout on the cluster (`python <script>`, `bash <script>` or the script's own path), one plain command per line with no `;`, `&`, `|`, redirection or `$`. Relative paths are read from the project directory.",
   "- `tts-turing-act cancel --runner <runner id> --job <job id>` cancels a job this runner launched. The cluster refuses any other job, the GPU pool's included, and that refusal is final: report it, do not retry it.",
-  "Before a launch the command checks the request against this runner's ceiling (GPUs, minutes and memory per request) and its GPU-hour budget against the hours already spent and booked. When it refuses (it exits 6 and says why), nothing was sent: raise a setup question for Tom saying what the launch was for and what it needs (GPU-hours for the budget; GPUs, time and memory for the ceiling, with the reply form it prints), and say what you will do if he does not answer. It exits 3 when the box has no runner key yet; say so in the check-in and act on nothing. After a launch or cancel it reads the queue back and prints what it saw; that line is the verification you name in the check-in. Record every launch and cancel with the pen's `--act`.",
+  "Before a launch the command checks the request against this runner's ceiling (GPUs, minutes and memory per request) and its GPU-hour budget against the hours already spent and booked. When it refuses (it exits 6 and says why), nothing was sent: raise a setup question for Tom saying what the launch was for and what it needs (GPU-hours for the budget; GPUs, time and memory for the ceiling, with the reply form it prints), and say what you will do if he does not answer. It exits 4 when the cluster started fewer jobs than asked for and says how many started; name that count in the check-in, since a partial launch is not the plan. It exits 3 when the box has no runner key yet; say so in the check-in and act on nothing. After a launch or cancel it reads the queue back and prints what it saw; that line is the verification you name in the check-in. Record every launch and cancel with the pen's `--act`.",
 ].join("\n");
 
 // The daemon that runs THIS session runs every other live session on the box
@@ -802,7 +802,9 @@ export const RUNNER_TIERS: readonly RunnerTier[] = ["routine", "plan", "setup"];
 // is ever passed). 1536000 MB is the largest node in that partition, the
 // eight-GPU H200 node, as the cluster's GPU report gave it on 2026-09-21.
 // turing-api/runner_key.py holds the same three numbers, since it cannot see
-// the row.
+// the row. turing-api/spec.md §1.4 records a cap of 12 GPUs per account on
+// `short`, below Tom's 16; a launch above it starts fewer jobs, and
+// tts-turing-act fails that launch and says how many started.
 export const RUNNER_CEILING = v.object({ gpus: v.number(), minutes: v.number(), memoryMb: v.number() });
 export type RunnerCeiling = Infer<typeof RUNNER_CEILING>;
 export const RUNNER_CEILING_DEFAULT: RunnerCeiling = { gpus: 2, minutes: 240, memoryMb: 128000 };

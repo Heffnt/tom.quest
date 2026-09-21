@@ -552,6 +552,9 @@ session: every run on the box holds the same worker key, so a door could not
 tell a session acting for Tom from a step raising its own ceiling. A step
 asks for a raise under Rulings requested. The API's hard maximum is the only
 bound on a step that skips `tts-turing-act`, as it always was for the budget.
+The default partition caps one account at 12 GPUs (`turing-api/spec.md`
+§1.4), below Tom's 16; a launch past it starts fewer jobs, and
+`tts-turing-act` exits 4 saying how many started.
 The sensor that writes the cache
 is loaded once by `tts-session-host`, so a new sensor reaches the cache only
 after the daemon restarts; until then every runner is held to the default. After a launch or cancel it reads the queue

@@ -166,7 +166,7 @@ async function send(method, route, runnerId, body) {
 
 async function launch(opts) {
   key();
-  const { launchVerdict, readCache, DEFAULT_CACHE_DIR } = await import(sensorUrl());
+  const { launchVerdict, launchShortfall, readCache, DEFAULT_CACHE_DIR } = await import(sensorUrl());
   const cacheFile = path.join(process.env.TTS_RUNNER_CACHE_DIR ?? DEFAULT_CACHE_DIR, `${opts.runner}.json`);
   const cache = fs.existsSync(cacheFile) ? readCache(cacheFile) : null;
   let jobs = null;
@@ -199,7 +199,11 @@ what this runner will do if he does not answer.`);
     return job ? `job ${id} is in the queue as ${job.job_name}, ${job.status}` : `job ${id} is not in the queue`;
   })));
   process.stdout.write(`${lines.join("\n")}\n`);
-  if (ids.length === 0) throw new Exit(4, "tts-turing-act: the cluster launched nothing.");
+  // A partial launch is a failure the step must report, not a success: the
+  // API answers one job of sixteen as success, and the default partition's
+  // cap on the account sits below the maximum a ruling reaches.
+  const shortfall = launchShortfall({ asked: opts.count, ids, errors: answer?.errors ?? [] });
+  if (shortfall) throw new Exit(4, `tts-turing-act: ${shortfall}.`);
 }
 
 async function cancel(opts) {

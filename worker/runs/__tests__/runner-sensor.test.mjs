@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkDone, gpusInGres, launchVerdict, readCache, renderFacts, sense } from "../runner-sensor.mjs";
+import { checkDone, gpusInGres, launchShortfall, launchVerdict, readCache, renderFacts, sense } from "../runner-sensor.mjs";
 
 const NOW = Date.parse("2026-09-19T12:00:00Z");
 
@@ -137,6 +137,17 @@ describe("gpusInGres", () => {
     expect(gpusInGres("gpu:a100:2")).toBe(2);
     expect(gpusInGres("gpu:1")).toBe(1);
     expect(gpusInGres("(null)")).toBe(0);
+  });
+});
+
+describe("launchShortfall", () => {
+  it("is nothing when every job asked for launched, and a sentence naming the count and the cap when fewer did", () => {
+    expect(launchShortfall({ asked: 2, ids: ["1", "2"], errors: [] })).toBeNull();
+    const short = launchShortfall({ asked: 16, ids: Array.from({ length: 12 }, (_, i) => String(i)), errors: ["QOSMaxGRESPerUser"] });
+    expect(short).toMatch(/launched 12 of the 16 jobs asked for/);
+    expect(short).toMatch(/The cluster said: QOSMaxGRESPerUser\./);
+    expect(short).toMatch(/default partition/);
+    expect(launchShortfall({ asked: 1, ids: [], errors: [] })).toMatch(/launched 0 of the 1 jobs/);
   });
 });
 
