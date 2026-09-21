@@ -678,6 +678,11 @@ function ensureMirror(repo, reposDir, env) {
  * names what it would delete, and every branch a worktree names is kept.
  * A kept branch is the run's to push; the reap removes its worktree, and the
  * next refresh prunes the branch then if GitHub never got it.
+ *
+ * REMOVAL CHECK on pruning at all: resolveRef answers `--ref NAME` from this
+ * mirror's refs/heads, so without a prune a branch deleted on GitHub (every
+ * squash-merged one) would still resolve here, to its old commit, and a run
+ * would work on a stale tree instead of being refused.
  */
 function pruneMirror(mirror, env) {
   const dryRun = git(["-C", mirror, "remote", "prune", "--dry-run", "origin"], { env });
@@ -1122,13 +1127,22 @@ function survivorBudget(run, timedOut) {
   return Math.max(0, run.opts.timeoutMs - (Date.now() - run.startedAt));
 }
 
-/** Kill what outlived the wait, and say on stderr what the wait was. */
+/** Kill what outlived the wait, and say on stderr what the wait was. The
+ *  kill rescans until nothing tagged is left, because a survivor can fork
+ *  between one scan and its kill, and that child would outlive the reap. */
 function settleSurvivors(run, waitedMs, left) {
   if (waitedMs > 0) note(`waited ${Math.round(waitedMs / 1000)}s after the CLI exited for the processes it started`);
-  for (const survivor of left) {
-    try { process.kill(survivor.pid, "SIGKILL"); } catch {}
+  const killed = new Map();
+  for (let round = 0; left.length > 0 && round < 50; round += 1) {
+    for (const survivor of left) {
+      killed.set(survivor.pid, survivor);
+      try { process.kill(survivor.pid, "SIGKILL"); } catch {}
+    }
+    sleep(20);
+    left = survivorsOf(run.id);
   }
-  return left;
+  if (left.length > 0) note(`${left.length} process(es) of this run would not die: ${left.map((survivor) => survivor.pid).join(", ")}`);
+  return [...killed.values()];
 }
 
 async function waitForSurvivors(run, timedOut) {

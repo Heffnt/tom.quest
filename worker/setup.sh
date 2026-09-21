@@ -375,7 +375,9 @@ NODE
 done
 # CLI helpers onto the PATH. A tts-* helper main's worker/bin no longer
 # carries is removed, so a retired or stray one cannot linger on the PATH
-# (tts-auth-lib.mjs sat there unused after it left main).
+# (tts-auth-lib.mjs sat there unused after it left main). The loop stays after
+# that one is gone: helpers are retired from worker/bin over time, and without
+# it each retirement needs a hand step on the box that nothing records.
 for installed in /usr/local/bin/tts-*; do
   [ -e "$installed" ] || continue
   if [ ! -e "$WORKER_DIR/bin/$(basename "$installed")" ]; then
