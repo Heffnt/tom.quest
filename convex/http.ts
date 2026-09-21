@@ -27,7 +27,7 @@ import {
   type Recommendation,
 } from "./ttsShared";
 import { isNarrowListId } from "./ttsShared";
-import { auditVerdictOf } from "./ttsMerge";
+import { auditVerdictOf, mergedOnMain } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
 import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../scripts/skills.mjs";
@@ -1865,6 +1865,10 @@ const ttsMerge = httpAction(async (ctx, request) => {
   const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
   if (!nonempty(b.repo) || !nonempty(b.sha) || !nonempty(b.subject)) return jsonResponse(400, { error: "repo, sha, and subject (non-empty strings) required" });
   if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
+  // A merge GitHub does not show is not recorded: the row cannot be corrected
+  // once written (convex/ttsMerge.ts mergedOnMain).
+  const onMain = await mergedOnMain(b.repo as string, b.sha as string);
+  if (!onMain.merged) return jsonResponse(409, { ok: false, recorded: false, error: `not recorded: ${onMain.why}` });
   try {
     const result = await ctx.runMutation(internal.ttsMerge.internalRecordMerge, { repo: b.repo as string, sha: b.sha as string, subject: b.subject as string, todoId: b.todoId as string | undefined });
     if (!result.recorded) {

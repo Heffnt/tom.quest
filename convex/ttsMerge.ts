@@ -10,7 +10,7 @@ import {
   evalsProtocolStatus,
   evalsRequestFor,
 } from "./ttsEvals";
-import { commitKey, mergeKey } from "./ttsShared";
+import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -656,6 +656,61 @@ export const internalRecordAudit = internalMutation({
     return { existing: false, verdict, replaced: existing !== null };
   },
 });
+
+/**
+ * Whether GitHub shows `sha` merged into `repo`'s main: on main itself (main
+ * is at it or ahead of it), or the head of a pull request merged into main.
+ * The second is how a squash merge lands, where the head commit never reaches
+ * main (worker/jobs/removal-loop.mjs merges that way).
+ *
+ * POST /tts/merge asks this before it records, because the record cannot be
+ * corrected afterwards: a merge row is written once per sha, and a second
+ * report returns the first. PR #196 was recorded at c4e73b5 on 2026-09-19 from
+ * a merge command GitHub had refused; its real merge landed half an hour later
+ * as 9f1096a, and that row stands. The three checks cannot catch this, since
+ * they are about the commit and not about whether it was merged.
+ *
+ * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
+ * recorded, and the reporter can post again.
+ */
+export async function mergedOnMain(
+  repo: string,
+  sha: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ merged: boolean; why: string }> {
+  const slug = (SESSION_REPOS as Record<string, string>)[repo];
+  if (!slug) return { merged: false, why: `${repo} is not a repository the record knows` };
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return { merged: false, why: `${sha} is not a commit sha` };
+  const token = process.env.GITHUB_MIRROR_TOKEN;
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "tts-merge",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const ask = async (path: string) => {
+    try {
+      const res = await fetchImpl(`https://api.github.com/repos/${slug}/${path}`, { headers });
+      return { status: res.status, body: res.ok ? ((await res.json()) as unknown) : null };
+    } catch {
+      return { status: 0, body: null };
+    }
+  };
+  const compare = await ask(`compare/${sha}...main`);
+  const status = (compare.body as { status?: unknown } | null)?.status;
+  // compare BASE...HEAD with main as the head: "ahead" means main has every
+  // commit of the sha and more, "identical" that main is at it.
+  if (status === "identical" || status === "ahead") return { merged: true, why: `${sha.slice(0, 7)} is on main` };
+  const pulls = await ask(`commits/${sha}/pulls`);
+  const merged = Array.isArray(pulls.body)
+    ? (pulls.body as { number?: unknown; merged_at?: unknown; base?: { ref?: unknown } }[])
+        .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === "main")
+    : undefined;
+  if (merged) return { merged: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into main` };
+  if (compare.status !== 200 && compare.status !== 404) {
+    return { merged: false, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on main (status ${compare.status})` };
+  }
+  return { merged: false, why: `${sha.slice(0, 7)} is not on main and belongs to no pull request merged into main` };
+}
 
 /**
  * POST /tts/merge writes exactly this event, and ONLY after the three checks
