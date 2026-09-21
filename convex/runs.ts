@@ -212,8 +212,10 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 
 // `runner:<id>` is a runner's step run: the id is the runners row it belongs
 // to, which is how the sessions page names the runner beside the chain.
+// `desktop` is a box session no launcher started, which scripts/run-hook.mjs
+// records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
 function validOrigin(origin: string) {
-  return ["session", "planner", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin) || /^runner:[a-z0-9]{1,64}$/.test(origin);
+  return ["session", "planner", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "desktop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin) || /^runner:[a-z0-9]{1,64}$/.test(origin);
 }
 async function fileVersionAt(ctx: MutationCtx, runId: string, fileVersion: string) {
   return await ctx.db

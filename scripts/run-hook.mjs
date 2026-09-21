@@ -152,15 +152,29 @@ function hookRegistration(payload, event, runFile, env) {
     || (host === null && normalizedFile.includes("/.claude/") && !normalizedFile.includes("/.claude-accounts/"));
   const subagent = event.startsWith("Subagent");
   const layersKnown = laptop && !subagent && cli === "claude";
+  // This function runs only when no launcher handed the session a token, so on
+  // the box a Claude session reaching it was started by no launcher. A desktop
+  // session (Tom's laptop app, Code tab, driving its own CLI over ssh) and a
+  // `claude` typed into an ssh shell are the two ways such a session exists on
+  // the box, and both are Tom's: it is a session with him, not a worker. The
+  // desktop's hook runs with sshd's bare environment, so RUN_HOST is unset
+  // there and the account-slot path of the run file is what says box. A
+  // process tagged TTS_BOX_RUN_ID was launched by box-run.mjs and only lacks a
+  // token because its spool write failed; it is not Tom's and stays unnamed.
+  const box = host === "box" || (host === null && normalizedFile.includes("/.claude-accounts/"));
+  const unlaunchedBoxSession = box && !subagent && cli === "claude" && !firstString(env.TTS_BOX_RUN_ID);
   return {
     host,
     ...(cli ? { cli } : {}),
-    origin: laptop ? "laptop" : firstString(env.TTS_RUN_ORIGIN) ?? "unknown",
+    origin: laptop
+      ? "laptop"
+      : firstString(env.TTS_RUN_ORIGIN) ?? (unlaunchedBoxSession ? "desktop" : "unknown"),
     kind: subagent ? "subagent" : "session",
-    // Only the laptop's own chat is named a session here. A subagent says
-    // nothing and inherits its parent's; on the box the launcher's envelope
-    // names it, and a word from this hook would overrule the launcher's.
-    ...(laptop && !subagent ? { environment: "session" } : {}),
+    // Only a session with Tom is named here: the laptop's own chat, and an
+    // unlaunched box session. A subagent says nothing and inherits its
+    // parent's; a launched box run's envelope names it, and a word from this
+    // hook would overrule the launcher's.
+    ...((laptop || unlaunchedBoxSession) && !subagent ? { environment: "session" } : {}),
     cwd: firstString(payload.cwd),
     ...(subagent && cli && host && parentThread
       ? { parentRunId: `${cli}:${host}:${parentThread}` }
