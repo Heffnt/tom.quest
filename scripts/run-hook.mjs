@@ -100,7 +100,11 @@ function sweepScript(env = process.env) {
 
 export function spawnSweep(runFile, env = process.env, spawnImpl = spawn) {
   const args = [sweepScript(env), ...(runFile ? ["--file", runFile] : [])];
-  const child = spawnImpl(process.execPath, args, { detached: true, stdio: "ignore", env });
+  // The sweep is the record's work, not the run's: without the run's tag the
+  // box launcher does not wait on it before reaping (worker/runs/box-run.mjs).
+  const sweepEnv = { ...env };
+  delete sweepEnv.TTS_BOX_RUN_ID;
+  const child = spawnImpl(process.execPath, args, { detached: true, stdio: "ignore", env: sweepEnv });
   child.unref();
 }
 

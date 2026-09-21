@@ -31,24 +31,18 @@
 //   --cli claude|codex      which CLI runs                 (default: claude)
 //   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
 //   --ref REF               branch, tag or sha to check out
-//   --cwd DIR               run in this existing absolute directory instead
-//                           of a worktree or a scratch one (needs --repo none)
 //   --model NAME            model for the run
 //   --effort LEVEL          codex only, passed through
 //   --sandbox MODE          codex only, passed through
 //   --schema FILE           codex only, passed through
-//   --allowed-tools A,B     claude only                    (default: TOOLS_ALLOWED)
-//                           an empty value means no tools, and denies them by name
-//   --disallowed-tools A,B  claude only                    (default: BANNED_TOOLS)
-//   --permission-mode MODE  claude only                    (default: acceptEdits)
-//   --max-turns N           claude only                    (default: no cap)
-//   --output-format FMT     claude only, text or json      (default: text)
 //   --tests                 this run will run a test suite (arms the guard)
 //   --install               pnpm install in the worktree   (implied by --tests)
 //   --parent RUNID          the laptop session's run id
 //   --root RUNID            that run's rootRunId           (default: --parent)
 //   --depth N               the parent's depth + 1         (default: 1)
 //   --keep-worktree         do not reap at exit (debugging)
+//   --timeout MS            hard kill                      (default: none)
+//   --help                  print this block
 //
 //     REMOVAL CHECK on --keep-worktree: the need it meets cannot be met some
 //     other way, because the reap DELETES THE ONLY COPY. A run's report comes
@@ -60,7 +54,12 @@
 //     second checkout to look at afterwards, and the log the reap removes with
 //     the tree is the same story. The flag is off by default and the reap is
 //     unconditional without it.
-//   --timeout MS            hard kill                      (default: none)
+//
+//   A claude run from the command line gets TOOLS_ALLOWED, BANNED_TOOLS denied,
+//   acceptEdits, no turn cap and text output. The tool lists, the permission
+//   mode, the turn cap, the output format and a caller's own directory are
+//   in-process options only (boxRun, boxRunSync): the jobs that set them call
+//   the launcher in process, and no command-line caller ever passed them.
 //
 // THE PROMPT ARRIVES ON STDIN, never as an argument — the same reason
 // codex-run.mjs passes `-`: no command-line length limit, and no prompt text
@@ -76,7 +75,7 @@
 // throws away everything it had done.
 //
 // Exit codes: the CLI's own code on completion; 124 on timeout when a
-// --timeout was given; 75 (EX_TEMPFAIL) when the memory guard refuses or a
+// --timeout was given, including a process the CLI left running past it; 75 (EX_TEMPFAIL) when the memory guard refuses or a
 // caller's slot wait runs out; 2 for bad arguments, an unresolvable ref, or a
 // missing binary. In process these are the `exitCode` of a thrown
 // BoxRunError; only main() turns one into an exit.
@@ -158,6 +157,8 @@ const DEFAULT_CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 // What an in-process caller's child may print before the call gives up on it.
 // runClaude's execFileSync used the same number.
 const SYNC_MAX_BUFFER = 32 * 1024 * 1024;
+// How often the launcher looks for a run's processes after its CLI exits.
+const SURVIVOR_POLL_MS = 500;
 
 /**
  * Every refusal and every failure before the child exits. The command line
@@ -202,24 +203,15 @@ function moduleUrl(relative, installed) {
 const { redactSecrets } = await import(moduleUrl("../session-host/redact.mjs", "/opt/tts/session-host/redact.mjs"));
 const { scrubbedEnv } = await import(moduleUrl("../session-host/env-scrub.mjs", "/opt/tts/session-host/env-scrub.mjs"));
 
-/** A comma list off the command line; an empty value is an empty list. */
-const commaList = (value) => value.split(",").map((name) => name.trim()).filter((name) => name !== "");
-
 function parseArgs(argv) {
   const opts = {
     cli: "claude",
     repo: REPO_NONE,
     ref: null,
-    cwd: null,
     model: null,
     effort: null,
     sandbox: null,
     schema: null,
-    allowedTools: undefined,
-    deniedTools: undefined,
-    permissionMode: undefined,
-    maxTurns: undefined,
-    outputFormat: "text",
     tests: false,
     install: false,
     parent: null,
@@ -238,16 +230,10 @@ function parseArgs(argv) {
       case "--cli": opts.cli = next(); break;
       case "--repo": opts.repo = next(); break;
       case "--ref": opts.ref = next(); break;
-      case "--cwd": opts.cwd = next(); break;
       case "--model": opts.model = next(); break;
       case "--effort": opts.effort = next(); break;
       case "--sandbox": opts.sandbox = next(); break;
       case "--schema": opts.schema = next(); break;
-      case "--allowed-tools": opts.allowedTools = commaList(next()); break;
-      case "--disallowed-tools": opts.deniedTools = commaList(next()); break;
-      case "--permission-mode": opts.permissionMode = next(); break;
-      case "--max-turns": opts.maxTurns = Number(next()); break;
-      case "--output-format": opts.outputFormat = next(); break;
       case "--tests": opts.tests = true; break;
       case "--install": opts.install = true; break;
       case "--parent": opts.parent = next(); break;
@@ -255,6 +241,9 @@ function parseArgs(argv) {
       case "--depth": opts.depth = Number(next()); break;
       case "--keep-worktree": opts.keepWorktree = true; break;
       case "--timeout": opts.timeoutMs = Number(next()); break;
+      // REMOVAL CHECK: Tom asked for it (2026-09-21). tts-run is reached by its
+      // PATH name, and without this the flags are written only in this file.
+      case "--help": return { help: true };
       default: fail(`unknown option ${arg}`);
     }
   }
@@ -263,9 +252,9 @@ function parseArgs(argv) {
   // an in-process caller that names nothing gets nothing added, which is what
   // runClaude always handed the CLI.
   if (opts.cli === "claude") {
-    if (opts.allowedTools === undefined) opts.allowedTools = [...TOOLS_ALLOWED];
-    if (opts.deniedTools === undefined) opts.deniedTools = [...BANNED_TOOLS];
-    if (opts.permissionMode === undefined) opts.permissionMode = "acceptEdits";
+    opts.allowedTools = [...TOOLS_ALLOWED];
+    opts.deniedTools = [...BANNED_TOOLS];
+    opts.permissionMode = "acceptEdits";
   }
   return opts;
 }
@@ -398,12 +387,8 @@ export function claudeArgs({ model, outputFormat = "text", maxTurns, allowedTool
   if (maxTurns !== undefined) args.push("--max-turns", String(maxTurns));
   if (model) args.push("--model", model);
   if (permissionMode) args.push("--permission-mode", permissionMode);
-  if (allowedTools !== undefined) {
-    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
-      throw new BoxRunError("allowedTools must be an array of non-empty strings");
-    }
-    args.push("--allowedTools", allowedTools.join(","));
-  }
+  // normalize() has already refused a malformed list; this is its one check.
+  if (allowedTools !== undefined) args.push("--allowedTools", allowedTools.join(","));
   // AN EMPTY LIST MEANS NO TOOLS, AND THE ALLOW-LIST ALONE DOES NOT SAY SO.
   // `--allowedTools` pre-approves; it does not withhold, and the default
   // permission mode hands the model its read tools without asking either way.
@@ -647,10 +632,13 @@ function ensureMirror(repo, reposDir, env) {
     fs.mkdirSync(reposDir, { recursive: true });
     note(`mirroring ${repo}`);
     gitOrFail(["clone", "--mirror", url, mirror], `could not mirror ${repo}`, { env: gitEnv });
-  } else if (git(["-C", mirror, "remote", "update", "--prune"], { env: gitEnv }).status !== 0) {
-    // A stale mirror is still a usable mirror when the ref is already in it.
-    // Refusing here would turn a network blip into a refused run.
-    note(`could not update the ${repo} mirror; using what is already there`);
+  } else {
+    if (git(["-C", mirror, "remote", "update"], { env: gitEnv }).status !== 0) {
+      // A stale mirror is still a usable mirror when the ref is already in it.
+      // Refusing here would turn a network blip into a refused run.
+      note(`could not update the ${repo} mirror; using what is already there`);
+    }
+    pruneMirror(mirror, gitEnv);
   }
   // THE MIRROR FLAG COMES OFF, EVERY TIME, AND THIS IS NOT COSMETIC.
   // `clone --mirror` is `--bare` plus the fetch refspec plus
@@ -668,13 +656,52 @@ function ensureMirror(repo, reposDir, env) {
   // is the normal path, not an exotic one.
   //
   // Unsetting it leaves the `+refs/*:refs/*` fetch refspec alone, so
-  // `remote update --prune` still mirrors everything IN; only the push side
+  // `remote update` still mirrors everything IN; only the push side
   // goes back to git's ordinary fast-forward-only behaviour. It runs on every
   // call rather than only after a clone, because the box already holds mirrors
   // cloned before this line existed. `--unset` exits 5 on a key that is not
   // there, which is why it is not gitOrFail.
   git(["-C", mirror, "config", "--unset", "remote.origin.mirror"], { env: gitEnv });
   return mirror;
+}
+
+/**
+ * Delete the mirror's refs GitHub no longer has, except a branch a live
+ * worktree has checked out.
+ *
+ * A RUN'S BRANCH LIVES IN THIS MIRROR, NOT IN ITS WORKTREE. A worktree shares
+ * the mirror's refs, so a branch a run makes and has not pushed yet is a ref
+ * here that GitHub does not have, and `remote update --prune` deleted it on
+ * the next run's refresh. The run's HEAD then named a branch that no longer
+ * existed, and its next commit started a new history without the earlier ones
+ * (run 96feb5c4, 2026-09-18). So the prune is done by hand: git's own dry run
+ * names what it would delete, and every branch a worktree names is kept.
+ * A kept branch is the run's to push; the reap removes its worktree, and the
+ * next refresh prunes the branch then if GitHub never got it.
+ *
+ * REMOVAL CHECK on pruning at all: resolveRef answers `--ref NAME` from this
+ * mirror's refs/heads, so without a prune a branch deleted on GitHub (every
+ * squash-merged one) would still resolve here, to its old commit, and a run
+ * would work on a stale tree instead of being refused.
+ */
+function pruneMirror(mirror, env) {
+  const dryRun = git(["-C", mirror, "remote", "prune", "--dry-run", "origin"], { env });
+  if (dryRun.status !== 0) return;
+  const checkedOut = new Set(
+    String(git(["-C", mirror, "worktree", "list", "--porcelain"], { env }).stdout ?? "")
+      .split("\n")
+      .filter((line) => line.startsWith("branch "))
+      .map((line) => line.slice("branch ".length).trim()),
+  );
+  for (const line of String(dryRun.stdout ?? "").split("\n")) {
+    const ref = /\[would prune\]\s+(refs\/\S+)/.exec(line)?.[1];
+    if (!ref) continue;
+    if (checkedOut.has(ref)) {
+      note(`kept ${ref}: a live worktree has it checked out`);
+      continue;
+    }
+    git(["-C", mirror, "update-ref", "-d", ref], { env });
+  }
 }
 
 function resolveRef(mirror, ref, env) {
@@ -920,6 +947,9 @@ function prepareRun(options, slot = noSlot) {
       // slot while its own parent holds one is the deadlock. Inherited, not
       // recomputed, so it survives however many levels the delegation goes.
       TTS_RUN_SLOT_HELD: "1",
+      // Every process under this run inherits this, whatever session or
+      // process group it moves to; survivorsOf reads it back.
+      TTS_BOX_RUN_ID: id,
     };
     // A token the caller's own process was started under is not this child's.
     if (!spooled) delete childEnv.TTS_RUN_REG_TOKEN;
@@ -1000,7 +1030,7 @@ function namedEnvironmentOf(env) {
  * `result`, and the envelope itself comes back for a caller that reads its
  * subtype.
  */
-function finishRun(run, { stdout, code, signal, timedOut }) {
+function finishRun(run, { stdout, code, signal, timedOut, survivors = [] }) {
   const { opts } = run;
   const envelope = opts.outputFormat === "json" ? resultEnvelopeOf(stdout) : null;
   const text = typeof envelope?.result === "string" ? envelope.result : stdout;
@@ -1019,8 +1049,12 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
         claim: { by: "launcher:box-run", threadId: envelope.session_id, runFile, hookPayloadKeys: [] },
       });
     } catch (error) {
-      // The SessionStart hook claims the same envelope; a claim that fails here
-      // leaves it to the hook and the sweep, and never loses the answer.
+      // REMOVAL CHECK: the SessionStart hook claims the same envelope, and this
+      // claim stays because for a Claude run nothing else claims a spool when
+      // the hook does not (its five-second timeout, a slot without the hook).
+      // claimRegistration is idempotent on the token, so the second claim costs
+      // nothing. A claim that fails here leaves it to the hook and never loses
+      // the answer.
       note(`could not claim the envelope: ${error?.message ?? error}`);
     }
   }
@@ -1038,15 +1072,99 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
     id: run.id,
     seconds: Math.round((Date.now() - run.startedAt) / 1000),
     text,
-    exitCode: timedOut ? 124 : (code ?? 1),
+    // Work killed at the time limit is a timeout, whether the CLI or a process
+    // it left running was still going.
+    exitCode: timedOut || survivors.length > 0 ? 124 : (code ?? 1),
     signal: signal ?? null,
-    timedOut,
+    timedOut: timedOut || survivors.length > 0,
     envelope,
     runToken: run.spooled?.token ?? null,
     stderrTail,
+    survivors,
     workDir: run.workDir,
     errLog: run.errLog,
   };
+}
+
+/**
+ * The processes still alive that this run started, found by the TTS_BOX_RUN_ID
+ * every one of them inherited: [{ pid, command }].
+ *
+ * A BOX RUN'S WORK CAN OUTLIVE ITS CLI. A model that starts a command in the
+ * background and then ends its turn ends the CLI while the command runs on;
+ * the launcher used to reap the worktree under it at once, and the run's
+ * report was the model's last line, "waiting" (runs 0ea27b8e, 17aa7df2 and
+ * 02839c97 on 2026-09-19). The environment, not the process group, is the
+ * test, because a CLI's shell may start its own session and an orphan's
+ * parent becomes init, while the environment goes with every descendant.
+ * Linux only, through /proc; elsewhere nothing is found and nothing waits.
+ */
+function survivorsOf(id, { procDir = "/proc" } = {}) {
+  if (process.platform !== "linux") return [];
+  const marker = `TTS_BOX_RUN_ID=${id}`;
+  const found = [];
+  let entries = [];
+  try { entries = fs.readdirSync(procDir); } catch { return []; }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
+    try {
+      if (!fs.readFileSync(path.join(procDir, entry, "environ"), "latin1").split("\0").includes(marker)) continue;
+      const command = fs.readFileSync(path.join(procDir, entry, "cmdline"), "utf8").split("\0").filter(Boolean).join(" ");
+      found.push({ pid: Number(entry), command: command.slice(0, 200) });
+    } catch {
+      // A process that exited between the listing and the read is not a survivor.
+    }
+  }
+  return found;
+}
+
+/** How long the launcher may wait for survivors: the rest of the run's
+ *  --timeout, or without limit when none was given (no limit by default, the
+ *  2026-09-09 ruling); nothing after a timeout, which is a hard kill. */
+function survivorBudget(run, timedOut) {
+  if (timedOut) return 0;
+  if (!(run.opts.timeoutMs > 0)) return Infinity;
+  return Math.max(0, run.opts.timeoutMs - (Date.now() - run.startedAt));
+}
+
+/** Kill what outlived the wait, and say on stderr what the wait was. The
+ *  kill rescans until nothing tagged is left, because a survivor can fork
+ *  between one scan and its kill, and that child would outlive the reap. */
+function settleSurvivors(run, waitedMs, left) {
+  if (waitedMs > 0) note(`waited ${Math.round(waitedMs / 1000)}s after the CLI exited for the processes it started`);
+  const killed = new Map();
+  for (let round = 0; left.length > 0 && round < 50; round += 1) {
+    for (const survivor of left) {
+      killed.set(survivor.pid, survivor);
+      try { process.kill(survivor.pid, "SIGKILL"); } catch {}
+    }
+    sleep(20);
+    left = survivorsOf(run.id);
+  }
+  if (left.length > 0) note(`${left.length} process(es) of this run would not die: ${left.map((survivor) => survivor.pid).join(", ")}`);
+  return [...killed.values()];
+}
+
+async function waitForSurvivors(run, timedOut) {
+  const budget = survivorBudget(run, timedOut);
+  const started = Date.now();
+  let left = survivorsOf(run.id);
+  while (left.length > 0 && Date.now() - started < budget) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(SURVIVOR_POLL_MS, budget - (Date.now() - started))));
+    left = survivorsOf(run.id);
+  }
+  return settleSurvivors(run, Date.now() - started, left);
+}
+
+function waitForSurvivorsSync(run, timedOut) {
+  const budget = survivorBudget(run, timedOut);
+  const started = Date.now();
+  let left = survivorsOf(run.id);
+  while (left.length > 0 && Date.now() - started < budget) {
+    sleep(Math.min(SURVIVOR_POLL_MS, budget - (Date.now() - started)));
+    left = survivorsOf(run.id);
+  }
+  return settleSurvivors(run, Date.now() - started, left);
 }
 
 /**
@@ -1139,7 +1257,9 @@ export async function boxRun(options) {
     child.on("close", (code, signal) => {
       if (timer) clearTimeout(timer);
       // The log is read back by finishRun, so it has to be flushed first.
-      errStream.end(() => resolve(finishRun(run, { stdout, code, signal, timedOut })));
+      waitForSurvivors(run, timedOut).then((survivors) => {
+        errStream.end(() => resolve(finishRun(run, { stdout, code, signal, timedOut, survivors })));
+      });
     });
   });
 }
@@ -1171,7 +1291,8 @@ export function boxRunSync(options) {
     run.reap();
     throw Object.assign(new BoxRunError(`could not start ${run.command}: ${result.error.message}`), { runToken: run.spooled?.token ?? null });
   }
-  return finishRun(run, { stdout: result.stdout ?? "", code: result.status, signal: result.signal, timedOut });
+  const survivors = waitForSurvivorsSync(run, timedOut);
+  return finishRun(run, { stdout: result.stdout ?? "", code: result.status, signal: result.signal, timedOut, survivors });
 }
 
 /**
@@ -1230,6 +1351,14 @@ function sessionRegistration(opts, prompt, env) {
   };
 }
 
+/** The Usage block of this file's header, as `--help` prints it. */
+function usage() {
+  const header = fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n");
+  const start = header.findIndex((line) => line.startsWith("// Usage:"));
+  const end = header.findIndex((line, index) => index > start && line.startsWith("//   --help"));
+  return `${header.slice(start, end + 1).map((line) => line.replace(/^\/\/ ?/, "")).join("\n")}\n`;
+}
+
 /** The command line: flags and stdin in, the report and one status line out. */
 async function main() {
   let reap = () => {};
@@ -1252,6 +1381,10 @@ async function main() {
   let result;
   try {
     opts = parseArgs(process.argv.slice(2));
+    if (opts.help) {
+      process.stdout.write(usage());
+      process.exit(0);
+    }
     const prompt = readStdin();
     if (!prompt.trim()) fail("no prompt on stdin");
     result = await boxRun({
@@ -1270,6 +1403,11 @@ async function main() {
   const report = redactSecrets(result.text);
   process.stdout.write(report);
   if (report && !report.endsWith("\n")) process.stdout.write("\n");
+  // A PROCESS THE RUN STARTED THAT OUTLIVED ITS TIME LIMIT was killed before
+  // the reap, and the report says so: the work it was doing is not in it.
+  if (result.survivors.length > 0) {
+    process.stdout.write(redactSecrets(`box-run: ${result.survivors.length} process(es) this run started were still running when its time limit ran out, and were killed: ${result.survivors.map((survivor) => survivor.command).join("; ")}\n`));
+  }
   // THE STATUS LINE IS LAST AND ON STDOUT, so the laptop agent reads it off the
   // final line of the one block it relays.
   const { seconds } = result;

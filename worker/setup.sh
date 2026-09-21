@@ -373,7 +373,18 @@ for (const event of events) {
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 done
-# CLI helpers onto the PATH.
+# CLI helpers onto the PATH. A tts-* helper main's worker/bin no longer
+# carries is removed, so a retired or stray one cannot linger on the PATH
+# (tts-auth-lib.mjs sat there unused after it left main). The loop stays after
+# that one is gone: helpers are retired from worker/bin over time, and without
+# it each retirement needs a hand step on the box that nothing records.
+for installed in /usr/local/bin/tts-*; do
+  [ -e "$installed" ] || continue
+  if [ ! -e "$WORKER_DIR/bin/$(basename "$installed")" ]; then
+    echo "  removing $installed: worker/bin no longer carries it"
+    rm -f "$installed"
+  fi
+done
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
@@ -513,7 +524,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # what makes a missed event recoverable. Captures are idempotent on the Slack
 # message ts server-side, so re-offering what the push route already took costs
 # nothing.
-7 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
+# flock: a job takes no run slot since PR #196, so the lock is its one guard
+# against a slow run overlapping the next and both writing the cursor file.
+7 * * * * root /usr/bin/flock -n /var/lock/tts-poll-dump.lock /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
 
 # Poll Gmail for action-implying mail every 10 minutes (quiet no-op until the
 # GMAIL_* keys exist in worker.env — see poll-gmail.mjs's header for the

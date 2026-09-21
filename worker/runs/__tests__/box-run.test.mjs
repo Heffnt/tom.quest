@@ -29,7 +29,11 @@ function fakeCli(tag) {
   const script = path.join(dir, "fake-cli.mjs");
   fs.writeFileSync(script, [
     'import fs from "node:fs";',
+    'import { spawn } from "node:child_process";',
     'const started = Date.now();',
+    // A command the fake leaves running in its own session when it exits, the
+    // way a model's backgrounded shell outlives the CLI's turn.
+    'if (process.env.FAKE_BACKGROUND) spawn("sh", ["-c", process.env.FAKE_BACKGROUND], { detached: true, stdio: "ignore" }).unref();',
     // The two registration variables are recorded beside argv because they are
     // the whole of what box-run.mjs hands a child about the record it belongs
     // to, and the child is the only place they can be observed.
@@ -56,7 +60,7 @@ function fakeCli(tag) {
 }
 
 /** A bare mirror where ensureMirror expects one, built locally so the run never
- * clones from GitHub. `remote update --prune` on a remote-less bare repository
+ * clones from GitHub. `remote update` on a remote-less bare repository
  * is a no-op, which is exactly the "mirror already present" path. */
 function localMirror(stateDir, repo) {
   const mirror = path.join(stateDir, "repos", `${repo}.git`);
@@ -319,6 +323,36 @@ describe("box-run worktrees", () => {
     expect(after.status).toBe(1);
   }, GIT_FIXTURE_MS);
 
+  // witness: run 96feb5c4 (2026-09-18) lost its first commits because another
+  // run's mirror refresh ran `remote update --prune`, which deleted the branch
+  // the first run had made in its worktree and not yet pushed.
+  it("keeps a branch a live worktree has checked out when the refresh prunes", () => {
+    const stateDir = temp("state");
+    const upstream = temp("upstream");
+    execFileSync("git", ["init", "-q", "-b", "main", upstream]);
+    git(upstream, "commit", "-q", "--allow-empty", "-m", "seed");
+    git(upstream, "branch", "deleted-upstream");
+    const mirror = path.join(stateDir, "repos", "tom.quest.git");
+    fs.mkdirSync(path.dirname(mirror), { recursive: true });
+    execFileSync("git", ["clone", "-q", "--mirror", upstream, mirror]);
+    git(upstream, "branch", "-D", "deleted-upstream");
+    // A live run's worktree on a branch GitHub has never seen, and a local
+    // branch nobody has checked out.
+    const live = path.join(temp("live"), "wt");
+    git(mirror, "worktree", "add", "-q", "-b", "run/unpushed", live, "main");
+    git(mirror, "branch", "left-behind", "main");
+    const result = run(["--repo", "tom.quest", "--ref", "main"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("prune") },
+    });
+    expect(result.status).toBe(0);
+    const heads = git(mirror, "for-each-ref", "--format=%(refname)", "refs/heads").trim().split("\n");
+    expect(heads).toContain("refs/heads/run/unpushed");
+    expect(heads).not.toContain("refs/heads/left-behind");
+    expect(heads).not.toContain("refs/heads/deleted-upstream");
+    expect(result.stderr).toContain("kept refs/heads/run/unpushed");
+  }, GIT_FIXTURE_MS);
+
   it("reaps the work directory after a failing run too", () => {
     const stateDir = temp("state");
     const { sha } = localMirror(stateDir, "tom.quest");
@@ -567,9 +601,11 @@ describe("claudeArgs", () => {
     expect(entry.claudeArgs({})).not.toContain("--session-id");
   });
 
+  // The one check on the list is normalize()'s, which every entry passes.
   it("refuses a tool list that is not non-empty strings", () => {
-    expect(() => entry.claudeArgs({ allowedTools: "Read" })).toThrow(/allowedTools/);
-    expect(() => entry.claudeArgs({ allowedTools: ["Read", ""] })).toThrow(/allowedTools/);
+    const { env } = inProcess("bad-tools");
+    expect(() => entry.boxRunSync({ prompt: "p", env, allowedTools: "Read", registration: null })).toThrow(/allowedTools/);
+    expect(() => entry.boxRunSync({ prompt: "p", env, allowedTools: ["Read", ""], registration: null })).toThrow(/allowedTools/);
   });
 });
 
@@ -676,27 +712,59 @@ describe("box-run in process", () => {
   });
 });
 
-describe("box-run command line flags for parity", () => {
-  it("passes --max-turns, --allowed-tools and --cwd through, and refuses a turn cap for codex", () => {
-    const own = temp("flag-cwd");
+// witness: runs 0ea27b8e, 17aa7df2 and 02839c97 (2026-09-19) backgrounded a
+// wait, ended their turn, and were reaped with the work still running.
+describe.skipIf(process.platform !== "linux")("box-run waits for what the CLI left running", () => {
+  it("waits for a process the CLI started to finish before it reaps", () => {
     const stateDir = temp("state");
-    const record = path.join(stateDir, "record.json");
-    const result = run(["--cwd", own, "--max-turns", "4", "--allowed-tools", "", "--output-format", "json"], {
+    const late = path.join(temp("late"), "done.txt");
+    const started = Date.now();
+    const result = run(["--repo", "none"], {
       stateDir,
-      env: { CLAUDE_BIN: fakeCli("flags"), FAKE_RECORD: record },
+      env: { CLAUDE_BIN: fakeCli("survivor"), FAKE_BACKGROUND: `sleep 2; echo done > ${late}` },
     });
     expect(result.status).toBe(0);
-    const { argv, cwd } = JSON.parse(fs.readFileSync(record, "utf8"));
-    expect(argv[argv.indexOf("--max-turns") + 1]).toBe("4");
-    expect(argv[argv.indexOf("--output-format") + 1]).toBe("json");
-    expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("");
-    expect(argv[argv.indexOf("--disallowedTools") + 1].split(",")).toContain("ToolSearch");
-    expect(fs.realpathSync(cwd)).toBe(fs.realpathSync(own));
-    const refused = run(["--cli", "codex", "--max-turns", "4"], { stateDir: temp("state"), env: { TTS_CODEX_BIN: fakeCli("codex-turns") } });
-    expect(refused.status).toBe(2);
-    expect(refused.stderr).toMatch(/claude only/);
-    const repoAndCwd = run(["--cwd", own, "--repo", "tom.quest"], { stateDir: temp("state"), env: { CLAUDE_BIN: fakeCli("cwd-repo") } });
-    expect(repoAndCwd.status).toBe(2);
-    expect(repoAndCwd.stderr).toMatch(/--cwd/);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2000);
+    expect(fs.readFileSync(late, "utf8")).toBe("done\n");
+    expect(result.stderr).toMatch(/waited \d+s after the CLI exited/);
+    expect(result.stdout).not.toContain("still running");
+    expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
+  });
+
+  it("kills what outlives the run's time limit and names it in the report", () => {
+    const stateDir = temp("state");
+    const late = path.join(temp("late"), "never.txt");
+    const result = run(["--repo", "none", "--timeout", "1500"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("outlives"), FAKE_BACKGROUND: `sleep 30; echo late > ${late}` },
+    });
+    // A timeout, like any other: the work was cut off.
+    expect(result.status).toBe(124);
+    expect(result.stdout).toMatch(/\d process\(es\) this run started were still running when its time limit ran out, and were killed: .*sh -c sleep 30/);
+    expect(statusLine(result.stdout)).toMatch(/exit 124 after \d+s$/);
+    const ps = spawnSync("pgrep", ["-f", `echo late > ${late}`], { encoding: "utf8" });
+    expect(ps.stdout.trim()).toBe("");
+  });
+});
+
+describe("box-run command line flags", () => {
+  // The six in-process settings were once command-line flags too; no caller
+  // passed one, so the command line refuses them like any unknown option.
+  it("refuses the settings that exist only in process", () => {
+    for (const flag of ["--cwd", "--allowed-tools", "--disallowed-tools", "--permission-mode", "--max-turns", "--output-format"]) {
+      const result = run(["--repo", "none", flag, "x"], { stateDir: temp("state"), env: { CLAUDE_BIN: fakeCli("gone") } });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`unknown option ${flag}`);
+    }
+  });
+
+  it("prints the usage block for --help and starts nothing", () => {
+    const record = path.join(temp("help"), "record.json");
+    const result = run(["--help"], { stateDir: temp("state"), env: { CLAUDE_BIN: fakeCli("help"), FAKE_RECORD: record } });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/^Usage:\n/);
+    expect(result.stdout).toContain("--timeout MS");
+    expect(result.stdout).not.toContain("REMOVAL CHECK");
+    expect(fs.existsSync(record)).toBe(false);
   });
 });
