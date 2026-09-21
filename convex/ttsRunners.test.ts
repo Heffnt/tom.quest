@@ -175,6 +175,7 @@ describe("the ceiling", () => {
     expect(prompt).toContain("my ceiling, now 2 GPUs, 240 minutes and 128000 MB of memory per request");
     expect(prompt).toContain('starts with the word "ceiling"');
     expect(prompt).toContain("You never raise it yourself");
+    expect(prompt).toContain("inside the runner's GPU-hour budget and its ceiling of 2 GPUs, 240 minutes and 128000 MB of memory per request;");
   });
 
   it("keeps the box's fallback ceiling equal to the record's default", async () => {
@@ -210,7 +211,8 @@ describe("the ceiling", () => {
     expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toEqual({ gpus: 16, minutes: 1440, memoryMb: 128000 });
     const events = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "ceiling")).collect());
     expect(events).toHaveLength(1);
-    expect(events[0].data).toMatchObject({ from: { gpus: 2, minutes: 240 }, to: { gpus: 16, minutes: 1440 }, by: { kind: "tom", slackTs: "2.0" } });
+    expect(events[0].data).toMatchObject({ from: { gpus: 2, minutes: 240 }, to: { gpus: 16, minutes: 1440 } });
+    expect(events[0].slackTs).toBe("2.0");
     expect(events[0].text).toBe("The ceiling moved from 2 GPUs, 240 minutes and 128000 MB of memory per request to 16 GPUs, 1440 minutes and 128000 MB of memory per request.");
     const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
     const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
@@ -220,26 +222,22 @@ describe("the ceiling", () => {
     expect(claim.prompt).toContain("(This reply did not change the ceiling: The ceiling's GPUs may be at most 16");
   });
 
-  it("moves for a session acting for Tom, and refuses a runner step", async () => {
+  it("passes to a hand-off successor unless its seed names one", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest(schema, modules);
-    const { internal } = await import("./_generated/api");
+    const wide = { gpus: 16, minutes: 1440, memoryMb: 512000 };
+    const first = (await (await post(t, seed({ ceiling: wide }))).json()).runnerId as Id<"runners">;
+    const next = (await (await post(t, seed({ title: "next", from: { kind: "handoff", runnerId: first } }))).json()).runnerId as Id<"runners">;
+    expect((await t.run((ctx) => ctx.db.get(next)))?.ceiling).toEqual(wide);
+  });
+
+  it("has no door for a session or a step", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest(schema, modules);
     const runnerId = (await (await post(t, seed())).json()).runnerId as Id<"runners">;
-    const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
-    const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
-    if (!claim.admitted) throw new Error(claim.reason);
-
-    const refused = await ceilingPost(t, { runnerId, runId: claim.stepRunId, why: "I need more", ceiling: { gpus: 16 } });
-    expect(refused.status).toBe(400);
-    expect((await refused.json()).error).toContain("A runner step may not set a ceiling");
-    expect(((await ceilingPost(t, { runnerId, runId: "claude:box:session-1", ceiling: { gpus: 16 } })).status)).toBe(400);
-    expect(((await ceilingPost(t, { runnerId, runId: "claude:box:session-1", why: "x", ceiling: { cpus: 16 } })).status)).toBe(400);
-
-    const set = await ceilingPost(t, { runnerId, runId: "claude:box:session-1", why: "Tom said in the session: give it all sixteen.", ceiling: { gpus: 16 } });
-    expect(set.status).toBe(200);
-    expect(await set.json()).toMatchObject({ ok: true, from: { gpus: 2 }, to: { gpus: 16, minutes: 240, memoryMb: 128000 } });
-    const event = await t.run(async (ctx) => (await ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "ceiling")).collect())[0]);
-    expect(event.data.by).toEqual({ kind: "run", runId: "claude:box:session-1", why: "Tom said in the session: give it all sixteen." });
+    const response = await ceilingPost(t, { runnerId, runId: "claude:box:session-1", why: "x", ceiling: { gpus: 16 } });
+    expect(response.status).toBe(404);
+    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toBeUndefined();
   });
 });
 

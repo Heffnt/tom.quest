@@ -314,7 +314,7 @@ export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, memoryMb, 
   const over = [
     gpus > ceiling.gpus ? `${gpus} GPUs where the ceiling is ${ceiling.gpus}` : null,
     minutes > ceiling.minutes ? `${minutes} minutes where the ceiling is ${ceiling.minutes}` : null,
-    memoryMb !== undefined && memoryMb > ceiling.memoryMb ? `${memoryMb} MB of memory where the ceiling is ${ceiling.memoryMb}` : null,
+    memoryMb > ceiling.memoryMb ? `${memoryMb} MB of memory where the ceiling is ${ceiling.memoryMb}` : null,
   ].filter(Boolean);
   if (over.length > 0) {
     return {
@@ -381,10 +381,9 @@ export async function sense(input, deps = defaultDeps) {
   // runner with no budget leaves none, and cannot launch.
   if (input.budgetGpuHours !== undefined) cache.budgetGpuHours = input.budgetGpuHours;
   else delete cache.budgetGpuHours;
-  // The ceiling rides the cache the same way; a claim with none leaves none,
-  // and tts-turing-act holds such a runner to the default.
-  if (validCeiling(input.ceiling)) cache.ceiling = input.ceiling;
-  else delete cache.ceiling;
+  // The ceiling rides the cache the same way. readCache drops one that is not
+  // three whole numbers, and tts-turing-act then holds the runner to the default.
+  cache.ceiling = input.ceiling;
   cache.readAt = now;
   writeCache(cachePath, cache);
   const jobsOut = { ...jobs };

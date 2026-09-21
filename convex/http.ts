@@ -3284,7 +3284,7 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
   if (b.model !== undefined && !isSessionModel(b.model)) return "model is not a session model.";
   if (b.delegateAllowed !== undefined && typeof b.delegateAllowed !== "boolean") return "delegateAllowed must be true or false.";
   if (b.budgetGpuHours !== undefined && typeof b.budgetGpuHours !== "number") return "budgetGpuHours must be a number.";
-  if (b.ceiling !== undefined && !ceilingShape(b.ceiling, true)) return "ceiling must be { gpus, minutes, memoryMb }, three numbers.";
+  if (b.ceiling !== undefined && !ceilingShape(b.ceiling)) return "ceiling must be { gpus, minutes, memoryMb }, three numbers.";
   if (b.specs !== undefined && (!Array.isArray(b.specs) || !b.specs.every((spec) => typeof spec === "string"))) return "specs must be a list of glob patterns.";
   if (b.runId !== undefined && !validRunId(b.runId)) return "runId is not a run id.";
   if (b.askOverrides !== undefined) {
@@ -3314,50 +3314,13 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
 
 http.route({ path: "/tts/runner", method: "POST", handler: ttsRunner });
 
-/** Whether a value is a ceiling's numbers: all three when `whole`, else any
- *  of them, and nothing else. Their range is runnerCeilingFaults' to judge. */
-function ceilingShape(c: unknown, whole: boolean): c is { gpus?: number; minutes?: number; memoryMb?: number } {
+/** Whether a value is a ceiling's three numbers and nothing else. Their range
+ *  is runnerCeilingFaults' to judge. */
+function ceilingShape(c: unknown): c is { gpus: number; minutes: number; memoryMb: number } {
   if (c === null || typeof c !== "object" || Array.isArray(c)) return false;
-  const keys = Object.keys(c);
-  const allowed = ["gpus", "minutes", "memoryMb"];
-  if (keys.length === 0 || !keys.every((k) => allowed.includes(k))) return false;
-  if (whole && keys.length !== 3) return false;
-  return keys.every((k) => typeof (c as Record<string, unknown>)[k] === "number");
+  const keys = Object.keys(c).sort();
+  return keys.join(",") === "gpus,memoryMb,minutes" && keys.every((k) => typeof (c as Record<string, unknown>)[k] === "number");
 }
-
-// POST /tts/runner-ceiling — a session carries out Tom's ruling on what one
-// launch of a runner may ask for (convex/ttsRunners.ts setCeiling). Body
-// { runnerId, runId, why, ceiling: { gpus?, minutes?, memoryMb? } }; a number
-// left out keeps its value. The other door is Tom's own reply in the runner's
-// thread. A runner step's run id is refused: a step asks, it never sets.
-const ttsRunnerCeiling = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.runnerId !== "string" || b.runnerId === "") return jsonResponse(400, { error: "runnerId required" });
-  if (!validRunId(b.runId)) return jsonResponse(400, { error: "runId (the session's own run id) required" });
-  if (typeof b.why !== "string" || b.why.trim() === "") return jsonResponse(400, { error: "why (the ruling of Tom's this carries out) required" });
-  if (!ceilingShape(b.ceiling, false)) return jsonResponse(400, { error: "ceiling must name at least one of gpus, minutes, memoryMb, each a number" });
-  try {
-    const result = await ctx.runMutation(internal.ttsRunners.internalSetCeilingForTom, {
-      runnerId: b.runnerId as Id<"runners">,
-      runId: b.runId,
-      why: b.why,
-      ceiling: b.ceiling,
-    });
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/runner-ceiling", method: "POST", handler: ttsRunnerCeiling });
 
 // POST /tts/runner-step — a runner step's check-in, through tts-runner-step.
 // Body { runnerId, stepRunId, decision, checkIn, document, asks: [{ tier,

@@ -308,10 +308,14 @@ async function insertRunner(
   const faults = runnerSeedFaults(seed);
   if (faults.length > 0) throw new Error(faults.join(" "));
   let document: string;
+  // A successor keeps its predecessor's ceiling unless the seed names one, so
+  // a hand-off never quietly drops a ceiling Tom raised back to the default.
+  let ceiling = seed.ceiling;
   if (seed.from.kind === "handoff") {
     const from = await ctx.db.get(seed.from.runnerId);
     if (!from) throw new Error("The runner named to hand off from does not exist.");
     document = handoffDocument(from);
+    ceiling ??= from.ceiling;
   } else if (seed.from.kind === "prompt") {
     document = promptDocument(seed.title.trim(), seed.from.text);
   } else {
@@ -328,7 +332,7 @@ async function insertRunner(
     stepMs: seed.stepMs,
     nextStepAt: now,
     ...(seed.budgetGpuHours !== undefined ? { budgetGpuHours: seed.budgetGpuHours } : {}),
-    ...(seed.ceiling !== undefined ? { ceiling: seed.ceiling } : {}),
+    ...(ceiling !== undefined ? { ceiling } : {}),
     ...(seed.specs !== undefined ? { specs: seed.specs } : {}),
     ...(seed.model !== undefined ? { model: seed.model } : {}),
     delegateAllowed: seed.delegateAllowed ?? true,
@@ -771,7 +775,7 @@ async function buildRunnerStepPrompt(
   const actsOnCluster = mayActOnCluster(runner, blocking.length);
   const act = observeOnly
     ? `ACT: change nothing. Tom has not answered ${blocking.length === 1 ? "the blocking question" : `${blocking.length} blocking questions`} this runner asked (${blocking.map((ask) => `"${ask.text ?? ""}"`).join("; ")}), so this step observes and checks in, and does not act on the experiment, the checkout or the document's plan.`
-    : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.${actsOnCluster ? " On the cluster you may launch jobs for this experiment and cancel the ones this runner launched, with `tts-turing-act` (under Tools), inside the runner's GPU-hour budget and its ceiling of ${runnerCeilingWords(ceilingOf(runner))}; each launch or cancel is recorded with the pen's `--act` and verified in the queue." : ""}`;
+    : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.${actsOnCluster ? ` On the cluster you may launch jobs for this experiment and cancel the ones this runner launched, with \`tts-turing-act\` (under Tools), inside the runner's GPU-hour budget and its ceiling of ${runnerCeilingWords(ceilingOf(runner))}; each launch or cancel is recorded with the pen's \`--act\` and verified in the queue.` : ""}`;
 
   const pen = [
     "The step pen records your check-in and schedules the next step. Write the check-in to a file and the rewritten document to another, then call:",
@@ -1074,7 +1078,7 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
   // ask for. It is still a reply the next step reads, with what it did noted.
   const ruled = parseCeilingReply(text, ceilingOf(runner));
   const ceiling = ruled && "ceiling" in ruled
-    ? await setCeiling(ctx, runner, ruled.ceiling, { kind: "tom", slackTs: at.ts }, now)
+    ? await setCeiling(ctx, runner, ruled.ceiling, at.ts, now)
     : undefined;
   await ctx.db.insert("runnerEvents", {
     runnerId,
@@ -1095,18 +1099,17 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
 
 // ── The ceiling ──────────────────────────────────────────────────────────────
 
-type CeilingSetBy = { kind: "tom"; slackTs: string } | { kind: "run"; runId: string; why: string };
-
 /**
- * THE ONE WRITER of a runner's ceiling after its creation, and it has two
- * callers only: Tom's own reply in the runner's thread (recordRunnerReply) and
- * a session acting for him through POST /tts/runner-ceiling. A step never
- * reaches it: the step pen has no such field, and the session door refuses a
- * run id that is one of the runner's steps, because an agent does not widen
- * its own permissions. The change is a `ceiling` event naming the old and new
- * numbers, so the record says who moved it and from what.
+ * THE ONE WRITER of a runner's ceiling after its creation, and its one caller
+ * is Tom's own reply in the runner's thread (recordRunnerReply): the events
+ * route admits only his Slack user. There is no door for a session. Every run
+ * on the box holds the same worker key, a runner step included, so a door
+ * could not tell a session acting for Tom from a step raising its own
+ * ceiling, and an agent never widens its own permissions. A session he is in
+ * asks him to reply. The change is a `ceiling` event naming the old and new
+ * numbers.
  */
-async function setCeiling(ctx: MutationCtx, runner: Doc<"runners">, next: RunnerCeiling, by: CeilingSetBy, now: number) {
+async function setCeiling(ctx: MutationCtx, runner: Doc<"runners">, next: RunnerCeiling, slackTs: string, now: number) {
   const faults = runnerCeilingFaults(next);
   if (faults.length > 0) throw new Error(faults.join(" "));
   const from = ceilingOf(runner);
@@ -1116,8 +1119,8 @@ async function setCeiling(ctx: MutationCtx, runner: Doc<"runners">, next: Runner
     at: now,
     kind: "ceiling",
     text: `The ceiling moved from ${runnerCeilingWords(from)} to ${runnerCeilingWords(next)}.`,
-    ...(by.kind === "tom" ? { slackTs: by.slackTs } : {}),
-    data: { from, to: next, by },
+    slackTs,
+    data: { from, to: next },
   });
   return { from, to: next };
 }
@@ -1129,27 +1132,6 @@ function ceilingReplyNote(data: unknown): string {
   if (d.ceilingRefused) return `\n(This reply did not change the ceiling: ${d.ceilingRefused})`;
   return "";
 }
-
-/** A session sets a runner's ceiling for Tom, through POST /tts/runner-ceiling.
- *  Numbers it does not name keep their current value. */
-export const internalSetCeilingForTom = internalMutation({
-  args: {
-    runnerId: v.id("runners"),
-    runId: v.string(),
-    why: v.string(),
-    ceiling: v.object({ gpus: v.optional(v.number()), minutes: v.optional(v.number()), memoryMb: v.optional(v.number()) }),
-  },
-  handler: async (ctx, { runnerId, runId, why, ceiling }) => {
-    const runner = await ctx.db.get(runnerId);
-    if (!runner) throw new Error("No runner has that id.");
-    if (runner.endedAt !== undefined) throw new Error("The runner has ended; its ceiling no longer matters.");
-    if (why.trim() === "") throw new Error("Say why: the ruling of Tom's this change carries out.");
-    const isStep = (await ctx.db.query("runnerSteps").withIndex("by_step_run", (q) => q.eq("stepRunId", runId)).first()) !== null;
-    if (isStep) throw new Error("A runner step may not set a ceiling; it asks Tom under Rulings requested.");
-    const next = { ...ceilingOf(runner), ...Object.fromEntries(Object.entries(ceiling).filter(([, n]) => n !== undefined)) } as RunnerCeiling;
-    return await setCeiling(ctx, runner, next, { kind: "run", runId, why: why.trim() }, Date.now());
-  },
-});
 
 // ── The page ─────────────────────────────────────────────────────────────────
 
