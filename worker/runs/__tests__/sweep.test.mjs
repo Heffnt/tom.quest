@@ -610,6 +610,18 @@ describe("run sweep", () => {
     expect(deletable({ host: "box", kind: "session" }, { verified: true, endSeen: true, gitTracked: false }, { now: NOW })).toMatchObject({ ok: false, reason: expect.stringContaining("cutover") });
   });
 
+  // witness: the refusal read `importedBy`, which nothing writes, so a
+  // backlog-imported file (the only copy of a transcript the record has no
+  // rows for) was never refused (run a372dfa4).
+  it("refuses to delete a backlog-imported file and allows an ordinary uploaded one", () => {
+    const uploaded = { verified: true, endSeen: true, gitTracked: false };
+    const laptopSession = { host: "laptop", kind: "session" };
+    expect(deletable(laptopSession, uploaded, { now: NOW })).toEqual({ ok: true, reason: "eligible" });
+    expect(deletable(laptopSession, { ...uploaded, backlog: true }, { now: NOW })).toEqual({ ok: false, reason: "backlog" });
+    // Only the importer's own measurement may look past the marker.
+    expect(deletable(laptopSession, { ...uploaded, backlog: true }, { now: NOW, ignoreBacklog: true })).toMatchObject({ ok: true });
+  });
+
   it("keeps only stale claim pointers with a readable live target envelope", async () => {
     const dir = temp(); const item = runFile(dir); const cfg = config(dir, item);
     const registrationDir = path.join(cfg.stateDir, "registration");

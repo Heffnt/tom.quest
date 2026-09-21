@@ -628,7 +628,10 @@ export function deletable(run, state, { now = Date.now(), ignoreBacklog = false 
   // caller: the importer measuring how many bytes the steady-state predicate
   // would free, which is the number that ruling needs and costs nothing to
   // have ready.
-  if (!ignoreBacklog && state.importedBy === "backlog") return { ok: false, reason: "backlog" };
+  // The marker is the one worker/runs/backlog.mjs writes into the state entry.
+  // This read `importedBy === "backlog"`, a field nothing writes, so it never
+  // refused anything.
+  if (!ignoreBacklog && state.backlog === true) return { ok: false, reason: "backlog" };
   if (!state.endSeen && now - Number(state.lastLineAt ?? 0) < ABANDONED_MS) return { ok: false, reason: "run may still be growing" };
   if (state.gitTracked !== false) return { ok: false, reason: "git tracking not ruled out" };
   if (run.host === "box" && run.kind === "session" && !run.cutoverAt) return { ok: false, reason: "box session has not passed cutover" };

@@ -30,7 +30,7 @@ import {
   runBacklogPass,
   unitsOf,
 } from "../backlog.mjs";
-import { stateFileFor, storeText } from "../sweep.mjs";
+import { deletable, stateFileFor, storeText } from "../sweep.mjs";
 
 const NOW = Date.parse("2026-09-01T00:00:00.000Z");
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-backlog-"));
@@ -372,6 +372,9 @@ describe("the deferred handshake", () => {
     expect(landed.deferred).toBe(false);
     expect(landed.storeKey).toMatch(/^runs\//);
     expect(landed.committedLine).toBe(0);
+    // The state entry the importer writes is the one the sweep's deletion
+    // check refuses: the file is the only copy of a transcript with no rows.
+    expect(deletable({ host: "laptop", kind: "session" }, { ...landed, endSeen: true, gitTracked: false }, { now: NOW })).toEqual({ ok: false, reason: "backlog" });
     // The second attempt re-puts the same bytes: the object already exists.
     expect(store.put.mock.results.some((entry) => entry.value.created === false)).toBe(true);
   });
