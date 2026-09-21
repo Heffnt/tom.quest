@@ -352,8 +352,26 @@ describe("evals runs", () => {
     expect(url.searchParams.get("limit")).toBe("5");
     expect(requested[0].init.headers).toEqual({ "X-TTS-Key": "worker-key" });
     expect(output).toEqual([
-      'dtsEvents/ev1 2026-09-09 repo=tom.quest sha=abc1234 items=40 pass=38 fail=2 regressions=1 still-failing=1 failures="writing/01,writing/02"',
+      'dtsEvents/ev1 2026-09-09 repo=tom.quest sha=abc1234 items=40 pass=38 fail=2 regressions=1 still-failing=1 failures="writing/01,writing/02" reasons="writing/01: too long; writing/02: no evidence"',
     ]);
+  });
+
+  it("prints each failing item's reason from its result entry, and the flaky items with theirs", () => {
+    const line = formatEvalsResult({
+      ...run,
+      data: {
+        ...run.data,
+        results: [
+          { id: "writing/01", judged: "fail", reason: "names a file Tom never saw", passK: false },
+          { id: "writing/02", judged: "fail", passK: false },
+          { id: "know/07", judged: "pass", reason: "trial 2 skipped the rule", passK: false },
+          { id: "know/08", judged: "pass", reason: "fine", passK: true },
+        ],
+      },
+    });
+    expect(line).toContain('reasons="writing/01: names a file Tom never saw; writing/02: no evidence"');
+    expect(line).toContain('flaky="know/07: trial 2 skipped the rule"');
+    expect(line).not.toContain("know/08");
   });
 
   it("caps the rows it prints at --limit and emits the rows unchanged under --json", async () => {
