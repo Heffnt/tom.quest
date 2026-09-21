@@ -383,6 +383,40 @@ describe("internalComposeToday", () => {
   // A CAPTURE FROM EMAIL IS NOT ITS OWN SECTION any more (§4.3): one that is
   // dated is a dated line, one that is ready is part of the count, and one
   // that is neither is a row, not a line.
+  // Tom, 2026-09-21: workers "should not reach me at all directly". A mail the
+  // triage judged to need him today opens no thread; the morning message
+  // names it with its reason, as a fact the writer's verifier holds it to.
+  it("names every mail capture judged to need him today, with its reason, and a fact for each", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const urgent = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice",
+      source: "email",
+      needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    const done = await t.mutation(internal.tts.internalCapture, {
+      statement: "Answer the registrar",
+      source: "email",
+      needsTomToday: { why: "a person is waiting" },
+    });
+    await t.mutation(internal.tts.internalCapture, { statement: "Read the newsletter", source: "email" });
+    await t.run(async (ctx) => ctx.db.patch(done, { status: "done" }));
+    vi.setSystemTime(FIVE_AM);
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM + 1,
+    });
+    expect(text).toContain("One captured item needs you today");
+    expect(text).toContain("Pay the lab deposit invoice, which needs you today because the invoice is due tomorrow.");
+    expect(text).toContain(ttsItemLink(urgent));
+    expect(text).not.toContain("Answer the registrar");
+    expect(text).not.toContain("Read the newsletter");
+    expect(facts.facts.map((f) => f.id)).toContain(`needs-you-today:${urgent}`);
+    expect(facts.facts.find((f) => f.id === "needs-you-today:count")?.numbers).toContain("1");
+    expect(facts.facts.map((f) => f.id)).not.toContain(`needs-you-today:${done}`);
+  });
+
   it("lists a dated email capture once, under today", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);

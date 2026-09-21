@@ -90,8 +90,8 @@ export function gmailTriagePrompt(writingStandard, batch) {
     ``,
     `For every captured email, include "needsTomToday". Include "why" only when`,
     `it is true. An email you do not capture has no second judgement at all.`,
-    `"why" IS PRINTED TO TOM in the message that asks him to settle it, so write`,
-    `it as half a sentence he can read — "the deposit is six weeks late", not`,
+    `"why" IS PRINTED TO TOM beside the item in his morning message and hourly`,
+    `line, so write it as half a sentence he can read — "the deposit is six weeks late", not`,
     `"overdue" — and never name the sender or quote the subject line.`,
     ``,
     `ANSWER FOR EVERY EMAIL BELOW - one entry each, in the order given, with "id"`,
@@ -115,13 +115,27 @@ export function messageProvenance(id) {
   return `${messageSourceId(id)} https://mail.google.com/mail/u/0/#all/${id}`;
 }
 
-// THE JOB NO LONGER COMPOSES THE MESSAGE (slack-design.md §4.5). It sends
-// FACTS — the todo, the reason, and the dedupe key — and convex/ttsSlack.ts
-// writes the needs-you thread from the todo's own statement and entry action.
-// The raw vendor subject and the From header stay out of Slack entirely: they
-// are on the needs-tom row and in the key, which is where they belong. Three
-// of these arrived in one week and all three were vendor security mail whose
-// subject lines read, in #tts, as if TTS had written them.
+// THIS JOB NEVER REACHES TOM. Tom, 2026-09-21: "workers should not reach me
+// at all directly. they deliberately do not have the context needed to talk to
+// me properly and instead other agents should process what they need and
+// surface it to me in the proper channels." It used to open a #tts-needs-you
+// thread per mail it judged to need him today, and on that morning opened
+// twelve for stale GitHub failure mail. Now the judgement and its reason ride
+// the capture (`needsTomToday`, `why` on POST /tts/capture) and are stored on
+// the todo; the morning message and the hourly line, which have the context,
+// say them. The raw vendor subject and the From header never leave this job.
+
+/** Pure: the POST /tts/capture body for one captured mail. The triage's
+ *  needs-Tom-today judgement and its reason ride the capture; there is no
+ *  second call. Exported for tests. */
+export function captureBody(id, verdict) {
+  return {
+    statement: verdict.statement,
+    source: "email",
+    provenance: messageProvenance(id),
+    ...(verdict.needsTomToday ? { needsTomToday: true, why: verdict.why } : {}),
+  };
+}
 
 async function gmailToken(env) {
   const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -256,7 +270,7 @@ async function main() {
   const untriaged = new Set(unresolved);
 
   let captured = 0;
-  let threads = 0;
+  let needsTom = 0;
   let processed = 0;
   for (const message of batch) {
     // THE CURSOR NEVER PASSES AN UNTRIAGED MAIL. Everything after it waits for
@@ -265,35 +279,13 @@ async function main() {
     if (untriaged.has(message.id)) break;
     const verdict = byId.get(message.id);
     if (verdict.capture) {
-      const result = await convexFetch(env, "/tts/capture", {
-        statement: verdict.statement,
-        source: "email",
-        provenance: messageProvenance(message.id),
-      });
+      const result = await convexFetch(env, "/tts/capture", captureBody(message.id, verdict));
       captured++;
+      if (verdict.needsTomToday) needsTom++;
       console.log(
-        `[poll-gmail] captured id=${result.id ?? "?"} "${verdict.statement.slice(0, 70)}"`,
+        `[poll-gmail] captured id=${result.id ?? "?"} "${verdict.statement.slice(0, 70)}"` +
+          (verdict.needsTomToday ? ` (needs Tom today: ${verdict.why || "no reason given"})` : ""),
       );
-      // NEEDS TOM TODAY: one thread in #tts, deduped server-side on the Gmail
-      // message id. A thread that cannot be opened must not cost the capture
-      // that already landed, so a refusal is reported and the run continues —
-      // the item is still a todo and the morning digest still reports it.
-      if (verdict.needsTomToday && result.id) {
-        try {
-          const opened = await convexFetch(env, "/tts/needs-tom", {
-            todoId: result.id,
-            reason: verdict.why,
-            key: messageSourceId(message.id),
-          });
-          if (opened.opened) threads++;
-          console.log(
-            `[poll-gmail] needs Tom (${verdict.why || "no reason given"}): thread ` +
-              `${opened.opened ? "opened" : "already open"} for ${result.id}`,
-          );
-        } catch (err) {
-          console.error(`[poll-gmail] thread for ${result.id} refused: ${err.message}`);
-        }
-      }
     }
     // Advance after EVERY processed message (captured or skipped), so a crash
     // mid-batch re-processes at most the one in flight.
@@ -302,7 +294,7 @@ async function main() {
   }
   console.log(
     `[poll-gmail] processed ${processed} of ${batch.length}, captured ${captured}, ` +
-      `threads opened ${threads}` +
+      `${needsTom} judged to need Tom today` +
       (unresolved.length > 0
         ? `, held at ${unresolved.length} untriaged (reported to TTS)`
         : "") +

@@ -457,17 +457,30 @@ export async function gatherTodayFacts(
   //    is a thing to do today and reaches him through the ready count below; a
   //    capture that is not ready is a row, not a line (§4.3). Read only to
   //    keep them out of the ready list twice.
-  const emailCaptureIds = new Set(
-    (
-      await ctx.db
-        .query("dtsTodos")
-        .withIndex("by_source", (q) => q.eq("source", "email"))
-        .order("desc")
-        .take(CAPTURE_SCAN)
-    )
-      .filter((t) => t.createdAt >= since && t.createdAt < now)
-      .map((t) => t._id as string),
-  );
+  const emailCaptures = (
+    await ctx.db
+      .query("dtsTodos")
+      .withIndex("by_source", (q) => q.eq("source", "email"))
+      .order("desc")
+      .take(CAPTURE_SCAN)
+  ).filter((t) => t.createdAt >= since && t.createdAt < now);
+  const emailCaptureIds = new Set(emailCaptures.map((t) => t._id as string));
+
+  //    Of every mail capture in the window (Gmail's "email", Outlook's
+  //    "outlook"), the ones the triage judged to need him today and still
+  //    active, oldest first. No worker raises these with him (Tom, 2026-09-21),
+  //    so this message says them.
+  const outlookCaptures = (
+    await ctx.db
+      .query("dtsTodos")
+      .withIndex("by_source", (q) => q.eq("source", "outlook"))
+      .order("desc")
+      .take(CAPTURE_SCAN)
+  ).filter((t) => t.createdAt >= since && t.createdAt < now);
+  const needsYou = [...emailCaptures, ...outlookCaptures]
+    .filter((t) => t.needsTomToday !== undefined && t.status === "active")
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((t) => ({ todoId: t._id as string, statement: t.statement, why: t.needsTomToday?.why ?? "" }));
 
   // 4. The night's events, oldest first: what the box left behind, what broke,
   //    and the delegate's decisions.
@@ -802,6 +815,7 @@ export async function gatherTodayFacts(
     // Counted over the WHOLE list, printed and beyond, because the lead's
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
+    needsYou,
     runners,
     overnight,
     batchesPlanned: overnight.length,

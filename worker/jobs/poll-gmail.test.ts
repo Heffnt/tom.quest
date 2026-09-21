@@ -11,7 +11,9 @@
 import { describe, expect, it } from "vitest";
 // A plain-JS worker job (deployed to the Jarvis Box as .mjs); the test reads
 // its pure exports, which TypeScript infers straight from the source.
+import fs from "node:fs";
 import {
+  captureBody,
   messageProvenance,
   messageSourceId,
   gmailTriagePrompt,
@@ -29,10 +31,32 @@ describe("the stable source id of a mail", () => {
     );
   });
 
-  it("is what the #tts thread is deduped on, so both spell it once", () => {
-    // The dedupe key handed to POST /tts/needs-tom is the source id itself,
-    // not a second string built beside it: one mail, one thread, forever.
+  it("leads the provenance, so the capture names its mail once", () => {
     expect(messageProvenance("42").startsWith(messageSourceId("42"))).toBe(true);
+  });
+});
+
+// Tom, 2026-09-21: "workers should not reach me at all directly." The mail
+// pollers opened a #tts-needs-you thread per mail judged to need him today;
+// that morning twelve opened for stale GitHub failure mail.
+describe("needing Tom today", () => {
+  it("rides the capture as a judgement and a reason", () => {
+    expect(captureBody("m1", { capture: true, statement: "Pay the invoice", needsTomToday: true, why: "it is due tomorrow" })).toEqual({
+      statement: "Pay the invoice",
+      source: "email",
+      provenance: messageProvenance("m1"),
+      needsTomToday: true,
+      why: "it is due tomorrow",
+    });
+    expect(captureBody("m2", { capture: true, statement: "Read it", needsTomToday: false, why: "" })).not.toHaveProperty("needsTomToday");
+  });
+
+  it("opens no needs-you thread from either mail poller", () => {
+    for (const file of ["poll-gmail.mjs", "poll-outlook.mjs"]) {
+      const source = fs.readFileSync(`worker/jobs/${file}`, "utf8");
+      expect(source).not.toContain('"/tts/needs-tom"');
+      expect(source).not.toContain("needs-you-thread");
+    }
   });
 });
 
@@ -48,7 +72,7 @@ describe("the Gmail triage prompt", () => {
 
   // The one sentence §4.5 adds: `why` is no longer a log-file note, it is the
   // first line of the message that asks Tom to settle the thing.
-  it("says that why is printed to Tom, and forbids the sender and the subject", () => {
+  it("says that why is printed to Tom beside the item, and forbids the sender and the subject", () => {
     const prompt = gmailTriagePrompt("WRITE STANDARD", [{ id: "m1", from: "A", subject: "S", snippet: "body" }]);
     expect(prompt).toContain('"why" IS PRINTED TO TOM');
     expect(prompt).toContain("half a sentence he can read");

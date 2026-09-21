@@ -330,7 +330,12 @@ export const internalChangedSince = internalQuery({
         text = e.kind;
         link = null;
       }
-      out.push({ kind, at: e.at, text, detail, link });
+      // A capture the triage judged to need him today carries its reason, so
+      // the line names it (composeHourly); no worker raises it with him.
+      const needsYouToday = kind === "captured" && todo?.needsTomToday !== undefined && todo.status === "active"
+        ? { needsYouToday: todo.needsTomToday.why }
+        : {};
+      out.push({ kind, at: e.at, text, detail, link, ...needsYouToday });
     }
     return out;
   },

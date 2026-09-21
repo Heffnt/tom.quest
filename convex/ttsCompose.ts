@@ -68,20 +68,24 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  reduced to the single line "+667 more on the page" while eighteen lines of
  *  "plan stored" survived. The fix is the ORDER, not the algorithm.
  *
- *  The runners run sits third: a live runner is the box at work now, nearer
- *  to him than what it left behind overnight. The objection list stays second.
+ *  The needs-you run sits third: a captured item the email triage judged to
+ *  need him today, which no worker may raise with him directly (Tom,
+ *  2026-09-21), so this message says it. The runners run sits fourth: a live
+ *  runner is the box at work now, nearer to him than what it left behind
+ *  overnight. The objection list stays second.
  *
  *  The calendar run is printed between "runners" and "overnight" and is not
  *  named here: it is his day, not a ranked list, and it has no page of its own
  *  to send him to. `fit` reduces it in printed order like any other run.
  */
-export const SECTION_ORDER = ["today", "objections", "runners", "overnight", "broken"] as const;
+export const SECTION_ORDER = ["today", "objections", "needs-you-today", "runners", "overnight", "broken"] as const;
 
 /** Per-section item caps, before the whole-message fit. Nearest him, most
  *  room. */
 export const SECTION_CAPS = {
   today: 12,
   objections: 12,
+  "needs-you-today": 8,
   runners: 6,
   calendar: 12,
   overnight: 6,
@@ -466,6 +470,15 @@ export type RunnerFact = {
   openQuestion: boolean;
 };
 
+/** One captured item a poller's triage judged to need Tom today. `why` is the
+ *  triage's own few words, empty when it gave none. Workers never raise these
+ *  with him; the morning message and the hourly line say them. */
+type NeedsYouTodayFact = {
+  todoId: string;
+  statement: string;
+  why: string;
+};
+
 export type TodayFacts = {
   day: string;
   /** Dated-or-late first (oldest date first), then ready items. */
@@ -485,6 +498,9 @@ export type TodayFacts = {
    *  rather than delegate decisions. Absent means "count the printed ones",
    *  which is right whenever nothing was held back. */
   objectionMerges?: number;
+  /** Captured since the last morning message, still active, and judged by the
+   *  triage to need him today; oldest first. */
+  needsYou: NeedsYouTodayFact[];
   /** Every live runner, the ones waiting on him first. */
   runners: RunnerFact[];
   overnight: BatchOutcome[];
@@ -547,6 +563,9 @@ export type Change = {
   text: string; // the todo's statement, the session's title, or the failure
   detail: string | null; // verdict, outcome, source, error
   link: string | null;
+  /** On a capture the triage judged to need Tom today: its reason, "" when it
+   *  gave none. Absent on every other change. */
+  needsYouToday?: string;
 };
 
 export type HourlyFacts = {
@@ -674,6 +693,21 @@ export function runnersLead(n: number, waiting: number): string {
   if (waiting === 0) return `${live}.`;
   if (waiting === n) return `${live}, and ${n === 1 ? "it waits" : "all of them wait"} on you.`;
   return `${live}, and ${countWord(waiting)} of them ${plural(waiting, "waits", "wait")} on you.`;
+}
+
+/** One needs-you-today item: the todo's statement, then the triage's reason
+ *  when it gave one. The reason is what gives when the line is too long. */
+function needsYouTodayLine(n: NeedsYouTodayFact): string {
+  const head = stripStop(n.statement);
+  const why = stripStop(n.why);
+  if (why === "") return statement(head);
+  const full = `${head}, which needs you today because ${lowerFirst(why)}`;
+  return statement(full.length < LINE_CHARS ? full : head);
+}
+
+/** The needs-you-today run's lead. */
+function needsYouTodayLead(n: number): string {
+  return `${capitalise(countWord(n))} captured ${plural(n, "item needs", "items need")} you today, as the email triage judged ${n === 1 ? "it" : "them"}.`;
 }
 
 /** `{statement} gained {added} items, reworked {reworked} and dropped
@@ -856,7 +890,21 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     note(lines, "objections", o.canReply, 'reply "revert 2", or "2: what to do instead".');
   }
 
-  // 3. The box's live runners, one line each, the ones waiting on him first
+  // 3. What the email triage judged to need him today. No worker opens a
+  //    needs-you thread for these (Tom, 2026-09-21: workers "should not reach
+  //    me at all directly"), so this run is where he hears of them, and a
+  //    reply naming the item reaches it as every digest reply does.
+  if (f.needsYou.length > 0) {
+    pushRun(
+      lines,
+      "needs-you-today",
+      needsYouTodayLead(f.needsYou.length),
+      f.needsYou.map((n) => ({ text: needsYouTodayLine(n), url: itemUrl(n.todoId) })),
+      SECTION_CAPS["needs-you-today"],
+    );
+  }
+
+  // 4. The box's live runners, one line each, the ones waiting on him first
   //    (the gatherer's order). Nothing when no runner is live. No reply
   //    invitation: a runner's question is answered in its own needs-you thread.
   if (f.runners.length > 0) {
@@ -870,7 +918,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 4. The calendar. Rows from a feed marked private in TTS_ICS_FEEDS never
+  // 5. The calendar. Rows from a feed marked private in TTS_ICS_FEEDS never
   //    reach this list — the gatherer drops them (Tom 2026-09-09, amendment 1).
   if (f.calendar.length > 0) {
     pushRun(
@@ -882,7 +930,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 5. What the box left behind overnight.
+  // 6. What the box left behind overnight.
   if (f.overnight.length > 0) {
     pushRun(
       lines,
@@ -893,7 +941,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 6. What broke.
+  // 7. What broke.
   if (f.broken.length > 0) {
     const failures = f.broken.reduce((sum, b) => sum + (b.count ?? 1), 0);
     pushRun(
@@ -923,13 +971,19 @@ export function composeTodayFitted(
 /** The first line names the count, the age of the worst, and THE ONE TO START
  *  WITH. It never names the message. */
 export function todayFirstLine(f: TodayFacts): string {
+  const needs =
+    f.needsYou.length > 0
+      ? ` ${capitalise(countWord(f.needsYou.length))} captured ${plural(f.needsYou.length, "item needs", "items need")} you today.`
+      : "";
   const second =
     f.objections.length > 0
-      ? ` ${capitalise(countWord(f.objections.length))} ${plural(f.objections.length, "decision was", "decisions were")} taken for you overnight.`
-      : " Nothing else needs an answer from you today.";
+      ? ` ${capitalise(countWord(f.objections.length))} ${plural(f.objections.length, "decision was", "decisions were")} taken for you overnight.${needs}`
+      : needs !== ""
+        ? needs
+        : " Nothing else needs an answer from you today.";
   if (f.lateCount === 0) {
     return `Nothing is dated today and nothing is late. The calendar is your whole day.${
-      f.objections.length > 0 ? second : ""
+      f.objections.length > 0 || needs !== "" ? second : ""
     }`;
   }
   const first = f.today[0];
@@ -1013,6 +1067,24 @@ export function composeHourly(f: HourlyFacts): Message | null {
   const changed = changeClauses(f.changes);
   if (changed.length > 0) clauses.push(joinClauses(changed));
   else if (clauses.length > 0) clauses.push("nothing else changed");
+  // A capture the triage judged to need him today is named, with its link:
+  // no worker raises it with him directly (Tom, 2026-09-21), so this line and
+  // the morning message are where he hears of it.
+  const needs = f.changes.filter((c) => c.needsYouToday !== undefined);
+  if (needs.length > 0) {
+    // Named by its first clause, and the reason only while it stays short:
+    // the hourly line is one sentence under the first line's cap.
+    const first = needs[0];
+    const name = shortClause(first.text);
+    const what = first.link === null ? name : linked(name, first.link);
+    const why = stripStop(first.needsYouToday ?? "");
+    const because = why !== "" && name.length + why.length < 100 ? ` because ${lowerFirst(why)}` : "";
+    clauses.push(
+      needs.length === 1
+        ? `${what} needs you today${because}`
+        : `${countWord(needs.length)} of the captures need you today, ${what} among them`,
+    );
+  }
   const since = f.sinceLabel ? ` since ${f.sinceLabel}` : "";
   return { firstLine: `${joinWithAnd(clauses)}${since}.`, lines: [] };
 }
@@ -1373,6 +1445,12 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     const line = objectionLine(objection, index + 1);
     facts.push(fact(`ask:${objection.askId}`, line.text, [line.url], [index + 1]));
   });
+  if (f.needsYou.length > 0) {
+    facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));
+  }
+  for (const n of f.needsYou) {
+    facts.push(fact(`needs-you-today:${n.todoId}`, needsYouTodayLine(n), [itemUrl(n.todoId)]));
+  }
   for (const r of f.runners) {
     facts.push(fact(`runner:${r.runnerId}`, runnerLine(r), [TAB_BATCHES]));
   }

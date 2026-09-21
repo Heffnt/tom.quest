@@ -1264,10 +1264,13 @@ export const internalCapture = internalMutation({
     // one. Machine fields, kept out of `provenance` (which is Tom's to read).
     slackChannel: v.optional(v.string()),
     slackTs: v.optional(v.string()),
+    // A poller's triage judged it to need Tom today, and why. Recorded on the
+    // row for the morning message and the hourly line; nothing opens a thread.
+    needsTomToday: v.optional(v.object({ why: v.string() })),
   },
   handler: async (
     ctx,
-    { statement, source, provenance, slackChannel, slackTs },
+    { statement, source, provenance, slackChannel, slackTs, needsTomToday },
   ) => {
     const now = Date.now();
     // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
@@ -1302,6 +1305,7 @@ export const internalCapture = internalMutation({
       provenance,
       slackChannel,
       slackTs,
+      ...(needsTomToday !== undefined ? { needsTomToday } : {}),
       createdAt: now,
       updatedAt: now,
     });
