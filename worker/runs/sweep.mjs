@@ -616,7 +616,7 @@ export async function sweepRunFile(item, {
   return { ingested: true, runId, rows: prepared.merged.rows.length, committedLine: prepared.merged.run.file.committedLine };
 }
 
-export function deletable(run, state, { now = Date.now(), ignoreBacklog = false } = {}) {
+export function deletable(run, state, { now = Date.now() } = {}) {
   if (!state?.verified) return { ok: false, reason: "upload not checksum-verified" };
   // The pending ruling on deleting a local file after upload is about the
   // steady state: a run that has ended, whose rows are in the record, whose
@@ -624,14 +624,13 @@ export function deletable(run, state, { now = Date.now(), ignoreBacklog = false 
   // different question nobody has asked — it is the only copy of a run that
   // predates the store, it has no rows in the record AT ALL by design, and a
   // loop nobody watched would destroy thousands of them at once. So it is
-  // refused outright, whatever the flag says. `ignoreBacklog` exists for one
-  // caller: the importer measuring how many bytes the steady-state predicate
-  // would free, which is the number that ruling needs and costs nothing to
-  // have ready.
+  // refused outright, whatever the flag says. The importer's own measure of
+  // what the steady-state rule would free (backlog.mjs measureDeletable) asks
+  // with a probe that carries no marker, so it needs no way past this.
   // The marker is the one worker/runs/backlog.mjs writes into the state entry.
   // This read `importedBy === "backlog"`, a field nothing writes, so it never
   // refused anything.
-  if (!ignoreBacklog && state.backlog === true) return { ok: false, reason: "backlog" };
+  if (state.backlog === true) return { ok: false, reason: "backlog" };
   if (!state.endSeen && now - Number(state.lastLineAt ?? 0) < ABANDONED_MS) return { ok: false, reason: "run may still be growing" };
   if (state.gitTracked !== false) return { ok: false, reason: "git tracking not ruled out" };
   if (run.host === "box" && run.kind === "session" && !run.cutoverAt) return { ok: false, reason: "box session has not passed cutover" };

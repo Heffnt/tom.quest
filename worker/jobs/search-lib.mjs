@@ -355,7 +355,8 @@ export function formatEvalsResult(row, fallback = "evals") {
   const failures = failing.map((failure) => singleLine(failure.id)).join(",");
   // WHY EACH ONE DID NOT PASS, and which passing cases failed a trial: the
   // scorer's reason off the case's result entry (bounded there), else off
-  // the failure. A flaky case reads apart from a failing one without a re-run.
+  // the failure, which is all a row written before the entries had reasons
+  // carries. A flaky case reads apart from a failing one without a re-run.
   const results = Array.isArray(data.results) ? data.results : [];
   const reasonOf = (id, fallbackReason) => {
     const reason = results.find((result) => result?.id === id)?.reason ?? fallbackReason;

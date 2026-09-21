@@ -618,8 +618,6 @@ describe("run sweep", () => {
     const laptopSession = { host: "laptop", kind: "session" };
     expect(deletable(laptopSession, uploaded, { now: NOW })).toEqual({ ok: true, reason: "eligible" });
     expect(deletable(laptopSession, { ...uploaded, backlog: true }, { now: NOW })).toEqual({ ok: false, reason: "backlog" });
-    // Only the importer's own measurement may look past the marker.
-    expect(deletable(laptopSession, { ...uploaded, backlog: true }, { now: NOW, ignoreBacklog: true })).toMatchObject({ ok: true });
   });
 
   it("keeps only stale claim pointers with a readable live target envelope", async () => {

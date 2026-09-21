@@ -2763,8 +2763,11 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // the cases that were asked.
       //
       // `reason` is the scorer's own sentence, the failing trial's when one
-      // failed (runCase's reason, runTrials's failedReason), so a flaky case can be told from a failing one without
-      // re-running it. Bounded, because the row holds every scored case.
+      // failed (runCase's reason, runTrials's failedReason), so a flaky case
+      // can be told from a failing one without re-running it. A passing case
+      // keeps its reason too: the repair brief under Tom's 2026-09-21 ruling
+      // asks for every item's, and a pass for the wrong reason shows only in
+      // it. Bounded, because the row holds every scored case.
       results: scoredAll.map((result) => ({
         id: result.id,
         judged: result.judged,
