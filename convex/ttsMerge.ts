@@ -686,6 +686,9 @@ export async function mergedOnMain(
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ merged: boolean; checked: boolean; why: string }> {
   const slug = (SESSION_REPOS as Record<string, string>)[repo];
+  // Both values go into a GitHub URL: an unknown repo has no slug to ask
+  // about, and a value that is not a sha (a branch name, a path) would ask
+  // GitHub a different question than whether this commit merged.
   if (!slug) return { merged: false, checked: true, why: `${repo} is not a repository the record knows` };
   if (!/^[0-9a-f]{7,40}$/i.test(sha)) return { merged: false, checked: true, why: `${sha} is not a commit sha` };
   const token = process.env.GITHUB_MIRROR_TOKEN;
@@ -723,6 +726,8 @@ export async function mergedOnMain(
         .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === main)
     : undefined;
   if (merged) return { merged: true, checked: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into ${main}` };
+  // A 404 from the comparison is GitHub not knowing the commit, which is an
+  // answer (not merged); any other failure means it was not asked.
   if (compare.status !== 200 && compare.status !== 404) {
     return { merged: false, checked: true, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on ${main} (status ${compare.status})` };
   }

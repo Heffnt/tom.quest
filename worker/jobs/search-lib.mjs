@@ -360,6 +360,7 @@ export function formatEvalsResult(row, fallback = "evals") {
   const results = Array.isArray(data.results) ? data.results : [];
   const reasonOf = (id, fallbackReason) => {
     const reason = results.find((result) => result?.id === id)?.reason ?? fallbackReason;
+    // Cut here as well: a failures-list reason on an older row is unbounded.
     return typeof reason === "string" && reason.trim() !== "" ? `${singleLine(id)}: ${singleLine(reason.slice(0, 300))}` : "";
   };
   const reasons = failing.map((failure) => reasonOf(failure.id, failure.reason)).filter(Boolean).join("; ");
