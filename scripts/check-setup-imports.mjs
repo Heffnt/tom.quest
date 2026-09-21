@@ -19,13 +19,13 @@
 // lines too (cut.mjs → overflow.mjs → redact.mjs is three files, not one).
 //
 // witness: delete any `cp "$WORKER_DIR"/session-host/redact.mjs …` line from
-// step 7, or move one below the `== [8/10] cron ==` heading.
+// step 7, or move one below the `== [8/11] cron ==` heading.
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, posix } from "node:path";
 import { unaffectedBy } from "./evals-check.mjs";
 
 const SETUP = "worker/setup.sh";
-const CRON_HEADING = '== [8/10] cron ==';
+const CRON_HEADING = '== [8/11] cron ==';
 // The one complete session-host copy contains every `.mjs` module there. It
 // covers an imported session-host file only when this exact command lands
 // before cron; a broader glob would hide a missing module or wrong destination.

@@ -39,6 +39,8 @@ function run(payload, { state, sweep, env = {}, args = [] }) {
       RUN_SWEEP_SCRIPT: sweep,
       TTS_RUN_REG_TOKEN: "",
       TTS_RUN_REG_SPOOL: "",
+      TTS_RUN_ORIGIN: "",
+      TTS_BOX_RUN_ID: "",
       ...env,
     },
   });
@@ -174,12 +176,62 @@ describe("run lifecycle hook", () => {
     expect(envelope.registration).not.toHaveProperty("environment");
   });
 
-  it("names no environment for a box session, whose launcher owns that word", () => {
+  // A desktop session (Tom's laptop app driving a CLI on the box over ssh) and a
+  // `claude` typed over ssh reach this hook with no launcher token. Before this
+  // rule the record defaulted them to the worker environment.
+  it("names an unlaunched box Claude session a session with Tom, from the desktop", () => {
     const f = fixture();
     const payload = payloadFor(f.root, "claude", "SessionStart");
     expect(run(payload, { ...f, env: { RUN_HOST: "box" } }).status).toBe(0);
     const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
-    expect(envelope.registration).toMatchObject({ host: "box", kind: "session" });
+    expect(envelope.registration).toMatchObject({ host: "box", kind: "session", environment: "session", origin: "desktop" });
+  });
+
+  it("hands a desktop session's box children the box run id, not a laptop one", () => {
+    const f = fixture();
+    const transcript = path.join(f.root, ".claude-accounts", "active", "projects", "-var-cache-tts-desktop", "desk.jsonl");
+    const payload = { hook_event_name: "SessionStart", session_id: "desk", transcript_path: transcript, cwd: f.root };
+    expect(run(payload, { ...f, env: { RUN_HOST: "box" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(transcript), "utf8"));
+    expect(envelope.registration).toMatchObject({ host: "box", cli: "claude", environment: "session", origin: "desktop" });
+    expect(JSON.parse(fs.readFileSync(currentRunPointerPath(f.state, f.root), "utf8"))).toMatchObject({ runId: "claude:box:desk" });
+  });
+
+  it("lets TTS_RUN_ORIGIN name an unlaunched box session's origin", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SessionStart");
+    expect(run(payload, { ...f, env: { RUN_HOST: "box", TTS_RUN_ORIGIN: "hook" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
+    expect(envelope.registration).toMatchObject({ environment: "session", origin: "hook" });
+  });
+
+  it("names nothing for a box run the launcher started whose token was lost", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SessionStart");
+    expect(run(payload, { ...f, env: { RUN_HOST: "box", TTS_BOX_RUN_ID: "abc123" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
+    expect(envelope.registration).toMatchObject({ host: "box", kind: "session", origin: "unknown" });
+    expect(envelope.registration).not.toHaveProperty("environment");
+  });
+
+  it("leaves a daemon session resumed after a restart with the daemon's environment", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SessionStart");
+    const sidecar = registrationSidecarPath(payload.transcript_path);
+    fs.mkdirSync(path.dirname(sidecar), { recursive: true });
+    fs.writeFileSync(sidecar, JSON.stringify({ token: "daemon-token", registration: { host: "box", origin: "daemon", kind: "job", environment: "worker" } }));
+    expect(run(payload, { ...f, env: { RUN_HOST: "box", TTS_RUN_PARENT_RUN_ID: "claude:box:parent" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(sidecar, "utf8"));
+    expect(envelope.registration).toMatchObject({ environment: "worker" });
+    expect(envelope.registration.origin).not.toBe("desktop");
+  });
+
+  it("names no environment for a box subagent, which inherits its parent's", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SubagentStart");
+    expect(run(payload, { ...f, env: { RUN_HOST: "box" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.agent_transcript_path), "utf8"));
+    expect(envelope.registration).toMatchObject({ host: "box", kind: "subagent" });
     expect(envelope.registration).not.toHaveProperty("environment");
   });
 

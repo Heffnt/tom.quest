@@ -28,3 +28,11 @@
 - `claude --remote-control` starts a session on the machine it is run on and lets Tom chat with it from claude.ai or the phone app. The tools run where it was started: there is no option to run one session's tools on another machine over ssh, and the Agent tool's `isolation: "remote"` runs in Anthropic's cloud sandbox, not on his server.
 - Using it on the box would need: (1) a tmux session per concurrent conversation, held under an account slot — `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active tmux new -d -s rc 'claude --remote-control'` — started by hand or by a job; (2) a decision of which surface is the chat window, since the desktop app or the phone becomes it and the laptop's desktop app plays no part; (3) two known costs — the run sits outside the session daemon, so `tom.quest/sessions` does not list it, though its run file still lands in `/root/.claude-accounts/<slot>/projects` and the box sweep still records it, and file-sending and artifact support on the web surface are unverified; (4) nothing this phase built blocks it — `tts-run`, the semaphore and the record changes are all independent of it.
 - Do not start one, and do not add a job that starts one.
+
+## Desktop sessions
+
+- A desktop session is Tom's laptop Claude app, Code tab, connected to the box over ssh. The app runs its own CLI copy under `/root/.claude/remote`, outside the session daemon, `tts-run` and the semaphore.
+- The account slot reaches it through the first line of `/root/.bashrc`, above its non-interactive guard, `export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active RUN_HOST=box`, which `worker/setup.sh` installs; the app has no setting of its own for this. `RUN_HOST=box` keeps its hooks on their box branches.
+- The run hook records it as a session with Tom: environment `session`, origin `desktop`, because a box Claude session with no launcher token was started by him.
+- Its standing workspace is `/var/cache/tts/desktop/`, one checkout per session repo, never reset; the session pulls and branches itself.
+- No job starts one, and none may.

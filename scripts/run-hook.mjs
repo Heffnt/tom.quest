@@ -152,15 +152,38 @@ function hookRegistration(payload, event, runFile, env) {
     || (host === null && normalizedFile.includes("/.claude/") && !normalizedFile.includes("/.claude-accounts/"));
   const subagent = event.startsWith("Subagent");
   const layersKnown = laptop && !subagent && cli === "claude";
+  // This function runs only when no launcher handed the session a token, so on
+  // the box a Claude session reaching it was started by no launcher. A desktop
+  // session (Tom's laptop app, Code tab, driving its own CLI over ssh) and a
+  // `claude` typed into an ssh shell are the two ways such a session exists on
+  // the box, and both are Tom's: it is a session with him, not a worker. Both
+  // carry RUN_HOST=box from the line worker/setup.sh puts atop /root/.bashrc,
+  // the same line that gives them the account slot and so this hook.
+  //
+  // REMOVAL CHECK: two tokenless starts are not Tom's and stay unnamed, so the
+  // envelope their starter wrote keeps its words. A process tagged
+  // TTS_BOX_RUN_ID was launched by box-run.mjs and lacks a token only because
+  // its spool write failed. A process carrying TTS_RUN_PARENT_RUN_ID was
+  // started under a run that already exists: the session daemon resumes its
+  // sessions after a restart that way (worker/session-host/session.mjs), with
+  // no new token, and naming it here would overwrite the daemon's environment.
+  const started = firstString(env.TTS_BOX_RUN_ID, env.TTS_RUN_PARENT_RUN_ID);
+  const unlaunchedBoxSession = host === "box" && !subagent && cli === "claude" && !started;
   return {
     host,
     ...(cli ? { cli } : {}),
-    origin: laptop ? "laptop" : firstString(env.TTS_RUN_ORIGIN) ?? "unknown",
+    // REMOVAL CHECK: TTS_RUN_ORIGIN keeps its word over `desktop` because it
+    // is how a process that starts claude without a launcher still names what
+    // started it; `desktop` is only the default when nothing did.
+    origin: laptop
+      ? "laptop"
+      : firstString(env.TTS_RUN_ORIGIN) ?? (unlaunchedBoxSession ? "desktop" : "unknown"),
     kind: subagent ? "subagent" : "session",
-    // Only the laptop's own chat is named a session here. A subagent says
-    // nothing and inherits its parent's; on the box the launcher's envelope
-    // names it, and a word from this hook would overrule the launcher's.
-    ...(laptop && !subagent ? { environment: "session" } : {}),
+    // Only a session with Tom is named here: the laptop's own chat, and an
+    // unlaunched box session. A subagent says nothing and inherits its
+    // parent's; a launched box run's envelope names it, and a word from this
+    // hook would overrule the launcher's.
+    ...((laptop || unlaunchedBoxSession) && !subagent ? { environment: "session" } : {}),
     cwd: firstString(payload.cwd),
     ...(subagent && cli && host && parentThread
       ? { parentRunId: `${cli}:${host}:${parentThread}` }

@@ -570,6 +570,10 @@ harmless to lose:
   snapshot staging directory, and run sweep cursors/queues. Any still-present
   CLI run files are rediscovered by the full sweep; already-uploaded bytes are
   recovered through the object store and their Convex index.
+- `/var/cache/tts/desktop/` — the standing workspace a desktop session opens
+  (see "Desktop sessions" below): one checkout each of tom.quest, WikiTom and
+  ComplexMultiTrigger. Setup rebuilds it, but nothing resets it, so a commit a
+  desktop session has not pushed is lost with the box.
 - `/root/wikitom` — the WikiTom checkout the nightly job writes. Everything
   in it is pushed, or reproducible from Convex and the object-backed run
   manifest, except
@@ -741,6 +745,47 @@ Jobs run under `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`, a symlink:
 tts-account status       # which account is active
 tts-account use wpi      # switch; takes effect on the next job run
 ```
+
+## Desktop sessions
+
+A desktop session is Tom's laptop Claude app, Code tab, connected to the box
+over ssh. Neither the session daemon nor `tts-run` is involved: the app opens
+an ssh connection as root and runs its own server from
+`/root/.claude/remote/srv/<hash>/server`, which spawns the app's own CLI copy
+from `/root/.claude/remote/ccd-cli/<version>` in stream-json mode, with the
+model, effort and permission mode the app chose. `/root/.claude/remote/` is
+that transport's install area and nothing else writes there.
+
+The server inherits sshd's bare command environment: the default `PATH`,
+`HOME=/root`, `SHELL=/bin/bash`, and the `SSH_*` variables. The app has no
+setting for a remote connection's environment, config directory or start
+directory, and `sshd_config` leaves `PermitUserEnvironment` off. Bash sources
+`/root/.bashrc` for an ssh command, so the one lever is the line setup.sh puts
+first in that file, above its "not running interactively" guard:
+`export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active RUN_HOST=box`. With it
+the CLI runs under the active account slot: the slot's login, its `CLAUDE.md`
+importing the agent rules, its hooks, and its `projects/` directory, which the
+run sweep and the nightly archive read. Without it the CLI falls back to
+`/root/.claude`, which no sweep reads. `RUN_HOST=box` rides the same line
+because the box's hooks and scripts learn where they run from it; without it
+the session-start hook would take its laptop branch, pull `/root/wikitom` and
+republish the skills that only the nightly job publishes. The line reaches
+every root ssh command, and changes none of them in practice: every job already
+has both values, and `box-run.mjs` sets the same ones for its children.
+
+No launcher registers a desktop session, so the slot's run hook
+(`scripts/run-hook.mjs`) records it: on the box, a Claude session with no
+launcher token is a session with Tom, environment `session`, origin `desktop`.
+A `claude` typed into an ssh shell is recorded the same way. A desktop session
+does not appear on `tom.quest/sessions`, whose rows the daemon owns.
+
+The standing workspace is `/var/cache/tts/desktop/`, one plain clone each of
+tom.quest, WikiTom and ComplexMultiTrigger, with `origin` at the clean GitHub
+URL, so pulls and pushes go through the credential helper and no checkout holds
+a token. Point the app's project folder at the parent to see all three, or at
+one checkout. Codex trusts the parent and each checkout, so `tts-codex` runs
+from any of them. Nothing resets these checkouts; the session pulls and
+branches itself.
 
 ## Testing jobs by hand
 

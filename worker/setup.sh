@@ -23,7 +23,7 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "== [1/10] apt packages (curl, git, python3, gh) =="
+echo "== [1/11] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl git ca-certificates
@@ -34,7 +34,7 @@ apt-get install -y curl git ca-certificates
 # stay fast and idempotent.
 apt-get install -y python3 python3-yaml python3-pytest gh
 
-echo "== [2/10] Node 22 (NodeSource) =="
+echo "== [2/11] Node 22 (NodeSource) =="
 # Only (re)install if node is missing or not major version 22 — keeps re-runs
 # fast and avoids needlessly touching apt sources.
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ]; then
@@ -51,12 +51,12 @@ echo "node: $(node -v)"
 command -v pnpm >/dev/null || npm install -g pnpm
 echo "pnpm: $(pnpm --version || true)"
 
-echo "== [3/10] Claude Code CLI =="
+echo "== [3/11] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
 npm install -g @anthropic-ai/claude-code
 echo "claude: $(claude --version || true)"
 
-echo "== [4/10] Codex CLI (OpenAI) =="
+echo "== [4/11] Codex CLI (OpenAI) =="
 # Codex is a first-class session runner on this box, not only a second opinion:
 # a session whose model is one of the gpt-5.6-* names runs Codex instead of
 # Claude, and every session can reach Codex through `tts-codex` (installed in
@@ -130,7 +130,7 @@ if [ "$(ast-grep --version 2>/dev/null)" != "ast-grep $AST_GREP_VERSION" ]; then
 fi
 echo "ast-grep: $(ast-grep --version || true)"
 
-echo "== [5/10] headless browser (Playwright + Chromium) =="
+echo "== [5/11] headless browser (Playwright + Chromium) =="
 # A session that changes a tom.quest page can look at the result instead of
 # asking Tom to look. Playwright is installed GLOBALLY (not as a repo dep) and
 # its browsers land in /root/.cache/ms-playwright, so every session — each of
@@ -168,7 +168,7 @@ esac
 PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$PW_ARCH" npx playwright install chromium || \
   echo "  (Chromium download refused on this distro; tts-browse will report if launch fails)"
 
-echo "== [6/10] directories =="
+echo "== [6/11] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
 # /var/lib/tts        — small local state: the Slack poll cursor, the
 #     brief-hash cursor, and the apply/execute lock dirs (all harmless to
@@ -191,6 +191,9 @@ echo "== [6/10] directories =="
 # /var/cache/tts/pnpm-store  — one pnpm store shared by every run's worktree,
 #     so a second worktree's node_modules costs kilobytes: pnpm hardlinks
 #     packages from this store on Linux instead of copying them.
+# /var/cache/tts/desktop     — the standing checkouts a desktop session opens
+#     (step 10); never reset, so unlike the rest of the cache not rebuildable
+#     without losing a session's unpushed work.
 mkdir -p /opt/tts /opt/tts/runs /opt/tts/jobs /var/lib/tts /var/cache/tts/runs \
   /var/cache/tts/runs/work /var/cache/tts/runs/repos /var/cache/tts/pnpm-store \
   /etc/tts /var/log/tts /root/.claude-accounts/gmail /root/.claude-accounts/wpi /root/.codex
@@ -203,7 +206,7 @@ mkdir -p /opt/tts /opt/tts/runs /opt/tts/jobs /var/lib/tts /var/cache/tts/runs \
 # agent-rules.md, written below.
 mkdir -p /root/.claude-accounts/gmail/skills /root/.claude-accounts/wpi/skills /root/.codex/skills
 
-echo "== [7/10] install worker files =="
+echo "== [7/11] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # Registration-aware jobs are copied flat, while the shared run machinery is
@@ -373,6 +376,29 @@ for (const event of events) {
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 done
+# THE SLOT REACHES A DESKTOP SESSION THROUGH THIS LINE AND NOTHING ELSE. A
+# desktop session is Tom's laptop Claude app, Code tab, connected here over
+# ssh: the app runs its own CLI copy under /root/.claude/remote with sshd's
+# bare command environment, and the app has no setting for that environment or
+# the config directory. Bash sources ~/.bashrc for an ssh command, but the
+# stock file returns at its "not running interactively" guard, so the line
+# must sit above it; without it the CLI runs from /root/.claude, outside every
+# slot, the agent rules and the run sweep. RUN_HOST=box rides the same line
+# because the box's hooks and scripts learn where they run from it: without it
+# the session-start hook takes its laptop branch, pulls /root/wikitom and
+# republishes the skills the nightly alone publishes. Every job already has
+# both, CLAUDE_CONFIG_DIR from its launcher and RUN_HOST from worker.env, and
+# box-run.mjs sets the same values for its children, so nothing else moves.
+PROFILE_LINE='export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active RUN_HOST=box'
+touch /root/.bashrc
+if grep -qxF "$PROFILE_LINE" /root/.bashrc; then
+  echo "  /root/.bashrc: the slot line is already present"
+else
+  # The first line is above any guard the file has, whatever its spelling.
+  printf '%s\n%s\n' "$PROFILE_LINE" "$(cat /root/.bashrc)" > /root/.bashrc.tts-new
+  mv /root/.bashrc.tts-new /root/.bashrc
+  echo "  /root/.bashrc: added the slot line at the top, above the non-interactive guard"
+fi
 # CLI helpers onto the PATH. A tts-* helper main's worker/bin no longer
 # carries is removed, so a retired or stray one cannot linger on the PATH
 # (tts-auth-lib.mjs sat there unused after it left main). The loop stays after
@@ -508,7 +534,7 @@ if [ ! -f /etc/tts/worker.env ]; then
 fi
 chmod 600 /etc/tts/worker.env
 
-echo "== [8/10] cron =="
+echo "== [8/11] cron =="
 # System cron runs in UTC and knows nothing about daylight saving, so the
 # nightly job is scheduled at BOTH 08:00 and 09:00 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
@@ -712,7 +738,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON
 chmod 644 /etc/cron.d/tts
 
-echo "== [9/10] session-host daemon =="
+echo "== [9/11] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
 # carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
@@ -758,7 +784,78 @@ else
   echo "  systemctl enable --now tts-session-host)."
 fi
 
-echo "== [10/10] done =="
+echo "== [10/11] desktop workspace =="
+# /var/cache/tts/desktop holds one standing checkout per session repo, for a
+# desktop session (Tom's laptop Claude app, Code tab, over ssh) to open: the
+# app's folder picker points at the parent for all three, or at one checkout,
+# the daemon's own convention (worker/session-host/session.mjs). Unlike every
+# other checkout on the box, NOTHING RESETS THESE: the session pulls and
+# branches itself, so an existing checkout is skipped, never touched.
+#
+# The repo map is read from box-run.mjs rather than restated here, so
+# scripts/check-session-mirrors.mjs's fence over its three copies covers this
+# step too. Each clone comes from the bare mirror under /var/cache/tts/runs/repos
+# when one exists (GitHub otherwise), then takes the clean GitHub URL as its
+# origin, as box-run.mjs's mirrors do: the credential helper above supplies the
+# token at ask time, so no checkout holds it.
+DESKTOP_DIR=/var/cache/tts/desktop
+mkdir -p "$DESKTOP_DIR"
+node -e '
+  const block = require("node:fs").readFileSync(process.argv[1], "utf8").match(/const REPO_GITHUB = \{([^}]+)\}/)[1];
+  for (const m of block.matchAll(/"?([\w.-]+)"?: "([\w.-]+\/[\w.-]+)",/g)) console.log(`${m[1]} ${m[2]}`);
+' "$WORKER_DIR/runs/box-run.mjs" | while read -r DESKTOP_REPO DESKTOP_GITHUB; do
+  CHECKOUT="$DESKTOP_DIR/$DESKTOP_REPO"
+  URL="https://github.com/$DESKTOP_GITHUB.git"
+  if [ -e "$CHECKOUT" ]; then
+    echo "  $CHECKOUT exists; left as it is"
+  else
+    # REMOVAL CHECK: the GitHub fallback stays because box-run.mjs makes a
+    # mirror only on a run's first use of a repo, so a rebuilt box reaches this
+    # step with none; the mirror stays because it is local and already fetched.
+    SOURCE="/var/cache/tts/runs/repos/$DESKTOP_REPO.git"
+    [ -f "$SOURCE/HEAD" ] || SOURCE="$URL"
+    # The source's own default branch, not a named one: tom.quest and WikiTom
+    # call it main, ComplexMultiTrigger calls it master. A failed clone is
+    # reported and skipped, so one repo cannot end the whole setup run.
+    if ! GIT_LFS_SKIP_SMUDGE=1 git clone --quiet "$SOURCE" "$CHECKOUT"; then
+      echo "  could not clone $DESKTOP_REPO into $CHECKOUT; skipped"
+      continue
+    fi
+    # The mirror's main may trail GitHub's by a little; the session pulls.
+    git -C "$CHECKOUT" remote set-url origin "$URL"
+    echo "  cloned $CHECKOUT on $(git -C "$CHECKOUT" branch --show-current)"
+  fi
+  # A fresh checkout of tom.quest needs its packages and its .env.local before
+  # next dev runs (the root AGENTS.md's worktree rules); both are skipped once
+  # present, and the store is the one every box run's worktree shares.
+  if [ "$DESKTOP_REPO" = tom.quest ]; then
+    if [ ! -d "$CHECKOUT/node_modules" ]; then
+      (cd "$CHECKOUT" && CI=true pnpm install --frozen-lockfile --store-dir /var/cache/tts/pnpm-store >/dev/null) \
+        && echo "  installed $CHECKOUT's packages" \
+        || echo "  pnpm install failed in $CHECKOUT; run it there by hand"
+    fi
+    if [ -f /root/tom.quest/.env.local ] && [ ! -e "$CHECKOUT/.env.local" ]; then
+      cp -p /root/tom.quest/.env.local "$CHECKOUT/.env.local"
+      echo "  copied .env.local into $CHECKOUT"
+    fi
+  fi
+done
+# Codex refuses to run outside a trusted directory, and a desktop session sends
+# work to Codex from wherever it opened. The parent and each checkout get the
+# same exact-path entry the file's other projects carry; an entry already there
+# is left alone.
+for TRUSTED in "$DESKTOP_DIR" "$DESKTOP_DIR"/*/; do
+  TRUSTED="${TRUSTED%/}"
+  [ -d "$TRUSTED" ] || continue
+  if grep -qxF "[projects.\"$TRUSTED\"]" /root/.codex/config.toml; then
+    echo "  codex already trusts $TRUSTED"
+  else
+    printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$TRUSTED" >> /root/.codex/config.toml
+    echo "  codex now trusts $TRUSTED"
+  fi
+done
+
+echo "== [11/11] done =="
 cat <<'STEPS'
 
 NEXT STEPS (manual, in order):
