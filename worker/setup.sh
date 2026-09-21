@@ -513,7 +513,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # what makes a missed event recoverable. Captures are idempotent on the Slack
 # message ts server-side, so re-offering what the push route already took costs
 # nothing.
-7 * * * * root /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
+# A job's model call takes no run slot since PR #196, so flock is its only concurrency guard.
+7 * * * * root /usr/bin/flock -n /var/lock/tts-poll-dump.lock /usr/bin/node /opt/tts/poll-dump.mjs >> /var/log/tts/poll-dump.log 2>&1
 
 # Poll Gmail for action-implying mail every 10 minutes (quiet no-op until the
 # GMAIL_* keys exist in worker.env — see poll-gmail.mjs's header for the
