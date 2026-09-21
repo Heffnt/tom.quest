@@ -669,7 +669,7 @@ describe("a merge the gate allows", () => {
 
   it("records the head of a squash-merged pull request, whose commit never reaches main", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
-    vi.stubGlobal("fetch", github({ compare: "diverged", pulls: [{ number: 207, merged_at: "2026-09-21T12:00:00Z", base: { ref: "main" } }] }).fake);
+    vi.stubGlobal("fetch", github({ compare: "diverged", pulls: [{ number: 207, merged_at: "2026-09-21T12:00:00Z", base: { ref: "main" }, head: { sha: SHA } }] }).fake);
     const t = convex();
     await gated(t);
     expect((await mergeReport(t)).status).toBe(200);
@@ -1032,7 +1032,7 @@ describe("mergedOnMain", () => {
   // witness: the first version compared against main by name, and
   // ComplexMultiTrigger's main branch is master.
   it("compares against the branch GitHub names as the repository's default", async () => {
-    const { fake, asked } = github({ main: "master", compare: "diverged", pulls: [{ number: 3, merged_at: "2026-09-21T12:00:00Z", base: { ref: "master" } }] });
+    const { fake, asked } = github({ main: "master", compare: "diverged", pulls: [{ number: 3, merged_at: "2026-09-21T12:00:00Z", base: { ref: "master" }, head: { sha: SHA } }] });
     expect(await mergedOnMain("ComplexMultiTrigger", SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: true, why: expect.stringContaining("merged into master") });
     expect(asked[1]).toBe(`https://api.github.com/repos/Heffnt/ComplexMultiTrigger/compare/${SHA}...master`);
   });
@@ -1042,6 +1042,14 @@ describe("mergedOnMain", () => {
     expect(await mergedOnMain("elsewhere", SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: false });
     expect(await mergedOnMain(REPO, "main", fake as unknown as typeof fetch)).toMatchObject({ merged: false });
     expect(asked).toEqual([]);
+  });
+
+  // witness: the sixth audit of PR #207 — GitHub lists a merged pull request
+  // for every commit in it, and an earlier commit of a squash merge never
+  // reached main.
+  it("does not count a commit of a merged pull request that was not its head", async () => {
+    const { fake } = github({ compare: "diverged", pulls: [{ number: 8, merged_at: "2026-09-21T12:00:00Z", base: { ref: "main" }, head: { sha: "f".repeat(40) } }] });
+    expect(await mergedOnMain(REPO, SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: false });
   });
 
   it("does not count a pull request merged into another branch", async () => {

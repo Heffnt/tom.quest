@@ -673,7 +673,7 @@ export const internalRecordAudit = internalMutation({
  * they are about the commit and not about whether it was merged.
  *
  * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
- * recorded, and the reporter can post again. ONE EXCEPTION, `checked: false`:
+ * recorded, and the reporter can post again. ONE EXCEPTION, said in `why`:
  * a repository GitHub will not show the record's token at all (404 on the
  * repository itself; GITHUB_MIRROR_TOKEN does not cover WikiTom, see
  * convex/ttsSync.ts). Refusing there would leave every merge of that
@@ -684,13 +684,13 @@ export async function mergedOnMain(
   repo: string,
   sha: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ merged: boolean; checked: boolean; why: string }> {
+): Promise<{ merged: boolean; why: string }> {
   const slug = (SESSION_REPOS as Record<string, string>)[repo];
   // Both values go into a GitHub URL: an unknown repo has no slug to ask
   // about, and a value that is not a sha (a branch name, a path) would ask
   // GitHub a different question than whether this commit merged.
-  if (!slug) return { merged: false, checked: true, why: `${repo} is not a repository the record knows` };
-  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return { merged: false, checked: true, why: `${sha} is not a commit sha` };
+  if (!slug) return { merged: false, why: `${repo} is not a repository the record knows` };
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return { merged: false, why: `${sha} is not a commit sha` };
   const token = process.env.GITHUB_MIRROR_TOKEN;
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -709,29 +709,33 @@ export async function mergedOnMain(
   // 404 only: GitHub answers a repository a token cannot see with 404, and a
   // 403 can be a rate limit, which must not pass as permission.
   if (info.status === 404) {
-    return { merged: true, checked: false, why: `not checked against GitHub: the record's token cannot read ${repo}` };
+    return { merged: true, why: `not checked against GitHub: the record's token cannot read ${repo}` };
   }
   const main = (info.body as { default_branch?: unknown } | null)?.default_branch;
   if (typeof main !== "string" || main === "") {
-    return { merged: false, checked: true, why: `GitHub could not be asked for ${repo}'s main branch (status ${info.status})` };
+    return { merged: false, why: `GitHub could not be asked for ${repo}'s main branch (status ${info.status})` };
   }
   const compare = await ask(`compare/${sha}...${encodeURIComponent(main)}`);
   const status = (compare.body as { status?: unknown } | null)?.status;
   // compare BASE...HEAD with main as the head: "ahead" means main has every
   // commit of the sha and more, "identical" that main is at it.
-  if (status === "identical" || status === "ahead") return { merged: true, checked: true, why: `${sha.slice(0, 7)} is on ${main}` };
+  if (status === "identical" || status === "ahead") return { merged: true, why: `${sha.slice(0, 7)} is on ${main}` };
   const pulls = await ask(`commits/${sha}/pulls`);
   const merged = Array.isArray(pulls.body)
-    ? (pulls.body as { number?: unknown; merged_at?: unknown; base?: { ref?: unknown } }[])
-        .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === main)
+    ? (pulls.body as { number?: unknown; merged_at?: unknown; base?: { ref?: unknown }; head?: { sha?: unknown } }[])
+        // The pull request's HEAD, not any commit in it: GitHub lists every
+        // pull request a commit belongs to, and an earlier commit of a
+        // squash-merged one was never what merged.
+        .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === main &&
+          typeof pull.head?.sha === "string" && pull.head.sha.toLowerCase().startsWith(sha.toLowerCase()))
     : undefined;
-  if (merged) return { merged: true, checked: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into ${main}` };
+  if (merged) return { merged: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into ${main}` };
   // A 404 from the comparison is GitHub not knowing the commit, which is an
   // answer (not merged); any other failure means it was not asked.
   if (compare.status !== 200 && compare.status !== 404) {
-    return { merged: false, checked: true, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on ${main} (status ${compare.status})` };
+    return { merged: false, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on ${main} (status ${compare.status})` };
   }
-  return { merged: false, checked: true, why: `${sha.slice(0, 7)} is not on ${main} and belongs to no pull request merged into it` };
+  return { merged: false, why: `${sha.slice(0, 7)} is not on ${main} and belongs to no pull request merged into it` };
 }
 
 /**
