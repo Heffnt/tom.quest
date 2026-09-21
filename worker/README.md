@@ -520,8 +520,9 @@ and restrictions". A **third credential**, `TURING_RUNNER_KEY`
 (`verify_launch_key` in `turing-api/main.py`, rules in
 `turing-api/runner_key.py`), opens `POST /allocate` and `DELETE /jobs/{id}`
 and nothing else, and only for jobs named `runner:<runner id>:<label>`. Every
-command it launches must run a file inside the CMT checkout; one request is
-capped in GPUs, minutes and memory; a cancel is refused unless the live job
+command it launches must run a file inside the CMT checkout; one request stays
+under the hard maximum no ruling reaches (16 GPUs, 1440 minutes, 1536000 MB);
+a cancel is refused unless the live job
 list shows the job under that runner's name. turing-api logs every call with
 the runner id.
 
@@ -538,7 +539,18 @@ tts-turing-act cancel --runner <id> --job <job id>
 Before a launch the command reads the runner's GPU-hour budget from the
 sensor's cache (`/var/lib/tts/runners/<id>.json`), never from its own command
 line, and refuses a launch that would cross it; a runner with no budget
-recorded cannot launch at all. After a launch or cancel it reads the queue
+recorded cannot launch at all. From the same cache it reads the runner's
+**ceiling**, what one launch may ask for in GPUs, minutes and memory, and
+refuses a request above it with a sentence naming the ceiling and how Tom
+raises it. The ceiling is a field of the runner row (default 2 GPUs, 240
+minutes, 128000 MB), set at creation, and changed after that only by Tom's
+reply in the runner's thread that starts with the word "ceiling" (`ceiling 8
+GPUs, 12 hours, 256 GB`) or by a session acting for him through
+`POST /tts/runner-ceiling`; each change is a `ceiling` event naming the old and
+new numbers. A step asks for a raise under Rulings requested and never sets
+it: the door refuses a runner step's run id. The sensor that writes the cache
+is loaded once by `tts-session-host`, so a new sensor reaches the cache only
+after the daemon restarts; until then every runner is held to the default. After a launch or cancel it reads the queue
 back and prints what it saw, which is the verification the check-in names.
 
 Without the key, `tts-turing-act` exits 3 and the step says so in its

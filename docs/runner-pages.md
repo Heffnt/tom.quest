@@ -16,7 +16,7 @@ The arrow at the start of a row expands it in place, showing three things:
 
 Runners that have ended sit under a fold headed "ended runners" with their count.
 
-The page's only action is Tom's: "New runner" opens a dialog with a title, the type, the host, the repo, the step length in minutes and the objective, and creates the runner through the createRunner mutation that already existed. Nothing on the page ends a runner, answers a question or edits a document. A runner still ends only through its own step's decision, and a question is still answered in its #tts-needs-you thread.
+The page's only action is Tom's: "New runner" opens a dialog with a title, the type, the host, the repo, the step length in minutes, the ceiling and the objective, and creates the runner through the createRunner mutation that already existed. The ceiling is the most one launch of the runner may ask for on the cluster: a number of GPUs, a number of minutes and an amount of memory, by default 2 GPUs, 240 minutes and 128000 MB. Tom raises it later by replying in the runner's thread with a message that starts with the word "ceiling", such as "ceiling 16 GPUs, 24 hours"; a session he is in may set it for him. No ruling reaches above 16 GPUs, 1440 minutes (the day-long limit of the cluster's default partition) and 1536000 MB (its largest machine). Nothing on the page ends a runner, answers a question or edits a document. A runner still ends only through its own step's decision, and a question is still answered in its #tts-needs-you thread.
 
 ## The morning message
 

@@ -17,7 +17,7 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { elapsedText, runnerDecisionWords, runnerTierWords } from "@/convex/ttsCompose";
-import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
+import { NO_REPO, RUNNER_CEILING_DEFAULT, RUNNER_CEILING_MAX, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import Markdown from "@/app/sessions/components/markdown";
 import Info from "./info";
@@ -271,10 +271,14 @@ function NewRunnerDialog({ onClose }: { onClose: () => void }) {
   const [repo, setRepo] = useState<string>(SESSION_REPO_NAMES[0] ?? NO_REPO);
   const [stepMinutes, setStepMinutes] = useState("10");
   const [objective, setObjective] = useState("");
+  const [gpus, setGpus] = useState(String(RUNNER_CEILING_DEFAULT.gpus));
+  const [ceilingMinutes, setCeilingMinutes] = useState(String(RUNNER_CEILING_DEFAULT.minutes));
+  const [memoryMb, setMemoryMb] = useState(String(RUNNER_CEILING_DEFAULT.memoryMb));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const minutes = Number(stepMinutes.trim());
+  const ceiling = { gpus: Number(gpus.trim()), minutes: Number(ceilingMinutes.trim()), memoryMb: Number(memoryMb.trim()) };
   const ready = title.trim() !== "" && objective.trim() !== "" && Number.isFinite(minutes) && minutes > 0;
 
   const create = async () => {
@@ -288,6 +292,7 @@ function NewRunnerDialog({ onClose }: { onClose: () => void }) {
         experimentHost,
         repo,
         stepMs: Math.round(minutes * 60_000),
+        ceiling,
         from: { kind: "prompt", text: objective },
       });
       onClose();
@@ -341,6 +346,29 @@ function NewRunnerDialog({ onClose }: { onClose: () => void }) {
             />
           </label>
         </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+          <span>one launch at most:</span>
+          {(
+            [
+              ["GPUs", gpus, setGpus, RUNNER_CEILING_MAX.gpus],
+              ["minutes", ceilingMinutes, setCeilingMinutes, RUNNER_CEILING_MAX.minutes],
+              ["MB of memory", memoryMb, setMemoryMb, RUNNER_CEILING_MAX.memoryMb],
+            ] as const
+          ).map(([label, value, set, max]) => (
+            <label key={label} className="flex items-center gap-1.5">
+              <input
+                type="text"
+                inputMode="numeric"
+                aria-label={`ceiling, ${label}`}
+                title={`at most ${max}`}
+                value={value}
+                onChange={(e) => set(e.target.value)}
+                className={`w-20 ${FIELD}`}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
         <textarea
           value={objective}
           onChange={(e) => setObjective(e.target.value)}
@@ -359,10 +387,13 @@ function NewRunnerDialog({ onClose }: { onClose: () => void }) {
             >
               Create runner
             </button>
-            <Info call="ttsRunners.createRunner({ title, type, experimentHost, repo, stepMs, from })">
+            <Info call="ttsRunners.createRunner({ title, type, experimentHost, repo, stepMs, ceiling, from })">
               Writes the runner, its first document holding the objective, and its first step,
               due now. The box launches that step on its next poll, and each step schedules the
-              next one step length later.
+              next one step length later. The ceiling is what one launch may ask for; a reply
+              starting with &quot;ceiling&quot; in the runner&apos;s thread raises it later, up to{" "}
+              {RUNNER_CEILING_MAX.gpus} GPUs, {RUNNER_CEILING_MAX.minutes} minutes and{" "}
+              {RUNNER_CEILING_MAX.memoryMb} MB.
             </Info>
           </span>
           <button

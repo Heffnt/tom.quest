@@ -22,13 +22,20 @@ from dirs import PathNotAllowed, resolve_within_root
 # neither can cancel the other's jobs.
 RUNNER_PREFIX = "runner:"
 
-# The ceiling that holds when the box's budget check is bypassed: a step that
-# writes its own HTTP call instead of using tts-turing-act skips the GPU-hour
-# budget, and these still bound what one request can ask for. The budget is
-# the real limit; these only stop a runaway request.
-MAX_RUNNER_MINUTES = 240
-MAX_RUNNER_COUNT = 2
-MAX_RUNNER_MEMORY_MB = 128000
+# The hard maximum, above which no ruling of Tom's reaches. The per-runner
+# ceiling (what one launch may ask for, which his ruling raises) lives on the
+# runner row in the TTS record and is enforced on the box by tts-turing-act,
+# together with the GPU-hour budget; this service cannot see the row. These
+# numbers only stop a runaway request, such as a step that writes its own HTTP
+# call instead of using tts-turing-act. Sixteen GPUs is Tom's own cluster limit
+# (his ruling of 2026-09-21), and main.py's MAX_ALLOCATION_COUNT already holds
+# it for every caller. 1440 minutes is the 24-hour walltime of the `short`
+# partition, where every allocation lands (spec.md §1.4). 1536000 MB is the
+# largest node in that partition, the eight-GPU H200 node, from the GPU report
+# of 2026-09-21. convex/ttsShared.ts RUNNER_CEILING_MAX holds the same three.
+MAX_RUNNER_MINUTES = 1440
+MAX_RUNNER_COUNT = 16
+MAX_RUNNER_MEMORY_MB = 1536000
 MAX_RUNNER_COMMANDS = 20
 MAX_RUNNER_COMMAND_CHARS = 1000
 
@@ -166,11 +173,11 @@ def allocation_fault(request, runner_id: str, root: Path) -> str | None:
     if owner != runner_id:
         return f"The job name {request.job_name!r} belongs to another runner, not {runner_id}."
     if request.count > MAX_RUNNER_COUNT:
-        return f"A runner may ask for at most {MAX_RUNNER_COUNT} GPUs in one request."
+        return f"A runner may ask for at most {MAX_RUNNER_COUNT} GPUs in one request, the hard maximum no ruling raises."
     if request.time_mins > MAX_RUNNER_MINUTES:
-        return f"A runner may ask for at most {MAX_RUNNER_MINUTES} minutes in one request."
+        return f"A runner may ask for at most {MAX_RUNNER_MINUTES} minutes in one request, the hard maximum no ruling raises."
     if request.memory_mb > MAX_RUNNER_MEMORY_MB:
-        return f"A runner may ask for at most {MAX_RUNNER_MEMORY_MB} MB of memory in one request."
+        return f"A runner may ask for at most {MAX_RUNNER_MEMORY_MB} MB of memory in one request, the hard maximum no ruling raises."
     if len(request.commands) > MAX_RUNNER_COMMANDS:
         return f"A runner may send at most {MAX_RUNNER_COMMANDS} commands in one request."
     cwd: Path | None = None

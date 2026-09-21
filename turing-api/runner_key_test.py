@@ -124,6 +124,14 @@ class AllocationFaultTest(CheckoutCase):
     def test_a_bad_command_among_good_ones_is_refused(self) -> None:
         self.assertIsNotNone(self.fault(commands=["python cmt/sweep/run.py", "rm -rf ~"]))
 
+    def test_the_hard_maxima_are_toms_limit_and_the_partitions(self) -> None:
+        # The per-runner ceiling is the box's; the API holds only what no ruling
+        # reaches above: sixteen GPUs, the short partition's day, its largest node.
+        self.assertEqual(runner_key.MAX_RUNNER_COUNT, 16)
+        self.assertEqual(runner_key.MAX_RUNNER_MINUTES, 1440)
+        self.assertEqual(runner_key.MAX_RUNNER_MEMORY_MB, 1536000)
+        self.assertIsNone(self.fault(count=16, time_mins=1440, memory_mb=1536000))
+
     def test_the_ceilings(self) -> None:
         self.assertIsNone(self.fault(count=runner_key.MAX_RUNNER_COUNT, time_mins=runner_key.MAX_RUNNER_MINUTES))
         self.assertIn("GPUs", self.fault(count=runner_key.MAX_RUNNER_COUNT + 1))

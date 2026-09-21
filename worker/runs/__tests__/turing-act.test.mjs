@@ -61,6 +61,20 @@ describe("tts-turing-act", () => {
     expect(result.stderr).toMatch(/setup-tier question for Tom/);
   });
 
+  it("refuses a launch above the runner's ceiling, naming it and how Tom raises it", () => {
+    const result = act([...LAUNCH, "--count", "4"], { cache: { jobs: {}, budgetGpuHours: 100, ceiling: { gpus: 2, minutes: 240, memoryMb: 128000 } } });
+    expect(result.status).toBe(6);
+    expect(result.stderr).toMatch(/4 GPUs where the ceiling is 2/);
+    expect(result.stderr).toMatch(/only Tom raises it/);
+    expect(result.stderr).toMatch(/how many GPUs, how long and how much memory/);
+  });
+
+  it("sends a launch a raised ceiling allows (here to a closed port)", () => {
+    const result = act([...LAUNCH, "--count", "8", "--memory-mb", "256000"], { cache: { jobs: {}, budgetGpuHours: 100, ceiling: { gpus: 16, minutes: 1440, memoryMb: 512000 } } });
+    expect(result.status).toBe(4);
+    expect(result.stderr).toMatch(/could not reach/);
+  });
+
   it("refuses a launch when the job list cannot be read", () => {
     const result = act(LAUNCH, { jobs: null, cache: { jobs: {}, budgetGpuHours: 10 } });
     expect(result.status).toBe(6);

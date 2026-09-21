@@ -12,6 +12,7 @@ import {
   RUNNER_ENDED_REASON,
   RUNNER_TIER,
   RUNNER_TYPE,
+  RUNNER_CEILING,
   SESSION_MODEL,
 } from "./ttsShared";
 
@@ -1540,6 +1541,10 @@ export default defineSchema({
     // past its deadline is a step that died, and the sweep clears it.
     lease: v.optional(v.object({ stepRunId: v.string(), deadline: v.number(), takenAt: v.number() })),
     budgetGpuHours: v.optional(v.number()),
+    // What one launch may ask for; absent is RUNNER_CEILING_DEFAULT
+    // (convex/ttsShared.ts). Set at creation, and after it only by Tom's
+    // reply or a session acting for him (setCeiling in convex/ttsRunners.ts).
+    ceiling: v.optional(RUNNER_CEILING),
     // The sweep specs the experiment drains, as glob patterns relative to the
     // repo (`sweeps/train/train25_*.yaml`). The step's sensor expands them to
     // CMT's build frontier to count what is done and what remains; absent,
@@ -1586,6 +1591,9 @@ export default defineSchema({
       // the check-in; `data` holds { verb, jobId }, `text` what it was for and
       // how it was verified. turing-api keeps the independent server-side log.
       v.literal("act"),
+      // The ceiling moved; `data` holds { from, to, by }, by Tom's reply or a
+      // session acting for him.
+      v.literal("ceiling"),
     ),
     stepRunId: v.optional(v.string()),
     text: v.optional(v.string()),
@@ -1632,7 +1640,9 @@ export default defineSchema({
     facts: v.optional(v.any()),
   })
     .index("by_status_due", ["status", "dueAt"])
-    .index("by_runner_due", ["runnerId", "dueAt"]),
+    .index("by_runner_due", ["runnerId", "dueAt"])
+    // Whether a run id is a runner step's: the ceiling door refuses those.
+    .index("by_step_run", ["stepRunId"]),
 
   // Tom presses one control and a box job serves it: Convex holds no S3 reader
   // credential and no second request signer, so opening an old run is a
