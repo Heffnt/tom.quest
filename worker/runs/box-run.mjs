@@ -157,6 +157,8 @@ const DEFAULT_CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 // What an in-process caller's child may print before the call gives up on it.
 // runClaude's execFileSync used the same number.
 const SYNC_MAX_BUFFER = 32 * 1024 * 1024;
+// How often the launcher looks for a run's processes after its CLI exits.
+const SURVIVOR_POLL_MS = 500;
 
 /**
  * Every refusal and every failure before the child exits. The command line
@@ -938,6 +940,9 @@ function prepareRun(options, slot = noSlot) {
       // slot while its own parent holds one is the deadlock. Inherited, not
       // recomputed, so it survives however many levels the delegation goes.
       TTS_RUN_SLOT_HELD: "1",
+      // Every process under this run inherits this, whatever session or
+      // process group it moves to; survivorsOf reads it back.
+      TTS_BOX_RUN_ID: id,
     };
     // A token the caller's own process was started under is not this child's.
     if (!spooled) delete childEnv.TTS_RUN_REG_TOKEN;
@@ -1018,7 +1023,7 @@ function namedEnvironmentOf(env) {
  * `result`, and the envelope itself comes back for a caller that reads its
  * subtype.
  */
-function finishRun(run, { stdout, code, signal, timedOut }) {
+function finishRun(run, { stdout, code, signal, timedOut, survivors = [] }) {
   const { opts } = run;
   const envelope = opts.outputFormat === "json" ? resultEnvelopeOf(stdout) : null;
   const text = typeof envelope?.result === "string" ? envelope.result : stdout;
@@ -1066,9 +1071,82 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
     envelope,
     runToken: run.spooled?.token ?? null,
     stderrTail,
+    survivors,
     workDir: run.workDir,
     errLog: run.errLog,
   };
+}
+
+/**
+ * The processes still alive that this run started, found by the TTS_BOX_RUN_ID
+ * every one of them inherited: [{ pid, command }].
+ *
+ * A BOX RUN'S WORK CAN OUTLIVE ITS CLI. A model that starts a command in the
+ * background and then ends its turn ends the CLI while the command runs on;
+ * the launcher used to reap the worktree under it at once, and the run's
+ * report was the model's last line, "waiting" (runs 0ea27b8e, 17aa7df2 and
+ * 02839c97 on 2026-09-19). The environment, not the process group, is the
+ * test, because a CLI's shell may start its own session and an orphan's
+ * parent becomes init, while the environment goes with every descendant.
+ * Linux only, through /proc; elsewhere nothing is found and nothing waits.
+ */
+function survivorsOf(id, { procDir = "/proc" } = {}) {
+  if (process.platform !== "linux") return [];
+  const marker = `TTS_BOX_RUN_ID=${id}`;
+  const found = [];
+  let entries = [];
+  try { entries = fs.readdirSync(procDir); } catch { return []; }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
+    try {
+      if (!fs.readFileSync(path.join(procDir, entry, "environ"), "latin1").split("\0").includes(marker)) continue;
+      const command = fs.readFileSync(path.join(procDir, entry, "cmdline"), "utf8").split("\0").filter(Boolean).join(" ");
+      found.push({ pid: Number(entry), command: command.slice(0, 200) });
+    } catch {
+      // A process that exited between the listing and the read is not a survivor.
+    }
+  }
+  return found;
+}
+
+/** How long the launcher may wait for survivors: the rest of the run's
+ *  --timeout, or without limit when none was given (no limit by default, the
+ *  2026-09-09 ruling); nothing after a timeout, which is a hard kill. */
+function survivorBudget(run, timedOut) {
+  if (timedOut) return 0;
+  if (!(run.opts.timeoutMs > 0)) return Infinity;
+  return Math.max(0, run.opts.timeoutMs - (Date.now() - run.startedAt));
+}
+
+/** Kill what outlived the wait, and say on stderr what the wait was. */
+function settleSurvivors(run, waitedMs, left) {
+  if (waitedMs > 0) note(`waited ${Math.round(waitedMs / 1000)}s after the CLI exited for the processes it started`);
+  for (const survivor of left) {
+    try { process.kill(survivor.pid, "SIGKILL"); } catch {}
+  }
+  return left;
+}
+
+async function waitForSurvivors(run, timedOut) {
+  const budget = survivorBudget(run, timedOut);
+  const started = Date.now();
+  let left = survivorsOf(run.id);
+  while (left.length > 0 && Date.now() - started < budget) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(SURVIVOR_POLL_MS, budget - (Date.now() - started))));
+    left = survivorsOf(run.id);
+  }
+  return settleSurvivors(run, Date.now() - started, left);
+}
+
+function waitForSurvivorsSync(run, timedOut) {
+  const budget = survivorBudget(run, timedOut);
+  const started = Date.now();
+  let left = survivorsOf(run.id);
+  while (left.length > 0 && Date.now() - started < budget) {
+    sleep(Math.min(SURVIVOR_POLL_MS, budget - (Date.now() - started)));
+    left = survivorsOf(run.id);
+  }
+  return settleSurvivors(run, Date.now() - started, left);
 }
 
 /**
@@ -1161,7 +1239,9 @@ export async function boxRun(options) {
     child.on("close", (code, signal) => {
       if (timer) clearTimeout(timer);
       // The log is read back by finishRun, so it has to be flushed first.
-      errStream.end(() => resolve(finishRun(run, { stdout, code, signal, timedOut })));
+      waitForSurvivors(run, timedOut).then((survivors) => {
+        errStream.end(() => resolve(finishRun(run, { stdout, code, signal, timedOut, survivors })));
+      });
     });
   });
 }
@@ -1193,7 +1273,8 @@ export function boxRunSync(options) {
     run.reap();
     throw Object.assign(new BoxRunError(`could not start ${run.command}: ${result.error.message}`), { runToken: run.spooled?.token ?? null });
   }
-  return finishRun(run, { stdout: result.stdout ?? "", code: result.status, signal: result.signal, timedOut });
+  const survivors = waitForSurvivorsSync(run, timedOut);
+  return finishRun(run, { stdout: result.stdout ?? "", code: result.status, signal: result.signal, timedOut, survivors });
 }
 
 /**
@@ -1304,6 +1385,11 @@ async function main() {
   const report = redactSecrets(result.text);
   process.stdout.write(report);
   if (report && !report.endsWith("\n")) process.stdout.write("\n");
+  // A PROCESS THE RUN STARTED THAT OUTLIVED ITS TIME LIMIT was killed before
+  // the reap, and the report says so: the work it was doing is not in it.
+  if (result.survivors.length > 0) {
+    process.stdout.write(redactSecrets(`box-run: ${result.survivors.length} process(es) this run started were still running when its time limit ran out, and were killed: ${result.survivors.map((survivor) => survivor.command).join("; ")}\n`));
+  }
   // THE STATUS LINE IS LAST AND ON STDOUT, so the laptop agent reads it off the
   // final line of the one block it relays.
   const { seconds } = result;

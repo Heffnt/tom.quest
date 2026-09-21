@@ -29,7 +29,11 @@ function fakeCli(tag) {
   const script = path.join(dir, "fake-cli.mjs");
   fs.writeFileSync(script, [
     'import fs from "node:fs";',
+    'import { spawn } from "node:child_process";',
     'const started = Date.now();',
+    // A command the fake leaves running in its own session when it exits, the
+    // way a model's backgrounded shell outlives the CLI's turn.
+    'if (process.env.FAKE_BACKGROUND) spawn("sh", ["-c", process.env.FAKE_BACKGROUND], { detached: true, stdio: "ignore" }).unref();',
     // The two registration variables are recorded beside argv because they are
     // the whole of what box-run.mjs hands a child about the record it belongs
     // to, and the child is the only place they can be observed.
@@ -705,6 +709,40 @@ describe("box-run in process", () => {
     const result = await entry.boxRun({ prompt: "p", env, registration: null });
     expect(result.text).toBe("async answer\n");
     expect(result.exitCode).toBe(0);
+  });
+});
+
+// witness: runs 0ea27b8e, 17aa7df2 and 02839c97 (2026-09-19) backgrounded a
+// wait, ended their turn, and were reaped with the work still running.
+describe.skipIf(process.platform !== "linux")("box-run waits for what the CLI left running", () => {
+  it("waits for a process the CLI started to finish before it reaps", () => {
+    const stateDir = temp("state");
+    const late = path.join(temp("late"), "done.txt");
+    const started = Date.now();
+    const result = run(["--repo", "none"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("survivor"), FAKE_BACKGROUND: `sleep 2; echo done > ${late}` },
+    });
+    expect(result.status).toBe(0);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2000);
+    expect(fs.readFileSync(late, "utf8")).toBe("done\n");
+    expect(result.stderr).toMatch(/waited \d+s after the CLI exited/);
+    expect(result.stdout).not.toContain("still running");
+    expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
+  });
+
+  it("kills what outlives the run's time limit and names it in the report", () => {
+    const stateDir = temp("state");
+    const late = path.join(temp("late"), "never.txt");
+    const result = run(["--repo", "none", "--timeout", "1500"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("outlives"), FAKE_BACKGROUND: `sleep 30; echo late > ${late}` },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/\d process\(es\) this run started were still running when its time limit ran out, and were killed: .*sh -c sleep 30/);
+    expect(statusLine(result.stdout)).toMatch(/exit 0 after \d+s$/);
+    const ps = spawnSync("pgrep", ["-f", `echo late > ${late}`], { encoding: "utf8" });
+    expect(ps.stdout.trim()).toBe("");
   });
 });
 

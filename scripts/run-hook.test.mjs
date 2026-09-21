@@ -264,4 +264,18 @@ describe("run lifecycle hook", () => {
     expect(fs.existsSync(started)).toBe(true);
     expect(fs.existsSync(finished)).toBe(false);
   });
+
+  // A box run waits for every process that carries its tag before it reaps;
+  // the sweep is the record's work, and a run must not wait on it.
+  it("starts the sweep without the box run's tag", async () => {
+    const f = fixture();
+    const seen = path.join(f.root, "seen");
+    fs.writeFileSync(f.sweep, `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(seen)}, String(process.env.TTS_BOX_RUN_ID ?? "none"));\n`);
+    const result = run(payloadFor(f.root, "claude", "Stop"), { ...f, env: { TTS_BOX_RUN_ID: "abcd1234" } });
+    expect(result.status).toBe(0);
+    for (let attempt = 0; attempt < 40 && !fs.existsSync(seen); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(fs.readFileSync(seen, "utf8")).toBe("none");
+  });
 });
