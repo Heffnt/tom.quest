@@ -676,6 +676,16 @@ describe("a merge the gate allows", () => {
     expect(await mergeRows(t)).toHaveLength(1);
   });
 
+  it("records a merge of a repository the token cannot read, and says it was not checked", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.stubGlobal("fetch", github({ status: 404 }).fake);
+    const t = convex();
+    await gated(t);
+    expect((await mergeReport(t)).status).toBe(200);
+    const [row] = await mergeRows(t);
+    expect((row.data as { mainCheck?: string }).mainCheck).toContain("not checked against GitHub");
+  });
+
   it("records nothing when GitHub cannot be asked", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     vi.stubGlobal("fetch", github({ status: 503 }).fake);

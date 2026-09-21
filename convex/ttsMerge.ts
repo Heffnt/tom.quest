@@ -673,16 +673,21 @@ export const internalRecordAudit = internalMutation({
  * they are about the commit and not about whether it was merged.
  *
  * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
- * recorded, and the reporter can post again.
+ * recorded, and the reporter can post again. ONE EXCEPTION, `checked: false`:
+ * a repository GitHub will not show the record's token at all (403 or 404 on
+ * the repository itself; GITHUB_MIRROR_TOKEN does not cover WikiTom, see
+ * convex/ttsSync.ts). Refusing there would leave every merge of that
+ * repository with no row and no line to object to, which costs Tom more than
+ * a row that says it was not checked; the row and its decisions line say so.
  */
 export async function mergedOnMain(
   repo: string,
   sha: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ merged: boolean; why: string }> {
+): Promise<{ merged: boolean; checked: boolean; why: string }> {
   const slug = (SESSION_REPOS as Record<string, string>)[repo];
-  if (!slug) return { merged: false, why: `${repo} is not a repository the record knows` };
-  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return { merged: false, why: `${sha} is not a commit sha` };
+  if (!slug) return { merged: false, checked: true, why: `${repo} is not a repository the record knows` };
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return { merged: false, checked: true, why: `${sha} is not a commit sha` };
   const token = process.env.GITHUB_MIRROR_TOKEN;
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -698,25 +703,28 @@ export async function mergedOnMain(
     }
   };
   const info = await ask("");
+  if (info.status === 403 || info.status === 404) {
+    return { merged: true, checked: false, why: `not checked against GitHub: the record's token cannot read ${repo}` };
+  }
   const main = (info.body as { default_branch?: unknown } | null)?.default_branch;
   if (typeof main !== "string" || main === "") {
-    return { merged: false, why: `GitHub could not be asked for ${repo}'s main branch (status ${info.status})` };
+    return { merged: false, checked: true, why: `GitHub could not be asked for ${repo}'s main branch (status ${info.status})` };
   }
   const compare = await ask(`compare/${sha}...${encodeURIComponent(main)}`);
   const status = (compare.body as { status?: unknown } | null)?.status;
   // compare BASE...HEAD with main as the head: "ahead" means main has every
   // commit of the sha and more, "identical" that main is at it.
-  if (status === "identical" || status === "ahead") return { merged: true, why: `${sha.slice(0, 7)} is on ${main}` };
+  if (status === "identical" || status === "ahead") return { merged: true, checked: true, why: `${sha.slice(0, 7)} is on ${main}` };
   const pulls = await ask(`commits/${sha}/pulls`);
   const merged = Array.isArray(pulls.body)
     ? (pulls.body as { number?: unknown; merged_at?: unknown; base?: { ref?: unknown } }[])
         .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === main)
     : undefined;
-  if (merged) return { merged: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into ${main}` };
+  if (merged) return { merged: true, checked: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into ${main}` };
   if (compare.status !== 200 && compare.status !== 404) {
-    return { merged: false, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on ${main} (status ${compare.status})` };
+    return { merged: false, checked: true, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on ${main} (status ${compare.status})` };
   }
-  return { merged: false, why: `${sha.slice(0, 7)} is not on ${main} and belongs to no pull request merged into it` };
+  return { merged: false, checked: true, why: `${sha.slice(0, 7)} is not on ${main} and belongs to no pull request merged into it` };
 }
 
 /**
@@ -735,6 +743,8 @@ export const internalRecordMerge = internalMutation({
     sha: v.string(),
     subject: v.string(),
     todoId: v.optional(v.string()),
+    // What GitHub said about the merge (mergedOnMain), kept on the row.
+    mainCheck: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const gate = await mergeGateFor(ctx, args.repo, args.sha);
@@ -751,7 +761,7 @@ export const internalRecordMerge = internalMutation({
       ctx,
       MERGE,
       todoId ?? undefined,
-      { repo: args.repo, sha: args.sha, subject: args.subject },
+      { repo: args.repo, sha: args.sha, subject: args.subject, ...(args.mainCheck === undefined ? {} : { mainCheck: args.mainCheck }) },
       key,
     );
     // ONE LINE IN #tts-decisions as it is recorded, through the one decisions
@@ -765,7 +775,7 @@ export const internalRecordMerge = internalMutation({
       askId: key,
       ...(todoId === undefined || todoId === null ? {} : { todoId: todoId as string }),
       decision: `merged ${args.repo}@${args.sha.slice(0, 7)}: ${args.subject}`,
-      reason: gate.checks.map((check) => check.why).join("; "),
+      reason: [...gate.checks.map((check) => check.why), ...(args.mainCheck === undefined ? [] : [args.mainCheck])].join("; "),
       refused: false,
     });
     return { recorded: true, id, existing: false, gate };
