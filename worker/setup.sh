@@ -389,12 +389,11 @@ PROFILE_LINE='export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active'
 touch /root/.bashrc
 if grep -qxF "$PROFILE_LINE" /root/.bashrc; then
   echo "  /root/.bashrc: the slot line is already present"
-elif grep -q '^\[ -z "\$PS1" \] && return' /root/.bashrc; then
-  sed -i "0,/^\[ -z \"\\\$PS1\" \] && return/s||$PROFILE_LINE\n&|" /root/.bashrc
-  echo "  /root/.bashrc: added the slot line above the non-interactive guard"
 else
-  sed -i "1i $PROFILE_LINE" /root/.bashrc
-  echo "  /root/.bashrc: added the slot line at the top (no guard found)"
+  # The first line is above any guard the file has, whatever its spelling.
+  printf '%s\n%s\n' "$PROFILE_LINE" "$(cat /root/.bashrc)" > /root/.bashrc.tts-new
+  mv /root/.bashrc.tts-new /root/.bashrc
+  echo "  /root/.bashrc: added the slot line at the top, above the non-interactive guard"
 fi
 # CLI helpers onto the PATH. A tts-* helper main's worker/bin no longer
 # carries is removed, so a retired or stray one cannot linger on the PATH
@@ -806,6 +805,9 @@ node -e '
   if [ -e "$CHECKOUT" ]; then
     echo "  $CHECKOUT exists; left as it is"
   else
+    # REMOVAL CHECK: the GitHub fallback stays because box-run.mjs makes a
+    # mirror only on a run's first use of a repo, so a rebuilt box reaches this
+    # step with none; the mirror stays because it is local and already fetched.
     SOURCE="/var/cache/tts/runs/repos/$DESKTOP_REPO.git"
     [ -f "$SOURCE/HEAD" ] || SOURCE="$URL"
     # The source's own default branch, not a named one: tom.quest and WikiTom
@@ -815,9 +817,8 @@ node -e '
       echo "  could not clone $DESKTOP_REPO into $CHECKOUT; skipped"
       continue
     fi
+    # The mirror's main may trail GitHub's by a little; the session pulls.
     git -C "$CHECKOUT" remote set-url origin "$URL"
-    GIT_LFS_SKIP_SMUDGE=1 git -C "$CHECKOUT" fetch --quiet origin \
-      || echo "  could not fetch $DESKTOP_REPO from GitHub; the clone holds the mirror's main"
     echo "  cloned $CHECKOUT on $(git -C "$CHECKOUT" branch --show-current)"
   fi
   # A fresh checkout of tom.quest needs its packages and its .env.local before

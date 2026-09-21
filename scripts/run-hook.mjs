@@ -135,8 +135,25 @@ function claimFields(payload, event, runFile) {
 // inheriting a claim nobody made for it.
 export const LAPTOP_SESSION_LAYERS = Object.freeze(["operate"]);
 
+// Where the run is: RUN_HOST when it is set, else the run file's path. The box
+// keeps its accounts under /root/.claude-accounts; anything under a plain
+// ~/.claude is the laptop.
+//
+// REMOVAL CHECK: the path cannot be dropped for RUN_HOST alone. A desktop
+// session's hooks run with sshd's bare environment, which carries no RUN_HOST,
+// and a profile variable reaches only a process that bash started; the run
+// file's place under an account slot holds however the CLI was started.
+function placeOf(runFile, env) {
+  if (env.RUN_HOST === "box" || env.RUN_HOST === "laptop") return env.RUN_HOST;
+  const normalized = String(runFile ?? "").replaceAll("\\", "/").toLowerCase();
+  if (normalized.includes("/.claude-accounts/")) return "box";
+  if (normalized.includes("/.claude/")) return "laptop";
+  return null;
+}
+
 function hookRegistration(payload, event, runFile, env) {
   const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
+  const place = placeOf(runFile, env);
   const cli = cliOf(payload, runFile, env);
   const parentThread = firstString(payload.session_id, payload.sessionId, payload.thread_id, payload.threadId);
   const toolUseId = firstString(
@@ -145,11 +162,7 @@ function hookRegistration(payload, event, runFile, env) {
     payload.parent_tool_use_id,
     payload.parentToolUseId,
   );
-  const normalizedFile = String(runFile).replaceAll("\\", "/").toLowerCase();
-  // The box keeps its accounts under /root/.claude-accounts; anything under a
-  // plain ~/.claude is the laptop. RUN_HOST wins over both when it is set.
-  const laptop = host === "laptop"
-    || (host === null && normalizedFile.includes("/.claude/") && !normalizedFile.includes("/.claude-accounts/"));
+  const laptop = place === "laptop";
   const subagent = event.startsWith("Subagent");
   const layersKnown = laptop && !subagent && cli === "claude";
   // This function runs only when no launcher handed the session a token, so on
@@ -161,11 +174,13 @@ function hookRegistration(payload, event, runFile, env) {
   // there and the account-slot path of the run file is what says box. A
   // process tagged TTS_BOX_RUN_ID was launched by box-run.mjs and only lacks a
   // token because its spool write failed; it is not Tom's and stays unnamed.
-  const box = host === "box" || (host === null && normalizedFile.includes("/.claude-accounts/"));
-  const unlaunchedBoxSession = box && !subagent && cli === "claude" && !firstString(env.TTS_BOX_RUN_ID);
+  const unlaunchedBoxSession = place === "box" && !subagent && cli === "claude" && !firstString(env.TTS_BOX_RUN_ID);
   return {
     host,
     ...(cli ? { cli } : {}),
+    // REMOVAL CHECK: TTS_RUN_ORIGIN keeps its word over `desktop` because it
+    // is how a process that starts claude without a launcher still names what
+    // started it; `desktop` is only the default when nothing did.
     origin: laptop
       ? "laptop"
       : firstString(env.TTS_RUN_ORIGIN) ?? (unlaunchedBoxSession ? "desktop" : "unknown"),
@@ -213,8 +228,9 @@ function writeCurrentRunPointer(payload, runFile, env, stateDir) {
     const sessionId = firstString(payload.session_id, payload.sessionId);
     const cwd = firstString(payload.cwd);
     if (cli !== "claude" || !sessionId || !cwd) return;
-    const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
-    const runId = `${cli}:${host ?? "laptop"}:${sessionId}`;
+    // The run id must name the host the sweep records, or scripts/box-agent.mjs
+    // parents a desktop session's box children to a laptop run that never was.
+    const runId = `${cli}:${placeOf(runFile, env) ?? "laptop"}:${sessionId}`;
     const file = currentRunPointerPath(stateDir, cwd);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const temporary = `${file}.tmp-${process.pid}`;

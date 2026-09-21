@@ -194,6 +194,9 @@ describe("run lifecycle hook", () => {
     expect(run(payload, { ...f, env: { RUN_HOST: "" } }).status).toBe(0);
     const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(transcript), "utf8"));
     expect(envelope.registration).toMatchObject({ host: null, cli: "claude", environment: "session", origin: "desktop" });
+    // The pointer box-agent.mjs reads must name the box run the sweep records,
+    // not a laptop run: a laptop id here parented box children to nothing real.
+    expect(JSON.parse(fs.readFileSync(currentRunPointerPath(f.state, f.root), "utf8"))).toMatchObject({ runId: "claude:box:desk" });
   });
 
   it("lets TTS_RUN_ORIGIN name an unlaunched box session's origin", () => {
