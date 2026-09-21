@@ -567,9 +567,11 @@ describe("claudeArgs", () => {
     expect(entry.claudeArgs({})).not.toContain("--session-id");
   });
 
+  // The one check on the list is normalize()'s, which every entry passes.
   it("refuses a tool list that is not non-empty strings", () => {
-    expect(() => entry.claudeArgs({ allowedTools: "Read" })).toThrow(/allowedTools/);
-    expect(() => entry.claudeArgs({ allowedTools: ["Read", ""] })).toThrow(/allowedTools/);
+    const { env } = inProcess("bad-tools");
+    expect(() => entry.boxRunSync({ prompt: "p", env, allowedTools: "Read", registration: null })).toThrow(/allowedTools/);
+    expect(() => entry.boxRunSync({ prompt: "p", env, allowedTools: ["Read", ""], registration: null })).toThrow(/allowedTools/);
   });
 });
 
@@ -676,27 +678,24 @@ describe("box-run in process", () => {
   });
 });
 
-describe("box-run command line flags for parity", () => {
-  it("passes --max-turns, --allowed-tools and --cwd through, and refuses a turn cap for codex", () => {
-    const own = temp("flag-cwd");
-    const stateDir = temp("state");
-    const record = path.join(stateDir, "record.json");
-    const result = run(["--cwd", own, "--max-turns", "4", "--allowed-tools", "", "--output-format", "json"], {
-      stateDir,
-      env: { CLAUDE_BIN: fakeCli("flags"), FAKE_RECORD: record },
-    });
+describe("box-run command line flags", () => {
+  // The six in-process settings were once command-line flags too; no caller
+  // passed one, so the command line refuses them like any unknown option.
+  it("refuses the settings that exist only in process", () => {
+    for (const flag of ["--cwd", "--allowed-tools", "--disallowed-tools", "--permission-mode", "--max-turns", "--output-format"]) {
+      const result = run(["--repo", "none", flag, "x"], { stateDir: temp("state"), env: { CLAUDE_BIN: fakeCli("gone") } });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`unknown option ${flag}`);
+    }
+  });
+
+  it("prints the usage block for --help and starts nothing", () => {
+    const record = path.join(temp("help"), "record.json");
+    const result = run(["--help"], { stateDir: temp("state"), env: { CLAUDE_BIN: fakeCli("help"), FAKE_RECORD: record } });
     expect(result.status).toBe(0);
-    const { argv, cwd } = JSON.parse(fs.readFileSync(record, "utf8"));
-    expect(argv[argv.indexOf("--max-turns") + 1]).toBe("4");
-    expect(argv[argv.indexOf("--output-format") + 1]).toBe("json");
-    expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("");
-    expect(argv[argv.indexOf("--disallowedTools") + 1].split(",")).toContain("ToolSearch");
-    expect(fs.realpathSync(cwd)).toBe(fs.realpathSync(own));
-    const refused = run(["--cli", "codex", "--max-turns", "4"], { stateDir: temp("state"), env: { TTS_CODEX_BIN: fakeCli("codex-turns") } });
-    expect(refused.status).toBe(2);
-    expect(refused.stderr).toMatch(/claude only/);
-    const repoAndCwd = run(["--cwd", own, "--repo", "tom.quest"], { stateDir: temp("state"), env: { CLAUDE_BIN: fakeCli("cwd-repo") } });
-    expect(repoAndCwd.status).toBe(2);
-    expect(repoAndCwd.stderr).toMatch(/--cwd/);
+    expect(result.stdout).toMatch(/^Usage:\n/);
+    expect(result.stdout).toContain("--timeout MS");
+    expect(result.stdout).not.toContain("REMOVAL CHECK");
+    expect(fs.existsSync(record)).toBe(false);
   });
 });

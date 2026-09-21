@@ -13,12 +13,7 @@
 #
 #   tts-run [flags] < prompt.txt
 #
-# Flags: --cli claude|codex, --repo NAME,
-# --ref REF, --cwd DIR, --model NAME, --effort LEVEL, --sandbox MODE,
-# --schema FILE, --allowed-tools A,B, --disallowed-tools A,B,
-# --permission-mode MODE, --max-turns N, --output-format text|json, --tests,
-# --install, --parent RUNID, --root RUNID, --depth N, --keep-worktree,
-# --timeout MS. The prompt arrives on stdin; only the run's report and one
-# status line come back on stdout. The cron jobs reach the same body in
-# process, through runClaude in worker/jobs/tts-lib.mjs.
+# `tts-run --help` prints the flags. The prompt arrives on stdin; only the
+# run's report and one status line come back on stdout. The cron jobs reach the
+# same body in process, through runClaude in worker/jobs/tts-lib.mjs.
 exec node /opt/tts/runs/box-run.mjs "$@"

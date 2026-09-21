@@ -31,24 +31,18 @@
 //   --cli claude|codex      which CLI runs                 (default: claude)
 //   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
 //   --ref REF               branch, tag or sha to check out
-//   --cwd DIR               run in this existing absolute directory instead
-//                           of a worktree or a scratch one (needs --repo none)
 //   --model NAME            model for the run
 //   --effort LEVEL          codex only, passed through
 //   --sandbox MODE          codex only, passed through
 //   --schema FILE           codex only, passed through
-//   --allowed-tools A,B     claude only                    (default: TOOLS_ALLOWED)
-//                           an empty value means no tools, and denies them by name
-//   --disallowed-tools A,B  claude only                    (default: BANNED_TOOLS)
-//   --permission-mode MODE  claude only                    (default: acceptEdits)
-//   --max-turns N           claude only                    (default: no cap)
-//   --output-format FMT     claude only, text or json      (default: text)
 //   --tests                 this run will run a test suite (arms the guard)
 //   --install               pnpm install in the worktree   (implied by --tests)
 //   --parent RUNID          the laptop session's run id
 //   --root RUNID            that run's rootRunId           (default: --parent)
 //   --depth N               the parent's depth + 1         (default: 1)
 //   --keep-worktree         do not reap at exit (debugging)
+//   --timeout MS            hard kill                      (default: none)
+//   --help                  print this block
 //
 //     REMOVAL CHECK on --keep-worktree: the need it meets cannot be met some
 //     other way, because the reap DELETES THE ONLY COPY. A run's report comes
@@ -60,7 +54,12 @@
 //     second checkout to look at afterwards, and the log the reap removes with
 //     the tree is the same story. The flag is off by default and the reap is
 //     unconditional without it.
-//   --timeout MS            hard kill                      (default: none)
+//
+//   A claude run from the command line gets TOOLS_ALLOWED, BANNED_TOOLS denied,
+//   acceptEdits, no turn cap and text output. The tool lists, the permission
+//   mode, the turn cap, the output format and a caller's own directory are
+//   in-process options only (boxRun, boxRunSync): the jobs that set them call
+//   the launcher in process, and no command-line caller ever passed them.
 //
 // THE PROMPT ARRIVES ON STDIN, never as an argument — the same reason
 // codex-run.mjs passes `-`: no command-line length limit, and no prompt text
@@ -202,24 +201,15 @@ function moduleUrl(relative, installed) {
 const { redactSecrets } = await import(moduleUrl("../session-host/redact.mjs", "/opt/tts/session-host/redact.mjs"));
 const { scrubbedEnv } = await import(moduleUrl("../session-host/env-scrub.mjs", "/opt/tts/session-host/env-scrub.mjs"));
 
-/** A comma list off the command line; an empty value is an empty list. */
-const commaList = (value) => value.split(",").map((name) => name.trim()).filter((name) => name !== "");
-
 function parseArgs(argv) {
   const opts = {
     cli: "claude",
     repo: REPO_NONE,
     ref: null,
-    cwd: null,
     model: null,
     effort: null,
     sandbox: null,
     schema: null,
-    allowedTools: undefined,
-    deniedTools: undefined,
-    permissionMode: undefined,
-    maxTurns: undefined,
-    outputFormat: "text",
     tests: false,
     install: false,
     parent: null,
@@ -238,16 +228,10 @@ function parseArgs(argv) {
       case "--cli": opts.cli = next(); break;
       case "--repo": opts.repo = next(); break;
       case "--ref": opts.ref = next(); break;
-      case "--cwd": opts.cwd = next(); break;
       case "--model": opts.model = next(); break;
       case "--effort": opts.effort = next(); break;
       case "--sandbox": opts.sandbox = next(); break;
       case "--schema": opts.schema = next(); break;
-      case "--allowed-tools": opts.allowedTools = commaList(next()); break;
-      case "--disallowed-tools": opts.deniedTools = commaList(next()); break;
-      case "--permission-mode": opts.permissionMode = next(); break;
-      case "--max-turns": opts.maxTurns = Number(next()); break;
-      case "--output-format": opts.outputFormat = next(); break;
       case "--tests": opts.tests = true; break;
       case "--install": opts.install = true; break;
       case "--parent": opts.parent = next(); break;
@@ -255,6 +239,7 @@ function parseArgs(argv) {
       case "--depth": opts.depth = Number(next()); break;
       case "--keep-worktree": opts.keepWorktree = true; break;
       case "--timeout": opts.timeoutMs = Number(next()); break;
+      case "--help": case "-h": return { help: true };
       default: fail(`unknown option ${arg}`);
     }
   }
@@ -263,9 +248,9 @@ function parseArgs(argv) {
   // an in-process caller that names nothing gets nothing added, which is what
   // runClaude always handed the CLI.
   if (opts.cli === "claude") {
-    if (opts.allowedTools === undefined) opts.allowedTools = [...TOOLS_ALLOWED];
-    if (opts.deniedTools === undefined) opts.deniedTools = [...BANNED_TOOLS];
-    if (opts.permissionMode === undefined) opts.permissionMode = "acceptEdits";
+    opts.allowedTools = [...TOOLS_ALLOWED];
+    opts.deniedTools = [...BANNED_TOOLS];
+    opts.permissionMode = "acceptEdits";
   }
   return opts;
 }
@@ -398,12 +383,8 @@ export function claudeArgs({ model, outputFormat = "text", maxTurns, allowedTool
   if (maxTurns !== undefined) args.push("--max-turns", String(maxTurns));
   if (model) args.push("--model", model);
   if (permissionMode) args.push("--permission-mode", permissionMode);
-  if (allowedTools !== undefined) {
-    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
-      throw new BoxRunError("allowedTools must be an array of non-empty strings");
-    }
-    args.push("--allowedTools", allowedTools.join(","));
-  }
+  // normalize() has already refused a malformed list; this is its one check.
+  if (allowedTools !== undefined) args.push("--allowedTools", allowedTools.join(","));
   // AN EMPTY LIST MEANS NO TOOLS, AND THE ALLOW-LIST ALONE DOES NOT SAY SO.
   // `--allowedTools` pre-approves; it does not withhold, and the default
   // permission mode hands the model its read tools without asking either way.
@@ -1019,8 +1000,12 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
         claim: { by: "launcher:box-run", threadId: envelope.session_id, runFile, hookPayloadKeys: [] },
       });
     } catch (error) {
-      // The SessionStart hook claims the same envelope; a claim that fails here
-      // leaves it to the hook and the sweep, and never loses the answer.
+      // REMOVAL CHECK: the SessionStart hook claims the same envelope, and this
+      // claim stays because for a Claude run nothing else claims a spool when
+      // the hook does not (its five-second timeout, a slot without the hook).
+      // claimRegistration is idempotent on the token, so the second claim costs
+      // nothing. A claim that fails here leaves it to the hook and never loses
+      // the answer.
       note(`could not claim the envelope: ${error?.message ?? error}`);
     }
   }
@@ -1230,6 +1215,14 @@ function sessionRegistration(opts, prompt, env) {
   };
 }
 
+/** The Usage block of this file's header, as `--help` prints it. */
+function usage() {
+  const header = fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n");
+  const start = header.findIndex((line) => line.startsWith("// Usage:"));
+  const end = header.findIndex((line, index) => index > start && line.startsWith("//   --help"));
+  return `${header.slice(start, end + 1).map((line) => line.replace(/^\/\/ ?/, "")).join("\n")}\n`;
+}
+
 /** The command line: flags and stdin in, the report and one status line out. */
 async function main() {
   let reap = () => {};
@@ -1252,6 +1245,10 @@ async function main() {
   let result;
   try {
     opts = parseArgs(process.argv.slice(2));
+    if (opts.help) {
+      process.stdout.write(usage());
+      process.exit(0);
+    }
     const prompt = readStdin();
     if (!prompt.trim()) fail("no prompt on stdin");
     result = await boxRun({
