@@ -738,9 +738,10 @@ describe.skipIf(process.platform !== "linux")("box-run waits for what the CLI le
       stateDir,
       env: { CLAUDE_BIN: fakeCli("outlives"), FAKE_BACKGROUND: `sleep 30; echo late > ${late}` },
     });
-    expect(result.status).toBe(0);
+    // A timeout, like any other: the work was cut off.
+    expect(result.status).toBe(124);
     expect(result.stdout).toMatch(/\d process\(es\) this run started were still running when its time limit ran out, and were killed: .*sh -c sleep 30/);
-    expect(statusLine(result.stdout)).toMatch(/exit 0 after \d+s$/);
+    expect(statusLine(result.stdout)).toMatch(/exit 124 after \d+s$/);
     const ps = spawnSync("pgrep", ["-f", `echo late > ${late}`], { encoding: "utf8" });
     expect(ps.stdout.trim()).toBe("");
   });

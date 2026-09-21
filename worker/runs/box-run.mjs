@@ -75,7 +75,7 @@
 // throws away everything it had done.
 //
 // Exit codes: the CLI's own code on completion; 124 on timeout when a
-// --timeout was given; 75 (EX_TEMPFAIL) when the memory guard refuses or a
+// --timeout was given, including a process the CLI left running past it; 75 (EX_TEMPFAIL) when the memory guard refuses or a
 // caller's slot wait runs out; 2 for bad arguments, an unresolvable ref, or a
 // missing binary. In process these are the `exitCode` of a thrown
 // BoxRunError; only main() turns one into an exit.
@@ -241,7 +241,9 @@ function parseArgs(argv) {
       case "--depth": opts.depth = Number(next()); break;
       case "--keep-worktree": opts.keepWorktree = true; break;
       case "--timeout": opts.timeoutMs = Number(next()); break;
-      case "--help": case "-h": return { help: true };
+      // REMOVAL CHECK: Tom asked for it (2026-09-21). tts-run is reached by its
+      // PATH name, and without this the flags are written only in this file.
+      case "--help": return { help: true };
       default: fail(`unknown option ${arg}`);
     }
   }
@@ -1065,9 +1067,11 @@ function finishRun(run, { stdout, code, signal, timedOut, survivors = [] }) {
     id: run.id,
     seconds: Math.round((Date.now() - run.startedAt) / 1000),
     text,
-    exitCode: timedOut ? 124 : (code ?? 1),
+    // Work killed at the time limit is a timeout, whether the CLI or a process
+    // it left running was still going.
+    exitCode: timedOut || survivors.length > 0 ? 124 : (code ?? 1),
     signal: signal ?? null,
-    timedOut,
+    timedOut: timedOut || survivors.length > 0,
     envelope,
     runToken: run.spooled?.token ?? null,
     stderrTail,
