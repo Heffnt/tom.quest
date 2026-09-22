@@ -271,9 +271,21 @@ export type MergeCheck = {
   why: string;
 };
 
+/** The bounded part of the `tests-run` row the worker needs before it audits.
+ * The merge gate already reads this exact row; carrying its three declared
+ * data fields in the GET response avoids a second record door and does not
+ * add another condition to the gate. */
+type TestsRunRecord = {
+  ok: boolean | null;
+  detail?: string;
+  url?: string;
+};
+
 export type MergeGateResult = {
   repo: string;
   sha: string;
+  /** The head's recorded test result, or null when the fail-closed row is absent. */
+  testsRun: TestsRunRecord | null;
   allowed: boolean;
   checks: MergeCheck[];
   /** The names of the checks that did not pass, in gate order. */
@@ -300,7 +312,14 @@ export async function mergeGateFor(
   const short = sha.slice(0, 7);
 
   const tests = await rowFor(ctx, TESTS_RUN, key);
-  const testsData = (tests?.data ?? {}) as { ok?: unknown; detail?: unknown };
+  const testsData = (tests?.data ?? {}) as { ok?: unknown; detail?: unknown; url?: unknown };
+  const testsRun: TestsRunRecord | null = tests === null
+    ? null
+    : {
+        ok: typeof testsData.ok === "boolean" ? testsData.ok : null,
+        ...(typeof testsData.detail === "string" ? { detail: testsData.detail } : {}),
+        ...(typeof testsData.url === "string" ? { url: testsData.url } : {}),
+      };
   const testsCheck: MergeCheck =
     tests === null
       ? { name: "tests", passed: false, why: `no tests result is recorded for ${short}` }
@@ -465,6 +484,7 @@ export async function mergeGateFor(
   return {
     repo,
     sha,
+    testsRun,
     allowed: checks.every((check) => check.passed),
     checks,
     missing: checks.filter((check) => !check.passed).map((check) => check.name),

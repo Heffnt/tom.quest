@@ -267,6 +267,7 @@ describe("the merge gate's three checks", () => {
     await cleanEvals(t);
     const answer = await (await mergeReport(t)).json();
     expect(answer.gate.missing).toEqual(["tests"]);
+    expect(answer.gate.testsRun).toBeNull();
     expect(answer.gate.checks.find((c: { name: string }) => c.name === "tests").why).toContain(
       "no tests result",
     );
@@ -280,6 +281,7 @@ describe("the merge gate's three checks", () => {
     await cleanEvals(t);
     const answer = await (await mergeReport(t)).json();
     expect(answer.gate.missing).toEqual(["tests"]);
+    expect(answer.gate.testsRun).toEqual({ ok: false, detail: "guardrails tests job" });
     const tests = answer.gate.checks.find((c: { name: string }) => c.name === "tests");
     expect(tests.why).toContain("red");
     expect(tests.why).toContain("guardrails tests job");
