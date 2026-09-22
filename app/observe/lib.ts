@@ -3,7 +3,7 @@
 // address each mark opens. Pure functions with no React in them, so the numbers
 // the page draws are the numbers a test can read.
 
-import { SESSION_REPOS } from "@/convex/ttsShared";
+import { SESSION_REPOS, isFailureKind } from "@/convex/ttsShared";
 import type { Lane, Tally } from "./map-data";
 
 // ── The window ───────────────────────────────────────────────────────────────
@@ -122,16 +122,11 @@ export function repoOfRun(run: RunMark): string | null {
   const cwd = run.cwd;
   if (cwd === null || cwd === "") return null;
   const segments = cwd.split(/[\\/]+/).filter((part) => part !== "");
+  // EVERY segment, which is what makes a worktree path answer too: a worktree
+  // directory is named for its branch, but the repository it belongs to is
+  // still a segment above it.
   for (const segment of segments) {
     const hit = REPO_NAMES.find((name) => name.toLowerCase() === segment.toLowerCase());
-    if (hit !== undefined) return hit;
-  }
-  // A worktree directory is named for the branch, not the repository, so the
-  // repository is the segment above `.claude`.
-  const worktree = segments.indexOf(".claude");
-  if (worktree > 0) {
-    const parent = segments[worktree - 1];
-    const hit = REPO_NAMES.find((name) => name.toLowerCase() === parent.toLowerCase());
     if (hit !== undefined) return hit;
   }
   return null;
@@ -139,13 +134,10 @@ export function repoOfRun(run: RunMark): string | null {
 
 // ── The point events ─────────────────────────────────────────────────────────
 
-const NOT_A_FAILURE = new Set(["slack-send-failed", "learning-revert-failed"]);
-
-/** A failure is a shape and not a kind — the same rule convex/tts.ts applies
- *  before a row becomes a #tts-broken line. */
-export function isFailure(kind: string): boolean {
-  return kind.endsWith("-failed") && !NOT_A_FAILURE.has(kind);
-}
+/** A failure is a shape and not a kind, in convex/ttsShared.ts's one spelling
+ *  of it — the same rule that decides whether a row becomes a #tts-broken
+ *  line, so the page and Slack never disagree about what failed. */
+export const isFailure = isFailureKind;
 
 export const GATE_KINDS = new Set(["tests-run", "audit-verdict", "evals-run"]);
 

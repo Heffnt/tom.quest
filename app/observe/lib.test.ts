@@ -82,7 +82,7 @@ describe("the repository a run worked in", () => {
     expect(repoOfRun(run({ cwd: "C:\\Users\\heffn\\Desktop\\WikiTom" }))).toBe("WikiTom");
   });
 
-  it("looks above .claude when the directory is named for a worktree", () => {
+  it("reads the repository out of a worktree path, named for its branch", () => {
     expect(
       repoOfRun(run({ cwd: "C:/Users/heffn/Desktop/ComplexMultiTrigger/.claude/worktrees/x" })),
     ).toBe("ComplexMultiTrigger");
