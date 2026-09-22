@@ -235,6 +235,19 @@ describe("starting and hosting", () => {
     expect(stops).toHaveLength(0);
   });
 
+  it("records an answer to an ended worker without queuing a turn no one will read", async () => {
+    const t = await setup();
+    const orchestrator = await start(t);
+    const worker = await spawn(t, orchestrator);
+    const elevationId = await elevate(t, worker);
+    await ingest(t, worker, { status: "running" });
+    await ingest(t, worker, { status: "ended", endedReason: "worker waited too long for an answer" });
+    const before = (await pendingTexts(t, worker)).length;
+    const res = await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId, kind: "obvious", answer: "Leave it." });
+    expect(res.body).toMatchObject({ status: "answered", delivered: false });
+    expect((await pendingTexts(t, worker)).length).toBe(before);
+  });
+
   it("carries messages both ways and keeps the document versioned", async () => {
     const t = await setup();
     const orchestrator = await start(t);

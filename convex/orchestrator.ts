@@ -241,11 +241,8 @@ export async function renewOrchestratorLease(ctx: MutationCtx, held: readonly st
 // ── Delivery ─────────────────────────────────────────────────────────────────
 
 /** A message into a run, as its next turn. Written as an agent's turn, so it
- * can never be read as Tom's words. Delivered to a live run; to an ended
- * orchestrator run it waits, and the next run's opener carries it. */
-async function deliver(ctx: MutationCtx, sessionId: Id<"claudeSessions">, text: string): Promise<boolean> {
-  const session = await ctx.db.get(sessionId);
-  if (!session) return false;
+ * can never be read as Tom's words. */
+async function queueTurn(ctx: MutationCtx, sessionId: Id<"claudeSessions">, text: string) {
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind: "user-turn",
@@ -254,13 +251,33 @@ async function deliver(ctx: MutationCtx, sessionId: Id<"claudeSessions">, text: 
     status: "pending",
     createdAt: Date.now(),
   });
-  return isLive(session.status);
 }
 
+/** A message into a worker, only while it is live: an ended session is never
+ * polled again, so a turn queued on it would sit unread for ever. False when
+ * the worker has ended, and the caller records that it was not delivered. */
+async function deliver(ctx: MutationCtx, sessionId: Id<"claudeSessions">, text: string): Promise<boolean> {
+  const session = await ctx.db.get(sessionId);
+  if (!session || !isLive(session.status)) return false;
+  await queueTurn(ctx, sessionId, text);
+  return true;
+}
+
+/** A message into the orchestrator. Queued on its latest run even when that
+ * run has ended, because the next run's opener carries every message its
+ * predecessor did not finish; true only when the run is live. */
 async function deliverToOrchestrator(ctx: MutationCtx, text: string): Promise<boolean> {
   const row = await orchestratorRow(ctx);
   if (!row || row.stoppedAt !== undefined || row.liveSessionId === undefined) return false;
-  return await deliver(ctx, row.liveSessionId, text);
+  const session = await ctx.db.get(row.liveSessionId);
+  if (!session) return false;
+  await queueTurn(ctx, session._id, text);
+  return isLive(session.status);
+}
+
+/** What a ruling on an elevation records about its delivery. */
+function deliveryResult(delivered: boolean, worker: Id<"claudeSessions">): string {
+  return delivered ? `delivered to worker ${worker}` : `recorded only: worker ${worker} had ended`;
 }
 
 // ── Start, stop, restart ─────────────────────────────────────────────────────
@@ -775,6 +792,13 @@ export const internalAnswer = internalMutation({
         return { status: "answered", delivered, ruling: null };
       }
       const decision = data.decision as string;
+      await ctx.db.patch(id, { status: "answered", kind, answer: decision, answeredBy: "delegate", answeredAt: now, askId });
+      const reason = typeof data.reason === "string" ? ` Its reason: ${data.reason}` : "";
+      const delivered = await deliver(
+        ctx,
+        elevation.workerSessionId,
+        `Answer to your elevation ${id} (a trade-off, ruled by the delegate; treat it as Tom's ruling): ${decision}.${reason}`,
+      );
       const rulingId = await ctx.db.insert("dtsRulings", {
         subjectType: "elevation",
         elevationId: id,
@@ -784,15 +808,8 @@ export const internalAnswer = internalMutation({
         ruledBy: "delegate",
         askId,
         appliedAt: now,
-        applyResult: `delivered to worker ${elevation.workerSessionId}`,
+        applyResult: deliveryResult(delivered, elevation.workerSessionId),
       });
-      await ctx.db.patch(id, { status: "answered", kind, answer: decision, answeredBy: "delegate", answeredAt: now, askId });
-      const reason = typeof data.reason === "string" ? ` Its reason: ${data.reason}` : "";
-      const delivered = await deliver(
-        ctx,
-        elevation.workerSessionId,
-        `Answer to your elevation ${id} (a trade-off, ruled by the delegate; treat it as Tom's ruling): ${decision}.${reason}`,
-      );
       await logEvent(ctx, "elevation-answered", elevation.todoId, { elevationId: id, kind, by: "delegate", askId, rulingId, delivered });
       return { status: "answered", delivered, ruling: rulingId };
     }
@@ -894,6 +911,8 @@ export async function recordElevationReply(
     await logEvent(ctx, "tom-note", elevation.todoId, { text, ...at, elevationId });
     return { outcome: "elevation-note" as const, elevationId };
   }
+  await ctx.db.patch(elevationId, { status: "answered", answer, answeredBy: "tom", answeredAt: now });
+  const delivered = await deliver(ctx, elevation.workerSessionId, `Tom answered your elevation ${elevationId}: ${answer}`);
   await ctx.db.insert("dtsRulings", {
     subjectType: "elevation",
     elevationId,
@@ -902,10 +921,8 @@ export async function recordElevationReply(
     ruledAt: now,
     ruledBy: "tom",
     appliedAt: now,
-    applyResult: `delivered to worker ${elevation.workerSessionId}`,
+    applyResult: deliveryResult(delivered, elevation.workerSessionId),
   });
-  await ctx.db.patch(elevationId, { status: "answered", answer, answeredBy: "tom", answeredAt: now });
-  const delivered = await deliver(ctx, elevation.workerSessionId, `Tom answered your elevation ${elevationId}: ${answer}`);
   await deliverToOrchestrator(ctx, `Tom answered elevation ${elevationId} (worker ${elevation.workerSessionId}): ${answer}`);
   await logEvent(ctx, "elevation-answered", elevation.todoId, { elevationId, kind: "reserved", by: "tom", delivered, ...at });
   return { outcome: "elevation-answer" as const, elevationId };
