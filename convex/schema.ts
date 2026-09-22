@@ -448,6 +448,14 @@ export default defineSchema({
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
+    // Set at capture when a poller's triage judged the item to need Tom
+    // TODAY, with the triage's own few words (empty when it gave none). No
+    // worker raises it with him (Tom, 2026-09-21); the morning message and the
+    // hourly line read it here and say it. Its own field because nothing else
+    // on the row can hold it: `statement` is display text the preparer
+    // rewrites, `body` is the preparer's, and `provenance` is the source line
+    // Tom reads, where a judgement would pose as a fact about the source.
+    needsTomToday: v.optional(v.object({ why: v.string() })),
     // NARROWED (the lifeos update, phase 7): two values, unprepared |
     // prepared. The retired spellings were mapped by
     // ttsMigrations.internalMigrateReadiness and verified gone on prod

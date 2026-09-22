@@ -264,6 +264,21 @@ describe("the changed-since query", () => {
     });
   });
 
+  it("marks a capture the triage judged to need Tom today with its reason, while the todo is active", async () => {
+    const t = convexTest(schema, modules);
+    const a = await insertTodo(t, "Pay the lab deposit invoice");
+    const b = await insertTodo(t, "Answer the registrar");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(a, { needsTomToday: { why: "the invoice is due tomorrow" } });
+      await ctx.db.patch(b, { needsTomToday: { why: "a person is waiting" }, status: "done" });
+    });
+    await insertEvent(t, SINCE + 1, "captured", a, { source: "email" });
+    await insertEvent(t, SINCE + 2, "captured", b, { source: "email" });
+    const changes = await t.query(internal.ttsHourly.internalChangedSince, { start: SINCE, end: NOW });
+    expect(changes[0]).toMatchObject({ text: "Pay the lab deposit invoice", needsYouToday: "the invoice is due tomorrow" });
+    expect(changes[1]).not.toHaveProperty("needsYouToday");
+  });
+
   // A kind's rows belong to it whatever they are keyed on. This read used to
   // pin `key` to undefined, which was exact only for as long as no row of the
   // kind had a key — and "job-failed" grew one, to stop a dead credential

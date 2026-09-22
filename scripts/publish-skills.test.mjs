@@ -74,6 +74,7 @@ function wikitom({ schedule = "# Schedule\n\nTuesday is practice.\n" } = {}) {
   write(dir, "model-of-tom/agent-rules.md", AGENT_RULES);
   write(dir, "model-of-tom/writing.md", "# Writing\n\n## Registers\n\nPlain.\n\n## Form\n\nShort.\n");
   write(dir, "model-of-tom/ground.md", "# Ground\n\nWhat he already knows.\n");
+  write(dir, "model-of-tom/explainers.md", "# Explainers\n\nOne HTML document per explainer.\n");
   write(dir, "model-of-tom/intent.md", "# Intent\n\n## Directions\n\nGo.\n");
   write(dir, "model-of-tom/priorities.md", "# Priorities\n\nResearch first.\n");
   if (schedule !== null) write(dir, "model-of-tom/schedule.md", schedule);
@@ -159,9 +160,10 @@ describe("publish-skills", () => {
     const out = temp("publish-skills-out-");
     const result = publish(vault, out);
     expect(result.refused).toEqual([]);
-    expect(result.skills).toHaveLength(13);
+    expect(result.skills).toHaveLength(14);
     expect(fs.readdirSync(out).sort()).toEqual(
       [
+        "tom-explainer",
         "tom-know-admin",
         "tom-know-agent-systems",
         "tom-know-climbing",
@@ -314,7 +316,7 @@ describe("publish-skills", () => {
     const vault = sharedVault();
     const out = temp("publish-skills-dry-");
     const result = publish(vault, out, { publish: { dryRun: true } });
-    expect(result.skills).toHaveLength(13);
+    expect(result.skills).toHaveLength(14);
     expect(result.skills.every((skill) => skill.wrote > 0)).toBe(true);
     expect(fs.readdirSync(out)).toEqual([]);
   }, SLOW);

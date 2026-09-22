@@ -738,7 +738,7 @@ export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
 
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
-// app/sessions and convex/claudeSessions import these directly. The worker
+// app/runs and convex/claudeSessions import these directly. The worker
 // daemon CANNOT (only worker/ is deployed to the Jarvis Box, and Node does not load
 // .ts), so it carries its own halves: session.mjs's REPO_GITHUB is a literal
 // mirror of SESSION_REPOS, while session-host.mjs has no DAEMON_STALE_MS at
@@ -1045,7 +1045,7 @@ export const DAEMON_STALE_MS = 90_000;
  * every status in the claudeSessions.status union (convex/schema.ts) except
  * the two terminal ones, "ended" and "failed".
  *
- * ONE HOME. Before this, app/sessions/lib.ts and convex/claudeSessions.ts each
+ * ONE HOME. Before this, app/runs/lib.ts and convex/claudeSessions.ts each
  * carried their own copy of this list and their own isLive, while the comment
  * above each copy said this file was the home — so the page's "live" and the
  * server's "live" were two facts that happened to agree. They are now one.
@@ -1084,10 +1084,10 @@ export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
 // doubled the length of everything in #dump and told him only that the system
 // worked; the one fact he did not already have is when he next sees it.
 
-/** Deep link to one session on the /sessions page — the one spelling every
+/** Deep link to one session on the /runs page — the one spelling every
  * Slack message about a session carries. */
 export function ttsSessionLink(sessionId: string): string {
-  return `https://www.tom.quest/sessions?session=${sessionId}`;
+  return `https://www.tom.quest/runs?session=${sessionId}`;
 }
 
 // ── Slack subjects (the lifeos update, phase 2) ──────────────────────────────

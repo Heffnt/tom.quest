@@ -91,7 +91,7 @@ describe("the timeline", () => {
     fireEvent.click(bar);
     expect(container.textContent).toContain("2 turns");
     const link = container.querySelector("a") as HTMLElement;
-    expect(link.getAttribute("href")).toBe(`/sessions?run=${encodeURIComponent(RUN.runId)}`);
+    expect(link.getAttribute("href")).toBe(`/runs?run=${encodeURIComponent(RUN.runId)}`);
   });
 
   it("places a bar across the window it covers", () => {

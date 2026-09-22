@@ -233,10 +233,32 @@ export const internalSubmitSlackDraft = internalMutation({
       },
       { canReply: data.canReply },
     );
-    await settle(ctx, row._id, data, "fable", renderSlack(fit(message).message), attempts, runToken);
+    const fitted = fit(message).message;
+    // What this written message showed, not what the template would have: the
+    // todos whose facts' links its item lines carry. The template's own list,
+    // computed with the request, holds only what the template printed.
+    const marks = data.marks === undefined
+      ? undefined
+      : { ...data.marks, surfacedTodoIds: printedTodos(ctx, fitted, data.facts) };
+    await settle(ctx, row._id, { ...data, ...(marks ? { marks } : {}) }, "fable", renderSlack(fitted), attempts, runToken);
     return { accepted: true };
   },
 });
+
+/** The todos a message printed: every today or needs-you-today fact whose link
+ *  one of its item lines carries, each id once. */
+function printedTodos(
+  ctx: MutationCtx,
+  message: { lines: { role: string; url?: string }[] },
+  block: FactsBlock,
+): Id<"dtsTodos">[] {
+  const urls = new Set(message.lines.filter((line) => line.role === "item").map((line) => line.url));
+  const ids = block.facts
+    .filter((f) => /^(todo|needs-you-today):/.test(f.id) && f.id !== "needs-you-today:count" && f.urls.some((url) => urls.has(url)))
+    .map((f) => ctx.db.normalizeId("dtsTodos", f.id.slice(f.id.indexOf(":") + 1)))
+    .filter((id): id is Id<"dtsTodos"> => id !== null);
+  return [...new Set(ids)];
+}
 
 /** The floor. Called by the scheduled timeout, and by any caller that decides
  *  the writer is not coming. A settled request ignores it. */

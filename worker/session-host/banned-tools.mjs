@@ -13,7 +13,7 @@
 // choice picker the human clicks; its result is the option they picked. Two
 // facts about this system make that impossible:
 //   - tom.quest's transcript renders every tool call the same way — a tool
-//     name and an input preview (app/sessions/components/message-row.tsx).
+//     name and an input preview (app/runs/components/message-row.tsx).
 //     There is no picker anywhere on the page, so an interactive session's
 //     question reaches Tom as an unanswerable row.
 //   - an autonomous session has no human on the other end at all, by

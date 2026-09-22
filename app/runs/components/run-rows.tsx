@@ -59,7 +59,7 @@ const NEAR_BOTTOM_PX = 150;
  * the old one was keyed by session id, and reusing it would silently
  * reinterpret one reader's mark under a different identity.
  */
-export const lastReadKey = (runKey: string) =>
+const lastReadKey = (runKey: string) =>
   `tts.runs.lastReadSeq.${runKey}`;
 
 // A subagent's rows arrive interleaved in the one seq stream — several parallel
@@ -82,7 +82,7 @@ function foldKeyOf(message: TranscriptMessage): string | undefined {
   return message.provenance === undefined ? message.parentToolUseId : undefined;
 }
 
-export function groupRows(messages: TranscriptMessage[]): Group[] {
+function groupRows(messages: TranscriptMessage[]): Group[] {
   const groups: Group[] = [];
   const byParent = new Map<string, AgentGroup>();
   for (const message of messages) {
@@ -147,7 +147,7 @@ function toolNameIndex(messages: TranscriptMessage[]): Map<string, string> {
  * fold while its call is in the main thread, keeps rendering on its own rather
  * than being pulled out of the group it belongs to.
  */
-export function pairRows(messages: TranscriptMessage[]): {
+function pairRows(messages: TranscriptMessage[]): {
   forCall: Map<string, PairedResult>;
   consumed: Set<string>;
 } {

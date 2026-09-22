@@ -31,6 +31,40 @@ async function aTodo(t: ReturnType<typeof convexTest>) {
   );
 }
 
+// ── POST /tts/capture keeps a poller's needs-Tom-today judgement ─────────────
+// Tom, 2026-09-21: workers do not reach him directly. The judgement and its
+// reason ride the capture onto the todo, and no thread is opened.
+describe("POST /tts/capture: needing Tom today", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function capture(t: ReturnType<typeof convexTest>, body: Record<string, unknown>) {
+    const res = await t.fetch("/tts/capture", {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify({ source: "email", ...body }),
+    });
+    return (await res.json()) as { id: string };
+  }
+
+  it("stores the judgement and its reason on the todo, and opens no thread", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
+    const t = convexTest(schema, modules);
+    const urgent = await capture(t, { statement: "Pay the invoice", needsTomToday: true, why: " it is due tomorrow " });
+    const plain = await capture(t, { statement: "Read the newsletter" });
+    const rows = await t.run(async (ctx) => ({
+      urgent: await ctx.db.get(urgent.id as never),
+      plain: await ctx.db.get(plain.id as never),
+      threads: await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", "needs-tom")).collect(),
+    }));
+    expect((rows.urgent as { needsTomToday?: unknown }).needsTomToday).toEqual({ why: "it is due tomorrow" });
+    expect(rows.plain).not.toHaveProperty("needsTomToday");
+    expect(rows.threads).toEqual([]);
+  });
+});
+
 // ── POST /tts/needs-tom picks its room, or posts nothing ─────────────────────
 // The route used to omit `channel` when SLACK_TTS_NEEDS_YOU_CHANNEL_ID was
 // unset, and the Slack door's default target is SLACK_TTS_CHANNEL_ID — so an

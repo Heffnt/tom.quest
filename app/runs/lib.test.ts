@@ -1,4 +1,4 @@
-// The two readers the sessions page added with the lifeos update (phase 7),
+// The two readers the runs page added with the lifeos update (phase 7),
 // both of which read something ANOTHER file wrote and could drift from it
 // silently.
 //

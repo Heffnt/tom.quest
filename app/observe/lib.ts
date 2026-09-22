@@ -200,7 +200,7 @@ export function failureRowOf(event: PointEvent): FailureRow {
 
 /** The run view, which reads ?run= on arrival. */
 export function runHref(runId: string): string {
-  return `/sessions?run=${encodeURIComponent(runId)}`;
+  return `/runs?run=${encodeURIComponent(runId)}`;
 }
 
 /** Where a ruling's subject is shown. An item link lands on the everything tab

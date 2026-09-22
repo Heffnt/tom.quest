@@ -440,7 +440,7 @@ function leaseMs(stepMs: number): number {
 
 /** The run record's link to one run, the one spelling a check-in carries. */
 export function runLink(runId: string): string {
-  return `https://www.tom.quest/sessions?run=${encodeURIComponent(runId)}`;
+  return `https://www.tom.quest/runs?run=${encodeURIComponent(runId)}`;
 }
 
 /** A step run's id: a Claude run on the box, under a session id minted here.
@@ -1181,7 +1181,7 @@ export async function liveRunnerFacts(ctx: QueryCtx): Promise<RunnerFact[]> {
 }
 
 /** The runner a step run belongs to, by the id in its `runner:<id>` origin:
- *  its title and its derived status, for the sessions page's run view. Behind
+ *  its title and its derived status, for the runs page's run view. Behind
  *  the same gate as the run record it sits beside. */
 export const runnerTitle = query({
   args: { runnerId: v.string() },

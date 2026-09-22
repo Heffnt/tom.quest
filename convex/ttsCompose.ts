@@ -68,14 +68,17 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  reduced to the single line "+667 more on the page" while eighteen lines of
  *  "plan stored" survived. The fix is the ORDER, not the algorithm.
  *
- *  The runners run sits third: a live runner is the box at work now, nearer
- *  to him than what it left behind overnight. The objection list stays second.
+ *  The needs-you run sits third: a captured item the email triage judged to
+ *  need him today, which no worker may raise with him directly (Tom,
+ *  2026-09-21), so this message says it. The runners run sits fourth: a live
+ *  runner is the box at work now, nearer to him than what it left behind
+ *  overnight. The objection list stays second.
  *
  *  The calendar run is printed between "runners" and "overnight" and is not
  *  named here: it is his day, not a ranked list, and it has no page of its own
  *  to send him to. `fit` reduces it in printed order like any other run.
  */
-export const SECTION_ORDER = ["today", "objections", "runners", "overnight", "broken"] as const;
+export const SECTION_ORDER = ["today", "objections", "needs-you-today", "runners", "overnight", "broken"] as const;
 
 /** Per-section item caps, before the whole-message fit. Nearest him, most
  *  room. */
@@ -297,9 +300,11 @@ function sectionRuns(lines: Line[]): { start: number; end: number }[] {
 }
 
 /** Reduce until it fits: each run to its lead plus ONE whole sentence with a
- *  link, from the last back; the first run is never reduced; then, still over,
- *  lines are dropped from the end. Returns whether anything was reduced
- *  (recorded on the digest-sent row as `truncated`, as today). */
+ *  link, from the last back; the first run is never reduced, nor is the
+ *  needs-you-today run, which names what no one else tells him (Tom,
+ *  2026-09-21); then, still over, lines are dropped by lastResortDrop.
+ *  Returns whether anything was reduced (recorded on the digest-sent row as
+ *  `truncated`, as today). */
 export function fit(
   m: Message,
   max: number = MESSAGE_MAX_CHARS,
@@ -312,6 +317,7 @@ export function fit(
     // The last run that is still more than a lead and one line under it.
     let target = -1;
     for (let i = runs.length - 1; i >= 1; i -= 1) {
+      if (current.lines[runs[i].start].section === PROTECTED_RUN) continue;
       if (runs[i].end - runs[i].start > 2) {
         target = i;
         break;
@@ -345,11 +351,49 @@ export function fit(
   // Every run but the first reduced and still over: lines go from the end
   // rather than a sentence being cut in half. NO ELLIPSIS, at any length.
   while (current.lines.length > 0 && renderSlack(current).length > max) {
-    current = { ...current, lines: current.lines.slice(0, -1) };
+    const drop = lastResortDrop(current.lines);
+    if (drop < 0) break;
+    const lines = current.lines;
+    current = { ...current, lines: withoutEmptyRuns([...lines.slice(0, drop), ...lines.slice(drop + 1)]) };
     truncated = true;
   }
   return { message: current, truncated };
 }
+
+/** Which line the last resort drops, or -1 for none: the last line of any
+ *  other run first; then the last needs-you-today line, since an item whose
+ *  line is dropped is not marked surfaced and comes back the next morning;
+ *  then the first run's last line, but never its lead and first item, which
+ *  the first line names. */
+function lastResortDrop(lines: Line[]): number {
+  const runs = sectionRuns(lines);
+  const first = runs[0];
+  const inFirst = (i: number) => first !== undefined && i >= first.start && i < first.end;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!inFirst(i) && lines[i].section !== PROTECTED_RUN) return i;
+  }
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].section === PROTECTED_RUN && lines[i].role !== "lead") return i;
+  }
+  if (first !== undefined && first.end - first.start > 2) return first.end - 1;
+  return -1;
+}
+
+/** The lines with every run that has lost all its item lines removed whole,
+ *  lead and note included: a lead with nothing under it is a malformed run. */
+function withoutEmptyRuns(lines: Line[]): Line[] {
+  const keep: Line[] = [];
+  for (const { start, end } of sectionRuns(lines)) {
+    const run = lines.slice(start, end);
+    if (run[0].role === "lead" && !run.some((line) => line.role === "item")) continue;
+    keep.push(...run);
+  }
+  return keep;
+}
+
+/** The run `fit` never reduces, and whose lines the last resort drops only
+ *  after every other run but the first. */
+const PROTECTED_RUN = "needs-you-today";
 
 // ── The dedup index — one appearance per item per day ────────────────────────
 
@@ -381,7 +425,7 @@ const ITEM_URL = "https://tom.quest/tts?item=";
 export const TAB_EVERYTHING = "https://tom.quest/tts?tab=everything";
 export const TAB_BATCHES = "https://tom.quest/tts?tab=batches";
 export const TAB_CALENDAR = "https://tom.quest/tts?tab=calendar";
-const SESSION_URL = "https://www.tom.quest/sessions?session=";
+const SESSION_URL = "https://www.tom.quest/runs?session=";
 
 export function itemUrl(todoId: string): string {
   return `${ITEM_URL}${todoId}`;
@@ -466,6 +510,18 @@ export type RunnerFact = {
   openQuestion: boolean;
 };
 
+/** One captured item a poller's triage judged to need Tom today. `why` is the
+ *  triage's own few words, empty when it gave none. Workers never raise these
+ *  with him; the morning message and the hourly line say them. */
+type NeedsYouTodayFact = {
+  todoId: string;
+  statement: string;
+  why: string;
+  /** "Ten days late." when the item also carries a date; it is then said
+   *  here once, with its reason, and not again under today. */
+  countdown?: string;
+};
+
 export type TodayFacts = {
   day: string;
   /** Dated-or-late first (oldest date first), then ready items. */
@@ -485,6 +541,9 @@ export type TodayFacts = {
    *  rather than delegate decisions. Absent means "count the printed ones",
    *  which is right whenever nothing was held back. */
   objectionMerges?: number;
+  /** Captured since the last morning message, still active, and judged by the
+   *  triage to need him today; oldest first. */
+  needsYou: NeedsYouTodayFact[];
   /** Every live runner, the ones waiting on him first. */
   runners: RunnerFact[];
   overnight: BatchOutcome[];
@@ -547,6 +606,9 @@ export type Change = {
   text: string; // the todo's statement, the session's title, or the failure
   detail: string | null; // verdict, outcome, source, error
   link: string | null;
+  /** On a capture the triage judged to need Tom today: its reason, "" when it
+   *  gave none. Absent on every other change. */
+  needsYouToday?: string;
 };
 
 export type HourlyFacts = {
@@ -676,6 +738,47 @@ export function runnersLead(n: number, waiting: number): string {
   return `${live}, and ${countWord(waiting)} of them ${plural(waiting, "waits", "wait")} on you.`;
 }
 
+/** One needs-you-today item: the todo's statement, then the triage's reason
+ *  when it gave one, then its lateness when it is dated. */
+function needsYouTodayLine(n: NeedsYouTodayFact): string {
+  const late = n.countdown ? ` ${stripStop(n.countdown)}.` : "";
+  const why = lowerFirst(stripStop(n.why));
+  const build = (head: string, reason: string) =>
+    reason === "" ? `${head}.${late}` : `${head}, which needs you today because ${reason}.${late}`;
+  // THE REASON IS KEPT. When the line is too long the statement gives first,
+  // to its first clause and then to its first six words, and only then is the
+  // reason cut, at a word and with no ellipsis, never dropped whole.
+  const heads = [stripStop(n.statement), shortClause(n.statement), shortClause(n.statement).split(" ").slice(0, 6).join(" ")];
+  for (const head of heads) {
+    const line = build(head, why);
+    if (line.length <= LINE_CHARS) return statement(line);
+  }
+  // Words first; a single word too long to fit (a pasted link, say) is cut
+  // by characters, the statement to at most sixty and the reason to the room
+  // left, so the line always keeps both and never needs statement()'s cut.
+  const head = heads[2].length > 60 ? heads[2].slice(0, 60).trim() : heads[2];
+  const words = why.split(" ");
+  while (words.length > 1 && build(head, words.join(" ")).length > LINE_CHARS) words.pop();
+  let reason = words.join(" ").replace(/[\s,;:—-]+$/, "");
+  const over = build(head, reason).length - LINE_CHARS;
+  if (over > 0) reason = reason.slice(0, Math.max(1, reason.length - over));
+  return statement(build(head, reason));
+}
+
+/** The today run's line counting the dated items it leaves to the needs-you
+ *  run, or null when it leaves none. The template prints it and the facts
+ *  block carries it, so a written message can say it too. */
+function leftBelowLine(f: TodayFacts): string | null {
+  const n = f.today.filter((item) => f.needsYou.some((needs) => needs.todoId === item.id)).length;
+  if (n === 0) return null;
+  return `${capitalise(countWord(n))} dated ${plural(n, "item is", "items are")} named below, with why ${n === 1 ? "it needs" : "they need"} you today.`;
+}
+
+/** The needs-you-today run's lead. */
+function needsYouTodayLead(n: number): string {
+  return `${capitalise(countWord(n))} captured ${plural(n, "item needs", "items need")} you today, as the email triage judged ${n === 1 ? "it" : "them"}.`;
+}
+
 /** `{statement} gained {added} items, reworked {reworked} and dropped
  *  {dropped}.` with each clause omitted at zero, `{statement} was planned and
  *  gained nothing.` when all are zero, and `, and one session is still on it`
@@ -800,11 +903,19 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   // 1. Today. Dated-or-late first, then ready. `ready` folded in (§4.3): the
   //    section that matters most is no longer the one truncation eats first.
   const todayItems: Item[] = [];
+  // A flagged item is said once, in the needs-you run, with its reason and
+  // its lateness; the today run leaves it to that run.
+  for (const needs of f.needsYou) seen.add(needs.todoId);
   for (const item of f.today) {
     if (seen.has(item.id)) continue;
     seen.add(item.id);
     todayItems.push({ text: todayLine(item), url: itemUrl(item.id) });
   }
+  // The dated items left to the needs-you run: the today run says how many,
+  // so none goes missing from it silently and it never falls to "nothing is
+  // dated" while one waits below.
+  const below = leftBelowLine(f);
+  if (below !== null) todayItems.push({ text: below, url: TAB_EVERYTHING });
   const readyMore =
     f.readyBeyond > 0
       ? {
@@ -856,7 +967,21 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     note(lines, "objections", o.canReply, 'reply "revert 2", or "2: what to do instead".');
   }
 
-  // 3. The box's live runners, one line each, the ones waiting on him first
+  // 3. What the email triage judged to need him today. No worker opens a
+  //    needs-you thread for these (Tom, 2026-09-21: workers "should not reach
+  //    me at all directly"), so this run is where he hears of them, and a
+  //    reply naming the item reaches it as every digest reply does.
+  //    Every item, uncapped: each is a thing only he can settle, and `fit`
+  //    never reduces this run (PROTECTED_RUN).
+  pushRun(
+    lines,
+    "needs-you-today",
+    needsYouTodayLead(f.needsYou.length),
+    f.needsYou.map((n) => ({ text: needsYouTodayLine(n), url: itemUrl(n.todoId) })),
+    f.needsYou.length,
+  );
+
+  // 4. The box's live runners, one line each, the ones waiting on him first
   //    (the gatherer's order). Nothing when no runner is live. No reply
   //    invitation: a runner's question is answered in its own needs-you thread.
   if (f.runners.length > 0) {
@@ -870,7 +995,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 4. The calendar. Rows from a feed marked private in TTS_ICS_FEEDS never
+  // 5. The calendar. Rows from a feed marked private in TTS_ICS_FEEDS never
   //    reach this list — the gatherer drops them (Tom 2026-09-09, amendment 1).
   if (f.calendar.length > 0) {
     pushRun(
@@ -882,7 +1007,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 5. What the box left behind overnight.
+  // 6. What the box left behind overnight.
   if (f.overnight.length > 0) {
     pushRun(
       lines,
@@ -893,7 +1018,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 6. What broke.
+  // 7. What broke.
   if (f.broken.length > 0) {
     const failures = f.broken.reduce((sum, b) => sum + (b.count ?? 1), 0);
     pushRun(
@@ -923,19 +1048,32 @@ export function composeTodayFitted(
 /** The first line names the count, the age of the worst, and THE ONE TO START
  *  WITH. It never names the message. */
 export function todayFirstLine(f: TodayFacts): string {
-  const second =
+  const decisions =
     f.objections.length > 0
       ? ` ${capitalise(countWord(f.objections.length))} ${plural(f.objections.length, "decision was", "decisions were")} taken for you overnight.`
-      : " Nothing else needs an answer from you today.";
+      : "";
+  const needs =
+    f.needsYou.length > 0
+      ? ` ${capitalise(countWord(f.needsYou.length))} captured ${plural(f.needsYou.length, "item needs", "items need")} you today.`
+      : "";
+  let head: string;
+  // The all-clear predates the needs-you run: the first line has always said
+  // when nothing else waits. It stays, and is said only when it is true.
+  let nothingElse = "";
   if (f.lateCount === 0) {
-    return `Nothing is dated today and nothing is late. The calendar is your whole day.${
-      f.objections.length > 0 ? second : ""
-    }`;
+    head = "Nothing is dated today and nothing is late. The calendar is your whole day.";
+  } else {
+    const first = f.today[0];
+    const oldest = f.oldestLateBy ? `, the oldest by ${f.oldestLateBy}` : "";
+    const start = first ? `; ${lowerFirst(shortClause(first.statement))} is the one to start with` : "";
+    head = `${capitalise(countWord(f.lateCount))} ${plural(f.lateCount, "thing carries", "things carry")} a date you have passed${oldest}${start}.`;
+    // Said only when it is true: nothing decided for him and nothing flagged.
+    if (decisions === "" && needs === "") nothingElse = " Nothing else needs an answer from you today.";
   }
-  const first = f.today[0];
-  const oldest = f.oldestLateBy ? `, the oldest by ${f.oldestLateBy}` : "";
-  const start = first ? `; ${lowerFirst(shortClause(first.statement))} is the one to start with` : "";
-  return `${capitalise(countWord(f.lateCount))} ${plural(f.lateCount, "thing carries", "things carry")} a date you have passed${oldest}${start}.${second}`;
+  // The needs-you sentence is the one that gives when the line would pass its
+  // cap: `fit` never shortens a first line, and the run below still says it.
+  const full = `${head}${decisions}${needs}${nothingElse}`;
+  return full.length <= FIRST_LINE_CHARS ? full : `${head}${decisions}`;
 }
 
 /** The first clause of a statement, for the first line: up to the first comma,
@@ -1011,10 +1149,26 @@ export function composeHourly(f: HourlyFacts): Message | null {
     clauses.push(clauses.length === 0 ? capitalise(clause) : clause);
   }
   const changed = changeClauses(f.changes);
-  if (changed.length > 0) clauses.push(joinClauses(changed));
-  else if (clauses.length > 0) clauses.push("nothing else changed");
+  const tail = changed.length > 0 ? joinClauses(changed) : clauses.length > 0 ? "nothing else changed" : null;
   const since = f.sinceLabel ? ` since ${f.sinceLabel}` : "";
-  return { firstLine: `${joinWithAnd(clauses)}${since}.`, lines: [] };
+  const line = (parts: string[]) =>
+    `${joinWithAnd(parts.map((part, i) => (i === 0 ? capitalise(part) : part)))}${since}.`;
+  const withTail = tail === null ? clauses : [...clauses, tail];
+  // A capture the triage judged to need him today is ALWAYS said: no worker
+  // raises it with him directly (Tom, 2026-09-21), so this line and the
+  // morning message are where he hears of it. The clause is tried from most
+  // to least detail; when even its count will not fit, the hour's other
+  // clauses (what ran, what moved, the runners) give way to it, and the
+  // counts of what changed stay beside it.
+  const needs = needsYouClauses(f.changes);
+  if (needs.length === 0) return { firstLine: line(withTail), lines: [] };
+  const fitted = needs.find((clause) => line([...withTail, clause]).length <= FIRST_LINE_CHARS);
+  return {
+    firstLine: fitted !== undefined
+      ? line([...withTail, fitted])
+      : line([...(tail === null ? [] : [tail]), needs[needs.length - 1]]),
+    lines: [],
+  };
 }
 
 /** One runner check-in, as the numbers the box read and the words the step
@@ -1157,6 +1311,23 @@ export function composeRunnerAsk(f: RunnerAskFacts, o: { canReply: boolean }): M
 
 export function runnerAskBody(f: RunnerAskFacts): string {
   return f.question.trim();
+}
+
+/** The hourly line's needs-you-today clause, most detail first: the item by
+ *  its first clause with its link and reason, then without the reason, then a
+ *  bare count. Empty when no capture in the hour needs him today. */
+function needsYouClauses(changes: Change[]): string[] {
+  const needs = changes.filter((c) => c.needsYouToday !== undefined);
+  if (needs.length === 0) return [];
+  const first = needs[0];
+  // The first line is posted as Slack markup, and the item and its reason are
+  // words from a mail: escaped, so "<!channel>" or a forged link stays text.
+  const name = shortClause(first.text);
+  const what = first.link === null ? slackEscape(name) : linked(name, first.link);
+  const why = slackEscape(stripStop(first.needsYouToday ?? ""));
+  const count = needs.length === 1 ? "one of the captures needs you today" : `${countWord(needs.length)} of the captures need you today`;
+  if (needs.length > 1) return [`${count}, ${what} among them`, count];
+  return [...(why !== "" ? [`${what} needs you today because ${lowerFirst(why)}`] : []), `${what} needs you today`, count];
 }
 
 /** The hourly line's runners clause, linking the batches tab where they are
@@ -1311,6 +1482,11 @@ export function composeContinued(f: ContinuedFact): Message {
 // checks every link and every number in what it wrote against the block.
 
 export type Fact = {
+  /** A fact every written draft must cite on some line: verifyDraft refuses
+   *  a draft that leaves one out, and the plain template, which says it, posts
+   *  instead. Set on each item that needs Tom today, which no one else tells
+   *  him (Tom, 2026-09-21). */
+  required?: true;
   id: string;
   /** The deterministic sentence about this fact — what the writer writes FROM. */
   text: string;
@@ -1356,9 +1532,13 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
       [f.lateCount],
     ),
   );
+  const flagged = new Set(f.needsYou.map((n) => n.todoId));
   for (const item of f.today) {
+    if (flagged.has(item.id)) continue; // its fact is its needs-you-today one
     facts.push(fact(`todo:${item.id}`, todayLine(item), [itemUrl(item.id)]));
   }
+  const below = leftBelowLine(f);
+  if (below !== null) facts.push(fact("today:left-below", below, [TAB_EVERYTHING], [f.today.filter((item) => flagged.has(item.id)).length]));
   if (f.readyBeyond > 0) {
     facts.push(
       fact(
@@ -1373,6 +1553,12 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     const line = objectionLine(objection, index + 1);
     facts.push(fact(`ask:${objection.askId}`, line.text, [line.url], [index + 1]));
   });
+  if (f.needsYou.length > 0) {
+    facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));
+  }
+  for (const n of f.needsYou) {
+    facts.push({ ...fact(`needs-you-today:${n.todoId}`, needsYouTodayLine(n), [itemUrl(n.todoId)]), required: true });
+  }
   for (const r of f.runners) {
     facts.push(fact(`runner:${r.runnerId}`, runnerLine(r), [TAB_BATCHES]));
   }
@@ -1530,6 +1716,25 @@ export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
         faults.push(`${line.label} uses the number ${number}, which is in no fact it cites`);
       }
     }
+  }
+  // A required fact is said on a line of its own: an item line that cites it
+  // AND carries its link, so one line cannot stand in for several items and
+  // the first line or a lead cannot stand in for any.
+  for (const f of block.facts) {
+    if (!f.required) continue;
+    const own = lines.some((line) => line.role === "item" && line.url !== undefined && f.urls.includes(line.url) && line.sources.includes(f.id));
+    if (!own) faults.push(`the draft leaves out the fact "${f.id}", which every message must say on an item line carrying its link`);
+  }
+  // THE OBJECTION LIST STAYS SECOND in a written draft too. A draft names no
+  // sections, so sectionOrderFaults cannot see its order; the lines are read
+  // by what they cite instead, and no needs-you-today line may come before a
+  // line of the objection list. Whether a draft prints the objection list at
+  // all is not checked here, as it never has been: only the needs-you items
+  // are required, above.
+  const lastObjection = lines.reduce((at, line, i) => (line.sources.some((id) => id.startsWith("ask:")) ? i : at), -1);
+  const firstNeeds = lines.findIndex((line) => line.role !== "first" && line.sources.some((id) => id.startsWith("needs-you-today:")));
+  if (firstNeeds >= 0 && firstNeeds < lastObjection) {
+    faults.push("a needs-you-today line is printed before the objection list, against the ruled order");
   }
   return [
     ...faults,

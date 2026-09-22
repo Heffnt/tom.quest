@@ -1,4 +1,4 @@
-// Shared types + helpers for the TTS Sessions surface (headless Claude Code
+// Shared types + helpers for the TTS Runs surface (headless Claude Code
 // sessions on the Jarvis Box; convex/claudeSessions.ts is the contract).
 // Copy rules: descriptive never evaluative, plain hyphenated vocabulary.
 
@@ -9,9 +9,9 @@ export { ageText } from "../tts/lib";
 
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
-export type StreamBuf = Doc<"claudeStreamBuf">;
-export type InboundRow = Doc<"claudeInbound">;
-export type DaemonHealth = Doc<"claudeDaemonHealth">;
+type StreamBuf = Doc<"claudeStreamBuf">;
+type InboundRow = Doc<"claudeInbound">;
+type DaemonHealth = Doc<"claudeDaemonHealth">;
 
 /**
  * A finalized row AS THE PAGE READS IT. claudeSessions.getMessages adds two
@@ -26,7 +26,7 @@ export type TranscriptMessage = Message & {
   fullByteLength?: number;
 };
 
-export type SessionStatus = Session["status"];
+type SessionStatus = Session["status"];
 
 // One home for the session constants: convex/ttsShared.ts (client-safe, no
 // server imports) — the staleness window, and the live-status list this page
@@ -332,7 +332,7 @@ export function formatClock(ms: number): string {
 // hash was checked and DID NOT MATCH. Saying "complete" there would be the
 // worst lie this function can tell — corrupted bytes announced as verified.
 
-export type OverflowProgress = {
+type OverflowProgress = {
   /** UTF-8 bytes reassembled so far, summed by the caller across reads. */
   bytes: number;
   /** What the row's stamp says the whole payload is. */
@@ -427,7 +427,7 @@ export function toolInputObjectOf(content: unknown): unknown {
   return input;
 }
 
-export type ChildRunFacts = {
+type ChildRunFacts = {
   childRunId: string;
   agentId?: string;
   agentType?: string;
@@ -468,7 +468,7 @@ export function childRunOf(content: unknown): ChildRunFacts | null {
   };
 }
 
-export type ContextFacts = {
+type ContextFacts = {
   model?: string;
   host?: string;
   cwd?: string;
@@ -593,7 +593,7 @@ export function costText(costUsd?: number): string {
 // was the permission band; nothing has produced it since 2026-08-29, and an
 // idle session is exactly "waiting for Tom's next turn" — so the coded order
 // already is the ruling as it stands.
-export const TRIAGE_BAND: Record<SessionStatus, number> = {
+const TRIAGE_BAND: Record<SessionStatus, number> = {
   running: 1,
   starting: 2,
   requested: 2,
