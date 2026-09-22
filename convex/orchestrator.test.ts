@@ -504,6 +504,26 @@ describe("restarting from the document", () => {
     expect(broken).toHaveLength(1);
   });
 
+  it("goes on in a new run when Tom reopens its current one, and leaves his conversation alone", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const t = await setup();
+    const first = await start(t);
+    const worker = await spawn(t, first);
+    await ingest(t, first, { status: "running", runId: "codex:box:r" });
+    await ingest(t, first, { status: "ended", endedReason: "autonomous turn failed" });
+    // Inside the crash backoff, Tom reopens the run to ask it something.
+    await t.mutation(internal.claudeSessions.internalReopenSession, { sessionId: first as Id<"claudeSessions">, text: "What happened?" });
+    expect((await pen(t, "/tts/message", { sessionId: worker, to: "orchestrator", text: "for the orchestrator" })).body.delivered).toBe(false);
+    await t.mutation(internal.orchestrator.internalSweep, {});
+    const next = (await row(t))!.liveSessionId!;
+    expect(next).not.toBe(first);
+    const reopened = await t.run(async (ctx) => ctx.db.get(first as Id<"claudeSessions">));
+    expect(reopened?.status).not.toBe("failed");
+    expect((await pendingTexts(t, first)).some((m) => m === "for the orchestrator")).toBe(false);
+    expect((await pen(t, "/tts/answer", { sessionId: first, elevationId: "x", kind: "obvious", answer: "y" })).status).toBe(409);
+  });
+
   it("does not count a daemon restart as a crash, and a run that stays up clears the count", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));

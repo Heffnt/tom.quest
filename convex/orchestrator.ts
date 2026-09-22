@@ -154,6 +154,13 @@ async function hostedRunOf(ctx: QueryCtx, session: Doc<"claudeSessions">): Promi
     .first();
 }
 
+/** The orchestrator's current run, when it is still running as the
+ * orchestrator: live and unattended. A run Tom reopened is his conversation
+ * and no longer the orchestrator's, even while the row still names it. */
+function isOrchestratorRun(session: Doc<"claudeSessions"> | null): session is Doc<"claudeSessions"> {
+  return session !== null && isLive(session.status) && session.mode === "autonomous";
+}
+
 /** The live orchestrator run, when the caller is it. Every orchestrator pen
  * names its own session id and is refused unless it is the live run: a run
  * the chain has moved past has no voice. */
@@ -163,7 +170,7 @@ async function requireLiveOrchestrator(ctx: MutationCtx, sessionId: string) {
   if (!row || row.stoppedAt !== undefined) throw new Error("refused: the orchestrator is stopped");
   if (id === null || row.liveSessionId !== id) throw new Error(`refused: ${sessionId} is not the orchestrator's live run`);
   const session = await ctx.db.get(id);
-  if (!session || !isLive(session.status)) throw new Error(`refused: ${sessionId} has ended`);
+  if (!isOrchestratorRun(session)) throw new Error(`refused: ${sessionId} has ended`);
   return { row, session };
 }
 
@@ -231,6 +238,7 @@ export async function renewOrchestratorLease(ctx: MutationCtx, held: readonly st
   const row = await orchestratorRow(ctx);
   if (!row || row.stoppedAt !== undefined || row.liveSessionId === undefined) return;
   if (!held.includes(row.liveSessionId)) return;
+  if (!isOrchestratorRun(await ctx.db.get(row.liveSessionId))) return;
   if (row.leaseDeadline !== undefined && row.leaseDeadline - now > (ORCHESTRATOR_LEASE_MS * 2) / 3) return;
   await ctx.db.patch(row._id, {
     leaseDeadline: now + ORCHESTRATOR_LEASE_MS,
@@ -270,7 +278,9 @@ async function deliverToOrchestrator(ctx: MutationCtx, text: string): Promise<bo
   const row = await orchestratorRow(ctx);
   if (!row || row.stoppedAt !== undefined || row.liveSessionId === undefined) return false;
   const session = await ctx.db.get(row.liveSessionId);
-  if (!session) return false;
+  // A run Tom reopened is his conversation: nothing is queued into it, and
+  // the sweep starts the orchestrator's next run within the minute.
+  if (!session || session.mode !== "autonomous") return false;
   await queueTurn(ctx, session._id, text);
   return isLive(session.status);
 }
@@ -314,7 +324,7 @@ async function launchRun(
       }
       if (message.status === "pending") await ctx.db.patch(message._id, { status: "interrupted" });
     }
-    if (isLive(from.status)) {
+    if (isOrchestratorRun(from)) {
       // Ended here, not by the daemon, so its live tail is cleared here too,
       // as forceClose clears it.
       await ctx.db.patch(from._id, { status: "failed", statusChangedAt: now, endedReason: `orchestrator restarted: ${reason}` });
@@ -410,7 +420,7 @@ async function startOrchestrator(ctx: MutationCtx, { reason, instruction }: { re
   let row = await orchestratorRow(ctx);
   if (row && row.stoppedAt === undefined && row.liveSessionId !== undefined) {
     const live = await ctx.db.get(row.liveSessionId);
-    if (live && isLive(live.status)) return { started: false, sessionId: live._id };
+    if (isOrchestratorRun(live)) return { started: false, sessionId: live._id };
   }
   if (!row) {
     const id = await ctx.db.insert("orchestrators", {
@@ -562,6 +572,12 @@ export const internalSweep = internalMutation({
     const session = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
     if (!session) {
       await launchRun(ctx, row, "its run was missing");
+      return { restarted: true };
+    }
+    if (session.mode !== "autonomous") {
+      // Tom reopened the orchestrator's run: it is his conversation now, and
+      // the orchestrator goes on in a new run without waiting out a backoff.
+      await launchRun(ctx, row, "Tom reopened its last run as a conversation");
       return { restarted: true };
     }
     if (!isLive(session.status)) {
