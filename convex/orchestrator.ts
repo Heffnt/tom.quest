@@ -311,7 +311,9 @@ async function launchRun(
   const now = Date.now();
   const from = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
   const carried: string[] = [...(row.mailbox ?? [])];
-  if (from) {
+  // A run Tom reopened is his conversation, and everything queued on it is
+  // its own; only a run still the orchestrator's hands its messages on.
+  if (from && from.mode === "autonomous") {
     // Every message the ended run did not finish: never delivered (pending,
     // or settled "interrupted" by the ending), or delivered in a turn that
     // failed or was cut off. Only "done" means the run acted on it. The run's
@@ -324,10 +326,8 @@ async function launchRun(
         .collect()
     ).sort((a, b) => a.createdAt - b.createdAt);
     for (const message of rows.slice(1)) {
-      if (message.status === "done") continue;
-      if (message.kind === "user-turn" && typeof message.text === "string" && message.author === "agent") {
-        carried.push(message.text);
-      }
+      if (message.status === "done" || message.author !== "agent" || message.kind !== "user-turn") continue;
+      if (typeof message.text === "string") carried.push(message.text);
       if (message.status === "pending") await ctx.db.patch(message._id, { status: "interrupted" });
     }
     if (isOrchestratorRun(from)) {

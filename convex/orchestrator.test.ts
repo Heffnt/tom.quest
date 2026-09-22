@@ -549,6 +549,11 @@ describe("restarting from the document", () => {
     const reopened = await t.run(async (ctx) => ctx.db.get(first as Id<"claudeSessions">));
     expect(reopened?.status).not.toBe("failed");
     expect((await pendingTexts(t, first)).some((m) => m === "for the orchestrator")).toBe(false);
+    // Tom's own question to the reopened run is his conversation's, untouched.
+    const his = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", first as Id<"claudeSessions">)).collect()).filter((m) => m.text === "What happened?"),
+    );
+    expect(his.map((m) => m.status)).toEqual(["pending"]);
     // It waited for the next run, whose opener carries it.
     expect((await pendingTexts(t, next))[0]).toContain("for the orchestrator");
     expect((await row(t))?.mailbox).toBeUndefined();
