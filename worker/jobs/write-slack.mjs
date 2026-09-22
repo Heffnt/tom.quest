@@ -88,6 +88,8 @@ export function formRules(kind, canReply) {
     `  "session opened", "worker event" and "focus-item" appear in no message.`,
     `- No title line. No *bold* header. No emoji. Slack already stamps the`,
     `  channel and the time.`,
+    `- A fact marked "required": true must be cited by one of your lines; a`,
+    `  draft that leaves one out is refused.`,
     `- USE ONLY THE FACTS BELOW. Every link and every number you write must`,
     `  appear in a fact you cite on that line. You may not compute a new number`,
     `  from two facts, and you may not carry a link over from another line.`,

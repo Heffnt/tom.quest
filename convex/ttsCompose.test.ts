@@ -780,6 +780,21 @@ describe("the needs-you-today run", () => {
     expect(roomy).not.toContain("Nothing else needs an answer");
   });
 
+  it("keeps the reason when the statement is long, shortening the statement first", () => {
+    const long = { todoId: "abc", statement: "Pay the lab deposit invoice for the autumn semester reagent order that the department placed in August, before the account closes", why: "the invoice is due tomorrow", countdown: "Ten days late." };
+    const text = renderSlack(composeToday(sept9({ needsYou: [long] }), { canReply: false }));
+    expect(text).toContain("because the invoice is due tomorrow. Ten days late.");
+  });
+
+  it("refuses a written draft that leaves out an item that needs him today", () => {
+    const block = todayFactsBlock(sept9({ needsYou: ITEMS }), false);
+    const count = block.facts.find((f) => f.id === "today:count")!;
+    const draft = { firstLine: "Three things carry a date you have passed.", firstLineSources: [count.id], lines: [] };
+    const faults = verifyDraft(draft, block);
+    expect(faults).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say');
+    expect(faults).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say');
+  });
+
   it("is a fact per item and one for the count, so a written line about them verifies", () => {
     const block = todayFactsBlock(sept9({ needsYou: ITEMS }), false);
     expect(block.facts.find((f) => f.id === "needs-you-today:abc")?.urls).toEqual(["https://tom.quest/tts?item=abc"]);

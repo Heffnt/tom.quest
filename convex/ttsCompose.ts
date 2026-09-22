@@ -700,11 +700,22 @@ export function runnersLead(n: number, waiting: number): string {
 /** One needs-you-today item: the todo's statement, then the triage's reason
  *  when it gave one. The reason is what gives when the line is too long. */
 function needsYouTodayLine(n: NeedsYouTodayFact): string {
-  const head = stripStop(n.statement);
-  const why = stripStop(n.why);
   const late = n.countdown ? ` ${stripStop(n.countdown)}.` : "";
-  const full = why === "" ? `${head}.${late}` : `${head}, which needs you today because ${lowerFirst(why)}.${late}`;
-  return statement(full.length <= LINE_CHARS ? full : `${head}.${late}`);
+  const why = lowerFirst(stripStop(n.why));
+  const build = (head: string, reason: string) =>
+    reason === "" ? `${head}.${late}` : `${head}, which needs you today because ${reason}.${late}`;
+  // THE REASON IS KEPT. When the line is too long the statement gives first,
+  // to its first clause and then to its first six words, and only then is the
+  // reason cut, at a word and with no ellipsis, never dropped whole.
+  const heads = [stripStop(n.statement), shortClause(n.statement), shortClause(n.statement).split(" ").slice(0, 6).join(" ")];
+  for (const head of heads) {
+    const line = build(head, why);
+    if (line.length <= LINE_CHARS) return statement(line);
+  }
+  const head = heads[2];
+  const words = why.split(" ");
+  while (words.length > 1 && build(head, words.join(" ")).length > LINE_CHARS) words.pop();
+  return statement(build(head, words.join(" ").replace(/[\s,;:—-]+$/, "")));
 }
 
 /** The needs-you-today run's lead. */
@@ -986,6 +997,8 @@ export function todayFirstLine(f: TodayFacts): string {
       ? ` ${capitalise(countWord(f.needsYou.length))} captured ${plural(f.needsYou.length, "item needs", "items need")} you today.`
       : "";
   let head: string;
+  // The all-clear predates the needs-you run: the first line has always said
+  // when nothing else waits. It stays, and is said only when it is true.
   let nothingElse = "";
   if (f.lateCount === 0) {
     head = "Nothing is dated today and nothing is late. The calendar is your whole day.";
@@ -1409,6 +1422,11 @@ export function composeContinued(f: ContinuedFact): Message {
 // checks every link and every number in what it wrote against the block.
 
 export type Fact = {
+  /** A fact every written draft must cite on some line: verifyDraft refuses
+   *  a draft that leaves one out, and the plain template, which says it, posts
+   *  instead. Set on each item that needs Tom today, which no one else tells
+   *  him (Tom, 2026-09-21). */
+  required?: true;
   id: string;
   /** The deterministic sentence about this fact — what the writer writes FROM. */
   text: string;
@@ -1477,7 +1495,7 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));
   }
   for (const n of f.needsYou) {
-    facts.push(fact(`needs-you-today:${n.todoId}`, needsYouTodayLine(n), [itemUrl(n.todoId)]));
+    facts.push({ ...fact(`needs-you-today:${n.todoId}`, needsYouTodayLine(n), [itemUrl(n.todoId)]), required: true });
   }
   for (const r of f.runners) {
     facts.push(fact(`runner:${r.runnerId}`, runnerLine(r), [TAB_BATCHES]));
@@ -1635,6 +1653,12 @@ export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
       if (!cited.some((f) => f.numbers.includes(number))) {
         faults.push(`${line.label} uses the number ${number}, which is in no fact it cites`);
       }
+    }
+  }
+  const citedAnywhere = new Set(lines.flatMap((line) => line.sources));
+  for (const f of block.facts) {
+    if (f.required && !citedAnywhere.has(f.id)) {
+      faults.push(`the draft leaves out the fact "${f.id}", which every message must say`);
     }
   }
   return [
