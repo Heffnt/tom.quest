@@ -23,6 +23,7 @@ import {
   buildOrchestratorPrompt,
   crashBackoffMs,
   orchestratorModel,
+  recordElevationReply,
 } from "./orchestrator";
 import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER, NARROW_LIST } from "./ttsShared";
 import { COMPACT_ENDED_REASON, ORCHESTRATOR_COMPACT_WORD } from "../worker/session-host/hosted.mjs";
@@ -697,5 +698,13 @@ describe("restarting from the document", () => {
     expect(session?.status).toBe("ended");
     expect((await t.mutation(internal.orchestrator.internalSweep, {})).restarted).toBe(false);
     expect((await pen(t, "/tts/spawn-worker", { sessionId: orchestrator, title: "x", brief: "y" })).status).toBe(409);
+    // Tom's answer to a reserved question, arriving while it is stopped,
+    // waits for the next start.
+    const elevationId = await t.run(async (ctx) =>
+      ctx.db.insert("elevations", { workerSessionId: worker as Id<"claudeSessions">, question: "q?", sides: ["a", "b"], status: "waiting-on-tom", kind: "reserved", recommendation: "a", createdAt: Date.now() }),
+    );
+    await t.run(async (ctx) => recordElevationReply(ctx, elevationId, "Go with a.", { channel: "C", ts: "2.0", threadTs: "1.0" }));
+    const restarted = await t.mutation(internal.orchestrator.internalStart, { reason: "again" });
+    expect((await pendingTexts(t, restarted.sessionId as string))[0]).toContain(`Tom answered elevation ${elevationId}`);
   });
 });

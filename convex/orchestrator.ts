@@ -279,16 +279,15 @@ async function deliver(ctx: MutationCtx, sessionId: Id<"claudeSessions">, text: 
  * predecessor did not finish; true only when the run is live. */
 async function deliverToOrchestrator(ctx: MutationCtx, text: string): Promise<boolean> {
   const row = await orchestratorRow(ctx);
-  if (!row || row.stoppedAt !== undefined || row.liveSessionId === undefined) return false;
-  const session = await ctx.db.get(row.liveSessionId);
-  // A run Tom reopened is his conversation: nothing is queued into it. The
-  // message waits on the row for the next run, which the sweep starts within
-  // the minute.
-  if (session && session.mode !== "autonomous") {
+  if (!row) return false;
+  const session = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
+  // Stopped, or its latest run is one Tom reopened as his conversation: no
+  // run of its own can hold the message, so it waits on the row for the next
+  // run (the sweep's, within the minute, or the next start's).
+  if (row.stoppedAt !== undefined || !session || session.mode !== "autonomous") {
     await ctx.db.patch(row._id, { mailbox: [...(row.mailbox ?? []), text] });
     return false;
   }
-  if (!session) return false;
   await queueTurn(ctx, session._id, text);
   return isLive(session.status);
 }
