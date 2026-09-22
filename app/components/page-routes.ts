@@ -1,3 +1,7 @@
+// The observation page's route name lives in app/observe/slug.ts, so renaming
+// that placeholder is an edit of one line and a rename of one directory.
+import { OBSERVE_SLUG } from "@/app/observe/slug";
+
 export type Page = {
   slug: string;       // "turing" -> tom.quest/turing
   title: string;
@@ -26,6 +30,7 @@ export const PAGES: Page[] = [
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "sessions", title: "Sessions", blurb: "TTS — every agent run, at every depth", priority: 9, visibility: "tom" },
+  { slug: OBSERVE_SLUG, title: "Observe", blurb: "Everything that ran and every ruling, by window", priority: 9, visibility: "tom" },
   { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5, visibility: "tom" },
