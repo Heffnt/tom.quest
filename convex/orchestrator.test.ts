@@ -366,11 +366,22 @@ describe("restarting from the document", () => {
     vi.useFakeTimers();
     const t = await setup();
     const first = await start(t);
-    await ingest(t, first, { status: "running", runId: "codex:box:thread-1" });
+    // The daemon delivers the opener, as it does on the run's first turn.
+    const opener1 = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", first as Id<"claudeSessions">).eq("status", "pending")).unique())!,
+    );
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: first as Id<"claudeSessions">,
+      status: "running",
+      runId: "codex:box:thread-1",
+      inboundUpdates: [{ id: opener1._id, status: "delivered" }],
+    });
     await pen(t, "/tts/orchestrator/document", { sessionId: first, document: "# v2\n\nCarry on with the footer." });
     const worker = await spawn(t, first);
+    // One message arrives during the last turn, before the ending settles it,
+    // and one between the two runs; the successor receives both.
+    await pen(t, "/tts/message", { sessionId: worker, to: "orchestrator", text: "Tests are green." });
     await ingest(t, first, { status: "ended", endedReason: COMPACT_ENDED_REASON, outcome: "completed" });
-    // A worker's message landing between the two runs waits for the next one.
     await pen(t, "/tts/message", { sessionId: worker, to: "orchestrator", text: "Footer done." });
 
     await t.mutation(internal.orchestrator.internalSweep, {});
@@ -382,6 +393,9 @@ describe("restarting from the document", () => {
     const opener = (await pendingTexts(t, next.liveSessionId!))[0];
     expect(opener).toContain("Carry on with the footer.");
     expect(opener).toContain("Footer done.");
+    expect(opener).toContain("Tests are green.");
+    // The first run's own opener was delivered to it and is not carried.
+    expect(opener.split("Why this run started").length).toBe(2);
     expect(opener).toContain(worker);
     const hosted = await t.run(async (ctx) => ctx.db.query("hostedRuns").withIndex("by_session", (q) => q.eq("sessionId", next.liveSessionId!)).unique());
     expect(hosted?.environment).toBe("orchestrator");

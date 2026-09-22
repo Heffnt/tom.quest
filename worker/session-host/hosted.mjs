@@ -50,7 +50,8 @@ export function asksToCompact(text) {
 }
 
 /**
- * What a hosted run does at a turn's end. The orchestrator ends only when it
+ * What a hosted run does at the end of a turn that succeeded (a failed turn
+ * ends it errored, as for any unattended session). The orchestrator ends only when it
  * asks to compact; otherwise it goes idle and waits for its next message. A
  * worker goes idle too and waits for the next poll to say whether it is done
  * (hostedIdleVerdict), because the pens it called during the turn are read by
@@ -58,13 +59,13 @@ export function asksToCompact(text) {
  *
  * @returns {"compact" | "idle"}
  */
-export function hostedTurnEnd({ environment, failed, finalText }) {
-  if (environment === "orchestrator" && !failed && asksToCompact(finalText)) return "compact";
-  return "idle";
+export function hostedTurnEnd({ environment, finalText }) {
+  return environment === "orchestrator" && asksToCompact(finalText) ? "compact" : "idle";
 }
 
 /**
- * What an idle hosted run does on a poll. `idleSince` is when its last turn
+ * What an idle hosted run does on a poll, once any message waiting for it has
+ * been handed over (session.mjs calls this only when none is being delivered). `idleSince` is when its last turn
  * ended; `polledAt` is when the poll carrying the server's facts was sent. A
  * poll sent before the turn ended cannot have seen an elevation or an outcome
  * the turn wrote, so it decides nothing.
@@ -73,15 +74,12 @@ export function hostedTurnEnd({ environment, failed, finalText }) {
  */
 export function hostedIdleVerdict({
   environment,
-  pendingTurn,
   outcomeRecorded,
   openElevations,
   idleSince,
   polledAt,
   now,
 }) {
-  // A message waiting is delivered by processCommands; nothing ends first.
-  if (pendingTurn) return "wait";
   // The orchestrator lives until it compacts, crashes or is stopped.
   if (environment !== "worker") return "wait";
   if (typeof idleSince !== "number" || typeof polledAt !== "number" || polledAt <= idleSince) return "wait";

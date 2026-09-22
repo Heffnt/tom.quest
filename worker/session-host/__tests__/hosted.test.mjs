@@ -28,25 +28,20 @@ describe("asksToCompact", () => {
 });
 
 describe("hostedTurnEnd", () => {
-  it("compacts only the orchestrator, only on a clean turn that asks", () => {
-    expect(hostedTurnEnd({ environment: "orchestrator", failed: false, finalText: "done\nJARVIS-COMPACT" })).toBe("compact");
-    expect(hostedTurnEnd({ environment: "orchestrator", failed: true, finalText: "JARVIS-COMPACT" })).toBe("idle");
-    expect(hostedTurnEnd({ environment: "orchestrator", failed: false, finalText: "answered two elevations" })).toBe("idle");
-    expect(hostedTurnEnd({ environment: "worker", failed: false, finalText: "JARVIS-COMPACT" })).toBe("idle");
+  it("compacts only the orchestrator, only on a turn that asks", () => {
+    expect(hostedTurnEnd({ environment: "orchestrator", finalText: "done\nJARVIS-COMPACT" })).toBe("compact");
+    expect(hostedTurnEnd({ environment: "orchestrator", finalText: "answered two elevations" })).toBe("idle");
+    expect(hostedTurnEnd({ environment: "worker", finalText: "JARVIS-COMPACT" })).toBe("idle");
   });
 });
 
 describe("hostedIdleVerdict", () => {
-  const base = { environment: "worker", pendingTurn: false, outcomeRecorded: false, openElevations: 0, idleSince: 1_000, polledAt: 2_000, now: 2_000 };
+  const base = { environment: "worker", outcomeRecorded: false, openElevations: 0, idleSince: 1_000, polledAt: 2_000, now: 2_000 };
 
   it("never decides on a poll sent before the turn ended", () => {
     expect(hostedIdleVerdict({ ...base, polledAt: 900 })).toBe("wait");
     expect(hostedIdleVerdict({ ...base, polledAt: 1_000 })).toBe("wait");
     expect(hostedIdleVerdict({ ...base, idleSince: undefined })).toBe("wait");
-  });
-
-  it("delivers a waiting message before anything ends", () => {
-    expect(hostedIdleVerdict({ ...base, pendingTurn: true, outcomeRecorded: true })).toBe("wait");
   });
 
   it("ends a worker whose outcome is recorded, or that has nothing open", () => {

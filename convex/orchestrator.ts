@@ -258,15 +258,25 @@ async function launchRun(
   const from = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
   const carried: string[] = [];
   if (from) {
-    const pending = await ctx.db
-      .query("claudeInbound")
-      .withIndex("by_session_status", (q) => q.eq("sessionId", from._id).eq("status", "pending"))
-      .collect();
-    for (const message of pending.sort((a, b) => a.createdAt - b.createdAt)) {
+    // Every message the ended run never received: still pending, or settled
+    // "interrupted" by its ending without ever being delivered. The ending
+    // settles them before this runs, so pending alone would lose a worker's
+    // message sent during the last turn.
+    const unread = [];
+    for (const status of ["pending", "interrupted"] as const) {
+      unread.push(
+        ...(await ctx.db
+          .query("claudeInbound")
+          .withIndex("by_session_status", (q) => q.eq("sessionId", from._id).eq("status", status))
+          .collect()),
+      );
+    }
+    for (const message of unread.sort((a, b) => a.createdAt - b.createdAt)) {
+      if (message.deliveredAt !== undefined) continue;
       if (message.kind === "user-turn" && typeof message.text === "string" && message.author === "agent") {
         carried.push(message.text);
       }
-      await ctx.db.patch(message._id, { status: "interrupted" });
+      if (message.status === "pending") await ctx.db.patch(message._id, { status: "interrupted" });
     }
     if (isLive(from.status)) {
       await ctx.db.patch(from._id, { status: "failed", statusChangedAt: now, endedReason: `orchestrator restarted: ${reason}` });

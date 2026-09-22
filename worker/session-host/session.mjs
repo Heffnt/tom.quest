@@ -1555,7 +1555,7 @@ export class Session {
           // document by the server, and a worker's orchestrator is told.
           const failed = m.is_error || (m.subtype && m.subtype !== "success");
           if (!failed) {
-            if (hostedTurnEnd({ environment: this.environment, failed, finalText: this.lastAssistantText }) === "compact") {
+            if (hostedTurnEnd({ environment: this.environment, finalText: this.lastAssistantText }) === "compact") {
               void this.#endAutonomous(COMPACT_ENDED_REASON, {
                 outcome: "completed",
                 outcomeSummary: "asked to be restarted from its document",
@@ -1909,7 +1909,6 @@ export class Session {
     if (this.status !== "idle" || this.delivering || this.stopRequested || this.dead) return;
     const verdict = hostedIdleVerdict({
       environment: this.environment,
-      pendingTurn: this.serverInbound.some((r) => r.kind === "user-turn" && !this.processedInbound.has(r._id)),
       outcomeRecorded: row.outcomeRecorded === true,
       openElevations: row.openElevations,
       idleSince: this.idleSince,
