@@ -519,14 +519,10 @@ function adoptSession(env, sessions, row) {
     s.finalizeRow("system", {
       text: "session-host restarted mid-mission; autonomous session ended",
     });
-    s.outcomeToSend = {
+    void s.endAdopted(DAEMON_RESTART_ENDED_REASON, {
       outcome: "errored",
       outcomeSummary: "daemon restarted mid-mission",
-    };
-    s.setStatus("ended");
-    s.endedReasonToSend = DAEMON_RESTART_ENDED_REASON;
-    s.requestFlush(true);
-    s.cleanupWorkdir();
+    });
     return;
   }
   s.status = "idle";

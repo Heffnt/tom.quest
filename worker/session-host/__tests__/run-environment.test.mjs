@@ -11,6 +11,17 @@ import { describe, expect, it } from "vitest";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sessionSource = fs.readFileSync(path.join(here, "..", "session.mjs"), "utf8");
 
+describe("adopting an unattended run after a restart", () => {
+  it("pushes its commits before the workdir goes, through the one unattended ending", () => {
+    const hostSource = fs.readFileSync(path.join(here, "..", "session-host.mjs"), "utf8");
+    const adopt = hostSource.slice(hostSource.indexOf("function adoptSession("), hostSource.indexOf("s.status = \"idle\";\n  s.statusToSend"));
+    expect(adopt).toContain("void s.endAdopted(DAEMON_RESTART_ENDED_REASON,");
+    expect(adopt).not.toContain("cleanupWorkdir()");
+    const end = sessionSource.slice(sessionSource.indexOf("async endAdopted("));
+    expect(end.slice(0, 900)).toMatch(/ensureWorkdir\(\{ forResume: true \}\)[\s\S]*this\.#endAutonomous\(endedReason, outcome\)/);
+  });
+});
+
 describe("hosted turn end", () => {
   it("applies a same-family model change at the turn boundary, as an interactive session does", () => {
     const start = sessionSource.indexOf("if (this.hosted && !this.stopRequested && !this.dead) {");

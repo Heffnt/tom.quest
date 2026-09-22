@@ -2088,6 +2088,21 @@ export class Session {
 
   // ── autonomous ending ──────────────────────────────────────────────────────
 
+  // An unattended run a restarted daemon found live: nothing re-enters the
+  // turn the old process died in, so it ends, but first its checkout is
+  // reattached and its commits pushed, as every other unattended ending
+  // does. A hosted worker waiting on an answer when setup.sh rolled the
+  // daemon would otherwise lose its local commits with the workdir.
+  async endAdopted(endedReason, outcome) {
+    this.status = "idle";
+    try {
+      await this.ensureWorkdir({ forResume: true });
+    } catch (err) {
+      log(`session ${this.id}: could not reattach the workdir before ending:`, String(err?.message ?? err));
+    }
+    await this.#endAutonomous(endedReason, outcome);
+  }
+
   #clearAutoTimer() {
     if (this.autoTurnTimer) {
       clearTimeout(this.autoTurnTimer);
