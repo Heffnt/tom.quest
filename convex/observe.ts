@@ -303,11 +303,15 @@ export const waitingOnTom = query({
       const todoId = event.todoId;
       if (lastAt === null || event.at > lastAt) lastAt = event.at;
       if (todoId === undefined) continue;
-      const after = await ctx.db
+      // His reply itself, not a page of the todo's events that might not
+      // reach it: a busy todo can carry any number of rows after the thread
+      // was opened, and a cutoff there counts a settled todo as still waiting.
+      const replied = await ctx.db
         .query("dtsEvents")
         .withIndex("by_todo", (q) => q.eq("todoId", todoId).gte("at", event.at))
-        .take(50);
-      if (after.some((row) => row.kind === "slack-event")) continue;
+        .filter((q) => q.eq(q.field("kind"), "slack-event"))
+        .first();
+      if (replied !== null) continue;
       waiting += 1;
       if (oldestAt === null || event.at < oldestAt) oldestAt = event.at;
     }
