@@ -249,6 +249,43 @@ describe("landing", () => {
     expect(row.lastAttempt?.why).toContain("does not show it on main");
   });
 
+  it("merges nothing where Tom revises it while the landing is talking to GitHub", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const puts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url);
+        if (init?.method === "PUT") {
+          puts.push(path);
+          return Response.json({}, { status: 200 });
+        }
+        if (/\/pulls\/\d+$/.test(path)) {
+          // His revise, written in the gap between the ready list and the
+          // merge — which is the whole of what this holds.
+          await t.mutation(internal.ttsRulings.internalRecordRuling, {
+            repo: REPO,
+            externalId: "pr-212",
+            verdict: "revise",
+            sentence: "stop",
+          });
+          return Response.json({ base: { ref: "main" } });
+        }
+        if (path.includes("/compare/")) return Response.json({ status: "ahead" });
+        if (/\/repos\/Heffnt\/[^/]+$/.test(path)) return Response.json({ default_branch: "main" });
+        return Response.json([]);
+      }),
+    );
+    await mirror(t);
+    await green(t);
+    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 1 });
+    expect(puts).toHaveLength(0);
+    const [row] = await tom.query(api.observe.changesWaiting, {});
+    expect(row.lastAttempt?.why).toContain("no longer approved");
+  });
+
   it("merges nothing where a revise shares the approve's millisecond", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);

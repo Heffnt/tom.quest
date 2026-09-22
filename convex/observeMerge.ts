@@ -289,6 +289,25 @@ export const internalApprovedAndGreen = internalQuery({
   },
 });
 
+/** IS IT STILL APPROVED AND STILL GREEN, asked again in the instant before the
+ *  merge. The landing reads the list, then talks to GitHub, and Tom can write
+ *  a revise in that gap — without this the merge would go through after he
+ *  withdrew it. */
+export const internalStillReady = internalQuery({
+  args: { repo: v.string(), number: v.number(), headSha: v.string() },
+  handler: async (ctx, { repo, number, headSha }) => {
+    const ruling = await newestRuling(ctx, repo, pullRequestChange(number));
+    if (ruling === null || ruling.verdict !== "approve") {
+      return { ready: false, why: `#${number} is no longer approved` };
+    }
+    const gate = await mergeGateFor(ctx, repo, headSha);
+    if (!gate.allowed) {
+      return { ready: false, why: `the gate is no longer green: ${gate.missing.join(", ")}` };
+    }
+    return { ready: true, why: "" };
+  },
+});
+
 /** What the last landing attempt did, written onto the row the page reads. A
  *  change that landed is marked closed at once, so it leaves the waiting list
  *  before the next refresh and a second landing run does not try it again. */
@@ -371,6 +390,19 @@ async function landReady(
             base === null || base === undefined
               ? `GitHub would not say what branch #${change.number} is aimed at, so it was not merged`
               : `#${change.number} is aimed at ${String(base)} and not ${MAIN_BRANCH}, so it was not merged`,
+        });
+        continue;
+      }
+      const still = await ctx.runQuery(internal.observeMerge.internalStillReady, {
+        repo: change.repo,
+        number: change.number,
+        headSha: change.headSha,
+      });
+      if (!still.ready) {
+        await ctx.runMutation(internal.observeMerge.internalNoteAttempt, {
+          id: change.id,
+          ok: false,
+          why: still.why,
         });
         continue;
       }
