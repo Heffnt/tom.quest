@@ -10,6 +10,7 @@ import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
+import { isChangeSubject } from "./ttsShared";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -51,6 +52,9 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 //            interactive session on the code block, whose opener names each
 //            subject and sentence it consumes (liveCodeSessionRulings +
 //            markCodeSessionRulingsApplied, from claudeSessions.insertSession).
+//            A code subject that names a CHANGE rather than a todo
+//            (ttsShared.isChangeSubject) applies here on every verdict; an
+//            approve is landed by convex/observeMerge.ts once its gate is green.
 // appliedAt/applyResult record the application either way; a newer ruling on
 // the same subject supersedes an older unapplied one (append-only, history
 // kept).
@@ -115,10 +119,13 @@ export const listRulings = query({
 });
 
 // The ONE implementation of recording a ruling — used by the Tom-gated
-// recordRuling below and by internalRecordRuling (a live session's pen, the
-// tts.internalTriage pattern), so verdict semantics cannot drift between the
-// two doors.
-async function insertRuling(
+// recordRuling below, by internalRecordRuling (a live session's pen, the
+// tts.internalTriage pattern), and by observe.approveChange (the Approve
+// control on the observation page), so verdict semantics cannot drift between
+// the doors. EXPORTED for that third caller and for no other reason: a
+// mutation cannot call another mutation in Convex, so a door that wants these
+// semantics has to call this function.
+export async function insertRuling(
   ctx: MutationCtx,
   {
     todoId,
@@ -267,6 +274,22 @@ async function insertRuling(
       // freeze (AUTO_BATCH_SESSION_PAUSE_MS in claudeSessions.ts): an
       // applied-forever test at the batch level would strand every task in the
       // graph on one conversation Tom meant to have.
+    }
+
+    if (isCode && isChangeSubject(externalId!)) {
+      // A RULING ON A CHANGE (a pull request or a merged commit, not a code
+      // todo) is applied the moment it is written, because nothing else can
+      // ever apply it: the auto-session scheduler would read an unapplied
+      // approve as a worker mission and refuse it as "not open in the mirror",
+      // and the brief pass would wait forever on a revise. What an approve
+      // sets in motion is read off this row by convex/observeMerge.ts, which
+      // lands the change once its gate is green; a later ruling on the same
+      // subject is newer and so withdraws it.
+      appliedAt = now;
+      applyResult =
+        verdict === "approve"
+          ? "approved: the record merges it once its gate is green"
+          : `${verdict} recorded on the change`;
     }
 
     const id = await ctx.db.insert("dtsRulings", {

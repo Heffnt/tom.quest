@@ -17,11 +17,14 @@
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
-import { query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
+import { APPROVABLE_REPOS, changeOfCommit, newestRuling, resolveChange } from "./observeMerge";
 import { mergeGateFor } from "./ttsMerge";
-import { VOCABULARY_TERMS, commitKey } from "./ttsShared";
+import { insertRuling } from "./ttsRulings";
+import { VOCABULARY_TERMS, commitKey, pullRequestChange } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
 
 /** The label every gate in this module names, so a denial says which surface. */
@@ -264,6 +267,15 @@ async function subjectWords(ctx: QueryCtx, ruling: Doc<"dtsRulings">): Promise<s
   }
   const { repo, externalId } = ruling;
   if (repo !== undefined && externalId !== undefined) {
+    // A ruling on a pull request reads as the pull request's title.
+    const pr = /^pr-(\d+)$/.exec(externalId);
+    if (pr !== null) {
+      const pull = await ctx.db
+        .query("pullRequests")
+        .withIndex("by_repo_number", (q) => q.eq("repo", repo).eq("number", Number(pr[1])))
+        .first();
+      if (pull !== null) return pull.title;
+    }
     const mirror = await ctx.db
       .query("dtsCodeTodoMirror")
       .withIndex("by_repo_external", (q) => q.eq("repo", repo).eq("externalId", externalId))
@@ -338,8 +350,13 @@ export const gateRows = query({
         .order("desc")
         .first();
       const data = (audit?.data ?? {}) as { text?: unknown; verdict?: unknown; model?: unknown };
+      // The ruling this change carries, which decides whether its row shows
+      // the quiet Approve or the ruled word.
+      const change = await changeOfCommit(ctx, repo, sha);
+      const ruling = await newestRuling(ctx, repo, change.externalId);
       return {
         key,
+        ruled: ruling?.verdict ?? null,
         allowed: gate.allowed,
         checks: gate.checks.map((check) => ({
           name: check.name,
@@ -357,6 +374,87 @@ export const gateRows = query({
               },
       };
     }));
+  },
+});
+
+// ── The changes that are waiting, and Approve ───────────────────────────────
+
+/**
+ * Every open pull request of the approvable repositories, newest first, each
+ * with the gate's three rows as they stand, the ruling it carries and what
+ * the last landing attempt said.
+ *
+ * Read off the mirror convex/observeMerge.ts keeps, because a query cannot ask
+ * GitHub; the mirror is at most five minutes behind.
+ */
+export const changesWaiting = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTom(ctx, SURFACE);
+    const out = [];
+    for (const repo of APPROVABLE_REPOS) {
+      const rows = await ctx.db
+        .query("pullRequests")
+        .withIndex("by_repo", (q) => q.eq("repo", repo))
+        .collect();
+      for (const row of rows) {
+        if (row.closedAt !== undefined) continue;
+        const gate = await mergeGateFor(ctx, repo, row.headSha);
+        const ruling = await newestRuling(ctx, repo, pullRequestChange(row.number));
+        out.push({
+          id: row._id as string,
+          repo,
+          number: row.number,
+          title: row.title,
+          branch: row.branch,
+          headSha: row.headSha,
+          draft: row.draft,
+          updatedAt: row.updatedAt,
+          ruled: ruling?.verdict ?? null,
+          allowed: gate.allowed,
+          checks: gate.checks.map((check) => ({ name: check.name, passed: check.passed, why: check.why })),
+          lastAttempt: row.lastAttempt ?? null,
+        });
+      }
+    }
+    return out.sort((left, right) => right.updatedAt - left.updatedAt);
+  },
+});
+
+/**
+ * THE APPROVE CONTROL. Records a ruling of Tom's approving one change, through
+ * convex/ttsRulings.ts insertRuling, the function every ruling goes through;
+ * the subject is the change (convex/ttsShared.ts pullRequestChange or
+ * commitChange) and the sentence is "Approve <the change's sentence>".
+ *
+ * IDEMPOTENT HERE, not in the browser: a change that already carries a ruling
+ * gets nothing written, and the answer is the word already ruled, so a second
+ * press, a second tab or a retried request cannot write a second ruling.
+ *
+ * A waiting pull request also schedules the landing once, so a change whose
+ * gate is already green merges at the press; one that is not green waits for
+ * the five-minute refresh to find it green. A merged commit gets the ruling
+ * only.
+ */
+export const approveChange = mutation({
+  args: {
+    repo: v.string(),
+    number: v.optional(v.number()),
+    sha: v.optional(v.string()),
+  },
+  handler: async (ctx, { repo, number, sha }) => {
+    await requireTom(ctx, SURFACE);
+    const change = await resolveChange(ctx, repo, { number, sha });
+    const ruled = await newestRuling(ctx, repo, change.externalId);
+    if (ruled !== null) return { written: false, ruled: ruled.verdict };
+    await insertRuling(ctx, {
+      repo,
+      externalId: change.externalId,
+      verdict: "approve",
+      sentence: `Approve ${change.title}`,
+    });
+    if (change.open) await ctx.scheduler.runAfter(0, internal.observeMerge.landApproved, {});
+    return { written: true, ruled: "approve" as const };
   },
 });
 
