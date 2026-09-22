@@ -10,10 +10,10 @@ const nextConfig: NextConfig = {
     // digests point at the old path — query params are preserved by default.
     // "sessions" -> "runs" rename (2026-09-21): the page lists every agent
     // run, not only sessions, and links in the record and in Slack still
-    // name /sessions.
+    // name /sessions. `:path*` matches zero segments too, so this one rule
+    // also sends the bare /sessions to /runs.
     return [
       { source: "/" + "dts", destination: "/tts", permanent: true },
-      { source: "/sessions", destination: "/runs", permanent: true },
       { source: "/sessions/:path*", destination: "/runs/:path*", permanent: true },
     ];
   },
