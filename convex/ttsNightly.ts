@@ -26,6 +26,7 @@ import schema from "./schema";
 import { clip } from "../worker/jobs/clip.mjs";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
+import { postBroken } from "./tts";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 
@@ -582,6 +583,11 @@ export const internalRecordWorkerEvent = internalMutation({
       throw new Error(`not a worker event kind: ${kind}`);
     }
     const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    // The same broken line logEvent posts, because this is the other way a
+    // failure row is written: the nightly's and the weekly's failures arrive
+    // here, and #tts-broken is a line per distinct failure whichever door the
+    // row came through.
+    await postBroken(ctx, kind, data);
     if (kind === LEARNING_CHANGE) {
       const d = (data ?? {}) as Record<string, unknown>;
       const file = typeof d.file === "string" ? d.file : "a model-of-Tom page";

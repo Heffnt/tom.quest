@@ -123,25 +123,39 @@ export async function logEvent(
     data: data === undefined ? undefined : data,
     key,
   });
-  if (isFailureKind(kind)) {
-    const d = (data ?? {}) as Record<string, unknown>;
-    const job = str(d.job) ?? kind.replace(/-failed$/, "");
-    // Scheduled, not awaited: the post is network I/O and this is a mutation.
-    // It rides the transaction, so a rolled-back failure is never reported.
-    // The action itself dedupes by job for the TTS day.
-    // THE RAW `error` IS A JOB'S OWN STDERR and is never posted as it came:
-    // worker/jobs/nightly.mjs reports git's verbatim, and git names its remote
-    // with the token in it. redactSecrets is the one choke point (the same
-    // helper convex/ttsSearch.ts and worker/session-host use), and it runs
-    // before the string becomes a #tts-broken line.
-    const detail = str(d.error);
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
-      job,
-      statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
-      ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
-    });
-  }
+  await postBroken(ctx, kind, data);
   return id;
+}
+
+/**
+ * THE #tts-broken LINE, from the one place a failure row is recognised. Called
+ * by logEvent above and by convex/ttsNightly.ts internalRecordWorkerEvent, the
+ * two ways a row reaches dtsEvents: the nightly's and the weekly's failures
+ * come the second way, and while this lived inside logEvent they were the
+ * failures Slack never heard about.
+ */
+export async function postBroken(
+  ctx: MutationCtx,
+  kind: string,
+  data?: unknown,
+): Promise<void> {
+  if (!isFailureKind(kind)) return;
+  const d = (data ?? {}) as Record<string, unknown>;
+  const job = str(d.job) ?? kind.replace(/-fail(ed|ure)$/, "");
+  // Scheduled, not awaited: the post is network I/O and this is a mutation.
+  // It rides the transaction, so a rolled-back failure is never reported.
+  // The action itself dedupes by job for the TTS day.
+  // THE RAW `error` IS A JOB'S OWN STDERR and is never posted as it came:
+  // worker/jobs/nightly.mjs reports git's verbatim, and git names its remote
+  // with the token in it. redactSecrets is the one choke point (the same
+  // helper convex/ttsSearch.ts and worker/session-host use), and it runs
+  // before the string becomes a #tts-broken line.
+  const detail = str(d.error);
+  await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+    job,
+    statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
+    ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
+  });
 }
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
