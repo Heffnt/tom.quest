@@ -97,6 +97,42 @@ function wanted(kind: string): boolean {
   );
 }
 
+/**
+ * THE FIELDS THE PAGE DRAWS, and nothing else off an event's body.
+ *
+ * dtsEvents.data is v.any(), and a failure row's `error` is the failed job's
+ * own stderr — the nightly reports git's verbatim, and git names its remote
+ * with the token in it. Every other surface that shows a failure sends that
+ * string through redactSecrets first, which convex/tts.ts calls the one choke
+ * point. Rather than add a second, this sends the browser the ten fields
+ * app/observe reads and leaves the rest on the server, so there is nothing to
+ * redact: a field added to a row is not on the wire until this list names it.
+ */
+function drawnFields(data: unknown): Record<string, unknown> | null {
+  if (typeof data !== "object" || data === null) return null;
+  const row = data as Record<string, unknown>;
+  const drawn: Record<string, unknown> = {};
+  for (const name of DRAWN_FIELDS) {
+    if (row[name] !== undefined) drawn[name] = row[name];
+  }
+  return drawn;
+}
+
+/** A merge row's four, a failure's job, and the five a delegate decision is
+ *  read from (app/observe/lib.ts and components/rulings-list.tsx). */
+const DRAWN_FIELDS = [
+  "repo",
+  "sha",
+  "subject",
+  "mainCheck",
+  "job",
+  "decision",
+  "fallback",
+  "question",
+  "reason",
+  "refused",
+] as const;
+
 /** The kinds a page of events counts but never draws, so their bodies stay on
  *  the server. An audit row carries up to eight kilobytes of the audit's prose,
  *  and a month of them is megabytes a browser never opens; the changes list
@@ -224,7 +260,7 @@ export const eventsInWindow = query({
           kind: event.kind,
           key: event.key ?? null,
           todoId: (event.todoId ?? null) as string | null,
-          data: COUNTED_NOT_DRAWN.has(event.kind) ? null : ((event.data ?? null) as unknown),
+          data: COUNTED_NOT_DRAWN.has(event.kind) ? null : drawnFields(event.data),
         })),
     };
   },

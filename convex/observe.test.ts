@@ -162,6 +162,30 @@ describe("the point events", () => {
     expect(merge?.data).not.toBeNull();
   });
 
+  it("sends the browser the fields the page draws and leaves a job's stderr on the server", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 120,
+        kind: "nightly-failure",
+        data: {
+          job: "nightly",
+          step: "push",
+          error: "remote: https://x-access-token:ghp_SECRET@github.com/Heffnt/tom.quest",
+        },
+      });
+    });
+    const page = await tom.query(api.observe.eventsInWindow, {
+      from: 0,
+      to: 1_000,
+      paginationOpts: PAGE,
+    });
+    const failure = page.page.find((event) => event.kind === "nightly-failure");
+    expect(failure?.data).toEqual({ job: "nightly" });
+    expect(JSON.stringify(page)).not.toContain("ghp_SECRET");
+  });
+
   it("calls a failure both spellings of one, but not the two that are not broken lines", () => {
     expect(isFailureKind("poll-canvas-failed")).toBe(true);
     // The nightly and the weekly write the other spelling, and they are job
