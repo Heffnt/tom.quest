@@ -154,16 +154,17 @@ the stable source id `gmail:message:<id>` in its provenance, followed by the
 `#all` link. Judged from headers plus Gmail's ~100-character snippet only —
 v1 never downloads bodies — and the prompt leans toward capturing when
 unsure, because a wrong capture costs one archive click while a wrong skip
-loses the thread. Second: does it need Tom **today**? If so the job asks
-Convex to open one thread in `#tts` on that todo (`POST /tts/needs-tom`),
-carrying one line — the sender, the subject, the todo's link — so his reply
-in it is the next turn on the row. That second judgement is capture triage,
+loses the thread. Second: does it need Tom **today**? If so the capture
+carries `needsTomToday` and the triage's reason, which Convex stores on the
+todo. The job opens no thread and reaches Tom by no other road: Tom ruled on
+2026-09-21 that workers do not reach him directly, so the morning message in
+`#tts-today` and the hourly line in `#tts-hourly` name the item with its
+reason, and his reply there reaches it. That second judgement is capture triage,
 not an importance rating: three facts and no others make it true (a deadline
 inside 48 hours, a named person waiting on a reply, money or credentials),
 and the rules for both judgements come from the deployment
 (`GET /tts/capture-context`, the synced WikiTom capture-triage text), never
-from a copy in the job. The thread is deduped on the Gmail message id, so one
-mail opens one thread however many times the job re-reads it. Until the
+from a copy in the job. Until the
 Gmail credentials exist it is a quiet no-op; see "Gmail credentials".
 
 **poll-canvas** is the one job that owns Canvas, in two halves on one tick.
@@ -462,7 +463,7 @@ fine" to a session that only checked the status.
 
 **Those two keys hold an account at role `agent`** — tom.quest's fourth role,
 which exists for this and nothing else. It reads `/turing` and `/tts`; it
-writes nothing anywhere; and it sees no other page, including `/sessions`,
+writes nothing anywhere; and it sees no other page, including `/runs`,
 `/forge`, `/jarvis` and `/canvas`. On `/turing` it gets the `GET` that lists
 GPUs and jobs, but not the `POST` that allocates, the `DELETE` that cancels,
 or the terminal's credential endpoint. The single list that defines the reach
@@ -796,7 +797,9 @@ No launcher registers a desktop session, so the slot's run hook
 (`scripts/run-hook.mjs`) records it: on the box, a Claude session with no
 launcher token is a session with Tom, environment `session`, origin `desktop`.
 A `claude` typed into an ssh shell is recorded the same way. A desktop session
-does not appear on `tom.quest/sessions`, whose rows the daemon owns.
+is absent from the "sessions" view of `tom.quest/runs`, whose rows the daemon
+owns, and is listed in its "all roots" view with every other top-level run the
+sweep records.
 
 The standing workspace is `/var/cache/tts/desktop/`, one plain clone each of
 tom.quest, WikiTom and ComplexMultiTrigger, with `origin` at the clean GitHub

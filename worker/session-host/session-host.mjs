@@ -57,7 +57,7 @@ const POLL_HOT_MS = 1_000;
 const POLL_WARM_MS = 5_000;
 // CONTRACT: idle poll 30s; the server/client staleness threshold is 90s =
 // 3 missed idle polls — if you change this cadence, change DAEMON_STALE_MS in
-// convex/ttsShared.ts (its one home; claudeSessions.ts and app/sessions/lib.ts
+// convex/ttsShared.ts (its one home; claudeSessions.ts and app/runs/lib.ts
 // re-export from there) with it.
 const POLL_IDLE_MS = 30_000;
 const HOT_WINDOW_MS = 30_000;

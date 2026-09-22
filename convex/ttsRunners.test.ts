@@ -623,7 +623,7 @@ describe("composeCheckIn", () => {
     asks: 0,
     checkIn: "Nothing changed.",
     graded: { verdict: "pass" as const, complaints: [] },
-    runUrl: "https://www.tom.quest/sessions?run=claude%3Abox%3Ax",
+    runUrl: "https://www.tom.quest/runs?run=claude%3Abox%3Ax",
   };
 
   it("still composes one line when nothing changed, the numbers in their fixed order", async () => {
@@ -728,7 +728,7 @@ describe("a question for Tom", () => {
 
   it("composes the question whole under a first line that says whether the runner is holding still", async () => {
     const { composeRunnerAsk, runnerAskBody, renderSlack } = await import("./ttsCompose");
-    const facts = { title: "TRAIN25 campaign", question: "Should I skip pythia? If you do not answer, I keep training it.", tier: "plan" as const, blocking: true, stepUrl: "https://www.tom.quest/sessions?run=x" };
+    const facts = { title: "TRAIN25 campaign", question: "Should I skip pythia? If you do not answer, I keep training it.", tier: "plan" as const, blocking: true, stepUrl: "https://www.tom.quest/runs?run=x" };
     const text = renderSlack(composeRunnerAsk(facts, { canReply: true }));
     expect(text.split("\n")[0]).toBe("The runner TRAIN25 campaign has a question about what the experiment is only you can settle. Its steps change nothing until you answer.");
     expect(text).toContain("reply here");

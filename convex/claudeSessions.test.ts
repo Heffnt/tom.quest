@@ -644,7 +644,7 @@ describe("claude sessions", () => {
     expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
   });
 
-  // "none" from the /sessions dropdown is an ANSWER, not an absence: Tom asked
+  // "none" from the /runs dropdown is an ANSWER, not an absence: Tom asked
   // for an empty scratch workspace and must not be overridden by the batch.
   // witness: change the resolver's `explicit !== undefined` test to a
   // truthiness test on the normalized result and this goes red.
@@ -2438,7 +2438,7 @@ describe("message overflow (the complete payload)", () => {
     return { messageId, full, overflow };
   }
 
-  /** Every page of one message's overflow, the way the sessions page reads it. */
+  /** Every page of one message's overflow, the way the runs page reads it. */
   async function readAll(
     t: ReturnType<typeof convexTest>,
     messageId: Id<"claudeMessages">,

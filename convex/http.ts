@@ -369,7 +369,11 @@ http.route({ path: "/tts/search/events", method: "GET", handler: ttsSearchEvents
 http.route({ path: "/tts/search/todos", method: "GET", handler: ttsSearchTodos });
 
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
-// item. Body: { statement, source?, provenance? }.
+// item. Body: { statement, source?, provenance?, needsTomToday?, why? }.
+// `needsTomToday: true` is a poller's triage judging the item to need Tom
+// today, and `why` its few words; both are stored on the todo, and the
+// morning message and the hourly line say them. No worker opens a needs-you
+// thread (Tom, 2026-09-21).
 const ttsCapture = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -392,6 +396,10 @@ const ttsCapture = httpAction(async (ctx, request) => {
     // on; a caller that has none simply omits them.
     slackChannel: typeof b.slackChannel === "string" ? b.slackChannel : undefined,
     slackTs: typeof b.slackTs === "string" ? b.slackTs : undefined,
+    needsTomToday:
+      b.needsTomToday === true
+        ? { why: typeof b.why === "string" ? b.why.trim() : "" }
+        : undefined,
   });
   return jsonResponse(200, { ok: true, id });
 });
@@ -437,6 +445,12 @@ http.route({
 });
 
 // POST /tts/needs-tom — one needs-you thread for a todo only Tom can settle.
+// NO CODE IN THIS REPOSITORY CALLS IT since Tom ruled on 2026-09-21 that
+// workers do not reach him directly: the mail pollers stopped, and a runner's
+// question opens its thread through internalOpenNeedsTomThread, not this
+// route. It stays because the agent rules still list it as a pen a session
+// with Tom's context may use, and removing a pen is a change to those rules,
+// made there first, not a side effect of this one.
 // Body: { todoId, reason, key }. The job stops composing message text: it
 // sends FACTS, and convex/ttsSlack.ts composes the thread from the todo's own
 // statement and entry action plus `reason`, then opens it through the one
@@ -3155,7 +3169,7 @@ http.route({
 });
 
 // POST /tts/session — the Friday weekly job's door (worker/jobs/weekly.mjs)
-// to open ITS session on the sessions page. Body: { title, kind: "weekly",
+// to open ITS session on the runs page. Body: { title, kind: "weekly",
 // day, agendaSubjects, repos?, model?, initialPrompt } →
 // claudeSessions.internalCreateWeeklySession, the same one row-builder
 // (insertSession) behind every session, so the opener begins with the

@@ -179,8 +179,44 @@ describe("the morning message's writer", () => {
     // THE FACTS BLOCK rides the same row, so the transcript shows the inputs
     // beside the message they produced.
     expect((marked[0].data as { facts: { kind: string } }).facts.kind).toBe("today");
+    // Surfaced is what THIS message printed: the rent, by its link.
+    expect((marked[0].data as { surfacedTodoIds?: string[] }).surfacedTodoIds ?? null).toBeNull();
+    const surfaced = rows.filter((e) => e.kind === "surfaced").map((e) => e.todoId);
+    expect(surfaced).toEqual([todoFact.id.slice("todo:".length)]);
     // The request is settled: nothing is open for a second run to write.
     expect(await openRequests(t)).toHaveLength(0);
+  });
+
+  it("marks surfaced the todos the written draft printed, a needs-you-today item included", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    await openMorning(t);
+    const flagged = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice", source: "email", needsTomToday: { why: "it is due tomorrow" },
+    });
+    vi.setSystemTime(FIVE_AM);
+    stubSlack();
+    await t.action(internal.ttsSync.sendToday, {});
+    const [request] = await openRequests(t);
+    const facts = request.facts.facts as { id: string; urls: string[] }[];
+    const todoFact = facts.find((f) => f.id.startsWith("todo:"))!;
+    const needsFact = facts.find((f) => f.id === `needs-you-today:${flagged}`)!;
+    const accepted = await t.mutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
+      requestId: request.requestId,
+      draft: {
+        firstLine: "One thing carries a date you have passed; the rent is the one to start with.",
+        firstLineSources: ["today:count"],
+        lines: [
+          { role: "item", text: "Pay the rent: open the bank app. One day late.", url: todoFact.urls[0], sources: [todoFact.id] },
+          { role: "item", text: "Pay the lab deposit invoice, which is due tomorrow.", url: needsFact.urls[0], sources: [needsFact.id] },
+        ],
+      },
+    });
+    expect(accepted).toEqual({ accepted: true });
+    await t.action(internal.ttsSync.sendSlackDraft, { requestId: request.requestId });
+    const surfaced = (await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).filter((e) => e.kind === "surfaced").map((e) => e.todoId);
+    expect(surfaced.sort()).toEqual([todoFact.id.slice("todo:".length), flagged].sort());
   });
 
   // The chain a reaction on the morning is resolved through: the writing run's

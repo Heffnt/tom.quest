@@ -40,7 +40,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // The staleness threshold lives in ttsShared (one home; the worker daemon's
 // literal mirror is fenced by scripts/check-session-mirrors.mjs), and so do
 // the live-status list this file scans by (LIVE_STATUSES / isLive, formerly
-// declared here AND in app/sessions/lib.ts) and
+// declared here AND in app/runs/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
 // page, the planner, and the scheduler must all mean the same thing by
 // "ready". The model-of-tom context each opener carries is assembled for that
@@ -385,7 +385,7 @@ async function messageOverflow(
   };
 }
 
-// Tom's door: what the sessions page expands a cut row into.
+// Tom's door: what the runs page expands a cut row into.
 export const getMessageOverflow = query({
   args: {
     messageId: v.id("claudeMessages"),
@@ -2372,7 +2372,7 @@ type ToolResultContent = {
 
 // Flatten a tool-result content payload (a string, or an array of typed
 // blocks) to plain text for previews and id matching. Lockstep with
-// app/sessions/lib.ts contentToText (the client's renderer of the same
+// app/runs/lib.ts contentToText (the client's renderer of the same
 // daemon-written shapes — the client bundle cannot import this server module).
 function contentText(x: unknown): string {
   if (typeof x === "string") return x;
@@ -2388,7 +2388,7 @@ function contentText(x: unknown): string {
   return x === undefined ? "" : JSON.stringify(x);
 }
 
-// Lockstep with app/sessions/lib.ts previewLine (the client's one-line
+// Lockstep with app/runs/lib.ts previewLine (the client's one-line
 // truncation of the same content).
 function previewText(x: unknown): string {
   const s = contentText(x);
@@ -2452,7 +2452,7 @@ export const getOpenToolWork = query({
 
     // ONE name per fact — this is the canonical field list, and the client
     // reads exactly these names (no aliases on either side). The reader is
-    // the transcript's subagent fold (app/sessions/components/transcript.tsx):
+    // the transcript's subagent fold (app/runs/components/transcript.tsx):
     // it takes `agents` — the running ones, with their type, description,
     // startedAt and current call — for its summary line, because those are
     // facts about a live subagent that are not rows in the transcript. The
@@ -2597,7 +2597,7 @@ export const getOpenToolWork = query({
 // ceilings admission is judged against, and the two runaway failsafes — and
 // they were set once and never touched again. A number nobody changes is not a
 // decision; it is mechanism, and mechanism belongs in code rather than in a
-// row Tom has to hold in his head to read the sessions page. So NO DOOR WRITES
+// row Tom has to hold in his head to read the runs page. So NO DOOR WRITES
 // THEM any more: both pens below write these values verbatim, and Tom's own
 // door (setAutoConfig) takes `enabled` alone.
 //
@@ -2671,7 +2671,7 @@ export const getAutoConfig = query({
 });
 
 // Tom's door, and the whole of it: ON or OFF. See the fleet strip in
-// app/sessions/components/session-list.tsx. The stored default model is
+// app/runs/components/session-list.tsx. The stored default model is
 // carried through untouched — a press of "stop" decides nothing about which
 // model the fleet runs on.
 export const setAutoConfig = mutation({

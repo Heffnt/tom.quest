@@ -441,6 +441,8 @@ function learningCheckout(over = {}) {
     "model-of-tom/evidence/agent-rules.md": "# Evidence\n\n## Map\n\n",
     "model-of-tom/schedule.md": "# Schedule\n\n## Week\n\n",
     "model-of-tom/evidence/schedule.md": "# Evidence\n\n## Week\n\n",
+    "model-of-tom/explainers.md": "# Explainers\n\n## Form\n\n",
+    "model-of-tom/evidence/explainers.md": "# Evidence\n\n## Form\n\n",
     "model-of-tom/areas/climbing.md": CLIMBING,
     "model-of-tom/evidence/areas/climbing.md": CLIMBING_EVIDENCE,
     "tts/spec.md": "# Spec\n\n## Rules\n\n- the spec's own line\n",
