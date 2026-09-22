@@ -314,6 +314,9 @@ export const internalStillReady = internalQuery({
 export const internalNoteAttempt = internalMutation({
   args: { id: v.string(), ok: v.boolean(), why: v.string() },
   handler: async (ctx, { id, ok, why }) => {
+    // The id travels out to an action and back as a string, so it is checked
+    // rather than trusted: a row deleted while the landing ran (the mirror
+    // drops a change forty days after it closed) has no note to write.
     const rowId = ctx.db.normalizeId("pullRequests", id);
     if (rowId === null) return;
     const row = await ctx.db.get(rowId);
@@ -493,6 +496,9 @@ async function landReady(
 export const refreshOpenPulls = internalAction({
   args: {},
   handler: async (ctx): Promise<{ open: number }> => {
+    // Without the credential there is nothing to ask GitHub with, and the
+    // mirror holds its last answer rather than emptying itself: the page would
+    // otherwise show no waiting changes at all the moment a token expired.
     const token = process.env.GITHUB_MIRROR_TOKEN;
     if (!token) return { open: 0 };
     let open = 0;
@@ -519,6 +525,10 @@ export const refreshOpenPulls = internalAction({
         );
         continue;
       }
+      // GitHub's own JSON, which nothing in this repository types: the shapes
+      // are checked here because a pull request missing a number or a head sha
+      // would be written into the table as undefined and read back by the page
+      // as a change it cannot open or merge.
       const rows = pulls
         .filter(
           (pull) =>

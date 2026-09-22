@@ -65,6 +65,9 @@ export default function RulingsList({
     ...rulings.map((ruling): Row => ({ id: ruling.id, at: ruling.ruledAt, by: "Tom", ruling })),
     ...events
       .filter((event) => event.kind === "delegate-decision")
+      // dtsEvents.data is v.any(), so nothing makes a delegate-decision row
+      // carry these fields; a row missing one draws the part it has rather
+      // than taking the list down, and its absence shows as an empty line.
       .map((event): Row => ({
         id: event.id,
         at: event.at,
