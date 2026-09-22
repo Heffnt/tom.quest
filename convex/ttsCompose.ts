@@ -1728,7 +1728,9 @@ export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
   // THE OBJECTION LIST STAYS SECOND in a written draft too. A draft names no
   // sections, so sectionOrderFaults cannot see its order; the lines are read
   // by what they cite instead, and no needs-you-today line may come before a
-  // line of the objection list.
+  // line of the objection list. Whether a draft prints the objection list at
+  // all is not checked here, as it never has been: only the needs-you items
+  // are required, above.
   const lastObjection = lines.reduce((at, line, i) => (line.sources.some((id) => id.startsWith("ask:")) ? i : at), -1);
   const firstNeeds = lines.findIndex((line) => line.role !== "first" && line.sources.some((id) => id.startsWith("needs-you-today:")));
   if (firstNeeds >= 0 && firstNeeds < lastObjection) {
