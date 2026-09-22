@@ -47,9 +47,9 @@ const WAITING_MAX = 200;
  *  (convex/ttsAsk.ts). Spelled here rather than imported because both of those
  *  modules pull in the Slack door and the GitHub fetch, which a read-only
  *  query has no business loading. */
-export const MERGE_KIND = "merge";
-export const DELEGATE_DECISION_KIND = "delegate-decision";
-export const DELEGATE_OBJECTION_KIND = "delegate-objection";
+const MERGE_KIND = "merge";
+const DELEGATE_DECISION_KIND = "delegate-decision";
+const DELEGATE_OBJECTION_KIND = "delegate-objection";
 
 /** The three head rows the merge gate reads for one commit
  *  (convex/ttsMerge.ts). */

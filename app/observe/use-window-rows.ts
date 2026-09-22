@@ -24,7 +24,7 @@ const PAGE = 400;
 const RUNS_CAP = 4000;
 const EVENTS_CAP = 4000;
 
-export type WindowRows = {
+type WindowRows = {
   runs: RunMark[];
   events: PointEvent[];
   rulings: RulingRow[];
@@ -42,14 +42,20 @@ export type WindowRows = {
   capped: boolean;
 };
 
-export function useWindowRows(win: TimeWindow): WindowRows {
-  const args = { from: win.from, to: win.to };
+/**
+ * `on` is the caller's `isTom`: every query below is gated on requireTom, so a
+ * signed-in stranger asking for them is a thrown error in the middle of the
+ * render rather than the gate card the page means to show. The "skip" idiom is
+ * what app/sessions already does for the same reason.
+ */
+export function useWindowRows(win: TimeWindow, on: boolean): WindowRows {
+  const args = on ? { from: win.from, to: win.to } : "skip";
 
   const runs = usePaginatedQuery(api.observe.runsInWindow, args, { initialNumItems: PAGE });
   const events = usePaginatedQuery(api.observe.eventsInWindow, args, { initialNumItems: PAGE });
   const rulings = useQuery(api.observe.rulingsInWindow, args);
-  const runners = useQuery(api.ttsRunners.listRunners, {});
-  const waiting = useQuery(api.observe.waitingOnTom, {});
+  const runners = useQuery(api.ttsRunners.listRunners, on ? {} : "skip");
+  const waiting = useQuery(api.observe.waitingOnTom, on ? {} : "skip");
 
   const runsStatus = runs.status;
   const runsLoadMore = runs.loadMore;

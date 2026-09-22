@@ -44,7 +44,7 @@ export type MapNode = {
   external?: boolean;
 };
 
-export type MapEdge = {
+type MapEdge = {
   from: string;
   to: string;
   /** Both ends carry an arrowhead: the two components feed each other. */

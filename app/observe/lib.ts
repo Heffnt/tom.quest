@@ -4,7 +4,7 @@
 // the page draws are the numbers a test can read.
 
 import { SESSION_REPOS } from "@/convex/ttsShared";
-import type { Lane } from "./map-data";
+import type { Lane, Tally } from "./map-data";
 
 // ── The window ───────────────────────────────────────────────────────────────
 
@@ -149,7 +149,7 @@ function field(data: unknown, name: string): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-export type MergeRow = {
+type MergeRow = {
   id: string;
   at: number;
   repo: string | null;
@@ -174,7 +174,7 @@ export function mergeRowOf(event: PointEvent): MergeRow {
   };
 }
 
-export type FailureRow = {
+type FailureRow = {
   id: string;
   at: number;
   job: string;
@@ -222,7 +222,7 @@ export function mergeHref(row: MergeRow): string | null {
 
 // ── The map's numbers ────────────────────────────────────────────────────────
 
-export type Tallied = { count: number; lastAt: number | null };
+type Tallied = { count: number; lastAt: number | null };
 
 const NOTHING: Tallied = { count: 0, lastAt: null };
 
@@ -239,7 +239,7 @@ export type WindowData = {
 };
 
 /** Everything in the window that belongs to one lane, counted and dated. */
-export function laneTally(data: WindowData, lane: Lane, now: number): Tallied {
+function laneTally(data: WindowData, lane: Lane, now: number): Tallied {
   if (lane === "sessions" || lane === "workers" || lane === "runners") {
     let count = 0;
     let lastAt: number | null = null;
@@ -268,18 +268,7 @@ export function laneTally(data: WindowData, lane: Lane, now: number): Tallied {
 }
 
 /** The number under one node of the map. */
-export function tallyFor(
-  tally:
-    | { of: "lane"; lane: Lane }
-    | { of: "everything" }
-    | { of: "host"; host: "box" | "laptop" }
-    | { of: "models" }
-    | { of: "wikitom" }
-    | { of: "gate" }
-    | { of: "turing" },
-  data: WindowData,
-  now: number,
-): Tallied {
+export function tallyFor(tally: Tally, data: WindowData, now: number): Tallied {
   switch (tally.of) {
     case "lane":
       return laneTally(data, tally.lane, now);

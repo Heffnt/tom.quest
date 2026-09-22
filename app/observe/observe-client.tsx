@@ -60,7 +60,7 @@ export default function ObserveClient() {
   }, [kind, offset]);
 
   const win = useMemo(() => windowBounds(kind, offset, anchor), [kind, offset, anchor]);
-  const rows = useWindowRows(win);
+  const rows = useWindowRows(win, isTom);
 
   const data = useMemo(
     () => ({

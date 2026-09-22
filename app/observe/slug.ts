@@ -4,6 +4,3 @@
  * app/components/page-routes.ts and every link on the page read it from here.
  */
 export const OBSERVE_SLUG = "observe";
-
-/** The page's own address. */
-export const OBSERVE_HREF = `/${OBSERVE_SLUG}`;
