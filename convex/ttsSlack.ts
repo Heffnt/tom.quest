@@ -559,6 +559,9 @@ export async function slackThreadReplyFrom(
       capturedAs: outcome.todoId,
     });
   }
+  // A reserved elevation's thread was opened on the elevation's todo, and the
+  // weekly gather matches a needs-you thread to its reply by that todo.
+  const elevationTodo = subject.kind === "elevation" ? (await ctx.db.get(subject.id))?.todoId : undefined;
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: "slack-event",
@@ -566,9 +569,11 @@ export async function slackThreadReplyFrom(
     todoId:
       subject.kind === "todo"
         ? subject.id
-        : outcome.outcome === "captured"
-          ? outcome.todoId
-          : undefined,
+        : subject.kind === "elevation"
+          ? elevationTodo
+          : outcome.outcome === "captured"
+            ? outcome.todoId
+            : undefined,
     data: {
       ...at,
       user,

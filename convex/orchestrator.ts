@@ -331,12 +331,23 @@ async function launchRun(
         .withIndex("by_session_status", (q) => q.eq("sessionId", from._id))
         .collect()
     ).sort((a, b) => a.createdAt - b.createdAt);
+    // The turn it was on when a run ended other than by compacting may have
+    // been marked done and still failed (the daemon settles a turn done at
+    // its result, failed or not), so that one turn counts as unfinished.
+    const delivered = rows.filter((m) => m.deliveredAt !== undefined);
+    const lastTurn = from.endedReason === COMPACT_ENDED_REASON
+      ? undefined
+      : delivered.reduce<(typeof rows)[number] | undefined>(
+          (a, m) => (a === undefined || m.deliveredAt! > a.deliveredAt! || (m.deliveredAt === a.deliveredAt && m.createdAt >= a.createdAt) ? m : a),
+          undefined,
+        );
+    const finished = (m: (typeof rows)[number]) => m.status === "done" && m._id !== lastTurn?._id;
     // Its opener finished: what that opener carried was read, and only what
     // arrived since is handed on (with anything the mailbox gained meanwhile,
     // which reached no run).
-    if (rows[0]?.status === "done") carried = carried.slice(row.carriedCount ?? 0);
+    if (rows[0] !== undefined && finished(rows[0])) carried = carried.slice(row.carriedCount ?? 0);
     for (const message of rows.slice(1)) {
-      if (message.status === "done" || message.author !== "agent" || message.kind !== "user-turn") continue;
+      if (finished(message) || message.author !== "agent" || message.kind !== "user-turn") continue;
       if (typeof message.text === "string") carried.push(message.text);
     }
     // Nothing is left pending on a run the chain has moved past, its opener

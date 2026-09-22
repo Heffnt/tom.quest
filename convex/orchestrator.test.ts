@@ -23,7 +23,6 @@ import {
   buildOrchestratorPrompt,
   crashBackoffMs,
   orchestratorModel,
-  recordElevationReply,
 } from "./orchestrator";
 import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER, NARROW_LIST } from "./ttsShared";
 import { COMPACT_ENDED_REASON, ORCHESTRATOR_COMPACT_WORD } from "../worker/session-host/hosted.mjs";
@@ -400,8 +399,18 @@ describe("elevations", () => {
     // Still open for the worker's ending until Tom answers.
     expect((await poll(t, { hosts: HOSTS })).sessions.find((s) => s.id === worker)?.openElevations).toBe(1);
 
-    const reply = await t.run(async (ctx) => recordElevationReply(ctx, elevationId as Id<"elevations">, "Renew it, yes.", { channel: "C-NEEDS", ts: "2.0", threadTs: "1.0" }));
+    // Tom's reply arrives in the thread the one Slack door recorded, and the
+    // record of it names the elevation's todo, as a todo thread's reply does.
+    const todoId = await t.mutation(internal.tts.internalCapture, { statement: "renew tom.quest", source: "test", provenance: "test" });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(elevationId as Id<"elevations">, { todoId });
+      await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "slack-sent", key: "C-NEEDS:1.0", data: { subject: { kind: "elevation", id: elevationId } } });
+    });
+    vi.stubEnv("TOM_SLACK_USER_ID", "UTOM");
+    const reply = await t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId: "Ev1", channel: "C-NEEDS", threadTs: "1.0", ts: "2.0", text: "Renew it, yes.", user: "UTOM" });
     expect(reply.outcome).toBe("elevation-answer");
+    const event = await t.run(async (ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", "slack-event").eq("key", "Ev1")).unique());
+    expect(event?.todoId).toBe(todoId);
     const ruling = await t.run(async (ctx) => ctx.db.query("dtsRulings").withIndex("by_elevation", (q) => q.eq("elevationId", elevationId as Id<"elevations">)).unique());
     expect(ruling).toMatchObject({ ruledBy: "tom", sentence: "Renew it, yes." });
     expect((await pendingTexts(t, worker)).some((m) => m === `Tom answered your elevation ${elevationId}: Renew it, yes.`)).toBe(true);
@@ -494,17 +503,22 @@ describe("restarting from the document", () => {
     const [opener, message] = await t.run(async (ctx) =>
       (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", first as Id<"claudeSessions">)).collect()).sort((a, b) => a.createdAt - b.createdAt),
     );
-    // The opener's turn finished; the message's turn was delivered and failed.
+    // The opener's turn finished; the message's turn was delivered and its
+    // result failed, which the daemon still settles as done.
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId: first as Id<"claudeSessions">,
       status: "running",
-      inboundUpdates: [{ id: opener._id, status: "delivered" }, { id: opener._id, status: "done" }, { id: message._id, status: "delivered" }],
+      inboundUpdates: [{ id: opener._id, status: "delivered" }, { id: opener._id, status: "done" }],
+    });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: first as Id<"claudeSessions">,
+      inboundUpdates: [{ id: message._id, status: "delivered" }],
     });
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId: first as Id<"claudeSessions">,
       status: "ended",
       endedReason: "autonomous turn failed",
-      inboundUpdates: [{ id: message._id, status: "failed" }],
+      inboundUpdates: [{ id: message._id, status: "done" }],
     });
     vi.setSystemTime(Date.now() + crashBackoffMs(1) + 1);
     await t.mutation(internal.orchestrator.internalSweep, {});
@@ -524,7 +538,9 @@ describe("restarting from the document", () => {
     expect(third).not.toBe(next);
     expect((await pendingTexts(t, third))[0]).toContain("PR 1 is open.");
 
-    // Once a run finishes its opener, what it carried is not carried again.
+    // Once a run finishes its opener (here it goes on to compact), what it
+    // carried is not carried again. A run that crashes straight after its
+    // opener carries them once more: that turn may have failed.
     const opener3 = await t.run(async (ctx) =>
       (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", third).eq("status", "pending")).unique())!,
     );
@@ -534,8 +550,7 @@ describe("restarting from the document", () => {
       runId: "codex:box:third",
       inboundUpdates: [{ id: opener3._id, status: "delivered" }, { id: opener3._id, status: "done" }],
     });
-    await ingest(t, third, { status: "ended", endedReason: "autonomous turn failed" });
-    vi.setSystemTime(Date.now() + crashBackoffMs(3) + 1);
+    await ingest(t, third, { status: "ended", endedReason: COMPACT_ENDED_REASON });
     await t.mutation(internal.orchestrator.internalSweep, {});
     const fourth = (await row(t))!.liveSessionId!;
     expect((await pendingTexts(t, fourth))[0]).not.toContain("PR 1 is open.");
