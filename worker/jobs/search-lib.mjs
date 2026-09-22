@@ -310,7 +310,9 @@ export function formatRulingResult(row, fallback = "ruling") {
   const provenance = row?.provenance
     ? `from=${singleLine(row.provenance.from)} inbound=${singleLine(row.provenance.inboundId)} quote=${quoted(row.provenance.quote)}`
     : "none";
-  return `${id} ${date} verdict=${singleLine(row?.verdict)} sentence=${quoted(row?.sentence)} provenance=${provenance} todo=${quoted(row?.todoStatement)}`;
+  // A delegate's answer says so; a ruling of Tom's prints as it always has.
+  const by = row?.ruledBy === "delegate" ? " by=delegate (not Tom's words)" : "";
+  return `${id} ${date} verdict=${singleLine(row?.verdict)}${by} sentence=${quoted(row?.sentence)} provenance=${provenance} todo=${quoted(row?.todoStatement)}`;
 }
 
 export function formatSessionResult(row, fallback = "session") {

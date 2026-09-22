@@ -507,23 +507,26 @@ export async function onHostedSessionEnded(
     await ctx.scheduler.runAfter(0, internal.orchestrator.internalSweep, {});
     return;
   }
-  const crashes = row.crashes + 1;
+  const crashes = await countCrash(ctx, row, session._id, ending.endedReason ?? ending.status);
   const wait = crashBackoffMs(crashes);
-  await ctx.db.patch(row._id, { crashes, restartAt: now + wait });
-  await logEvent(ctx, "orchestrator-crashed", undefined, {
-    sessionId: session._id,
-    endedReason: ending.endedReason ?? ending.status,
-    crashes,
-    restartInMs: wait,
-  });
+  await ctx.db.patch(row._id, { restartAt: now + wait });
+  await ctx.scheduler.runAfter(wait, internal.orchestrator.internalSweep, {});
+}
+
+/** Count one crash, the one way: the event, and at the third in a row the
+ * #tts-broken line. Returns the new count. */
+async function countCrash(ctx: MutationCtx, row: Doc<"orchestrators">, sessionId: Id<"claudeSessions">, endedReason: string): Promise<number> {
+  const crashes = row.crashes + 1;
+  await ctx.db.patch(row._id, { crashes });
+  await logEvent(ctx, "orchestrator-crashed", undefined, { sessionId, endedReason, crashes });
   if (crashes === ORCHESTRATOR_CRASHES_REPORTED) {
     // "-failed" is what makes logEvent post the #tts-broken line.
     await logEvent(ctx, "orchestrator-restart-failed", undefined, {
       job: "orchestrator",
-      error: `the orchestrator has crashed ${crashes} times in a row; the last run ended: ${ending.endedReason ?? ending.status}`,
+      error: `the orchestrator has crashed ${crashes} times in a row; the last run ended: ${endedReason}`,
     });
   }
-  await ctx.scheduler.runAfter(wait, internal.orchestrator.internalSweep, {});
+  return crashes;
 }
 
 /**
@@ -554,12 +557,7 @@ export const internalSweep = internalMutation({
       return { restarted: true };
     }
     if (session.status !== "requested" && row.leaseDeadline !== undefined && now > row.leaseDeadline) {
-      await ctx.db.patch(row._id, { crashes: row.crashes + 1 });
-      await logEvent(ctx, "orchestrator-crashed", undefined, {
-        sessionId: session._id,
-        endedReason: "its lease expired",
-        crashes: row.crashes + 1,
-      });
+      await countCrash(ctx, row, session._id, "its lease expired");
       await launchRun(ctx, (await ctx.db.get(row._id))!, "the last run's lease expired");
       return { restarted: true };
     }

@@ -308,6 +308,9 @@ describe("elevations", () => {
     // Never read as Tom's words: not by the planner's feed of his recent
     // rulings, and not by the nightly learning step.
     expect(await t.query(internal.ttsRulings.internalRecentRulings, {})).toEqual([]);
+    // Search names it as the delegate's.
+    const found = (await t.query(internal.ttsSearch.rulings, { query: "header already links", limit: 5 })) as { results: { ruledBy: string }[] };
+    expect(found.results.map((r) => r.ruledBy)).toEqual(["delegate"]);
     expect((await pendingTexts(t, worker)).some((m) => m.includes("ruled by the delegate; treat it as Tom's ruling): Leave it; the header already links."))).toBe(true);
 
     // His objection reverts it, and both runs are told.
@@ -523,6 +526,8 @@ describe("restarting from the document", () => {
 
     await ingest(t, first, { status: "idle", runId: "codex:box:held" });
     await poll(t, { hosts: HOSTS, held: [first] });
+    // Two crashes already behind it: the expiry is the third, and says so.
+    await t.run(async (ctx) => ctx.db.patch((await ctx.db.query("orchestrators").first())!._id, { crashes: 2 }));
     const renewed = (await row(t))!.leaseDeadline!;
     expect(renewed).toBeGreaterThan(Date.now());
     vi.setSystemTime(renewed + 1);
@@ -532,6 +537,8 @@ describe("restarting from the document", () => {
     expect(next.liveSessionId).not.toBe(first);
     const old = await t.run(async (ctx) => ctx.db.get(first as Id<"claudeSessions">));
     expect(old?.status).toBe("failed");
+    const broken = await t.run(async (ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "orchestrator-restart-failed")).collect());
+    expect(broken).toHaveLength(1);
     const session = await t.run(async (ctx) => ctx.db.get(next.liveSessionId!));
     expect(session?.continuesRunId).toBe("codex:box:held");
   });

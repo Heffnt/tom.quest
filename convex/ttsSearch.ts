@@ -119,6 +119,9 @@ export const rulings = internalQuery({
         id: ruling._id,
         subjectType: ruling.subjectType,
         verdict: ruling.verdict,
+        // Absent is Tom. A delegate's answer is named as the delegate's, so no
+        // reader takes it for his words.
+        ruledBy: ruling.ruledBy ?? "tom",
         sentence,
         provenance: ruling.provenance
           ? {
