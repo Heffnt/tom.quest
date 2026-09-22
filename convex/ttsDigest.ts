@@ -810,7 +810,8 @@ export async function gatherTodayFacts(
     today: dated,
     lateCount,
     oldestLateBy,
-    readyBeyond: readyIds.size,
+    // Ready items not printed: a flagged one is printed in the needs-you run.
+    readyBeyond: [...readyIds].filter((id) => !needsYou.some((n) => n.todoId === id)).length,
     calendar,
     calendarLead: spans.length === 0 ? undefined : calendarLeadText(spans),
     objections: objections.slice(0, OBJECTION_CAP),

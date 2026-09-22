@@ -438,6 +438,26 @@ describe("internalComposeToday", () => {
     expect(facts.facts.find((f) => f.id === "needs-you-today:count")?.numbers).toContain("1");
   });
 
+  it("does not count a flagged item among the other ready items it prints", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const flagged = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice", source: "email", needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    const plain = await t.mutation(internal.tts.internalCapture, { statement: "Read the newsletter", source: "slack-capture" });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(flagged, { readiness: "prepared", entryAction: "open the invoice" });
+      await ctx.db.patch(plain, { readiness: "prepared", entryAction: "open it" });
+    });
+    vi.setSystemTime(FIVE_AM);
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const ready = facts.facts.find((f) => f.id === "ready:beyond");
+    expect(text).toContain("Pay the lab deposit invoice, which needs you today");
+    expect(ready?.numbers).toContain("1");
+    expect(ready?.numbers).not.toContain("2");
+  });
+
   it("stores the triage's reason with secrets redacted", async () => {
     const t = convexTest(schema, modules);
     const id = await t.mutation(internal.tts.internalCapture, {
