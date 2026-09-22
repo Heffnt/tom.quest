@@ -207,8 +207,6 @@ export function rulingHref(ruling: RulingRow): string {
 
 type Tallied = { count: number; lastAt: number | null };
 
-const NOTHING: Tallied = { count: 0, lastAt: null };
-
 function latest(left: number | null, right: number): number {
   return left === null ? right : Math.max(left, right);
 }
@@ -326,8 +324,6 @@ export function tallyFor(tally: Tally, data: WindowData, now: number): Tallied {
       }
       return { count, lastAt };
     }
-    default:
-      return NOTHING;
   }
 }
 
