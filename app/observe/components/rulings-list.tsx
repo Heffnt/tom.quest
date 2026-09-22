@@ -53,11 +53,9 @@ function flag(data: unknown, name: string): boolean {
 export default function RulingsList({
   rulings,
   events,
-  isTom,
 }: {
   rulings: RulingRow[];
   events: PointEvent[];
-  isTom: boolean;
 }) {
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const [objecting, setObjecting] = useState<RulingRow | null>(null);
@@ -139,15 +137,13 @@ export default function RulingsList({
                         >
                           open the subject
                         </Link>
-                        {isTom ? (
-                          <button
-                            type="button"
-                            onClick={() => setObjecting(row.ruling)}
-                            className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text"
-                          >
-                            object
-                          </button>
-                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setObjecting(row.ruling)}
+                          className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text"
+                        >
+                          object
+                        </button>
                       </div>
                     </>
                   ) : (
