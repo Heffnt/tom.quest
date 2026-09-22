@@ -734,10 +734,16 @@ function needsYouTodayLine(n: NeedsYouTodayFact): string {
     const line = build(head, why);
     if (line.length <= LINE_CHARS) return statement(line);
   }
-  const head = heads[2];
+  // Words first; a single word too long to fit (a pasted link, say) is cut
+  // by characters, the statement to at most sixty and the reason to the room
+  // left, so the line always keeps both and never needs statement()'s cut.
+  const head = heads[2].length > 60 ? heads[2].slice(0, 60).trim() : heads[2];
   const words = why.split(" ");
   while (words.length > 1 && build(head, words.join(" ")).length > LINE_CHARS) words.pop();
-  return statement(build(head, words.join(" ").replace(/[\s,;:—-]+$/, "")));
+  let reason = words.join(" ").replace(/[\s,;:—-]+$/, "");
+  const over = build(head, reason).length - LINE_CHARS;
+  if (over > 0) reason = reason.slice(0, Math.max(1, reason.length - over));
+  return statement(build(head, reason));
 }
 
 /** The needs-you-today run's lead. */

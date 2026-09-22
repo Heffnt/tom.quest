@@ -807,6 +807,17 @@ describe("the needs-you-today run", () => {
     for (const run of runs) expect(run.slice(1)).toContain("item");
   });
 
+  it("keeps a reason and the lateness even when each is one word too long to fit", () => {
+    const long = { todoId: "abc", statement: `Open ${"x".repeat(180)}`, why: "y".repeat(200), countdown: "Ten days late." };
+    const text = renderSlack(composeToday(sept9({ needsYou: [long] }), { canReply: false }));
+    const line = text.split("\n").find((l) => l.includes("item=abc"))!;
+    expect(line).toContain("which needs you today because yyy");
+    expect(line).toContain("Ten days late.");
+    const fact = todayFactsBlock(sept9({ needsYou: [long] }), false).facts.find((f) => f.id === "needs-you-today:abc")!;
+    expect(fact.text.length).toBeLessThanOrEqual(LINE_CHARS);
+    expect(fact.text).toContain("because yyy");
+  });
+
   it("refuses a written draft that puts an item that needs him today before the objection list", () => {
     const withAsk = sept9({
       needsYou: ITEMS,
