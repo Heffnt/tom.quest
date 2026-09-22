@@ -40,16 +40,16 @@ describe("formatDatabaseResult", () => {
         status: "ended",
         model: "opus",
         outcomeSummary: "ready",
-        sessionUrl: "https://tom.quest/sessions/42",
+        sessionUrl: "https://tom.quest/runs/42",
       }),
-    ).toBe("claudeSessions/session:42 2026-09-09 title=\"first line\\nsecond\\tline\" status=ended model=opus summary=\"ready\" url=https://tom.quest/sessions/42");
+    ).toBe("claudeSessions/session:42 2026-09-09 title=\"first line\\nsecond\\tline\" status=ended model=opus summary=\"ready\" url=https://tom.quest/runs/42");
   });
 });
 
 describe("purpose-shaped formatters", () => {
   it("keeps each database result type readable without serializing the row", () => {
     expect(formatRulingResult({ id: "r1", date: "2026-09-01", verdict: "approve", sentence: "keep it", provenance: { from: "tom", inboundId: "i1", quote: "yes" }, todoStatement: "Ship it" })).toContain('dtsRulings/r1 2026-09-01 verdict=approve sentence="keep it" provenance=from=tom inbound=i1 quote="yes" todo="Ship it"');
-    expect(formatSessionResult({ id: "s1", date: "2026-09-02", title: "Search", status: "ended", model: "opus", outcomeSummary: "done", repos: ["tom.quest", "WikiTom"], url: "/sessions?session=s1" })).toBe('claudeSessions/s1 2026-09-02 title="Search" status=ended model=opus summary="done" repos=tom.quest,WikiTom url=https://tom.quest/sessions?session=s1');
+    expect(formatSessionResult({ id: "s1", date: "2026-09-02", title: "Search", status: "ended", model: "opus", outcomeSummary: "done", repos: ["tom.quest", "WikiTom"], url: "/runs?session=s1" })).toBe('claudeSessions/s1 2026-09-02 title="Search" status=ended model=opus summary="done" repos=tom.quest,WikiTom url=https://tom.quest/runs?session=s1');
     expect(formatEventResult({ id: "e1", date: "2026-09-03", kind: "nightly", text: "finished" })).toBe('dtsEvents/e1 2026-09-03 kind=nightly text="finished"');
     expect(formatTodoResult({ id: "t1", createdAt: "2026-09-04", statement: "Search", status: "active", category: "ops", updatedAt: "2026-09-05" })).toBe('dtsTodos/t1 2026-09-04 statement="Search" status=active category="ops" createdAt=2026-09-04 updatedAt=2026-09-05');
     // A run with nothing to report keeps the shape and simply carries no

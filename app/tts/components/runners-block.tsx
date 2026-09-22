@@ -2,7 +2,7 @@
 
 // RUNNERS — the box's runners, above the batch cards on the batches tab. The
 // live ones newest first, the ended ones under a fold. A row's title opens its
-// newest step run in the run view on /sessions, which already walks the chain
+// newest step run in the run view on /runs, which already walks the chain
 // of steps back; a row expands to the runner's document, its check-ins and the
 // questions it asked. The one action is Tom's: open a new runner.
 //
@@ -19,16 +19,16 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { elapsedText, runnerDecisionWords, runnerTierWords } from "@/convex/ttsCompose";
 import { NO_REPO, RUNNER_CEILING_DEFAULT, RUNNER_CEILING_MAX, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
-import Markdown from "@/app/sessions/components/markdown";
+import Markdown from "@/app/runs/components/markdown";
 import Info from "./info";
 import SectionHeader from "./section-header";
 import { RUNNER_STATUS_WORDS, ageText, errMessage, fmtDate, untilText } from "@/app/tts/lib";
 
 type Runner = FunctionReturnType<typeof api.ttsRunners.listRunners>[number];
 
-/** The run view on /sessions, which reads ?run= on arrival. */
+/** The run view on /runs, which reads ?run= on arrival. */
 function runHref(runId: string): string {
-  return `/sessions?run=${encodeURIComponent(runId)}`;
+  return `/runs?run=${encodeURIComponent(runId)}`;
 }
 
 function clock(ms: number): string {

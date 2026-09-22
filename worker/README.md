@@ -462,7 +462,7 @@ fine" to a session that only checked the status.
 
 **Those two keys hold an account at role `agent`** — tom.quest's fourth role,
 which exists for this and nothing else. It reads `/turing` and `/tts`; it
-writes nothing anywhere; and it sees no other page, including `/sessions`,
+writes nothing anywhere; and it sees no other page, including `/runs`,
 `/forge`, `/jarvis` and `/canvas`. On `/turing` it gets the `GET` that lists
 GPUs and jobs, but not the `POST` that allocates, the `DELETE` that cancels,
 or the terminal's credential endpoint. The single list that defines the reach
@@ -796,7 +796,7 @@ No launcher registers a desktop session, so the slot's run hook
 (`scripts/run-hook.mjs`) records it: on the box, a Claude session with no
 launcher token is a session with Tom, environment `session`, origin `desktop`.
 A `claude` typed into an ssh shell is recorded the same way. A desktop session
-does not appear on `tom.quest/sessions`, whose rows the daemon owns.
+does not appear on `tom.quest/runs`, whose rows the daemon owns.
 
 The standing workspace is `/var/cache/tts/desktop/`, one plain clone each of
 tom.quest, WikiTom and ComplexMultiTrigger, with `origin` at the clean GitHub

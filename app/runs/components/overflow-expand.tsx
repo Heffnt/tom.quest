@@ -13,7 +13,7 @@
 // each read's text is appended in order and its bytes are summed, and the
 // running total is compared against the byte length the row itself stamps.
 // What the line under the control claims is exactly what was checked
-// (app/sessions/lib.ts describeOverflow): "complete" only when the server
+// (app/runs/lib.ts describeOverflow): "complete" only when the server
 // verified bytes and hash, "complete in N reads" when the bytes sum but the
 // hash was not re-checked across pages, and otherwise incomplete with the
 // reason. A silent prefix would be the truncation this path exists to undo.

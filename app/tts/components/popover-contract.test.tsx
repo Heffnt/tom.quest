@@ -6,7 +6,7 @@
 // directions:
 //
 //   1. RENDERED. Every component under app/tts/components AND
-//      app/sessions/components that has controls is rendered here, and every
+//      app/runs/components that has controls is rendered here, and every
 //      control it puts on screen either carries a popover naming a call, or
 //      fires nothing on the backend — which is checked by pressing it and
 //      watching the mutations. The table of components is closed against BOTH
@@ -29,7 +29,7 @@
 // verdict-buttons.tsx and every other verdict surface reads that same text.
 //
 // What counts as fired: `useMutation(api.<module>.<function>)` in any .tsx
-// under app/tts or app/sessions. What counts as named: the same
+// under app/tts or app/runs. What counts as named: the same
 // `<module>.<function>` opening a string literal — the `call=` of an Info, the
 // `call:` of an info table, a Caption's children — anywhere under those two.
 
@@ -90,18 +90,18 @@ import RunnersBlock from "./runners-block";
 import TimeNoteField from "./time-note-field";
 import TodoRow from "./todo-row";
 import VerdictButtons from "./verdict-buttons";
-import Composer from "@/app/sessions/components/composer";
-import ForkDialog from "@/app/sessions/components/fork-dialog";
-import ModelSelect from "@/app/sessions/components/model-select";
-import OverflowExpand from "@/app/sessions/components/overflow-expand";
-import Run from "@/app/sessions/components/run";
-import RunList from "@/app/sessions/components/run-list";
-import RunRow from "@/app/sessions/components/run-row";
-import RunRows from "@/app/sessions/components/run-rows";
+import Composer from "@/app/runs/components/composer";
+import ForkDialog from "@/app/runs/components/fork-dialog";
+import ModelSelect from "@/app/runs/components/model-select";
+import OverflowExpand from "@/app/runs/components/overflow-expand";
+import Run from "@/app/runs/components/run";
+import RunList from "@/app/runs/components/run-list";
+import RunRow from "@/app/runs/components/run-row";
+import RunRows from "@/app/runs/components/run-rows";
 
 const APP = join(__dirname, "..", "..");
 const TTS = join(APP, "tts");
-const SESSIONS = join(APP, "sessions");
+const SESSIONS = join(APP, "runs");
 /** The two component directories the table of cases is closed against. */
 const COMPONENT_DIRS = [join(TTS, "components"), join(SESSIONS, "components")];
 
@@ -320,7 +320,7 @@ const ROW = {
   content: {
     toolName: "Read",
     toolUseId: "tu1",
-    input: { file_path: "app/sessions/components/run.tsx" },
+    input: { file_path: "app/runs/components/run.tsx" },
   },
   createdAt: NOW,
 };
@@ -556,13 +556,13 @@ const CASES: { file: string; render: () => void }[] = [
       void render(<VerdictButtons subject="todo" statement="s" onRule={noop} />),
   },
   {
-    file: "app/sessions/components/composer.tsx",
+    file: "app/runs/components/composer.tsx",
     // daemonStale, so "Force close" is on screen with the rest.
     render: () =>
       void render(<Composer session={SESSION as never} daemonStale />),
   },
   {
-    file: "app/sessions/components/fork-dialog.tsx",
+    file: "app/runs/components/fork-dialog.tsx",
     render: () =>
       void render(
         <ForkDialog
@@ -574,21 +574,21 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/sessions/components/model-select.tsx",
+    file: "app/runs/components/model-select.tsx",
     render: () =>
       void render(
         <ModelSelect ariaLabel="session model" value="gpt-5.6-sol" onChange={noop} />,
       ),
   },
   {
-    file: "app/sessions/components/overflow-expand.tsx",
+    file: "app/runs/components/overflow-expand.tsx",
     render: () =>
       void render(
         <OverflowExpand messageId={"m1" as never} fullByteLength={40_000} />,
       ),
   },
   {
-    file: "app/sessions/components/run-list.tsx",
+    file: "app/runs/components/run-list.tsx",
     render: () =>
       void render(
         <RunList
@@ -600,14 +600,14 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/sessions/components/run-row.tsx",
+    file: "app/runs/components/run-row.tsx",
     // source="run", so the raw level names runs.rows rather than the session
     // reader. The compact line is the control; pressing it is what proves the
     // three levels fire nothing on the backend.
     render: () => void render(<RunRow row={ROW as never} source="run" />),
   },
   {
-    file: "app/sessions/components/run-rows.tsx",
+    file: "app/runs/components/run-rows.tsx",
     // CanLoadMore, so its one control — "load earlier rows" — is on screen.
     // source="session" is the branch that has one: a run pages the other way
     // and the same button reads "load later rows".
@@ -624,7 +624,7 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/sessions/components/run.tsx",
+    file: "app/runs/components/run.tsx",
     // depth 0 and a session id, because that is the only posture that draws
     // controls at all: the header's rename ⓘ and model select, the rows, and
     // the composer. daemonStale, so the composer's "Force close" comes with

@@ -3145,7 +3145,7 @@ http.route({
 });
 
 // POST /tts/session — the Friday weekly job's door (worker/jobs/weekly.mjs)
-// to open ITS session on the sessions page. Body: { title, kind: "weekly",
+// to open ITS session on the runs page. Body: { title, kind: "weekly",
 // day, agendaSubjects, repos?, model?, initialPrompt } →
 // claudeSessions.internalCreateWeeklySession, the same one row-builder
 // (insertSession) behind every session, so the opener begins with the

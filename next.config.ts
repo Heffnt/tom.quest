@@ -8,7 +8,14 @@ const nextConfig: NextConfig = {
   async redirects() {
     // "dts" -> "tts" rename (2026-08-29): links in already-sent Slack
     // digests point at the old path — query params are preserved by default.
-    return [{ source: "/" + "dts", destination: "/tts", permanent: true }];
+    // "sessions" -> "runs" rename (2026-09-21): the page lists every agent
+    // run, not only sessions, and links in the record and in Slack still
+    // name /sessions.
+    return [
+      { source: "/" + "dts", destination: "/tts", permanent: true },
+      { source: "/sessions", destination: "/runs", permanent: true },
+      { source: "/sessions/:path*", destination: "/runs/:path*", permanent: true },
+    ];
   },
 };
 

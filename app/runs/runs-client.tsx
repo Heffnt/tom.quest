@@ -37,7 +37,7 @@ type Target =
   | { kind: "run"; runId: string }
   | null;
 
-export default function SessionsClient() {
+export default function RunsClient() {
   // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
   const { isTom } = useAuth();
   const router = useRouter();
@@ -69,19 +69,19 @@ export default function SessionsClient() {
 
   const openSession = (sessionId: Id<"claudeSessions">) => {
     setTarget({ kind: "session", sessionId });
-    router.replace(`/sessions?session=${sessionId}`, { scroll: false });
+    router.replace(`/runs?session=${sessionId}`, { scroll: false });
   };
 
   const openRun = (runId: string) => {
     setTarget({ kind: "run", runId });
-    router.replace(`/sessions?run=${encodeURIComponent(runId)}`, {
+    router.replace(`/runs?run=${encodeURIComponent(runId)}`, {
       scroll: false,
     });
   };
 
   const close = () => {
     setTarget(null);
-    router.replace("/sessions", { scroll: false });
+    router.replace("/runs", { scroll: false });
   };
 
   // health: undefined = query loading; null = the worker has never reported.
@@ -111,7 +111,7 @@ export default function SessionsClient() {
     <div className="max-w-3xl mx-auto w-full">
       <div className="px-3 sm:px-4 py-6 space-y-4">
         <header>
-          <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Runs</h1>
         </header>
         <RunList
           sessions={sessions}
@@ -123,5 +123,5 @@ export default function SessionsClient() {
     </div>
   );
 
-  return <TomGate label="Sessions">{body}</TomGate>;
+  return <TomGate label="Runs">{body}</TomGate>;
 }

@@ -202,7 +202,7 @@ export const sessions = internalQuery({
           ? excerpt(redactSecrets(session.outcomeSummary), query)
           : null,
         date: session.createdAt,
-        url: `https://tom.quest/sessions?session=${session._id}`,
+        url: `https://tom.quest/runs?session=${session._id}`,
       });
       if (results.length === limit) {
         exhausted = false;

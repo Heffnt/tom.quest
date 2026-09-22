@@ -776,7 +776,7 @@ describe("composeHourly", () => {
     expect(message).not.toBeNull();
     expect(message?.lines).toEqual([]);
     expect(message?.firstLine).toBe(
-      "<https://www.tom.quest/sessions?session=k97a|Retire the superseded CMT code paths> has been working on its own for 2h15m, and 3 items were captured.",
+      "<https://www.tom.quest/runs?session=k97a|Retire the superseded CMT code paths> has been working on its own for 2h15m, and 3 items were captured.",
     );
   });
 

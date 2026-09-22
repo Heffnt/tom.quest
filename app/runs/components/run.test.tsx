@@ -252,7 +252,7 @@ function loadTree() {
         _id: "m-a-1",
         runId: "run-a",
         seq: 1000,
-        ...bash("tu-a-1", "cat app/sessions/lib.ts"),
+        ...bash("tu-a-1", "cat app/runs/lib.ts"),
       }),
       fileRow({
         _id: "m-a-2",
@@ -374,10 +374,10 @@ describe("the recursion", () => {
     // Level 0 is on screen; nothing below it is, because nothing is open.
     expect(screen.getByText("ls -la")).toBeTruthy();
     expect(screen.getByText("walk the fixture tree")).toBeTruthy();
-    expect(screen.queryByText("cat app/sessions/lib.ts")).toBeNull();
+    expect(screen.queryByText("cat app/runs/lib.ts")).toBeNull();
 
     openFold("walk the fixture tree");
-    expect(screen.getByText("cat app/sessions/lib.ts")).toBeTruthy();
+    expect(screen.getByText("cat app/runs/lib.ts")).toBeTruthy();
     expect(screen.getByText("child A summarizes the fixture")).toBeTruthy();
     expect(screen.getByText("the grandchild leaf")).toBeTruthy();
     expect(screen.queryByText("echo grandchild")).toBeNull();
@@ -389,7 +389,7 @@ describe("the recursion", () => {
     // Every level kept its own rows — the grandchild's did not land in the
     // child's list — and the indent grows by one container per level.
     expect(indentDepth(screen.getByText("ls -la"))).toBe(0);
-    expect(indentDepth(screen.getByText("cat app/sessions/lib.ts"))).toBe(1);
+    expect(indentDepth(screen.getByText("cat app/runs/lib.ts"))).toBe(1);
     expect(indentDepth(screen.getByText("echo grandchild"))).toBe(2);
   });
 
@@ -948,7 +948,7 @@ const FIXTURE_KIND: [string, string][] = [
   ["ls -la", "tool-call"],
   ["root run plans the sweep", "thinking"],
   ["walk the fixture tree", "child-run"],
-  ["cat app/sessions/lib.ts", "tool-call"],
+  ["cat app/runs/lib.ts", "tool-call"],
   ["child A summarizes the fixture", "assistant-text"],
   ["the grandchild leaf", "child-run"],
   ["echo grandchild", "tool-call"],
