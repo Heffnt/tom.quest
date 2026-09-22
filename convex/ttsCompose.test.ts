@@ -798,6 +798,21 @@ describe("composeHourly", () => {
     );
   });
 
+  it("keeps the line under its cap by naming the capture with less detail, and never pushes it over", () => {
+    const long = "Pay the lab deposit invoice for the autumn semester reagent order";
+    const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abcdefghijklmnopqrstuvwxyz012345", text: long, needsYouToday: "the invoice is due tomorrow and the lab manager is waiting on it" };
+    const running = [{
+      sessionId: "k97a", title: "Planning", kind: "worker", mode: "autonomous",
+      status: "running", statement: "Plan the research path", batchId: null, elapsedMs: 3_600_000,
+    }];
+    const message = composeHourly(hourly({ running, changes: [capture] }));
+    // The whole clause with its reason would not fit here.
+    expect(composeHourly(hourly({ running }))!.firstLine.length + capture.needsYouToday.length).toBeGreaterThan(FIRST_LINE_CHARS - 60);
+    expect(message!.firstLine.length).toBeLessThanOrEqual(FIRST_LINE_CHARS);
+    expect(message!.firstLine).toContain("needs you today");
+    expect(message!.firstLine).not.toContain("because");
+  });
+
   it("is one sentence with a link inside it for a busy hour", () => {
     const message = composeHourly(
       hourly({

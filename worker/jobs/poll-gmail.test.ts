@@ -51,6 +51,9 @@ describe("needing Tom today", () => {
     expect(captureBody("m2", { capture: true, statement: "Read it", needsTomToday: false, why: "" })).not.toHaveProperty("needsTomToday");
   });
 
+  // Fails if either poller regains the road to a thread: the door itself
+  // stays for sessions (convex/http.ts says why), so only this test holds the
+  // pollers off it.
   it("opens no needs-you thread from either mail poller", () => {
     for (const file of ["poll-gmail.mjs", "poll-outlook.mjs"]) {
       const source = fs.readFileSync(`worker/jobs/${file}`, "utf8");

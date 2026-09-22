@@ -1067,26 +1067,15 @@ export function composeHourly(f: HourlyFacts): Message | null {
   const changed = changeClauses(f.changes);
   if (changed.length > 0) clauses.push(joinClauses(changed));
   else if (clauses.length > 0) clauses.push("nothing else changed");
-  // A capture the triage judged to need him today is named, with its link:
-  // no worker raises it with him directly (Tom, 2026-09-21), so this line and
-  // the morning message are where he hears of it.
-  const needs = f.changes.filter((c) => c.needsYouToday !== undefined);
-  if (needs.length > 0) {
-    // Named by its first clause, and the reason only while it stays short:
-    // the hourly line is one sentence under the first line's cap.
-    const first = needs[0];
-    const name = shortClause(first.text);
-    const what = first.link === null ? name : linked(name, first.link);
-    const why = stripStop(first.needsYouToday ?? "");
-    const because = why !== "" && name.length + why.length < 100 ? ` because ${lowerFirst(why)}` : "";
-    clauses.push(
-      needs.length === 1
-        ? `${what} needs you today${because}`
-        : `${countWord(needs.length)} of the captures need you today, ${what} among them`,
-    );
-  }
   const since = f.sinceLabel ? ` since ${f.sinceLabel}` : "";
-  return { firstLine: `${joinWithAnd(clauses)}${since}.`, lines: [] };
+  const line = (extra: string[]) => `${joinWithAnd([...clauses, ...extra])}${since}.`;
+  // A capture the triage judged to need him today is named: no worker raises
+  // it with him directly (Tom, 2026-09-21), so this line and the morning
+  // message are where he hears of it. The clause is tried from most to least
+  // detail and the first that keeps the line under its cap is taken; when
+  // none fits, the morning message still carries the item.
+  const fitted = needsYouClauses(f.changes).find((clause) => line([clause]).length <= FIRST_LINE_CHARS);
+  return { firstLine: line(fitted === undefined ? [] : [fitted]), lines: [] };
 }
 
 /** One runner check-in, as the numbers the box read and the words the step
@@ -1229,6 +1218,21 @@ export function composeRunnerAsk(f: RunnerAskFacts, o: { canReply: boolean }): M
 
 export function runnerAskBody(f: RunnerAskFacts): string {
   return f.question.trim();
+}
+
+/** The hourly line's needs-you-today clause, most detail first: the item by
+ *  its first clause with its link and reason, then without the reason, then a
+ *  bare count. Empty when no capture in the hour needs him today. */
+function needsYouClauses(changes: Change[]): string[] {
+  const needs = changes.filter((c) => c.needsYouToday !== undefined);
+  if (needs.length === 0) return [];
+  const first = needs[0];
+  const name = shortClause(first.text);
+  const what = first.link === null ? name : linked(name, first.link);
+  const why = stripStop(first.needsYouToday ?? "");
+  const count = needs.length === 1 ? "one of the captures needs you today" : `${countWord(needs.length)} of the captures need you today`;
+  if (needs.length > 1) return [`${count}, ${what} among them`, count];
+  return [...(why !== "" ? [`${what} needs you today because ${lowerFirst(why)}`] : []), `${what} needs you today`, count];
 }
 
 /** The hourly line's runners clause, linking the batches tab where they are

@@ -445,6 +445,12 @@ http.route({
 });
 
 // POST /tts/needs-tom — one needs-you thread for a todo only Tom can settle.
+// NO CODE IN THIS REPOSITORY CALLS IT since Tom ruled on 2026-09-21 that
+// workers do not reach him directly: the mail pollers stopped, and a runner's
+// question opens its thread through internalOpenNeedsTomThread, not this
+// route. It stays because the agent rules still list it as a pen a session
+// with Tom's context may use, and removing a pen is a change to those rules,
+// made there first, not a side effect of this one.
 // Body: { todoId, reason, key }. The job stops composing message text: it
 // sends FACTS, and convex/ttsSlack.ts composes the thread from the todo's own
 // statement and entry action plus `reason`, then opens it through the one
