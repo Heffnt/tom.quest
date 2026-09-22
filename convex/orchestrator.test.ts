@@ -25,7 +25,7 @@ import {
   orchestratorModel,
   recordElevationReply,
 } from "./orchestrator";
-import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER } from "./ttsShared";
+import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER, NARROW_LIST } from "./ttsShared";
 import { COMPACT_ENDED_REASON, ORCHESTRATOR_COMPACT_WORD } from "../worker/session-host/hosted.mjs";
 import { checkMessage, composeElevationAsk, elevationAskBody } from "./ttsCompose";
 
@@ -340,6 +340,34 @@ describe("elevations", () => {
     expect(reverted?.applyResult).toContain("reverted by Tom's objection");
     expect((await pendingTexts(t, worker)).some((m) => m.startsWith("Tom objected to the delegate's ruling"))).toBe(true);
     expect((await pendingTexts(t, orchestrator)).some((m) => m.startsWith("Tom objected to the delegate's ruling"))).toBe(true);
+  });
+
+  it("closes a trade-off the delegate refused as Tom's only as reserved, and never over his objection", async () => {
+    const t = await setup();
+    const orchestrator = await start(t);
+    const worker = await spawn(t, orchestrator);
+    const record = async (elevationId: string, askId: string, over: Record<string, unknown>) =>
+      pen(t, "/tts/ask", {
+        askId, elevationId, question: "Renew now?", options: ["Renew.", "Wait."], fallback: "Wait.",
+        decision: "Renew.", reason: "It lapses on Friday.", refused: false, refusedBecause: null,
+        model: "fable", ms: 1, promptSha: "abcd1234", ...over,
+      });
+    const reserved = await elevate(t, worker, "Renew now?");
+    await record(reserved, "11111111", { refused: true, refusedBecause: `${NARROW_LIST[0].id} — it spends money` });
+    const refusal = await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId: reserved, kind: "trade-off", askId: "11111111", answer: "Wait." });
+    expect(refusal.status).toBe(409);
+    expect(String(refusal.body.error)).toContain("answer it as reserved");
+
+    const objected = await elevate(t, worker, "Which colour?");
+    await record(objected, "22222222", {});
+    await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+      askId: "22222222", text: "No, keep the old colour.", revert: false, sentence: "No, keep the old colour.", channel: "C", ts: "2.0", threadTs: "1.0",
+    });
+    const over = await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId: objected, kind: "trade-off", askId: "22222222" });
+    expect(over.status).toBe(409);
+    expect(String(over.body.error)).toContain("keep the old colour");
+    const rulings = await t.run(async (ctx) => ctx.db.query("dtsRulings").withIndex("by_elevation", (q) => q.eq("elevationId", objected as Id<"elevations">)).collect());
+    expect(rulings).toHaveLength(0);
   });
 
   it("sends a reserved decision to Tom with a recommendation, and his reply is the answer", async () => {

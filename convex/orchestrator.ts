@@ -41,13 +41,14 @@ import {
   NARROW_LIST,
   channelFor,
   isLive,
+  isNarrowListId,
   isSessionModel,
   modelFamily,
   normalizeSessionRepos,
   type DecisionKind,
   type SessionModel,
 } from "./ttsShared";
-import { DELEGATE_DECISION } from "./ttsAsk";
+import { DELEGATE_DECISION, DELEGATE_OBJECTION } from "./ttsAsk";
 import {
   COMPACT_ENDED_REASON,
   DAEMON_RESTART_ENDED_REASON,
@@ -791,6 +792,23 @@ export const internalAnswer = internalMutation({
         .first();
       const data = (ask?.data ?? {}) as { elevationId?: unknown; decision?: unknown; reason?: unknown; refused?: unknown; capped?: unknown; refusedBecause?: unknown };
       if (!ask || data.elevationId !== id) throw new Error(`refused: ask ${askId} is not the delegate's answer to elevation ${id}`);
+      // A refusal naming one of Tom's four is the delegate saying the decision
+      // is reserved: only the reserved path may close it.
+      if (data.refused === true && data.capped !== true && typeof data.refusedBecause === "string" && isNarrowListId(data.refusedBecause.split(" — ")[0])) {
+        throw new Error(`refused: the delegate says this decision is Tom's (${data.refusedBecause}); answer it as reserved, with your recommendation`);
+      }
+      // Tom may object in the decision's #tts-decisions thread before this
+      // answer is written; an objected decision is never recorded as standing.
+      const objection = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_OBJECTION).eq("key", askId))
+        .first();
+      if (objection) {
+        const words = (objection.data as { revert?: unknown; text?: unknown } | undefined) ?? {};
+        throw new Error(
+          `refused: Tom objected to the delegate's decision on ask ${askId} (${words.revert === true ? "revert" : String(words.text ?? "")}); answer the elevation again in the light of his words`,
+        );
+      }
       const ruled = typeof data.decision === "string" && data.refused !== true && data.capped !== true;
       if (!ruled) {
         if (answer === undefined) {
@@ -1034,7 +1052,7 @@ export function buildOrchestratorPrompt(args: {
     "",
     "Workers never decide trade-offs or reserved decisions; they raise them to you as elevations, with two sides and no recommendation. You judge which kind each is and answer it:",
     "- Obvious: answer it yourself, in one sentence.",
-    `- Trade-off: ask the delegate first, giving it the two sides and NO recommendation: \`tts-ask --elevation <elevation id> [--todo <the todo it concerns, when it names one>] --question "<the question>" --option "<side one>" --option "<side two>" --fallback "<what the worker should do if it does not rule>"\`. Its first line is \`DELEGATE <ask id>\`. Then answer with kind trade-off and that ask id; the record reads the delegate's answer from its own record and writes it as a delegate ruling, which every run treats as Tom's and his objection reverts. If the delegate refused or did not answer, answer trade-off again with your fallback in "answer".`,
+    `- Trade-off: ask the delegate first, giving it the two sides and NO recommendation: \`tts-ask --elevation <elevation id> [--todo <the todo it concerns, when it names one>] --question "<the question>" --option "<side one>" --option "<side two>" --fallback "<what the worker should do if it does not rule>"\`. Its first line is \`DELEGATE <ask id>\`. Then answer with kind trade-off and that ask id; the record reads the delegate's answer from its own record and writes it as a delegate ruling, which every run treats as Tom's and his objection reverts. If the delegate refused it as one of Tom's four, it is reserved: answer it as reserved. If it did not answer, or its cap was spent, answer trade-off again with your fallback in "answer". If Tom objected to its decision before you answered, the answer is refused with his words; answer again in their light.`,
     "- Reserved: answer with kind reserved and your recommendation. The record opens a #tts-needs-you thread for Tom, and his reply is delivered to the worker. You open a needs-you thread for nothing else.",
     "",
     "Delegating (the agent rules). Fable for anything that needs simplification or judgment, Codex for mechanical work, Opus for briefs; every spawn names its model.",
