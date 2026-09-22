@@ -2094,6 +2094,9 @@ export class Session {
   // does. A hosted worker waiting on an answer when setup.sh rolled the
   // daemon would otherwise lose its local commits with the workdir.
   async endAdopted(endedReason, outcome) {
+    // Ending from here on, before the first await: no poll may deliver a
+    // queued turn into a run whose workdir is about to go.
+    this.stopRequested = true;
     this.status = "idle";
     try {
       await this.ensureWorkdir({ forResume: true });

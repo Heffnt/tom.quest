@@ -18,6 +18,7 @@ describe("adopting an unattended run after a restart", () => {
     expect(adopt).toContain("void s.endAdopted(DAEMON_RESTART_ENDED_REASON,");
     expect(adopt).not.toContain("cleanupWorkdir()");
     const end = sessionSource.slice(sessionSource.indexOf("async endAdopted("));
+    expect(end.slice(0, 900)).toMatch(/this\.stopRequested = true;[\s\S]*await this\.ensureWorkdir/);
     expect(end.slice(0, 900)).toMatch(/ensureWorkdir\(\{ forResume: true \}\)[\s\S]*this\.#endAutonomous\(endedReason, outcome\)/);
   });
 });

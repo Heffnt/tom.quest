@@ -958,6 +958,27 @@ async function openElevationNeedsYou(
 }
 
 /**
+ * The Slack door gave up on a reserved elevation's thread: no thread exists,
+ * so nothing waits on Tom. The elevation is open again, its marker goes so a
+ * second answer can open the thread, and the orchestrator is told to answer
+ * it again.
+ */
+export async function onElevationThreadFailed(ctx: MutationCtx, elevationId: Id<"elevations">, error: string) {
+  const elevation = await ctx.db.get(elevationId);
+  if (!elevation || elevation.status !== "waiting-on-tom") return;
+  await ctx.db.patch(elevationId, { status: "open", kind: undefined, recommendation: undefined });
+  const markers = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", "needs-tom").eq("key", `elevation:${elevationId}`))
+    .collect();
+  for (const marker of markers) await ctx.db.delete(marker._id);
+  await deliverToOrchestrator(
+    ctx,
+    `The #tts-needs-you thread for elevation ${elevationId} could not be posted (${error.slice(0, 200)}), so Tom never saw it. It is open again: answer it as reserved again.`,
+  );
+}
+
+/**
  * Tom's reply in a reserved elevation's thread. It is his by construction:
  * the events route reaches here only for his Slack user. His words are the
  * answer, recorded as his ruling on the elevation and delivered to the worker.

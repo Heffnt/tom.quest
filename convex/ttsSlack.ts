@@ -29,7 +29,7 @@ import {
   type RunnerAskFacts,
 } from "./ttsCompose";
 import { recordRunnerReply, runLink } from "./ttsRunners";
-import { recordElevationReply } from "./orchestrator";
+import { onElevationThreadFailed, recordElevationReply } from "./orchestrator";
 import { changeIdTokens, namedChange, withoutChangeId } from "../worker/jobs/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
@@ -134,6 +134,9 @@ export const internalRecordSlackFailed = internalMutation({
       subject.kind === "todo" ? subject.id : undefined,
       { channel, threadTs, subject, error, text, attempts, windowEnd },
     );
+    // A reserved elevation whose thread never posted is not waiting on Tom:
+    // it goes back to the orchestrator to put to him again.
+    if (subject.kind === "elevation") await onElevationThreadFailed(ctx, subject.id, error);
   },
 });
 

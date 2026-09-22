@@ -396,6 +396,12 @@ describe("elevations", () => {
     expect(posts[0]).toMatchObject({ channel: "C-NEEDS", subject: { kind: "elevation", id: elevationId } });
     expect(posts[0].text).toContain("The orchestrator recommends: Renew it now.");
     expect(posts[0].text).toContain("Should I buy the tom.quest renewal now?");
+    // A thread Slack refused is not waiting on Tom: the question is open
+    // again, the orchestrator is told, and a second answer opens the thread.
+    await t.mutation(internal.ttsSlack.internalRecordSlackFailed, { channel: "C-NEEDS", subject: { kind: "elevation", id: elevationId as Id<"elevations"> }, error: "channel_not_found" });
+    expect((await t.run(async (ctx) => ctx.db.get(elevationId as Id<"elevations">)))?.status).toBe("open");
+    expect((await pendingTexts(t, orchestrator)).some((m) => m.includes("could not be posted"))).toBe(true);
+    expect((await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId, kind: "reserved", recommendation: "Renew it now." })).body).toMatchObject({ status: "waiting-on-tom", opened: true });
     // Still open for the worker's ending until Tom answers.
     expect((await poll(t, { hosts: HOSTS })).sessions.find((s) => s.id === worker)?.openElevations).toBe(1);
 
