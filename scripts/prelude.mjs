@@ -193,6 +193,52 @@ export function collectRepoRules({ dir, repo, commit: requestedCommit = "HEAD" }
 }
 
 /**
+ * THE FILES HIS INTENT IS WRITTEN IN that no other post carries.
+ *
+ * Three of the four kinds of place his intent lives already reach Convex: the
+ * model-of-tom pages through the base post above, the `AGENTS.md` files through
+ * `collectRepoRules`, his rulings and labels because they are rows of the
+ * record already. These six are the rest — the evidence behind each
+ * model-of-tom line, the steering file, and the two files whose dated notes
+ * quote a ruling of his — and the /intent page reads them out of Convex the way
+ * every other reader inside Convex reads a file: from a table, because there is
+ * no filesystem there.
+ *
+ * THE EVIDENCE FILES ARE NOT A LAYER and must never become one. "Never load;
+ * search it" is the rule about them, so they are posted as source bodies and
+ * are not in `PRELUDE_LAYERS` — nothing here puts a byte of them in a prompt.
+ *
+ * SEVERAL CHECKOUTS, EACH AT ITS OWN COMMIT. `dirs` maps a repository's name to
+ * its working copy and `commits` pins the ones that must not be read at HEAD —
+ * the WikiTom half is pinned to the commit the base post used, so a page and
+ * the evidence behind it are one consistent reading. WHICH files those are is
+ * the caller's list, not this file's: the names of the repositories have one
+ * home, and a second list of them here would be a second home.
+ *
+ * A file that is absent is reported in `missing` rather than thrown, because
+ * five sources posted is better than none and the caller says so out loud.
+ */
+export function collectIntentSources({ dirs, sources, commits: pinned = {} } = {}) {
+  if (typeof dirs !== "object" || dirs === null) throw new PreludeError("--intent-sources needs a checkout map");
+  if (!Array.isArray(sources) || sources.length === 0) throw new PreludeError("--intent-sources needs a source list");
+  const commits = {};
+  const files = [];
+  const missing = [];
+  for (const { repo, path: filePath } of sources) {
+    const dir = dirs[repo];
+    if (typeof dir !== "string" || dir === "") throw new PreludeError(`no checkout named ${repo}`);
+    if (commits[repo] === undefined) commits[repo] = resolveCommit(dir, pinned[repo] ?? "HEAD");
+    const body = readObject(dir, commits[repo], filePath);
+    if (body === null || body.trim() === "") {
+      missing.push(`${repo} ${filePath}`);
+      continue;
+    }
+    files.push({ repo, path: filePath, body, bytes: Buffer.byteLength(body), commit: commits[repo] });
+  }
+  return { commits, files, missing };
+}
+
+/**
  * Build the nightly publication in one pass over an immutable WikiTom
  * commit. Headers come from the same collected file map, so no consumer has
  * to recreate a layer's file selection or invoke git again.
