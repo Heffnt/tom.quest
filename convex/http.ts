@@ -3483,24 +3483,9 @@ function orchestratorPen(
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 const optionalStr = (value: unknown): string | undefined => (typeof value === "string" && value.trim() !== "" ? value : undefined);
 
-// POST /tts/orchestrator — { action: "start", reason, instruction? } starts it
-// (one exists at a time; a start while a run is live starts nothing) and
-// { action: "stop", reason } stops it and the workers it hosts.
 // GET /tts/orchestrator — its state: the row, live workers, unanswered
-// elevations.
-http.route({
-  path: "/tts/orchestrator",
-  method: "POST",
-  handler: orchestratorPen(async (ctx, b) => {
-    const reason = str(b.reason).trim();
-    if (reason === "") throw new Error("reason (non-empty string) required");
-    if (b.action === "start") {
-      return await ctx.runMutation(internal.orchestrator.internalStart, { reason, instruction: optionalStr(b.instruction) });
-    }
-    if (b.action === "stop") return await ctx.runMutation(internal.orchestrator.internalStop, { reason });
-    throw new Error('action must be "start" or "stop"');
-  }),
-});
+// elevations. Read-only. Starting and stopping it is Tom's alone
+// (orchestrator.start / orchestrator.stop), never a worker-key pen.
 http.route({
   path: "/tts/orchestrator",
   method: "GET",

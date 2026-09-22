@@ -1159,6 +1159,39 @@ export function runnerAskBody(f: RunnerAskFacts): string {
   return f.question.trim();
 }
 
+/** A decision a hosted worker raised that the orchestrator judged reserved:
+ *  only Tom can make it (convex/orchestrator.ts). */
+type ElevationAskFacts = {
+  question: string;
+  sides: string[];
+  recommendation: string;
+  workerSessionId: string;
+};
+
+/** The first line and the link go through the form, as a runner's question
+ *  does; the question, its two sides and the orchestrator's recommendation
+ *  follow whole (elevationAskBody), because a decision cut to one Slack line
+ *  is one he cannot make. */
+export function composeElevationAsk(f: ElevationAskFacts, o: { canReply: boolean }): Message {
+  const lines: Line[] = [{ role: "item", text: "Open the worker that asked.", url: `${SESSION_URL}${f.workerSessionId}` }];
+  note(lines, "needs-you", o.canReply, "reply here with your decision, and the worker receives it as its answer.");
+  return {
+    firstLine: "A worker has reached a decision only you can make. It carries on with what does not depend on it while you decide.",
+    lines,
+  };
+}
+
+export function elevationAskBody(f: ElevationAskFacts): string {
+  return [
+    f.question.trim(),
+    "",
+    `One side: ${f.sides[0]?.trim() ?? ""}`,
+    `The other: ${f.sides[1]?.trim() ?? ""}`,
+    "",
+    `The orchestrator recommends: ${f.recommendation.trim()}`,
+  ].join("\n");
+}
+
 /** The hourly line's runners clause, linking the batches tab where they are
  *  listed. */
 function runnersClause(runners: RunnerFact[]): string {

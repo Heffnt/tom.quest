@@ -7,7 +7,7 @@
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
@@ -20,12 +20,12 @@ import {
   ORCHESTRATOR_LEASE_MS,
   buildHostedWorkerPrompt,
   buildOrchestratorPrompt,
-  composeElevationForTom,
   crashBackoffMs,
   orchestratorModel,
   recordElevationReply,
 } from "./orchestrator";
 import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER, ORCHESTRATOR_COMPACT_WORD } from "./ttsShared";
+import { checkMessage, composeElevationAsk, elevationAskBody } from "./ttsCompose";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const KEY = "worker-key";
@@ -82,9 +82,8 @@ async function pendingTexts(t: T, sessionId: string) {
 }
 
 async function start(t: T, instruction?: string) {
-  const res = await pen(t, "/tts/orchestrator", { action: "start", reason: "the proof", ...(instruction ? { instruction } : {}) });
-  expect(res.status).toBe(200);
-  return res.body.sessionId as string;
+  const res = await t.mutation(internal.orchestrator.internalStart, { reason: "the proof", ...(instruction ? { instruction } : {}) });
+  return res.sessionId as string;
 }
 
 /** The daemon's ingest for one session: what it reports as the run moves. */
@@ -154,13 +153,12 @@ describe("the prompts", () => {
     expect(text).toContain("never ask the delegate or Tom yourself");
     expect(text).not.toContain("tts-ask");
   });
-  it("ask Tom a reserved decision with the orchestrator's recommendation", () => {
-    const text = composeElevationForTom(
-      { question: "Buy the domain?", sides: ["Buy it.", "Do not."], recommendation: "Buy it.", workerSessionId: "w1" },
-      { canReply: true },
-    );
-    expect(text).toContain("The orchestrator recommends: Buy it.");
-    expect(text).toContain("Reply in this thread");
+  it("ask Tom a reserved decision in the form, with the orchestrator's recommendation after it", () => {
+    const facts = { question: "Buy the domain?", sides: ["Buy it.", "Do not."], recommendation: "Buy it.", workerSessionId: "w1" };
+    for (const canReply of [true, false]) {
+      expect(checkMessage(composeElevationAsk(facts, { canReply }), { canReply })).toEqual([]);
+    }
+    expect(elevationAskBody(facts)).toContain("The orchestrator recommends: Buy it.");
   });
 });
 
@@ -184,8 +182,18 @@ describe("starting and hosting", () => {
     expect(hosted?.environment).toBe("orchestrator");
 
     // One at a time.
-    const again = await pen(t, "/tts/orchestrator", { action: "start", reason: "twice" });
-    expect(again.body).toMatchObject({ started: false, sessionId });
+    expect(await t.mutation(internal.orchestrator.internalStart, { reason: "twice" })).toMatchObject({ started: false, sessionId });
+  });
+
+  it("is started and stopped by Tom, never through a worker-key pen", async () => {
+    const t = await setup();
+    const tomId = await t.run(async (ctx) => ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }));
+    const userId = await t.run(async (ctx) => ctx.db.insert("users", { name: "friend", email: "f@x.y", role: "admin" }));
+    await expect(t.withIdentity({ subject: userId }).mutation(api.orchestrator.start, { reason: "not his" })).rejects.toThrow(/restricted to Tom/);
+    expect((await t.withIdentity({ subject: tomId }).mutation(api.orchestrator.start, { reason: "his" })).started).toBe(true);
+    const byKey = await t.fetch("/tts/orchestrator", { method: "POST", headers: { "Content-Type": "application/json", "X-TTS-Key": KEY }, body: JSON.stringify({ action: "stop", reason: "a worker" }) });
+    expect(byKey.status).toBe(404);
+    expect((await t.withIdentity({ subject: tomId }).mutation(api.orchestrator.stop, { reason: "his" })).stopped).toBe(true);
   });
 
   it("spawns hosted workers for the live run only, up to the limit", async () => {
@@ -302,6 +310,7 @@ describe("elevations", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ channel: "C-NEEDS", subject: { kind: "elevation", id: elevationId } });
     expect(posts[0].text).toContain("The orchestrator recommends: Renew it now.");
+    expect(posts[0].text).toContain("Should I buy the tom.quest renewal now?");
     // Still open for the worker's ending until Tom answers.
     expect((await poll(t, { hosts: HOSTS })).sessions.find((s) => s.id === worker)?.openElevations).toBe(1);
 
@@ -315,6 +324,9 @@ describe("elevations", () => {
 
 describe("restarting from the document", () => {
   it("restarts at once after a compaction, naming the last run and carrying its undelivered messages", async () => {
+    // Fake timers hold the sweep the ending schedules, so the one run below is
+    // the only restart.
+    vi.useFakeTimers();
     const t = await setup();
     const first = await start(t);
     await ingest(t, first, { status: "running", runId: "codex:box:thread-1" });
@@ -396,8 +408,8 @@ describe("restarting from the document", () => {
     await ingest(t, worker, { status: "ended", endedReason: "worker run complete" });
     expect((await pendingTexts(t, orchestrator)).some((m) => m.includes(`Worker ${worker}`) && m.includes("footer fixed in PR 1"))).toBe(true);
 
-    const stopped = await pen(t, "/tts/orchestrator", { action: "stop", reason: "the proof is over" });
-    expect(stopped.body.stopped).toBe(true);
+    const stopped = await t.mutation(internal.orchestrator.internalStop, { reason: "the proof is over" });
+    expect(stopped.stopped).toBe(true);
     const session = await t.run(async (ctx) => ctx.db.get(orchestrator as Id<"claudeSessions">));
     expect(session?.status).toBe("ended");
     expect((await t.mutation(internal.orchestrator.internalSweep, {})).restarted).toBe(false);

@@ -20,9 +20,11 @@ import { v } from "convex/values";
 import {
   internalMutation,
   internalQuery,
+  mutation,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { requireTom } from "./authRoles";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { insertSession, mergeGate, sessionOutcomePen, workspaceParagraph } from "./claudeSessions";
@@ -44,6 +46,7 @@ import {
   type SessionModel,
 } from "./ttsShared";
 import { DELEGATE_DECISION } from "./ttsAsk";
+import { composeElevationAsk, elevationAskBody, renderSlack } from "./ttsCompose";
 
 export const ORCHESTRATOR_KEY = "jarvis" as const;
 /** The endedReason a compaction ends with. MIRROR of COMPACT_ENDED_REASON in
@@ -324,38 +327,58 @@ async function launchRun(
   return sessionId;
 }
 
-/** Start the orchestrator, or say which run is already live. One exists at a
- * time: a start while a run is live starts nothing. */
-export const internalStart = internalMutation({
-  args: { reason: v.string(), instruction: v.optional(v.string()) },
-  handler: async (ctx, { reason, instruction }) => {
-    const now = Date.now();
-    let row = await orchestratorRow(ctx);
-    if (row && row.stoppedAt === undefined && row.liveSessionId !== undefined) {
-      const live = await ctx.db.get(row.liveSessionId);
-      if (live && isLive(live.status)) return { started: false, sessionId: live._id };
-    }
-    if (!row) {
-      const id = await ctx.db.insert("orchestrators", {
-        key: ORCHESTRATOR_KEY,
-        model: DEFAULT_SESSION_MODEL,
-        modelReason: "not started yet",
-        document: INITIAL_DOCUMENT,
-        documentVersion: 1,
-        startedAt: now,
-        runStartedAt: now,
-        crashes: 0,
-      });
-      await ctx.db.insert("orchestratorDocuments", { version: 1, text: INITIAL_DOCUMENT, at: now });
-      row = (await ctx.db.get(id))!;
-    } else {
-      await ctx.db.patch(row._id, { stoppedAt: undefined, stoppedReason: undefined, crashes: 0, startedAt: now });
-      row = (await ctx.db.get(row._id))!;
-    }
-    const sessionId = await launchRun(ctx, row, `started: ${reason}`, instruction?.trim() || undefined);
-    return { started: true, sessionId };
+/**
+ * Start the orchestrator, or say which run is already live. One exists at a
+ * time: a start while a run is live starts nothing.
+ *
+ * TOM'S DOOR, NOT A WORKER-KEY PEN: every run on the box holds the worker key,
+ * so a pen could not tell Tom's start from a worker starting a fleet, or his
+ * stop from a worker silencing the one run that answers it. Tom starts and
+ * stops it from his login; a session with the deploy credential uses the
+ * internal twins (`npx convex run orchestrator:internalStart`), the way
+ * internalCreateSession is used. Restarts after a compaction or a crash are
+ * the record's own and need neither.
+ */
+const START_ARGS = { reason: v.string(), instruction: v.optional(v.string()) };
+export const start = mutation({
+  args: START_ARGS,
+  handler: async (ctx, args) => {
+    await requireTom(ctx, "Orchestrator");
+    return await startOrchestrator(ctx, args);
   },
 });
+export const internalStart = internalMutation({
+  args: START_ARGS,
+  handler: async (ctx, args) => await startOrchestrator(ctx, args),
+});
+
+async function startOrchestrator(ctx: MutationCtx, { reason, instruction }: { reason: string; instruction?: string }) {
+  const now = Date.now();
+  let row = await orchestratorRow(ctx);
+  if (row && row.stoppedAt === undefined && row.liveSessionId !== undefined) {
+    const live = await ctx.db.get(row.liveSessionId);
+    if (live && isLive(live.status)) return { started: false, sessionId: live._id };
+  }
+  if (!row) {
+    const id = await ctx.db.insert("orchestrators", {
+      key: ORCHESTRATOR_KEY,
+      model: DEFAULT_SESSION_MODEL,
+      modelReason: "not started yet",
+      document: INITIAL_DOCUMENT,
+      documentVersion: 1,
+      startedAt: now,
+      runStartedAt: now,
+      crashes: 0,
+    });
+    await ctx.db.insert("orchestratorDocuments", { version: 1, text: INITIAL_DOCUMENT, at: now });
+    row = (await ctx.db.get(id))!;
+  } else {
+    await ctx.db.patch(row._id, { stoppedAt: undefined, stoppedReason: undefined, crashes: 0, startedAt: now });
+    row = (await ctx.db.get(row._id))!;
+  }
+  const sessionId = await launchRun(ctx, row, `started: ${reason}`, instruction?.trim() || undefined);
+  return { started: true, sessionId };
+}
 
 /** End a session the daemon may never have claimed. A claimed run is sent a
  * stop, which the daemon honours; a run still requested is ended here, since
@@ -376,20 +399,29 @@ async function endRun(ctx: MutationCtx, sessionId: Id<"claudeSessions">, reason:
 }
 
 /** Stop the orchestrator and the workers it hosts. Nothing restarts it until
- * the next start. */
-export const internalStop = internalMutation({
+ * the next start. Tom's door, for the reason start gives. */
+export const stop = mutation({
   args: { reason: v.string() },
-  handler: async (ctx, { reason }) => {
-    const row = await orchestratorRow(ctx);
-    if (!row) return { stopped: false };
-    await ctx.db.patch(row._id, { stoppedAt: Date.now(), stoppedReason: reason, restartAt: undefined });
-    if (row.liveSessionId !== undefined) await endRun(ctx, row.liveSessionId, `orchestrator stopped: ${reason}`);
-    const workers = await liveHostedWorkers(ctx);
-    for (const { session } of workers) await endRun(ctx, session._id, `orchestrator stopped: ${reason}`);
-    await logEvent(ctx, "orchestrator-stopped", undefined, { reason, workers: workers.length });
-    return { stopped: true, workers: workers.length };
+  handler: async (ctx, args) => {
+    await requireTom(ctx, "Orchestrator");
+    return await stopOrchestrator(ctx, args);
   },
 });
+export const internalStop = internalMutation({
+  args: { reason: v.string() },
+  handler: async (ctx, args) => await stopOrchestrator(ctx, args),
+});
+
+async function stopOrchestrator(ctx: MutationCtx, { reason }: { reason: string }) {
+  const row = await orchestratorRow(ctx);
+  if (!row) return { stopped: false };
+  await ctx.db.patch(row._id, { stoppedAt: Date.now(), stoppedReason: reason, restartAt: undefined });
+  if (row.liveSessionId !== undefined) await endRun(ctx, row.liveSessionId, `orchestrator stopped: ${reason}`);
+  const workers = await liveHostedWorkers(ctx);
+  for (const { session } of workers) await endRun(ctx, session._id, `orchestrator stopped: ${reason}`);
+  await logEvent(ctx, "orchestrator-stopped", undefined, { reason, workers: workers.length });
+  return { stopped: true, workers: workers.length };
+}
 
 /**
  * A hosted session reached an ending (the daemon's terminal flush, or a
@@ -762,34 +794,18 @@ async function openElevationNeedsYou(
     data: { key, elevationId: elevation._id, workerSessionId: elevation.workerSessionId },
   });
   const canReply = Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
+  const facts = {
+    question: elevation.question,
+    sides: elevation.sides,
+    recommendation: elevation.recommendation,
+    workerSessionId: elevation.workerSessionId,
+  };
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel,
-    text: composeElevationForTom(elevation, { canReply }),
+    text: `${renderSlack(composeElevationAsk(facts, { canReply }))}\n\n${elevationAskBody(facts)}`,
     subject: { kind: "elevation", id: elevation._id },
   });
   return { opened: true };
-}
-
-/** The needs-you message for a reserved decision: what is asked, the two
- * sides, what the orchestrator recommends, and how to answer. Plain
- * sentences; Tom reads it without the code. */
-export function composeElevationForTom(
-  elevation: { question: string; sides: string[]; recommendation: string; workerSessionId: string },
-  { canReply }: { canReply: boolean },
-): string {
-  return [
-    `A worker needs a decision only you can make: ${elevation.question}`,
-    "",
-    `One side: ${elevation.sides[0]}`,
-    `The other: ${elevation.sides[1]}`,
-    "",
-    `The orchestrator recommends: ${elevation.recommendation}`,
-    "",
-    `The worker's run: https://tom.quest/sessions?session=${elevation.workerSessionId}`,
-    canReply
-      ? "Reply in this thread with your decision; your reply goes to the worker as its answer."
-      : "Replies in this thread do not reach the record yet, so answer in a session.",
-  ].join("\n");
 }
 
 /**
@@ -863,7 +879,6 @@ export const internalState = internalQuery({
         model: row.model,
         modelReason: row.modelReason,
         documentVersion: row.documentVersion,
-        liveSessionId: row.liveSessionId ?? null,
         leaseDeadline: row.leaseDeadline ?? null,
         crashes: row.crashes,
         restartAt: row.restartAt ?? null,
