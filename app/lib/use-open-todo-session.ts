@@ -33,7 +33,7 @@ export function reserveSessionTab(): ReservedTab {
   const tab = window.open("", "_blank");
   return {
     goto: (sessionId) => {
-      const href = `/sessions?session=${sessionId}`;
+      const href = `/runs?session=${sessionId}`;
       // Popup blocked (or the tab was closed): fall back to this tab. Plain
       // location.assign keeps this helper hook-free, so click handlers can
       // call it without a router in scope.
@@ -61,7 +61,7 @@ export function reserveSessionTab(): ReservedTab {
 //   - REPOS ARE NOT PASSED. Omitting them is a real answer, not a default: the
 //     server resolves the session's repos from the todo's batch declaration
 //     (convex/claudeSessions.ts resolveSessionRepos), which is the only place
-//     that knows. A surface that genuinely knows better — the /sessions form,
+//     that knows. A surface that genuinely knows better — the /runs form,
 //     where Tom picks from a dropdown — passes `repos` explicitly.
 export function useOpenSession() {
   const createSession = useMutation(api.claudeSessions.createSession);
@@ -83,7 +83,7 @@ export function useOpenSession() {
      * Which model the session runs on (ttsShared SESSION_MODELS; the family
      * behind the name picks the runner on the Jarvis Box). Same rule as
      * `repos`: omitting it is a real answer — the server fills in
-     * DEFAULT_SESSION_MODEL. Only the /sessions form, where Tom picks from a
+     * DEFAULT_SESSION_MODEL. Only the /runs form, where Tom picks from a
      * dropdown, passes it; the TTS buttons take the default on purpose.
      */
     model?: SessionModel;

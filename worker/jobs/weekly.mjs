@@ -26,7 +26,7 @@
 //      commitTree, syncRemote — never a second copy). With the checkout
 //      absent (the deploy key not yet on GitHub) the file is a failure row and
 //      the session still opens with the agenda text.
-//   4. the session — one session of kind "weekly" on the sessions page,
+//   4. the session — one session of kind "weekly" on the runs page,
 //      opened through POST /tts/session, whose opening prompt is the agenda
 //      and whose instructions say what the session does with Tom: read the
 //      facts, ask the question, take his rulings by number in his words,

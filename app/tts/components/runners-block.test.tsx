@@ -109,7 +109,7 @@ describe("the runners block", () => {
   it("opens the newest step run in the run view from the title", () => {
     render(<RunnersBlock now={NOW} />);
     expect(screen.getByRole("link", { name: "TRAIN25 campaign" }).getAttribute("href")).toBe(
-      `/sessions?run=${encodeURIComponent(STEP_RUN)}`,
+      `/runs?run=${encodeURIComponent(STEP_RUN)}`,
     );
   });
 
@@ -122,8 +122,8 @@ describe("the runners block", () => {
 
     const checkIns = screen.getAllByRole("link", { name: "step run" });
     expect(checkIns.map((a) => a.getAttribute("href"))).toEqual([
-      `/sessions?run=${encodeURIComponent(STEP_RUN)}`,
-      `/sessions?run=${encodeURIComponent(EARLIER_RUN)}`,
+      `/runs?run=${encodeURIComponent(STEP_RUN)}`,
+      `/runs?run=${encodeURIComponent(EARLIER_RUN)}`,
     ]);
     expect(screen.getByText(/it asked a question/)).toBeTruthy();
     expect(screen.getByText(/it changed nothing · did not pass the writing check/)).toBeTruthy();

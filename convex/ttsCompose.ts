@@ -425,7 +425,7 @@ const ITEM_URL = "https://tom.quest/tts?item=";
 export const TAB_EVERYTHING = "https://tom.quest/tts?tab=everything";
 export const TAB_BATCHES = "https://tom.quest/tts?tab=batches";
 export const TAB_CALENDAR = "https://tom.quest/tts?tab=calendar";
-const SESSION_URL = "https://www.tom.quest/sessions?session=";
+const SESSION_URL = "https://www.tom.quest/runs?session=";
 
 export function itemUrl(todoId: string): string {
   return `${ITEM_URL}${todoId}`;

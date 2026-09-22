@@ -25,12 +25,12 @@ import type { TranscriptMessage } from "./lib";
  * when its `runs` row has not landed — most sessions predate the record — so
  * the two identities are separate fields rather than one run document.
  */
-export type RunSubject = {
+type RunSubject = {
   runId?: string;
   sessionId?: Id<"claudeSessions">;
 };
 
-export type RunRowsResult = {
+type RunRowsResult = {
   /** ALWAYS ascending, oldest first, whichever query delivered them. */
   rows: TranscriptMessage[];
   status: "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";

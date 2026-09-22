@@ -87,6 +87,7 @@ export const AREAS_DIR = "model-of-tom/areas";
 
 const WRITING_PATH = "model-of-tom/writing.md";
 const GROUND_PATH = "model-of-tom/ground.md";
+const EXPLAINERS_PATH = "model-of-tom/explainers.md";
 const INTENT_PATH = "model-of-tom/intent.md";
 const PRIORITIES_PATH = "model-of-tom/priorities.md";
 const SCHEDULE_PATH = "model-of-tom/schedule.md";
@@ -108,7 +109,8 @@ const ELLIPSIS = "…";
  * never the half that gets cut.
  *
  * `week` has no tail at all: its one page is a fixed subject, so a generated
- * summary of its headings would say less than the sentence below.
+ * summary of its headings would say less than the sentence below. `explainer`
+ * has none for the same reason: its page is the form of one kind of document.
  */
 export const SKILL_SHAPES = Object.freeze({
   write: Object.freeze({
@@ -116,6 +118,13 @@ export const SKILL_SHAPES = Object.freeze({
     base:
       "Load before writing anything Tom reads — a report, an explanation, a Slack message, a digest line. His writing standard: ",
     suffix: "",
+  }),
+  explainer: Object.freeze({
+    group: "write",
+    base:
+      "Load before writing an HTML explainer for Tom — of a plan, a change, a ruling, or a component of code.",
+    suffix: "",
+    fixed: true,
   }),
   area: Object.freeze({
     group: "know",
@@ -487,6 +496,22 @@ export function buildSkills({ commit, pages = [], repos = [] } = {}) {
       body: pageBody(writing),
       sourcePaths: [WRITING_PATH],
       references: present(ground) ? [{ name: "ground.md", path: GROUND_PATH, body: pageBody(ground) }] : [],
+    });
+  }
+
+  // explainer ────────────────────────────────────────────────────────────────
+  const explainers = byPath.get(EXPLAINERS_PATH);
+  if (!present(explainers)) {
+    refuse("explainer", state(EXPLAINERS_PATH, explainers));
+  } else {
+    add({
+      name: "explainer",
+      shape: "explainer",
+      variable: "",
+      override: override(explainers),
+      overridePath: EXPLAINERS_PATH,
+      body: pageBody(explainers),
+      sourcePaths: [EXPLAINERS_PATH],
     });
   }
 

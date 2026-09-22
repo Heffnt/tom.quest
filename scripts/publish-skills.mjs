@@ -79,6 +79,7 @@ const WIKITOM_PAGES = Object.freeze([
   "model-of-tom/agent-rules.md",
   "model-of-tom/writing.md",
   "model-of-tom/ground.md",
+  "model-of-tom/explainers.md",
   "model-of-tom/intent.md",
   "model-of-tom/priorities.md",
   "model-of-tom/schedule.md",
