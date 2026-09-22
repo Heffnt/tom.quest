@@ -1015,13 +1015,40 @@ export async function recordElevationReply(
  * the ruling is work, and the orchestrator hands it out.
  */
 export async function onDelegateObjection(ctx: MutationCtx, askId: string, text: string, revert: boolean) {
-  const ruling = await ctx.db.query("dtsRulings").withIndex("by_ask", (q) => q.eq("askId", askId)).first();
-  if (!ruling || ruling.ruledBy !== "delegate" || ruling.elevationId === undefined) return;
-  const elevation = await ctx.db.get(ruling.elevationId);
   const words = revert ? "revert it" : text.trim();
+  const ruling = await ctx.db.query("dtsRulings").withIndex("by_ask", (q) => q.eq("askId", askId)).first();
+  if (!ruling || ruling.ruledBy !== "delegate" || ruling.elevationId === undefined) {
+    await onFallbackObjection(ctx, askId, words);
+    return;
+  }
+  const elevation = await ctx.db.get(ruling.elevationId);
   await ctx.db.patch(ruling._id, { applyResult: `reverted by Tom's objection: ${words}` });
   const note = `Tom objected to the delegate's ruling on elevation ${ruling.elevationId} ("${ruling.sentence ?? ""}"), which no longer stands: ${words}`;
   if (elevation) await deliver(ctx, elevation.workerSessionId, note);
+  await deliverToOrchestrator(ctx, note);
+}
+
+/**
+ * His objection to a trade-off the delegate never ruled on. The fallback the
+ * ask recorded closed the elevation, and convex/ttsAsk.ts posts that fallback
+ * to #tts-decisions as a decision like any other — "a no-answer is still a
+ * decision Tom may object to" — so it is one he can object to, while there is
+ * no ruling row to revert, because nothing ruled.
+ *
+ * The elevation opens again and both runs are told, which is the whole of the
+ * answer: the orchestrator judges the question afresh, and answering it as a
+ * trade-off on the same ask is already refused while an objection to that ask
+ * stands.
+ */
+async function onFallbackObjection(ctx: MutationCtx, askId: string, words: string) {
+  const elevation = await ctx.db.query("elevations").withIndex("by_ask", (q) => q.eq("askId", askId)).first();
+  // answeredBy "orchestrator" with an ask is the fallback and nothing else: an
+  // obvious answer names no ask, and a reserved one is answered by Tom.
+  if (!elevation || elevation.status !== "answered" || elevation.answeredBy !== "orchestrator") return;
+  const stood = elevation.answer ?? "";
+  await ctx.db.patch(elevation._id, { status: "open", answer: undefined, answeredBy: undefined, answeredAt: undefined });
+  const note = `Tom objected to the fallback that stood on elevation ${elevation._id} ("${stood}"), which no longer stands: ${words}. The question is open again.`;
+  await deliver(ctx, elevation.workerSessionId, note);
   await deliverToOrchestrator(ctx, note);
 }
 

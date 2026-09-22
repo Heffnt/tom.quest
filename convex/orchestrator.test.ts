@@ -372,6 +372,18 @@ describe("elevations", () => {
     expect(fell.body).toMatchObject({ status: "answered", ruling: null });
     expect((await t.run(async (ctx) => ctx.db.get(silent as Id<"elevations">)))?.answer).toBe("Wait.");
 
+    // That fallback is posted to #tts-decisions as a decision like any other,
+    // so his objection to it must land somewhere: there is no ruling row to
+    // revert, and the question opens again with both runs told.
+    await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+      askId: "33333333", text: "No, renew it.", revert: false, sentence: "No, renew it.", channel: "C", ts: "4.0", threadTs: "3.0",
+    });
+    const reopened = await t.run(async (ctx) => ctx.db.get(silent as Id<"elevations">));
+    expect(reopened?.status).toBe("open");
+    expect(reopened?.answer).toBeUndefined();
+    expect((await pendingTexts(t, worker)).some((m) => m.startsWith(`Tom objected to the fallback that stood on elevation ${silent}`) && m.includes("No, renew it."))).toBe(true);
+    expect((await pendingTexts(t, orchestrator)).some((m) => m.startsWith(`Tom objected to the fallback that stood on elevation ${silent}`))).toBe(true);
+
     const objected = await elevate(t, worker, "Which colour?");
     await record(objected, "22222222", {});
     await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {

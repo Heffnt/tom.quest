@@ -1754,7 +1754,10 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_worker_status", ["workerSessionId", "status"])
-    .index("by_status", ["status", "createdAt"]),
+    .index("by_status", ["status", "createdAt"])
+    // The elevation one delegate ask answered, for his objection to that ask
+    // when it closed on the fallback and wrote no ruling to look it up by.
+    .index("by_ask", ["askId"]),
 
   // Tom presses one control and a box job serves it: Convex holds no S3 reader
   // credential and no second request signer, so opening an old run is a
