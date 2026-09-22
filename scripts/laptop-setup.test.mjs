@@ -244,7 +244,11 @@ describe("laptop setup", () => {
     for (const dir of [claudeSkills, codexSkills]) {
       expect(fs.existsSync(path.join(dir, "tom-write", "SKILL.md"))).toBe(true);
       expect(fs.existsSync(path.join(dir, "tom-know-admin", "SKILL.md"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, "tom-repo-WikiTom", "SKILL.md"))).toBe(true);
+      // LOWERCASE, because skillDirName lowercases (scripts/skills.mjs
+      // bareSkillName). Spelled "tom-repo-WikiTom" this passed only on a
+      // case-insensitive filesystem — Tom's laptop — and failed on the box and
+      // on a CI runner.
+      expect(fs.existsSync(path.join(dir, "tom-repo-wikitom", "SKILL.md"))).toBe(true);
       expect(first.stdout).toContain(`changed ${dir}`);
     }
     expect(fs.readFileSync(path.join(claudeSkills, "tom-write", "SKILL.md"), "utf8")).toContain("Use short sentences.");
