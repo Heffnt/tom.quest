@@ -140,7 +140,7 @@ export default function Timeline({
       dayAndClock(ruling.ruledAt),
     ].filter((line) => line !== ""),
     href: rulingHref(ruling),
-    hrefWords: "open the subject",
+    hrefWords: rulingHref(ruling) === null ? null : "open the subject",
     tone: "accent",
   }));
 

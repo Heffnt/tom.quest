@@ -134,12 +134,14 @@ export default function RulingsList({
                         />
                       )}
                       <div className="flex items-center gap-2">
-                        <Link
-                          href={rulingHref(row.ruling)}
-                          className="text-[11px] text-text-muted underline hover:text-text"
-                        >
-                          open the subject
-                        </Link>
+                        {rulingHref(row.ruling) !== null && (
+                          <Link
+                            href={rulingHref(row.ruling) as string}
+                            className="text-[11px] text-text-muted underline hover:text-text"
+                          >
+                            open the subject
+                          </Link>
+                        )}
                         <button
                           type="button"
                           onClick={() => setObjecting(row.ruling)}

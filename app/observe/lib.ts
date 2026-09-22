@@ -3,7 +3,7 @@
 // address each mark opens. Pure functions with no React in them, so the numbers
 // the page draws are the numbers a test can read.
 
-import { SESSION_REPOS, isFailureKind } from "@/convex/ttsShared";
+import { SESSION_REPOS, isChangeSubject, isFailureKind } from "@/convex/ttsShared";
 import type { Lane, Tally } from "./map-data";
 
 // ── The window ───────────────────────────────────────────────────────────────
@@ -198,11 +198,16 @@ export function runHref(runId: string): string {
   return `/runs?run=${encodeURIComponent(runId)}`;
 }
 
-/** Where a ruling's subject is shown. An item link lands on the everything tab
- *  and only resolves a life todo, so a batch and a code subject open the
- *  batches tab instead of a link that would land nowhere. */
-export function rulingHref(ruling: RulingRow): string {
+/** Where a ruling's subject is shown, or null where no page shows it. An item
+ *  link lands on the everything tab and only resolves a life todo, so a batch
+ *  and a code todo open the batches tab. A RULING ON A CHANGE — the Approve
+ *  control's own, whose subject is `pr-<number>` or `sha-<sha>` — has no page
+ *  at all: the change lives in the pull request mirror and the merge rows,
+ *  which this page draws and /tts does not, so it answers null and the row
+ *  carries no link rather than one that opens a page without it. */
+export function rulingHref(ruling: RulingRow): string | null {
   if (ruling.subjectType === "life" && ruling.todoId !== null) return `/tts?item=${ruling.todoId}`;
+  if (ruling.externalId !== null && isChangeSubject(ruling.externalId)) return null;
   return "/tts?tab=batches";
 }
 
