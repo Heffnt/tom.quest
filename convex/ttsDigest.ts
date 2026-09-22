@@ -948,7 +948,12 @@ export const internalComposeToday = internalQuery({
       // Every todo the message showed, for the "surfaced" instrumentation:
       // the today run and, read off the FITTED message as the objection
       // numbers are, the needs-you-today items actually printed; each id once.
-      surfacedTodoIds: [...new Set([...facts.today.map((item) => item.id), ...printedNeedsYouIds(message, facts)])]
+      // A flagged dated item is printed in the needs-you run, not under today,
+      // so it counts as surfaced only when that run printed it.
+      surfacedTodoIds: [...new Set([
+        ...facts.today.map((item) => item.id).filter((id) => !facts.needsYou.some((n) => n.todoId === id)),
+        ...printedNeedsYouIds(message, facts),
+      ])]
         .map((id) => ctx.db.normalizeId("dtsTodos", id))
         .filter((id): id is Id<"dtsTodos"> => id !== null),
       // The decisions the objection list carried, in PRINTED order: a reply of

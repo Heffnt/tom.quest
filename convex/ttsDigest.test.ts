@@ -494,6 +494,27 @@ describe("internalComposeToday", () => {
     expect(ids.filter((id) => surfacedTodoIds.includes(id)).sort()).toEqual(printed.sort());
   });
 
+  it("does not mark a dated flagged item surfaced when the fitted message dropped its line", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const ids = [];
+    for (let i = 0; i < 40; i += 1) {
+      const id = await t.mutation(internal.tts.internalCapture, {
+        statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`,
+        source: "email",
+        needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
+      });
+      await t.run(async (ctx) => ctx.db.patch(id, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+      ids.push(id);
+    }
+    vi.setSystemTime(FIVE_AM);
+    const { text, surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const printed = ids.filter((id) => text.includes(ttsItemLink(id)));
+    expect(printed.length).toBeLessThan(40);
+    expect(ids.filter((id) => surfacedTodoIds.includes(id)).sort()).toEqual(printed.sort());
+  });
+
   it("stores the triage's reason with secrets redacted", async () => {
     const t = convexTest(schema, modules);
     const id = await t.mutation(internal.tts.internalCapture, {

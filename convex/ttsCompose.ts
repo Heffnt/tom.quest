@@ -1109,10 +1109,8 @@ export function composeHourly(f: HourlyFacts): Message | null {
   const changed = changeClauses(f.changes);
   const tail = changed.length > 0 ? joinClauses(changed) : clauses.length > 0 ? "nothing else changed" : null;
   const since = f.sinceLabel ? ` since ${f.sinceLabel}` : "";
-  const line = (parts: string[]) => {
-    const [first, ...rest] = parts;
-    return `${joinWithAnd([capitalise(first), ...rest])}${since}.`;
-  };
+  const line = (parts: string[]) =>
+    `${joinWithAnd(parts.map((part, i) => (i === 0 ? capitalise(part) : part)))}${since}.`;
   const withTail = tail === null ? clauses : [...clauses, tail];
   // A capture the triage judged to need him today is ALWAYS said: no worker
   // raises it with him directly (Tom, 2026-09-21), so this line and the

@@ -878,6 +878,11 @@ describe("composeHourly", () => {
     expect(message!.firstLine).not.toContain("because");
   });
 
+  it("does not throw on an hour whose only changes it does not count", () => {
+    const archived = { kind: "archived" as const, at: 1, text: "Old item", detail: null, link: null };
+    expect(() => composeHourly(hourly({ changes: [archived] }))).not.toThrow();
+  });
+
   it("always says a capture needs him today, the hour's other clauses giving way when even the count will not fit", () => {
     const title = "A".repeat(150);
     const running = [{ sessionId: "k97a", title, kind: "worker", mode: "autonomous", status: "running", statement: "Plan it", batchId: null, elapsedMs: 3_600_000 }];
