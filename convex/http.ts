@@ -1672,13 +1672,15 @@ const ttsAskContext = httpAction(async (ctx, request) => {
   const sessionId = nonempty(params.get("sessionId"));
   const job = nonempty(params.get("job"));
   const runnerId = nonempty(params.get("runnerId"));
-  if ([sessionId, job, runnerId].filter((one) => one !== undefined).length !== 1) {
-    return jsonResponse(400, { error: "exactly one of sessionId, runnerId or job is required" });
+  const elevationId = nonempty(params.get("elevationId"));
+  if ([sessionId, job, runnerId, elevationId].filter((one) => one !== undefined).length !== 1) {
+    return jsonResponse(400, { error: "exactly one of sessionId, runnerId, job or elevationId is required" });
   }
   const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
     sessionId,
     job,
     runnerId,
+    elevationId,
     todoId: nonempty(params.get("todoId")),
   });
   return jsonResponse(200, context);

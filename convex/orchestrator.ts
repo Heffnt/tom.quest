@@ -63,8 +63,6 @@ export const ORCHESTRATOR_CRASH_BACKOFF_MS = 60_000;
 export const ORCHESTRATOR_CRASH_BACKOFF_CAP_MS = 60 * 60_000;
 /** Consecutive crashes after which #tts-broken is told. */
 export const ORCHESTRATOR_CRASHES_REPORTED = 3;
-const DOCUMENT_MAX_CHARS = 200_000;
-const MESSAGE_MAX_CHARS = 20_000;
 /** The delegate's own question limit (POST /tts/ask): a trade-off goes to the
  * delegate word for word, so an elevation's question is held to it. */
 const QUESTION_MAX_CHARS = 400;
@@ -528,7 +526,6 @@ export const internalWriteDocument = internalMutation({
     const { row, session } = await requireLiveOrchestrator(ctx, sessionId);
     const text = document.trim();
     if (text === "") throw new Error("refused: the document is empty");
-    if (text.length > DOCUMENT_MAX_CHARS) throw new Error(`refused: the document is over ${DOCUMENT_MAX_CHARS} characters`);
     const version = row.documentVersion + 1;
     const now = Date.now();
     await ctx.db.insert("orchestratorDocuments", { version, text, sessionId: session._id, at: now });
@@ -591,7 +588,6 @@ export const internalSendMessage = internalMutation({
   handler: async (ctx, { sessionId, to, text }) => {
     const body = text.trim();
     if (body === "") throw new Error("refused: the message is empty");
-    if (body.length > MESSAGE_MAX_CHARS) throw new Error(`refused: the message is over ${MESSAGE_MAX_CHARS} characters`);
     const id = ctx.db.normalizeId("claudeSessions", sessionId);
     const hosted = id === null ? null : await hostedRunOf(ctx, id);
     if (hosted?.environment === "worker") {
@@ -939,7 +935,7 @@ export function buildOrchestratorPrompt(args: {
     "",
     "Workers never decide trade-offs or reserved decisions; they raise them to you as elevations, with two sides and no recommendation. You judge which kind each is and answer it:",
     "- Obvious: answer it yourself, in one sentence.",
-    `- Trade-off: ask the delegate first, giving it the two sides and NO recommendation: \`tts-ask --elevation <elevation id> --question "<the question>" --option "<side one>" --option "<side two>" --fallback "<what the worker should do if it does not rule>"\`. Its first line is \`DELEGATE <ask id>\`. Then answer with kind trade-off and that ask id; the record reads the delegate's answer from its own record and writes it as a delegate ruling, which every run treats as Tom's and his objection reverts. If the delegate refused or did not answer, answer trade-off again with your fallback in "answer".`,
+    `- Trade-off: ask the delegate first, giving it the two sides and NO recommendation: \`tts-ask --elevation <elevation id> [--todo <the todo it concerns, when it names one>] --question "<the question>" --option "<side one>" --option "<side two>" --fallback "<what the worker should do if it does not rule>"\`. Its first line is \`DELEGATE <ask id>\`. Then answer with kind trade-off and that ask id; the record reads the delegate's answer from its own record and writes it as a delegate ruling, which every run treats as Tom's and his objection reverts. If the delegate refused or did not answer, answer trade-off again with your fallback in "answer".`,
     "- Reserved: answer with kind reserved and your recommendation. The record opens a #tts-needs-you thread for Tom, and his reply is delivered to the worker. You open a needs-you thread for nothing else.",
     "",
     "Delegating (the agent rules). Fable for anything that needs simplification or judgment, Codex for mechanical work, Opus for briefs; every spawn names its model.",

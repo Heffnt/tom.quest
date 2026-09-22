@@ -644,7 +644,7 @@ export default function BatchesTab() {
                   ? `${r.repo} ${r.externalId}`
                   : // A batch subject carries batchId, not todoId — without
                     // the fallback the row renders with a blank subject.
-                    (r.todoId ?? r.batchId ?? r.elevationId))}
+                    (r.todoId ?? r.batchId))}
             </span>
             <span className="text-text-faint">{ageText(r.ruledAt, now)}</span>
           </div>

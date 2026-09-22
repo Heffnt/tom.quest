@@ -3697,7 +3697,15 @@ export const internalAutoSchedule = internalMutation({
           .collect()), // bounded: live sessions are few by design
       );
     }
-    const liveAutonomous = liveSessions.filter(
+    // The orchestrator's runs and the workers it spawned are hosted runs with
+    // a limit of their own (convex/orchestrator.ts); they are not this
+    // scheduler's sessions and take none of its places, though a todo one of
+    // them holds is still excluded below.
+    const ownSessions: Doc<"claudeSessions">[] = [];
+    for (const s of liveSessions) {
+      if ((await hostedFacts(ctx, s)) === undefined) ownSessions.push(s);
+    }
+    const liveAutonomous = ownSessions.filter(
       (s) => s.mode === "autonomous",
     ).length;
     if (liveAutonomous >= config.maxLiveAutonomous) return;
@@ -4258,7 +4266,7 @@ export const internalAutoSchedule = internalMutation({
     // session: it counts against maxLiveAutonomous on every later tick, and
     // against this tick's budget as the one pick it is.
     if (admittedSoFar() < capacity) {
-      await admitProspectMission(ctx, now, liveSessions, fleet);
+      await admitProspectMission(ctx, now, ownSessions, fleet);
     }
 
     // Quiet when idle: the scheduler event only exists when real work was

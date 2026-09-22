@@ -8,6 +8,7 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
+import { AUTO_DEFAULTS } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
@@ -321,6 +322,40 @@ describe("elevations", () => {
     const ruling = await t.run(async (ctx) => ctx.db.query("dtsRulings").withIndex("by_elevation", (q) => q.eq("elevationId", elevationId as Id<"elevations">)).unique());
     expect(ruling).toMatchObject({ ruledBy: "tom", sentence: "Renew it, yes." });
     expect((await pendingTexts(t, worker)).some((m) => m === `Tom answered your elevation ${elevationId}: Renew it, yes.`)).toBe(true);
+  });
+});
+
+describe("beside the older machinery", () => {
+  it("gives the delegate's pre-ask read an elevation as its caller", async () => {
+    const t = await setup();
+    const orchestrator = await start(t);
+    const worker = await spawn(t, orchestrator);
+    const elevationId = await elevate(t, worker);
+    const res = await t.fetch(`/tts/ask-context?elevationId=${elevationId}`, { headers: { "X-TTS-Key": KEY } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ asked: 0 });
+  });
+
+  it("takes none of the auto-session scheduler's places", async () => {
+    const t = await setup();
+    const orchestrator = await start(t);
+    await spawn(t, orchestrator);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("claudeAutoConfig", { ...AUTO_DEFAULTS, enabled: true, maxLiveAutonomous: 1, updatedAt: Date.now() });
+    });
+    await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+      hosts: HOSTS,
+      load: { loadavg1: 1, cpus: 8, freeMemMb: 8192, totalMemMb: 16384, liveSessions: 0 },
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const prospectors = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeSessions").collect()).filter((s) => s.title.startsWith("prospect: ")),
+    );
+    // Two hosted runs are live and the cap is one, yet the scheduler still
+    // admits its own prospector.
+    expect(prospectors).toHaveLength(1);
   });
 });
 
