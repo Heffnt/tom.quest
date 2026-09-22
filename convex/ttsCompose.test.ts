@@ -853,6 +853,15 @@ describe("the needs-you-today run", () => {
     expect(folded).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line carrying its link');
   });
 
+  it("says how many dated items it leaves below when only some of them are flagged, and gives the writer that fact", () => {
+    const mixed = sept9({ needsYou: [{ todoId: "ph74xqqp", statement: "Test interest-gradient sequencing", why: "the lab meets today" }] });
+    const text = renderSlack(composeToday(mixed, { canReply: false }));
+    expect(text).toContain("One dated item is named below, with why it needs you today.");
+    expect(text).toContain("Run the first Friday triage session");
+    const fact = todayFactsBlock(mixed, false).facts.find((f) => f.id === "today:left-below");
+    expect(fact?.numbers).toContain("1");
+  });
+
   it("keeps the today run saying dated items exist when every one of them is left to the needs-you run", () => {
     const only = sept9({
       today: [{ id: "abc", statement: "Pay the lab deposit invoice", countdown: "Ten days late." }],

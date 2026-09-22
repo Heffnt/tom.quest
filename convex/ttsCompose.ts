@@ -765,6 +765,15 @@ function needsYouTodayLine(n: NeedsYouTodayFact): string {
   return statement(build(head, reason));
 }
 
+/** The today run's line counting the dated items it leaves to the needs-you
+ *  run, or null when it leaves none. The template prints it and the facts
+ *  block carries it, so a written message can say it too. */
+function leftBelowLine(f: TodayFacts): string | null {
+  const n = f.today.filter((item) => f.needsYou.some((needs) => needs.todoId === item.id)).length;
+  if (n === 0) return null;
+  return `${capitalise(countWord(n))} dated ${plural(n, "item is", "items are")} named below, with why ${n === 1 ? "it needs" : "they need"} you today.`;
+}
+
 /** The needs-you-today run's lead. */
 function needsYouTodayLead(n: number): string {
   return `${capitalise(countWord(n))} captured ${plural(n, "item needs", "items need")} you today, as the email triage judged ${n === 1 ? "it" : "them"}.`;
@@ -902,15 +911,11 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     seen.add(item.id);
     todayItems.push({ text: todayLine(item), url: itemUrl(item.id) });
   }
-  // Every dated item left to the needs-you run: the today run still says
-  // there are some, rather than falling to "nothing is dated".
-  const leftBelow = f.today.filter((item) => f.needsYou.some((n) => n.todoId === item.id)).length;
-  if (todayItems.length === 0 && leftBelow > 0) {
-    todayItems.push({
-      text: `${capitalise(countWord(leftBelow))} dated ${plural(leftBelow, "item is", "items are")} named below, with why ${leftBelow === 1 ? "it needs" : "they need"} you today.`,
-      url: TAB_EVERYTHING,
-    });
-  }
+  // The dated items left to the needs-you run: the today run says how many,
+  // so none goes missing from it silently and it never falls to "nothing is
+  // dated" while one waits below.
+  const below = leftBelowLine(f);
+  if (below !== null) todayItems.push({ text: below, url: TAB_EVERYTHING });
   const readyMore =
     f.readyBeyond > 0
       ? {
@@ -1532,6 +1537,8 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     if (flagged.has(item.id)) continue; // its fact is its needs-you-today one
     facts.push(fact(`todo:${item.id}`, todayLine(item), [itemUrl(item.id)]));
   }
+  const below = leftBelowLine(f);
+  if (below !== null) facts.push(fact("today:left-below", below, [TAB_EVERYTHING], [f.today.filter((item) => flagged.has(item.id)).length]));
   if (f.readyBeyond > 0) {
     facts.push(
       fact(
