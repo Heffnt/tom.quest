@@ -466,20 +466,18 @@ export async function gatherTodayFacts(
   const emailCaptures = recentEmail.filter((t) => t.createdAt >= since && t.createdAt < now);
   const emailCaptureIds = new Set(emailCaptures.map((t) => t._id as string));
 
-  //    Of the recent mail captures (Gmail's "email", Outlook's "outlook"), the
-  //    ones the triage judged to need him today, still active, and NOT YET
-  //    SHOWN in a morning message, oldest first. No worker raises these with
-  //    him (Tom, 2026-09-21), so this message says them, each once: a line
-  //    printed marks its todo surfaced, and one dropped for length stays
-  //    unshown and comes back the next morning rather than aging out of a
-  //    window. The field is never cleared: it is what the triage judged at
-  //    capture, and the reader decides what is still to be said.
-  const recentOutlook = await ctx.db
-    .query("dtsTodos")
-    .withIndex("by_source", (q) => q.eq("source", "outlook"))
-    .order("desc")
-    .take(CAPTURE_SCAN);
-  const flagged = [...recentEmail, ...recentOutlook].filter(
+  //    Of the recent mail captures, the ones the triage judged to need him
+  //    today, still active, and NOT YET SHOWN in a morning message. No worker
+  //    raises these with him (Tom, 2026-09-21), so this message says them,
+  //    each once: a line printed marks its todo surfaced, and one dropped for
+  //    length stays unshown and comes back the next morning rather than aging
+  //    out of a window. A morning reposted after a failed send records no
+  //    surfaced todos (ttsSync's resend), so its flagged items are said again
+  //    the next morning: the error is toward saying twice, never never. The
+  //    field is never cleared: it is what the triage judged at capture, and
+  //    the reader decides what is still to be said. Gmail's "email" is the one
+  //    mail source that captures today; Outlook's joins when its poller does.
+  const flagged = recentEmail.filter(
     (t) => t.needsTomToday !== undefined && t.status === "active" && t.createdAt < now,
   );
   const unshown: typeof flagged = [];
