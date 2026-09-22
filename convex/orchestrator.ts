@@ -1046,7 +1046,11 @@ async function onFallbackObjection(ctx: MutationCtx, askId: string, words: strin
   // obvious answer names no ask, and a reserved one is answered by Tom.
   if (!elevation || elevation.status !== "answered" || elevation.answeredBy !== "orchestrator") return;
   const stood = elevation.answer ?? "";
-  await ctx.db.patch(elevation._id, { status: "open", answer: undefined, answeredBy: undefined, answeredAt: undefined });
+  // The ask goes with the answer it no longer has. Left behind, it would
+  // still name this elevation: a second objection to the same ask would then
+  // reopen whatever the orchestrator had since answered, and an obvious
+  // answer, which names no ask of its own, would be the one it undid.
+  await ctx.db.patch(elevation._id, { status: "open", answer: undefined, answeredBy: undefined, answeredAt: undefined, askId: undefined });
   const note = `Tom objected to the fallback that stood on elevation ${elevation._id} ("${stood}"), which no longer stands: ${words}. The question is open again.`;
   await deliver(ctx, elevation.workerSessionId, note);
   await deliverToOrchestrator(ctx, note);

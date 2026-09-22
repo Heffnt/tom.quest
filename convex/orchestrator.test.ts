@@ -383,6 +383,14 @@ describe("elevations", () => {
     expect(reopened?.answer).toBeUndefined();
     expect((await pendingTexts(t, worker)).some((m) => m.startsWith(`Tom objected to the fallback that stood on elevation ${silent}`) && m.includes("No, renew it."))).toBe(true);
     expect((await pendingTexts(t, orchestrator)).some((m) => m.startsWith(`Tom objected to the fallback that stood on elevation ${silent}`))).toBe(true);
+    // The ask went with the answer, so a second objection to it undoes nothing
+    // the orchestrator has since answered.
+    expect(reopened?.askId).toBeUndefined();
+    expect((await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId: silent, kind: "obvious", answer: "Renew." })).body.status).toBe("answered");
+    await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+      askId: "33333333", text: "Still no.", revert: false, sentence: "Still no.", channel: "C", ts: "5.0", threadTs: "3.0",
+    });
+    expect((await t.run(async (ctx) => ctx.db.get(silent as Id<"elevations">)))).toMatchObject({ status: "answered", answer: "Renew." });
 
     const objected = await elevate(t, worker, "Which colour?");
     await record(objected, "22222222", {});
