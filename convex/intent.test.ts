@@ -87,6 +87,30 @@ describe("POST /tts/intent-sources", () => {
     expect(((await res.json()) as { error: string }).error).toContain(message);
   });
 
+  // `--only=post` from an older checkout is a supported run, and it must not
+  // roll the page back to a night that has already been superseded.
+  it("refuses a post whose sources are older than the stored ones", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await post(t, [{ ...source("tts/spec.md", "# Spec, tonight\n"), syncedAt: 2_000 }]);
+    const stale = await post(t, [{ ...source("tts/spec.md", "# Spec, last week\n"), syncedAt: 1_000 }]);
+    expect(stale.status).toBe(400);
+    expect(((await stale.json()) as { error: string }).error).toContain("older than the stored one");
+    const rows = await t.run(async (ctx) => ctx.db.query("intentSources").collect());
+    expect(rows[0].body).toBe("# Spec, tonight\n");
+  });
+
+  // A rerun at the same commit is the same bodies, so it replaces.
+  it("takes a post at the same commit time", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await post(t, [{ ...source("tts/spec.md", "# Spec\n"), syncedAt: 2_000 }]);
+    const again = await post(t, [{ ...source("vqc/adoption.md", "# adoption\n"), syncedAt: 2_000 }]);
+    expect(again.status).toBe(200);
+    const rows = await t.run(async (ctx) => ctx.db.query("intentSources").collect());
+    expect(rows.map((row) => row.path)).toEqual(["vqc/adoption.md"]);
+  });
+
   // A refused post must leave what the page is reading exactly as it was.
   it("leaves the store alone when a later file is malformed", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
@@ -162,6 +186,11 @@ describe("intent.lines", () => {
       locator: "line 5",
     });
     expect(direction.evidence[0].form).toBe("said");
+
+    // The act is his; the WORDING of a label is an agent's, so the page must
+    // not put it on screen under his name.
+    const label = lines.find((line) => line.kind === "label")!;
+    expect(label).toMatchObject({ voice: "unattributed", section: "good", source: "runLabels" });
 
     // Newest first, and the undated AGENTS.md rule last.
     expect(lines[0].kind).toBe("label");

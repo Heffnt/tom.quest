@@ -57,7 +57,17 @@ export function isIntentSourcePath(path: unknown): path is string {
  *  pace, so this is a year of them and not a window. */
 const RULINGS_MAX = 500;
 
-/** The most labels the page reads, per source. */
+/**
+ * The most labels the page reads, per source.
+ *
+ * REMOVAL CHECK: the cap cannot be deleted and the rows it leaves out cannot be
+ * deleted instead. `runLabels` is append-only and unbounded — one row per
+ * judgment he ever made about a run's output — and it is the corpus the golden
+ * set is mined from, so an old label is evidence rather than clutter. Without a
+ * cap this query's read grows with the record until Convex refuses it, taking
+ * the other four kinds down with it. `capped` is what keeps the header honest
+ * about the difference.
+ */
 const LABELS_MAX = 250;
 
 /** The model-of-tom pages whose lines are intent, and which kind each is.
@@ -77,6 +87,21 @@ const LABEL_SOURCES = ["ruling", "objection", "session-reply", "digest-reaction"
  * Every row of `intentSources` replaced in one post, the way the model-of-tom
  * files are replaced: a file the publisher stops sending leaves no stale row
  * behind, so the page never shows a source the checkout no longer has.
+ *
+ * NEWER OR NOTHING. `--only=post` from an older checkout is a supported run, so
+ * a replace with no freshness check would silently roll the page back to a
+ * night that has already been superseded — the same rollback the base and the
+ * catalog doors refuse. The post's newest `syncedAt` is a commit time, so the
+ * comparison is between two immutable commits and not between two request
+ * instants. Equal replaces, because a rerun at the same commit is the same
+ * bodies.
+ *
+ * REMOVAL CHECK on the validation below: it cannot be deleted in favour of the
+ * door's own checks in convex/http.ts, nor the other way round. This mutation
+ * is what makes the store's invariants true for EVERY caller — the validators
+ * express neither "no path twice" nor "a non-empty body" — while the HTTP
+ * checks are what turn a publisher's malformed post into a 400 naming the
+ * field, rather than a thrown mutation the job can only report as a failure.
  */
 export const internalReplaceIntentSources = internalMutation({
   args: {
@@ -108,6 +133,13 @@ export const internalReplaceIntentSources = internalMutation({
       seen.add(file.path);
     }
     const existing = await ctx.db.query("intentSources").collect();
+    const newest = (rows: { syncedAt: number }[]) => Math.max(...rows.map((row) => row.syncedAt));
+    if (existing.length > 0 && newest(files) < newest(existing)) {
+      throw new Error(
+        `the post's newest source (${new Date(newest(files)).toISOString()}) is older than the stored one`
+          + ` (${new Date(newest(existing)).toISOString()}) — store left as it was`,
+      );
+    }
     for (const row of existing) await ctx.db.delete(row._id);
     for (const file of files) await ctx.db.insert("intentSources", file);
     return { files: files.length, deleted: existing.length };
@@ -225,9 +257,12 @@ export const lines = query({
     }));
     record("dtsRulings", "record", null, rulings[0]?.ruledAt ?? null, ruled);
 
-    // HIS LABELS. `meaning` is an agent's present-tense wording of what he did
-    // about a run's output; the act itself — the ruling, the objection, the
-    // reply, the reaction — is his, and the writer refuses any actor but him.
+    // HIS LABELS. The act is his — the writer refuses any actor but him — but
+    // the LINE is not: `meaning` is an agent's present-tense wording of what he
+    // did, written to be an eval case's rubric. So the line is `unattributed`
+    // and the polarity it carries is what is his. Calling it `his` would put
+    // generated prose on the page under his name, which is the one thing the
+    // voice column exists to prevent.
     let labelsCapped = false;
     const labelled: IntentLine[] = [];
     for (const source of LABEL_SOURCES) {
@@ -241,7 +276,7 @@ export const lines = query({
           kind: "label",
           text: row.meaning,
           section: row.polarity,
-          voice: "his",
+          voice: "unattributed",
           source: "runLabels",
           locator: row.runId,
           at: row.at,

@@ -26,7 +26,16 @@ describe("parseDate", () => {
 
   it("returns null for anything else", () => {
     expect(parseDate("last spring")).toBeNull();
-    expect(parseDate("2026-13-01")).toBe(Date.UTC(2026, 12, 1));
+  });
+
+  // A date that does not exist must not roll forward into one that does: the
+  // page prints the source's spelling and sorts on the number, so 2026-13-01
+  // read as January 2027 would sort a line a year from where it reads.
+  it("refuses a date that does not exist", () => {
+    expect(parseDate("2026-13-01")).toBeNull();
+    expect(parseDate("2026-02-30")).toBeNull();
+    expect(parseDate("2026-00-10")).toBeNull();
+    expect(parseDate("2026-02-28")).toBe(Date.UTC(2026, 1, 28));
   });
 });
 

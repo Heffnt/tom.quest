@@ -73,8 +73,18 @@ const MONTHS: Record<string, number> = {
 export function parseDate(value: string): number | null {
   const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
   if (iso) {
-    const at = Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
-    return Number.isFinite(at) ? at : null;
+    const [year, month, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+    const at = Date.UTC(year, month - 1, day);
+    // `Date.UTC` ROLLS A DATE THAT DOES NOT EXIST FORWARD — 2026-13-01 becomes
+    // January 2027, 2026-02-30 becomes March. The page prints the source's own
+    // spelling and sorts on this number, so a rolled date would sort a line a
+    // year from where the page says it is. A date that does not survive the
+    // round trip is not a date.
+    const back = new Date(at);
+    if (back.getUTCFullYear() !== year || back.getUTCMonth() !== month - 1 || back.getUTCDate() !== day) {
+      return null;
+    }
+    return at;
   }
   const month = /^([A-Za-z]+)\s+(\d{4})$/.exec(value.trim());
   if (month) {

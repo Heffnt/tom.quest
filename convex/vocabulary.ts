@@ -26,6 +26,16 @@ const SURFACE = "Vocabulary";
  *  past this is a generator that has started minting words. */
 export const VOCABULARY_TERMS_MAX = 1000;
 
+/**
+ * The render, replaced whole.
+ *
+ * REMOVAL CHECK on the validation below: it cannot be deleted in favour of the
+ * door's own checks in convex/http.ts, nor the other way round. This mutation
+ * is what makes the store's invariants true for EVERY caller — the validators
+ * express neither "no word twice" nor "newer than what is stored" — while the
+ * HTTP checks are what turn a publisher's malformed post into a 400 naming the
+ * field, rather than a thrown mutation the job can only report as a failure.
+ */
 export const internalReplaceVocabulary = internalMutation({
   args: {
     version: v.string(),
