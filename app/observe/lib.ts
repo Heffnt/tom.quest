@@ -120,7 +120,7 @@ export const REPO_NAMES: string[] = Object.keys(SESSION_REPOS);
  */
 export function repoOfRun(run: RunMark): string | null {
   const cwd = run.cwd;
-  if (cwd === null || cwd === "") return null;
+  if (cwd === null) return null;
   const segments = cwd.split(/[\\/]+/).filter((part) => part !== "");
   // EVERY segment, which is what makes a worktree path answer too: a worktree
   // directory is named for its branch, but the repository it belongs to is
