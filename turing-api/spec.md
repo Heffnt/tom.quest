@@ -60,8 +60,9 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
   and `DELETE /jobs/{id}`. It accepts the full key unchanged and the runner key with an
   `X-Runner-Id` header, and holds a runner-key call to `runner_key.py`: the job name must
   be `runner:<runner id>:<label>` for that id, every command must run a file inside the CMT
-  checkout (`BOOLEAN_BACKDOOR_REPO`) with no shell metacharacter, one request is capped
-  below the full key's limits, and a cancel is refused unless the live job list shows the
+  checkout (`BOOLEAN_BACKDOOR_REPO`) with no shell metacharacter, one request stays under
+  the hard maxima no ruling of Tom's reaches (16 GPUs, 1440 minutes, 1536000 MB; the
+  per-runner ceiling his ruling raises is enforced on the box by `tts-turing-act`), and a cancel is refused unless the live job list shows the
   job under this runner's name. Refusals are 403 with the reason, and every call is logged
   with the runner id and never the key. It is what a TTS runner step holds
   (`worker/bin/tts-turing-act`), never a session; unset, it fails closed like the read key.

@@ -807,6 +807,11 @@ function slackReplyChannels(): Set<string> {
       // objection to it (convex/ttsSync.ts sendRemoval). Without this line
       // the thread would look answerable and every reply would be dropped.
       process.env.SLACK_TTS_SIMPLIFY_CHANNEL_ID,
+      // A runner's check-in thread (convex/ttsSync.ts sendRunnerCheckIn): his
+      // reply there is the runner's next turn and, when it starts with
+      // "ceiling", his ruling on what one launch may ask for. Without this
+      // line every reply under a check-in was dropped.
+      process.env.SLACK_TTS_RUNNERS_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
   );
 }
@@ -3284,6 +3289,11 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
   if (b.budgetGpuHours !== undefined && typeof b.budgetGpuHours !== "number") return "budgetGpuHours must be a number.";
   if (b.specs !== undefined && (!Array.isArray(b.specs) || !b.specs.every((spec) => typeof spec === "string"))) return "specs must be a list of glob patterns.";
   if (b.runId !== undefined && !validRunId(b.runId)) return "runId is not a run id.";
+  // Refused, not ignored: a caller that sent a ceiling must learn it was not
+  // taken. Every run on the box holds this pen's key, a runner step included,
+  // so a ceiling set here would be an agent widening its own reach; a runner
+  // opened here holds the default, Tom's form or his reply sets more.
+  if (b.ceiling !== undefined) return "ceiling is Tom's to set, on the New runner form or by his reply in the runner's thread; a runner opened here holds the default.";
   if (b.askOverrides !== undefined) {
     const cells = b.askOverrides;
     const tiers = ["routine", "plan", "setup"];
@@ -3310,6 +3320,7 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
 }
 
 http.route({ path: "/tts/runner", method: "POST", handler: ttsRunner });
+
 
 // POST /tts/runner-step — a runner step's check-in, through tts-runner-step.
 // Body { runnerId, stepRunId, decision, checkIn, document, asks: [{ tier,

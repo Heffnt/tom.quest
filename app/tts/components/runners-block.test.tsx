@@ -143,7 +143,7 @@ describe("the runners block", () => {
     expect(screen.getByText(/ended 1 day ago/)).toBeTruthy();
   });
 
-  it("creates a runner through createRunner, with the step length in milliseconds", async () => {
+  it("creates a runner through createRunner, with the step length in milliseconds and its ceiling", async () => {
     render(<RunnersBlock now={NOW} />);
     fireEvent.click(screen.getByRole("button", { name: "New runner" }));
     const dialog = screen.getByRole("dialog", { name: "New runner" });
@@ -151,6 +151,7 @@ describe("the runners block", () => {
     fireEvent.change(within(dialog).getByLabelText("type"), { target: { value: "probe" } });
     fireEvent.change(within(dialog).getByLabelText("step length in minutes"), { target: { value: "15" } });
     fireEvent.change(within(dialog).getByPlaceholderText("objective"), { target: { value: "Run five seeds." } });
+    fireEvent.change(within(dialog).getByLabelText("ceiling, GPUs"), { target: { value: "8" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Create runner" }));
     await vi.waitFor(() => expect(convex.calls).toHaveLength(1));
     expect(convex.calls[0]).toEqual({
@@ -161,6 +162,7 @@ describe("the runners block", () => {
         experimentHost: "turing",
         repo: expect.any(String),
         stepMs: 900_000,
+        ceiling: { gpus: 8, minutes: 240, memoryMb: 128000 },
         from: { kind: "prompt", text: "Run five seeds." },
       },
     });

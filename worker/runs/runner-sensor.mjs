@@ -99,11 +99,23 @@ export function readCache(file) {
       done: Array.isArray(cache.done) ? cache.done : [],
       jobs: cache.jobs && typeof cache.jobs === "object" ? cache.jobs : {},
       ...(typeof cache.budgetGpuHours === "number" ? { budgetGpuHours: cache.budgetGpuHours } : {}),
+      ...(validCeiling(cache.ceiling) ? { ceiling: cache.ceiling } : {}),
       ...(typeof cache.readAt === "number" ? { readAt: cache.readAt } : {}),
     };
   } catch {
     return { done: [], jobs: {} };
   }
+}
+
+// What one launch may ask for when the cache holds no ceiling: the default in
+// convex/ttsShared.ts (RUNNER_CEILING_DEFAULT), the fixed ceiling every runner
+// had before Tom ruled on 2026-09-21 that a ruling of his may raise it. A cache
+// written before the row carried a ceiling falls back to it, never above it.
+export const DEFAULT_CEILING = { gpus: 2, minutes: 240, memoryMb: 128000 };
+
+function validCeiling(ceiling) {
+  return ceiling !== null && typeof ceiling === "object"
+    && ["gpus", "minutes", "memoryMb"].every((key) => Number.isInteger(ceiling[key]) && ceiling[key] >= 1);
 }
 
 function writeCache(file, cache) {
@@ -286,7 +298,7 @@ function spentGpuHours(cacheJobs, jobs, runnerId, now) {
  *
  * input: { cache (the sensor's cache file, parsed, or null), jobs (the job
  *          list, or null when it could not be read), runnerId, gpus, minutes,
- *          now }
+ *          memoryMb, now }
  * returns { ok: true, spent, committed, request, budget } or
  *         { ok: false, reason } with the sentence the step raises.
  *
@@ -295,7 +307,22 @@ function spentGpuHours(cacheJobs, jobs, runnerId, now) {
  * same spend. The job list must be readable: a launch is refused rather than
  * counted against a spend of zero that nobody saw.
  */
-export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, now }) {
+export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, memoryMb, now }) {
+  // THE CEILING FIRST: it is Tom's per-request limit, read from the record's
+  // copy in the cache like the budget, and a request above it is his to allow.
+  const ceiling = validCeiling(cache?.ceiling) ? cache.ceiling : DEFAULT_CEILING;
+  const over = [
+    gpus > ceiling.gpus ? `${gpus} GPUs where the ceiling is ${ceiling.gpus}` : null,
+    minutes > ceiling.minutes ? `${minutes} minutes where the ceiling is ${ceiling.minutes}` : null,
+    memoryMb > ceiling.memoryMb ? `${memoryMb} MB of memory where the ceiling is ${ceiling.memoryMb}` : null,
+  ].filter(Boolean);
+  if (over.length > 0) {
+    return {
+      ok: false,
+      ceiling,
+      reason: `this launch asks for ${over.join(", and ")}; this runner's ceiling is ${ceiling.gpus} GPUs, ${ceiling.minutes} minutes and ${ceiling.memoryMb} MB of memory per request, and only Tom raises it, by a reply in the runner's thread that starts with the word "ceiling" and names the new numbers, such as "ceiling 8 GPUs, 12 hours, 256 GB"`,
+    };
+  }
   const budget = cache?.budgetGpuHours;
   if (typeof budget !== "number" || !Number.isFinite(budget)) {
     return { ok: false, reason: "no GPU-hour budget is recorded for this runner, so it cannot launch; ask Tom to set one" };
@@ -320,6 +347,19 @@ export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, now }) {
   return { ok: true, ...numbers };
 }
 
+/**
+ * Why a launch that went out fell short, or null when every job asked for was
+ * launched. turing-api answers a partial allocation as a success, and the
+ * cluster's default partition caps one account's GPUs below the maximum a
+ * ruling may reach (12 on `short`, turing-api/spec.md §1.4, where Tom's limit
+ * is 16), so a launch of 16 can start 12. A step must not read that as done.
+ */
+export function launchShortfall({ asked, ids, errors }) {
+  if (ids.length >= asked) return null;
+  const said = errors.length > 0 ? ` The cluster said: ${errors.join("; ")}.` : "";
+  return `the cluster launched ${ids.length} of the ${asked} jobs asked for, so the launch is not what was planned.${said} Say in the check-in how many started and what this runner will do about the rest; a shortfall at twelve or more GPUs is likely the account's cap on the cluster's default partition, which a ruling does not raise`;
+}
+
 function gpuHoursFact(jobs, cache, runnerId, budget, now) {
   if (jobs.unavailable) {
     const spent = spentGpuHours(cache.jobs, [], runnerId, now);
@@ -335,7 +375,7 @@ const round = (n) => Math.round(n * 10) / 10;
  * Read the facts for one step. Never throws: a source that fails is named in
  * its own field.
  *
- * input: { runnerId, cwd, specs, budgetGpuHours, failures: [{ at, text }],
+ * input: { runnerId, cwd, specs, budgetGpuHours, ceiling, failures: [{ at, text }],
  *          cacheDir }
  */
 export async function sense(input, deps = defaultDeps) {
@@ -354,6 +394,9 @@ export async function sense(input, deps = defaultDeps) {
   // runner with no budget leaves none, and cannot launch.
   if (input.budgetGpuHours !== undefined) cache.budgetGpuHours = input.budgetGpuHours;
   else delete cache.budgetGpuHours;
+  // The ceiling rides the cache the same way. readCache drops one that is not
+  // three whole numbers, and tts-turing-act then holds the runner to the default.
+  cache.ceiling = input.ceiling;
   cache.readAt = now;
   writeCache(cachePath, cache);
   const jobsOut = { ...jobs };

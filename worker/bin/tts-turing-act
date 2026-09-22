@@ -21,7 +21,12 @@
 // over this runner's jobs in `tts-turing jobs` (named runner:<id>:, so the
 // pool's jobs and Tom's own never spend a runner's budget); the time still
 // booked on this runner's live jobs counts too. No budget recorded, or a job list that cannot be read, refuses.
-// turing-api's own ceilings bound a request that skips this command.
+//
+// SO IS THE CEILING: GPUs, minutes and memory per request, from the same
+// cache, which the sensor fills from the runner row. Tom raises it by a
+// ruling (convex/ttsRunners.ts setCeiling); a request above it is refused
+// here with a sentence saying how to ask. turing-api only knows the hard
+// maximum no ruling reaches, which bounds a request that skips this command.
 //
 // THE READ-BACK IS THE VERIFICATION. After a launch the queue is read again and
 // the job is looked for by name; after a cancel, the job is looked for gone.
@@ -161,16 +166,19 @@ async function send(method, route, runnerId, body) {
 
 async function launch(opts) {
   key();
-  const { launchVerdict, readCache, DEFAULT_CACHE_DIR } = await import(sensorUrl());
+  const { launchVerdict, launchShortfall, readCache, DEFAULT_CACHE_DIR } = await import(sensorUrl());
   const cacheFile = path.join(process.env.TTS_RUNNER_CACHE_DIR ?? DEFAULT_CACHE_DIR, `${opts.runner}.json`);
   const cache = fs.existsSync(cacheFile) ? readCache(cacheFile) : null;
   let jobs = null;
   try { jobs = await readJobs(); } catch { jobs = null; }
-  const verdict = launchVerdict({ cache, jobs, runnerId: opts.runner, gpus: opts.count, minutes: opts.minutes, now: Date.now() });
+  const verdict = launchVerdict({ cache, jobs, runnerId: opts.runner, gpus: opts.count, minutes: opts.minutes, memoryMb: opts["memory-mb"], now: Date.now() });
   if (!verdict.ok) {
+    const needs = verdict.ceiling
+      ? "how many GPUs, how long and how much memory it needs"
+      : "how many GPU-hours it needs";
     throw new Exit(6, `tts-turing-act: refused before sending: ${verdict.reason}.
 Nothing was launched. Raise this as a setup-tier question for Tom, saying what
-the launch was for and how many GPU-hours it needs, and say in the check-in
+the launch was for and ${needs}, and say in the check-in
 what this runner will do if he does not answer.`);
   }
   const jobName = `runner:${opts.runner}:${opts.label}`;
@@ -191,7 +199,11 @@ what this runner will do if he does not answer.`);
     return job ? `job ${id} is in the queue as ${job.job_name}, ${job.status}` : `job ${id} is not in the queue`;
   })));
   process.stdout.write(`${lines.join("\n")}\n`);
-  if (ids.length === 0) throw new Exit(4, "tts-turing-act: the cluster launched nothing.");
+  // A partial launch is a failure the step must report, not a success: the
+  // API answers one job of sixteen as success, and the default partition's
+  // cap on the account sits below the maximum a ruling reaches.
+  const shortfall = launchShortfall({ asked: opts.count, ids, errors: answer?.errors ?? [] });
+  if (shortfall) throw new Exit(4, `tts-turing-act: ${shortfall}.`);
 }
 
 async function cancel(opts) {

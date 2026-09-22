@@ -14,6 +14,8 @@ import {
   NARROW_LIST,
   RUNNER_ACT_PARAGRAPH,
   RUNNER_ANSWERER,
+  RUNNER_CEILING,
+  RUNNER_CEILING_DEFAULT,
   RUNNER_DECISION,
   RUNNER_TIERS,
   RUNNER_TIER,
@@ -22,7 +24,12 @@ import {
   SESSION_MODELS,
   SESSION_REPO_NAMES,
   NO_REPO,
+  CEILING_REPLY_FORM,
+  parseCeilingReply,
+  runnerCeilingFaults,
+  runnerCeilingWords,
   type RunnerAnswerer,
+  type RunnerCeiling,
   type RunnerTier,
   type SessionModel,
 } from "./ttsShared";
@@ -47,6 +54,11 @@ const RUNNER_DOCUMENT_MAX = 200_000;
  *  than this and the next is due before the last has read its document. */
 const RUNNER_STEP_MIN_MS = 5 * 60_000;
 const RUNNER_STEP_MAX_MS = 24 * 60 * 60_000;
+
+/** The runner's ceiling per request, the default when the row names none. */
+function ceilingOf(runner: Pick<Doc<"runners">, "ceiling">): RunnerCeiling {
+  return runner.ceiling ?? RUNNER_CEILING_DEFAULT;
+}
 
 // ── Status, derived ──────────────────────────────────────────────────────────
 
@@ -221,6 +233,7 @@ const RUNNER_SEED = {
   model: v.optional(SESSION_MODEL),
   delegateAllowed: v.optional(v.boolean()),
   budgetGpuHours: v.optional(v.number()),
+  ceiling: v.optional(RUNNER_CEILING),
   specs: v.optional(v.array(v.string())),
   askOverrides: v.optional(v.array(v.object({ tier: RUNNER_TIER, answerer: RUNNER_ANSWERER }))),
   subject: v.optional(RUNNER_SUBJECT),
@@ -251,6 +264,7 @@ export function runnerSeedFaults(seed: RunnerSeed): string[] {
   if (seed.budgetGpuHours !== undefined && !(Number.isFinite(seed.budgetGpuHours) && seed.budgetGpuHours >= 0)) {
     faults.push("The GPU-hour budget must be a number of hours, zero or more.");
   }
+  if (seed.ceiling !== undefined) faults.push(...runnerCeilingFaults(seed.ceiling));
   if (seed.specs !== undefined) {
     if (seed.repo === NO_REPO) faults.push("Sweep specs need a repo to expand them in.");
     if (seed.specs.length > 50 || seed.specs.some((spec) => !/^[\w.*?/[\]-]{1,200}$/.test(spec) || spec.startsWith("/") || spec.split("/").includes(".."))) {
@@ -314,6 +328,10 @@ async function insertRunner(
     stepMs: seed.stepMs,
     nextStepAt: now,
     ...(seed.budgetGpuHours !== undefined ? { budgetGpuHours: seed.budgetGpuHours } : {}),
+    // Named only on Tom's own form (createRunner); the pen refuses one, and a
+    // hand-off successor starts at the default like any runner, since anyone
+    // holding the pen's key could otherwise hand off from a raised runner.
+    ...(seed.ceiling !== undefined ? { ceiling: seed.ceiling } : {}),
     ...(seed.specs !== undefined ? { specs: seed.specs } : {}),
     ...(seed.model !== undefined ? { model: seed.model } : {}),
     delegateAllowed: seed.delegateAllowed ?? true,
@@ -510,6 +528,7 @@ export const internalClaimRunnerStep = internalMutation({
       sensor: {
         specs: runner.specs ?? [],
         ...(runner.budgetGpuHours !== undefined ? { budgetGpuHours: runner.budgetGpuHours } : {}),
+        ceiling: ceilingOf(runner),
         failures: since.failures.map((failure) => ({ at: failure.at, text: failure.text ?? "" })),
       },
     };
@@ -672,7 +691,7 @@ function renderRubric(runner: Pick<Doc<"runners">, "type" | "delegateAllowed" | 
  * this prompt's own words (a tier name, "this runner", an exit code) and on a
  * question with no default. So the prompt names those words here.
  */
-function checkInContract(runner: Pick<Doc<"runners">, "title" | "stepMs">): string {
+function checkInContract(runner: Pick<Doc<"runners">, "title" | "stepMs" | "ceiling">): string {
   const minutes = Math.round(runner.stepMs / 60_000);
   return [
     "## The check-in",
@@ -683,6 +702,7 @@ function checkInContract(runner: Pick<Doc<"runners">, "title" | "stepMs">): stri
     "- Name only what Tom needs to know where the experiment stands or to answer a question. The document is written in the code's words: a script, a log, a stop condition or a stage you mention is described by what it does, in words, or left out. Never ask him to type a command.",
     "- Describe a process's exit code or an HTTP status in words: say the step's process was stopped by a signal, or the cluster refused the request as unauthorized, never the bare number.",
     `- For every question open for Tom, new or still unanswered, say what the next step will do if he does not answer, and when, as one clock time given once: the next step runs about ${minutes} minutes after this check-in is recorded, unless you move it with --next-step-ms, and a moved step says why. A new question goes under the one "Rulings requested" heading, numbered, each one paragraph: what is gained and lost each way, the one you recommend and why, and that default. The default is the recommendation, since Tom takes a recommendation he does not answer as agreed.`,
+    `- A launch that needs more than my ceiling, now ${runnerCeilingWords(ceilingOf(runner))}, is a question under "Rulings requested" like any other: say how many GPUs, how long and how much memory it needs, and what for. Tom raises the ceiling with ${CEILING_REPLY_FORM}; say that form in the question in plain words. You never raise it yourself and never ask anyone but Tom to.`,
     `- Put the numbers from the facts block in one short Markdown table with two columns, what was counted and what this step found, and say so in the sentence before it, with what one unit of work is: one stage of the pipeline for one sweep setting, such as training one model, finished once its output folder holds a completion marker. The table takes about a third of the length cap, so the prose around it stays short. Its rows, in these words: jobs on the account running on the cluster; GPUs free on the cluster; units of work the sweep files ask for (the frontier's size); units known finished (its done count); my steps that failed since the last check-in; GPU-hours this runner's jobs used since I began. A quantity the box could not read or check is a row that says so and why, in words, with no number: a count carried over from an earlier step or a total of zero because nothing was read counts nothing seen.`,
     "- Say what was seen and what was done; never grade your own work.",
     "- Name each job this step launched or cancelled on the cluster in one sentence: what it was for, and how you saw it take effect, the new job in the queue by its name or the cancelled one gone from it. Name at most two this way and count the rest in one sentence, since the table already takes a third of the length cap. A launch the budget refused, or one the cluster refused as not this runner's to make, is said in words, with what you will do instead.",
@@ -743,7 +763,7 @@ async function buildRunnerStepPrompt(
 
   const replies = since.replies.length === 0
     ? "Tom has not replied since the last step."
-    : since.replies.map((reply) => `Tom replied at ${new Date(reply.at).toISOString()}:\n> ${(reply.text ?? "").split("\n").join("\n> ")}`).join("\n\n");
+    : since.replies.map((reply) => `Tom replied at ${new Date(reply.at).toISOString()}:\n> ${(reply.text ?? "").split("\n").join("\n> ")}${ceilingReplyNote(reply.data)}`).join("\n\n");
   const missed: string[] = [];
   for (const failure of since.failures) missed.push(`- A step failed: ${failure.text ?? "no reason recorded"}.`);
   if (since.deferred > 0) missed.push(`- ${since.deferred} step${since.deferred === 1 ? " was" : "s were"} skipped because the step before was still running.`);
@@ -754,7 +774,7 @@ async function buildRunnerStepPrompt(
   const actsOnCluster = mayActOnCluster(runner, blocking.length);
   const act = observeOnly
     ? `ACT: change nothing. Tom has not answered ${blocking.length === 1 ? "the blocking question" : `${blocking.length} blocking questions`} this runner asked (${blocking.map((ask) => `"${ask.text ?? ""}"`).join("; ")}), so this step observes and checks in, and does not act on the experiment, the checkout or the document's plan.`
-    : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.${actsOnCluster ? " On the cluster you may launch jobs for this experiment and cancel the ones this runner launched, with `tts-turing-act` (under Tools), inside the runner's GPU-hour budget; each launch or cancel is recorded with the pen's `--act` and verified in the queue." : ""}`;
+    : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.${actsOnCluster ? ` On the cluster you may launch jobs for this experiment and cancel the ones this runner launched, with \`tts-turing-act\` (under Tools), inside the runner's GPU-hour budget and its ceiling of ${runnerCeilingWords(ceilingOf(runner))}; each launch or cancel is recorded with the pen's \`--act\` and verified in the queue.` : ""}`;
 
   const pen = [
     "The step pen records your check-in and schedules the next step. Write the check-in to a file and the rewritten document to another, then call:",
@@ -1053,15 +1073,45 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
     .order("desc")
     .first();
   if (open) await ctx.db.patch(open._id, { answeredAt: now, answerText: text });
+  // A reply that starts with "ceiling" is Tom's ruling on what one launch may
+  // ask for, and THE ONE PLACE a runner's ceiling moves after its creation:
+  // the events route admits only his Slack user. There is no door for a
+  // session. Every run on the box holds the same worker key, a runner step
+  // included, so a door could not tell a session acting for Tom from a step
+  // raising its own ceiling, and an agent never widens its own permissions.
+  // The reply event records the old and new numbers, and the next step reads
+  // under his words what they did.
+  const ruled = parseCeilingReply(text, ceilingOf(runner));
+  let ceiling: { from: RunnerCeiling; to: RunnerCeiling } | undefined;
+  if (ruled && "ceiling" in ruled) {
+    ceiling = { from: ceilingOf(runner), to: ruled.ceiling };
+    await ctx.db.patch(runnerId, { ceiling: ruled.ceiling });
+  }
   await ctx.db.insert("runnerEvents", {
     runnerId,
     at: now,
     kind: "reply",
     text,
     slackTs: at.ts,
-    data: { channel: at.channel, threadTs: at.threadTs, ...(open ? { answers: open._id } : {}) },
+    data: {
+      channel: at.channel,
+      threadTs: at.threadTs,
+      ...(open ? { answers: open._id } : {}),
+      ...(ceiling ? { ceiling } : {}),
+      ...(ruled && "fault" in ruled ? { ceilingRefused: ruled.fault } : {}),
+    },
   });
   return { outcome: "runner-reply" as const, runnerId };
+}
+
+// ── The ceiling ──────────────────────────────────────────────────────────────
+
+/** What a reply did to the ceiling, as the next step reads it under the reply. */
+function ceilingReplyNote(data: unknown): string {
+  const d = (data ?? {}) as { ceiling?: { from: RunnerCeiling; to: RunnerCeiling }; ceilingRefused?: string };
+  if (d.ceiling) return `\n(This reply set the ceiling from ${runnerCeilingWords(d.ceiling.from)} to ${runnerCeilingWords(d.ceiling.to)}.)`;
+  if (d.ceilingRefused) return `\n(This reply did not change the ceiling: ${d.ceilingRefused})`;
+  return "";
 }
 
 // ── The page ─────────────────────────────────────────────────────────────────

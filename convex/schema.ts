@@ -12,6 +12,7 @@ import {
   RUNNER_ENDED_REASON,
   RUNNER_TIER,
   RUNNER_TYPE,
+  RUNNER_CEILING,
   SESSION_MODEL,
 } from "./ttsShared";
 
@@ -1540,6 +1541,10 @@ export default defineSchema({
     // past its deadline is a step that died, and the sweep clears it.
     lease: v.optional(v.object({ stepRunId: v.string(), deadline: v.number(), takenAt: v.number() })),
     budgetGpuHours: v.optional(v.number()),
+    // What one launch may ask for; absent is RUNNER_CEILING_DEFAULT
+    // (convex/ttsShared.ts). Set at creation on Tom's own form only, and
+    // after that moved only by Tom's reply (recordRunnerReply in convex/ttsRunners.ts).
+    ceiling: v.optional(RUNNER_CEILING),
     // The sweep specs the experiment drains, as glob patterns relative to the
     // repo (`sweeps/train/train25_*.yaml`). The step's sensor expands them to
     // CMT's build frontier to count what is done and what remains; absent,
@@ -1579,7 +1584,7 @@ export default defineSchema({
     kind: v.union(
       v.literal("check-in"), // one per step, always
       v.literal("ask"), // a ruling requested
-      v.literal("reply"), // Tom's answer, from the needs-you thread
+      v.literal("reply"), // Tom's answer, from a runner's thread; a ceiling ruling adds data.ceiling { from, to }
       v.literal("step-failed"), // an expired lease, or a step that exited without checking in
       v.literal("document"), // a document rewrite; `text` holds the new document
       // One launch or cancel on the experiment, recorded by the step pen beside

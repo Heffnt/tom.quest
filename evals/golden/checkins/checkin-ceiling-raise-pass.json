@@ -1,0 +1,17 @@
+{
+  "id": "checkin-ceiling-raise-pass",
+  "job": "checkin",
+  "partition": "checkins/pass",
+  "kind": "regression",
+  "verdict": "approve",
+  "confirmedByTom": false,
+  "trials": 1,
+  "negative": false,
+  "input": {
+    "checkIn": "The TRAIN25 campaign, an agent that checks your model-training experiment in steps, found 12 of its 40 training runs still to do, each needing about three hours on one GPU.\n\nMy ceiling, the most one launch of mine may ask for, is 2 GPUs for four hours, so the 12 runs would take six launches and about 18 hours.\n\n## Rulings requested\n\n1. Should my ceiling rise to 12 GPUs, so the 12 runs go in one launch and finish this evening? Raising it finishes about 15 hours sooner and holds 12 of your 16 GPUs for three hours; keeping it costs only time. I recommend raising it. To raise it, reply in this thread with the word ceiling and the new number, as in ceiling 12 GPUs. If you do not answer, the step at 15:40 keeps launching 2 GPUs at a time."
+  },
+  "expected": {
+    "verdict": "pass",
+    "rubric": "A check-in that defines the ceiling it asks to raise, gives numbers with what they count, and asks one ruling under the one allowed heading with what is gained and lost, a recommendation, the reply form in plain words and the default with its time. The judge must pass it."
+  }
+}

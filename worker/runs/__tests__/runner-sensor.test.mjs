@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkDone, gpusInGres, launchVerdict, readCache, renderFacts, sense } from "../runner-sensor.mjs";
+import { checkDone, gpusInGres, launchShortfall, launchVerdict, readCache, renderFacts, sense } from "../runner-sensor.mjs";
 
 const NOW = Date.parse("2026-09-19T12:00:00Z");
 
@@ -75,6 +75,15 @@ describe("sense", () => {
     expect(readCache(path.join(cacheDir, "r1.json"))).not.toHaveProperty("budgetGpuHours");
   });
 
+  it("carries the runner's ceiling into the cache beside the budget, and drops it when the claim has none", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "sensor-"));
+    const ceiling = { gpus: 16, minutes: 1440, memoryMb: 512000 };
+    await sense({ runnerId: "r3", cwd: "/checkout", specs: [], budgetGpuHours: 10, ceiling, failures: [], cacheDir }, deps());
+    expect(readCache(path.join(cacheDir, "r3.json"))).toMatchObject({ ceiling });
+    await sense({ runnerId: "r3", cwd: "/checkout", specs: [], failures: [], cacheDir }, deps());
+    expect(readCache(path.join(cacheDir, "r3.json"))).not.toHaveProperty("ceiling");
+  });
+
   it("says in its own field what it could not read, and keeps every field", async () => {
     const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "sensor-"));
     const facts = await sense({ runnerId: "r2", cwd: "/checkout", specs: [], failures: [], cacheDir }, deps({
@@ -131,6 +140,17 @@ describe("gpusInGres", () => {
   });
 });
 
+describe("launchShortfall", () => {
+  it("is nothing when every job asked for launched, and a sentence naming the count and the cap when fewer did", () => {
+    expect(launchShortfall({ asked: 2, ids: ["1", "2"], errors: [] })).toBeNull();
+    const short = launchShortfall({ asked: 16, ids: Array.from({ length: 12 }, (_, i) => String(i)), errors: ["QOSMaxGRESPerUser"] });
+    expect(short).toMatch(/launched 12 of the 16 jobs asked for/);
+    expect(short).toMatch(/The cluster said: QOSMaxGRESPerUser\./);
+    expect(short).toMatch(/default partition/);
+    expect(launchShortfall({ asked: 1, ids: [], errors: [] })).toMatch(/launched 0 of the 1 jobs/);
+  });
+});
+
 describe("launchVerdict", () => {
   // One running job of this runner, started an hour ago with half an hour left
   // (1 GPU-hour spent, 0.5 booked), and on the same account a pool job and one
@@ -168,6 +188,21 @@ describe("launchVerdict", () => {
     // another runner's.
     const cache = { jobs: { 8: { gpuHours: 12 }, 11: { gpuHours: 3, name: "runner:r10:train" } }, budgetGpuHours: 4 };
     expect(verdict({ cache })).toMatchObject({ ok: true, spent: 1 });
+  });
+
+  it("holds a runner with no ceiling cached to the default ceiling", () => {
+    const big = verdict({ cache: { jobs: {}, budgetGpuHours: 1000 }, gpus: 3 });
+    expect(big.ok).toBe(false);
+    expect(big.reason).toMatch(/3 GPUs where the ceiling is 2/);
+    expect(big.reason).toMatch(/starts with the word "ceiling"/);
+    expect(verdict({ cache: { jobs: {}, budgetGpuHours: 1000 }, minutes: 241 }).reason).toMatch(/241 minutes where the ceiling is 240/);
+    expect(verdict({ cache: { jobs: {}, budgetGpuHours: 1000 }, memoryMb: 128001 }).reason).toMatch(/128001 MB of memory where the ceiling is 128000/);
+  });
+
+  it("lets a raised ceiling through, and refuses above it", () => {
+    const cache = { jobs: {}, budgetGpuHours: 1000, ceiling: { gpus: 16, minutes: 1440, memoryMb: 512000 } };
+    expect(verdict({ cache, gpus: 16, minutes: 1440, memoryMb: 512000 }).ok).toBe(true);
+    expect(verdict({ cache, gpus: 17 }).reason).toMatch(/17 GPUs where the ceiling is 16/);
   });
 
   it("refuses when no budget is recorded", () => {

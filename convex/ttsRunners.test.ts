@@ -127,6 +127,8 @@ describe("the create door", () => {
       [seed({ model: "gpt-5.6-sol" }), "run on Claude"],
       [seed({ askOverrides: [{ tier: "plan", answerer: "delegate" }] }), "may not call it"],
       [{ ...seed(), from: { kind: "letter" } }, "from.kind"],
+      // The pen's key is every run's on the box, a runner step's included.
+      [seed({ ceiling: { gpus: 16, minutes: 240, memoryMb: 128000 } }), "ceiling is Tom's to set"],
     ] as const;
     for (const [body, words] of refusals) {
       const response = await post(t, body);
@@ -144,6 +146,116 @@ describe("the create door", () => {
   it("keeps the Tom-only mutation behind the Tom gate", async () => {
     const t = convexTest(schema, modules);
     await expect(t.mutation((await import("./_generated/api")).api.ttsRunners.createRunner, seed())).rejects.toThrow();
+  });
+});
+
+describe("the ceiling", () => {
+  function ceilingPost(t: TestConvex<typeof schema>, body: unknown) {
+    return t.fetch("/tts/runner-ceiling", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-TTS-Key": KEY },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("holds a new runner to the default, takes one from Tom's form, and hands it to the box with the claim", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest(schema, modules);
+    const { internal } = await import("./_generated/api");
+    const plain = (await (await post(t, seed())).json()).runnerId as Id<"runners">;
+    const wide = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ title: "wide", ceiling: { gpus: 8, minutes: 720, memoryMb: 256000 } }) });
+    expect((await t.run((ctx) => ctx.db.get(plain)))?.ceiling).toBeUndefined();
+    expect((await t.run((ctx) => ctx.db.get(wide)))?.ceiling).toEqual({ gpus: 8, minutes: 720, memoryMb: 256000 });
+    const steps = await t.run((ctx) => ctx.db.query("runnerSteps").collect());
+    const claims = [];
+    for (const step of steps) claims.push(await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id }));
+    const sensors = claims.map((c) => (c.admitted ? c.sensor.ceiling : null));
+    expect(sensors).toEqual([{ gpus: 2, minutes: 240, memoryMb: 128000 }, { gpus: 8, minutes: 720, memoryMb: 256000 }]);
+    const prompt = claims[0].admitted ? claims[0].prompt : "";
+    expect(prompt).toContain("my ceiling, now 2 GPUs, 240 minutes and 128000 MB of memory per request");
+    expect(prompt).toContain('starts with the word "ceiling"');
+    expect(prompt).toContain("You never raise it yourself");
+    expect(prompt).toContain("inside the runner's GPU-hour budget and its ceiling of 2 GPUs, 240 minutes and 128000 MB of memory per request;");
+  });
+
+  it("keeps the box's fallback ceiling equal to the record's default", async () => {
+    const { DEFAULT_CEILING } = await import("../worker/runs/runner-sensor.mjs");
+    const { RUNNER_CEILING_DEFAULT } = await import("./ttsShared");
+    expect(DEFAULT_CEILING).toEqual(RUNNER_CEILING_DEFAULT);
+  });
+
+  it("reads Tom's ceiling reply", async () => {
+    const { parseCeilingReply, RUNNER_CEILING_DEFAULT: d } = await import("./ttsShared");
+    expect(parseCeilingReply("Yes, skip pythia.", d)).toBeNull();
+    expect(parseCeilingReply("ceiling 16 GPUs", d)).toEqual({ ceiling: { gpus: 16, minutes: 240, memoryMb: 128000 } });
+    expect(parseCeilingReply("Ceiling 8 GPUs, 12 hours, 256 GB", d)).toEqual({ ceiling: { gpus: 8, minutes: 720, memoryMb: 256000 } });
+    expect(parseCeilingReply("ceiling 600 minutes and 200000 MB", d)).toEqual({ ceiling: { gpus: 2, minutes: 600, memoryMb: 200000 } });
+    expect(parseCeilingReply("ceiling: 16 gpus and 1440 minutes.", d)).toEqual({ ceiling: { gpus: 16, minutes: 1440, memoryMb: 128000 } });
+    expect(parseCeilingReply("ceiling 1.5 hours", d)).toEqual({ ceiling: { gpus: 2, minutes: 90, memoryMb: 128000 } });
+    expect(parseCeilingReply("ceiling 17 gpus", d)).toMatchObject({ fault: expect.stringContaining("at most 16") });
+    expect(parseCeilingReply("ceiling 25 hours", d)).toMatchObject({ fault: expect.stringContaining("at most 1440") });
+    expect(parseCeilingReply("ceiling 2.5 GPUs", d)).toMatchObject({ fault: expect.stringContaining("whole number") });
+    // Anything but the form changes nothing: a number is never read out of a sentence.
+    for (const reply of [
+      "ceiling please", "ceiling -16 GPUs", "ceiling +16 GPUs", "ceiling x16 GPUs", "ceiling 16 GPUs, -5 hours",
+      "ceiling 8 GPUs, not 16 GPUs", "ceiling 8 GPUs or 16 GPUs", "ceiling about 16 GPUs", "ceiling 16",
+      "ceiling 12 hours and 30 minutes", "ceiling 16 GPUs please",
+    ]) {
+      expect(parseCeilingReply(reply, d), reply).toMatchObject({ fault: expect.stringContaining("only the word") });
+    }
+  });
+
+  it("moves on Tom's reply in the runner's thread, recorded with the old and new numbers, and the next step reads it", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { internal } = await import("./_generated/api");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed() });
+    const reply = (text: string, ts: string) => t.mutation(internal.ttsSlack.internalRouteReply, {
+      subject: { kind: "runner", id: runnerId },
+      text,
+      at: { channel: "CNEEDS", ts, threadTs: "1.0" },
+    });
+    expect(await reply("ceiling 16 GPUs, 24 hours", "2.0")).toEqual({ outcome: "runner-reply", runnerId });
+    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toEqual({ gpus: 16, minutes: 1440, memoryMb: 128000 });
+    await reply("ceiling 20 GPUs", "3.0");
+    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toEqual({ gpus: 16, minutes: 1440, memoryMb: 128000 });
+    const replies = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "reply")).collect());
+    expect(replies).toHaveLength(2);
+    expect(replies[0].data).toMatchObject({ ceiling: { from: { gpus: 2, minutes: 240 }, to: { gpus: 16, minutes: 1440 } } });
+    expect(replies[0].slackTs).toBe("2.0");
+    expect(replies[1].data.ceiling).toBeUndefined();
+    expect(replies[1].data.ceilingRefused).toContain("at most 16");
+    const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
+    const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
+    if (!claim.admitted) throw new Error(claim.reason);
+    expect(claim.sensor.ceiling).toEqual({ gpus: 16, minutes: 1440, memoryMb: 128000 });
+    expect(claim.prompt).toContain("(This reply set the ceiling from 2 GPUs");
+    expect(claim.prompt).toContain("(This reply did not change the ceiling: The ceiling's GPUs may be at most 16");
+  });
+
+  it("refuses a ceiling above the maximum even on Tom's form", async () => {
+    const t = convexTest(schema, modules);
+    const { internal } = await import("./_generated/api");
+    await expect(t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ ceiling: { gpus: 17, minutes: 240, memoryMb: 128000 } }) })).rejects.toThrow(/at most 16/);
+  });
+
+  it("starts a hand-off successor at the default, whatever its predecessor held", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest(schema, modules);
+    const { internal } = await import("./_generated/api");
+    const first = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ ceiling: { gpus: 16, minutes: 1440, memoryMb: 512000 } }) });
+    const next = (await (await post(t, seed({ title: "next", from: { kind: "handoff", runnerId: first } }))).json()).runnerId as Id<"runners">;
+    expect((await t.run((ctx) => ctx.db.get(next)))?.ceiling).toBeUndefined();
+  });
+
+  it("has no door for a session or a step", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest(schema, modules);
+    const runnerId = (await (await post(t, seed())).json()).runnerId as Id<"runners">;
+    const response = await ceilingPost(t, { runnerId, runId: "claude:box:session-1", why: "x", ceiling: { gpus: 16 } });
+    expect(response.status).toBe(404);
+    // The step pen takes no ceiling field either: the check-in body has none.
+    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toBeUndefined();
   });
 });
 
@@ -328,7 +440,7 @@ describe("the step prompt", () => {
     expect(contract).toContain("what the next step will do if he does not answer, and when, as one clock time given once");
     expect(contract).toContain("one short Markdown table with two columns");
     expect(prompt).not.toContain("name the tier you judged in the check-in");
-    expect(claimed.sensor).toEqual({ specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 500, failures: [] });
+    expect(claimed.sensor).toEqual({ specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 500, ceiling: { gpus: 2, minutes: 240, memoryMb: 128000 }, failures: [] });
     // A runner on a Turing experiment is told how to act on the cluster, and
     // records each act with the pen.
     expect(prompt).toContain("tts-turing-act launch --runner");
