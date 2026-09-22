@@ -93,6 +93,11 @@ function wanted(kind: string): boolean {
  *  asks for that text by commit instead. */
 const COUNTED_NOT_DRAWN = new Set<string>([...GATE_KINDS, PAGE_OPENED_KIND]);
 
+/** The three things a window must be before it is handed to an index range.
+ *  These are not niceties: a NaN bound makes `gte`/`lt` match nothing, so the
+ *  page would draw an empty month rather than fail, and an unbounded window
+ *  walks the whole table. A query is a door anyone signed in as Tom can call
+ *  with any numbers, so the numbers are checked here rather than trusted. */
 function assertWindow(from: number, to: number) {
   if (!Number.isFinite(from) || !Number.isFinite(to)) throw new Error("window bounds must be numbers");
   if (to <= from) throw new Error("a window ends after it starts");
@@ -369,6 +374,10 @@ export const gateRows = query({
   args: { commits: v.array(v.object({ repo: v.string(), sha: v.string() })) },
   handler: async (ctx, { commits }) => {
     await requireTom(ctx, SURFACE);
+    // Forty is what the changes list draws; the sixty is the room above it,
+    // and it is here because each commit costs three indexed reads and the
+    // argument comes from the browser. Without it one call could ask for a
+    // year of commits and the read would be the page's whole cost.
     if (commits.length > 60) throw new Error("gateRows takes at most 60 commits");
     return await Promise.all(commits.map(async ({ repo, sha }) => {
       const key = commitKey(repo, sha);
@@ -514,6 +523,10 @@ export const define = query({
   handler: async (ctx, { term }) => {
     await requireTom(ctx, SURFACE);
     const word = term.trim();
+    // The longest word of the vocabulary is nowhere near eighty characters;
+    // this is what stops a term from the browser becoming a regular expression
+    // built over a page of text, which is scanned against every published body
+    // the record holds.
     if (word === "" || word.length > 80) throw new Error("a term is one to eighty characters");
     const found: { where: string; text: string }[] = [];
 
@@ -575,11 +588,18 @@ function definingLines(body: string, term: string): string[] {
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const bold = new RegExp(`\\*\\*\\s*${escaped}\\s*\\*\\*`, "i");
   const bullet = new RegExp(`^\\s*[-*]\\s+\`?${escaped}\`?\\s*[—:-]\\s+\\S`, "i");
-  const shouted = new RegExp(`\\b(?:A|AN|THE)?\\s*${escaped.toUpperCase()}\\b[^.]*\\b(?:IS|ARE|HOLDS|MEANS)\\b`);
+  // The term shouted, the verb either way: the vocabulary's own lines are
+  // "A BATCH holds how a set of todos gets completed", so a verb that had to
+  // be shouted too could not match the very form this pattern is for.
+  const shouted = new RegExp(
+    `\\b(?:A|AN|THE)?\\s*${escaped.toUpperCase()}\\b[^.]*\\b(?:IS|ARE|HOLDS|MEANS|is|are|holds|means)\\b`,
+  );
   const hits: string[] = [];
   for (const line of body.split(/\r?\n/)) {
     if (hits.length >= DEFINITION_LINES_MAX) break;
     const trimmed = line.trim();
+    // A blank line defines nothing, and the shouted pattern's optional article
+    // would otherwise let one through as a hit with no words in it.
     if (trimmed === "") continue;
     if (bold.test(trimmed) || bullet.test(trimmed) || shouted.test(trimmed)) {
       hits.push(trimmed.slice(0, DEFINITION_LINE_MAX_CHARS));
