@@ -518,7 +518,7 @@ describe("restarting from the document", () => {
       (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", first as Id<"claudeSessions">)).collect()).sort((a, b) => a.createdAt - b.createdAt),
     );
     // The opener's turn finished; the message's turn was delivered and its
-    // result failed, which the daemon still settles as done.
+    // result failed, which the daemon settles as failed for a hosted run.
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId: first as Id<"claudeSessions">,
       status: "running",
@@ -532,7 +532,7 @@ describe("restarting from the document", () => {
       sessionId: first as Id<"claudeSessions">,
       status: "ended",
       endedReason: "autonomous turn failed",
-      inboundUpdates: [{ id: message._id, status: "done" }],
+      inboundUpdates: [{ id: message._id, status: "failed" }],
     });
     vi.setSystemTime(Date.now() + crashBackoffMs(1) + 1);
     await t.mutation(internal.orchestrator.internalSweep, {});
@@ -552,9 +552,8 @@ describe("restarting from the document", () => {
     expect(third).not.toBe(next);
     expect((await pendingTexts(t, third))[0]).toContain("PR 1 is open.");
 
-    // Once a run finishes its opener (here it goes on to compact), what it
-    // carried is not carried again. A run that crashes straight after its
-    // opener carries them once more: that turn may have failed.
+    // Once a run finishes its opener, what it carried is not carried again,
+    // however the run later ends: a turn it finished is not replayed.
     const opener3 = await t.run(async (ctx) =>
       (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", third).eq("status", "pending")).unique())!,
     );
@@ -564,7 +563,7 @@ describe("restarting from the document", () => {
       runId: "codex:box:third",
       inboundUpdates: [{ id: opener3._id, status: "delivered" }, { id: opener3._id, status: "done" }],
     });
-    await ingest(t, third, { status: "ended", endedReason: COMPACT_ENDED_REASON });
+    await ingest(t, third, { status: "ended", endedReason: "daemon restarted mid-mission" });
     await t.mutation(internal.orchestrator.internalSweep, {});
     const fourth = (await row(t))!.liveSessionId!;
     expect((await pendingTexts(t, fourth))[0]).not.toContain("PR 1 is open.");

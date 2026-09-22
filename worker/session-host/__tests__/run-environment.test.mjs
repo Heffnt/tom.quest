@@ -24,6 +24,12 @@ describe("adopting an unattended run after a restart", () => {
 });
 
 describe("hosted turn end", () => {
+  it("settles a hosted turn whose result failed as failed, not done", () => {
+    const start = sessionSource.indexOf("const turnFailed = this.hosted && (m.is_error");
+    expect(start).toBeGreaterThan(-1);
+    expect(sessionSource.slice(start, start + 300)).toContain('status: turnFailed ? "failed" : "done",');
+  });
+
   it("applies a same-family model change at the turn boundary, as an interactive session does", () => {
     const start = sessionSource.indexOf("if (this.hosted && !this.stopRequested && !this.dead) {");
     expect(start).toBeGreaterThan(-1);

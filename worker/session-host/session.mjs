@@ -1540,9 +1540,13 @@ export class Session {
           this.#maybeUsageSignal(String(m.result ?? ""));
         }
         if (this.activeUserTurnId) {
+          // A hosted run's turn whose result failed is settled "failed": the
+          // record hands every turn not "done" to the orchestrator's next run,
+          // and a failed turn was not acted on.
+          const turnFailed = this.hosted && (m.is_error || (m.subtype && m.subtype !== "success"));
           this.outbox.inboundUpdates.push({
             id: this.activeUserTurnId,
-            status: "done",
+            status: turnFailed ? "failed" : "done",
           });
           this.activeUserTurnId = null;
         }

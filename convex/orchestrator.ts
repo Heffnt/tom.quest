@@ -331,17 +331,9 @@ async function launchRun(
         .withIndex("by_session_status", (q) => q.eq("sessionId", from._id))
         .collect()
     ).sort((a, b) => a.createdAt - b.createdAt);
-    // The turn it was on when a run ended other than by compacting may have
-    // been marked done and still failed (the daemon settles a turn done at
-    // its result, failed or not), so that one turn counts as unfinished.
-    const delivered = rows.filter((m) => m.deliveredAt !== undefined);
-    const lastTurn = from.endedReason === COMPACT_ENDED_REASON
-      ? undefined
-      : delivered.reduce<(typeof rows)[number] | undefined>(
-          (a, m) => (a === undefined || m.deliveredAt! > a.deliveredAt! || (m.deliveredAt === a.deliveredAt && m.createdAt >= a.createdAt) ? m : a),
-          undefined,
-        );
-    const finished = (m: (typeof rows)[number]) => m.status === "done" && m._id !== lastTurn?._id;
+    // "done" is a turn the run acted on: the daemon settles a hosted run's
+    // turn "failed" when its result failed (worker/session-host/session.mjs).
+    const finished = (m: (typeof rows)[number]) => m.status === "done";
     // Its opener finished: what that opener carried was read, and only what
     // arrived since is handed on (with anything the mailbox gained meanwhile,
     // which reached no run).
