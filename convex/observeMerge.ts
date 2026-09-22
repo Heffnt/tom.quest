@@ -340,6 +340,28 @@ async function landReady(
     let why: string;
     let ok = false;
     try {
+      // WHAT GITHUB HOLDS NOW, not what the mirror saw five minutes ago: a
+      // pull request can be retargeted at another branch between the refresh
+      // and this call, and the merge request itself cannot name a base, so the
+      // base is read here, immediately before the merge.
+      const now = await fetch(
+        `https://api.github.com/repos/${slug}/pulls/${change.number}`,
+        { headers: githubHeaders(token) },
+      );
+      const base = now.ok
+        ? ((await now.json()) as { base?: { ref?: unknown } }).base?.ref
+        : null;
+      if (base !== MAIN_BRANCH) {
+        await ctx.runMutation(internal.observeMerge.internalNoteAttempt, {
+          id: change.id,
+          ok: false,
+          why:
+            base === null || base === undefined
+              ? `GitHub would not say what branch #${change.number} is aimed at, so it was not merged`
+              : `#${change.number} is aimed at ${String(base)} and not ${MAIN_BRANCH}, so it was not merged`,
+        });
+        continue;
+      }
       const res = await fetch(
         `https://api.github.com/repos/${slug}/pulls/${change.number}/merge`,
         {
@@ -385,10 +407,19 @@ async function landReady(
     // mergedOnMain is asked afterwards, so the row carries GitHub's answer
     // about the head sha rather than this file's account of its own success.
     const onMain = await mergedOnMain(change.repo, change.headSha);
-    // GitHub's answer about the head, not this file's account of its own
-    // success: a 200 from the merge call with no commit on main is a merge
-    // that did not happen where it was meant to, and the row says so.
-    if (!onMain.merged) why = `${why}, but GitHub does not show it on main: ${onMain.why}`;
+    // GitHub'S ANSWER ABOUT THE HEAD DECIDES, not this file's account of its
+    // own success: where the merge call answered 200 and the head is not on
+    // main, nothing is recorded and the row keeps the failure, because a merge
+    // row the record cannot see on main is a sentence about a merge that did
+    // not happen where it was meant to.
+    if (!onMain.merged) {
+      await ctx.runMutation(internal.observeMerge.internalNoteAttempt, {
+        id: change.id,
+        ok: false,
+        why: `${why}, but GitHub does not show it on main: ${onMain.why}`,
+      });
+      continue;
+    }
     const written = await ctx.runMutation(
       internal.ttsMerge.internalRecordMerge,
       {

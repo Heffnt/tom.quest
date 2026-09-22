@@ -54,9 +54,10 @@ async function green(t: TestConvex<typeof schema>) {
 const mirror = (t: TestConvex<typeof schema>, pulls = [PULL]) =>
   t.mutation(internal.observeMerge.internalReplaceOpenPulls, { repo: REPO, pulls });
 
-/** GitHub as the landing asks it: the merge PUT answers `mergeStatus`, and the
- *  mergedOnMain reads show the sha on main. */
-function github(mergeStatus: number, message = "") {
+/** GitHub as the landing asks it: the pull request read answers the base
+ *  branch, the merge PUT answers `mergeStatus`, and the mergedOnMain reads
+ *  show the sha on main. */
+function github(mergeStatus: number, message = "", base = "main") {
   const puts: { url: string; body: unknown }[] = [];
   const fake = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url);
@@ -64,6 +65,7 @@ function github(mergeStatus: number, message = "") {
       puts.push({ url: path, body: JSON.parse(String(init.body)) });
       return Response.json({ message }, { status: mergeStatus });
     }
+    if (/\/pulls\/\d+$/.test(path)) return Response.json({ base: { ref: base } });
     if (path.includes("/compare/")) return Response.json({ status: "ahead" });
     if (/\/repos\/Heffnt\/[^/]+$/.test(path)) return Response.json({ default_branch: "main" });
     return new Response("", { status: 404 });
@@ -213,6 +215,52 @@ describe("landing", () => {
     // The landed change shows the ruling that landed it.
     const [row] = await tom.query(api.observe.gateRows, { commits: [{ repo: REPO, sha: SHA }] });
     expect(row.ruled).toBe("approve");
+  });
+
+  it("records nothing where GitHub took the merge but does not show the head on main", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const puts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url);
+        if (init?.method === "PUT") {
+          puts.push(path);
+          return Response.json({}, { status: 200 });
+        }
+        if (/\/pulls\/\d+$/.test(path)) return Response.json({ base: { ref: "main" } });
+        if (path.includes("/compare/")) return Response.json({ status: "diverged" });
+        if (/\/repos\/Heffnt\/[^/]+$/.test(path)) return Response.json({ default_branch: "main" });
+        return Response.json([]);
+      }),
+    );
+    await mirror(t);
+    await green(t);
+    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 1 });
+    expect(puts).toHaveLength(1);
+    const merges = await t.run((ctx) =>
+      ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", MERGE)).collect(),
+    );
+    expect(merges).toHaveLength(0);
+    const [row] = await tom.query(api.observe.changesWaiting, {});
+    expect(row.lastAttempt).toMatchObject({ ok: false });
+    expect(row.lastAttempt?.why).toContain("does not show it on main");
+  });
+
+  it("merges nothing that GitHub has retargeted since the mirror saw it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const gh = github(200, "", "some-other-branch");
+    vi.stubGlobal("fetch", gh.fake);
+    await mirror(t);
+    await green(t);
+    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 1 });
+    expect(gh.puts).toHaveLength(0);
+    const [row] = await tom.query(api.observe.changesWaiting, {});
+    expect(row.lastAttempt?.why).toContain("aimed at some-other-branch");
   });
 
   it("merges nothing aimed at a branch other than main, however green and approved", async () => {
