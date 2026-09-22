@@ -12,11 +12,13 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const sessionSource = fs.readFileSync(path.join(here, "..", "session.mjs"), "utf8");
 
 describe("session envelope environment", () => {
-  it("branches on the session's mode, beside the kind that already does", () => {
+  it("takes its names from the session's mode and hosted environment", () => {
     const start = sessionSource.indexOf('writer: { file: "worker/session-host/session.mjs", job: "session-host" }');
     expect(start).toBeGreaterThan(-1);
     const envelope = sessionSource.slice(start, start + 1200);
-    expect(envelope).toContain('kind: this.mode === "autonomous" ? "job" : "session",');
-    expect(envelope).toContain('environment: this.mode === "autonomous" ? "worker" : "session",');
+    // The three names come from hosted.mjs's runEnvelope, which its own test
+    // pins: a worker when unattended, a session when Tom is talking to it, and
+    // the orchestrator's runs under their own name.
+    expect(envelope).toContain("...runEnvelope(this.mode, this.environment),");
   });
 });
