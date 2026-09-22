@@ -31,6 +31,7 @@ import { insertSession, mergeGate, sessionOutcomePen, workspaceParagraph } from 
 import { logEvent } from "./tts";
 import {
   BOX_TOOLS_PARAGRAPH,
+  CODEX_FALLBACK_MODEL,
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
   DAEMON_RESTART_SENTENCE,
@@ -42,6 +43,7 @@ import {
   channelFor,
   isLive,
   isSessionModel,
+  modelFamily,
   normalizeSessionRepos,
   type DecisionKind,
   type SessionModel,
@@ -63,6 +65,12 @@ export const ORCHESTRATOR_CRASH_BACKOFF_MS = 60_000;
 export const ORCHESTRATOR_CRASH_BACKOFF_CAP_MS = 60 * 60_000;
 /** Consecutive crashes after which #tts-broken is told. */
 export const ORCHESTRATOR_CRASHES_REPORTED = 3;
+/** A run that stayed up this long was not part of a crash loop: the crash
+ * count starts again from it. */
+export const ORCHESTRATOR_STABLE_MS = 10 * 60_000;
+/** The endedReason worker/session-host/session-host.mjs writes when a
+ * restarted daemon ends an unattended run it finds live. */
+const DAEMON_RESTART_ENDED_REASON = "daemon restarted mid-mission";
 /** The delegate's own question limit (POST /tts/ask): a trade-off goes to the
  * delegate word for word, so an elevation's question is held to it. */
 const QUESTION_MAX_CHARS = 400;
@@ -98,13 +106,18 @@ export const INITIAL_DOCUMENT = [
  * Opus at the cap for a box run; the orchestrator's own ruling names Fable as
  * its fallback, so Fable it is).
  */
-export function orchestratorModel(
-  health: { codexModels?: string[]; codexUsage?: { weeklyUsedPercent: number; readAt: number } } | null,
-  now: number,
-): { model: SessionModel; reason: string } {
+type Health = { codexModels?: string[]; codexUsage?: { weeklyUsedPercent: number; readAt: number } } | null;
+
+/** True when a fresh reading puts Codex's weekly usage at or past the cap,
+ * the same test the auto-session scheduler applies. */
+function codexCapped(health: Health, now: number): boolean {
   const usage = health?.codexUsage;
-  if (usage && now - usage.readAt <= CODEX_USAGE_STALE_MS && usage.weeklyUsedPercent >= CODEX_WEEKLY_CAP_PERCENT) {
-    return { model: "fable", reason: `Codex's weekly usage is at ${Math.round(usage.weeklyUsedPercent)}%, past the ${CODEX_WEEKLY_CAP_PERCENT}% cap, so Fable` };
+  return usage !== undefined && now - usage.readAt <= CODEX_USAGE_STALE_MS && usage.weeklyUsedPercent >= CODEX_WEEKLY_CAP_PERCENT;
+}
+
+export function orchestratorModel(health: Health, now: number): { model: SessionModel; reason: string } {
+  if (codexCapped(health, now)) {
+    return { model: "fable", reason: `Codex's weekly usage is at ${Math.round(health!.codexUsage!.weeklyUsedPercent)}%, past the ${CODEX_WEEKLY_CAP_PERCENT}% cap, so Fable` };
   }
   const listed = health?.codexModels;
   if (listed === undefined) {
@@ -213,7 +226,10 @@ export async function renewOrchestratorLease(ctx: MutationCtx, held: readonly st
   if (!row || row.stoppedAt !== undefined || row.liveSessionId === undefined) return;
   if (!held.includes(row.liveSessionId)) return;
   if (row.leaseDeadline !== undefined && row.leaseDeadline - now > (ORCHESTRATOR_LEASE_MS * 2) / 3) return;
-  await ctx.db.patch(row._id, { leaseDeadline: now + ORCHESTRATOR_LEASE_MS });
+  await ctx.db.patch(row._id, {
+    leaseDeadline: now + ORCHESTRATOR_LEASE_MS,
+    ...(row.crashes > 0 && now - row.runStartedAt >= ORCHESTRATOR_STABLE_MS ? { crashes: 0 } : {}),
+  });
 }
 
 // ── Delivery ─────────────────────────────────────────────────────────────────
@@ -277,7 +293,14 @@ async function launchRun(
       if (message.status === "pending") await ctx.db.patch(message._id, { status: "interrupted" });
     }
     if (isLive(from.status)) {
+      // Ended here, not by the daemon, so its live tail is cleared here too,
+      // as forceClose clears it.
       await ctx.db.patch(from._id, { status: "failed", statusChangedAt: now, endedReason: `orchestrator restarted: ${reason}` });
+      const buf = await ctx.db
+        .query("claudeStreamBuf")
+        .withIndex("by_session", (q) => q.eq("sessionId", from._id))
+        .first();
+      if (buf) await ctx.db.delete(buf._id);
     }
   }
   const health = await ctx.db.query("claudeDaemonHealth").first();
@@ -452,16 +475,29 @@ export async function onHostedSessionEnded(
     const outcome = fresh?.outcome
       ? `its outcome: ${fresh.outcome}${fresh.outcomeSummary ? ` — ${fresh.outcomeSummary}` : ""}`
       : "it recorded no outcome";
+    // A message can be accepted for a worker in the moment before it ends; the
+    // ending settles it unread. The orchestrator is told which, so nothing it
+    // sent disappears without a word.
+    const unread = (
+      await ctx.db
+        .query("claudeInbound")
+        .withIndex("by_session_status", (q) => q.eq("sessionId", session._id))
+        .collect()
+    ).filter((m) => m.kind === "user-turn" && m.author === "agent" && m.deliveredAt === undefined && m.status !== "done" && typeof m.text === "string");
+    const lost = unread.length === 0 ? "" : `\nThese messages never reached it:\n${unread.map((m) => `---\n${m.text}`).join("\n")}`;
     await deliverToOrchestrator(
       ctx,
-      `Worker ${session._id} ("${session.title}") ended (${ending.endedReason ?? ending.status}); ${outcome}.`,
+      `Worker ${session._id} ("${session.title}") ended (${ending.endedReason ?? ending.status}); ${outcome}.${lost}`,
     );
     return;
   }
   const row = await orchestratorRow(ctx);
   if (!row || row.liveSessionId !== session._id || row.stoppedAt !== undefined) return;
-  if (ending.endedReason === COMPACT_ENDED_REASON) {
-    await ctx.db.patch(row._id, { crashes: 0, restartAt: now });
+  // A compaction restarts at once. So does a daemon restart (every roll of
+  // worker/setup.sh): it ends every unattended run and says nothing about
+  // this one, so it is not counted as a crash.
+  if (ending.endedReason === COMPACT_ENDED_REASON || ending.endedReason === DAEMON_RESTART_ENDED_REASON) {
+    await ctx.db.patch(row._id, { crashes: ending.endedReason === COMPACT_ENDED_REASON ? 0 : row.crashes, restartAt: now });
     await ctx.scheduler.runAfter(0, internal.orchestrator.internalSweep, {});
     return;
   }
@@ -562,7 +598,14 @@ export const internalSpawnWorker = internalMutation({
       throw new Error(`refused: ${live.length} hosted workers are live, the limit is ${HOSTED_WORKERS_MAX}; wait for one to end`);
     }
     if (args.model !== undefined && !isSessionModel(args.model)) throw new Error(`refused: unknown model ${args.model}`);
-    const model: SessionModel = args.model !== undefined && isSessionModel(args.model) ? args.model : DEFAULT_SESSION_MODEL;
+    // Codex's weekly cap, as the scheduler applies it: a worker that asked for
+    // a Codex model waits, and one that took the default falls back to Claude.
+    const capped = codexCapped(await ctx.db.query("claudeDaemonHealth").first(), Date.now());
+    if (capped && args.model !== undefined && modelFamily(args.model as SessionModel) === "codex") {
+      throw new Error(`refused: Codex is past its weekly cap; spawn this worker on a Claude model or wait`);
+    }
+    const model: SessionModel =
+      args.model !== undefined && isSessionModel(args.model) ? args.model : capped ? CODEX_FALLBACK_MODEL : DEFAULT_SESSION_MODEL;
     let todoId: Id<"dtsTodos"> | undefined;
     if (args.todoId !== undefined) {
       const id = ctx.db.normalizeId("dtsTodos", args.todoId);

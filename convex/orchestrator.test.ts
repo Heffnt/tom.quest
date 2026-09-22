@@ -19,6 +19,7 @@ import {
   ORCHESTRATOR_CRASHES_REPORTED,
   ORCHESTRATOR_KEY,
   ORCHESTRATOR_LEASE_MS,
+  ORCHESTRATOR_STABLE_MS,
   buildHostedWorkerPrompt,
   buildOrchestratorPrompt,
   crashBackoffMs,
@@ -459,6 +460,29 @@ describe("restarting from the document", () => {
     expect(broken).toHaveLength(1);
   });
 
+  it("does not count a daemon restart as a crash, and a run that stays up clears the count", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const t = await setup();
+    const first = await start(t);
+    await ingest(t, first, { status: "running", runId: "codex:box:a" });
+    await ingest(t, first, { status: "ended", endedReason: "autonomous turn failed" });
+    expect((await row(t))?.crashes).toBe(1);
+    vi.setSystemTime(Date.now() + crashBackoffMs(1) + 1);
+    await t.mutation(internal.orchestrator.internalSweep, {});
+    const second = (await row(t))!.liveSessionId!;
+    await ingest(t, second, { status: "running", runId: "codex:box:b" });
+    await ingest(t, second, { status: "ended", endedReason: "daemon restarted mid-mission" });
+    expect((await row(t))?.crashes).toBe(1);
+    await t.mutation(internal.orchestrator.internalSweep, {});
+    const third = (await row(t))!.liveSessionId!;
+    expect(third).not.toBe(second);
+    await ingest(t, third, { status: "idle", runId: "codex:box:c" });
+    vi.setSystemTime(Date.now() + ORCHESTRATOR_STABLE_MS);
+    await poll(t, { hosts: HOSTS, held: [third] });
+    expect((await row(t))?.crashes).toBe(0);
+  });
+
   it("restarts a claimed run whose lease ran out, and renews the lease while the daemon holds it", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
@@ -491,8 +515,13 @@ describe("restarting from the document", () => {
     await ingest(t, worker, { status: "running" });
     await pen(t, "/tts/session-outcome", { sessionId: worker, outcome: "completed", summary: "footer fixed in PR 1" });
     expect((await poll(t, { hosts: HOSTS })).sessions.find((s) => s.id === worker)?.outcomeRecorded).toBe(true);
+    // Accepted in the moment before the worker ends, and never read by it.
+    await pen(t, "/tts/message", { sessionId: orchestrator, to: worker, text: "Also fix the header." });
     await ingest(t, worker, { status: "ended", endedReason: "worker run complete" });
-    expect((await pendingTexts(t, orchestrator)).some((m) => m.includes(`Worker ${worker}`) && m.includes("footer fixed in PR 1"))).toBe(true);
+    const note = (await pendingTexts(t, orchestrator)).find((m) => m.includes(`Worker ${worker}`));
+    expect(note).toContain("footer fixed in PR 1");
+    expect(note).toContain("These messages never reached it");
+    expect(note).toContain("Also fix the header.");
 
     const stopped = await t.mutation(internal.orchestrator.internalStop, { reason: "the proof is over" });
     expect(stopped.stopped).toBe(true);

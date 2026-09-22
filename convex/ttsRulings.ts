@@ -113,7 +113,11 @@ export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    return await ctx.db.query("dtsRulings").collect();
+    // An elevation's answer is about a worker's question, not a todo, batch
+    // or code entry the page shows, so the page is not sent it.
+    return (await ctx.db.query("dtsRulings").collect()).filter(
+      (r): r is typeof r & { subjectType: "life" | "code" | "batch" } => r.subjectType !== "elevation",
+    );
   },
 });
 

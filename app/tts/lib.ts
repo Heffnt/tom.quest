@@ -8,7 +8,9 @@ export type Todo = Doc<"dtsTodos">;
 export type Batch = Doc<"batches">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
-export type Ruling = Doc<"dtsRulings">;
+// A ruling the page shows: on a todo, a batch or a code entry. Answers to a
+// worker's elevation are rulings too, and listRulings leaves them out.
+export type Ruling = Doc<"dtsRulings"> & { subjectType: "life" | "code" | "batch" };
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
@@ -37,18 +39,14 @@ export function isRulable(t: Todo): boolean {
 // the worker feed always agree on which ruling is live.
 
 export function rulingSubjectKey(r: {
-  subjectType: "life" | "code" | "batch" | "elevation";
+  subjectType: "life" | "code" | "batch";
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
-  elevationId?: string;
 }): string {
   if (r.subjectType === "life") return `life ${r.todoId}`;
   if (r.subjectType === "batch") return batchSubjectKey(r.batchId!);
-  // An answer to a worker's elevation (convex/orchestrator.ts); no todo or
-  // batch shows it, so its key matches nothing on the page.
-  if (r.subjectType === "elevation") return `elevation ${r.elevationId}`;
   return codeSubjectKey(r.repo!, r.externalId!);
 }
 
