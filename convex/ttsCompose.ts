@@ -865,6 +865,15 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     seen.add(item.id);
     todayItems.push({ text: todayLine(item), url: itemUrl(item.id) });
   }
+  // Every dated item left to the needs-you run: the today run still says
+  // there are some, rather than falling to "nothing is dated".
+  const leftBelow = f.today.filter((item) => f.needsYou.some((n) => n.todoId === item.id)).length;
+  if (todayItems.length === 0 && leftBelow > 0) {
+    todayItems.push({
+      text: `${capitalise(countWord(leftBelow))} dated ${plural(leftBelow, "item is", "items are")} named below, with why ${leftBelow === 1 ? "it needs" : "they need"} you today.`,
+      url: TAB_EVERYTHING,
+    });
+  }
   const readyMore =
     f.readyBeyond > 0
       ? {
@@ -1665,10 +1674,12 @@ export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
       }
     }
   }
-  const citedAnywhere = new Set(lines.flatMap((line) => line.sources));
+  // A required fact is said on a line of its own: cited by an item line, not
+  // folded into the first line or a lead.
+  const citedByItems = new Set(lines.filter((line) => line.role === "item").flatMap((line) => line.sources));
   for (const f of block.facts) {
-    if (f.required && !citedAnywhere.has(f.id)) {
-      faults.push(`the draft leaves out the fact "${f.id}", which every message must say`);
+    if (f.required && !citedByItems.has(f.id)) {
+      faults.push(`the draft leaves out the fact "${f.id}", which every message must say on an item line`);
     }
   }
   return [

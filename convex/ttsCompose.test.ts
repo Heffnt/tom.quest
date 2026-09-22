@@ -801,8 +801,25 @@ describe("the needs-you-today run", () => {
     const count = block.facts.find((f) => f.id === "today:count")!;
     const draft = { firstLine: "Three things carry a date you have passed.", firstLineSources: [count.id], lines: [] };
     const faults = verifyDraft(draft, block);
-    expect(faults).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say');
-    expect(faults).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say');
+    expect(faults).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line');
+    expect(faults).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say on an item line');
+    // Cited only on the first line is still left out.
+    const folded = verifyDraft({ ...draft, firstLineSources: [count.id, "needs-you-today:abc", "needs-you-today:def"] }, block);
+    expect(folded).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line');
+  });
+
+  it("keeps the today run saying dated items exist when every one of them is left to the needs-you run", () => {
+    const only = sept9({
+      today: [{ id: "abc", statement: "Pay the lab deposit invoice", countdown: "Ten days late." }],
+      lateCount: 1,
+      oldestLateBy: "ten days",
+      readyBeyond: 0,
+      needsYou: [{ todoId: "abc", statement: "Pay the lab deposit invoice", why: "the invoice is overdue", countdown: "Ten days late." }],
+    });
+    const text = renderSlack(composeToday(only, { canReply: false }));
+    expect(text).not.toContain("Nothing is dated today");
+    expect(text).toContain("One dated item is named below, with why it needs you today.");
+    expect(text.split("Pay the lab deposit invoice, which needs you today")).toHaveLength(2);
   });
 
   it("is a fact per item and one for the count, so a written line about them verifies", () => {
