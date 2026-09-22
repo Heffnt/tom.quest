@@ -796,7 +796,9 @@ No launcher registers a desktop session, so the slot's run hook
 (`scripts/run-hook.mjs`) records it: on the box, a Claude session with no
 launcher token is a session with Tom, environment `session`, origin `desktop`.
 A `claude` typed into an ssh shell is recorded the same way. A desktop session
-does not appear on `tom.quest/runs`, whose rows the daemon owns.
+is absent from the "sessions" view of `tom.quest/runs`, whose rows the daemon
+owns, and is listed in its "all roots" view with every other top-level run the
+sweep records.
 
 The standing workspace is `/var/cache/tts/desktop/`, one plain clone each of
 tom.quest, WikiTom and ComplexMultiTrigger, with `origin` at the clean GitHub

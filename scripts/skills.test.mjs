@@ -300,7 +300,8 @@ describe("skills: descriptions", () => {
     );
     const { skills, refused } = buildSkills({ commit: COMMIT, pages, repos });
     // explainers.md is optional until a WikiTom run lands it; before then its
-    // refusal is the only one the real vault may produce.
+    // refusal is the only one the real vault may produce. Once the page is on
+    // WikiTom main this allowance is dead and goes back to `toEqual([])`.
     const explainersLanded = pages.some((page) => page.path === "model-of-tom/explainers.md");
     expect(refused).toEqual(
       explainersLanded ? [] : [{ name: "explainer", why: "model-of-tom/explainers.md is absent at this commit" }],
