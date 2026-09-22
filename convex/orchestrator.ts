@@ -140,10 +140,17 @@ async function orchestratorRow(ctx: QueryCtx): Promise<Doc<"orchestrators"> | nu
     .unique();
 }
 
-async function hostedRunOf(ctx: QueryCtx, sessionId: Id<"claudeSessions">): Promise<Doc<"hostedRuns"> | null> {
+/**
+ * The hosted run a session is, or null. ONE RULE for every reader: a session
+ * is hosted only while it runs unattended. Tom reopening a hosted row flips
+ * its mode and makes it his interactive session, which nothing here may
+ * count, stop, message or end as the orchestrator's.
+ */
+async function hostedRunOf(ctx: QueryCtx, session: Doc<"claudeSessions">): Promise<Doc<"hostedRuns"> | null> {
+  if (session.mode !== "autonomous") return null;
   return await ctx.db
     .query("hostedRuns")
-    .withIndex("by_session", (q) => q.eq("sessionId", sessionId))
+    .withIndex("by_session", (q) => q.eq("sessionId", session._id))
     .first();
 }
 
@@ -162,10 +169,10 @@ async function requireLiveOrchestrator(ctx: MutationCtx, sessionId: string) {
 
 async function requireHostedWorker(ctx: MutationCtx, sessionId: string) {
   const id = ctx.db.normalizeId("claudeSessions", sessionId);
-  const hosted = id === null ? null : await hostedRunOf(ctx, id);
-  if (id === null || !hosted || hosted.environment !== "worker") throw new Error(`refused: ${sessionId} is not a hosted worker`);
-  const session = await ctx.db.get(id);
-  if (!session || !isLive(session.status)) throw new Error(`refused: ${sessionId} has ended`);
+  const session = id === null ? null : await ctx.db.get(id);
+  const hosted = session === null ? null : await hostedRunOf(ctx, session);
+  if (!session || !hosted || hosted.environment !== "worker") throw new Error(`refused: ${sessionId} is not a hosted worker`);
+  if (!isLive(session.status)) throw new Error(`refused: ${sessionId} has ended`);
   return { hosted, session };
 }
 
@@ -180,7 +187,7 @@ async function liveHostedWorkers(ctx: QueryCtx) {
       .withIndex("by_status", (q) => q.eq("status", status))
       .collect();
     for (const session of sessions) {
-      const hosted = await hostedRunOf(ctx, session._id);
+      const hosted = await hostedRunOf(ctx, session);
       if (hosted?.environment === "worker") live.push({ hosted, session });
     }
   }
@@ -199,10 +206,7 @@ async function unansweredElevations(ctx: QueryCtx) {
  * the daemon runs the ordinary way.
  */
 export async function hostedFacts(ctx: QueryCtx, session: Doc<"claudeSessions">) {
-  // Tom reopening a hosted row makes it his interactive session (the reopen
-  // flips its mode), and it is then an ordinary session like any other.
-  if (session.mode !== "autonomous") return undefined;
-  const hosted = await hostedRunOf(ctx, session._id);
+  const hosted = await hostedRunOf(ctx, session);
   if (!hosted) return undefined;
   if (hosted.environment === "orchestrator") return { environment: "orchestrator" as const };
   const open = await ctx.db
@@ -469,7 +473,7 @@ export async function onHostedSessionEnded(
   session: Doc<"claudeSessions">,
   ending: { status: string; endedReason?: string },
 ) {
-  const hosted = await hostedRunOf(ctx, session._id);
+  const hosted = await hostedRunOf(ctx, session);
   if (!hosted) return;
   const now = Date.now();
   if (hosted.environment === "worker") {
@@ -642,7 +646,8 @@ export const internalSendMessage = internalMutation({
     const body = text.trim();
     if (body === "") throw new Error("refused: the message is empty");
     const id = ctx.db.normalizeId("claudeSessions", sessionId);
-    const hosted = id === null ? null : await hostedRunOf(ctx, id);
+    const caller = id === null ? null : await ctx.db.get(id);
+    const hosted = caller === null ? null : await hostedRunOf(ctx, caller);
     if (hosted?.environment === "worker") {
       if (to !== "orchestrator") throw new Error('refused: a worker messages only "orchestrator"');
       const { session } = await requireHostedWorker(ctx, sessionId);

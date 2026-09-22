@@ -223,6 +223,16 @@ describe("starting and hosting", () => {
     expect(row?.environment).toBeUndefined();
     // And an old daemon, which hosts nothing, may now take it like any session.
     expect((await poll(t)).sessions.map((s) => s.id)).toContain(worker);
+    // Nothing of the orchestrator's counts, messages or stops it any more.
+    expect((await pen(t, "/tts/message", { sessionId: orchestrator, to: worker, text: "hello" })).status).toBe(409);
+    expect((await pen(t, "/tts/elevate", { sessionId: worker, question: "q?", sides: ["a", "b"] })).status).toBe(409);
+    await t.mutation(internal.orchestrator.internalStop, { reason: "done" });
+    const reopened = await t.run(async (ctx) => ctx.db.get(worker as Id<"claudeSessions">));
+    expect(reopened?.status).not.toBe("ended");
+    const stops = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", worker as Id<"claudeSessions">)).collect()).filter((m) => m.kind === "stop"),
+    );
+    expect(stops).toHaveLength(0);
   });
 
   it("carries messages both ways and keeps the document versioned", async () => {
