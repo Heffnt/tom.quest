@@ -417,6 +417,22 @@ describe("internalComposeToday", () => {
     expect(facts.facts.map((f) => f.id)).not.toContain(`needs-you-today:${done}`);
   });
 
+  it("does not say a flagged capture twice once it is dated under today", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const dated = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice",
+      source: "email",
+      needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    await t.run(async (ctx) => ctx.db.patch(dated, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+    vi.setSystemTime(FIVE_AM);
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    expect(text.split("Pay the lab deposit invoice")).toHaveLength(2);
+    expect(facts.facts.map((f) => f.id)).not.toContain(`needs-you-today:${dated}`);
+  });
+
   it("lists a dated email capture once, under today", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);

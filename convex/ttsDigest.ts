@@ -815,7 +815,9 @@ export async function gatherTodayFacts(
     // Counted over the WHOLE list, printed and beyond, because the lead's
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
-    needsYou,
+    // One appearance per item: a flagged capture that preparation has since
+    // dated is already a line under today, and is not said twice.
+    needsYou: needsYou.filter((n) => !dated.some((item) => item.id === n.todoId)),
     runners,
     overnight,
     batchesPlanned: overnight.length,
