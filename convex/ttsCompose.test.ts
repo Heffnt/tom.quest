@@ -30,6 +30,7 @@ import {
   statement,
   verifyDraft,
   todayFactsBlock,
+  fit,
   todayFirstLine,
   type Draft,
   type HourlyFacts,
@@ -784,6 +785,15 @@ describe("the needs-you-today run", () => {
     const long = { todoId: "abc", statement: "Pay the lab deposit invoice for the autumn semester reagent order that the department placed in August, before the account closes", why: "the invoice is due tomorrow", countdown: "Ten days late." };
     const text = renderSlack(composeToday(sept9({ needsYou: [long] }), { canReply: false }));
     expect(text).toContain("because the invoice is due tomorrow. Ten days late.");
+  });
+
+  it("is never reduced when the message must be fitted, whatever else gives", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ todoId: `n${i}`, statement: `Answer the registrar about form ${i} before the office closes`, why: "a person is waiting on a reply" }));
+    const overnight = Array.from({ length: 40 }, (_, i) => ({ batchId: `b${i}`, statement: `The research critical path number ${i} with a long name`, added: 4, reworked: 2, dropped: 1, finished: 1, running: false }));
+    const { message, truncated } = fit(composeToday(sept9({ needsYou: many, overnight, batchesPlanned: 40 }), { canReply: false }));
+    expect(truncated).toBe(true);
+    const text = renderSlack(message);
+    for (const n of many) expect(text).toContain(`form ${n.todoId.slice(1)} before`);
   });
 
   it("refuses a written draft that leaves out an item that needs him today", () => {

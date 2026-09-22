@@ -300,8 +300,10 @@ function sectionRuns(lines: Line[]): { start: number; end: number }[] {
 }
 
 /** Reduce until it fits: each run to its lead plus ONE whole sentence with a
- *  link, from the last back; the first run is never reduced; then, still over,
- *  lines are dropped from the end. Returns whether anything was reduced
+ *  link, from the last back; the first run is never reduced, nor is the
+ *  needs-you-today run, which names what no one else tells him (Tom,
+ *  2026-09-21); then, still over, lines are dropped from the end, the
+ *  needs-you-today run's last of all. Returns whether anything was reduced
  *  (recorded on the digest-sent row as `truncated`, as today). */
 export function fit(
   m: Message,
@@ -315,6 +317,7 @@ export function fit(
     // The last run that is still more than a lead and one line under it.
     let target = -1;
     for (let i = runs.length - 1; i >= 1; i -= 1) {
+      if (current.lines[runs[i].start].section === PROTECTED_RUN) continue;
       if (runs[i].end - runs[i].start > 2) {
         target = i;
         break;
@@ -348,11 +351,18 @@ export function fit(
   // Every run but the first reduced and still over: lines go from the end
   // rather than a sentence being cut in half. NO ELLIPSIS, at any length.
   while (current.lines.length > 0 && renderSlack(current).length > max) {
-    current = { ...current, lines: current.lines.slice(0, -1) };
+    const lines = current.lines;
+    let drop = lines.length - 1;
+    while (drop >= 0 && lines[drop].section === PROTECTED_RUN) drop -= 1;
+    if (drop < 0) drop = lines.length - 1;
+    current = { ...current, lines: [...lines.slice(0, drop), ...lines.slice(drop + 1)] };
     truncated = true;
   }
   return { message: current, truncated };
 }
+
+/** The run `fit` never reduces and drops from last. */
+const PROTECTED_RUN = "needs-you-today";
 
 // ── The dedup index — one appearance per item per day ────────────────────────
 
