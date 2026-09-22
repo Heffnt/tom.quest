@@ -469,7 +469,10 @@ export async function gatherTodayFacts(
   //    Of every mail capture in the window (Gmail's "email", Outlook's
   //    "outlook"), the ones the triage judged to need him today and still
   //    active, oldest first. No worker raises these with him (Tom, 2026-09-21),
-  //    so this message says them.
+  //    so this message says them. The field is never cleared: it is what the
+  //    triage judged at capture, a fact about that moment, and a status
+  //    change is a separate fact on the row. So the reader, not a writer on
+  //    every status path, decides that a finished item is not said.
   const outlookCaptures = (
     await ctx.db
       .query("dtsTodos")

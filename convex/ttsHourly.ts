@@ -331,7 +331,9 @@ export const internalChangedSince = internalQuery({
         link = null;
       }
       // A capture the triage judged to need him today carries its reason, so
-      // the line names it (composeHourly); no worker raises it with him.
+      // the line names it (composeHourly); no worker raises it with him. The
+      // field records the judgement at capture and is never cleared, so an
+      // item finished within the hour is left unsaid here, by the reader.
       const needsYouToday = kind === "captured" && todo?.needsTomToday !== undefined && todo.status === "active"
         ? { needsYouToday: todo.needsTomToday.why }
         : {};
