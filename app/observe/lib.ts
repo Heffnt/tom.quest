@@ -158,6 +158,12 @@ type MergeRow = {
   commitKey: string | null;
 };
 
+/** A merge row as the page reads it. The repo and the sha are nullable for the
+ *  reason failureRowOf's job is: dtsEvents.data is v.any(), so no schema makes
+ *  a merge row carry them, and the record holds merge rows written before
+ *  POST /tts/merge required either. A row without them is still the sentence
+ *  of a change that landed, which is what the list draws; what it cannot do is
+ *  open the gate, so commitKey answers null and the gate is left out. */
 export function mergeRowOf(event: PointEvent): MergeRow {
   const repo = field(event.data, "repo");
   const sha = field(event.data, "sha");

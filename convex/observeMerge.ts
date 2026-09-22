@@ -63,7 +63,10 @@ type ApprovableRepo = (typeof APPROVABLE_REPOS)[number];
  *  about. Such a pull request is not mirrored, so it carries no Approve. */
 const MAIN_BRANCH = "main";
 
-/** The most open pull requests one refresh mirrors (GitHub's page maximum). */
+/** The most open pull requests one refresh mirrors. It is GitHub's page
+ *  maximum, and it is here rather than deleted because the call takes a page
+ *  size or gives thirty: asking for a hundred is how one refresh sees every
+ *  open change in a repository that has never had more than a dozen. */
 const PULLS_MAX = 100;
 
 /** How long a closed row is kept: the observation page's widest window, so a

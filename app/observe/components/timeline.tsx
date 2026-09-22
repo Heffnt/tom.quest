@@ -267,7 +267,10 @@ function Row({
   openKey: string | null;
 }) {
   const rows = packRows(band.marks, (m) => m.start, (m) => m.end, gap, MAX_ROWS);
-  const used = rows.length === 0 ? 1 : Math.max(...rows) + 1;
+  // A band is only drawn with marks in it — a lane holding none returns its
+  // one thin line above — and packRows answers one row number per mark, so
+  // there is always at least one.
+  const used = Math.max(...rows) + 1;
   return (
     <div className="flex items-start gap-2 py-0.5">
       <div
@@ -351,7 +354,7 @@ function Detail({ mark, onClose }: { mark: Mark | null; onClose: () => void }) {
       {mark === null ? null : (
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1 space-y-0.5">
-            {mark.detail.slice(0, 4).map((line, index) => (
+            {mark.detail.map((line, index) => (
               <Terms
                 key={index}
                 text={line}

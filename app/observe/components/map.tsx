@@ -199,6 +199,10 @@ function Box({
       <text x={node.x} y={y + 55} textAnchor="middle" className="fill-text-faint text-[10px] font-mono">
         {lastAt === null ? "—" : `${ago(lastAt, now)} ago`}
       </text>
+      {/* Nothing waiting draws nothing. The query answers the count because
+          the same read carries the oldest thread's age, which the badge says
+          when there is one; a badge reading nought is a thing to read that
+          says nothing happened. */}
       {waiting !== null && waiting.waiting > 0 && (
         <>
           <rect

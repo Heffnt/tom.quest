@@ -177,7 +177,10 @@ export default function ChangesList({
 
 type Target = { repo: string; number?: number; sha?: string };
 
-/** The changes that are waiting: every open pull request the record mirrors. */
+/** The changes that are waiting: every open pull request the record mirrors.
+ *  Nothing waiting draws nothing — an empty list under its own heading claims
+ *  a section of the page for a fact already told by the changes below it —
+ *  and undefined is Convex's word for a read that has not answered yet. */
 function Waiting() {
   const waiting = useQuery(api.observe.changesWaiting, {});
   const [open, setOpen] = useState<string | null>(null);

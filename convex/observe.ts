@@ -41,6 +41,11 @@ const SURFACE = "Observe";
 const MAX_WINDOW_MS = 40 * 24 * 60 * 60 * 1000;
 
 /** The most rulings one window returns. Append-only at Tom's own pace. */
+/** The most rulings one window's read answers with. A Convex query has a hard
+ *  limit on the rows it may read and fails outright past it, so an uncapped
+ *  read of a month would one day take the page down rather than shorten a
+ *  list; the table runs to tens of rows a month, so this is the ceiling and
+ *  not the shape of the answer. */
 const RULINGS_MAX = 500;
 
 /** How far back the waiting-on-Tom count looks for an unanswered thread. A
@@ -48,7 +53,12 @@ const RULINGS_MAX = 500;
  *  count would be a number that only grows. */
 const WAITING_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** The most needs-you rows that count is allowed to read. */
+/** The most needs-you rows that count is allowed to read, and the reason the
+ *  answer carries it: each row costs a second read for his reply, so an
+ *  uncapped month would be two reads a thread against the query's own row
+ *  limit, past which the page gets no answer at all rather than a short one.
+ *  The count says what it read (`read`, `cap`), so a capped answer is legible
+ *  as one. */
 const WAITING_MAX = 200;
 
 /** The merge row's kind (convex/ttsMerge.ts MERGE), and the delegate's two
@@ -344,6 +354,9 @@ export const waitingOnTom = query({
     for (const event of asked) {
       const todoId = event.todoId;
       if (lastAt === null || event.at > lastAt) lastAt = event.at;
+      // A needs-you row with no todo cannot be answered either way: the reply
+      // that settles a thread is found on the todo, so counting such a row
+      // would be counting something that can never stop waiting.
       if (todoId === undefined) continue;
       // His reply itself, not a page of the todo's events that might not
       // reach it: a busy todo can carry any number of rows after the thread
@@ -568,7 +581,11 @@ export const define = query({
   },
 });
 
-/** The most lines one word's answer carries. */
+/** The most lines one word's answer carries, in the drawer and in each body
+ *  it searches. A word of the vocabulary appears in hundreds of lines across
+ *  the published bodies, and the drawer is for the line that defines it: past
+ *  a dozen the reader is reading the corpus, not a definition, and the query
+ *  is carrying it all to the browser to be scrolled past. */
 const DEFINITION_LINES_MAX = 12;
 
 /** The longest line kept whole; past this it is cut, because a definition the
