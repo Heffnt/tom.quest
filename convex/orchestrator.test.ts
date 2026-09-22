@@ -363,6 +363,14 @@ describe("elevations", () => {
     expect(refusal.status).toBe(409);
     expect(String(refusal.body.error)).toContain("answer it as reserved");
 
+    // A delegate that did not answer: the fallback recorded with the ask
+    // stands, whatever the answer call says.
+    const silent = await elevate(t, worker, "Which font?");
+    await record(silent, "33333333", { decision: null, reason: "delegate could not run: timeout" });
+    const fell = await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId: silent, kind: "trade-off", askId: "33333333", answer: "Renew." });
+    expect(fell.body).toMatchObject({ status: "answered", ruling: null });
+    expect((await t.run(async (ctx) => ctx.db.get(silent as Id<"elevations">)))?.answer).toBe("Wait.");
+
     const objected = await elevate(t, worker, "Which colour?");
     await record(objected, "22222222", {});
     await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {

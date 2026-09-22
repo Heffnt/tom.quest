@@ -824,7 +824,7 @@ export const internalAnswer = internalMutation({
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", askId))
         .first();
-      const data = (ask?.data ?? {}) as { elevationId?: unknown; decision?: unknown; reason?: unknown; refused?: unknown; capped?: unknown; refusedBecause?: unknown };
+      const data = (ask?.data ?? {}) as { elevationId?: unknown; decision?: unknown; reason?: unknown; refused?: unknown; capped?: unknown; refusedBecause?: unknown; fallback?: unknown };
       if (!ask || data.elevationId !== id) throw new Error(`refused: ask ${askId} is not the delegate's answer to elevation ${id}`);
       // A refusal naming one of Tom's four is the delegate saying the decision
       // is reserved: only the reserved path may close it.
@@ -845,16 +845,14 @@ export const internalAnswer = internalMutation({
       }
       const ruled = typeof data.decision === "string" && data.refused !== true && data.capped !== true;
       if (!ruled) {
-        if (answer === undefined) {
-          throw new Error(
-            `refused: the delegate did not rule on ask ${askId}${typeof data.refusedBecause === "string" ? ` (${data.refusedBecause})` : ""}; answer again with your fallback in "answer", or as reserved if it is Tom's`,
-          );
-        }
-        await ctx.db.patch(id, { status: "answered", kind, answer, answeredBy: "orchestrator", answeredAt: now, askId });
+        // The fallback stands, and it is the one the ask recorded before the
+        // delegate ran, never one written after its silence.
+        const fallback = typeof data.fallback === "string" ? data.fallback : "";
+        await ctx.db.patch(id, { status: "answered", kind, answer: fallback, answeredBy: "orchestrator", answeredAt: now, askId });
         const delivered = await deliver(
           ctx,
           elevation.workerSessionId,
-          `Answer to your elevation ${id} (a trade-off the delegate did not rule on; the orchestrator's fallback stands): ${answer}`,
+          `Answer to your elevation ${id} (a trade-off the delegate did not rule on; the fallback the orchestrator gave with its ask stands): ${fallback}`,
         );
         await logEvent(ctx, "elevation-answered", elevation.todoId, { elevationId: id, kind, by: "orchestrator", askId, delegateRuled: false, delivered });
         return { status: "answered", delivered, ruling: null };
@@ -1107,7 +1105,7 @@ export function buildOrchestratorPrompt(args: {
     "",
     "Workers never decide trade-offs or reserved decisions; they raise them to you as elevations, with two sides and no recommendation. You judge which kind each is and answer it:",
     "- Obvious: answer it yourself, in one sentence.",
-    `- Trade-off: ask the delegate first, giving it the two sides and NO recommendation: \`tts-ask --elevation <elevation id> [--todo <the todo it concerns, when it names one>] --question "<the question>" --option "<side one>" --option "<side two>" --fallback "<what the worker should do if it does not rule>"\`. Its first line is \`DELEGATE <ask id>\`. Then answer with kind trade-off and that ask id; the record reads the delegate's answer from its own record and writes it as a delegate ruling, which every run treats as Tom's and his objection reverts. If the delegate refused it as one of Tom's four, it is reserved: answer it as reserved. If it did not answer, or its cap was spent, answer trade-off again with your fallback in "answer". If Tom objected to its decision before you answered, the answer is refused with his words; answer again in their light.`,
+    `- Trade-off: ask the delegate first, giving it the two sides and NO recommendation: \`tts-ask --elevation <elevation id> [--todo <the todo it concerns, when it names one>] --question "<the question>" --option "<side one>" --option "<side two>" --fallback "<what the worker should do if it does not rule>"\`. Its first line is \`DELEGATE <ask id>\`. Then answer with kind trade-off and that ask id; the record reads the delegate's answer from its own record and writes it as a delegate ruling, which every run treats as Tom's and his objection reverts. If the delegate refused it as one of Tom's four, it is reserved: answer it as reserved. If it did not answer, or its cap was spent, answer trade-off with the same ask id and the fallback you gave it stands. If Tom objected to its decision before you answered, the answer is refused with his words; answer again in their light.`,
     "- Reserved: answer with kind reserved and your recommendation. The record opens a #tts-needs-you thread for Tom, and his reply is delivered to the worker. You open a needs-you thread for nothing else.",
     "",
     "Delegating (the agent rules). Fable for anything that needs simplification or judgment, Codex for mechanical work, Opus for briefs; every spawn names its model.",
@@ -1182,7 +1180,7 @@ export function buildHostedWorkerPrompt(args: {
     "",
     "1. Elevate a decision:",
     "```",
-    curl("/tts/elevate", `{"sessionId": "${id}", "question": "<one sentence>", "sides": ["<side one>", "<side two>"]${todo}}`),
+    curl("/tts/elevate", `{"sessionId": "${id}", "question": "<one sentence>", "sides": ["<side one>", "<side two>"]${todo}, "runId": "<optional: a run it concerns, other than yours>"}`),
     "```",
     "2. Message the orchestrator (what you found, what you need, what you are about to do that it should know):",
     "```",
