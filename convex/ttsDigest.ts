@@ -933,9 +933,10 @@ export const internalComposeToday = internalQuery({
       // the sender records it on the "digest-sent" row.
       truncated,
       since,
-      // Every todo the message showed, for the "surfaced" instrumentation.
-      surfacedTodoIds: facts.today
-        .map((item) => ctx.db.normalizeId("dtsTodos", item.id))
+      // Every todo the message showed, for the "surfaced" instrumentation:
+      // the today run and the needs-you-today run, each id once.
+      surfacedTodoIds: [...new Set([...facts.today.map((item) => item.id), ...facts.needsYou.map((n) => n.todoId)])]
+        .map((id) => ctx.db.normalizeId("dtsTodos", id))
         .filter((id): id is Id<"dtsTodos"> => id !== null),
       // The decisions the objection list carried, in PRINTED order: a reply of
       // "revert 2" names the second of these. Read off the FITTED message, not

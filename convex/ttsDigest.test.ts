@@ -458,6 +458,23 @@ describe("internalComposeToday", () => {
     expect(ready?.numbers).not.toContain("2");
   });
 
+  it("marks every flagged item it prints as surfaced, once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const flagged = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice", source: "email", needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    await t.run(async (ctx) => ctx.db.patch(flagged, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+    const undated = await t.mutation(internal.tts.internalCapture, {
+      statement: "Answer the registrar", source: "email", needsTomToday: { why: "a person is waiting" },
+    });
+    vi.setSystemTime(FIVE_AM);
+    const { surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    expect(surfacedTodoIds.filter((id) => id === flagged)).toHaveLength(1);
+    expect(surfacedTodoIds).toContain(undated);
+  });
+
   it("stores the triage's reason with secrets redacted", async () => {
     const t = convexTest(schema, modules);
     const id = await t.mutation(internal.tts.internalCapture, {
