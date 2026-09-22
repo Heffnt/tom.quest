@@ -42,7 +42,7 @@ describe("page registry", () => {
     // Named individually because each is a specific thing a session must not
     // reach: /canvas spends LLM credits through its agent route, and the other
     // three are Tom's own surfaces.
-    it.each(["canvas", "runs", "forge", "jarvis", "logo"])(
+    it.each(["canvas", "runs", "forge", "jarvis", "logo", "intent", "vocabulary"])(
       "does not see /%s",
       (slug) => {
         const entry = PAGES.find((p) => p.slug === slug);
@@ -84,6 +84,22 @@ describe("page registry", () => {
     const turing = PAGES.find((entry) => entry.slug === "turing");
     expect(turing?.visibility).toBe("admin");
     expect(canSeePage("admin", turing!)).toBe(true);
+  });
+
+  // The two pages of his own record: what he wants to be true, and the words
+  // the system says it in. Both are Tom-only and neither is agent-readable —
+  // a headless session looking at a page it changed has no business reading
+  // his intent.
+  it("keeps /intent and /vocabulary Tom-only", () => {
+    for (const slug of ["intent", "vocabulary"]) {
+      const entry = PAGES.find((page) => page.slug === slug);
+      expect(entry, `no page named ${slug}`).toBeDefined();
+      expect(entry!.visibility).toBe("tom");
+      expect(entry!.agentReadable).toBeUndefined();
+      expect(canSeePage("tom", entry!)).toBe(true);
+      expect(canSeePage("admin", entry!)).toBe(false);
+      expect(canSeePage("guest", entry!)).toBe(false);
+    }
   });
 
   it("prefers prefix matches before substring matches", () => {
