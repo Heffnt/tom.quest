@@ -54,11 +54,11 @@ export default function ChangesList({
   runs: RunMark[];
   now: number;
 }) {
-  const merges = events
+  const all = events
     .filter((event) => event.kind === "merge")
     .map(mergeRowOf)
-    .sort((left, right) => right.at - left.at)
-    .slice(0, MERGES_MAX);
+    .sort((left, right) => right.at - left.at);
+  const merges = all.slice(0, MERGES_MAX);
 
   const commits = merges
     .filter((row) => row.repo !== null && row.sha !== null)
@@ -70,7 +70,14 @@ export default function ChangesList({
 
   return (
     <section className="space-y-1.5">
-      <h2 className="text-[13px] font-semibold text-text-muted">changes</h2>
+      <h2 className="flex items-baseline gap-2 text-[13px] font-semibold text-text-muted">
+        changes
+        {all.length > merges.length && (
+          <span className="text-[10px] font-normal font-mono text-text-faint">
+            {merges.length} of {all.length}
+          </span>
+        )}
+      </h2>
       <Waiting />
       <div className="flex flex-col gap-1.5">
         {merges.map((row) => {
