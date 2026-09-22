@@ -1697,13 +1697,41 @@ http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 // regression. These routes are where the first two are written, where all
 // three are read, and where a passed merge is recorded.
 
-// POST /tts/tests — the Guardrails `tests` job's own result, at the end of its
-// run. Body: { repo, sha, ok, detail?, url? }.
+// POST /tts/tests — the Guardrails run's own result, posted by the `report` job
+// once the other four have answered (scripts/tests-report.mjs). Body:
+// { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest? }.
 //
 // EITHER KEY, for the reason the evals-run read takes either: CI holds the
 // narrow evals key and this is a CI fact of the same class, while the box
 // holds the worker key and posts its own local runs. The worker key is
 // strictly the more privileged of the two, so accepting it widens nothing.
+/** `{ name: seconds }` when every value is a finite number, else null. The
+ *  schema's `v.record(v.string(), v.number())` refuses anything else, and a
+ *  refused mutation is a missing tests row. */
+function numberRecord(value: unknown): Record<string, number> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const out: Record<string, number> = {};
+  for (const [name, seconds] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds)) return null;
+    out[name] = seconds;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+/** The slowest files, kept to five: the warning names them and a row is a
+ *  record, not the reporter's whole answer. */
+function slowestFiles(value: unknown): { file: string; seconds: number }[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: { file: string; seconds: number }[] = [];
+  for (const entry of value.slice(0, 5)) {
+    const row = (entry ?? {}) as Record<string, unknown>;
+    if (typeof row.file !== "string" || row.file.trim() === "") return null;
+    if (typeof row.seconds !== "number" || !Number.isFinite(row.seconds)) return null;
+    out.push({ file: row.file.trim(), seconds: row.seconds });
+  }
+  return out.length === 0 ? null : out;
+}
+
 const ttsTests = httpAction(async (ctx, request) => {
   const denied = request.headers.get("X-TTS-Key")
     ? ttsAuth(request)
@@ -1721,12 +1749,23 @@ const ttsTests = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
   }
   if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
+  const durations = numberRecord(b.durations);
+  const slowest = slowestFiles(b.slowest);
   const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
     repo: (b.repo as string).trim(),
     sha: (b.sha as string).trim(),
     ok: b.ok,
     ...(nonempty(b.detail) ? { detail: (b.detail as string).trim() } : {}),
     ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
+    // WHICH SCOPE RAN AND HOW LONG IT TOOK. All four are optional and none is a
+    // condition: a caller that sends none records the row it always did, and
+    // the timing warning (convex/ttsMerge.ts slowConditions) simply has nothing
+    // to measure. Each is DROPPED rather than refused when it is the wrong
+    // shape — a malformed duration must not cost the gate its tests row.
+    ...(nonempty(b.mode) ? { mode: (b.mode as string).trim() } : {}),
+    ...(typeof b.files === "number" && Number.isFinite(b.files) ? { files: b.files } : {}),
+    ...(durations === null ? {} : { durations }),
+    ...(slowest === null ? {} : { slowest }),
   });
   //  rather than : the answer's own ok says the POST landed, and
   // the row's ok says whether the tests were green.

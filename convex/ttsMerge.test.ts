@@ -9,6 +9,10 @@ import {
   AUDIT_TEXT_MAX_BYTES,
   AUDIT_VERDICT,
   MERGE,
+  SUITE_SLOW_KEY,
+  SUITE_SLOW_SECONDS,
+  TESTS_JOB_SLOW_KEY,
+  TESTS_JOB_SLOW_SECONDS,
   TESTS_RUN,
   auditChunkNote,
   auditVerdictOf,
@@ -17,6 +21,7 @@ import {
   compactCount,
   mergedOnMain,
   removalNotesOf,
+  slowConditions,
 } from "./ttsMerge";
 import { COVERAGE_NOT_REQUIRED, EVALS_REQUEST, EVALS_RUN } from "./ttsEvals";
 import { EVALS_PROTOCOL } from "../worker/jobs/evals-row.mjs";
@@ -105,6 +110,22 @@ const mergeReport = (t: TestConvex<typeof schema>, over: Record<string, unknown>
 const mergeRows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
     ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", MERGE)).collect(),
+  );
+
+const testsRows = (t: TestConvex<typeof schema>) =>
+  t.run(async (ctx) =>
+    ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", commitKey(REPO, SHA)))
+      .order("desc")
+      .collect(),
+  );
+
+/** The timing warning's own rows, on the channel the digest and the hourly
+ *  update already read (convex/ttsJobs.ts). */
+const jobRows = (t: TestConvex<typeof schema>, kind: string) =>
+  t.run(async (ctx) =>
+    ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", kind)).collect(),
   );
 
 const auditRows = (t: TestConvex<typeof schema>) =>
@@ -800,6 +821,134 @@ describe("POST /tts/tests — the first check's own door", () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
     expect((await post(t, "/tts/tests", { repo: REPO, sha: SHA })).status).toBe(400);
+  });
+
+  it("keeps the mode, the file count and every job's seconds on the row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/tests", {
+      repo: REPO,
+      sha: SHA,
+      ok: true,
+      mode: "related",
+      files: 2,
+      durations: { "static-boundaries": 31, "secret-scan": 11, tests: 142, e2e: 97, suite: 11.4 },
+      slowest: [{ file: "convex/http.test.ts", seconds: 6.2 }],
+    });
+    const row = (await testsRows(t))[0];
+    expect(row.data).toMatchObject({
+      mode: "related",
+      files: 2,
+      durations: { tests: 142, suite: 11.4 },
+      slowest: [{ file: "convex/http.test.ts", seconds: 6.2 }],
+    });
+  });
+
+  // A malformed timing must not cost the gate its tests row: the door drops
+  // what the validator would refuse and records the fact it came for.
+  it("drops a timing it cannot read rather than refusing the row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    const response = await post(t, "/tts/tests", {
+      repo: REPO,
+      sha: SHA,
+      ok: true,
+      files: "two",
+      durations: { tests: "fast" },
+      slowest: [{ file: "convex/http.test.ts" }],
+    });
+    expect(response.status).toBe(200);
+    const row = (await testsRows(t))[0];
+    expect(row.data).toMatchObject({ ok: true });
+    expect((row.data as Record<string, unknown>).durations).toBeUndefined();
+    expect((row.data as Record<string, unknown>).files).toBeUndefined();
+  });
+});
+
+describe("the timing warning — Tom's 2026-09-22 ruling", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("names the two thresholds and answers a condition per duration it was given", () => {
+    expect(TESTS_JOB_SLOW_SECONDS).toBe(300);
+    expect(SUITE_SLOW_SECONDS).toBe(600);
+    expect(slowConditions({ durations: {} })).toEqual([]);
+    const both = slowConditions({
+      mode: "full",
+      durations: { tests: 400, suite: 700 },
+      slowest: [{ file: "convex/http.test.ts", seconds: 90 }],
+    });
+    expect(both.map((row) => row.key)).toEqual([TESTS_JOB_SLOW_KEY, SUITE_SLOW_KEY]);
+    expect(both.every((row) => row.crossed)).toBe(true);
+    expect(both[0].error).toContain("convex/http.test.ts 90s");
+    // A related run that crossed ten minutes crossed the five-minute job
+    // threshold seven minutes earlier, so one slow run is still one sentence.
+    expect(slowConditions({ mode: "related", durations: { tests: 200, suite: 700 } })).toEqual([
+      { key: TESTS_JOB_SLOW_KEY, crossed: false, error: expect.stringContaining("200s") },
+    ]);
+  });
+
+  it("posts one job-failed row when the tests job crosses five minutes, and never twice", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    const timing = { durations: { tests: 420, suite: 88 }, mode: "related", slowest: [{ file: "convex/runs.test.ts", seconds: 41 }] };
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: true, ...timing });
+    await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}b`, ok: true, ...timing });
+    const failures = await jobRows(t, "job-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0].key).toBe(TESTS_JOB_SLOW_KEY);
+    expect((failures[0].data as { error: string }).error).toContain("420s");
+    expect((failures[0].data as { error: string }).error).toContain("convex/runs.test.ts 41s");
+  });
+
+  it("re-arms the warning when a later run comes back under the threshold", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: true, durations: { tests: 420 } });
+    await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}b`, ok: true, durations: { tests: 60 } });
+    await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}c`, ok: true, durations: { tests: 420 } });
+    expect(await jobRows(t, "job-recovered")).toHaveLength(1);
+    expect(await jobRows(t, "job-failed")).toHaveLength(2);
+  });
+
+  // The row is write-once and the clock is not: the nightly full suite runs on
+  // a main sha whose row already exists, and it is exactly the run whose
+  // duration there would otherwise be no way to hear about.
+  it("reads the timing of a rerun the row already answers", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: true, durations: { tests: 60 } });
+    const again = await (
+      await post(t, "/tts/tests", {
+        repo: REPO,
+        sha: SHA,
+        ok: true,
+        mode: "full",
+        durations: { tests: 120, suite: 900 },
+      })
+    ).json();
+    expect(again.existing).toBe(true);
+    const failures = await jobRows(t, "job-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0].key).toBe(SUITE_SLOW_KEY);
+    // And the row itself still carries the FIRST run's answer.
+    expect((await testsRows(t))[0].data).toMatchObject({ durations: { tests: 60 } });
+  });
+
+  it("never fails anything: a slow run still records a green row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    const response = await post(t, "/tts/tests", {
+      repo: REPO,
+      sha: SHA,
+      ok: true,
+      mode: "full",
+      durations: { tests: 9_999, suite: 9_999 },
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).green).toBe(true);
+    expect(
+      (await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json()).missing,
+    ).not.toContain("tests");
   });
 });
 
