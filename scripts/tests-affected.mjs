@@ -170,7 +170,10 @@ function argOf(argv, name) {
 }
 
 function main(argv) {
-  const base = argOf(argv, "--base");
+  // `--base ""` is what a push event hands this, since a push has no merge
+  // base to name. Normalised to null HERE, before the diff is asked for, so
+  // `git diff ...HEAD` is never run with an empty left side.
+  const base = (argOf(argv, "--base") ?? "").trim() || null;
   const summaryPath = argOf(argv, "--summary");
   // `--mode full` is how the main and nightly runs say so without a diff: they
   // have no base to compare against and want everything regardless.

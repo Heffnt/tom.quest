@@ -94,7 +94,15 @@ jobs:
           # decide which tests the change can reach, and a shallow clone has no
           # merge base. A run with no base falls back to the whole suite, which
           # is correct and slow, so the fetch is what makes the mode real.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          #
+          # WRITTEN INSIDE OUT ON PURPOSE. GitHub's `a && b || c` is not a
+          # ternary: `&&` answers its right operand only when that operand is
+          # TRUTHY, and 0 is not. Spelled the obvious way round —
+          # `event_name == 'pull_request' && 0 || 1` — a pull request evaluates
+          # `true && 0` to 0, falls through the `||`, and checks out shallow:
+          # the exact opposite of what it reads as, with nothing failing to say
+          # so. The truthy value has to be on the left of the `||`.
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
       - uses: pnpm/action-setup@v4
         with:
           run_install: false
@@ -121,7 +129,10 @@ jobs:
           exit $status
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
-          MODE: ${{ github.event_name == 'pull_request' && '' || 'full' }}
+          # INSIDE OUT for the `fetch-depth` reason above, and the empty string
+          # is falsy exactly as 0 is: `event_name == 'pull_request' && '' ||
+          # 'full'` hands every pull request `full`.
+          MODE: ${{ github.event_name != 'pull_request' && 'full' || '' }}
       # The production build, verified on every PR. It runs here rather than
       # relying on the Vercel check because Vercel's PREVIEW build is not the
       # production build (it skips `convex deploy`, which a PR branch must not
