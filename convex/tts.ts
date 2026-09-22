@@ -17,6 +17,7 @@ import {
   READINESS,
   SESSION_MODEL,
   goalCheckable,
+  isFailureKind,
   isPrepared,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
@@ -94,19 +95,9 @@ const MAX_BATCH_GOALS = 20;
 const MAX_GRAPH_TASKS = 40;
 
 // ── #tts-broken, from the one place failures are already written ─────────────
-// Every job failure in the system is a "-failed" event kind. Rather than
-// making each producer remember to post, the ONE event writer schedules the
-// broken line — which is why there is no second list of failure kinds to keep
-// in step with this one.
-//
-// Two exclusions, both load-bearing:
-//   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
-//                        convex/ttsHourly.ts already warns about: a refused
-//                        post would write a row that schedules another post.
-//   "learning-revert-failed"  not a job failure at all — it is an objection
-//                        the nightly job could not apply, and it belongs to
-//                        the model-of-Tom line it is about.
-const NOT_A_BROKEN_LINE = new Set(["slack-send-failed", "learning-revert-failed"]);
+// Rather than making each producer remember to post, the ONE event writer
+// schedules the broken line, on the shape convex/ttsShared.ts calls a failure
+// (isFailureKind, with its two load-bearing exclusions).
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
@@ -132,7 +123,7 @@ export async function logEvent(
     data: data === undefined ? undefined : data,
     key,
   });
-  if (kind.endsWith("-failed") && !NOT_A_BROKEN_LINE.has(kind)) {
+  if (isFailureKind(kind)) {
     const d = (data ?? {}) as Record<string, unknown>;
     const job = str(d.job) ?? kind.replace(/-failed$/, "");
     // Scheduled, not awaited: the post is network I/O and this is a mutation.

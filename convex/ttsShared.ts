@@ -80,6 +80,28 @@ export function mergeKey(repo: string, sha: string): string {
 }
 
 /**
+ * A FAILURE IS A SHAPE AND NOT A KIND: every job failure in the system is a
+ * "-failed" event kind, with two exclusions, both load-bearing:
+ *   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
+ *                        convex/ttsHourly.ts already warns about: a refused
+ *                        post would write a row that schedules another post.
+ *   "learning-revert-failed"  not a job failure at all — it is an objection
+ *                        the nightly job could not apply, and it belongs to
+ *                        the model-of-Tom line it is about.
+ *
+ * Spelled here, not in convex/tts.ts where the #tts-broken writer applies it,
+ * because the observation page asks the same question of the same events and a
+ * second list of the exceptions is a second answer waiting to drift.
+ */
+export function isFailureKind(kind: string): boolean {
+  return (
+    kind.endsWith("-failed") &&
+    kind !== "slack-send-failed" &&
+    kind !== "learning-revert-failed"
+  );
+}
+
+/**
  * THE SUBJECT A CHANGE IS RULED ON: a code subject `(repo, externalId)` whose
  * externalId names the change rather than a code todo. A pull request the
  * record has mirrored is `pr-<number>`; a merged commit whose pull request the
