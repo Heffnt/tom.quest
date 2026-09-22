@@ -29,11 +29,6 @@ export const COMPACT_ENDED_REASON = "orchestrator compacted";
  */
 export const WORKER_ANSWER_WAIT_MS = 12 * 60 * 60 * 1000;
 
-/** True when a run is hosted: kept across turns rather than ended after one. */
-export function isHosted(environment) {
-  return environment === "orchestrator" || environment === "worker";
-}
-
 /**
  * The run envelope's three names for a daemon session: where it starts, what
  * kind of run it is, and its environment. An interactive session is a session
@@ -98,10 +93,7 @@ export function hostedIdleVerdict({
 /** The slugs a `codex debug models` catalog lists for use (visibility
  * "list"); session-host.mjs reports them on the heartbeat. */
 export function listedCodexModels(text) {
-  const parsed = JSON.parse(text);
-  const models = Array.isArray(parsed) ? parsed : parsed?.models;
+  const models = JSON.parse(text)?.models;
   if (!Array.isArray(models)) throw new Error("codex debug models printed no model list");
-  return models
-    .filter((m) => typeof m?.slug === "string" && (m.visibility === undefined || m.visibility === "list"))
-    .map((m) => m.slug);
+  return models.filter((m) => m?.visibility === "list").map((m) => m.slug);
 }

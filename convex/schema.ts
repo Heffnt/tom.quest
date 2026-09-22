@@ -1712,8 +1712,7 @@ export default defineSchema({
     todoId: v.optional(v.id("dtsTodos")),
     createdAt: v.number(),
   })
-    .index("by_session", ["sessionId"])
-    .index("by_environment", ["environment", "createdAt"]),
+    .index("by_session", ["sessionId"]),
 
   // A decision a hosted worker raised to the orchestrator: the question and
   // its two sides, never a recommendation. The orchestrator judges its kind

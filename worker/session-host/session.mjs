@@ -47,7 +47,6 @@ import {
   COMPACT_ENDED_REASON,
   hostedIdleVerdict,
   hostedTurnEnd,
-  isHosted,
   runEnvelope,
 } from "./hosted.mjs";
 import { claimRegistration, writeRegistration } from "../runs/registration.mjs";
@@ -459,7 +458,7 @@ export class Session {
     // "orchestrator" or "worker" when the server says the daemon HOSTS this
     // row (hosted.mjs): an unattended run kept alive across turns so a message
     // can reach it mid-run. Absent for every other session.
-    this.environment = isHosted(environment) ? environment : undefined;
+    this.environment = environment ?? undefined;
     this.hosted = this.environment !== undefined;
     // When a hosted run's last turn ended (hostedIdleVerdict reads it), and
     // the text of the newest top-level assistant row — the Codex runner's
@@ -1565,6 +1564,9 @@ export class Session {
             }
             this.idleSince = Date.now();
             this.setStatus("idle");
+            // A same-family model change that arrived mid-turn applies here,
+            // as it does for an interactive session below.
+            if (this.modelSwitchPending) this.#retireQuery(`model changed to ${this.model}`);
             this.requestFlush(true);
             this.processCommands();
             break;
@@ -1909,7 +1911,7 @@ export class Session {
       environment: this.environment,
       pendingTurn: this.serverInbound.some((r) => r.kind === "user-turn" && !this.processedInbound.has(r._id)),
       outcomeRecorded: row.outcomeRecorded === true,
-      openElevations: typeof row.openElevations === "number" ? row.openElevations : 0,
+      openElevations: row.openElevations,
       idleSince: this.idleSince,
       polledAt: row.polledAt,
       now: Date.now(),

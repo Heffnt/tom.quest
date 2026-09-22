@@ -17,9 +17,6 @@ export const DELEGATE_MAX_PER_JOB = 3;
 // A runner's cap is keyed on the RUNNER, not the step: a step lives ten
 // minutes, so a per-step cap is no cap at all.
 export const DELEGATE_MAX_PER_RUNNER = 5;
-// An elevation is ONE question, so its cap is the one ask and one retry after
-// a failure; a third ask is the orchestrator shopping for an answer.
-export const DELEGATE_MAX_PER_ELEVATION = 2;
 export const DIGEST_OBJECTION_LOOKBACK = 14;
 
 export type ObjectionFact = {
@@ -123,7 +120,8 @@ function sameCaller(data: unknown, args: { sessionId?: string; job?: string; run
 function capFor(args: { sessionId?: string; runnerId?: string; elevationId?: string }): number {
   if (args.sessionId !== undefined) return DELEGATE_MAX_PER_SESSION;
   if (args.runnerId !== undefined) return DELEGATE_MAX_PER_RUNNER;
-  if (args.elevationId !== undefined) return DELEGATE_MAX_PER_ELEVATION;
+  // An elevation is one more caller kind and is held to the job's cap: the
+  // count needs a caller key, and a new number would be one more to keep.
   return DELEGATE_MAX_PER_JOB;
 }
 

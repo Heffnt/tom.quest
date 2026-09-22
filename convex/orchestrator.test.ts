@@ -240,6 +240,8 @@ describe("elevations", () => {
     expect(res.body.status).toBe("answered");
     expect((await pendingTexts(t, worker)).some((m) => m.includes("(obvious; the orchestrator's): Leave it"))).toBe(true);
     expect((await poll(t, { hosts: HOSTS })).sessions.find((s) => s.id === worker)?.openElevations).toBe(0);
+    // A question longer than the delegate takes could never reach it.
+    expect((await pen(t, "/tts/elevate", { sessionId: worker, question: "x".repeat(401), sides: ["a", "b"] })).status).toBe(409);
     // A second answer to the same question is refused.
     expect((await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId, kind: "obvious", answer: "again" })).status).toBe(409);
   });

@@ -83,6 +83,7 @@ describe("listedCodexModels", () => {
       ],
     });
     expect(listedCodexModels(catalog)).toEqual(["gpt-6-astra", "gpt-5.6-sol"]);
+    expect(listedCodexModels(JSON.stringify({ models: [{ slug: "gpt-5.5" }] }))).toEqual([]);
     expect(() => listedCodexModels("{}")).toThrow(/no model list/);
   });
 });

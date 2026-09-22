@@ -11,6 +11,15 @@ import { describe, expect, it } from "vitest";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sessionSource = fs.readFileSync(path.join(here, "..", "session.mjs"), "utf8");
 
+describe("hosted turn end", () => {
+  it("applies a same-family model change at the turn boundary, as an interactive session does", () => {
+    const start = sessionSource.indexOf("if (this.hosted && !this.stopRequested && !this.dead) {");
+    expect(start).toBeGreaterThan(-1);
+    const branch = sessionSource.slice(start, sessionSource.indexOf("if (this.mode === \"autonomous\" && !this.stopRequested", start));
+    expect(branch).toContain("if (this.modelSwitchPending) this.#retireQuery(");
+  });
+});
+
 describe("session envelope environment", () => {
   it("takes its names from the session's mode and hosted environment", () => {
     const start = sessionSource.indexOf('writer: { file: "worker/session-host/session.mjs", job: "session-host" }');

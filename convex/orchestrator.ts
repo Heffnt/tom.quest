@@ -36,6 +36,7 @@ import {
   DAEMON_RESTART_SENTENCE,
   DEFAULT_SESSION_MODEL,
   HOSTED_WORKERS_MAX,
+  LIVE_STATUSES,
   NARROW_LIST,
   ORCHESTRATOR_COMPACT_WORD,
   channelFor,
@@ -64,11 +65,9 @@ export const ORCHESTRATOR_CRASH_BACKOFF_CAP_MS = 60 * 60_000;
 export const ORCHESTRATOR_CRASHES_REPORTED = 3;
 const DOCUMENT_MAX_CHARS = 200_000;
 const MESSAGE_MAX_CHARS = 20_000;
-const QUESTION_MAX_CHARS = 600;
-const SIDE_MAX_CHARS = 600;
-/** How far back the live-worker count looks. A hosted worker lives hours;
- * the scan is bounded by the table's newest rows, not by a guess at a date. */
-const HOSTED_SCAN = 200;
+/** The delegate's own question limit (POST /tts/ask): a trade-off goes to the
+ * delegate word for word, so an elevation's question is held to it. */
+const QUESTION_MAX_CHARS = 400;
 
 export const INITIAL_DOCUMENT = [
   "# The orchestrator's document",
@@ -160,19 +159,22 @@ async function requireHostedWorker(ctx: MutationCtx, sessionId: string) {
   return { hosted, session };
 }
 
-/** The hosted workers whose sessions are live, newest first. */
+/** The hosted workers whose sessions are live, newest first. Read from the
+ * live sessions, which are few by design, so no live worker is ever outside
+ * the read. */
 async function liveHostedWorkers(ctx: QueryCtx) {
-  const rows = await ctx.db
-    .query("hostedRuns")
-    .withIndex("by_environment", (q) => q.eq("environment", "worker"))
-    .order("desc")
-    .take(HOSTED_SCAN);
   const live: { hosted: Doc<"hostedRuns">; session: Doc<"claudeSessions"> }[] = [];
-  for (const hosted of rows) {
-    const session = await ctx.db.get(hosted.sessionId);
-    if (session && isLive(session.status)) live.push({ hosted, session });
+  for (const status of LIVE_STATUSES) {
+    const sessions = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_status", (q) => q.eq("status", status))
+      .collect();
+    for (const session of sessions) {
+      const hosted = await hostedRunOf(ctx, session._id);
+      if (hosted?.environment === "worker") live.push({ hosted, session });
+    }
   }
-  return live;
+  return live.sort((a, b) => b.session.createdAt - a.session.createdAt);
 }
 
 async function unansweredElevations(ctx: QueryCtx) {
@@ -620,8 +622,8 @@ export const internalElevate = internalMutation({
     const question = args.question.trim();
     const sides = args.sides.map((side) => side.trim());
     if (question === "" || question.length > QUESTION_MAX_CHARS) throw new Error(`refused: the question is 1 to ${QUESTION_MAX_CHARS} characters`);
-    if (sides.length !== 2 || sides.some((side) => side === "" || side.length > SIDE_MAX_CHARS)) {
-      throw new Error(`refused: give exactly two sides, each 1 to ${SIDE_MAX_CHARS} characters, and no recommendation`);
+    if (sides.length !== 2 || sides.some((side) => side === "")) {
+      throw new Error("refused: give exactly two sides and no recommendation");
     }
     let todoId: Id<"dtsTodos"> | undefined;
     if (args.todoId !== undefined) {

@@ -39,7 +39,6 @@ export const DELEGATE_MODEL = "claude-fable-5"; // ttsShared SESSION_MODELS.fabl
 export const DELEGATE_MAX_PER_SESSION = 5;
 export const DELEGATE_MAX_PER_JOB = 3;
 export const DELEGATE_MAX_PER_RUNNER = 5;
-export const DELEGATE_MAX_PER_ELEVATION = 2; // convex/ttsAsk.ts, the same cap
 
 const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
 const PRELUDE_SCRIPT = process.env.TTS_PRELUDE_SCRIPT || "/opt/tts/scripts/prelude.mjs";
@@ -272,9 +271,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
     ? (state.delegate?.maxPerSession ?? DELEGATE_MAX_PER_SESSION)
     : ask.runnerId
       ? (state.delegate?.maxPerRunner ?? DELEGATE_MAX_PER_RUNNER)
-      : ask.elevationId
-        ? (state.delegate?.maxPerElevation ?? DELEGATE_MAX_PER_ELEVATION)
-        : (state.delegate?.maxPerJob ?? DELEGATE_MAX_PER_JOB);
+      : (state.delegate?.maxPerJob ?? DELEGATE_MAX_PER_JOB);
 
   // The caller's prior context, read BEFORE the ask: how many it has spent,
   // and every objection Tom has already made on this item. Those objections go
