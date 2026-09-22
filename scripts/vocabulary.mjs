@@ -816,7 +816,7 @@ function parseSkillShapes(skillsText) {
 }
 
 /**
- * The published set: the three fixed skills, one per area page in the checkout,
+ * The published set: the four fixed skills, one per area page in the checkout,
  * and one per repository. The BODIES are not read — this register says what the
  * set is and where each description comes from, and `scripts/publish-skills.mjs`
  * is what turns that into directories.
@@ -824,6 +824,7 @@ function parseSkillShapes(skillsText) {
 function buildSkillRows(wikitom, repos) {
   const skills = [
     { name: "write", group: "write", shape: "write", descriptionSource: "model-of-tom/writing.md headings", sourcePaths: ["model-of-tom/writing.md"] },
+    { name: "explainer", group: "write", shape: "explainer", descriptionSource: "scripts/skills.mjs:SKILL_SHAPES.explainer.base", sourcePaths: ["model-of-tom/explainers.md"] },
     { name: "know-intent", group: "know", shape: "intent", descriptionSource: "model-of-tom/intent.md headings", sourcePaths: ["model-of-tom/intent.md", "model-of-tom/priorities.md"] },
     { name: "know-week", group: "know", shape: "week", descriptionSource: "scripts/skills.mjs:SKILL_SHAPES.week.base", sourcePaths: ["model-of-tom/schedule.md"] },
   ];

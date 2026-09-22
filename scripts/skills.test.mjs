@@ -66,6 +66,7 @@ function fixturePages(extra = []) {
     { path: "model-of-tom/agent-rules.md", body: AGENT_RULES },
     { path: "model-of-tom/writing.md", body: "# Writing\n\n## Registers\n\nPlain.\n\n## Form\n\nShort.\n" },
     { path: "model-of-tom/ground.md", body: "# Ground\n\nWhat he already knows.\n" },
+    { path: "model-of-tom/explainers.md", body: "# Explainers\n\nOne HTML document per explainer.\n" },
     { path: "model-of-tom/intent.md", body: "# Intent\n\n## Directions\n\nGo.\n\n## What to protect\n\nSleep.\n" },
     { path: "model-of-tom/priorities.md", body: "# Priorities\n\nResearch first.\n" },
     { path: "model-of-tom/schedule.md", body: "# Schedule\n\nTuesday is practice.\n" },
@@ -104,6 +105,7 @@ function build(overrides = {}) {
 
 const EXPECTED = Object.freeze([
   ["write", "write"],
+  ["explainer", "write"],
   ["know-intent", "know"],
   ["know-week", "know"],
   ["know-admin", "know"],
@@ -129,7 +131,7 @@ const HAS_VAULT = fs.existsSync(path.join(WIKITOM_DIR, "model-of-tom", "agent-ru
 
 function vaultPages() {
   const root = path.join(WIKITOM_DIR, "model-of-tom");
-  const fixed = ["agent-rules.md", "writing.md", "ground.md", "intent.md", "priorities.md", "schedule.md"]
+  const fixed = ["agent-rules.md", "writing.md", "ground.md", "explainers.md", "intent.md", "priorities.md", "schedule.md"]
     .filter((name) => fs.existsSync(path.join(root, name)))
     .map((name) => ({ path: `model-of-tom/${name}`, body: fs.readFileSync(path.join(root, name), "utf8") }));
   const areas = fs
@@ -141,7 +143,7 @@ function vaultPages() {
 }
 
 describe("skills: the set", () => {
-  it("expands to exactly the 14 skills, in order, with their groups", () => {
+  it("expands to exactly the 15 skills, in order, with their groups", () => {
     const { skills, refused } = build();
     expect(refused).toEqual([]);
     expect(skills.map((skill) => [skill.name, skill.group])).toEqual(EXPECTED.map((row) => [...row]));
@@ -228,6 +230,21 @@ describe("skills: refusals", () => {
     expect(refused).toEqual([{ name: "know-week", why: "model-of-tom/schedule.md is blank at this commit" }]);
   });
 
+  it("refuses the explainer skill while its page is absent, and publishes it once the page lands", () => {
+    const pages = fixturePages().filter((page) => page.path !== "model-of-tom/explainers.md");
+    const before = build({ pages });
+    expect(before.skills.map((skill) => skill.name)).not.toContain("explainer");
+    expect(before.refused).toEqual([{ name: "explainer", why: "model-of-tom/explainers.md is absent at this commit" }]);
+
+    const explainer = build().skills.find((skill) => skill.name === "explainer");
+    expect(explainer.group).toBe("write");
+    expect(explainer.description).toBe(
+      "Load before writing an HTML explainer for Tom — of a plan, a change, a ruling, or a component of code.",
+    );
+    expect(explainer.body).toBe("# Explainers\n\nOne HTML document per explainer.");
+    expect(explainer.sourcePaths).toEqual(["model-of-tom/explainers.md"]);
+  });
+
   it("refuses a repo whole when it has no root AGENTS.md", () => {
     const repos = [{ repo: "WikiTom", files: [{ path: "tts/AGENTS.md", body: "nested only" }] }];
     const { skills, refused } = build({ repos });
@@ -282,7 +299,12 @@ describe("skills: descriptions", () => {
       bullet.names.map((name) => ({ repo: name, files: [{ path: "AGENTS.md", body: "# rules\n" }] })),
     );
     const { skills, refused } = buildSkills({ commit: COMMIT, pages, repos });
-    expect(refused).toEqual([]);
+    // explainers.md is optional until a WikiTom run lands it; before then its
+    // refusal is the only one the real vault may produce.
+    const explainersLanded = pages.some((page) => page.path === "model-of-tom/explainers.md");
+    expect(refused).toEqual(
+      explainersLanded ? [] : [{ name: "explainer", why: "model-of-tom/explainers.md is absent at this commit" }],
+    );
     expect(skills.length).toBeGreaterThanOrEqual(14);
     for (const skill of skills) {
       expect(byteLength(skill.description), `${skill.name}: ${skill.description}`).toBeLessThanOrEqual(
