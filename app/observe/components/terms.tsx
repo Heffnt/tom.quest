@@ -110,5 +110,10 @@ function canonical(word: string): string {
     const hit = VOCABULARY_TERMS.find((term) => term.toLowerCase() === singular);
     if (hit !== undefined) return hit;
   }
+  // The word the page found, where the vocabulary's own spelling of it cannot
+  // be recovered. The pattern above is built from VOCABULARY_TERMS, so this is
+  // a plural English spells some way the three rules here do not; the drawer
+  // then answers about the word as written, which is a definition it may not
+  // find rather than a word it asks the wrong question about.
   return word;
 }

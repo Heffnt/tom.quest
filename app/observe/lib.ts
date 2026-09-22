@@ -434,6 +434,9 @@ export function packRows<T>(
 /** Where a time sits across the window, as a fraction from 0 to 1. */
 export function fractionOf(at: number, win: { from: number; to: number }): number {
   const span = win.to - win.from;
+  // A window of no width cannot come from windowBounds, and this is what keeps
+  // one that did from dividing by zero: every mark would be placed at NaN,
+  // which draws nothing at all, so the page would go blank rather than wrong.
   if (span <= 0) return 0;
   return Math.min(1, Math.max(0, (at - win.from) / span));
 }
@@ -450,6 +453,10 @@ export type Point = { x: number; y: number };
 export function borderPoint(centre: Point, halfWidth: number, halfHeight: number, towards: Point): Point {
   const dx = towards.x - centre.x;
   const dy = towards.y - centre.y;
+  // Two nodes on the same centre have no direction between them. The layout
+  // gives every node its own place, so this answers a layout someone has just
+  // edited: the edge collapses to a point instead of taking the whole drawing
+  // down with an infinity.
   if (dx === 0 && dy === 0) return centre;
   const tx = dx === 0 ? Number.POSITIVE_INFINITY : halfWidth / Math.abs(dx);
   const ty = dy === 0 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy);
@@ -471,6 +478,8 @@ export function arrowHead(from: Point, tip: Point, length = 9, halfBase = 4.5): 
   const dx = tip.x - from.x;
   const dy = tip.y - from.y;
   const len = Math.hypot(dx, dy);
+  // As in borderPoint: an edge of no length has no direction to point along,
+  // and dividing by it would put NaN in the polygon, which SVG drops silently.
   if (len === 0) return `${tip.x},${tip.y}`;
   const ux = dx / len;
   const uy = dy / len;
@@ -487,6 +496,7 @@ export function shortened(from: Point, tip: Point, by: number): Point {
   const dx = tip.x - from.x;
   const dy = tip.y - from.y;
   const len = Math.hypot(dx, dy);
+  // As in borderPoint: nothing to shorten along, and the alternative is NaN.
   if (len === 0) return tip;
   return { x: tip.x - (dx / len) * by, y: tip.y - (dy / len) * by };
 }

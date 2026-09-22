@@ -80,9 +80,14 @@ export type MapNode = {
   // which would be a second way to spell the same fact.
 };
 
+/** A node's name. The edges below are typed on it, so an edge naming a node
+ *  the map does not hold is a compile error rather than a drawing that throws
+ *  when someone opens the page. */
+export type NodeId = (typeof NODES)[number]["id"];
+
 type MapEdge = {
-  from: string;
-  to: string;
+  from: NodeId;
+  to: NodeId;
   /** Both ends carry an arrowhead: the two components feed each other. */
   both?: boolean;
 };
@@ -97,7 +102,7 @@ const ROW_MID = 170;
 const ROW_LOW = 280;
 const ROW_FLOOR = 385;
 
-export const NODES: MapNode[] = [
+export const NODES = [
   // Tom.
   { id: "tom", label: "Tom", unit: "rulings", x: 80, y: ROW_MID, shape: "person", tally: { of: "lane", lane: "rulings" }, filters: "rulings" },
 
@@ -120,7 +125,7 @@ export const NODES: MapNode[] = [
   { id: "models", label: "the models", unit: "models", x: 625, y: ROW_FLOOR, shape: "outside", tally: { of: "models" }, opens: "/turing" },
   { id: "turing", label: "Turing", unit: "runners", x: 810, y: ROW_FLOOR, shape: "machine", tally: { of: "turing" }, opens: "/turing" },
   { id: "github", label: "GitHub", unit: "merges", x: 995, y: ROW_FLOOR, shape: "outside", tally: { of: "lane", lane: "merges" }, filters: "merges" },
-];
+] as const satisfies readonly MapNode[];
 
 export const EDGES: MapEdge[] = [
   { from: "tom", to: "sessions", both: true },

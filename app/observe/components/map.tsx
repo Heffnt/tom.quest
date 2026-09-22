@@ -30,6 +30,7 @@ import {
   nodeAction,
   type Lane,
   type MapNode,
+  type NodeId,
   type Shape,
 } from "../map-data";
 import { ago, arrowHead, borderPoint, shortened, tallyFor, type WindowData } from "../lib";
@@ -42,10 +43,11 @@ const CHAMFER = 12;
 
 const BY_ID = new Map(NODES.map((node) => [node.id, node]));
 
-function at(id: string): MapNode {
-  const node = BY_ID.get(id);
-  if (node === undefined) throw new Error(`the map has no node ${id}`);
-  return node;
+/** A node by name. Every caller names one of the map's own node ids, which the
+ *  NodeId type makes the compiler check, so there is no missing-node case to
+ *  answer for here. */
+function at(id: NodeId): MapNode {
+  return BY_ID.get(id) as MapNode;
 }
 
 /** The stroke, the fill and the dashes each kind of thing is drawn with. */
