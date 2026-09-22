@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import {
   composeTodayFitted,
   countWord,
+  itemUrl,
   renderSlack,
   todayFactsBlock,
   type BatchOutcome,
@@ -888,6 +889,17 @@ function printedObjectionNumber(text: string): number | null {
  * The list therefore says what he could SEE, which is the only thing a reply
  * of "revert 2" can honestly be resolved against.
  */
+/** The needs-you-today items the fitted message printed, by their links. */
+function printedNeedsYouIds(
+  message: { lines: { role: string; section?: string; url?: string }[] },
+  facts: TodayFacts,
+): string[] {
+  const printed = new Set(
+    message.lines.filter((line) => line.role === "item" && line.section === "needs-you-today").map((line) => line.url),
+  );
+  return facts.needsYou.filter((n) => printed.has(itemUrl(n.todoId))).map((n) => n.todoId);
+}
+
 function printedObjectionAskIds(
   message: { lines: { role: string; section?: string; text: string }[] },
   facts: TodayFacts,
@@ -934,8 +946,9 @@ export const internalComposeToday = internalQuery({
       truncated,
       since,
       // Every todo the message showed, for the "surfaced" instrumentation:
-      // the today run and the needs-you-today run, each id once.
-      surfacedTodoIds: [...new Set([...facts.today.map((item) => item.id), ...facts.needsYou.map((n) => n.todoId)])]
+      // the today run and, read off the FITTED message as the objection
+      // numbers are, the needs-you-today items actually printed; each id once.
+      surfacedTodoIds: [...new Set([...facts.today.map((item) => item.id), ...printedNeedsYouIds(message, facts)])]
         .map((id) => ctx.db.normalizeId("dtsTodos", id))
         .filter((id): id is Id<"dtsTodos"> => id !== null),
       // The decisions the objection list carried, in PRINTED order: a reply of

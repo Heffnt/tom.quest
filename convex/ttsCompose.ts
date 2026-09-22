@@ -708,7 +708,7 @@ export function runnersLead(n: number, waiting: number): string {
 }
 
 /** One needs-you-today item: the todo's statement, then the triage's reason
- *  when it gave one. The reason is what gives when the line is too long. */
+ *  when it gave one, then its lateness when it is dated. */
 function needsYouTodayLine(n: NeedsYouTodayFact): string {
   const late = n.countdown ? ` ${stripStop(n.countdown)}.` : "";
   const why = lowerFirst(stripStop(n.why));
@@ -929,9 +929,8 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   //    needs-you thread for these (Tom, 2026-09-21: workers "should not reach
   //    me at all directly"), so this run is where he hears of them, and a
   //    reply naming the item reaches it as every digest reply does.
-  //    Every item, uncapped: each is a thing only he can settle, and the
-  //    whole-message fit, which reduces this run after the four below it, is
-  //    the only bound.
+  //    Every item, uncapped: each is a thing only he can settle, and `fit`
+  //    never reduces this run (PROTECTED_RUN).
   pushRun(
     lines,
     "needs-you-today",
