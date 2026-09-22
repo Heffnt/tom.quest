@@ -3,7 +3,11 @@
 // THE OBSERVATION PAGE. Everything happening in Jarvis and everything that
 // happened, in one window of time: the map of the components with what each one
 // did in that window, the timeline of every run and every point, the rulings
-// and the changes, and the runners.
+// and the changes.
+//
+// THIS PAGE ONLY OBSERVES. The one thing it writes is a ruling — Approve on a
+// change, object on a ruling — so no panel that starts work belongs on it, and
+// no text the record did not write is rendered here.
 //
 // THE MAP IS NOT FILTERED. Its numbers are what the window holds, so they stay
 // put while the controls below narrow what the timeline draws — a count that
@@ -16,7 +20,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
-import RunnersBlock from "@/app/tts/components/runners-block";
 import ChangesList from "./components/changes-list";
 import DefinitionDrawer from "./components/definition-drawer";
 import Map from "./components/map";
@@ -179,12 +182,8 @@ export default function ObserveClient() {
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <RulingsList rulings={rows.rulings} events={rows.events} isTom={isTom} />
+            <RulingsList rulings={rows.rulings} events={rows.events} />
             <ChangesList events={rows.events} runs={rows.runs} now={now} />
-          </div>
-
-          <div className="mt-4">
-            <RunnersBlock now={now} />
           </div>
         </div>
         <DefinitionDrawer term={defining} onClose={() => setDefining(null)} />
