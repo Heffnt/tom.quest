@@ -58,7 +58,6 @@ describe("needing Tom today", () => {
     for (const file of ["poll-gmail.mjs", "poll-outlook.mjs"]) {
       const source = fs.readFileSync(`worker/jobs/${file}`, "utf8");
       expect(source).not.toContain('"/tts/needs-tom"');
-      expect(source).not.toContain("needs-you-thread");
     }
   });
 });

@@ -832,6 +832,15 @@ describe("composeHourly", () => {
     expect(message!.firstLine).not.toContain("because");
   });
 
+  it("always says a capture needs him today, the hour's other clauses giving way when even the count will not fit", () => {
+    const title = "A".repeat(150);
+    const running = [{ sessionId: "k97a", title, kind: "worker", mode: "autonomous", status: "running", statement: "Plan it", batchId: null, elapsedMs: 3_600_000 }];
+    const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abc", text: "Pay the invoice", needsYouToday: "it is due" };
+    const line = composeHourly(hourly({ running, changes: [capture] }))!.firstLine;
+    expect(line).toBe("1 item was captured, and one of the captures needs you today.");
+    expect(line).not.toContain(title);
+  });
+
   it("is one sentence with a link inside it for a busy hour", () => {
     const message = composeHourly(
       hourly({

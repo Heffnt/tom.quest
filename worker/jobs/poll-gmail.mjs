@@ -270,7 +270,6 @@ async function main() {
   const untriaged = new Set(unresolved);
 
   let captured = 0;
-  let needsTom = 0;
   let processed = 0;
   for (const message of batch) {
     // THE CURSOR NEVER PASSES AN UNTRIAGED MAIL. Everything after it waits for
@@ -281,10 +280,8 @@ async function main() {
     if (verdict.capture) {
       const result = await convexFetch(env, "/tts/capture", captureBody(message.id, verdict));
       captured++;
-      if (verdict.needsTomToday) needsTom++;
       console.log(
-        `[poll-gmail] captured id=${result.id ?? "?"} "${verdict.statement.slice(0, 70)}"` +
-          (verdict.needsTomToday ? ` (needs Tom today: ${verdict.why || "no reason given"})` : ""),
+        `[poll-gmail] captured id=${result.id ?? "?"} "${verdict.statement.slice(0, 70)}"`,
       );
     }
     // Advance after EVERY processed message (captured or skipped), so a crash
@@ -293,8 +290,7 @@ async function main() {
     processed++;
   }
   console.log(
-    `[poll-gmail] processed ${processed} of ${batch.length}, captured ${captured}, ` +
-      `${needsTom} judged to need Tom today` +
+    `[poll-gmail] processed ${processed} of ${batch.length}, captured ${captured}` +
       (unresolved.length > 0
         ? `, held at ${unresolved.length} untriaged (reported to TTS)`
         : "") +

@@ -85,7 +85,6 @@ export const SECTION_ORDER = ["today", "objections", "needs-you-today", "runners
 export const SECTION_CAPS = {
   today: 12,
   objections: 12,
-  "needs-you-today": 8,
   runners: 6,
   calendar: 12,
   overnight: 6,
@@ -894,15 +893,16 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   //    needs-you thread for these (Tom, 2026-09-21: workers "should not reach
   //    me at all directly"), so this run is where he hears of them, and a
   //    reply naming the item reaches it as every digest reply does.
-  if (f.needsYou.length > 0) {
-    pushRun(
-      lines,
-      "needs-you-today",
-      needsYouTodayLead(f.needsYou.length),
-      f.needsYou.map((n) => ({ text: needsYouTodayLine(n), url: itemUrl(n.todoId) })),
-      SECTION_CAPS["needs-you-today"],
-    );
-  }
+  //    Every item, uncapped: each is a thing only he can settle, and the
+  //    whole-message fit, which reduces this run after the four below it, is
+  //    the only bound.
+  pushRun(
+    lines,
+    "needs-you-today",
+    needsYouTodayLead(f.needsYou.length),
+    f.needsYou.map((n) => ({ text: needsYouTodayLine(n), url: itemUrl(n.todoId) })),
+    f.needsYou.length,
+  );
 
   // 4. The box's live runners, one line each, the ones waiting on him first
   //    (the gatherer's order). Nothing when no runner is live. No reply
@@ -1070,17 +1070,28 @@ export function composeHourly(f: HourlyFacts): Message | null {
     clauses.push(clauses.length === 0 ? capitalise(clause) : clause);
   }
   const changed = changeClauses(f.changes);
-  if (changed.length > 0) clauses.push(joinClauses(changed));
-  else if (clauses.length > 0) clauses.push("nothing else changed");
+  const tail = changed.length > 0 ? joinClauses(changed) : clauses.length > 0 ? "nothing else changed" : null;
   const since = f.sinceLabel ? ` since ${f.sinceLabel}` : "";
-  const line = (extra: string[]) => `${joinWithAnd([...clauses, ...extra])}${since}.`;
-  // A capture the triage judged to need him today is named: no worker raises
-  // it with him directly (Tom, 2026-09-21), so this line and the morning
-  // message are where he hears of it. The clause is tried from most to least
-  // detail and the first that keeps the line under its cap is taken; when
-  // none fits, the morning message still carries the item.
-  const fitted = needsYouClauses(f.changes).find((clause) => line([clause]).length <= FIRST_LINE_CHARS);
-  return { firstLine: line(fitted === undefined ? [] : [fitted]), lines: [] };
+  const line = (parts: string[]) => {
+    const [first, ...rest] = parts;
+    return `${joinWithAnd([capitalise(first), ...rest])}${since}.`;
+  };
+  const withTail = tail === null ? clauses : [...clauses, tail];
+  // A capture the triage judged to need him today is ALWAYS said: no worker
+  // raises it with him directly (Tom, 2026-09-21), so this line and the
+  // morning message are where he hears of it. The clause is tried from most
+  // to least detail; when even its count will not fit, the hour's other
+  // clauses (what ran, what moved, the runners) give way to it, and the
+  // counts of what changed stay beside it.
+  const needs = needsYouClauses(f.changes);
+  if (needs.length === 0) return { firstLine: line(withTail), lines: [] };
+  const fitted = needs.find((clause) => line([...withTail, clause]).length <= FIRST_LINE_CHARS);
+  return {
+    firstLine: fitted !== undefined
+      ? line([...withTail, fitted])
+      : line([...(tail === null ? [] : [tail]), needs[needs.length - 1]]),
+    lines: [],
+  };
 }
 
 /** One runner check-in, as the numbers the box read and the words the step
