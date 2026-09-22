@@ -1,7 +1,9 @@
 "use client";
 
-// CHANGES for the window. A row is one merge, and what it shows at rest is the
-// merge's own sentence — the pull request's title, which by this repository's
+// CHANGES: first the ones that are waiting, every open pull request, then the
+// merges of the window. A waiting row shows the pull request's title, its
+// branch, the gate's three rows as they stand and one control, Approve. A
+// merge row shows the merge's own sentence — the pull request's title, which by this repository's
 // commit rule states the world after the change rather than what was done to
 // the code. Every vocabulary word in it opens its definition.
 //
@@ -16,11 +18,18 @@
 // pull request body, and no other table holds one, so the written account of a
 // change is the audit's — the audit read the diff and wrote about it, and
 // convex/ttsMerge.ts keeps that text on the head row.
+//
+// APPROVE. convex/observe.ts approveChange records Tom's ruling approving the
+// change; convex/observeMerge.ts merges an approved waiting change once its
+// gate is green. A change that already carries a ruling shows the ruled word
+// in place of the control. On a merge row the control is quieter and records
+// the ruling only, since the change has already landed.
 
 import { useState } from "react";
 import Link from "next/link";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import Info from "@/app/tts/components/info";
 import Terms from "./terms";
 import {
   dayAndClock,
@@ -62,6 +71,7 @@ export default function ChangesList({
   return (
     <section className="space-y-1.5">
       <h2 className="text-[13px] font-semibold text-text-muted">changes</h2>
+      <Waiting />
       <div className="flex flex-col gap-1.5">
         {merges.map((row) => {
           const gate = row.commitKey === null ? undefined : byKey.get(row.commitKey);
@@ -80,6 +90,15 @@ export default function ChangesList({
                   {dayAndClock(row.at)}
                 </span>
               </button>
+              {gate !== undefined && row.repo !== null && row.sha !== null && (
+                <div className="flex justify-end px-2.5 pb-1.5">
+                  <ApproveControl
+                    ruled={gate.ruled}
+                    quiet
+                    target={{ repo: row.repo, sha: row.sha }}
+                  />
+                </div>
+              )}
               {showing && (
                 <div className="space-y-2 border-t border-border px-2.5 py-2">
                   <Terms
@@ -146,6 +165,133 @@ export default function ChangesList({
         })}
       </div>
     </section>
+  );
+}
+
+type Target = { repo: string; number?: number; sha?: string };
+
+/** The changes that are waiting: every open pull request the record mirrors. */
+function Waiting() {
+  const waiting = useQuery(api.observe.changesWaiting, {});
+  const [open, setOpen] = useState<string | null>(null);
+  if (waiting === undefined || waiting.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      {waiting.map((row) => {
+        const showing = open === row.id;
+        return (
+          <div key={row.id} className="rounded-md border border-border bg-surface/50">
+            <div className="flex items-start gap-2 px-2.5 py-1.5">
+              <button
+                type="button"
+                aria-expanded={showing}
+                onClick={() => setOpen(showing ? null : row.id)}
+                className="-mx-1 min-w-0 flex-1 rounded px-1 text-left hover:bg-surface-alt/60"
+              >
+                <span className="block text-[13px] text-text">{row.title}</span>
+                <span className="mt-0.5 flex flex-wrap items-baseline gap-x-2 font-mono text-[10px]">
+                  <span className="text-text-muted">
+                    {row.branch}
+                    {row.draft ? " · draft" : ""}
+                  </span>
+                  {row.checks.map((check) => (
+                    <span key={check.name} className={check.passed ? "text-success" : "text-error"}>
+                      {check.name}
+                    </span>
+                  ))}
+                </span>
+              </button>
+              <ApproveControl ruled={row.ruled} quiet={false} target={{ repo: row.repo, number: row.number }} />
+            </div>
+            {row.ruled === "approve" && (
+              <div className="px-2.5 pb-1.5 text-[11px] text-text-muted">
+                {row.lastAttempt !== null && !row.lastAttempt.ok ? (
+                  <>
+                    <p>approved, waiting for a merge</p>
+                    <Terms text={row.lastAttempt.why} className="block text-text-faint" />
+                  </>
+                ) : row.allowed ? (
+                  <p>approved, merging</p>
+                ) : (
+                  <p>approved, lands when the gate is green</p>
+                )}
+              </div>
+            )}
+            {showing && (
+              <div className="space-y-2 border-t border-border px-2.5 py-2">
+                <Terms text={row.title} className="block text-[13px] leading-snug text-text" />
+                <p className="font-mono text-[11px] text-text-muted">
+                  #{row.number} · {row.branch} · {row.repo}@{row.headSha.slice(0, 7)}
+                </p>
+                <div className="space-y-1">
+                  {row.checks.map((check) => (
+                    <Opens key={check.name} head={check.name} tone={check.passed ? "pass" : "fail"}>
+                      <Terms text={check.why} className="block text-[11px] text-text-muted" />
+                    </Opens>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Approve, or the word already ruled. The mutation is idempotent on the
+ * server; `pending` only stops a double press from sending two requests.
+ */
+function ApproveControl({
+  ruled,
+  quiet,
+  target,
+}: {
+  ruled: string | null;
+  quiet: boolean;
+  target: Target;
+}) {
+  const approve = useMutation(api.observe.approveChange);
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (ruled !== null) {
+    return <span className="shrink-0 text-[11px] font-mono text-accent">{ruled}</span>;
+  }
+  return (
+    <span className="flex shrink-0 items-baseline gap-1">
+      {failed !== null && <span className="text-[10px] text-error">{failed}</span>}
+      <button
+        type="button"
+        disabled={pending}
+        onClick={async () => {
+          setPending(true);
+          setFailed(null);
+          try {
+            await approve(target);
+          } catch (error) {
+            setFailed(error instanceof Error ? error.message : String(error));
+          } finally {
+            setPending(false);
+          }
+        }}
+        className={
+          quiet
+            ? "rounded px-1.5 py-0.5 text-[11px] text-text-faint hover:bg-surface-alt hover:text-text disabled:opacity-50"
+            : "rounded border border-border px-2 py-0.5 text-[11px] text-text hover:border-text-faint hover:bg-surface-alt disabled:opacity-50"
+        }
+      >
+        Approve
+      </button>
+      <Info
+        side="below"
+        call={`observe.approveChange({ repo, ${target.number !== undefined ? "number" : "sha"} })`}
+      >
+        {quiet
+          ? "Records your ruling approving this change. It has already merged, so nothing else happens."
+          : "Records your ruling approving this change. The record merges it with a merge commit once its three gate rows are green."}
+      </Info>
+    </span>
   );
 }
 
