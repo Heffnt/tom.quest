@@ -48,11 +48,4 @@ describe("the rendered text", () => {
     fireEvent.click(getByText("ruling"));
     expect(asked).toEqual(["ruling"]);
   });
-
-  it("is plain text where the page defines nothing", () => {
-    const { container } = render(<Terms text="one ruling" />);
-    expect(container.querySelectorAll("button").length).toBe(0);
-    expect(container.textContent).toBe("one ruling");
-    void vi;
-  });
 });

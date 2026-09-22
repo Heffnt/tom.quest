@@ -17,9 +17,9 @@
 import { createContext, useContext, useMemo } from "react";
 import { VOCABULARY_TERMS } from "@/convex/ttsShared";
 
-/** Opening a definition. Null means nothing on this page defines words, which
- *  is the state a test renders in. */
-const AskContext = createContext<((term: string) => void) | null>(null);
+/** Opening a definition. The page is the only thing that renders `Terms`, and
+ *  it always provides this, so there is no second way for a word to behave. */
+const AskContext = createContext<(term: string) => void>(() => {});
 
 export function TermsProvider({
   onDefine,
@@ -59,7 +59,6 @@ const PATTERN = new RegExp(
 export default function Terms({ text, className }: { text: string; className?: string }) {
   const ask = useContext(AskContext);
   const parts = useMemo(() => split(text), [text]);
-  if (ask === null) return <span className={className}>{text}</span>;
   return (
     <span className={className}>
       {parts.map((part, index) =>
