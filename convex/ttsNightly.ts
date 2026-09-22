@@ -290,11 +290,12 @@ export const internalLearningInput = internalQuery({
       await ctx.db
         .query("dtsRulings")
         .withIndex("by_ruled", (q) => q.gte("ruledAt", since).lt("ruledAt", until))
+        // A delegate ruling is the delegate's reading of Tom, not his words:
+        // learning from it would teach the model of Tom its own guesses. Left
+        // out before the cap, so it never takes a place one of his would.
+        .filter((q) => q.neq(q.field("ruledBy"), "delegate"))
         .take(LEARNING_INPUT_MAX)
     )
-      // A delegate ruling is the delegate's reading of Tom, not his words:
-      // learning from it would teach the model of Tom its own guesses.
-      .filter((r) => r.ruledBy !== "delegate")
       .map((r) => ({
       id: r._id,
       at: r.ruledAt,

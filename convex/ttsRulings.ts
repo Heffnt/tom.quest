@@ -899,10 +899,14 @@ export function briefAwaitsRuling(
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
+    // The planner reads these as Tom's recent rulings on its todos and
+    // batches. An answer to a worker's elevation is about neither, and a
+    // delegate's answer is not his, so none is sent; left out before the cap.
     return await ctx.db
       .query("dtsRulings")
       .withIndex("by_ruled")
       .order("desc")
+      .filter((q) => q.neq(q.field("subjectType"), "elevation"))
       .take(Math.min(limit ?? 200, 1000));
   },
 });

@@ -281,6 +281,9 @@ describe("elevations", () => {
     expect(res.body.status).toBe("answered");
     const ruling = await t.run(async (ctx) => ctx.db.query("dtsRulings").withIndex("by_elevation", (q) => q.eq("elevationId", elevationId as Id<"elevations">)).unique());
     expect(ruling).toMatchObject({ subjectType: "elevation", verdict: "answer", ruledBy: "delegate", askId: "0badc0de", sentence: "Leave it; the header already links." });
+    // Never read as Tom's words: not by the planner's feed of his recent
+    // rulings, and not by the nightly learning step.
+    expect(await t.query(internal.ttsRulings.internalRecentRulings, {})).toEqual([]);
     expect((await pendingTexts(t, worker)).some((m) => m.includes("ruled by the delegate; treat it as Tom's ruling): Leave it; the header already links."))).toBe(true);
 
     // His objection reverts it, and both runs are told.
