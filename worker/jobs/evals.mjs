@@ -48,6 +48,7 @@ import {
   reportJobFailed,
   reportJobOk,
   runClaude,
+  runClaudeAsync,
   serverErrorMessage,
 } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
@@ -66,6 +67,7 @@ import { BOX_WIKITOM_DIR } from "./search-lib.mjs";
 // runs a diff lands here with no edit.
 import { AUDIT_UNAVAILABLE, auditPrompt } from "./audit.mjs";
 import { pruneStaleWorktrees, takeEvalsLock } from "./evals-lock.mjs";
+import { replayContext } from "./evals-replay.mjs";
 
 export const EVALS_RUN = "evals-run";
 export const EVALS_REQUEST = "evals-request";
@@ -187,6 +189,37 @@ export function verdictOf(item) {
 export function isConfirmed(item) {
   return item.confirmedByTom !== false;
 }
+
+/**
+ * The reason an item's ORIGINAL INPUT CANNOT BE PUT IN FRONT OF THE MODEL, or
+ * null. It is a sentence in the item's own file, written there by
+ * scripts/triage-explanation-golden.mjs out of what the session archive shows.
+ *
+ * A MARKED ITEM IS NEVER SCORED AND NEVER DELETED, and the two halves of that
+ * are equally deliberate. Never scored, because a replay that cannot reproduce
+ * the input measures the gap and not the tree — the 27 mined explanations
+ * failed identically at base and at head for exactly that reason, which made
+ * them a cost the gate paid and learned nothing from. Never deleted, because
+ * the item still records a real thing Tom ruled on, the reason it cannot be
+ * replayed is a fact about the archive rather than about the item, and two of
+ * the fifteen become replayable the day the next laptop archive lands.
+ *
+ * IT IS COUNTED SEPARATELY ON THE ROW (`unreplayable`) rather than folded into
+ * `skipped`, because those are different facts: a skip is something this run
+ * did not get to, and this is something no run can do.
+ */
+export function unreplayableReason(item) {
+  const why = item?.unreplayable;
+  return typeof why === "string" && why.trim() !== "" ? why.trim() : null;
+}
+
+/** An input the archive cannot supply at RUN TIME, though the item file carries
+ *  no mark — a box whose WikiTom worktree has no session archive, an item
+ *  imported since the last triage. runItem turns it into a skip before any
+ *  model call, the way SkillsNotAssembledError is turned into one: nothing
+ *  about the tree under test was measured, so calling it a regression would
+ *  fail a merge over a gap in the harness. */
+export class ReplayUnavailableError extends Error {}
 
 /** Every golden item in a tom.quest tree, id-ascending. THE LAYOUT IS
  *  evals/golden/ AND ONE LEVEL BELOW IT: the exporter writes its rulings items
@@ -571,21 +604,38 @@ export const JOBS = {
     opts: { maxTurns: 6 },
   },
   // The mined explanations are not a job's output — they are what an agent
-  // wrote to Tom in a session. The regeneration is the same act: the topic,
-  // its context lines, and the write and know layers, and nothing else.
+  // wrote to Tom in a session. The regeneration is the same act: the session
+  // that agent was in, up to and including Tom's request, and the write and
+  // know layers.
+  //
+  // THE SESSION IS THE INPUT, AND IT USED TO BE MISSING. This prompt carried
+  // the topic and two context lines, which is not what the original agent had
+  // by three orders of magnitude, so the regeneration answered "I don't have
+  // the context" and the judge failed it at base and at head alike — 21 of the
+  // 27 on the run at 129370b (2026-09-22). An item that scores the same however
+  // the tree under test changes is measuring nothing and gating nothing while
+  // costing a call each side. worker/jobs/evals-replay.mjs reads the session
+  // back out of WikiTom's archive; an item whose input it cannot carry whole is
+  // `unreplayable` in its own file and never reaches here.
   explanation: {
     layers: ["write", "know"],
     module: null,
-    build: (item, layers) => [
+    build: (item, layers, _mod, context) => [
       layers.text,
       ``,
-      `Write Tom a ground-up explanation of the topic below. He has not been`,
-      `given the concepts it rests on, so build them before you use them.`,
+      `Below is a working session with Tom, up to and including his request. Write`,
+      `the answer to that request: a ground-up explanation of the topic named at the`,
+      `end. He has not been given the concepts it rests on, so build them before you`,
+      `use them.`,
       ``,
       `Answer with the explanation itself and nothing else: no preamble, no`,
       `restatement of the question, no closing offer of further help.`,
       ``,
       ...item.input.contextLines,
+      ``,
+      `--- THE SESSION ---`,
+      ...context.replay(item).lines,
+      `--- END OF THE SESSION ---`,
       ``,
       `Topic: ${item.input.topic}`,
     ].join("\n"),
@@ -1154,6 +1204,11 @@ export async function runItem(item, context, io, { deterministic = null, receipt
     // merge over a gap in the harness. realIo wires one, so a real run never
     // reaches this; a test io or a caller that built its own still can.
     if (err instanceof SkillsNotAssembledError) return { ...base, judged: "skip", reason: err.message };
+    // Same posture, same reason: the prompt could not be assembled, so nothing
+    // was spent and nothing about the tree was measured.
+    if (err instanceof ReplayUnavailableError) {
+      return { ...base, judged: "skip", reason: err.message, unreplayable: true };
+    }
     return { ...base, ...runnerFailure(serverErrorMessage(err)) };
   }
   if (deterministic !== null) {
@@ -2530,6 +2585,95 @@ export async function verifierScorecard(io, env, { at, force = false } = {}) {
   };
 }
 
+// ── Cost: what a run does not have to do twice ───────────────────────────────
+
+/**
+ * How many items are in flight at once.
+ *
+ * FOUR, AND THE LIMIT IS THE BOX AND NOT THE MODEL. Each item is a CLI child
+ * process with a checkout's worth of environment behind it; the box runs the
+ * session daemon, the cron jobs and the cluster poller beside this. Four keeps
+ * the pass under the load a single Codex session already puts on it, and the
+ * measured pull-request runs — 70 to 84 calls in 20 to 31 minutes, one at a
+ * time (2026-09-22) — become roughly a quarter of that wall clock.
+ *
+ * IT IS NOT A REASON TO ASK FOR MORE ITEMS. The whole point of the two
+ * shortcuts below is that a run scores the items its diff can move; this is
+ * what makes the ones it does score take less of an afternoon.
+ */
+export const ITEM_CONCURRENCY = (() => {
+  const named = Number(process.env.TTS_EVALS_CONCURRENCY);
+  return Number.isInteger(named) && named > 0 ? named : 4;
+})();
+
+/**
+ * `worker` over every entry of `list`, at most `limit` at a time, answers in
+ * the list's own order.
+ *
+ * THE ORDER IS THE POINT OF THE INDEX. A run's results, failures and scoredIds
+ * are compared with another run's, and a set that comes back in completion
+ * order would put a different sentence in `errors` and a different item first
+ * in every list depending on which model call happened to return first. So each
+ * answer is written to its own slot and nothing is pushed.
+ */
+export async function inPool(list, limit, worker) {
+  const answers = new Array(list.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.max(1, Math.min(limit, list.length)) }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= list.length) return;
+      answers[index] = await worker(list[index], index);
+    }
+  });
+  await Promise.all(lanes);
+  return answers;
+}
+
+/**
+ * The base run's own result for one item, when the head does not have to score
+ * it again — otherwise null.
+ *
+ * THREE CONDITIONS, AND EVERY ONE OF THEM IS NECESSARY.
+ *
+ * The item's BYTES must be identical on both sides. That is the same test the
+ * gate compares on (scripts/evals-check.mjs mismatchOf), and without it a run
+ * would carry over a measurement of a different item under the same id.
+ *
+ * The item's JOB must read nothing this diff touched. `affectedJobs` is the
+ * base tree's answer, never the head's (trustedRequestDiff), because a head
+ * that could narrow this list could carry its own base results over the change
+ * it just made.
+ *
+ * And the base run must actually have SCORED it. A base that skipped an item,
+ * or never selected it, has no result to carry and the head scores it.
+ *
+ * WHAT IT IS NOT. It is not a cache with a lifetime, a key or an eviction rule:
+ * it is one row the head already fetched, read for the ids it may reuse. The
+ * saving is the whole reason this is safe to do at all — an item whose bytes
+ * and whose inputs are identical on both sides CANNOT have a different result
+ * for any reason but the sampling, and paying a model call to re-roll the
+ * sampling on the base side is exactly what HEAD_TRIALS exists to not do.
+ */
+export function carriedResultFor(item, carryOver, affectedJobs) {
+  if (carryOver === null || carryOver === undefined || scoredNothing(carryOver)) return null;
+  if (!Array.isArray(affectedJobs) || affectedJobs.includes(item.job)) return null;
+  if (carryOver.scoredHashes?.[item.id] !== contentHash(item)) return null;
+  const result = (carryOver.results ?? []).find((one) => one.id === item.id);
+  if (result === undefined || (result.judged !== "pass" && result.judged !== "fail")) return null;
+  return {
+    ...baseOf(item),
+    judged: result.judged,
+    ...(typeof result.reason === "string" ? { reason: result.reason } : {}),
+    passK: result.passK === true,
+    // ONE TRIAL, AND IT IS THE BASE'S. The head spent nothing; saying it tried
+    // three times would make `calls` and the flaky count into fiction.
+    trials: { head: 1, headPassed: result.judged === "pass" ? 1 : 0 },
+    carried: true,
+  };
+}
+
 /** The pinned skill-name mapping. Trigger files keep human repository labels,
  * while the evaluated catalog uses the one canonical bare spelling. */
 async function triggerNameMappingFor(tomquestTree, io) {
@@ -2566,7 +2710,7 @@ async function triggerRouterFor(tomquestTree, wikitomTree, io) {
  * `io` carries every side effect so the test can drive this with no network
  * and no model.
  */
-export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set(), changed = undefined }, io) {
+export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set(), changed = undefined, carryOver = null, affectedJobs = null }, io) {
   const startedAt = io.now();
   const trees = treesFor(repo, sha);
   const tomquest = io.worktree("tom.quest", trees.tomquest);
@@ -2574,7 +2718,21 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
   try {
     const all = loadGolden(tomquest.dir);
     const wanted = jobs === null ? all : all.filter((item) => jobs.includes(item.job));
-    const items = weekly ? wanted : selectItems(wanted, Math.max(1, Math.floor(limit / 2)));
+    // UNREPLAYABLE ITEMS ARE TAKEN OUT BEFORE THE SELECTION, NOT AFTER IT, and
+    // that is the half of this that is not about cost. selectItems takes the
+    // newest twenty approve and twenty revise, so twenty-seven mined
+    // explanations filled the approve half and pushed the `run` case and both
+    // `learning` items — the three scored WITHOUT a judge, and the only ones in
+    // the set whose input the replay reproduces exactly — out of every
+    // pull-request run. Fifteen of the twenty-seven cannot be replayed at all,
+    // so a budget spent on them was a budget spent measuring nothing while the
+    // items that measure something were not run.
+    const replayable = wanted.filter((item) => unreplayableReason(item) === null);
+    const unreplayableItems = wanted
+      .filter((item) => unreplayableReason(item) !== null)
+      .map((item) => ({ id: item.id, partition: item.partition, why: unreplayableReason(item) }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const items = weekly ? replayable : selectItems(replayable, Math.max(1, Math.floor(limit / 2)));
     // Weekly runs take the whole trigger set. A pull-request run takes every
     // case from exactly the trigger files it changed, so its coverage cannot
     // be satisfied by a case deferred to the weekly job.
@@ -2592,9 +2750,30 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     const modules = await io.loadModules(tomquest.dir, items);
     const layerCache = new Map();
     const preludeCache = new Map();
+    const replayCache = new Map();
     const context = {
       cmtDir: io.cmtDir?.() ?? undefined,
       modules,
+      // The session an explanation item was written from, read out of the
+      // PINNED WikiTom tree — the same tree the layers come from, so an item is
+      // replayed against the archive the run pins rather than whatever this
+      // box's checkout holds today. Cached per item because a retried item
+      // would otherwise gunzip a half-megabyte transcript again.
+      replay: (item) => {
+        if (!replayCache.has(item.id)) {
+          const found = typeof io.replay === "function"
+            ? io.replay(wikitom.dir, item)
+            : { unreplayable: "the io in use wired no replay reader" };
+          replayCache.set(item.id, found);
+        }
+        const found = replayCache.get(item.id);
+        // A THROW RATHER THAN AN EMPTY BLOCK. Building the prompt without the
+        // session would score the model on a gap in the harness and report the
+        // difference as a regression; runItem turns this into a skip before any
+        // call is paid for.
+        if (found.unreplayable !== undefined) throw new ReplayUnavailableError(found.unreplayable);
+        return found;
+      },
       layers: (names) => {
         const key = names.join(",");
         if (!layerCache.has(key)) layerCache.set(key, io.layers(tomquest.dir, wikitom.dir, names));
@@ -2614,28 +2793,48 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
         return preludeCache.get(key);
       },
     };
-    const results = [];
-    const ablationRows = [];
-    const ablationSkipped = [];
+    // CARRIED FIRST, AND WITHOUT A LANE. An item the base already answered
+    // costs nothing and must not occupy one of the four; separating them here
+    // also means the pool's size is the number of items actually being scored,
+    // which is what the timing line reports.
+    const carried = new Map();
     for (const item of items) {
+      const reuse = carriedResultFor(item, carryOver, affectedJobs);
+      if (reuse !== null) carried.set(item.id, reuse);
+    }
+    const toScore = items.filter((item) => !carried.has(item.id));
+    // THE ABLATION ARM STAYS BEHIND ITS CASE. It is one trial per name on the
+    // case that just ran, reported and never gated, so it rides inside that
+    // case's lane rather than opening lanes of its own — and its rows come back
+    // WITH that case rather than being pushed onto a shared list, so the order
+    // of the arm is the order the names were removed in and not the order the
+    // lanes happened to finish.
+    const scoredResults = await inPool(toScore, ITEM_CONCURRENCY, async (item) => {
       // A `run` case is scored over its own trials with the deterministic
       // checks in front of the judge; every other item keeps the landed
       // retrial path exactly as it was. A weekly run is the full-trials run
       // and everything else is a pull-request run.
       if (item.job === "run") {
         const result = await runCase(item, context, io, { pr: !weekly });
-        results.push(result);
         if (ablation && result.judged !== "skip") {
           const arm = await ablationFor(item, context, io, result.judged === "pass");
-          ablationRows.push(...arm.rows);
-          ablationSkipped.push(...arm.skipped);
+          return { result, arm };
         }
-        continue;
+        return { result, arm: null };
       }
-      results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
-    }
-    const triggerResults = [];
+      return { result: await runTrials(item.id, basePassed, () => runItem(item, context, io)), arm: null };
+    });
+    const ablationRows = scoredResults.flatMap((one) => one.arm?.rows ?? []);
+    const ablationSkipped = scoredResults.flatMap((one) => one.arm?.skipped ?? []);
+    const byId = new Map(toScore.map((item, index) => [item.id, scoredResults[index].result]));
+    const results = items.map((item) => carried.get(item.id) ?? byId.get(item.id));
+    // THE PUBLICATION IS PINNED BEFORE THE LANES OPEN. The loop below both
+    // reads and writes `catalogHash` — one case establishes the run's catalog
+    // identity and every later one is checked against it — so it is a sequence
+    // and not a set of independent items. The RUNNER CALL each case then makes
+    // is independent, and that is what goes in the pool underneath.
     let catalogHash = null;
+    const pinnedFor = [];
     for (const { trigger, one } of triggerCases) {
       let pinned = null;
       if (triggerMethod(one) === TRIGGER_METHOD_RUNNER) {
@@ -2664,8 +2863,13 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
           pinned = { reason: `the trigger publication could not be pinned: ${serverErrorMessage(error)}` };
         }
       }
-      triggerResults.push(await runTriggerCase(trigger, one, io, router, pinned));
+      pinnedFor.push(pinned);
     }
+    const triggerResults = await inPool(
+      triggerCases,
+      ITEM_CONCURRENCY,
+      async ({ trigger, one }, index) => await runTriggerCase(trigger, one, io, router, pinnedFor[index]),
+    );
     // SORTED, so the repo order a run scores its tasks in is the same on every
     // box. `scoredIds` and `scoredHashes` are sorted downstream, but the ORDER
     // OF EXECUTION decides which task reaches a rate limit first, and a run
@@ -2712,6 +2916,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     // a broken box look survivable in proportion to how many triggers it also
     // failed to score.
     const scoredItems = scoredAll.length + scoredTasks.length;
+    const finishedAt = io.now();
     // A run is catastrophic when at least one item was scored and
     // errored * 2 >= scoredItems: exactly half is runner failed because less
     // than half of expected evidence remains trustworthy. All-error is included.
@@ -2728,12 +2933,34 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       regenModel: REGEN_MODEL,
       judgeModel: JUDGE_MODEL,
       startedAt,
-      finishedAt: io.now(),
+      finishedAt,
       // Trials, not items: a retried item costs its calls again and the row
       // says so. The ablation arm is one trial per name and costs the same two
-      // calls each, so it is counted rather than hidden.
-      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2 +
+      // calls each, so it is counted rather than hidden. A CARRIED item cost
+      // nothing and is left out — a call count including the base's calls would
+      // be the one number on this row that is not about this run.
+      calls: (scored.filter((result) => result.carried !== true)
+        .reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2 +
         scoredTriggers.filter((result) => result.method === TRIGGER_METHOD_RUNNER).length,
+      // WHAT THIS RUN COST AND WHY, in one object, so a check that wants to
+      // warn on a slow run reads a number instead of subtracting two stamps and
+      // guessing what filled the gap.
+      //
+      // The four counts are a partition of the items this run was handed:
+      // `regenerated` paid for calls, `cached` came from the base row
+      // unchanged, `unreplayable` could not be put in front of the model at
+      // all, and `skipped` is everything the runner could not assemble this
+      // time. `concurrency` is here because a duration means nothing without
+      // it — the same work at four lanes and at one is the same calls and a
+      // different afternoon.
+      timing: {
+        durationMs: finishedAt - startedAt,
+        regenerated: toScore.length,
+        cached: carried.size,
+        skipped: [...results, ...triggerResults].filter((result) => result?.judged === "skip").length,
+        unreplayable: unreplayableItems.length,
+        concurrency: ITEM_CONCURRENCY,
+      },
       // The ids actually scored, so the gate can tell a newly added item apart
       // from one that regressed without re-deriving the selection.
       scoredIds: [...scoredAll, ...scoredTasks].map((result) => result.id).sort(),
@@ -2741,6 +2968,13 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // The coverage gate requires every changed trigger filename to be here.
       triggerFilesRun,
       skipped: [...results, ...triggerResults].filter((result) => result.judged === "skip").map(({ id, reason, method }) => ({ id, reason, method })),
+      // THE COUNT AND THE LIST, SAID OUT LOUD AND NEVER FOLDED INTO `items`.
+      // An item whose input no prompt can carry is not a pass, not a failure
+      // and not a skip: it is a measurement nobody can make. The row carries
+      // the number so the check can print it, and the reasons so a reader never
+      // has to open fifteen files to learn why the set shrank.
+      unreplayable: unreplayableItems.length,
+      unreplayableItems,
       // A --weekly run SAYS SO ON THE ROW. The weekly graduation pass
       // (scripts/graduate-golden.mjs) promotes a capability case on this
       // evidence and no other: a pull-request run scores a 40-item subset
@@ -2778,6 +3012,12 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
           ? result.judged === "pass"
           : result.trials.headPassed === result.trials.head),
         ...(result.perTrial === undefined ? {} : { tokensMedian: result.tokensMedian ?? null }),
+        // A CARRIED RESULT SAYS SO. The gate compares it like any other — it is
+        // the base's own answer to the same bytes under the same inputs — but a
+        // reader of the row must be able to tell a result this run measured
+        // from one it reused, or `calls` and the numbers beside it read as a
+        // contradiction.
+        ...(result.carried === true ? { carried: true } : {}),
       })),
       ablation: ablationRows,
       ablationSkipped,
@@ -2868,8 +3108,17 @@ export function parseArgs(argv) {
 export function realIo(env) {
   return {
     now: () => Date.now(),
-    runClaude: async (prompt, options) => runClaude(prompt, options),
+    // THE ASYNC DOOR, and it is what makes ITEM_CONCURRENCY mean anything.
+    // runClaude blocks the event loop for the whole call (spawnSync), so four
+    // lanes over it would run one at a time and only look concurrent.
+    // runClaudeAsync is the same call, the same envelope and the same no-slot
+    // policy, awaited instead of waited for.
+    runClaude: async (prompt, options) => await runClaudeAsync(prompt, options),
     layers: (tomquestTree, wikitomTree, names) => layersFor(tomquestTree, wikitomTree, names),
+    // The session an explanation item was written from, out of the pinned
+    // WikiTom tree. worker/jobs/evals-replay.mjs says why it is read from there
+    // rather than carried in the item.
+    replay: (wikitomTree, item) => replayContext(wikitomTree, item),
     // The skill half of a name set, assembled by running the PINNED tree's own
     // scripts/publish-skills.mjs against the PINNED WikiTom tree and reading
     // what it wrote. Both trees go through, because the catalogue is one tree's
@@ -3004,6 +3253,9 @@ function unscoredRun({ repo, sha, at, answersRequestAt = null }) {
     scoredHashes: {},
     triggerFilesRun: [],
     skipped: [],
+    unreplayable: 0,
+    unreplayableItems: [],
+    timing: { durationMs: 0, regenerated: 0, cached: 0, skipped: 0, unreplayable: 0, concurrency: ITEM_CONCURRENCY },
     results: [],
     efficiency: { cases: 0, unknown: 0, rises: [] },
     ablation: [],
@@ -3207,7 +3459,7 @@ export async function trustedRequestDiff(request, io, run = git) {
     // a full scored run and nothing else: the comparison base, the changed list
     // and the coverage input are all still the box's own.
     if (policy === null) {
-      return { base: baseTree.commit, changed, unaffected: false, watchedPaths: null, basePolicy: "absent" };
+      return { base: baseTree.commit, changed, unaffected: false, watchedPaths: null, basePolicy: "absent", affectedJobs: null };
     }
     // The list is read from the same base module that supplies its predicate.
     const watchedPaths = [...policy.WATCHED_PATHS];
@@ -3217,6 +3469,12 @@ export async function trustedRequestDiff(request, io, run = git) {
       unaffected: policy.unaffectedBy(changed),
       watchedPaths,
       basePolicy: "present",
+      // WHICH JOBS THIS DIFF CAN MOVE, from the same base module for the same
+      // reason the watch comes from it: a head that narrowed this list would
+      // carry its own base results over a change that moved them. A base too
+      // old to answer says null, which regenerates everything — the same answer
+      // an absent policy gives the shortcut above.
+      affectedJobs: typeof policy.jobsAffectedBy === "function" ? policy.jobsAffectedBy(changed) : null,
     };
   } catch (error) {
     const reason = redactSecrets(serverErrorMessage(error)).slice(0, 300);
@@ -3341,7 +3599,7 @@ export async function stampAgainstBase(data, base, diff = {}) {
 export async function runAndPost(env, io, {
   repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
   dryRun = false, scorecard = undefined, answersRequestAt = null, unaffectedClaimed = false,
-  basePolicy = null,
+  basePolicy = null, affectedJobs = null,
 }) {
   const existing = force || dryRun ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
@@ -3368,7 +3626,18 @@ export async function runAndPost(env, io, {
   // can become a regression, so exactly those are tried again when they fail.
   const data = {
     ...await stampAgainstBase(
-      await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData), changed }, io),
+      await runEvals({
+        repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData), changed,
+        // THE ONE THING A HEAD MAY REUSE FROM ITS BASE. `carryOver` is the base
+        // row itself, and runEvals reuses a result from it only when the item's
+        // bytes are identical on both sides AND its job reads nothing this diff
+        // touched. Both halves are checked there; here is only where the two
+        // facts are handed over together, because neither means anything alone.
+        // A weekly run carries nothing over: it is the measurement the
+        // graduation pass rests on, and it scores everything.
+        carryOver: weekly ? null : baseData,
+        affectedJobs: weekly ? null : affectedJobs,
+      }, io),
       baseData,
       { changed, prBody },
     ),
@@ -3613,6 +3882,7 @@ export async function serveRequest(env, io, request, options = {}) {
       // The box's own diff is the coverage input.
       // it — it has a shallow cache clone with no merge base — and a second
       changed: boxDiff.changed,
+      affectedJobs: boxDiff.affectedJobs ?? null,
       prBody: request.prBody,
       // The same identity cheap rows carry: a request replaced while this
       // long run is in flight cannot accept this old measurement as current.
