@@ -807,6 +807,22 @@ describe("the needs-you-today run", () => {
     for (const run of runs) expect(run.slice(1)).toContain("item");
   });
 
+  it("refuses a written draft that puts an item that needs him today before the objection list", () => {
+    const withAsk = sept9({
+      needsYou: ITEMS,
+      objections: [{ askId: "a1", todoId: "ph79", decision: "moved the passport appointment to Thursday", reason: "the consulate shuts on Wednesdays this month" }],
+    });
+    const block = todayFactsBlock(withAsk, false);
+    const ask = block.facts.find((f) => f.id === "ask:a1")!;
+    const [abc, def] = ["abc", "def"].map((id) => block.facts.find((f) => f.id === `needs-you-today:${id}`)!);
+    const line = (f: { id: string; urls: string[]; text: string }) => ({ role: "item" as const, text: f.text, url: f.urls[0], sources: [f.id] });
+    const base = { firstLine: "Three things carry a date you have passed.", firstLineSources: ["today:count"] };
+    const wrong = verifyDraft({ ...base, lines: [line(abc), line(ask), line(def)] }, block);
+    expect(wrong).toContain("a needs-you-today line is printed before the objection list, against the ruled order");
+    const right = verifyDraft({ ...base, lines: [line(ask), line(abc), line(def)] }, block);
+    expect(right).not.toContain("a needs-you-today line is printed before the objection list, against the ruled order");
+  });
+
   it("refuses a written draft that leaves out an item that needs him today", () => {
     const block = todayFactsBlock(sept9({ needsYou: ITEMS }), false);
     const count = block.facts.find((f) => f.id === "today:count")!;

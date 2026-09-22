@@ -1693,6 +1693,15 @@ export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
     const own = lines.some((line) => line.role === "item" && line.url !== undefined && f.urls.includes(line.url) && line.sources.includes(f.id));
     if (!own) faults.push(`the draft leaves out the fact "${f.id}", which every message must say on an item line carrying its link`);
   }
+  // THE OBJECTION LIST STAYS SECOND in a written draft too. A draft names no
+  // sections, so sectionOrderFaults cannot see its order; the lines are read
+  // by what they cite instead, and no needs-you-today line may come before a
+  // line of the objection list.
+  const lastObjection = lines.reduce((at, line, i) => (line.sources.some((id) => id.startsWith("ask:")) ? i : at), -1);
+  const firstNeeds = lines.findIndex((line) => line.role !== "first" && line.sources.some((id) => id.startsWith("needs-you-today:")));
+  if (firstNeeds >= 0 && firstNeeds < lastObjection) {
+    faults.push("a needs-you-today line is printed before the objection list, against the ruled order");
+  }
   return [
     ...faults,
     ...sectionOrderFaults(draft.lines.map((line) => ({ ...line, role: line.role as string }))),
