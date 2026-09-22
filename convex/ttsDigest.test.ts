@@ -520,10 +520,10 @@ describe("internalComposeToday", () => {
     const id = await t.mutation(internal.tts.internalCapture, {
       statement: "Rotate the leaked key",
       source: "email",
-      needsTomToday: { why: "the mail quotes ghp_abcdefghijklmnopqrstuvwxyz0123456789 in full" },
+      needsTomToday: { why: "the mail quotes ghp_abcdefghijklmnopqrstuvwxyz0123456789 in full" }, // gitleaks:allow
     });
     const row = await t.run((ctx) => ctx.db.get(id));
-    expect(row?.needsTomToday?.why).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(row?.needsTomToday?.why).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789"); // gitleaks:allow
   });
 
   it("lists a dated email capture once, under today", async () => {
