@@ -53,11 +53,11 @@ import {
  *  asked for; widening it is adding a name to this array. */
 export const APPROVABLE_REPOS = ["tom.quest"] as const;
 
-/** Head branches the mirror never lists, so they carry no Approve control.
- *  `observe-mockup-laptop` is the branch that builds this control: approving
- *  its own pull request from the page it adds is a merge of the page by the
- *  page, and Tom rules on it the ordinary way. */
-const NOT_LISTED_BRANCHES = new Set(["observe-mockup-laptop"]);
+/** THE ONE BASE BRANCH. A change lands on main or it does not land here: the
+ *  merge gate's three rows and `mergedOnMain` both speak about main, so a pull
+ *  request aimed anywhere else is one this control cannot tell the truth
+ *  about. Such a pull request is not mirrored, so it carries no Approve. */
+const MAIN_BRANCH = "main";
 
 /** The most open pull requests one refresh mirrors (GitHub's page maximum). */
 const PULLS_MAX = 100;
@@ -250,6 +250,9 @@ export const internalApprovedAndGreen = internalQuery({
         .collect();
       for (const row of rows) {
         if (row.closedAt !== undefined) continue;
+        // A row the mirror wrote before it knew to ask, or one whose base
+        // moved: main is the only branch this can land on (MAIN_BRANCH).
+        if (row.baseBranch !== MAIN_BRANCH) continue;
         const ruling = await newestRuling(
           ctx,
           repo,
@@ -382,6 +385,10 @@ async function landReady(
     // mergedOnMain is asked afterwards, so the row carries GitHub's answer
     // about the head sha rather than this file's account of its own success.
     const onMain = await mergedOnMain(change.repo, change.headSha);
+    // GitHub's answer about the head, not this file's account of its own
+    // success: a 200 from the merge call with no commit on main is a merge
+    // that did not happen where it was meant to, and the row says so.
+    if (!onMain.merged) why = `${why}, but GitHub does not show it on main: ${onMain.why}`;
     const written = await ctx.runMutation(
       internal.ttsMerge.internalRecordMerge,
       {
@@ -443,14 +450,14 @@ export const refreshOpenPulls = internalAction({
           (pull) =>
             typeof pull?.number === "number" &&
             typeof pull.head?.sha === "string" &&
-            !NOT_LISTED_BRANCHES.has(pull.head.ref),
+            pull.base?.ref === MAIN_BRANCH,
         )
         .map((pull) => ({
           number: pull.number,
           title: typeof pull.title === "string" ? pull.title : "",
           branch: pull.head.ref,
           headSha: pull.head.sha,
-          baseBranch: pull.base?.ref ?? "main",
+          baseBranch: MAIN_BRANCH,
           draft: pull.draft === true,
           updatedAt: Date.parse(pull.updated_at) || Date.now(),
         }));

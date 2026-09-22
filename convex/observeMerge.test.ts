@@ -154,6 +154,28 @@ describe("the mirror", () => {
     const rows = await t.run((ctx) => ctx.db.query("pullRequests").collect());
     expect(rows[0].closedAt).toBeGreaterThan(0);
   });
+
+  it("does not mirror a pull request aimed at a branch other than main", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json([
+          {
+            number: 300,
+            title: "a change aimed elsewhere",
+            draft: false,
+            updated_at: new Date().toISOString(),
+            head: { ref: "side", sha: SHA },
+            base: { ref: "some-other-branch" },
+          },
+        ]),
+      ),
+    );
+    expect(await t.action(internal.observeMerge.refreshOpenPulls, {})).toEqual({ open: 0 });
+    expect(await tom.query(api.observe.changesWaiting, {})).toHaveLength(0);
+  });
 });
 
 describe("landing", () => {
@@ -191,6 +213,18 @@ describe("landing", () => {
     // The landed change shows the ruling that landed it.
     const [row] = await tom.query(api.observe.gateRows, { commits: [{ repo: REPO, sha: SHA }] });
     expect(row.ruled).toBe("approve");
+  });
+
+  it("merges nothing aimed at a branch other than main, however green and approved", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const gh = github(200);
+    vi.stubGlobal("fetch", gh.fake);
+    await mirror(t, [{ ...PULL, baseBranch: "some-other-branch" }]);
+    await green(t);
+    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 0 });
+    expect(gh.puts).toHaveLength(0);
   });
 
   it("merges nothing that is green and not approved", async () => {
