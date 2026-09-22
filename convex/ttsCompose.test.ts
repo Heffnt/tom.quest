@@ -796,6 +796,17 @@ describe("the needs-you-today run", () => {
     for (const n of many) expect(text).toContain(`form ${n.todoId.slice(1)} before`);
   });
 
+  it("never leaves a run's lead with nothing under it when the last resort drops lines", () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ todoId: `n${i}`, statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`, why: "a person in the registrar's office is waiting on your reply" }));
+    const { message } = fit(composeToday(sept9({ needsYou: many }), { canReply: false }));
+    const runs = message.lines.reduce<string[][]>((acc, line) => {
+      if (line.role === "lead") acc.push([line.role]);
+      else if (acc.length > 0) acc[acc.length - 1].push(line.role);
+      return acc;
+    }, []);
+    for (const run of runs) expect(run.slice(1)).toContain("item");
+  });
+
   it("refuses a written draft that leaves out an item that needs him today", () => {
     const block = todayFactsBlock(sept9({ needsYou: ITEMS }), false);
     const count = block.facts.find((f) => f.id === "today:count")!;
@@ -876,6 +887,14 @@ describe("composeHourly", () => {
     expect(message!.firstLine.length).toBeLessThanOrEqual(FIRST_LINE_CHARS);
     expect(message!.firstLine).toContain("needs you today");
     expect(message!.firstLine).not.toContain("because");
+  });
+
+  it("escapes the item and its reason, words from a mail, in the hourly line", () => {
+    const capture = { kind: "captured" as const, at: 1, detail: "email", link: null, text: "Reply to <!channel>", needsYouToday: "the <https://evil.example|bank> asks" };
+    const line = composeHourly(hourly({ changes: [capture] }))!.firstLine;
+    expect(line).not.toContain("<!channel>");
+    expect(line).not.toContain("<https://evil.example");
+    expect(line).toContain("&lt;!channel&gt;");
   });
 
   it("does not throw on an hour whose only changes it does not count", () => {

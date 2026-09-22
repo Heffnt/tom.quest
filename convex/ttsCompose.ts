@@ -355,10 +355,22 @@ export function fit(
     let drop = lines.length - 1;
     while (drop >= 0 && lines[drop].section === PROTECTED_RUN) drop -= 1;
     if (drop < 0) drop = lines.length - 1;
-    current = { ...current, lines: [...lines.slice(0, drop), ...lines.slice(drop + 1)] };
+    current = { ...current, lines: withoutEmptyRuns([...lines.slice(0, drop), ...lines.slice(drop + 1)]) };
     truncated = true;
   }
   return { message: current, truncated };
+}
+
+/** The lines with every run that has lost all its item lines removed whole,
+ *  lead and note included: a lead with nothing under it is a malformed run. */
+function withoutEmptyRuns(lines: Line[]): Line[] {
+  const keep: Line[] = [];
+  for (const { start, end } of sectionRuns(lines)) {
+    const run = lines.slice(start, end);
+    if (run[0].role === "lead" && !run.some((line) => line.role === "item")) continue;
+    keep.push(...run);
+  }
+  return keep;
 }
 
 /** The run `fit` never reduces and drops from last. */
@@ -1278,9 +1290,11 @@ function needsYouClauses(changes: Change[]): string[] {
   const needs = changes.filter((c) => c.needsYouToday !== undefined);
   if (needs.length === 0) return [];
   const first = needs[0];
+  // The first line is posted as Slack markup, and the item and its reason are
+  // words from a mail: escaped, so "<!channel>" or a forged link stays text.
   const name = shortClause(first.text);
-  const what = first.link === null ? name : linked(name, first.link);
-  const why = stripStop(first.needsYouToday ?? "");
+  const what = first.link === null ? slackEscape(name) : linked(name, first.link);
+  const why = slackEscape(stripStop(first.needsYouToday ?? ""));
   const count = needs.length === 1 ? "one of the captures needs you today" : `${countWord(needs.length)} of the captures need you today`;
   if (needs.length > 1) return [`${count}, ${what} among them`, count];
   return [...(why !== "" ? [`${what} needs you today because ${lowerFirst(why)}`] : []), `${what} needs you today`, count];

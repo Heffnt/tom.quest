@@ -889,15 +889,19 @@ function printedObjectionNumber(text: string): number | null {
  * The list therefore says what he could SEE, which is the only thing a reply
  * of "revert 2" can honestly be resolved against.
  */
-/** The needs-you-today items the fitted message printed, by their links. */
-function printedNeedsYouIds(
+/** The today and needs-you-today items the fitted message printed, by their
+ *  links, each id once. */
+function printedTodoIds(
   message: { lines: { role: string; section?: string; url?: string }[] },
   facts: TodayFacts,
 ): string[] {
   const printed = new Set(
-    message.lines.filter((line) => line.role === "item" && line.section === "needs-you-today").map((line) => line.url),
+    message.lines
+      .filter((line) => line.role === "item" && (line.section === "today" || line.section === "needs-you-today"))
+      .map((line) => line.url),
   );
-  return facts.needsYou.filter((n) => printed.has(itemUrl(n.todoId))).map((n) => n.todoId);
+  const ids = [...facts.today.map((item) => item.id), ...facts.needsYou.map((n) => n.todoId)];
+  return [...new Set(ids.filter((id) => printed.has(itemUrl(id))))];
 }
 
 function printedObjectionAskIds(
@@ -948,12 +952,9 @@ export const internalComposeToday = internalQuery({
       // Every todo the message showed, for the "surfaced" instrumentation:
       // the today run and, read off the FITTED message as the objection
       // numbers are, the needs-you-today items actually printed; each id once.
-      // A flagged dated item is printed in the needs-you run, not under today,
-      // so it counts as surfaced only when that run printed it.
-      surfacedTodoIds: [...new Set([
-        ...facts.today.map((item) => item.id).filter((id) => !facts.needsYou.some((n) => n.todoId === id)),
-        ...printedNeedsYouIds(message, facts),
-      ])]
+      // Both read off the fitted message, so an item whose line was dropped
+      // never counts as seen.
+      surfacedTodoIds: printedTodoIds(message, facts)
         .map((id) => ctx.db.normalizeId("dtsTodos", id))
         .filter((id): id is Id<"dtsTodos"> => id !== null),
       // The decisions the objection list carried, in PRINTED order: a reply of
