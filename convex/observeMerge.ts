@@ -51,7 +51,11 @@ import {
 /** The repositories whose open pull requests the observation page lists and
  *  its Approve control can land. One name, because tom.quest is the one Tom
  *  asked for; widening it is adding a name to this array. */
-export const APPROVABLE_REPOS = ["tom.quest"] as const;
+export const APPROVABLE_REPOS = ["tom.quest"] as const satisfies readonly (keyof typeof SESSION_REPOS)[];
+
+/** One of those names. Typed, so the GitHub slug below is always a string and
+ *  there is no unknown-repository branch to carry. */
+type ApprovableRepo = (typeof APPROVABLE_REPOS)[number];
 
 /** THE ONE BASE BRANCH. A change lands on main or it does not land here: the
  *  merge gate's three rows and `mergedOnMain` both speak about main, so a pull
@@ -79,8 +83,10 @@ type Pull = {
   base: { ref: string };
 };
 
-function slugOf(repo: string): string | undefined {
-  return (SESSION_REPOS as Record<string, string>)[repo];
+/** A repository's GitHub home. Every approvable repository is a SESSION_REPOS
+ *  key, which the type above makes the compiler check, so this always answers. */
+function slugOf(repo: ApprovableRepo): string {
+  return SESSION_REPOS[repo];
 }
 
 function githubHeaders(token: string): Record<string, string> {
@@ -105,7 +111,16 @@ export async function newestRuling(
       q.eq("repo", repo).eq("externalId", externalId),
     )
     .collect();
-  return rulings.sort((left, right) => right.ruledAt - left.ruledAt)[0] ?? null;
+  // ruledAt wins; _creationTime breaks a same-millisecond tie, the rule
+  // convex/ttsRulings.ts liveRulings already applies — without it a revise
+  // written in the same millisecond as an approve could leave the approve
+  // standing, and the change would merge after Tom withdrew it.
+  return (
+    rulings.sort(
+      (left, right) =>
+        right.ruledAt - left.ruledAt || right._creationTime - left._creationTime,
+    )[0] ?? null
+  );
 }
 
 /**
@@ -238,7 +253,7 @@ export const internalApprovedAndGreen = internalQuery({
   handler: async (ctx) => {
     const ready: {
       id: string;
-      repo: string;
+      repo: ApprovableRepo;
       number: number;
       headSha: string;
       title: string;
@@ -322,18 +337,15 @@ async function landReady(
     internal.observeMerge.internalApprovedAndGreen,
     {},
   );
-  if (ready.length === 0) return { landed: 0, tried: 0 };
   const token = process.env.GITHUB_MIRROR_TOKEN;
   let landed = 0;
   for (const change of ready) {
     const slug = slugOf(change.repo);
-    if (!token || slug === undefined) {
+    if (!token) {
       await ctx.runMutation(internal.observeMerge.internalNoteAttempt, {
         id: change.id,
         ok: false,
-        why: !token
-          ? "the record holds no GitHub credential, so it cannot merge a change"
-          : `${change.repo} is not a repository the record knows`,
+        why: "the record holds no GitHub credential, so it cannot merge a change",
       });
       continue;
     }
@@ -454,7 +466,6 @@ export const refreshOpenPulls = internalAction({
     let open = 0;
     for (const repo of APPROVABLE_REPOS) {
       const slug = slugOf(repo);
-      if (slug === undefined) continue;
       let pulls: Pull[];
       try {
         const res = await fetch(

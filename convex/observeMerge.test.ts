@@ -249,6 +249,32 @@ describe("landing", () => {
     expect(row.lastAttempt?.why).toContain("does not show it on main");
   });
 
+  it("merges nothing where a revise shares the approve's millisecond", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const gh = github(200);
+    vi.stubGlobal("fetch", gh.fake);
+    await mirror(t);
+    await green(t);
+    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    // Tom's revise, written in the same millisecond the approve carries: the
+    // later row wins on _creationTime, which is the only thing telling them
+    // apart.
+    await t.run(async (ctx) => {
+      const approve = await ctx.db.query("dtsRulings").first();
+      await ctx.db.insert("dtsRulings", {
+        subjectType: "code",
+        repo: REPO,
+        externalId: "pr-212",
+        verdict: "revise",
+        sentence: "not yet",
+        ruledAt: approve!.ruledAt,
+      });
+    });
+    expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 0 });
+    expect(gh.puts).toHaveLength(0);
+  });
+
   it("merges nothing that GitHub has retargeted since the mirror saw it", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
