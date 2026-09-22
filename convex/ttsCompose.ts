@@ -971,25 +971,30 @@ export function composeTodayFitted(
 /** The first line names the count, the age of the worst, and THE ONE TO START
  *  WITH. It never names the message. */
 export function todayFirstLine(f: TodayFacts): string {
+  const decisions =
+    f.objections.length > 0
+      ? ` ${capitalise(countWord(f.objections.length))} ${plural(f.objections.length, "decision was", "decisions were")} taken for you overnight.`
+      : "";
   const needs =
     f.needsYou.length > 0
       ? ` ${capitalise(countWord(f.needsYou.length))} captured ${plural(f.needsYou.length, "item needs", "items need")} you today.`
       : "";
-  const second =
-    f.objections.length > 0
-      ? ` ${capitalise(countWord(f.objections.length))} ${plural(f.objections.length, "decision was", "decisions were")} taken for you overnight.${needs}`
-      : needs !== ""
-        ? needs
-        : " Nothing else needs an answer from you today.";
+  let head: string;
+  let nothingElse = "";
   if (f.lateCount === 0) {
-    return `Nothing is dated today and nothing is late. The calendar is your whole day.${
-      f.objections.length > 0 || needs !== "" ? second : ""
-    }`;
+    head = "Nothing is dated today and nothing is late. The calendar is your whole day.";
+  } else {
+    const first = f.today[0];
+    const oldest = f.oldestLateBy ? `, the oldest by ${f.oldestLateBy}` : "";
+    const start = first ? `; ${lowerFirst(shortClause(first.statement))} is the one to start with` : "";
+    head = `${capitalise(countWord(f.lateCount))} ${plural(f.lateCount, "thing carries", "things carry")} a date you have passed${oldest}${start}.`;
+    // Said only when it is true: nothing decided for him and nothing flagged.
+    if (decisions === "" && needs === "") nothingElse = " Nothing else needs an answer from you today.";
   }
-  const first = f.today[0];
-  const oldest = f.oldestLateBy ? `, the oldest by ${f.oldestLateBy}` : "";
-  const start = first ? `; ${lowerFirst(shortClause(first.statement))} is the one to start with` : "";
-  return `${capitalise(countWord(f.lateCount))} ${plural(f.lateCount, "thing carries", "things carry")} a date you have passed${oldest}${start}.${second}`;
+  // The needs-you sentence is the one that gives when the line would pass its
+  // cap: `fit` never shortens a first line, and the run below still says it.
+  const full = `${head}${decisions}${needs}${nothingElse}`;
+  return full.length <= FIRST_LINE_CHARS ? full : `${head}${decisions}`;
 }
 
 /** The first clause of a statement, for the first line: up to the first comma,

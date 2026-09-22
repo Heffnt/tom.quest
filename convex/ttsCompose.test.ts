@@ -30,6 +30,7 @@ import {
   statement,
   verifyDraft,
   todayFactsBlock,
+  todayFirstLine,
   type Draft,
   type HourlyFacts,
   type Line,
@@ -759,6 +760,24 @@ describe("the needs-you-today run", () => {
     expect(message.firstLine).not.toContain("Nothing else needs an answer from you today");
     const sections = message.lines.filter((l) => l.role === "lead").map((l) => l.section);
     expect(sections.indexOf("needs-you-today")).toBeLessThan(sections.indexOf("overnight"));
+  });
+
+  it("drops its sentence from the first line rather than pass the cap, and never says nothing else is waiting", () => {
+    const objections = Array.from({ length: 12 }, (_, i) => ({ askId: `a${i}`, todoId: `t${i}`, decision: "moved the passport appointment to Thursday", reason: "the consulate shuts" }));
+    const late = sept9({
+      lateCount: 12,
+      oldestLateBy: "twenty-three days",
+      today: [{ id: "x1", statement: "Confirm the time of the TRACE Lab meeting you are presenting at next week in the main hall", entryAction: "open it", countdown: "Twenty-three days late." }],
+      objections,
+      needsYou: ITEMS,
+    });
+    const first = todayFirstLine(late);
+    expect(first.length).toBeLessThanOrEqual(FIRST_LINE_CHARS);
+    expect(first).not.toContain("captured items need you today"); // it would not have fitted
+    expect(first).not.toContain("Nothing else needs an answer");
+    const roomy = todayFirstLine(sept9({ needsYou: ITEMS }));
+    expect(roomy).toContain("Two captured items need you today.");
+    expect(roomy).not.toContain("Nothing else needs an answer");
   });
 
   it("is a fact per item and one for the count, so a written line about them verifies", () => {
