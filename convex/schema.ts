@@ -1693,6 +1693,9 @@ export default defineSchema({
     // Tom had reopened, so no run of its own could hold them; the next run's
     // opener carries them and clears this.
     mailbox: v.optional(v.array(v.string())),
+    // How many of the mailbox's messages the live run's opener carried; they
+    // leave the mailbox once that run finishes its opener.
+    carriedCount: v.optional(v.number()),
     // Set by a stop: nothing restarts it until the next start.
     stoppedAt: v.optional(v.number()),
     stoppedReason: v.optional(v.string()),

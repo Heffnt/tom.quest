@@ -507,6 +507,32 @@ describe("restarting from the document", () => {
     expect(text).toContain("PR 1 is open.");
     expect(text).toContain("Spawn one worker on the footer.");
     expect(text.split("Why this run started").length).toBe(2);
+
+    // The next run crashes during that very opener: the message is carried
+    // again, not lost.
+    await ingest(t, next, { status: "running", runId: "codex:box:n" });
+    await ingest(t, next, { status: "ended", endedReason: "autonomous turn failed" });
+    vi.setSystemTime(Date.now() + crashBackoffMs(2) + 1);
+    await t.mutation(internal.orchestrator.internalSweep, {});
+    const third = (await row(t))!.liveSessionId!;
+    expect(third).not.toBe(next);
+    expect((await pendingTexts(t, third))[0]).toContain("PR 1 is open.");
+
+    // Once a run finishes its opener, what it carried is not carried again.
+    const opener3 = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", third).eq("status", "pending")).unique())!,
+    );
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: third,
+      status: "running",
+      runId: "codex:box:third",
+      inboundUpdates: [{ id: opener3._id, status: "delivered" }, { id: opener3._id, status: "done" }],
+    });
+    await ingest(t, third, { status: "ended", endedReason: "autonomous turn failed" });
+    vi.setSystemTime(Date.now() + crashBackoffMs(3) + 1);
+    await t.mutation(internal.orchestrator.internalSweep, {});
+    const fourth = (await row(t))!.liveSessionId!;
+    expect((await pendingTexts(t, fourth))[0]).not.toContain("PR 1 is open.");
   });
 
   it("waits out the backoff after a crash, then restarts; the third crash in a row is reported", async () => {
@@ -556,7 +582,6 @@ describe("restarting from the document", () => {
     expect(his.map((m) => m.status)).toEqual(["pending"]);
     // It waited for the next run, whose opener carries it.
     expect((await pendingTexts(t, next))[0]).toContain("for the orchestrator");
-    expect((await row(t))?.mailbox).toBeUndefined();
     expect((await pen(t, "/tts/answer", { sessionId: first, elevationId: "x", kind: "obvious", answer: "y" })).status).toBe(409);
   });
 

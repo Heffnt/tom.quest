@@ -310,7 +310,11 @@ async function launchRun(
 ): Promise<Id<"claudeSessions">> {
   const now = Date.now();
   const from = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
-  const carried: string[] = [...(row.mailbox ?? [])];
+  // The mailbox holds what the next run must be shown: messages that reached
+  // no run of the orchestrator's, and those an earlier opener carried. It is
+  // kept until a run FINISHES its opener, so a run that crashes during its
+  // first turn hands the same messages on again rather than losing them.
+  let carried: string[] = [...(row.mailbox ?? [])];
   // A run Tom reopened is his conversation, and everything queued on it is
   // its own; only a run still the orchestrator's hands its messages on.
   if (from && from.mode === "autonomous") {
@@ -325,6 +329,10 @@ async function launchRun(
         .withIndex("by_session_status", (q) => q.eq("sessionId", from._id))
         .collect()
     ).sort((a, b) => a.createdAt - b.createdAt);
+    // Its opener finished: what that opener carried was read, and only what
+    // arrived since is handed on (with anything the mailbox gained meanwhile,
+    // which reached no run).
+    if (rows[0]?.status === "done") carried = carried.slice(row.carriedCount ?? 0);
     for (const message of rows.slice(1)) {
       if (message.status === "done" || message.author !== "agent" || message.kind !== "user-turn") continue;
       if (typeof message.text === "string") carried.push(message.text);
@@ -383,7 +391,8 @@ async function launchRun(
     leaseDeadline: now + ORCHESTRATOR_LEASE_MS,
     runStartedAt: now,
     restartAt: undefined,
-    mailbox: undefined,
+    mailbox: carried.length > 0 ? carried : undefined,
+    carriedCount: carried.length,
     lastRestart: { at: now, reason, ...(from ? { fromSessionId: from._id } : {}) },
   });
   await logEvent(ctx, "orchestrator-started", undefined, {
