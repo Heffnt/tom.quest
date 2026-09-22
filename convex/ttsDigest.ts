@@ -828,11 +828,17 @@ export async function gatherTodayFacts(
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
     // A flagged capture that preparation has since dated keeps its lateness
-    // here, and is said once, in the needs-you run (composeToday).
-    needsYou: needsYou.map((n) => {
-      const countdown = dated.find((item) => item.id === n.todoId)?.countdown;
-      return countdown === undefined ? n : { ...n, countdown };
-    }),
+    // here, and is said once, in the needs-you run (composeToday). Dated ones
+    // lead the run in the today list's own oldest-first order, so the item the
+    // first line names as the one to start with is the last line any fit could
+    // drop; the rest follow in capture order.
+    needsYou: needsYou
+      .map((n, order) => {
+        const at = dated.findIndex((item) => item.id === n.todoId);
+        return { n: at < 0 ? n : { ...n, countdown: dated[at].countdown }, rank: at < 0 ? dated.length + order : at };
+      })
+      .sort((a, b) => a.rank - b.rank)
+      .map(({ n }) => n),
     runners,
     overnight,
     batchesPlanned: overnight.length,

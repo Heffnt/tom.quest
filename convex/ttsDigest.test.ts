@@ -520,6 +520,30 @@ describe("internalComposeToday", () => {
     expect(shownSecond.some((id) => shownFirst.includes(id))).toBe(false);
   });
 
+  it("keeps the flagged item the first line names, however many flagged dated items overflow", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const ids = [];
+    for (let i = 0; i < 40; i += 1) {
+      vi.setSystemTime(FIVE_AM - 3_600_000 + i * 1000);
+      const id = await t.mutation(internal.tts.internalCapture, {
+        statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`,
+        source: "email",
+        needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
+      });
+      // The LAST captured carries the OLDEST date, so capture order and date order disagree.
+      await t.run(async (ctx) => ctx.db.patch(id, { timingClass: "dated", dueAt: Date.UTC(2026, 7, 1, 16) + (39 - i) * 3_600_000, dateKind: "external" }));
+      ids.push(id);
+    }
+    vi.setSystemTime(FIVE_AM);
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const firstLine = text.split("\n")[0];
+    const named = ids.find((id, i) => firstLine.toLowerCase().includes(`form number ${i} `));
+    expect(named).toBeDefined();
+    expect(text).toContain(ttsItemLink(named!));
+  });
+
   it("does not mark a dated flagged item surfaced when the fitted message dropped its line", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM - 3_600_000);
