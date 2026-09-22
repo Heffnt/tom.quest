@@ -231,8 +231,11 @@ export default function Timeline({
       </div>
       <Detail
         mark={
-          Object.values(bands)
-            .flat()
+          // The lanes actually drawn, so holding the timeline to one lane
+          // closes a mark opened in another rather than leaving its lines
+          // under lanes that no longer hold it.
+          LANES.filter((lane) => onlyLane === null || onlyLane === lane)
+            .flatMap((lane) => bands[lane])
             .flatMap((band) => band.marks)
             .find((mark) => mark.key === openKey) ?? null
         }
