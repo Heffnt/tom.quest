@@ -61,7 +61,7 @@ describe("hostedIdleVerdict", () => {
 
 describe("runEnvelope", () => {
   it("names the orchestrator's runs as its own environment", () => {
-    expect(runEnvelope("autonomous", "orchestrator")).toEqual({ origin: "orchestrator", kind: "job", environment: "orchestrator" });
+    expect(runEnvelope("autonomous", "orchestrator")).toEqual({ origin: "daemon", kind: "job", environment: "orchestrator" });
     expect(runEnvelope("autonomous", "worker")).toEqual({ origin: "daemon", kind: "job", environment: "worker" });
     expect(runEnvelope("autonomous", undefined)).toEqual({ origin: "daemon", kind: "job", environment: "worker" });
     expect(runEnvelope("interactive", undefined)).toEqual({ origin: "session", kind: "session", environment: "session" });

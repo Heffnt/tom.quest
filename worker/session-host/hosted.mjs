@@ -32,11 +32,11 @@ export const WORKER_ANSWER_WAIT_MS = 12 * 60 * 60 * 1000;
 /**
  * The run envelope's three names for a daemon session: where it starts, what
  * kind of run it is, and its environment. An interactive session is a session
- * with Tom; an unattended one is a worker; a hosted run names its own
- * environment, so the orchestrator's runs read as the orchestrator's.
+ * with Tom; an unattended one is a worker; the orchestrator's runs start where
+ * every unattended session does and name their own environment.
  */
 export function runEnvelope(mode, environment) {
-  if (environment === "orchestrator") return { origin: "orchestrator", kind: "job", environment: "orchestrator" };
+  if (environment === "orchestrator") return { origin: "daemon", kind: "job", environment: "orchestrator" };
   if (mode === "autonomous") return { origin: "daemon", kind: "job", environment: "worker" };
   return { origin: "session", kind: "session", environment: "session" };
 }

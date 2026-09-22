@@ -406,6 +406,36 @@ describe("restarting from the document", () => {
     expect(hosted?.environment).toBe("orchestrator");
   });
 
+  it("carries a message whose turn crashed to the next run", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const t = await setup();
+    const first = await start(t);
+    const worker = await spawn(t, first);
+    await pen(t, "/tts/message", { sessionId: worker, to: "orchestrator", text: "PR 1 is open." });
+    const [opener, message] = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").withIndex("by_session_status", (q) => q.eq("sessionId", first as Id<"claudeSessions">)).collect()).sort((a, b) => a.createdAt - b.createdAt),
+    );
+    // The opener's turn finished; the message's turn was delivered and failed.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: first as Id<"claudeSessions">,
+      status: "running",
+      inboundUpdates: [{ id: opener._id, status: "delivered" }, { id: opener._id, status: "done" }, { id: message._id, status: "delivered" }],
+    });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: first as Id<"claudeSessions">,
+      status: "ended",
+      endedReason: "autonomous turn failed",
+      inboundUpdates: [{ id: message._id, status: "failed" }],
+    });
+    vi.setSystemTime(Date.now() + crashBackoffMs(1) + 1);
+    await t.mutation(internal.orchestrator.internalSweep, {});
+    const next = (await row(t))!.liveSessionId!;
+    const text = (await pendingTexts(t, next))[0];
+    expect(text).toContain("PR 1 is open.");
+    expect(text.split("Why this run started").length).toBe(2);
+  });
+
   it("waits out the backoff after a crash, then restarts; the third crash in a row is reported", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));

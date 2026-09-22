@@ -258,21 +258,19 @@ async function launchRun(
   const from = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
   const carried: string[] = [];
   if (from) {
-    // Every message the ended run never received: still pending, or settled
-    // "interrupted" by its ending without ever being delivered. The ending
-    // settles them before this runs, so pending alone would lose a worker's
-    // message sent during the last turn.
-    const unread = [];
-    for (const status of ["pending", "interrupted"] as const) {
-      unread.push(
-        ...(await ctx.db
-          .query("claudeInbound")
-          .withIndex("by_session_status", (q) => q.eq("sessionId", from._id).eq("status", status))
-          .collect()),
-      );
-    }
-    for (const message of unread.sort((a, b) => a.createdAt - b.createdAt)) {
-      if (message.deliveredAt !== undefined) continue;
+    // Every message the ended run did not finish: never delivered (pending,
+    // or settled "interrupted" by the ending), or delivered in a turn that
+    // failed or was cut off. Only "done" means the run acted on it. The run's
+    // own opener, its first row, is its successor's opener rebuilt, and is
+    // never carried.
+    const rows = (
+      await ctx.db
+        .query("claudeInbound")
+        .withIndex("by_session_status", (q) => q.eq("sessionId", from._id))
+        .collect()
+    ).sort((a, b) => a.createdAt - b.createdAt);
+    for (const message of rows.slice(1)) {
+      if (message.status === "done") continue;
       if (message.kind === "user-turn" && typeof message.text === "string" && message.author === "agent") {
         carried.push(message.text);
       }
