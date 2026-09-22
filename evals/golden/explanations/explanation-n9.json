@@ -6,6 +6,7 @@
   "label": "did not",
   "sentence": "1. a. I don't care about what exact sweep file trained it, only the config.\n\n1. i dont understand the grouping vs channels question. averaged by default is good if we make it so that I can see the spread. I hate it when things are silently averaged bc it is confusing. I want to see it so I can know if I should split it. \n2. epoch is an x axis choice. group plot is idential to the big plot but I can visualize another dimension which is whatever the sub plots vary across. \n3. facet grid. on the order of 10 to 100. I can scroll down to see more and control the size of each subplot. promoting it to the big plot would be nice. \n4. I want you to explain how the filter bar applies to plots and suggest ways to make it easier to use.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 3 tool calls the agent made after Tom's request (Agent, Monitor), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-07-07",
   "input": {
     "topic": "Grouping versus visual channels question",

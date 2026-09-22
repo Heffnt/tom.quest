@@ -6,6 +6,7 @@
   "label": "did not",
   "sentence": "you are using a lot of made up names for different experiments that I dont understand and for most of them i dont need to understand so translate it into normal language when explaining things to me. I understand the vocab you defined so use that and other standard cmt language. \ndo phase 0. \nI agree with all your phase 1 recommendations.",
   "confirmedByTom": false,
+  "unreplayable": "the session transcript is not in WikiTom's archive",
   "ruledOn": "2026-09-09",
   "input": {
     "topic": "What the budget experiment tested",
