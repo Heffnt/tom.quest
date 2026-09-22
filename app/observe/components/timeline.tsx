@@ -83,7 +83,11 @@ export default function Timeline({
   /** When a node of the map is pressed, the timeline holds that lane alone. */
   onlyLane: Lane | null;
 }) {
-  const [open, setOpen] = useState<Mark | null>(null);
+  // THE KEY, NOT THE MARK. What is drawn is rebuilt from the rows on every
+  // tick and every change of window or filter, so holding the mark itself
+  // would leave the strip below showing a run as it was when it was pressed —
+  // still running after it ended, or from a window that has since moved.
+  const [openKey, setOpenKey] = useState<string | null>(null);
 
   const runMark = (run: RunMark): Mark => ({
     key: run.runId,
@@ -217,15 +221,23 @@ export default function Timeline({
                   band={row}
                   win={win}
                   gap={gap}
-                  onOpen={setOpen}
-                  openKey={open?.key ?? null}
+                  onOpen={(mark) => setOpenKey(mark.key)}
+                  openKey={openKey}
                 />
               ))}
             </div>
           );
         })}
       </div>
-      <Detail mark={open} onClose={() => setOpen(null)} />
+      <Detail
+        mark={
+          Object.values(bands)
+            .flat()
+            .flatMap((band) => band.marks)
+            .find((mark) => mark.key === openKey) ?? null
+        }
+        onClose={() => setOpenKey(null)}
+      />
     </div>
   );
 }
