@@ -1689,6 +1689,10 @@ export default defineSchema({
     // until the next start replaces it: a run that crashes before writing its
     // document must not lose what it was asked to do.
     instruction: v.optional(v.string()),
+    // Messages for the orchestrator that arrived while its latest run was one
+    // Tom had reopened, so no run of its own could hold them; the next run's
+    // opener carries them and clears this.
+    mailbox: v.optional(v.array(v.string())),
     // Set by a stop: nothing restarts it until the next start.
     stoppedAt: v.optional(v.number()),
     stoppedReason: v.optional(v.string()),

@@ -279,9 +279,14 @@ async function deliverToOrchestrator(ctx: MutationCtx, text: string): Promise<bo
   const row = await orchestratorRow(ctx);
   if (!row || row.stoppedAt !== undefined || row.liveSessionId === undefined) return false;
   const session = await ctx.db.get(row.liveSessionId);
-  // A run Tom reopened is his conversation: nothing is queued into it, and
-  // the sweep starts the orchestrator's next run within the minute.
-  if (!session || session.mode !== "autonomous") return false;
+  // A run Tom reopened is his conversation: nothing is queued into it. The
+  // message waits on the row for the next run, which the sweep starts within
+  // the minute.
+  if (session && session.mode !== "autonomous") {
+    await ctx.db.patch(row._id, { mailbox: [...(row.mailbox ?? []), text] });
+    return false;
+  }
+  if (!session) return false;
   await queueTurn(ctx, session._id, text);
   return isLive(session.status);
 }
@@ -305,7 +310,7 @@ async function launchRun(
 ): Promise<Id<"claudeSessions">> {
   const now = Date.now();
   const from = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
-  const carried: string[] = [];
+  const carried: string[] = [...(row.mailbox ?? [])];
   if (from) {
     // Every message the ended run did not finish: never delivered (pending,
     // or settled "interrupted" by the ending), or delivered in a turn that
@@ -378,6 +383,7 @@ async function launchRun(
     leaseDeadline: now + ORCHESTRATOR_LEASE_MS,
     runStartedAt: now,
     restartAt: undefined,
+    mailbox: undefined,
     lastRestart: { at: now, reason, ...(from ? { fromSessionId: from._id } : {}) },
   });
   await logEvent(ctx, "orchestrator-started", undefined, {

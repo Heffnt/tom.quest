@@ -549,6 +549,9 @@ describe("restarting from the document", () => {
     const reopened = await t.run(async (ctx) => ctx.db.get(first as Id<"claudeSessions">));
     expect(reopened?.status).not.toBe("failed");
     expect((await pendingTexts(t, first)).some((m) => m === "for the orchestrator")).toBe(false);
+    // It waited for the next run, whose opener carries it.
+    expect((await pendingTexts(t, next))[0]).toContain("for the orchestrator");
+    expect((await row(t))?.mailbox).toBeUndefined();
     expect((await pen(t, "/tts/answer", { sessionId: first, elevationId: "x", kind: "obvious", answer: "y" })).status).toBe(409);
   });
 
