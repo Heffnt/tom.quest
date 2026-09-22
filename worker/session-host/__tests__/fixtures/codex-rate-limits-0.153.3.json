@@ -1,0 +1,43 @@
+{
+  "_comment": "The `result` of account/rateLimits/read from `codex app-server`, codex-cli 0.153.3, read on the Jarvis Box on 2026-09-21 (a prolite plan). accountId and the credit id are redacted. Only one window: the weekly one, in primary; secondary is null.",
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": null,
+    "primary": { "usedPercent": 51, "windowDurationMins": 10080, "resetsAt": 1790414227 },
+    "secondary": null,
+    "credits": { "hasCredits": false, "unlimited": false, "balance": "0" },
+    "individualLimit": null,
+    "spendControlReached": false,
+    "planType": "prolite",
+    "rateLimitReachedType": null
+  },
+  "rateLimitsByLimitId": {
+    "codex": {
+      "limitId": "codex",
+      "limitName": null,
+      "primary": { "usedPercent": 51, "windowDurationMins": 10080, "resetsAt": 1790414227 },
+      "secondary": null,
+      "credits": { "hasCredits": false, "unlimited": false, "balance": "0" },
+      "individualLimit": null,
+      "spendControlReached": false,
+      "planType": "prolite",
+      "rateLimitReachedType": null
+    }
+  },
+  "rateLimitResetCredits": {
+    "availableCount": 1,
+    "credits": [
+      {
+        "id": "RateLimitResetCredit_REDACTED",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "grantedAt": 1788566072,
+        "expiresAt": 1791158072,
+        "title": "Full reset",
+        "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+      }
+    ]
+  },
+  "accountId": "REDACTED",
+  "rateLimitUpsell": null
+}
