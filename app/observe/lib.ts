@@ -56,9 +56,15 @@ export type RunMark = {
   kind: string;
   status: string;
   model: string | null;
+  origin: string;
   startedAt: number;
   lastLineAt: number;
   endedReason: string | null;
+  turns: number | null;
+  toolCalls: number | null;
+  totalTokens: number | null;
+  costUsd: number | null;
+  mergeKey: string | null;
   cwd: string | null;
   gitBranch: string | null;
   wikitomCommit: string | null;
@@ -205,21 +211,6 @@ export function rulingHref(ruling: RulingRow): string {
   return "/tts?tab=batches";
 }
 
-/**
- * The merge's pull request. The record keeps no pull request number on a merge
- * row: what it keeps is GitHub's own answer to whether the sha reached main,
- * and that sentence names the pull request when a pull request is what merged
- * it. So the number is read out of that sentence, and a merge whose sentence
- * names none opens the commit instead.
- */
-export function mergeHref(row: MergeRow): string | null {
-  const slug = row.repo === null ? undefined : (SESSION_REPOS as Record<string, string>)[row.repo];
-  if (slug === undefined || row.sha === null) return null;
-  const pull = row.mainCheck === null ? null : /pull request #(\d+)/.exec(row.mainCheck);
-  if (pull !== null) return `https://github.com/${slug}/pull/${pull[1]}`;
-  return `https://github.com/${slug}/commit/${row.sha}`;
-}
-
 // ── The map's numbers ────────────────────────────────────────────────────────
 
 type Tallied = { count: number; lastAt: number | null };
@@ -313,6 +304,16 @@ export function tallyFor(tally: Tally, data: WindowData, now: number): Tallied {
       }
       return { count: seen.size, lastAt };
     }
+    case "events": {
+      let count = 0;
+      let lastAt: number | null = null;
+      for (const event of data.events) {
+        if (event.kind !== tally.kind) continue;
+        count += 1;
+        lastAt = latest(lastAt, event.at);
+      }
+      return { count, lastAt };
+    }
     case "gate": {
       let count = 0;
       let lastAt: number | null = null;
@@ -358,6 +359,48 @@ export function clock(at: number): string {
 
 export function dayAndClock(at: number): string {
   return `${new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${clock(at)}`;
+}
+
+// ── Grouping the workers ─────────────────────────────────────────────────────
+
+/**
+ * THE JOB A WORKER RUN BELONGS TO, or nothing.
+ *
+ * A scheduled job's runs all carry `origin: "cron:<job>"`, written by
+ * worker/jobs/tts-lib.mjs, so the job's name is on every row and is not
+ * inferred from anything. That is what the workers lane groups on: seven
+ * hundred runs of the time-note job are one row called `time-notes`, and the
+ * row's count says how many.
+ *
+ * ANYTHING ELSE ANSWERS NOTHING and keeps a row of its own — a subagent, a
+ * delegate call, a codex child, a run an orchestrator spawned. Those are the
+ * runs worth seeing one at a time, and folding them into a group would hide the
+ * very thing the lane is for.
+ */
+export function jobOfRun(run: RunMark): string | null {
+  if (run.depth !== 0 || run.parentRunId !== null) return null;
+  const cron = /^cron:(.+)$/.exec(run.origin);
+  return cron === null ? null : cron[1];
+}
+
+/** How a run ended, in the record's own words and numbers. */
+export function outcomeWords(run: RunMark): string[] {
+  const parts: string[] = [run.status];
+  if (run.endedReason !== null) parts.push(run.endedReason);
+  if (run.turns !== null) parts.push(`${run.turns} turns`);
+  if (run.toolCalls !== null) parts.push(`${run.toolCalls} tool calls`);
+  if (run.totalTokens !== null) parts.push(`${run.totalTokens.toLocaleString("en-US")} tokens`);
+  if (run.costUsd !== null) parts.push(`$${run.costUsd.toFixed(2)}`);
+  return parts;
+}
+
+/** How long a run lasted, in the shortest true unit. */
+export function lasted(run: RunMark, now: number): string {
+  const ms = Math.max(0, barEnd(run, now) - run.startedAt);
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  return `${(minutes / 60).toFixed(1)}h`;
 }
 
 // ── Stacking ─────────────────────────────────────────────────────────────────

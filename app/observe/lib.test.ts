@@ -7,8 +7,10 @@ import {
   fractionOf,
   isFailure,
   laneOfRun,
-  mergeHref,
   mergeRowOf,
+  jobOfRun,
+  lasted,
+  outcomeWords,
   packRows,
   repoOfRun,
   rulingHref,
@@ -31,9 +33,15 @@ const RUN: RunMark = {
   kind: "job",
   status: "ended",
   model: "opus",
+  origin: "cron:time-notes",
   startedAt: 1_000,
   lastLineAt: 2_000,
   endedReason: null,
+  turns: null,
+  toolCalls: null,
+  totalTokens: null,
+  costUsd: null,
+  mergeKey: null,
   cwd: null,
   gitBranch: null,
   wikitomCommit: null,
@@ -96,7 +104,7 @@ describe("a failure", () => {
   });
 });
 
-describe("a merge's address", () => {
+describe("a merge row", () => {
   const event = (data: unknown): PointEvent => ({
     id: "e1",
     at: 10,
@@ -106,28 +114,45 @@ describe("a merge's address", () => {
     data,
   });
 
-  it("is the pull request the record's own sentence names", () => {
+  it("carries the repository, the sha and the commit key the gate is filed under", () => {
     const row = mergeRowOf(
-      event({
-        repo: "tom.quest",
-        sha: "abcdef1234",
-        subject: "observe: a page",
-        mainCheck: "abcdef1 is the head of pull request #205, merged into main",
-      }),
+      event({ repo: "tom.quest", sha: "abcdef1234", subject: "observe: a page", mainCheck: "abcdef1 is on main" }),
     );
-    expect(mergeHref(row)).toBe("https://github.com/Heffnt/tom.quest/pull/205");
+    expect(row.repo).toBe("tom.quest");
+    expect(row.subject).toBe("observe: a page");
+    expect(row.commitKey).toBe("tom.quest@abcdef1234");
   });
 
-  it("is the commit when no pull request is named", () => {
-    const row = mergeRowOf(
-      event({ repo: "tom.quest", sha: "abcdef1234", subject: "x", mainCheck: "abcdef1 is on main" }),
-    );
-    expect(mergeHref(row)).toBe("https://github.com/Heffnt/tom.quest/commit/abcdef1234");
+  it("carries no address off this site", () => {
+    const row = mergeRowOf(event({ repo: "tom.quest", sha: "abcdef1234" }));
+    expect(JSON.stringify(row)).not.toContain("github.com");
+  });
+});
+
+describe("the job a worker run belongs to", () => {
+  it("is the name in its own origin, and nothing when it was spawned", () => {
+    expect(jobOfRun(run({ origin: "cron:time-notes" }))).toBe("time-notes");
+    expect(jobOfRun(run({ origin: "daemon" }))).toBeNull();
+    expect(jobOfRun(run({ origin: "cron:digest", depth: 1 }))).toBeNull();
+    expect(jobOfRun(run({ origin: "cron:digest", parentRunId: "claude:box:parentaa" }))).toBeNull();
+  });
+});
+
+describe("how a run ended", () => {
+  it("says only the numbers the row carries", () => {
+    expect(outcomeWords(run({ status: "ended", turns: 3, toolCalls: 7, totalTokens: 1234, costUsd: 0.5 }))).toEqual([
+      "ended",
+      "3 turns",
+      "7 tool calls",
+      "1,234 tokens",
+      "$0.50",
+    ]);
+    expect(outcomeWords(run({ status: "running" }))).toEqual(["running"]);
   });
 
-  it("is nothing when the row names a repository the record does not know", () => {
-    const row = mergeRowOf(event({ repo: "elsewhere", sha: "abcdef1234" }));
-    expect(mergeHref(row)).toBeNull();
+  it("says how long it ran in the shortest true unit", () => {
+    expect(lasted(run({ startedAt: 0, lastLineAt: 30_000 }), 0)).toBe("30s");
+    expect(lasted(run({ startedAt: 0, lastLineAt: 5 * 60_000 }), 0)).toBe("5m");
   });
 });
 
@@ -215,6 +240,11 @@ describe("the map's numbers", () => {
     expect(tallyFor({ of: "lane", lane: "merges" }, data, 0)).toEqual({ count: 1, lastAt: 400 });
     expect(tallyFor({ of: "lane", lane: "failures" }, data, 0)).toEqual({ count: 1, lastAt: 500 });
     expect(tallyFor({ of: "lane", lane: "rulings" }, data, 0)).toEqual({ count: 1, lastAt: 700 });
+  });
+
+  it("counts one kind of event on its own", () => {
+    expect(tallyFor({ of: "events", kind: "merge" }, data, 0)).toEqual({ count: 1, lastAt: 400 });
+    expect(tallyFor({ of: "events", kind: "tts-opened" }, data, 0)).toEqual({ count: 0, lastAt: null });
   });
 
   it("counts the host, the distinct models, the WikiTom commits and the gate rows", () => {

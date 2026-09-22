@@ -9,14 +9,19 @@
 // put while the controls below narrow what the timeline draws — a count that
 // moved with the filters would be a different number every time a filter was
 // touched, and the map's whole job is to be the place where nothing is hidden.
+//
+// NOTHING ON THIS PAGE LEAVES THE SITE. Every press either opens more of what
+// the record holds, in place, or goes to another page of tom.quest.
 
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import RunnersBlock from "@/app/tts/components/runners-block";
 import ChangesList from "./components/changes-list";
+import DefinitionDrawer from "./components/definition-drawer";
 import Map from "./components/map";
 import RulingsList from "./components/rulings-list";
+import { TermsProvider } from "./components/terms";
 import Timeline from "./components/timeline";
 import type { Lane } from "./map-data";
 import { OBSERVE_SLUG } from "./slug";
@@ -42,7 +47,8 @@ export default function ObserveClient() {
   const [children, setChildren] = useState(false);
   const [repo, setRepo] = useState<string>("all");
   const [environment, setEnvironment] = useState<Environment>("all");
-  const [focus, setFocus] = useState<Lane | "box" | null>(null);
+  const [focus, setFocus] = useState<Lane | null>(null);
+  const [defining, setDefining] = useState<string | null>(null);
 
   // A fifteen-second tick keeps the ages and the live bars honest.
   const [now, setNow] = useState(() => Date.now());
@@ -82,113 +88,107 @@ export default function ObserveClient() {
         (run) =>
           (children || run.depth === 0) &&
           (environment === "all" || run.environment === environment) &&
-          (repo === "all" || repoOfRun(run) === repo) &&
-          (focus !== "box" || run.host === "box"),
+          (repo === "all" || repoOfRun(run) === repo),
       ),
-    [rows.runs, children, environment, repo, focus],
+    [rows.runs, children, environment, repo],
   );
-
-  const onlyLane = focus === null || focus === "box" ? null : focus;
 
   return (
     <TomGate label="Observe">
-      <div className="w-full px-3 py-5 sm:px-5">
-        <header className="flex flex-wrap items-baseline justify-between gap-2">
-          <h1 className="text-2xl font-bold tracking-tight">{OBSERVE_SLUG}</h1>
-          <span className="text-[11px] font-mono text-text-faint">
-            {windowLabel(win)}
-            {rows.capped ? " · capped" : rows.complete ? "" : " · loading"}
-          </span>
-        </header>
+      <TermsProvider onDefine={setDefining}>
+        <div className="w-full px-3 py-5 sm:px-5">
+          <header className="flex flex-wrap items-baseline justify-between gap-2">
+            <h1 className="text-2xl font-bold tracking-tight">{OBSERVE_SLUG}</h1>
+            <span className="text-[11px] font-mono text-text-faint">
+              {windowLabel(win)}
+              {rows.capped ? " · capped" : rows.complete ? "" : " · loading"}
+            </span>
+          </header>
 
-        <div className="mt-3">
-          <Map
-            data={data}
-            now={now}
-            focus={focus}
-            onFocus={setFocus}
-            waiting={rows.waiting}
-          />
-        </div>
+          <div className="mt-3">
+            <Map data={data} now={now} focus={focus} onFocus={setFocus} waiting={rows.waiting} />
+          </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <Group>
-            {WINDOW_KINDS.map((option) => (
-              <Pick
-                key={option}
-                on={kind === option}
-                onClick={() => {
-                  setKind(option);
-                  setOffset(0);
-                }}
-              >
-                {option}
-              </Pick>
-            ))}
-          </Group>
-          <Group>
-            <Pick on={false} onClick={() => setOffset((value) => value + 1)}>
-              previous
-            </Pick>
-            <Pick on={false} onClick={() => setOffset((value) => Math.max(0, value - 1))}>
-              next
-            </Pick>
-          </Group>
-          <Group>
-            <Pick on={children} onClick={() => setChildren((value) => !value)}>
-              child runs
-            </Pick>
-          </Group>
-          <Group>
-            <Pick on={repo === "all"} onClick={() => setRepo("all")}>
-              every repo
-            </Pick>
-            {REPO_NAMES.map((name) => (
-              <Pick key={name} on={repo === name} onClick={() => setRepo(name)}>
-                {name}
-              </Pick>
-            ))}
-          </Group>
-          <Group>
-            {ENVIRONMENTS.map((option) => (
-              <Pick
-                key={option}
-                on={environment === option}
-                onClick={() => setEnvironment(option)}
-              >
-                {option === "all" ? "every environment" : option}
-              </Pick>
-            ))}
-          </Group>
-          {focus !== null && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <Group>
-              <Pick on onClick={() => setFocus(null)}>
-                {focus}
+              {WINDOW_KINDS.map((option) => (
+                <Pick
+                  key={option}
+                  on={kind === option}
+                  onClick={() => {
+                    setKind(option);
+                    setOffset(0);
+                  }}
+                >
+                  {option}
+                </Pick>
+              ))}
+            </Group>
+            <Group>
+              <Pick on={false} onClick={() => setOffset((value) => value + 1)}>
+                previous
+              </Pick>
+              <Pick on={false} onClick={() => setOffset((value) => Math.max(0, value - 1))}>
+                next
               </Pick>
             </Group>
-          )}
-        </div>
+            <Group>
+              <Pick on={children} onClick={() => setChildren((value) => !value)}>
+                child runs
+              </Pick>
+            </Group>
+            <Group>
+              <Pick on={repo === "all"} onClick={() => setRepo("all")}>
+                every repo
+              </Pick>
+              {REPO_NAMES.map((name) => (
+                <Pick key={name} on={repo === name} onClick={() => setRepo(name)}>
+                  {name}
+                </Pick>
+              ))}
+            </Group>
+            <Group>
+              {ENVIRONMENTS.map((option) => (
+                <Pick
+                  key={option}
+                  on={environment === option}
+                  onClick={() => setEnvironment(option)}
+                >
+                  {option === "all" ? "every environment" : option}
+                </Pick>
+              ))}
+            </Group>
+            {focus !== null && (
+              <Group>
+                <Pick on onClick={() => setFocus(null)}>
+                  {focus}
+                </Pick>
+              </Group>
+            )}
+          </div>
 
-        <div className="mt-2">
-          <Timeline
-            win={win}
-            now={now}
-            runs={shown}
-            events={rows.events}
-            rulings={rows.rulings}
-            onlyLane={onlyLane}
-          />
-        </div>
+          <div className="mt-2">
+            <Timeline
+              win={win}
+              now={now}
+              runs={shown}
+              events={rows.events}
+              rulings={rows.rulings}
+              onlyLane={focus}
+            />
+          </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <RulingsList rulings={rows.rulings} events={rows.events} isTom={isTom} />
-          <ChangesList events={rows.events} />
-        </div>
+          <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <RulingsList rulings={rows.rulings} events={rows.events} isTom={isTom} />
+            <ChangesList events={rows.events} runs={rows.runs} now={now} />
+          </div>
 
-        <div className="mt-4">
-          <RunnersBlock now={now} />
+          <div className="mt-4">
+            <RunnersBlock now={now} />
+          </div>
         </div>
-      </div>
+        <DefinitionDrawer term={defining} onClose={() => setDefining(null)} />
+      </TermsProvider>
     </TomGate>
   );
 }
@@ -216,9 +216,7 @@ function Pick({
       aria-pressed={on}
       onClick={onClick}
       className={`rounded px-2 py-0.5 text-[11px] ${
-        on
-          ? "bg-accent-dim text-accent"
-          : "text-text-muted hover:bg-surface-alt hover:text-text"
+        on ? "bg-accent-dim text-accent" : "text-text-muted hover:bg-surface-alt hover:text-text"
       }`}
     >
       {children}

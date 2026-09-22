@@ -125,6 +125,7 @@ describe("the point events", () => {
         "poll-gmail-failed",
         "slack-send-failed",
         "tts-opened",
+        "surfaced",
       ]) {
         await ctx.db.insert("dtsEvents", { at: 100, kind });
       }
@@ -139,7 +140,26 @@ describe("the point events", () => {
       "merge",
       "poll-gmail-failed",
       "tests-run",
+      "tts-opened",
     ]);
+  });
+
+  it("counts a gate head row and a page open without carrying their bodies", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", { at: 100, kind: "audit-verdict", data: { text: "a".repeat(4000) } });
+      await ctx.db.insert("dtsEvents", { at: 110, kind: "merge", data: { repo: "tom.quest", sha: "abc" } });
+    });
+    const page = await tom.query(api.observe.eventsInWindow, {
+      from: 0,
+      to: 1_000,
+      paginationOpts: PAGE,
+    });
+    const audit = page.page.find((event) => event.kind === "audit-verdict");
+    const merge = page.page.find((event) => event.kind === "merge");
+    expect(audit?.data).toBeNull();
+    expect(merge?.data).not.toBeNull();
   });
 
   it("calls a failure every -failed kind but the two that are not broken lines", () => {
@@ -196,5 +216,52 @@ describe("the merge gate's state", () => {
     expect(gate.allowed).toBe(false);
     expect(gate.checks.map((check) => check.name).sort()).toEqual(["audit", "evals", "tests"]);
     expect(gate.checks.every((check) => check.passed)).toBe(false);
+  });
+});
+
+describe("defining a word", () => {
+  it("reads the lines of the published bodies that define it, and says where each came from", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomFiles", {
+        name: "agent-rules",
+        sourcePath: "model-of-tom/agent-rules.md",
+        syncedAt: 1,
+        body: [
+          "Some prose that mentions a runner in passing.",
+          "- **runner** — one experiment watched by a chain of short step runs.",
+        ].join(String.fromCharCode(10)),
+      });
+    });
+    const answer = await tom.query(api.observe.define, { term: "runner" });
+    expect(answer.found).toHaveLength(1);
+    expect(answer.found[0].where).toBe("model-of-tom/agent-rules.md");
+    expect(answer.found[0].text).toContain("one experiment watched");
+  });
+
+  it("says a word is in the vocabulary even when nothing in the record defines it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const answer = await tom.query(api.observe.define, { term: "ruling" });
+    expect(answer.inVocabulary).toBe(true);
+    expect(answer.found).toEqual([]);
+    expect(answer.elsewhere).toContain("vocabulary.json");
+  });
+
+  it("carries a skill's own description when the word names a skill", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: "know-week",
+        group: "know",
+        description: "Tom's recurring week.",
+        body: "nothing here defines anything",
+        syncedAt: 1,
+      });
+    });
+    const answer = await tom.query(api.observe.define, { term: "know-week" });
+    expect(answer.found.some((entry) => entry.text === "Tom's recurring week.")).toBe(true);
   });
 });

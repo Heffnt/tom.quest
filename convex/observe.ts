@@ -21,7 +21,7 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { mergeGateFor } from "./ttsMerge";
-import { commitKey } from "./ttsShared";
+import { VOCABULARY_TERMS, commitKey } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
 
 /** The label every gate in this module names, so a denial says which surface. */
@@ -50,6 +50,10 @@ const WAITING_MAX = 200;
 const MERGE_KIND = "merge";
 const DELEGATE_DECISION_KIND = "delegate-decision";
 const DELEGATE_OBJECTION_KIND = "delegate-objection";
+
+/** What the map's pages box counts: an open of the TTS page, which the page
+ *  itself records (convex/tts.ts recordEvent). */
+const PAGE_OPENED_KIND = "tts-opened";
 
 /** The three head rows the merge gate reads for one commit
  *  (convex/ttsMerge.ts). */
@@ -81,10 +85,17 @@ function wanted(kind: string): boolean {
     kind === MERGE_KIND ||
     kind === DELEGATE_DECISION_KIND ||
     kind === DELEGATE_OBJECTION_KIND ||
+    kind === PAGE_OPENED_KIND ||
     (GATE_KINDS as readonly string[]).includes(kind) ||
     isFailureKind(kind)
   );
 }
+
+/** The kinds a page of events counts but never draws, so their bodies stay on
+ *  the server. An audit row carries up to eight kilobytes of the audit's prose,
+ *  and a month of them is megabytes a browser never opens; the changes list
+ *  asks for that text by commit instead. */
+const COUNTED_NOT_DRAWN = new Set<string>([...GATE_KINDS, PAGE_OPENED_KIND]);
 
 function assertWindow(from: number, to: number) {
   if (!Number.isFinite(from) || !Number.isFinite(to)) throw new Error("window bounds must be numbers");
@@ -106,9 +117,25 @@ function mark(run: Doc<"runs">) {
     kind: run.kind,
     status: run.status,
     model: run.model ?? null,
+    // WHERE THE RUN CAME FROM, verbatim. A scheduled job's is `cron:<job>`
+    // (worker/jobs/tts-lib.mjs), a runner step's `runner:<id>`, a session's
+    // "session" or "daemon". The timeline groups the workers lane on this, so
+    // seven hundred runs of one job are one row named by the job the record
+    // itself named.
+    origin: run.origin,
     startedAt: run.startedAt,
     lastLineAt: run.lastLineAt,
+    // The outcome a mark opens to. Four numbers and a word, which is what the
+    // run row itself holds; the transcript stays on the run page.
     endedReason: run.outcome?.endedReason ?? null,
+    turns: run.outcome?.turns ?? null,
+    toolCalls: run.outcome?.toolCalls ?? null,
+    totalTokens: run.outcome?.totals.totalTokens ?? null,
+    costUsd: run.outcome?.costUsd ?? null,
+    // The merge this run's registration named, which is how the changes list
+    // finds the runs that did the work of a merge. Absent on every run that
+    // named none.
+    mergeKey: run.mergeKey ?? null,
     // The repository filter's value. A run names no repository field; what it
     // has is the working directory and the branch its launcher recorded, and
     // the page turns the directory into a repository name (app/observe/lib.ts
@@ -186,15 +213,7 @@ export const eventsInWindow = query({
           kind: event.kind,
           key: event.key ?? null,
           todoId: (event.todoId ?? null) as string | null,
-          // A GATE HEAD ROW ARRIVES WITHOUT ITS BODY. The map counts these and
-          // nothing draws their content, while an audit row carries up to eight
-          // kilobytes of the audit's prose — a month of them would be megabytes
-          // sent to a browser that never opens one. The changes list reads the
-          // gate's own answer for the commits it shows (gateRows below), which
-          // is where that content belongs.
-          data: (GATE_KINDS as readonly string[]).includes(event.kind)
-            ? null
-            : ((event.data ?? null) as unknown),
+          data: COUNTED_NOT_DRAWN.has(event.kind) ? null : ((event.data ?? null) as unknown),
         })),
     };
   },
@@ -306,16 +325,133 @@ export const gateRows = query({
     await requireTom(ctx, SURFACE);
     if (commits.length > 60) throw new Error("gateRows takes at most 60 commits");
     return await Promise.all(commits.map(async ({ repo, sha }) => {
+      const key = commitKey(repo, sha);
       const gate = await mergeGateFor(ctx, repo, sha);
+      // THE AUDIT'S OWN PROSE, which is the nearest thing the record keeps to
+      // an account of what a change does: the audit read the diff and wrote
+      // about it, and convex/ttsMerge.ts stores that text on the head row. The
+      // merge row itself carries a subject and GitHub's sentence and no pull
+      // request body, so this is what the expansion has to read.
+      const audit = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", "audit-verdict").eq("key", key))
+        .order("desc")
+        .first();
+      const data = (audit?.data ?? {}) as { text?: unknown; verdict?: unknown; model?: unknown };
       return {
-        key: commitKey(repo, sha),
+        key,
         allowed: gate.allowed,
         checks: gate.checks.map((check) => ({
           name: check.name,
           passed: check.passed,
           why: check.why,
         })),
+        audit:
+          audit === null
+            ? null
+            : {
+                at: audit.at,
+                verdict: typeof data.verdict === "string" ? data.verdict : null,
+                model: typeof data.model === "string" ? data.model : null,
+                text: typeof data.text === "string" ? data.text : null,
+              },
       };
     }));
   },
 });
+
+// ── Definitions ──────────────────────────────────────────────────────────────
+
+/**
+ * What the record can say about one word.
+ *
+ * THE CANONICAL GLOSSARY IS NOT IN THE RECORD. The vocabulary's definitions
+ * live in WikiTom `tts/vocabulary.json` and `tts search define` answers from
+ * them on a box or a laptop with that checkout; tom.quest holds the term NAMES
+ * alone (convex/ttsShared.ts VOCABULARY_TERMS says so in as many words). So
+ * this reads the three published bodies the record DOES hold — the
+ * model-of-Tom files, the skills and the repository rules — for the lines that
+ * define the word, and answers with those lines and where each came from.
+ *
+ * A word the vocabulary names and none of those bodies define comes back with
+ * an empty list and `inVocabulary: true`, which is a true statement about the
+ * record rather than a missing answer dressed up as one.
+ */
+export const define = query({
+  args: { term: v.string() },
+  handler: async (ctx, { term }) => {
+    await requireTom(ctx, SURFACE);
+    const word = term.trim();
+    if (word === "" || word.length > 80) throw new Error("a term is one to eighty characters");
+    const found: { where: string; text: string }[] = [];
+
+    const skills = await ctx.db.query("ttsSkills").collect();
+    for (const skill of skills) {
+      if (skill.name.toLowerCase() === word.toLowerCase() && skill.description !== undefined) {
+        found.push({ where: `skill ${skill.name}`, text: skill.description });
+      }
+      for (const line of definingLines(skill.body, word)) {
+        found.push({ where: `skill ${skill.name}`, text: line });
+      }
+      for (const reference of skill.references ?? []) {
+        for (const line of definingLines(reference.body, word)) {
+          found.push({ where: reference.path, text: line });
+        }
+      }
+    }
+
+    for (const file of await ctx.db.query("modelOfTomFiles").collect()) {
+      for (const line of definingLines(file.body, word)) {
+        found.push({ where: file.sourcePath, text: line });
+      }
+    }
+
+    for (const rule of await ctx.db.query("repoRules").collect()) {
+      for (const line of definingLines(rule.body, word)) {
+        found.push({ where: `${rule.repo} ${rule.path}`, text: line });
+      }
+    }
+
+    return {
+      term: word,
+      inVocabulary: VOCABULARY_TERMS.some((known) => known.toLowerCase() === word.toLowerCase()),
+      found: found.slice(0, DEFINITION_LINES_MAX),
+      // Where the definition is when it is not here, said once rather than
+      // guessed at by the reader.
+      elsewhere: "WikiTom tts/vocabulary.json, through `tts search define`",
+    };
+  },
+});
+
+/** The most lines one word's answer carries. */
+const DEFINITION_LINES_MAX = 12;
+
+/** The longest line kept whole; past this it is cut, because a definition the
+ *  reader has to scroll a drawer for is a page, not a definition. */
+const DEFINITION_LINE_MAX_CHARS = 600;
+
+/**
+ * The lines of one body that DEFINE the word rather than merely mention it.
+ *
+ * Three shapes, all of them shapes the corpus already writes in: the glossary
+ * bullet (`- **term** — …`), the bold name anywhere in a line, and the closed
+ * vocabulary's own upper-case sentence (`A BATCH holds …`). Mentions are
+ * deliberately not matched: every file in the corpus says "run" and a drawer
+ * holding every sentence with "run" in it defines nothing.
+ */
+function definingLines(body: string, term: string): string[] {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const bold = new RegExp(`\\*\\*\\s*${escaped}\\s*\\*\\*`, "i");
+  const bullet = new RegExp(`^\\s*[-*]\\s+\`?${escaped}\`?\\s*[—:-]\\s+\\S`, "i");
+  const shouted = new RegExp(`\\b(?:A|AN|THE)?\\s*${escaped.toUpperCase()}\\b[^.]*\\b(?:IS|ARE|HOLDS|MEANS)\\b`);
+  const hits: string[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    if (hits.length >= DEFINITION_LINES_MAX) break;
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    if (bold.test(trimmed) || bullet.test(trimmed) || shouted.test(trimmed)) {
+      hits.push(trimmed.slice(0, DEFINITION_LINE_MAX_CHARS));
+    }
+  }
+  return hits;
+}
