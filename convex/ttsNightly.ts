@@ -291,7 +291,11 @@ export const internalLearningInput = internalQuery({
         .query("dtsRulings")
         .withIndex("by_ruled", (q) => q.gte("ruledAt", since).lt("ruledAt", until))
         .take(LEARNING_INPUT_MAX)
-    ).map((r) => ({
+    )
+      // A delegate ruling is the delegate's reading of Tom, not his words:
+      // learning from it would teach the model of Tom its own guesses.
+      .filter((r) => r.ruledBy !== "delegate")
+      .map((r) => ({
       id: r._id,
       at: r.ruledAt,
       verdict: r.verdict,

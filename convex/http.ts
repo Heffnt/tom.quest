@@ -1,6 +1,6 @@
 import { httpRouter } from "convex/server";
 import type { FunctionArgs } from "convex/server";
-import { httpAction } from "./_generated/server";
+import { httpAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
@@ -1611,12 +1611,18 @@ const ttsAsk = httpAction(async (ctx, request) => {
   const hasSession = nonempty(b.sessionId);
   const hasJob = nonempty(b.job);
   const hasRunner = nonempty(b.runnerId);
-  if ([hasSession, hasJob, hasRunner].filter(Boolean).length !== 1) return jsonResponse(400, { error: "exactly one of sessionId, runnerId or job is required" });
+  // An elevation's trade-off, asked by the orchestrator (convex/orchestrator.ts).
+  // Tom's ruling of 2026-09-21: it is shown to the delegate with NO
+  // recommendation, so this caller alone sends none and is refused one.
+  const hasElevation = nonempty(b.elevationId);
+  if ([hasSession, hasJob, hasRunner, hasElevation].filter(Boolean).length !== 1) return jsonResponse(400, { error: "exactly one of sessionId, runnerId, job or elevationId is required" });
   if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
   if (!nonempty(b.question) || (b.question as string).trim().length > 400) return jsonResponse(400, { error: "question (1-400 characters) required" });
   if (!Array.isArray(b.options) || b.options.length < 2 || b.options.length > 5 || !b.options.every(nonempty)) return jsonResponse(400, { error: "options must be 2-5 non-empty strings" });
   const options = b.options.map((option) => (option as string).trim());
-  if (!nonempty(b.recommendation) || !options.includes((b.recommendation as string).trim())) return jsonResponse(400, { error: "recommendation must be one of options" });
+  if (hasElevation) {
+    if (b.recommendation !== undefined) return jsonResponse(400, { error: "an elevation's trade-off carries no recommendation" });
+  } else if (!nonempty(b.recommendation) || !options.includes((b.recommendation as string).trim())) return jsonResponse(400, { error: "recommendation must be one of options" });
   if (!nonempty(b.fallback)) return jsonResponse(400, { error: "fallback (non-empty string) required" });
   if (b.decision !== null && !nonempty(b.decision)) return jsonResponse(400, { error: "decision must be a non-empty string or null" });
   if (!nonempty(b.reason) || (b.reason as string).trim().length > 400) return jsonResponse(400, { error: "reason (1-400 characters) required" });
@@ -1632,8 +1638,9 @@ const ttsAsk = httpAction(async (ctx, request) => {
       askId: b.askId as string, sessionId: hasSession ? b.sessionId as string : undefined,
       job: hasJob ? b.job as string : undefined, todoId: b.todoId as string | undefined,
       runnerId: hasRunner ? b.runnerId as string : undefined,
+      elevationId: hasElevation ? b.elevationId as string : undefined,
       question: (b.question as string).trim(), options,
-      recommendation: (b.recommendation as string).trim(), fallback: (b.fallback as string).trim(),
+      recommendation: hasElevation ? undefined : (b.recommendation as string).trim(), fallback: (b.fallback as string).trim(),
       decision: b.decision as string | null, reason: (b.reason as string).trim(),
       refused: b.refused, refusedBecause: b.refusedBecause as string | null,
       model: b.model as string, ms: b.ms, promptSha: b.promptSha as string,
@@ -1642,6 +1649,7 @@ const ttsAsk = httpAction(async (ctx, request) => {
       sessionId: hasSession ? b.sessionId as string : undefined,
       job: hasJob ? b.job as string : undefined,
       runnerId: hasRunner ? b.runnerId as string : undefined,
+      elevationId: hasElevation ? b.elevationId as string : undefined,
       todoId: b.todoId as string | undefined,
     });
     return jsonResponse(200, { ok: true, askId: b.askId, ...result, priorObjections: context.priorObjections });
@@ -3443,6 +3451,121 @@ http.route({
   handler: ttsSessionOutcome,
 });
 
+// ── The orchestrator's pens (Tom, 2026-09-21; convex/orchestrator.ts) ────────
+// Worker-key doors, like every pen a run on the box holds. Each names the
+// calling run's session id, and the mutation refuses a caller that is not the
+// orchestrator's live run (or, for a worker's pens, a live hosted worker): the
+// key says a run is on the box, the session id says which one it is. A
+// refusal is a 409 with the mutation's sentence, which the calling agent reads.
+
+/** Parse a pen's JSON body, run one mutation, answer with its result. */
+function orchestratorPen(
+  run: (ctx: ActionCtx, body: Record<string, unknown>) => Promise<unknown>,
+) {
+  return httpAction(async (ctx, request) => {
+    const denied = ttsAuth(request);
+    if (denied) return denied;
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse(400, { error: "invalid JSON body" });
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    try {
+      return jsonResponse(200, { ok: true, ...((await run(ctx, b)) as object) });
+    } catch (e) {
+      return jsonResponse(409, { error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+}
+
+const str = (value: unknown): string => (typeof value === "string" ? value : "");
+const optionalStr = (value: unknown): string | undefined => (typeof value === "string" && value.trim() !== "" ? value : undefined);
+
+// POST /tts/orchestrator — { action: "start", reason, instruction? } starts it
+// (one exists at a time; a start while a run is live starts nothing) and
+// { action: "stop", reason } stops it and the workers it hosts.
+// GET /tts/orchestrator — its state: the row, live workers, unanswered
+// elevations.
+http.route({
+  path: "/tts/orchestrator",
+  method: "POST",
+  handler: orchestratorPen(async (ctx, b) => {
+    const reason = str(b.reason).trim();
+    if (reason === "") throw new Error("reason (non-empty string) required");
+    if (b.action === "start") {
+      return await ctx.runMutation(internal.orchestrator.internalStart, { reason, instruction: optionalStr(b.instruction) });
+    }
+    if (b.action === "stop") return await ctx.runMutation(internal.orchestrator.internalStop, { reason });
+    throw new Error('action must be "start" or "stop"');
+  }),
+});
+http.route({
+  path: "/tts/orchestrator",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const denied = ttsAuth(request);
+    if (denied) return denied;
+    return jsonResponse(200, await ctx.runQuery(internal.orchestrator.internalState, {}));
+  }),
+});
+http.route({
+  path: "/tts/orchestrator/document",
+  method: "POST",
+  handler: orchestratorPen(async (ctx, b) =>
+    await ctx.runMutation(internal.orchestrator.internalWriteDocument, { sessionId: str(b.sessionId), document: str(b.document) }),
+  ),
+});
+http.route({
+  path: "/tts/spawn-worker",
+  method: "POST",
+  handler: orchestratorPen(async (ctx, b) =>
+    await ctx.runMutation(internal.orchestrator.internalSpawnWorker, {
+      sessionId: str(b.sessionId),
+      title: str(b.title),
+      brief: str(b.brief),
+      repos: Array.isArray(b.repos) ? b.repos.filter((r): r is string => typeof r === "string") : undefined,
+      todoId: optionalStr(b.todoId),
+      model: optionalStr(b.model),
+    }),
+  ),
+});
+http.route({
+  path: "/tts/message",
+  method: "POST",
+  handler: orchestratorPen(async (ctx, b) =>
+    await ctx.runMutation(internal.orchestrator.internalSendMessage, { sessionId: str(b.sessionId), to: str(b.to), text: str(b.text) }),
+  ),
+});
+http.route({
+  path: "/tts/elevate",
+  method: "POST",
+  handler: orchestratorPen(async (ctx, b) =>
+    await ctx.runMutation(internal.orchestrator.internalElevate, {
+      sessionId: str(b.sessionId),
+      question: str(b.question),
+      sides: Array.isArray(b.sides) ? b.sides.map((side) => str(side)) : [],
+      todoId: optionalStr(b.todoId),
+      concernsRunId: optionalStr(b.runId),
+    }),
+  ),
+});
+http.route({
+  path: "/tts/answer",
+  method: "POST",
+  handler: orchestratorPen(async (ctx, b) =>
+    await ctx.runMutation(internal.orchestrator.internalAnswer, {
+      sessionId: str(b.sessionId),
+      elevationId: str(b.elevationId),
+      kind: str(b.kind),
+      answer: optionalStr(b.answer),
+      askId: optionalStr(b.askId),
+      recommendation: optionalStr(b.recommendation),
+    }),
+  ),
+});
+
 // ── Claude Code session-host endpoints ───────────────────────────────────────
 // The session-host daemon's channel (worker/session-host/). Its OWN key —
 // SESSIONS_WORKER_KEY shares nothing with the other keys (the auth-clobber
@@ -3494,9 +3617,17 @@ const sessionsPoll = httpAction(async (ctx, request) => {
       typeof b.codexUsage === "object" && b.codexUsage !== null
         ? (b.codexUsage as never)
         : undefined,
+    codexModels: stringList(b.codexModels),
+    hosts: stringList(b.hosts),
+    held: stringList(b.held),
   });
   return jsonResponse(200, result);
 });
+
+/** A list of strings from a daemon body, or undefined when it is not one. */
+function stringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? (value as string[]) : undefined;
+}
 
 http.route({ path: "/sessions/poll", method: "POST", handler: sessionsPoll });
 

@@ -18,6 +18,7 @@ import type * as crons from "../crons.js";
 import type * as forge from "../forge.js";
 import type * as gpuPool from "../gpuPool.js";
 import type * as http from "../http.js";
+import type * as orchestrator from "../orchestrator.js";
 import type * as runLabels from "../runLabels.js";
 import type * as runs from "../runs.js";
 import type * as serverHealth from "../serverHealth.js";
@@ -71,6 +72,7 @@ declare const fullApi: ApiFromModules<{
   forge: typeof forge;
   gpuPool: typeof gpuPool;
   http: typeof http;
+  orchestrator: typeof orchestrator;
   runLabels: typeof runLabels;
   runs: typeof runs;
   serverHealth: typeof serverHealth;

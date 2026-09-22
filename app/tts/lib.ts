@@ -37,14 +37,18 @@ export function isRulable(t: Todo): boolean {
 // the worker feed always agree on which ruling is live.
 
 export function rulingSubjectKey(r: {
-  subjectType: "life" | "code" | "batch";
+  subjectType: "life" | "code" | "batch" | "elevation";
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
+  elevationId?: string;
 }): string {
   if (r.subjectType === "life") return `life ${r.todoId}`;
   if (r.subjectType === "batch") return batchSubjectKey(r.batchId!);
+  // An answer to a worker's elevation (convex/orchestrator.ts); no todo or
+  // batch shows it, so its key matches nothing on the page.
+  if (r.subjectType === "elevation") return `elevation ${r.elevationId}`;
   return codeSubjectKey(r.repo!, r.externalId!);
 }
 

@@ -6,6 +6,7 @@ import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
+import { onDelegateObjection } from "./orchestrator";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -16,6 +17,9 @@ export const DELEGATE_MAX_PER_JOB = 3;
 // A runner's cap is keyed on the RUNNER, not the step: a step lives ten
 // minutes, so a per-step cap is no cap at all.
 export const DELEGATE_MAX_PER_RUNNER = 5;
+// An elevation is ONE question, so its cap is the one ask and one retry after
+// a failure; a third ask is the orchestrator shopping for an answer.
+export const DELEGATE_MAX_PER_ELEVATION = 2;
 export const DIGEST_OBJECTION_LOOKBACK = 14;
 
 export type ObjectionFact = {
@@ -60,10 +64,13 @@ const ASK_ARGS = {
   sessionId: v.optional(v.string()),
   job: v.optional(v.string()),
   runnerId: v.optional(v.string()),
+  // An elevation's trade-off, asked by the orchestrator; it carries no
+  // recommendation (Tom, 2026-09-21), and every other caller must send one.
+  elevationId: v.optional(v.string()),
   todoId: v.optional(v.string()),
   question: v.string(),
   options: v.array(v.string()),
-  recommendation: v.string(),
+  recommendation: v.optional(v.string()),
   fallback: v.string(),
   decision: v.union(v.string(), v.null()),
   reason: v.string(),
@@ -87,10 +94,11 @@ type AskData = {
   sessionId?: string;
   job?: string;
   runnerId?: string;
+  elevationId?: string;
   todoId?: string;
   question: string;
   options: string[];
-  recommendation: string;
+  recommendation?: string;
   fallback: string;
   decision: string | null;
   reason: string;
@@ -102,18 +110,20 @@ type AskData = {
   runToken?: string;
 };
 
-/** Who asked: a session, a runner or a job, exactly one. The cap and the
- *  count are both per caller, and both read this. */
-function sameCaller(data: unknown, args: { sessionId?: string; job?: string; runnerId?: string }): boolean {
-  const row = (data ?? {}) as { sessionId?: unknown; job?: unknown; runnerId?: unknown };
+/** Who asked: a session, a runner, an elevation or a job, exactly one. The
+ *  cap and the count are both per caller, and both read this. */
+function sameCaller(data: unknown, args: { sessionId?: string; job?: string; runnerId?: string; elevationId?: string }): boolean {
+  const row = (data ?? {}) as { sessionId?: unknown; job?: unknown; runnerId?: unknown; elevationId?: unknown };
   if (args.sessionId !== undefined) return row.sessionId === args.sessionId;
   if (args.runnerId !== undefined) return row.runnerId === args.runnerId;
+  if (args.elevationId !== undefined) return row.elevationId === args.elevationId;
   return row.job === args.job;
 }
 
-function capFor(args: { sessionId?: string; runnerId?: string }): number {
+function capFor(args: { sessionId?: string; runnerId?: string; elevationId?: string }): number {
   if (args.sessionId !== undefined) return DELEGATE_MAX_PER_SESSION;
   if (args.runnerId !== undefined) return DELEGATE_MAX_PER_RUNNER;
+  if (args.elevationId !== undefined) return DELEGATE_MAX_PER_ELEVATION;
   return DELEGATE_MAX_PER_JOB;
 }
 
@@ -145,6 +155,13 @@ export const internalRecordAsk = internalMutation({
       const runnerId = ctx.db.normalizeId("runners", args.runnerId);
       if (runnerId === null || !(await ctx.db.get(runnerId))) throw new Error(`Unknown runner id: ${args.runnerId}`);
     }
+    if (args.elevationId !== undefined) {
+      const elevationId = ctx.db.normalizeId("elevations", args.elevationId);
+      if (elevationId === null || !(await ctx.db.get(elevationId))) throw new Error(`Unknown elevation id: ${args.elevationId}`);
+      if (args.recommendation !== undefined) throw new Error("An elevation's trade-off carries no recommendation.");
+    } else if (args.recommendation === undefined) {
+      throw new Error("recommendation is required unless the ask is an elevation's trade-off");
+    }
     const callerCount = recent.filter((event) => sameCaller(event.data, args)).length;
     const cap = capFor(args);
     const attended = session !== null && session.mode !== "autonomous";
@@ -158,6 +175,7 @@ export const internalRecordAsk = internalMutation({
       sessionId: args.sessionId ?? null,
       job: args.job ?? null,
       runnerId: args.runnerId ?? null,
+      elevationId: args.elevationId ?? null,
       todoId: todoId ?? null,
       refused,
       refusedBecause,
@@ -195,7 +213,7 @@ export const internalRecordAsk = internalMutation({
 });
 
 export const internalAskContext = internalQuery({
-  args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), runnerId: v.optional(v.string()), todoId: v.optional(v.string()) },
+  args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), runnerId: v.optional(v.string()), elevationId: v.optional(v.string()), todoId: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const recent = await ctx.db.query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
@@ -277,6 +295,9 @@ export const internalRecordDelegateObjection = internalMutation({
         .first());
     if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
     const eventId = await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
+    // A delegate ruling on a worker's elevation is reverted by his objection,
+    // and the worker and the orchestrator are told (convex/orchestrator.ts).
+    await onDelegateObjection(ctx, args.askId, args.text, args.revert);
     // AN OBJECTION IS A JUDGMENT ABOUT THE RUN THAT TOOK THE DECISION, and the
     // label writer resolves it the same way this handler just resolved the
     // subject: the decision row (or the merge row) carries the run's token.

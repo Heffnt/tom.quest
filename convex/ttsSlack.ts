@@ -29,6 +29,7 @@ import {
   type RunnerAskFacts,
 } from "./ttsCompose";
 import { recordRunnerReply, runLink } from "./ttsRunners";
+import { recordElevationReply } from "./orchestrator";
 import { changeIdTokens, namedChange, withoutChangeId } from "../worker/jobs/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
@@ -483,6 +484,7 @@ export type ThreadReplyOutcome =
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
   | { outcome: "runner-reply"; runnerId: Id<"runners"> }
+  | { outcome: "elevation-answer" | "elevation-note"; elevationId: Id<"elevations"> }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -718,6 +720,10 @@ async function routeReply(
       // step reads it whole, and it answers the newest open question. Not a
       // ruling — the rulings table is for todos and batches.
       return await recordRunnerReply(ctx, subject.id, text, at);
+    case "elevation":
+      // A reserved decision's thread: his reply is the answer, recorded as
+      // his ruling on the elevation and delivered to the worker that asked.
+      return await recordElevationReply(ctx, subject.id, text, at);
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }

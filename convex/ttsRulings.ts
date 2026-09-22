@@ -88,17 +88,20 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code, and batch keys disjoint). Client
-// code derives live rulings with the same rule via app/tts/lib.ts.
+// spaces; the type prefix keeps life, code, batch and elevation keys
+// disjoint). Client code derives live rulings with the same rule via
+// app/tts/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch";
+  subjectType: "life" | "code" | "batch" | "elevation";
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
+  elevationId?: string;
 }) => {
   if (row.subjectType === "life") return `life ${row.todoId}`;
   if (row.subjectType === "batch") return `batch ${row.batchId}`;
+  if (row.subjectType === "elevation") return `elevation ${row.elevationId}`;
   return `code ${row.repo} ${row.externalId}`;
 };
 

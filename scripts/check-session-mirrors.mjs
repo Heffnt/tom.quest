@@ -542,6 +542,22 @@ if (ranScripts.length > 0 && inventoryBlock) {
   }
 }
 
+// 9. The orchestrator's compact word and the ending it writes. The daemon
+// reads the word off the orchestrator's last message and ends the run with the
+// reason (worker/session-host/hosted.mjs); the record restarts the run at once
+// only for that reason (convex/orchestrator.ts). A drift on either side turns
+// every compaction into a crash, restarted after a backoff.
+const hostedMjs = readFileSync("worker/session-host/hosted.mjs", "utf8");
+const orchestratorTs = readFileSync("convex/orchestrator.ts", "utf8");
+const literal = (source, name) => source.match(new RegExp(`${name} = "([^"]+)"`))?.[1];
+for (const [name, a, b, aName, bName] of [
+  ["ORCHESTRATOR_COMPACT_WORD", literal(shared, "ORCHESTRATOR_COMPACT_WORD"), literal(hostedMjs, "ORCHESTRATOR_COMPACT_WORD"), "ttsShared.ts", "hosted.mjs"],
+  ["COMPACT_ENDED_REASON", literal(orchestratorTs, "COMPACT_ENDED_REASON"), literal(hostedMjs, "COMPACT_ENDED_REASON"), "orchestrator.ts", "hosted.mjs"],
+]) {
+  if (a === undefined || b === undefined) failures.push(`${name}: literal not found in ${a === undefined ? aName : bName}`);
+  else if (a !== b) failures.push(`${name} drifted: ${aName} says "${a}", ${bName} says "${b}"`);
+}
+
 if (failures.length > 0) {
   console.error("Session-mirror check FAILED:");
   for (const f of failures) console.error("  - " + f);

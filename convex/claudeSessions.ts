@@ -49,6 +49,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import { dueRunnerSteps } from "./ttsRunners";
+import { hostedFacts, onHostedSessionEnded, renewOrchestratorLease } from "./orchestrator";
 import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE } from "./ttsShared";
 import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
@@ -564,7 +565,7 @@ type SessionSeed = {
  * single string, kept because prod schema is additive-only and every reader
  * that has not moved yet still reads it). repo = repos[0] ?? "none".
  */
-async function insertSession(
+export async function insertSession(
   ctx: MutationCtx,
   seed: SessionSeed,
   now: number,
@@ -1012,7 +1013,7 @@ export const internalCreateWeeklySession = internalMutation({
 // The one outcome pen for the interactive footer and every autonomous mission.
 // The caller owns its session-specific purpose and outcome wording; this owns
 // the credential-bearing command and its exact JSON shape.
-function sessionOutcomePen({
+export function sessionOutcomePen({
   sessionId,
   leadIn,
   summary,
@@ -1463,6 +1464,7 @@ export const forceClose = mutation({
     if (buf) await ctx.db.delete(buf._id);
     // A returning daemon learns from the poll that this session is terminal
     // and kills any process it still holds for it.
+    await onHostedSessionEnded(ctx, session, { status: "ended", endedReason: "force-closed by Tom; worker unconfirmed" });
   },
 });
 
@@ -1507,6 +1509,16 @@ export const internalPoll = internalMutation({
         readAt: v.number(),
       }),
     ),
+    // The model slugs the box's Codex CLI lists; the orchestrator's model is
+    // picked from them (convex/orchestrator.ts orchestratorModel).
+    codexModels: v.optional(v.array(v.string())),
+    // What this daemon can host beyond ordinary sessions. A daemon that does
+    // not name "orchestrator" and "worker" is never shown a hosted row: an old
+    // copy on the box would end it after its first turn.
+    hosts: v.optional(v.array(v.string())),
+    // The session ids the daemon holds; the orchestrator's lease is renewed
+    // while its live run is among them.
+    held: v.optional(v.array(v.string())),
   },
   handler: async (
     ctx,
@@ -1517,6 +1529,9 @@ export const internalPoll = internalMutation({
       lastIngestError,
       load,
       codexUsage,
+      codexModels,
+      hosts,
+      held,
     },
   ) => {
     const now = Date.now();
@@ -1536,6 +1551,7 @@ export const internalPoll = internalMutation({
           activeAccount,
           ...(load !== undefined ? { load } : {}),
           ...(codexUsage !== undefined ? { codexUsage } : {}),
+          ...(codexModels !== undefined ? { codexModels } : {}),
           ...(lastIngestError !== undefined ? { lastIngestError } : {}),
         });
       }
@@ -1547,8 +1563,11 @@ export const internalPoll = internalMutation({
         activeAccount,
         load,
         codexUsage,
+        codexModels,
       });
     }
+    if (held !== undefined) await renewOrchestratorLease(ctx, held, now);
+    const hostsHosted = hosts?.includes("orchestrator") === true && hosts.includes("worker");
 
     const sessions: unknown[] = [];
     for (const status of LIVE_STATUSES) {
@@ -1557,6 +1576,10 @@ export const internalPoll = internalMutation({
         .withIndex("by_status", (q) => q.eq("status", status))
         .collect(); // bounded: live sessions are few by design
       for (const s of rows) {
+        // A hosted row (the orchestrator's run, or a worker it spawned) goes
+        // only to a daemon that hosts them, with what decides its ending.
+        const hosted = await hostedFacts(ctx, s);
+        if (hosted !== undefined && !hostsHosted) continue;
         const pendingInbound = await ctx.db
           .query("claudeInbound")
           .withIndex("by_session_status", (q) =>
@@ -1599,6 +1622,7 @@ export const internalPoll = internalMutation({
           reopenedAt: s.reopenedAt,
           reopenEpoch: s.reopenEpoch ?? 0,
           pendingInbound,
+          ...(hosted ?? {}),
         });
       }
     }
@@ -2020,6 +2044,15 @@ export const internalIngest = internalMutation({
         session.title,
         args.endedReason ?? session.endedReason,
       );
+    }
+    // A hosted run's ending: the orchestrator is restarted from its document,
+    // and a worker's orchestrator is told (convex/orchestrator.ts). Once, on
+    // the same live→terminal edge.
+    if (becameTerminal) {
+      await onHostedSessionEnded(ctx, session, {
+        status: args.status!,
+        endedReason: args.endedReason ?? session.endedReason,
+      });
     }
 
     // NOTE (review finding): there was a permission-REQUEST insert loop here,
@@ -2690,7 +2723,7 @@ function promptFact(label: string, value: string | undefined): string | null {
 // BOX_TOOLS_PARAGRAPH and DAEMON_RESTART_SENTENCE live in ttsShared.ts, which
 // the runner's step prompt (convex/ttsRunners.ts) reads too.
 
-function workspaceParagraph(
+export function workspaceParagraph(
   repos: string[],
   sessionId: Id<"claudeSessions">,
   work: string,
@@ -2735,7 +2768,7 @@ function delegateDoctrine(sessionId: Id<"claudeSessions">, todoId?: Id<"dtsTodos
 // POST /tts/merge is the REPORT, and it runs the same gate again: it is what
 // puts the merge in the morning's objection list and posts one line to
 // #tts-decisions. It cannot make an ungated merge legitimate.
-function mergeGate(): string {
+export function mergeGate(): string {
   return [
     "Merging is mechanical, not Tom's gate. A merge is allowed when three things are on record for the exact commit you are merging: the tests are green, an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit), and an evals run scored it with no regression.",
     "Run the merge as its OWN command — `git merge` or `gh pr merge`, nothing chained to it. The box checks the three itself and either runs it or denies it naming which are missing; you never have to ask.",
