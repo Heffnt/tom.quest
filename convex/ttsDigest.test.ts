@@ -417,7 +417,7 @@ describe("internalComposeToday", () => {
     expect(facts.facts.map((f) => f.id)).not.toContain(`needs-you-today:${done}`);
   });
 
-  it("does not say a flagged capture twice once it is dated under today", async () => {
+  it("says a flagged capture that is also dated once, in the needs-you run, with its reason and lateness", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM - 3_600_000);
     const t = convexTest(schema, modules);
@@ -430,7 +430,23 @@ describe("internalComposeToday", () => {
     vi.setSystemTime(FIVE_AM);
     const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
     expect(text.split("Pay the lab deposit invoice")).toHaveLength(2);
-    expect(facts.facts.map((f) => f.id)).not.toContain(`needs-you-today:${dated}`);
+    // Said in the needs-you run, with its reason and its lateness, and its
+    // one fact is the needs-you one.
+    expect(text).toContain("Pay the lab deposit invoice, which needs you today because the invoice is due tomorrow. One day late.");
+    expect(facts.facts.map((f) => f.id)).toContain(`needs-you-today:${dated}`);
+    expect(facts.facts.map((f) => f.id)).not.toContain(`todo:${dated}`);
+    expect(facts.facts.find((f) => f.id === "needs-you-today:count")?.numbers).toContain("1");
+  });
+
+  it("stores the triage's reason with secrets redacted", async () => {
+    const t = convexTest(schema, modules);
+    const id = await t.mutation(internal.tts.internalCapture, {
+      statement: "Rotate the leaked key",
+      source: "email",
+      needsTomToday: { why: "the mail quotes ghp_abcdefghijklmnopqrstuvwxyz0123456789 in full" },
+    });
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.needsTomToday?.why).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
   });
 
   it("lists a dated email capture once, under today", async () => {

@@ -1305,7 +1305,9 @@ export const internalCapture = internalMutation({
       provenance,
       slackChannel,
       slackTs,
-      ...(needsTomToday !== undefined ? { needsTomToday } : {}),
+      // The reason is a model's words about a mail and reaches Slack, so it
+      // passes the one redaction choke point here, where it is stored.
+      ...(needsTomToday !== undefined ? { needsTomToday: { why: redactSecrets(needsTomToday.why) } } : {}),
       createdAt: now,
       updatedAt: now,
     });

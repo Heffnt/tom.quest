@@ -818,9 +818,12 @@ export async function gatherTodayFacts(
     // Counted over the WHOLE list, printed and beyond, because the lead's
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
-    // One appearance per item: a flagged capture that preparation has since
-    // dated is already a line under today, and is not said twice.
-    needsYou: needsYou.filter((n) => !dated.some((item) => item.id === n.todoId)),
+    // A flagged capture that preparation has since dated keeps its lateness
+    // here, and is said once, in the needs-you run (composeToday).
+    needsYou: needsYou.map((n) => {
+      const countdown = dated.find((item) => item.id === n.todoId)?.countdown;
+      return countdown === undefined ? n : { ...n, countdown };
+    }),
     runners,
     overnight,
     batchesPlanned: overnight.length,

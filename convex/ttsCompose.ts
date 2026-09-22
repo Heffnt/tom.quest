@@ -476,6 +476,9 @@ type NeedsYouTodayFact = {
   todoId: string;
   statement: string;
   why: string;
+  /** "Ten days late." when the item also carries a date; it is then said
+   *  here once, with its reason, and not again under today. */
+  countdown?: string;
 };
 
 export type TodayFacts = {
@@ -699,9 +702,9 @@ export function runnersLead(n: number, waiting: number): string {
 function needsYouTodayLine(n: NeedsYouTodayFact): string {
   const head = stripStop(n.statement);
   const why = stripStop(n.why);
-  if (why === "") return statement(head);
-  const full = `${head}, which needs you today because ${lowerFirst(why)}`;
-  return statement(full.length < LINE_CHARS ? full : head);
+  const late = n.countdown ? ` ${stripStop(n.countdown)}.` : "";
+  const full = why === "" ? `${head}.${late}` : `${head}, which needs you today because ${lowerFirst(why)}.${late}`;
+  return statement(full.length <= LINE_CHARS ? full : `${head}.${late}`);
 }
 
 /** The needs-you-today run's lead. */
@@ -833,6 +836,9 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   // 1. Today. Dated-or-late first, then ready. `ready` folded in (§4.3): the
   //    section that matters most is no longer the one truncation eats first.
   const todayItems: Item[] = [];
+  // A flagged item is said once, in the needs-you run, with its reason and
+  // its lateness; the today run leaves it to that run.
+  for (const needs of f.needsYou) seen.add(needs.todoId);
   for (const item of f.today) {
     if (seen.has(item.id)) continue;
     seen.add(item.id);
@@ -1448,7 +1454,9 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
       [f.lateCount],
     ),
   );
+  const flagged = new Set(f.needsYou.map((n) => n.todoId));
   for (const item of f.today) {
+    if (flagged.has(item.id)) continue; // its fact is its needs-you-today one
     facts.push(fact(`todo:${item.id}`, todayLine(item), [itemUrl(item.id)]));
   }
   if (f.readyBeyond > 0) {
