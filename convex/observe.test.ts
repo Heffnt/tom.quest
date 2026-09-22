@@ -162,8 +162,12 @@ describe("the point events", () => {
     expect(merge?.data).not.toBeNull();
   });
 
-  it("calls a failure every -failed kind but the two that are not broken lines", () => {
+  it("calls a failure both spellings of one, but not the two that are not broken lines", () => {
     expect(isFailureKind("poll-canvas-failed")).toBe(true);
+    // The nightly and the weekly write the other spelling, and they are job
+    // failures like any other.
+    expect(isFailureKind("nightly-failure")).toBe(true);
+    expect(isFailureKind("weekly-failure")).toBe(true);
     expect(isFailureKind("slack-send-failed")).toBe(false);
     expect(isFailureKind("learning-revert-failed")).toBe(false);
   });

@@ -183,7 +183,10 @@ export function failureRowOf(event: PointEvent): FailureRow {
   return {
     id: event.id,
     at: event.at,
-    job: field(event.data, "job") ?? event.kind.replace(/-failed$/, ""),
+    // The job that broke, from the row where it is written and from the kind
+    // where it is not: dtsEvents.data is v.any(), so no schema makes a
+    // producer name its job, and the kind is the only other place the name is.
+    job: field(event.data, "job") ?? event.kind.replace(/-fail(ed|ure)$/, ""),
     todoId: event.todoId,
   };
 }

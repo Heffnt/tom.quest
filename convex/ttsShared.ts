@@ -80,8 +80,11 @@ export function mergeKey(repo: string, sha: string): string {
 }
 
 /**
- * A FAILURE IS A SHAPE AND NOT A KIND: every job failure in the system is a
- * "-failed" event kind, with two exclusions, both load-bearing:
+ * A FAILURE IS A SHAPE AND NOT A KIND: a job failure is an event kind ending
+ * in "-failed" or in "-failure" — the nightly and the weekly write the second
+ * spelling ("nightly-failure", "weekly-failure"), and reading only the first
+ * left their failures out of both the failures lane and #tts-broken. Two
+ * exclusions, both load-bearing:
  *   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
  *                        convex/ttsHourly.ts already warns about: a refused
  *                        post would write a row that schedules another post.
@@ -95,7 +98,7 @@ export function mergeKey(repo: string, sha: string): string {
  */
 export function isFailureKind(kind: string): boolean {
   return (
-    kind.endsWith("-failed") &&
+    (kind.endsWith("-failed") || kind.endsWith("-failure")) &&
     kind !== "slack-send-failed" &&
     kind !== "learning-revert-failed"
   );
