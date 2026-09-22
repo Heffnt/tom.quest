@@ -586,8 +586,10 @@ export const internalRecordWorkerEvent = internalMutation({
     // The same broken line logEvent posts, because this is the other way a
     // failure row is written: the nightly's and the weekly's failures arrive
     // here, and #tts-broken is a line per distinct failure whichever door the
-    // row came through.
-    await postBroken(ctx, kind, data);
+    // row came through. Except where this handler writes the line itself,
+    // below, in the failure's own words — a second, generic line for the same
+    // row is the one thing "a line per distinct failure" forbids.
+    if (kind !== LEARNING_CHECK_FAILED) await postBroken(ctx, kind, data);
     if (kind === LEARNING_CHANGE) {
       const d = (data ?? {}) as Record<string, unknown>;
       const file = typeof d.file === "string" ? d.file : "a model-of-Tom page";
