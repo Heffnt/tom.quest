@@ -300,11 +300,16 @@ describe("elevations", () => {
 
   it("sends a reserved decision to Tom with a recommendation, and his reply is the answer", async () => {
     const t = await setup();
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "C-NEEDS");
     const orchestrator = await start(t);
     const worker = await spawn(t, orchestrator);
     const elevationId = await elevate(t, worker, "Should I buy the tom.quest renewal now?");
     expect((await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId, kind: "reserved" })).status).toBe(409);
+    // With no needs-you channel no thread can open, so the question stays open
+    // and the worker is told nothing; the answer is retried once it is set.
+    const unset = await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId, kind: "reserved", recommendation: "Renew it now." });
+    expect(unset.body).toMatchObject({ status: "open", opened: false });
+    expect((await pendingTexts(t, worker)).some((m) => m.includes("Tom's to decide"))).toBe(false);
+    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "C-NEEDS");
     const res = await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId, kind: "reserved", recommendation: "Renew it now." });
     expect(res.body).toMatchObject({ status: "waiting-on-tom", opened: true });
     const posts = await t.run(async (ctx) =>

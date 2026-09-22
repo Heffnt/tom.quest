@@ -754,15 +754,21 @@ export const internalAnswer = internalMutation({
     if (kind === "reserved") {
       const recommendation = args.recommendation?.trim();
       if (!recommendation) throw new Error("refused: a reserved decision goes to Tom with your recommendation");
-      await ctx.db.patch(id, { status: "waiting-on-tom", kind, recommendation });
       const opened = await openElevationNeedsYou(ctx, { ...elevation, recommendation });
+      if (!opened.opened) {
+        // No thread, so nothing Tom can answer: the elevation stays open and
+        // the orchestrator answers it again once the channel is set.
+        await logEvent(ctx, "elevation-to-tom", elevation.todoId, { elevationId: id, opened: false, reason: opened.reason });
+        return { status: "open", opened: false, reason: opened.reason };
+      }
+      await ctx.db.patch(id, { status: "waiting-on-tom", kind, recommendation });
       await deliver(
         ctx,
         elevation.workerSessionId,
         `Your elevation ${id} is Tom's to decide; it has gone to him with the orchestrator's recommendation. Carry on with everything that does not depend on it; his answer arrives as a message.`,
       );
-      await logEvent(ctx, "elevation-to-tom", elevation.todoId, { elevationId: id, opened: opened.opened, ...(opened.reason ? { reason: opened.reason } : {}) });
-      return { status: "waiting-on-tom", opened: opened.opened, ...(opened.reason ? { reason: opened.reason } : {}) };
+      await logEvent(ctx, "elevation-to-tom", elevation.todoId, { elevationId: id, opened: true });
+      return { status: "waiting-on-tom", opened: true };
     }
 
     throw new Error('refused: kind is "obvious", "trade-off" or "reserved"');
@@ -784,9 +790,13 @@ async function openElevationNeedsYou(
     .query("dtsEvents")
     .withIndex("by_kind_key", (q) => q.eq("kind", "needs-tom").eq("key", key))
     .first();
-  if (seen) return { opened: false, reason: "already open" };
+  // A retry after the channel was unset: the key was never written then, so
+  // a marker here means a thread really exists.
+  if (seen) return { opened: true };
   const channel = channelFor("needsYou");
   if (channel === null) {
+    // Reported through the same door the needs-tom route uses, so #tts-broken
+    // says the channel is missing for as long as it is.
     await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
       job: "tts/needs-tom",
       error: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
