@@ -458,31 +458,38 @@ export async function gatherTodayFacts(
   //    is a thing to do today and reaches him through the ready count below; a
   //    capture that is not ready is a row, not a line (§4.3). Read only to
   //    keep them out of the ready list twice.
-  const emailCaptures = (
-    await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_source", (q) => q.eq("source", "email"))
-      .order("desc")
-      .take(CAPTURE_SCAN)
-  ).filter((t) => t.createdAt >= since && t.createdAt < now);
+  const recentEmail = await ctx.db
+    .query("dtsTodos")
+    .withIndex("by_source", (q) => q.eq("source", "email"))
+    .order("desc")
+    .take(CAPTURE_SCAN);
+  const emailCaptures = recentEmail.filter((t) => t.createdAt >= since && t.createdAt < now);
   const emailCaptureIds = new Set(emailCaptures.map((t) => t._id as string));
 
-  //    Of every mail capture in the window (Gmail's "email", Outlook's
-  //    "outlook"), the ones the triage judged to need him today and still
-  //    active, oldest first. No worker raises these with him (Tom, 2026-09-21),
-  //    so this message says them. The field is never cleared: it is what the
-  //    triage judged at capture, a fact about that moment, and a status
-  //    change is a separate fact on the row. So the reader, not a writer on
-  //    every status path, decides that a finished item is not said.
-  const outlookCaptures = (
-    await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_source", (q) => q.eq("source", "outlook"))
-      .order("desc")
-      .take(CAPTURE_SCAN)
-  ).filter((t) => t.createdAt >= since && t.createdAt < now);
-  const needsYou = [...emailCaptures, ...outlookCaptures]
-    .filter((t) => t.needsTomToday !== undefined && t.status === "active")
+  //    Of the recent mail captures (Gmail's "email", Outlook's "outlook"), the
+  //    ones the triage judged to need him today, still active, and NOT YET
+  //    SHOWN in a morning message, oldest first. No worker raises these with
+  //    him (Tom, 2026-09-21), so this message says them, each once: a line
+  //    printed marks its todo surfaced, and one dropped for length stays
+  //    unshown and comes back the next morning rather than aging out of a
+  //    window. The field is never cleared: it is what the triage judged at
+  //    capture, and the reader decides what is still to be said.
+  const recentOutlook = await ctx.db
+    .query("dtsTodos")
+    .withIndex("by_source", (q) => q.eq("source", "outlook"))
+    .order("desc")
+    .take(CAPTURE_SCAN);
+  const flagged = [...recentEmail, ...recentOutlook].filter(
+    (t) => t.needsTomToday !== undefined && t.status === "active" && t.createdAt < now,
+  );
+  const unshown: typeof flagged = [];
+  for (const t of flagged) {
+    const shown = (
+      await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", t._id)).collect()
+    ).some((e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest");
+    if (!shown) unshown.push(t);
+  }
+  const needsYou = unshown
     .sort((a, b) => a.createdAt - b.createdAt)
     .map((t) => ({ todoId: t._id as string, statement: t.statement, why: t.needsTomToday?.why ?? "" }));
 

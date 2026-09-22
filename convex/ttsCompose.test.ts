@@ -805,6 +805,9 @@ describe("the needs-you-today run", () => {
       return acc;
     }, []);
     for (const run of runs) expect(run.slice(1)).toContain("item");
+    // The today run keeps its lead and the first item the first line names.
+    expect(message.lines[0].role).toBe("lead");
+    expect(message.lines[1]).toMatchObject({ role: "item", section: "today" });
   });
 
   it("keeps a reason and the lateness even when each is one word too long to fit", () => {

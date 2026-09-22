@@ -494,6 +494,32 @@ describe("internalComposeToday", () => {
     expect(ids.filter((id) => surfacedTodoIds.includes(id)).sort()).toEqual(printed.sort());
   });
 
+  it("brings a flagged item whose line was dropped for length back the next morning, and never repeats one shown", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const ids = [];
+    for (let i = 0; i < 40; i += 1) {
+      ids.push(await t.mutation(internal.tts.internalCapture, {
+        statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`,
+        source: "email",
+        needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
+      }));
+    }
+    vi.setSystemTime(FIVE_AM);
+    const first = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    await t.mutation(internal.tts.internalMarkDigestSent, {
+      day: DAY_KEY, surfacedTodoIds: first.surfacedTodoIds, windowEnd: FIVE_AM + 1, truncated: first.truncated,
+    });
+    const shownFirst = ids.filter((id) => first.text.includes(ttsItemLink(id)));
+    expect(shownFirst.length).toBeLessThan(40);
+    vi.setSystemTime(FIVE_AM + DAY);
+    const second = await t.query(internal.ttsDigest.internalComposeToday, { day: "2026-09-06", now: FIVE_AM + DAY + 1 });
+    const shownSecond = ids.filter((id) => second.text.includes(ttsItemLink(id)));
+    expect(shownSecond.length).toBeGreaterThan(0);
+    expect(shownSecond.some((id) => shownFirst.includes(id))).toBe(false);
+  });
+
   it("does not mark a dated flagged item surfaced when the fitted message dropped its line", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM - 3_600_000);

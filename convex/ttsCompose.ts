@@ -302,9 +302,9 @@ function sectionRuns(lines: Line[]): { start: number; end: number }[] {
 /** Reduce until it fits: each run to its lead plus ONE whole sentence with a
  *  link, from the last back; the first run is never reduced, nor is the
  *  needs-you-today run, which names what no one else tells him (Tom,
- *  2026-09-21); then, still over, lines are dropped from the end, the
- *  needs-you-today run's last of all. Returns whether anything was reduced
- *  (recorded on the digest-sent row as `truncated`, as today). */
+ *  2026-09-21); then, still over, lines are dropped by lastResortDrop.
+ *  Returns whether anything was reduced (recorded on the digest-sent row as
+ *  `truncated`, as today). */
 export function fit(
   m: Message,
   max: number = MESSAGE_MAX_CHARS,
@@ -351,14 +351,32 @@ export function fit(
   // Every run but the first reduced and still over: lines go from the end
   // rather than a sentence being cut in half. NO ELLIPSIS, at any length.
   while (current.lines.length > 0 && renderSlack(current).length > max) {
+    const drop = lastResortDrop(current.lines);
+    if (drop < 0) break;
     const lines = current.lines;
-    let drop = lines.length - 1;
-    while (drop >= 0 && lines[drop].section === PROTECTED_RUN) drop -= 1;
-    if (drop < 0) drop = lines.length - 1;
     current = { ...current, lines: withoutEmptyRuns([...lines.slice(0, drop), ...lines.slice(drop + 1)]) };
     truncated = true;
   }
   return { message: current, truncated };
+}
+
+/** Which line the last resort drops, or -1 for none: the last line of any
+ *  other run first; then the last needs-you-today line, since an item whose
+ *  line is dropped is not marked surfaced and comes back the next morning;
+ *  then the first run's last line, but never its lead and first item, which
+ *  the first line names. */
+function lastResortDrop(lines: Line[]): number {
+  const runs = sectionRuns(lines);
+  const first = runs[0];
+  const inFirst = (i: number) => first !== undefined && i >= first.start && i < first.end;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!inFirst(i) && lines[i].section !== PROTECTED_RUN) return i;
+  }
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].section === PROTECTED_RUN && lines[i].role !== "lead") return i;
+  }
+  if (first !== undefined && first.end - first.start > 2) return first.end - 1;
+  return -1;
 }
 
 /** The lines with every run that has lost all its item lines removed whole,
@@ -373,7 +391,8 @@ function withoutEmptyRuns(lines: Line[]): Line[] {
   return keep;
 }
 
-/** The run `fit` never reduces and drops from last. */
+/** The run `fit` never reduces, and whose lines the last resort drops only
+ *  after every other run but the first. */
 const PROTECTED_RUN = "needs-you-today";
 
 // ── The dedup index — one appearance per item per day ────────────────────────
