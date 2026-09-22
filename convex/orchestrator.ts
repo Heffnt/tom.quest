@@ -338,6 +338,10 @@ async function launchRun(
     for (const message of rows.slice(1)) {
       if (message.status === "done" || message.author !== "agent" || message.kind !== "user-turn") continue;
       if (typeof message.text === "string") carried.push(message.text);
+    }
+    // Nothing is left pending on a run the chain has moved past, its opener
+    // and any stop included: a reopen of it later must not replay them.
+    for (const message of rows) {
       if (message.status === "pending") await ctx.db.patch(message._id, { status: "interrupted" });
     }
     if (isOrchestratorRun(from)) {

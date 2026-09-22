@@ -640,6 +640,8 @@ describe("restarting from the document", () => {
     expect(next.liveSessionId).not.toBe(first);
     const old = await t.run(async (ctx) => ctx.db.get(first as Id<"claudeSessions">));
     expect(old?.status).toBe("failed");
+    // Its never-delivered opener is settled, so a later reopen cannot replay it.
+    expect(await pendingTexts(t, first)).toEqual([]);
     const broken = await t.run(async (ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "orchestrator-restart-failed")).collect());
     expect(broken).toHaveLength(1);
     const session = await t.run(async (ctx) => ctx.db.get(next.liveSessionId!));

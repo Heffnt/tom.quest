@@ -44,6 +44,8 @@ describe("delegatePrompt", () => {
     expect(text).toContain("NO recommendation");
     expect(text).not.toContain("what it recommends:");
     expect(text).not.toContain("recommendation is the default");
+    // Nor the fallback, which is the orchestrator's own default side.
+    expect(text).not.toContain("what it will do if you do not answer");
   });
 
   it("renders every narrow-list item's decision line, in order", () => {

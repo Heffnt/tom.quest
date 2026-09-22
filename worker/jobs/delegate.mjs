@@ -202,7 +202,9 @@ export function delegatePrompt(ask, { layers, narrowList }) {
     "its question: " + ask.question,
     "the options it gave:", options,
     ...(ask.recommendation === undefined ? [] : ["what it recommends: " + ask.recommendation]),
-    "what it will do if you do not answer: " + ask.fallback + objections,
+    // An elevation's fallback is the orchestrator's own default, which would
+    // tell the delegate the side it leans to; it is not shown.
+    (ask.elevationId ? "" : "what it will do if you do not answer: " + ask.fallback) + objections,
   ].join("\n");
 }
 
