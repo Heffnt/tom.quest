@@ -223,6 +223,12 @@ describe("starting and hosting", () => {
     expect(row?.environment).toBeUndefined();
     // And an old daemon, which hosts nothing, may now take it like any session.
     expect((await poll(t)).sessions.map((s) => s.id)).toContain(worker);
+    // An answer to its open question is recorded, not queued into Tom's talk.
+    const elevationId = await t.run(async (ctx) =>
+      ctx.db.insert("elevations", { workerSessionId: worker as Id<"claudeSessions">, question: "q?", sides: ["a", "b"], status: "open", createdAt: Date.now() }),
+    );
+    expect((await pen(t, "/tts/answer", { sessionId: orchestrator, elevationId, kind: "obvious", answer: "a" })).body.delivered).toBe(false);
+    expect((await pendingTexts(t, worker)).some((m) => m.includes("Answer to your elevation"))).toBe(false);
     // Nothing of the orchestrator's counts, messages or stops it any more.
     expect((await pen(t, "/tts/message", { sessionId: orchestrator, to: worker, text: "hello" })).status).toBe(409);
     expect((await pen(t, "/tts/elevate", { sessionId: worker, question: "q?", sides: ["a", "b"] })).status).toBe(409);
@@ -569,7 +575,10 @@ describe("restarting from the document", () => {
     // Inside the crash backoff, Tom reopens the run to ask it something.
     await t.mutation(internal.claudeSessions.internalReopenSession, { sessionId: first as Id<"claudeSessions">, text: "What happened?" });
     expect((await pen(t, "/tts/message", { sessionId: worker, to: "orchestrator", text: "for the orchestrator" })).body.delivered).toBe(false);
-    await t.mutation(internal.orchestrator.internalSweep, {});
+    // A stop while Tom holds it leaves his conversation alone.
+    await t.mutation(internal.orchestrator.internalStop, { reason: "check" });
+    expect((await t.run(async (ctx) => ctx.db.get(first as Id<"claudeSessions">)))?.status).not.toBe("ended");
+    await t.mutation(internal.orchestrator.internalStart, { reason: "again" });
     const next = (await row(t))!.liveSessionId!;
     expect(next).not.toBe(first);
     const reopened = await t.run(async (ctx) => ctx.db.get(first as Id<"claudeSessions">));

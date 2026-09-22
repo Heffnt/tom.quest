@@ -262,12 +262,14 @@ async function queueTurn(ctx: MutationCtx, sessionId: Id<"claudeSessions">, text
   });
 }
 
-/** A message into a worker, only while it is live: an ended session is never
- * polled again, so a turn queued on it would sit unread for ever. False when
- * the worker has ended, and the caller records that it was not delivered. */
+/** A message into a worker, only while it is live and still the
+ * orchestrator's: an ended session is never polled again, so a turn queued on
+ * it would sit unread for ever, and a worker Tom reopened is his
+ * conversation. False otherwise, and the caller records that it was not
+ * delivered. */
 async function deliver(ctx: MutationCtx, sessionId: Id<"claudeSessions">, text: string): Promise<boolean> {
   const session = await ctx.db.get(sessionId);
-  if (!session || !isLive(session.status)) return false;
+  if (!session || !isLive(session.status) || session.mode !== "autonomous") return false;
   await queueTurn(ctx, sessionId, text);
   return true;
 }
@@ -465,7 +467,9 @@ async function startOrchestrator(ctx: MutationCtx, { reason, instruction }: { re
  * no daemon holds it to honour anything. */
 async function endRun(ctx: MutationCtx, sessionId: Id<"claudeSessions">, reason: string) {
   const session = await ctx.db.get(sessionId);
-  if (!session || !isLive(session.status)) return;
+  // A run Tom reopened is his conversation, and a stop of the orchestrator
+  // never ends it.
+  if (!session || !isLive(session.status) || session.mode !== "autonomous") return;
   if (session.status === "requested") {
     await ctx.db.patch(sessionId, { status: "ended", statusChangedAt: Date.now(), endedReason: reason });
     const pending = await ctx.db
