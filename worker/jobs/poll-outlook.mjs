@@ -20,10 +20,10 @@
 //      against the deployment's own rules (GET /tts/capture-context): does
 //      this imply an action by Tom, and does it need him TODAY;
 //   3. POST /tts/capture for each action-implying message, source "outlook",
-//      provenance `outlook:message:<id> <web link>`;
-//   4. POST /tts/needs-tom { todoId, reason, key } for each one that needs
-//      him today — facts, never message text — keyed on
-//      `outlook:message:<id>` so one mail opens one #tts thread for ever.
+//      provenance `outlook:message:<id> <web link>`, with `needsTomToday` and
+//      `why` when the triage judged it to need him today. It opens no thread:
+//      no worker reaches Tom directly (his ruling of 2026-09-21), and the
+//      morning message and the hourly line say what needs him.
 //
 // CREDENTIALS (all three in /etc/tts/worker.env; the job is a quiet no-op
 // until they exist — the same ships-ahead-of-the-credential posture as
@@ -81,12 +81,10 @@ export function messageProvenance(id, webLink) {
   return webLink ? `${source} ${webLink}` : source;
 }
 
-// THIS JOB WILL NOT COMPOSE THE MESSAGE EITHER (slack-design.md §4.5). When
-// its Microsoft Graph half lands it sends FACTS to POST /tts/needs-tom —
-// { todoId, reason, key } — exactly as poll-gmail.mjs now does, and
-// convex/ttsSlack.ts writes the needs-you thread from the todo's own statement
-// and entry action. The route REFUSES a body carrying `text`, so a copy of the
-// old line here would fail loudly rather than post a message with no reason.
+// THIS JOB WILL NEVER REACH TOM EITHER. Tom, 2026-09-21: "workers should not
+// reach me at all directly." When its Microsoft Graph half lands it sends the
+// triage's judgement on the capture itself, exactly as poll-gmail.mjs does,
+// and never calls POST /tts/needs-tom.
 
 /** The keys of OUTLOOK_KEYS that `env` does not have. Exported for tests. */
 export function missingKeys(env) {

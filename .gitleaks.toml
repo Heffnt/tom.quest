@@ -66,4 +66,8 @@ regexes = [
   # value stands alone, as the five above it do, until someone can run both
   # forms. What it hides is one literal string — the canonical example UUID.
   '''8f14e45f-ceea-467a-9a36-dedd4bea2543''',
+  # convex/ttsDigest.test.ts — the shape IS the test: the capture door must
+  # redact a credential-shaped token out of the email triage's reason before
+  # it is stored and printed in the morning message.
+  '''ghp_abcdefghijklmnopqrstuvwxyz0123456789''',
 ]

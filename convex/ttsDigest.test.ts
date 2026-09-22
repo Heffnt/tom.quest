@@ -383,6 +383,199 @@ describe("internalComposeToday", () => {
   // A CAPTURE FROM EMAIL IS NOT ITS OWN SECTION any more (§4.3): one that is
   // dated is a dated line, one that is ready is part of the count, and one
   // that is neither is a row, not a line.
+  // Tom, 2026-09-21: workers "should not reach me at all directly". A mail the
+  // triage judged to need him today opens no thread; the morning message
+  // names it with its reason, as a fact the writer's verifier holds it to.
+  it("names every mail capture judged to need him today, with its reason, and a fact for each", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const urgent = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice",
+      source: "email",
+      needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    const done = await t.mutation(internal.tts.internalCapture, {
+      statement: "Answer the registrar",
+      source: "email",
+      needsTomToday: { why: "a person is waiting" },
+    });
+    await t.mutation(internal.tts.internalCapture, { statement: "Read the newsletter", source: "email" });
+    await t.run(async (ctx) => ctx.db.patch(done, { status: "done" }));
+    vi.setSystemTime(FIVE_AM);
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM + 1,
+    });
+    expect(text).toContain("One captured item needs you today");
+    expect(text).toContain("Pay the lab deposit invoice, which needs you today because the invoice is due tomorrow.");
+    expect(text).toContain(ttsItemLink(urgent));
+    expect(text).not.toContain("Answer the registrar");
+    expect(text).not.toContain("Read the newsletter");
+    expect(facts.facts.map((f) => f.id)).toContain(`needs-you-today:${urgent}`);
+    expect(facts.facts.find((f) => f.id === "needs-you-today:count")?.numbers).toContain("1");
+    expect(facts.facts.map((f) => f.id)).not.toContain(`needs-you-today:${done}`);
+  });
+
+  it("says a flagged capture that is also dated once, in the needs-you run, with its reason and lateness", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const dated = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice",
+      source: "email",
+      needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    await t.run(async (ctx) => ctx.db.patch(dated, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+    vi.setSystemTime(FIVE_AM);
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    expect(text.split("Pay the lab deposit invoice")).toHaveLength(2);
+    // Said in the needs-you run, with its reason and its lateness, and its
+    // one fact is the needs-you one.
+    expect(text).toContain("Pay the lab deposit invoice, which needs you today because the invoice is due tomorrow. One day late.");
+    expect(facts.facts.map((f) => f.id)).toContain(`needs-you-today:${dated}`);
+    expect(facts.facts.map((f) => f.id)).not.toContain(`todo:${dated}`);
+    expect(facts.facts.find((f) => f.id === "needs-you-today:count")?.numbers).toContain("1");
+  });
+
+  it("does not count a flagged item among the other ready items it prints", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const flagged = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice", source: "email", needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    const plain = await t.mutation(internal.tts.internalCapture, { statement: "Read the newsletter", source: "slack-capture" });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(flagged, { readiness: "prepared", entryAction: "open the invoice" });
+      await ctx.db.patch(plain, { readiness: "prepared", entryAction: "open it" });
+    });
+    vi.setSystemTime(FIVE_AM);
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const ready = facts.facts.find((f) => f.id === "ready:beyond");
+    expect(text).toContain("Pay the lab deposit invoice, which needs you today");
+    expect(ready?.numbers).toContain("1");
+    expect(ready?.numbers).not.toContain("2");
+  });
+
+  it("marks every flagged item it prints as surfaced, once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const flagged = await t.mutation(internal.tts.internalCapture, {
+      statement: "Pay the lab deposit invoice", source: "email", needsTomToday: { why: "the invoice is due tomorrow" },
+    });
+    await t.run(async (ctx) => ctx.db.patch(flagged, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+    const undated = await t.mutation(internal.tts.internalCapture, {
+      statement: "Answer the registrar", source: "email", needsTomToday: { why: "a person is waiting" },
+    });
+    vi.setSystemTime(FIVE_AM);
+    const { surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    expect(surfacedTodoIds.filter((id) => id === flagged)).toHaveLength(1);
+    expect(surfacedTodoIds).toContain(undated);
+  });
+
+  it("marks as surfaced only the flagged items the fitted message printed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const ids = [];
+    for (let i = 0; i < 40; i += 1) {
+      ids.push(await t.mutation(internal.tts.internalCapture, {
+        statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`,
+        source: "email",
+        needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
+      }));
+    }
+    vi.setSystemTime(FIVE_AM);
+    const { text, surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const printed = ids.filter((id) => text.includes(ttsItemLink(id)));
+    expect(printed.length).toBeLessThan(40);
+    expect(ids.filter((id) => surfacedTodoIds.includes(id)).sort()).toEqual(printed.sort());
+  });
+
+  it("brings a flagged item whose line was dropped for length back the next morning, and never repeats one shown", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const ids = [];
+    for (let i = 0; i < 40; i += 1) {
+      ids.push(await t.mutation(internal.tts.internalCapture, {
+        statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`,
+        source: "email",
+        needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
+      }));
+    }
+    vi.setSystemTime(FIVE_AM);
+    const first = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    await t.mutation(internal.tts.internalMarkDigestSent, {
+      day: DAY_KEY, surfacedTodoIds: first.surfacedTodoIds, windowEnd: FIVE_AM + 1, truncated: first.truncated,
+    });
+    const shownFirst = ids.filter((id) => first.text.includes(ttsItemLink(id)));
+    expect(shownFirst.length).toBeLessThan(40);
+    vi.setSystemTime(FIVE_AM + DAY);
+    const second = await t.query(internal.ttsDigest.internalComposeToday, { day: "2026-09-06", now: FIVE_AM + DAY + 1 });
+    const shownSecond = ids.filter((id) => second.text.includes(ttsItemLink(id)));
+    expect(shownSecond.length).toBeGreaterThan(0);
+    expect(shownSecond.some((id) => shownFirst.includes(id))).toBe(false);
+  });
+
+  it("keeps the flagged item the first line names, however many flagged dated items overflow", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const ids = [];
+    for (let i = 0; i < 40; i += 1) {
+      vi.setSystemTime(FIVE_AM - 3_600_000 + i * 1000);
+      const id = await t.mutation(internal.tts.internalCapture, {
+        statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`,
+        source: "email",
+        needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
+      });
+      // The LAST captured carries the OLDEST date, so capture order and date order disagree.
+      await t.run(async (ctx) => ctx.db.patch(id, { timingClass: "dated", dueAt: Date.UTC(2026, 7, 1, 16) + (39 - i) * 3_600_000, dateKind: "external" }));
+      ids.push(id);
+    }
+    vi.setSystemTime(FIVE_AM);
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const firstLine = text.split("\n")[0];
+    const named = ids.find((id, i) => firstLine.toLowerCase().includes(`form number ${i} `));
+    expect(named).toBeDefined();
+    expect(text).toContain(ttsItemLink(named!));
+  });
+
+  it("does not mark a dated flagged item surfaced when the fitted message dropped its line", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3_600_000);
+    const t = convexTest(schema, modules);
+    const ids = [];
+    for (let i = 0; i < 40; i += 1) {
+      const id = await t.mutation(internal.tts.internalCapture, {
+        statement: `Answer the registrar about enrolment form number ${i} before the office closes on Friday afternoon`,
+        source: "email",
+        needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
+      });
+      await t.run(async (ctx) => ctx.db.patch(id, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+      ids.push(id);
+    }
+    vi.setSystemTime(FIVE_AM);
+    const { text, surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const printed = ids.filter((id) => text.includes(ttsItemLink(id)));
+    expect(printed.length).toBeLessThan(40);
+    expect(ids.filter((id) => surfacedTodoIds.includes(id)).sort()).toEqual(printed.sort());
+  });
+
+  it("stores the triage's reason with secrets redacted", async () => {
+    const t = convexTest(schema, modules);
+    const id = await t.mutation(internal.tts.internalCapture, {
+      statement: "Rotate the leaked key",
+      source: "email",
+      needsTomToday: { why: "the mail quotes ghp_abcdefghijklmnopqrstuvwxyz0123456789 in full" }, // gitleaks:allow
+    });
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.needsTomToday?.why).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789"); // gitleaks:allow
+  });
+
   it("lists a dated email capture once, under today", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);

@@ -154,16 +154,17 @@ the stable source id `gmail:message:<id>` in its provenance, followed by the
 `#all` link. Judged from headers plus Gmail's ~100-character snippet only —
 v1 never downloads bodies — and the prompt leans toward capturing when
 unsure, because a wrong capture costs one archive click while a wrong skip
-loses the thread. Second: does it need Tom **today**? If so the job asks
-Convex to open one thread in `#tts` on that todo (`POST /tts/needs-tom`),
-carrying one line — the sender, the subject, the todo's link — so his reply
-in it is the next turn on the row. That second judgement is capture triage,
+loses the thread. Second: does it need Tom **today**? If so the capture
+carries `needsTomToday` and the triage's reason, which Convex stores on the
+todo. The job opens no thread and reaches Tom by no other road: Tom ruled on
+2026-09-21 that workers do not reach him directly, so the morning message in
+`#tts-today` and the hourly line in `#tts-hourly` name the item with its
+reason, and his reply there reaches it. That second judgement is capture triage,
 not an importance rating: three facts and no others make it true (a deadline
 inside 48 hours, a named person waiting on a reply, money or credentials),
 and the rules for both judgements come from the deployment
 (`GET /tts/capture-context`, the synced WikiTom capture-triage text), never
-from a copy in the job. The thread is deduped on the Gmail message id, so one
-mail opens one thread however many times the job re-reads it. Until the
+from a copy in the job. Until the
 Gmail credentials exist it is a quiet no-op; see "Gmail credentials".
 
 **poll-canvas** is the one job that owns Canvas, in two halves on one tick.

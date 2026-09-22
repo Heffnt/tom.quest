@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import {
   composeTodayFitted,
   countWord,
+  itemUrl,
   renderSlack,
   todayFactsBlock,
   type BatchOutcome,
@@ -457,17 +458,38 @@ export async function gatherTodayFacts(
   //    is a thing to do today and reaches him through the ready count below; a
   //    capture that is not ready is a row, not a line (§4.3). Read only to
   //    keep them out of the ready list twice.
-  const emailCaptureIds = new Set(
-    (
-      await ctx.db
-        .query("dtsTodos")
-        .withIndex("by_source", (q) => q.eq("source", "email"))
-        .order("desc")
-        .take(CAPTURE_SCAN)
-    )
-      .filter((t) => t.createdAt >= since && t.createdAt < now)
-      .map((t) => t._id as string),
+  const recentEmail = await ctx.db
+    .query("dtsTodos")
+    .withIndex("by_source", (q) => q.eq("source", "email"))
+    .order("desc")
+    .take(CAPTURE_SCAN);
+  const emailCaptures = recentEmail.filter((t) => t.createdAt >= since && t.createdAt < now);
+  const emailCaptureIds = new Set(emailCaptures.map((t) => t._id as string));
+
+  //    Of the recent mail captures, the ones the triage judged to need him
+  //    today, still active, and NOT YET SHOWN in a morning message. No worker
+  //    raises these with him (Tom, 2026-09-21), so this message says them,
+  //    each once: a line printed marks its todo surfaced, and one dropped for
+  //    length stays unshown and comes back the next morning rather than aging
+  //    out of a window. A morning reposted after a failed send records no
+  //    surfaced todos (ttsSync's resend), so its flagged items are said again
+  //    the next morning: the error is toward saying twice, never never. The
+  //    field is never cleared: it is what the triage judged at capture, and
+  //    the reader decides what is still to be said. Gmail's "email" is the one
+  //    mail source that captures today; Outlook's joins when its poller does.
+  const flagged = recentEmail.filter(
+    (t) => t.needsTomToday !== undefined && t.status === "active" && t.createdAt < now,
   );
+  const unshown: typeof flagged = [];
+  for (const t of flagged) {
+    const shown = (
+      await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", t._id)).collect()
+    ).some((e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest");
+    if (!shown) unshown.push(t);
+  }
+  const needsYou = unshown
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((t) => ({ todoId: t._id as string, statement: t.statement, why: t.needsTomToday?.why ?? "" }));
 
   // 4. The night's events, oldest first: what the box left behind, what broke,
   //    and the delegate's decisions.
@@ -794,7 +816,8 @@ export async function gatherTodayFacts(
     today: dated,
     lateCount,
     oldestLateBy,
-    readyBeyond: readyIds.size,
+    // Ready items not printed: a flagged one is printed in the needs-you run.
+    readyBeyond: [...readyIds].filter((id) => !needsYou.some((n) => n.todoId === id)).length,
     calendar,
     calendarLead: spans.length === 0 ? undefined : calendarLeadText(spans),
     objections: objections.slice(0, OBJECTION_CAP),
@@ -802,6 +825,18 @@ export async function gatherTodayFacts(
     // Counted over the WHOLE list, printed and beyond, because the lead's
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
+    // A flagged capture that preparation has since dated keeps its lateness
+    // here, and is said once, in the needs-you run (composeToday). Dated ones
+    // lead the run in the today list's own oldest-first order, so the item the
+    // first line names as the one to start with is the last line any fit could
+    // drop; the rest follow in capture order.
+    needsYou: needsYou
+      .map((n, order) => {
+        const at = dated.findIndex((item) => item.id === n.todoId);
+        return { n: at < 0 ? n : { ...n, countdown: dated[at].countdown }, rank: at < 0 ? dated.length + order : at };
+      })
+      .sort((a, b) => a.rank - b.rank)
+      .map(({ n }) => n),
     runners,
     overnight,
     batchesPlanned: overnight.length,
@@ -865,6 +900,21 @@ function printedObjectionNumber(text: string): number | null {
  * The list therefore says what he could SEE, which is the only thing a reply
  * of "revert 2" can honestly be resolved against.
  */
+/** The today and needs-you-today items the fitted message printed, by their
+ *  links, each id once. */
+function printedTodoIds(
+  message: { lines: { role: string; section?: string; url?: string }[] },
+  facts: TodayFacts,
+): string[] {
+  const printed = new Set(
+    message.lines
+      .filter((line) => line.role === "item" && (line.section === "today" || line.section === "needs-you-today"))
+      .map((line) => line.url),
+  );
+  const ids = [...facts.today.map((item) => item.id), ...facts.needsYou.map((n) => n.todoId)];
+  return [...new Set(ids.filter((id) => printed.has(itemUrl(id))))];
+}
+
 function printedObjectionAskIds(
   message: { lines: { role: string; section?: string; text: string }[] },
   facts: TodayFacts,
@@ -910,9 +960,13 @@ export const internalComposeToday = internalQuery({
       // the sender records it on the "digest-sent" row.
       truncated,
       since,
-      // Every todo the message showed, for the "surfaced" instrumentation.
-      surfacedTodoIds: facts.today
-        .map((item) => ctx.db.normalizeId("dtsTodos", item.id))
+      // Every todo the message showed, for the "surfaced" instrumentation:
+      // the today run and, read off the FITTED message as the objection
+      // numbers are, the needs-you-today items actually printed; each id once.
+      // Both read off the fitted message, so an item whose line was dropped
+      // never counts as seen.
+      surfacedTodoIds: printedTodoIds(message, facts)
+        .map((id) => ctx.db.normalizeId("dtsTodos", id))
         .filter((id): id is Id<"dtsTodos"> => id !== null),
       // The decisions the objection list carried, in PRINTED order: a reply of
       // "revert 2" names the second of these. Read off the FITTED message, not
