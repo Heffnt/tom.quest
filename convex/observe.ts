@@ -24,7 +24,12 @@ import { requireTom } from "./authRoles";
 import { APPROVABLE_REPOS, changeOfCommit, newestRuling, resolveChange } from "./observeMerge";
 import { mergeGateFor } from "./ttsMerge";
 import { insertRuling } from "./ttsRulings";
-import { VOCABULARY_TERMS, commitKey, pullRequestChange } from "./ttsShared";
+import {
+  VOCABULARY_TERMS,
+  commitKey,
+  isFailureKind,
+  pullRequestChange,
+} from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
 
 /** The label every gate in this module names, so a denial says which surface. */
@@ -62,23 +67,11 @@ const PAGE_OPENED_KIND = "tts-opened";
  *  (convex/ttsMerge.ts). */
 export const GATE_KINDS = ["tests-run", "audit-verdict", "evals-run"] as const;
 
-/** The two `-failed` kinds that are not #tts-broken lines. Spelled the way
- *  convex/tts.ts NOT_A_BROKEN_LINE spells them, and for its reasons: the Slack
- *  door's own failure would post about itself, and a learning revert is an
- *  objection the nightly could not apply, not a job that broke. */
-const NOT_A_FAILURE = new Set(["slack-send-failed", "learning-revert-failed"]);
-
-/**
- * True for the event rows the failures lane draws.
- *
- * FAILURE IS A SHAPE, NOT A KIND. convex/tts.ts logEvent turns every kind
- * ending in `-failed` into a #tts-broken line, minus those two exclusions, so
- * this reads the same rule. A list of failure kinds here would be a second list
- * that goes stale the day a new job is written.
- */
-export function isFailureKind(kind: string): boolean {
-  return kind.endsWith("-failed") && !NOT_A_FAILURE.has(kind);
-}
+/** True for the event rows the failures lane draws: the one spelling of the
+ *  rule, in convex/ttsShared.ts, which is also what decides whether an event
+ *  becomes a #tts-broken line. Re-exported so the page's server module names
+ *  what it uses. */
+export { isFailureKind };
 
 /** The kinds a page of events keeps. Everything else in the window is dropped
  *  on the server, so a page of rows is rows the page can draw rather than rows
