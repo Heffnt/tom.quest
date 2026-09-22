@@ -10,14 +10,21 @@
 // Dependency-free so the repo's vitest can run it
 // (`__tests__/hosted.test.mjs`); session.mjs cannot be imported there.
 
+// The daemon and the record share these through one definition: the record
+// (convex/orchestrator.ts) imports this file, as it imports redact.mjs.
+
 /** The last line of the orchestrator's final message when it asks to be
- * restarted from its document. MIRROR of ORCHESTRATOR_COMPACT_WORD in
- * convex/ttsShared.ts; scripts/check-session-mirrors.mjs fences the two. */
+ * restarted from its document. */
 export const ORCHESTRATOR_COMPACT_WORD = "JARVIS-COMPACT";
 
-/** The endedReason a compaction ends with. convex/orchestrator.ts reads it to
- * tell a compaction (restart now, crash count cleared) from a crash. */
+/** The endedReason a compaction ends with. The record reads it to tell a
+ * compaction (restart now, crash count cleared) from a crash. */
 export const COMPACT_ENDED_REASON = "orchestrator compacted";
+
+/** The endedReason a restarted daemon ends a live unattended run with
+ * (session-host.mjs adoptSession). The record restarts the orchestrator at
+ * once on it and does not count it as a crash. */
+export const DAEMON_RESTART_ENDED_REASON = "daemon restarted mid-mission";
 
 /**
  * How long a hosted worker with an open elevation waits, idle, for its answer.

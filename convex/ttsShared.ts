@@ -1120,11 +1120,6 @@ export const DECISION_KIND = v.union(
   v.literal("reserved"),
 );
 export type DecisionKind = Infer<typeof DECISION_KIND>;
-/** The last line of the orchestrator's final message when it asks to be
- * restarted from its document. MIRRORED in worker/session-host/hosted.mjs,
- * which reads it off the turn's result; scripts/check-session-mirrors.mjs
- * fences the two. */
-export const ORCHESTRATOR_COMPACT_WORD = "JARVIS-COMPACT";
 /**
  * How many hosted workers may be live at once. Its own number, not the box
  * launcher's two slots: those bound the command line's runs, which each hold

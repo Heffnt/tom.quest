@@ -39,7 +39,6 @@ import {
   HOSTED_WORKERS_MAX,
   LIVE_STATUSES,
   NARROW_LIST,
-  ORCHESTRATOR_COMPACT_WORD,
   channelFor,
   isLive,
   isSessionModel,
@@ -49,12 +48,14 @@ import {
   type SessionModel,
 } from "./ttsShared";
 import { DELEGATE_DECISION } from "./ttsAsk";
+import {
+  COMPACT_ENDED_REASON,
+  DAEMON_RESTART_ENDED_REASON,
+  ORCHESTRATOR_COMPACT_WORD,
+} from "../worker/session-host/hosted.mjs";
 import { composeElevationAsk, elevationAskBody, renderSlack } from "./ttsCompose";
 
 export const ORCHESTRATOR_KEY = "jarvis" as const;
-/** The endedReason a compaction ends with. MIRROR of COMPACT_ENDED_REASON in
- * worker/session-host/hosted.mjs, which writes it. */
-export const COMPACT_ENDED_REASON = "orchestrator compacted";
 /** How long a run holds the lease without the daemon saying it still holds
  * the run. The daemon polls every 30 seconds at the slowest, so three minutes
  * is six missed polls: a daemon that stopped, not one that paused. */
@@ -68,9 +69,7 @@ export const ORCHESTRATOR_CRASHES_REPORTED = 3;
 /** A run that stayed up this long was not part of a crash loop: the crash
  * count starts again from it. */
 export const ORCHESTRATOR_STABLE_MS = 10 * 60_000;
-/** The endedReason worker/session-host/session-host.mjs writes when a
- * restarted daemon ends an unattended run it finds live. */
-const DAEMON_RESTART_ENDED_REASON = "daemon restarted mid-mission";
+
 /** The delegate's own question limit (POST /tts/ask): a trade-off goes to the
  * delegate word for word, so an elevation's question is held to it. */
 const QUESTION_MAX_CHARS = 400;
@@ -200,6 +199,9 @@ async function unansweredElevations(ctx: QueryCtx) {
  * the daemon runs the ordinary way.
  */
 export async function hostedFacts(ctx: QueryCtx, session: Doc<"claudeSessions">) {
+  // Tom reopening a hosted row makes it his interactive session (the reopen
+  // flips its mode), and it is then an ordinary session like any other.
+  if (session.mode !== "autonomous") return undefined;
   const hosted = await hostedRunOf(ctx, session._id);
   if (!hosted) return undefined;
   if (hosted.environment === "orchestrator") return { environment: "orchestrator" as const };
@@ -268,7 +270,6 @@ async function launchRun(
   ctx: MutationCtx,
   row: Doc<"orchestrators">,
   reason: string,
-  instruction: string | undefined,
 ): Promise<Id<"claudeSessions">> {
   const now = Date.now();
   const from = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
@@ -323,7 +324,7 @@ async function launchRun(
           document: row.document,
           documentVersion: row.documentVersion,
           reason,
-          instruction,
+          instruction: row.instruction,
           carried,
           workers: workers.map(({ session }) => ({ id: session._id, title: session.title, status: session.status })),
           elevations: elevations.map((e) => ({
@@ -400,14 +401,15 @@ async function startOrchestrator(ctx: MutationCtx, { reason, instruction }: { re
       startedAt: now,
       runStartedAt: now,
       crashes: 0,
+      instruction: instruction?.trim() || undefined,
     });
     await ctx.db.insert("orchestratorDocuments", { version: 1, text: INITIAL_DOCUMENT, at: now });
     row = (await ctx.db.get(id))!;
   } else {
-    await ctx.db.patch(row._id, { stoppedAt: undefined, stoppedReason: undefined, crashes: 0, startedAt: now });
+    await ctx.db.patch(row._id, { stoppedAt: undefined, stoppedReason: undefined, crashes: 0, startedAt: now, instruction: instruction?.trim() || undefined });
     row = (await ctx.db.get(row._id))!;
   }
-  const sessionId = await launchRun(ctx, row, `started: ${reason}`, instruction?.trim() || undefined);
+  const sessionId = await launchRun(ctx, row, `started: ${reason}`);
   return { started: true, sessionId };
 }
 
@@ -535,7 +537,7 @@ export const internalSweep = internalMutation({
     const now = Date.now();
     const session = row.liveSessionId === undefined ? null : await ctx.db.get(row.liveSessionId);
     if (!session) {
-      await launchRun(ctx, row, "its run was missing", undefined);
+      await launchRun(ctx, row, "its run was missing");
       return { restarted: true };
     }
     if (!isLive(session.status)) {
@@ -544,7 +546,7 @@ export const internalSweep = internalMutation({
         session.endedReason === COMPACT_ENDED_REASON
           ? "the last run compacted"
           : `the last run ended: ${session.endedReason ?? session.status}`;
-      await launchRun(ctx, row, reason, undefined);
+      await launchRun(ctx, row, reason);
       return { restarted: true };
     }
     if (session.status !== "requested" && row.leaseDeadline !== undefined && now > row.leaseDeadline) {
@@ -554,7 +556,7 @@ export const internalSweep = internalMutation({
         endedReason: "its lease expired",
         crashes: row.crashes + 1,
       });
-      await launchRun(ctx, (await ctx.db.get(row._id))!, "the last run's lease expired", undefined);
+      await launchRun(ctx, (await ctx.db.get(row._id))!, "the last run's lease expired");
       return { restarted: true };
     }
     return { restarted: false };
@@ -1029,7 +1031,7 @@ export function buildOrchestratorPrompt(args: {
     BOX_TOOLS_PARAGRAPH,
     "",
     `Why this run started: ${args.reason}.`,
-    ...(args.instruction ? ["", "The instruction this start carries:", args.instruction] : []),
+    ...(args.instruction ? ["", "The instruction Tom started the orchestrator with (every run of it carries this until he starts it again):", args.instruction] : []),
     "",
     `Your document (version ${args.documentVersion}):`,
     "",

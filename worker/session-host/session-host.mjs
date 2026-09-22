@@ -39,7 +39,7 @@ import { Session, gitErrorText } from "./session.mjs";
 import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
-import { listedCodexModels } from "./hosted.mjs";
+import { DAEMON_RESTART_ENDED_REASON, listedCodexModels } from "./hosted.mjs";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -524,7 +524,7 @@ function adoptSession(env, sessions, row) {
       outcomeSummary: "daemon restarted mid-mission",
     };
     s.setStatus("ended");
-    s.endedReasonToSend = "daemon restarted mid-mission";
+    s.endedReasonToSend = DAEMON_RESTART_ENDED_REASON;
     s.requestFlush(true);
     s.cleanupWorkdir();
     return;

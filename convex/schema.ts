@@ -1685,6 +1685,10 @@ export default defineSchema({
     // When the next run may start after a crash; absent means now.
     restartAt: v.optional(v.number()),
     lastRestart: v.optional(v.object({ at: v.number(), reason: v.string(), fromSessionId: v.optional(v.id("claudeSessions")) })),
+    // The instruction Tom started it with, carried into every run of the chain
+    // until the next start replaces it: a run that crashes before writing its
+    // document must not lose what it was asked to do.
+    instruction: v.optional(v.string()),
     // Set by a stop: nothing restarts it until the next start.
     stoppedAt: v.optional(v.number()),
     stoppedReason: v.optional(v.string()),

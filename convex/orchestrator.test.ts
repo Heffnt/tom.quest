@@ -12,7 +12,6 @@ import { AUTO_DEFAULTS } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
-  COMPACT_ENDED_REASON,
   INITIAL_DOCUMENT,
   ORCHESTRATOR_CRASH_BACKOFF_CAP_MS,
   ORCHESTRATOR_CRASH_BACKOFF_MS,
@@ -26,7 +25,8 @@ import {
   orchestratorModel,
   recordElevationReply,
 } from "./orchestrator";
-import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER, ORCHESTRATOR_COMPACT_WORD } from "./ttsShared";
+import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER } from "./ttsShared";
+import { COMPACT_ENDED_REASON, ORCHESTRATOR_COMPACT_WORD } from "../worker/session-host/hosted.mjs";
 import { checkMessage, composeElevationAsk, elevationAskBody } from "./ttsCompose";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -209,6 +209,20 @@ describe("starting and hosting", () => {
     const over = await pen(t, "/tts/spawn-worker", { sessionId: orchestrator, title: "one too many", brief: "y" });
     expect(over.status).toBe(409);
     expect(String(over.body.error)).toContain(`the limit is ${HOSTED_WORKERS_MAX}`);
+  });
+
+  it("hands a hosted row Tom reopens back to him as an ordinary session", async () => {
+    const t = await setup();
+    const orchestrator = await start(t);
+    const worker = await spawn(t, orchestrator);
+    await ingest(t, worker, { status: "running" });
+    await ingest(t, worker, { status: "ended", endedReason: "worker run complete" });
+    await t.mutation(internal.claudeSessions.internalReopenSession, { sessionId: worker as Id<"claudeSessions">, text: "What did you change?" });
+    const row = (await poll(t, { hosts: HOSTS })).sessions.find((s) => s.id === worker);
+    expect(row).toBeDefined();
+    expect(row?.environment).toBeUndefined();
+    // And an old daemon, which hosts nothing, may now take it like any session.
+    expect((await poll(t)).sessions.map((s) => s.id)).toContain(worker);
   });
 
   it("carries messages both ways and keeps the document versioned", async () => {
@@ -410,11 +424,11 @@ describe("restarting from the document", () => {
     expect(hosted?.environment).toBe("orchestrator");
   });
 
-  it("carries a message whose turn crashed to the next run", async () => {
+  it("carries a message whose turn crashed to the next run, and the start instruction to every run", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
     const t = await setup();
-    const first = await start(t);
+    const first = await start(t, "Spawn one worker on the footer.");
     const worker = await spawn(t, first);
     await pen(t, "/tts/message", { sessionId: worker, to: "orchestrator", text: "PR 1 is open." });
     const [opener, message] = await t.run(async (ctx) =>
@@ -437,6 +451,7 @@ describe("restarting from the document", () => {
     const next = (await row(t))!.liveSessionId!;
     const text = (await pendingTexts(t, next))[0];
     expect(text).toContain("PR 1 is open.");
+    expect(text).toContain("Spawn one worker on the footer.");
     expect(text.split("Why this run started").length).toBe(2);
   });
 
