@@ -801,11 +801,15 @@ describe("the needs-you-today run", () => {
     const count = block.facts.find((f) => f.id === "today:count")!;
     const draft = { firstLine: "Three things carry a date you have passed.", firstLineSources: [count.id], lines: [] };
     const faults = verifyDraft(draft, block);
-    expect(faults).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line');
-    expect(faults).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say on an item line');
+    expect(faults).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line carrying its link');
+    expect(faults).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say on an item line carrying its link');
+    // One line citing both, with one link, says only one of them.
+    const merged = verifyDraft({ ...draft, lines: [{ role: "item" as const, text: "Pay the lab deposit invoice and answer the registrar.", url: "https://tom.quest/tts?item=abc", sources: ["needs-you-today:abc", "needs-you-today:def"] }] }, block);
+    expect(merged).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say on an item line carrying its link');
+    expect(merged).not.toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line carrying its link');
     // Cited only on the first line is still left out.
     const folded = verifyDraft({ ...draft, firstLineSources: [count.id, "needs-you-today:abc", "needs-you-today:def"] }, block);
-    expect(folded).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line');
+    expect(folded).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line carrying its link');
   });
 
   it("keeps the today run saying dated items exist when every one of them is left to the needs-you run", () => {

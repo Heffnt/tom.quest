@@ -1674,13 +1674,13 @@ export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
       }
     }
   }
-  // A required fact is said on a line of its own: cited by an item line, not
-  // folded into the first line or a lead.
-  const citedByItems = new Set(lines.filter((line) => line.role === "item").flatMap((line) => line.sources));
+  // A required fact is said on a line of its own: an item line that cites it
+  // AND carries its link, so one line cannot stand in for several items and
+  // the first line or a lead cannot stand in for any.
   for (const f of block.facts) {
-    if (f.required && !citedByItems.has(f.id)) {
-      faults.push(`the draft leaves out the fact "${f.id}", which every message must say on an item line`);
-    }
+    if (!f.required) continue;
+    const own = lines.some((line) => line.role === "item" && line.url !== undefined && f.urls.includes(line.url) && line.sources.includes(f.id));
+    if (!own) faults.push(`the draft leaves out the fact "${f.id}", which every message must say on an item line carrying its link`);
   }
   return [
     ...faults,
