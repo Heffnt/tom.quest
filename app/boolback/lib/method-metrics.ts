@@ -69,8 +69,6 @@ for (const field of PROFILE_SUMMARY_FIELDS) {
   BASE_ACCESSORS[`interp_${field}`] = (r, m) => interpKindValue(r, m, field);
 }
 
-export const PER_METHOD_BASES = Object.keys(BASE_ACCESSORS);
-
 /** The client-derived anatomy bases (normalize synthesizes their schema entries). */
 export const ANATOMY_BASES = [
   "interp_peak_layer",

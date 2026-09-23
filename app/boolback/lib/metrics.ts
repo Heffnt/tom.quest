@@ -7,7 +7,7 @@
 // format string. Building columns/ranges/labels off this index (not a hand-kept
 // list) is the whole point of the redesign — it cannot drift from the builder.
 
-import type { Bundle, MetricSchemaEntry, MetricSuite } from "./types";
+import type { MetricSchemaEntry, MetricSuite } from "./types";
 import { parseMethodMetric } from "./method-metrics";
 
 /** Index metric_schema by metric name. */
@@ -35,29 +35,9 @@ export function metricNamesInSuite(
   return schema.filter((e) => e.suite === suite).map((e) => e.name);
 }
 
-/** Convenience groupings derived from a bundle's metric_schema. */
-export function metricGroupings(bundle: Bundle): {
-  index: Record<string, MetricSchemaEntry>;
-  function: string[];
-  outcome: string[];
-  defense: string[];
-  interp: string[];
-  scan: string[];
-  spectral: string[];
-  structural: string[];
-} {
-  const schema = bundle.metric_schema;
-  return {
-    index: indexMetricSchema(schema),
-    function: metricNamesInGroup(schema, "FUNCTION"),
-    outcome: metricNamesInGroup(schema, "OUTCOME"),
-    defense: metricNamesInGroup(schema, "DEFENSE"),
-    interp: metricNamesInGroup(schema, "INTERP"),
-    scan: metricNamesInGroup(schema, "SCAN"),
-    spectral: metricNamesInSuite(schema, "spectral"),
-    structural: metricNamesInSuite(schema, "structural"),
-  };
-}
+// Callers ask for the one grouping they need (indexMetricSchema,
+// metricNamesInGroup, metricNamesInSuite above). The all-at-once wrapper that
+// used to sit here had no readers.
 
 // ---------------------------------------------------------------------------
 // Per-axis metric-select ordering. The Y axis is an OUTCOME instrument (what

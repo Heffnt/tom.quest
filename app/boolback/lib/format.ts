@@ -19,11 +19,6 @@ export function relTime(iso: string | null | undefined): string {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-/** 12345 -> "12,345". */
-export function thousands(n: number): string {
-  return n.toLocaleString("en-US");
-}
-
 /** Bytes -> "1.2 MB". */
 export function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

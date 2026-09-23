@@ -105,8 +105,8 @@ export function blendTint(tally: Multiset): string {
 
 // ── node & edge model ────────────────────────────────────────────────────────
 
-/** Bands stack bottom→top; the renderer maps each to a vertical zone. */
-export type GraphBand = "cauldron" | "ingredient" | "frequency" | "combined";
+/* Bands stack bottom→top; the renderer maps each to a vertical zone. Each node
+   type below spells its own band literal — there is no shared band union. */
 
 /** Abstract stage position (percent of the stage box, 0..100). */
 export type GraphPoint = { x: number; y: number };
