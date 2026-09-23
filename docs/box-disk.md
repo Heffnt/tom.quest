@@ -19,8 +19,8 @@ reports the same bytes twice and the total is the honest number.
 
 | directory | 2026-09-23 | what it holds | who deletes it, and when |
 | --- | --- | --- | --- |
-| `/var/cache/tts/sessions/<id>` | 10.7 GB | one workdir per session: a fresh clone per repo the session named | `Session.cleanupWorkdir` when the session ends, and `worker/session-host/workdir-sweep.mjs` hourly for any workdir no live Session speaks for and nothing has touched for a day |
-| `/var/cache/tts/sessions/<id>/overflow` | 0 | **keep** — complete payloads Convex refused; they exist nowhere else | `worker/session-host/reingest-overflow.mjs`, hourly, once Convex has taken the payload; both sweeps above keep it |
+| `/var/cache/tts/sessions/<id>` | 10.7 GB | one workdir per session: a fresh clone per repo the session named | `worker/session-host/workdir.mjs`, by session id, in whichever process observes the ending: the Session that ended it, the daemon's reap when the server stops listing it, or, for a session that ended while no daemon ran, the daemon's first poll after it starts |
+| `/var/cache/tts/sessions/<id>/overflow` | 0 | **keep** — complete payloads Convex refused; they exist nowhere else | `worker/session-host/reingest-overflow.mjs`, hourly, once Convex has taken the payload; every deleter above keeps it |
 | `/var/cache/tts/runs/repos/*.git` | 4.5 GB | the bare mirrors every run's worktree is cut from | nobody: refreshed in place, never deleted. WikiTom is 3.9 GB of it, most of that the `sessions/` archive in its history |
 | `/var/cache/tts/runs/work/<id>` | 1.9 GB | one worktree per run, plus its `stderr.log` | `box-run.mjs`'s reap, on every exit path — the child's close, a throw, a signal, a full disk. `--keep-worktree` is how to ask it not to |
 | `/var/cache/tts/runs/store` | 1.7 GB | the run store, standing in for the object store that is not provisioned | nobody, until `RUN_STORE_ENDPOINT` and its three companions are set and the store moves off the box. The sweep already reports this as a failure every pass |
@@ -61,11 +61,10 @@ for d in /var/cache/tts/sessions/*/; do
 done
 ```
 
-That is the hourly sweep's rule, run now: every session workdir with nothing in
-it touched in the last day goes, and one holding a refused payload stays. It was
-10.7 GB on 2026-09-23. Unlike the sweep it does not know which session has a
-turn running, so it can delete a workdir out from under a live turn — run it
-when the fleet is quiet, or read the list first.
+It deletes every session workdir with nothing in it touched in the last day, and
+keeps one holding a refused payload. It was 10.7 GB on 2026-09-23. It does not
+know which session is live, so it can delete a workdir out from under a live
+turn: run it when the fleet is quiet, or read the list first.
 
 If more is needed, in the order of what costs least to lose:
 
