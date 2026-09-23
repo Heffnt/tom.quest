@@ -87,7 +87,7 @@ export function PointHoverTooltip({ point, cloud, manifest, activeMode }: Props)
             {predictions.map(({ mode, value }) => (
               <ClassRow
                 key={mode.id}
-                label={stripPredictionLabel(mode.label)}
+                label={mode.label}
                 value={value}
                 selected={mode.id === activeMode.id}
               />
@@ -181,10 +181,6 @@ function clampToViewport(
   if (typeof window === "undefined") return value;
   const viewportSize = axis === "width" ? window.innerWidth : window.innerHeight;
   return Math.max(padding, Math.min(value, viewportSize - estimatedSize - padding));
-}
-
-function stripPredictionLabel(label: string): string {
-  return label.replace(/^Predictions?\s+—\s+/, "");
 }
 
 function formatCoordinate(value: number): string {
