@@ -1042,3 +1042,51 @@ describe("the fallback auditor through box-run", () => {
     fs.rmSync(checkout, { recursive: true, force: true });
   }, 30_000);
 });
+
+// The audit's own temp directory: a registration spool, made per audit because
+// a Codex run's token is not on its stdout. It is removed in a `finally`, which
+// is every exit path a throw can take, and these pin that — a spool leaked once
+// per audit would put a directory per merge-gate run in /tmp for good.
+describe("the audit's registration spool", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function auditWith(runner, tmp) {
+    vi.resetModules();
+    vi.stubEnv("TTS_CODEX_BIN", runner);
+    vi.stubEnv("TMPDIR", tmp);
+    const fresh = await import("../jobs/audit.mjs");
+    const { io: fakeIo, posted } = io({
+      audit: undefined,
+      runTrace: async () => ({ runId: "run_1", turns: 1, tokens: 10, toolCalls: [] }),
+      mergeGate: async () => ({ checks: [] }),
+    });
+    delete fakeIo.audit; // the real one, so the spool is really made
+    let error = null;
+    try {
+      await fresh.auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: tmp }, fakeIo);
+    } catch (err) {
+      error = err;
+    }
+    return { posted, error };
+  }
+
+  const spools = (dir) => fs.readdirSync(dir).filter((name) => name.startsWith("tts-audit-reg-"));
+
+  it("removes the spool when the auditor answers", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "audit-spool-ok-"));
+    const runner = path.join(tmp, "fake-codex.mjs");
+    fs.writeFileSync(runner, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(`${AUDIT_VERDICT_LINE}\n\nIt does what it says.`)});\n`);
+    fs.chmodSync(runner, 0o755);
+    await auditWith(runner, tmp);
+    expect(spools(tmp)).toEqual([]);
+  });
+
+  it("removes the spool when the auditor throws", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "audit-spool-throw-"));
+    const runner = path.join(tmp, "fake-codex.mjs");
+    fs.writeFileSync(runner, "#!/usr/bin/env node\nprocess.stderr.write(\"broken\\n\");\nprocess.exit(3);\n");
+    fs.chmodSync(runner, 0o755);
+    await auditWith(runner, tmp);
+    expect(spools(tmp)).toEqual([]);
+  });
+});
