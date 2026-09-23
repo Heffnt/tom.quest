@@ -24,6 +24,9 @@ const eslintConfig = defineConfig([
     "**/next-env.d.ts",
     "**/convex/_generated/**",
     // Stale local git worktrees are gitignored dev artifacts — never lint them.
+    // Two other files fence this same path, in two other syntaxes: the
+    // `exclude` list in vitest.config.mts, and SKIP_DIR (a set of basenames) in
+    // scripts/check-session-mirrors.mjs. A change here belongs in all three.
     ".claude/**",
   ]),
 ]);
