@@ -183,6 +183,11 @@ def config():
         "head_dim": HEAD_DIM,
         "d_mlp": D_MLP,
         "vocab_size": cfg.vocab_size,
+        # Kept on purpose with no client reader: /config is this server's
+        # self-description of the loaded model, read by anything that curls it
+        # (including by hand, to check which checkpoint is up), and this server
+        # is deployed separately from the web app, so dropping a key here does
+        # not follow from the web app no longer reading it.
         "tied_embeddings": bool(getattr(cfg, "tie_word_embeddings", False)),
     }
 

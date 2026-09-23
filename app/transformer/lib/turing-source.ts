@@ -16,7 +16,8 @@ type ServerConfig = {
   head_dim: number;
   d_mlp: number;
   vocab_size: number;
-  tied_embeddings: boolean;
+  // /config also returns tied_embeddings; ModelConfig has no field for it and
+  // nothing here reads it, so it is left off this type on purpose.
 };
 
 type ServerStep = {
@@ -76,7 +77,6 @@ export async function createTuringSource(baseUrl: string, token: string): Promis
     headDim: conf.head_dim,
     dMlp: conf.d_mlp,
     vocabSize: conf.vocab_size,
-    tiedEmbeddings: conf.tied_embeddings,
   };
 
   const statsCache = new Map<string, TensorStats>();
