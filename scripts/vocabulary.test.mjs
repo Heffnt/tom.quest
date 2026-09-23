@@ -293,9 +293,12 @@ function makeCheckouts(overrides = {}) {
   write(tomQuest, "convex/crons.ts", overrides.crons ?? CRONS_TS);
   write(tomQuest, "worker/setup.sh", overrides.setup ?? SETUP_SH);
   for (const [rel, body] of Object.entries(FILES)) write(tomQuest, rel, overrides[rel] ?? body);
-  // The two files the generator both imports and parses.
+  // The two files the generator both imports and parses. An override stands in
+  // for a tom.quest checkout that is NOT the one this generator was installed
+  // from, which is the case on the box and the case the shapes read below is
+  // about.
   for (const rel of ["worker/jobs/search-lib.mjs", "scripts/skills.mjs"]) {
-    write(tomQuest, rel, fs.readFileSync(path.join(REPO_ROOT, rel), "utf8"));
+    write(tomQuest, rel, overrides[rel] ?? fs.readFileSync(path.join(REPO_ROOT, rel), "utf8"));
   }
   return { root, wikitom, tomQuest };
 }
@@ -583,6 +586,24 @@ describe("the disagreement check", () => {
     const missing = run(makeCheckouts({ agentRules: AGENT_RULES.replace("- WikiTom: the private notes tree.\n", "") }));
     expect(codes(missing)).toEqual(["D5"]);
     expect(missing.disagreements[0].subject).toBe('repository "WikiTom"');
+  });
+
+  it("D5 — a tom.quest older than this generator is a disagreement, not a throw", () => {
+    // THE CASE THE BOX PRODUCES. worker/setup.sh installs these scripts from the
+    // branch it is rolled from and nothing pulls /root/tom.quest, so the text
+    // this generator parses is routinely a checkout behind the SKILL_SHAPES it
+    // was written against. It was: from the night `explainer` landed in the
+    // install and not in that checkout, a count asserted between the two threw
+    // "the source declares 6 and the parser read 5" and the nightly's graph step
+    // wrote no graph, every night.
+    const older = fs
+      .readFileSync(path.join(REPO_ROOT, "scripts/skills.mjs"), "utf8")
+      .replace(/ {2}explainer: Object\.freeze\(\{[\s\S]*?\n {2}\}\),\n/, "");
+    expect(older).not.toContain("explainer: Object.freeze({");
+    const result = run(makeCheckouts({ "scripts/skills.mjs": older }));
+    expect(codes(result)).toEqual(["D5"]);
+    expect(result.disagreements[0].subject).toBe('skill "explainer"');
+    expect(result.disagreements[0].rows[1].text).not.toContain("explainer");
   });
 
   it("collects every disagreement and never stops at the first", () => {

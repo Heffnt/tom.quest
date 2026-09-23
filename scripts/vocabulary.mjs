@@ -55,7 +55,7 @@ import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
 // same reason, for worker/jobs/worker-env.mjs on this branch.
 const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 const BOX_WIKITOM_DIR = "/root/wikitom";
-import { AREAS_DIR, SKILL_SHAPES, parseRepoBullets } from "./skills.mjs";
+import { AREAS_DIR, parseRepoBullets } from "./skills.mjs";
 // The one HEAD parser (see "Git" below). scripts/graph.mjs imports this file
 // only inside a function, so a static import back to it makes no load cycle.
 import { headCommit } from "./graph.mjs";
@@ -800,7 +800,25 @@ export function parseSearchQuestions(searchLibText, helpText) {
 
 // ── The skills ───────────────────────────────────────────────────────────────
 
-function parseSkillShapes(skillsText) {
+/**
+ * The shapes THE GIVEN TEXT declares, and nothing beyond them.
+ *
+ * NO COUNT AGAINST THE IMPORTED `SKILL_SHAPES`, and there was one. The text
+ * comes from the `tomQuest` checkout this run was pointed at; the imported
+ * object comes from the copy of scripts/skills.mjs sitting beside this file. On
+ * the box those are two different checkouts — worker/setup.sh installs these
+ * scripts from the branch it is rolled from and nothing pulls /root/tom.quest —
+ * so the count asserted a fact about one file and read two, and every night
+ * after `explainer` landed in the install and not in that checkout the nightly's
+ * graph step threw and wrote no graph.
+ *
+ * The comparison worth making ACROSS the two trees is the D5 below: a shape this
+ * generator names for a skill that the checkout does not declare. It reports,
+ * names both sides, and lets the rest of the night finish. The comparison worth
+ * making WITHIN one tree — that this regex still reads every key the code
+ * declares — is `pnpm check:vocabulary`, the one place both sides are one file.
+ */
+export function parseSkillShapes(skillsText) {
   const text = normalize(skillsText);
   const start = text.indexOf("export const SKILL_SHAPES = Object.freeze({");
   if (start === -1) fail("scripts/skills.mjs has no `SKILL_SHAPES`");
@@ -809,9 +827,6 @@ function parseSkillShapes(skillsText) {
   const block = text.slice(start, end);
   const shapes = [...block.matchAll(/^ {2}(\w+): Object\.freeze\(\{/gm)].map((hit) => hit[1]);
   if (shapes.length === 0) fail("scripts/skills.mjs's `SKILL_SHAPES` names no shape");
-  // The imported object is the second list; the parsed block is the first. They
-  // must be the same set, or this file's text parser has fallen behind the code.
-  assertCount("scripts/skills.mjs SKILL_SHAPES", Object.keys(SKILL_SHAPES).length, shapes.length, `read [${shapes.join(", ")}]`);
   return shapes;
 }
 
