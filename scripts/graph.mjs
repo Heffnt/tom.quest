@@ -140,9 +140,14 @@ export const GRAPH_PATH = "tts/graph.json";
 export const VOCABULARY_PATH = "tts/vocabulary.json";
 export const GENERATOR_VERSION = 1;
 
-/** The six synthesis pages, in the order scripts/skills.mjs names them. */
+/** The seven synthesis pages, the set WikiTom's own scripts/check-evidence.mjs
+ *  mirrors evidence against. A page it counts and this list does not is an
+ *  evidence file with no page here, which is G4 below: explainers.md landed
+ *  with the explainer skill, was a seventh page there and a sixth here, and
+ *  failed the nightly's graph step on a vault that was correct. */
 const SYNTHESIS = Object.freeze([
   "model-of-tom/agent-rules.md",
+  "model-of-tom/explainers.md",
   "model-of-tom/ground.md",
   "model-of-tom/intent.md",
   "model-of-tom/priorities.md",
