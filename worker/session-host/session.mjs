@@ -42,6 +42,7 @@ import {
   mergeUnreadableDenial,
 } from "./merge-gate.mjs";
 import { codexQuery } from "./codex-query.mjs";
+import { removeWorkdir } from "./workdir.mjs";
 import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
 import { claimRegistration, writeRegistration } from "../runs/registration.mjs";
 
@@ -996,30 +997,10 @@ export class Session {
   }
 
   // Best-effort teardown. Losing this dir loses nothing durable (no-state
-  // rule) — that is precisely why deleting it is safe here.
+  // rule) — that is precisely why deleting it is safe here. workdir.mjs holds
+  // the one exception (overflow/) and the other callers.
   cleanupWorkdir() {
-    const base = path.join(SESSIONS_ROOT, String(this.id));
-    try {
-      // ONE exception to "losing this dir loses nothing durable": the overflow
-      // dir holds complete payloads Convex refused, which exist nowhere else.
-      // When it has files, everything BESIDE it goes and it stays.
-      const overflowDir = path.join(base, "overflow");
-      const rescued =
-        fs.existsSync(overflowDir) && fs.readdirSync(overflowDir).length > 0;
-      if (!rescued) {
-        fs.rmSync(base, { recursive: true, force: true });
-        return;
-      }
-      for (const entry of fs.readdirSync(base)) {
-        if (entry === "overflow") continue;
-        fs.rmSync(path.join(base, entry), { recursive: true, force: true });
-      }
-      log(
-        `session ${this.id}: kept ${overflowDir} — it holds payloads Convex refused`,
-      );
-    } catch (err) {
-      log(`session ${this.id}: workdir cleanup failed (ignored):`, String(err));
-    }
+    removeWorkdir(this.id, { log });
   }
 
   // ── the SDK query ──────────────────────────────────────────────────────────

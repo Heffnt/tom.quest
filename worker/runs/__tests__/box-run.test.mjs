@@ -747,6 +747,59 @@ describe.skipIf(process.platform !== "linux")("box-run waits for what the CLI le
   });
 });
 
+// witness: on 2026-09-22 the box's disk filled, a run died writing a progress
+// line, and the 1.1 GB worktree it left behind was still there a day later —
+// so the disk that caused the death never came back. A launcher that cannot
+// reap when the disk is full is a launcher that cannot recover from a full
+// disk. /dev/full answers every write with ENOSPC, which is that failure
+// exactly, and SIGHUP is how an ssh-dropped `tts-run` dies.
+describe.skipIf(process.platform !== "linux")("box-run reaps on every exit path", () => {
+  it("reaps the worktree when every write to its own stderr fails with ENOSPC", () => {
+    const stateDir = temp("state");
+    const { mirror, sha } = localMirror(stateDir, "tom.quest");
+    const full = fs.openSync("/dev/full", "w");
+    try {
+      const result = spawnSync(process.execPath, [RUNNER, "--repo", "tom.quest", "--ref", sha], {
+        encoding: "utf8",
+        input: "do the work\n",
+        env: baseEnv(stateDir, { CLAUDE_BIN: fakeCli("enospc") }),
+        stdio: ["pipe", "pipe", full],
+      });
+      // The answer still came back and the run still ended on its own code —
+      // a full disk costs the progress lines, not the run.
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("fake answer");
+    } finally {
+      fs.closeSync(full);
+    }
+    expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
+    expect(git(mirror, "worktree", "list")).not.toContain(path.join(stateDir, "work"));
+  }, GIT_FIXTURE_MS);
+
+  it("reaps the worktree when the run is hung up on", async () => {
+    const stateDir = temp("state");
+    const { mirror, sha } = localMirror(stateDir, "tom.quest");
+    const child = spawn(process.execPath, [RUNNER, "--repo", "tom.quest", "--ref", sha], {
+      encoding: "utf8",
+      env: baseEnv(stateDir, { CLAUDE_BIN: fakeCli("hangup"), FAKE_SLEEP_MS: "30000" }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin.end("do the work\n");
+    // The worktree has to exist before the signal, or the test proves nothing.
+    const work = path.join(stateDir, "work");
+    const made = () => (fs.existsSync(work) ? fs.readdirSync(work) : []);
+    const deadline = Date.now() + 20_000;
+    while (made().length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(made()).toHaveLength(1);
+    child.kill("SIGHUP");
+    await new Promise((resolve) => child.on("close", resolve));
+    expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
+    expect(git(mirror, "worktree", "list")).not.toContain(path.join(stateDir, "work"));
+  }, GIT_FIXTURE_MS);
+});
+
 describe("box-run command line flags", () => {
   // The six in-process settings were once command-line flags too; no caller
   // passed one, so the command line refuses them like any unknown option.
