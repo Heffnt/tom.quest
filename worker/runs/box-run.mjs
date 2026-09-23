@@ -185,7 +185,27 @@ function fail(message, code = 2, reason = null) {
 }
 
 function note(message) {
-  process.stderr.write(`box-run: ${message}\n`);
+  // A PROGRESS LINE MUST NOT BE ABLE TO KILL THE RUN. guardStderr says how a
+  // failed write gets here; the catch is for the other shape, a pipe whose
+  // reader is gone, which throws EPIPE at the call.
+  try {
+    process.stderr.write(`box-run: ${message}\n`);
+  } catch {}
+}
+
+// ENOSPC ON OUR OWN STDERR IS NOT A REASON TO DIE. On the box a run's stderr is
+// a file, and a file stream reports a failed write as an 'error' event on the
+// next tick rather than as a throw the writer can catch — with no listener on
+// it that is an uncaught exception. On 2026-09-22 the box filled, a run died
+// exactly there, between its last progress line and the reap that would have
+// freed 1.1 GB, and the disk never came back. Installed from prepareRun, the
+// one funnel every run goes through, so the command line, a job's boxRunSync
+// and the daemon's runner steps are all covered by the same line.
+let stderrGuarded = false;
+function guardStderr() {
+  if (stderrGuarded) return;
+  stderrGuarded = true;
+  process.stderr.on("error", () => {});
 }
 
 // This file runs here in a checkout (worker/runs/) and flat at /opt/tts/runs/.
@@ -838,6 +858,9 @@ function prepareRun(options, slot = noSlot) {
   const opts = normalize(options);
   const env = opts.env;
 
+  // BEFORE ANYTHING ELSE: a run that cannot report must still be able to reap.
+  guardStderr();
+
   // BEFORE THE SEMAPHORE AND BEFORE ANY WORK: a refused run must start nothing,
   // take no slot, and clone nothing.
   refuseIfMemoryIsShort(opts, env);
@@ -1031,6 +1054,19 @@ function namedEnvironmentOf(env) {
  * subtype.
  */
 function finishRun(run, { stdout, code, signal, timedOut, survivors = [] }) {
+  // THE REAP IS THE FINALLY, not a line near the end. Everything between here
+  // and the return reads a file, parses an envelope or writes a note, and any
+  // of them can throw — a full disk throws in all three. This function runs
+  // inside a stream callback, so a throw that escapes it is an uncaught
+  // exception that takes the process down with the worktree still on disk.
+  try {
+    return finishedResult(run, { stdout, code, signal, timedOut, survivors });
+  } finally {
+    run.reap();
+  }
+}
+
+function finishedResult(run, { stdout, code, signal, timedOut, survivors }) {
   const { opts } = run;
   const envelope = opts.outputFormat === "json" ? resultEnvelopeOf(stdout) : null;
   const text = typeof envelope?.result === "string" ? envelope.result : stdout;
@@ -1058,16 +1094,15 @@ function finishRun(run, { stdout, code, signal, timedOut, survivors = [] }) {
       note(`could not claim the envelope: ${error?.message ?? error}`);
     }
   }
-  // THE TAIL, NOT THE PATH. The reap below deletes the work directory, so
-  // naming the log file would hand the caller an address that no longer
-  // resolves — and the one case this matters most is the one where the CLI
-  // wrote no answer at all, which is exactly where a Codex weekly-cap message
-  // lives. --keep-worktree is what keeps the whole log.
+  // THE TAIL, NOT THE PATH. The reap deletes the work directory, so naming the
+  // log file would hand the caller an address that no longer resolves — and the
+  // one case this matters most is the one where the CLI wrote no answer at all,
+  // which is exactly where a Codex weekly-cap message lives. --keep-worktree is
+  // what keeps the whole log.
   let stderrTail = "";
   if (code !== 0 || timedOut) {
     try { stderrTail = redactSecrets(fs.readFileSync(run.errLog, "utf8")).trim().split("\n").slice(-5).join("\n"); } catch {}
   }
-  run.reap();
   return {
     id: run.id,
     seconds: Math.round((Date.now() - run.startedAt) / 1000),
@@ -1199,8 +1234,22 @@ export async function boxRun(options) {
       throw Object.assign(new BoxRunError(`the caller's pre-launch step failed: ${error?.message ?? error}`), { runToken: run.spooled?.token ?? null });
     }
   }
-  fs.mkdirSync(path.dirname(run.errLog), { recursive: true });
-  const errStream = fs.createWriteStream(run.errLog);
+  let errStream;
+  try {
+    fs.mkdirSync(path.dirname(run.errLog), { recursive: true });
+    errStream = fs.createWriteStream(run.errLog);
+  } catch (error) {
+    // A log the run cannot open is the one failure that used to leave the
+    // whole checkout behind: these two lines sat outside every try, and on a
+    // full disk they are the first thing to throw.
+    run.reap();
+    throw Object.assign(new BoxRunError(`could not open the run log: ${error?.message ?? error}`), { runToken: run.spooled?.token ?? null });
+  }
+  // THE LOG IS NOT WORTH THE RUN. Nothing listens for this stream's errors by
+  // default, and an unhandled 'error' on a stream is an uncaught exception:
+  // one ENOSPC while the child's stderr is piping killed the launcher with its
+  // worktree still on disk, so the disk that caused it never came back.
+  errStream.on("error", (error) => note(`the run log stopped: ${error?.message ?? error}`));
   let child;
   run.startedAt = Date.now();
   try {
@@ -1371,7 +1420,10 @@ async function main() {
   // checkout of tom.quest or ComplexMultiTrigger on disk for good, and the
   // mirror's worktree list grows an entry per kill. `--keep-worktree` is the way
   // to ask for that deliberately; reap() honours it either way.
-  for (const signal of ["SIGINT", "SIGTERM"]) {
+  // SIGHUP is on the list because it is the common one on this box: `tts-run`
+  // is what the laptop sends over ssh, and a dropped connection hangs up the
+  // run rather than interrupting or terminating it.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => {
       reap();
       process.exit(130);
@@ -1394,7 +1446,12 @@ async function main() {
       onReap: (fn) => { reap = fn; },
     });
   } catch (error) {
-    process.stderr.write(`box-run: ${error?.message ?? error}\n`);
+    // boxRun reaps on the failures it can see, but not on one thrown past it —
+    // a redactor that will not load, a bug in this file. reap() is idempotent,
+    // so calling it here costs nothing and closes the last path out of main()
+    // that left a worktree on disk.
+    reap();
+    note(String(error?.message ?? error));
     process.exit(error instanceof BoxRunError ? error.exitCode : 2);
   }
   // Redaction is a choke point, not a courtesy: the sweep redacts again on
