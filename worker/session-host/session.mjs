@@ -1551,32 +1551,24 @@ export class Session {
           this.activeUserTurnId = null;
         }
         this.#clearAutoTimer();
-        if (this.hosted && !this.stopRequested && !this.dead) {
-          // A HOSTED run outlives its turn (hosted.mjs): the orchestrator ends
-          // only when it asks to compact, a worker when the next poll says it
-          // is done. A failed turn still ends it errored below, as for any
-          // unattended session: the orchestrator is then restarted from its
-          // document by the server, and a worker's orchestrator is told.
-          const failed = m.is_error || (m.subtype && m.subtype !== "success");
-          if (!failed) {
-            if (hostedTurnEnd({ environment: this.environment, finalText: this.lastAssistantText }) === "compact") {
-              void this.#endAutonomous(COMPACT_ENDED_REASON, {
-                outcome: "completed",
-                outcomeSummary: "asked to be restarted from its document",
-              });
-              break;
-            }
-            this.idleSince = Date.now();
-            this.setStatus("idle");
-            // A same-family model change that arrived mid-turn applies here,
-            // as it does for an interactive session below.
-            if (this.modelSwitchPending) this.#retireQuery(`model changed to ${this.model}`);
-            this.requestFlush(true);
-            this.processCommands();
+        // A HOSTED run outlives its turn (hosted.mjs): the orchestrator ends
+        // only when it asks to compact, a worker when the next poll says it
+        // is done. A successful turn goes idle through the tail below, as an
+        // interactive session's does. A failed turn still ends it errored, as
+        // for any unattended session: the orchestrator is then restarted from
+        // its document by the server, and a worker's orchestrator is told.
+        const hostedLives = this.hosted && !this.stopRequested && !this.dead
+          && !(m.is_error || (m.subtype && m.subtype !== "success"));
+        if (hostedLives) {
+          if (hostedTurnEnd({ environment: this.environment, finalText: this.lastAssistantText }) === "compact") {
+            void this.#endAutonomous(COMPACT_ENDED_REASON, {
+              outcome: "completed",
+              outcomeSummary: "asked to be restarted from its document",
+            });
             break;
           }
-        }
-        if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
+          this.idleSince = Date.now();
+        } else if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
           // An autonomous session is ONE mission turn — nobody would ever
           // send stop, so the daemon ends it itself. The agent's own outcome
           // (recorded via the /tts/session-outcome pen) is already

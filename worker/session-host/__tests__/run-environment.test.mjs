@@ -30,11 +30,17 @@ describe("hosted turn end", () => {
     expect(sessionSource.slice(start, start + 300)).toContain('status: turnFailed ? "failed" : "done",');
   });
 
-  it("applies a same-family model change at the turn boundary, as an interactive session does", () => {
-    const start = sessionSource.indexOf("if (this.hosted && !this.stopRequested && !this.dead) {");
+  it("goes idle through the interactive tail, so a mid-turn model change applies there", () => {
+    const start = sessionSource.indexOf("if (hostedLives) {");
     expect(start).toBeGreaterThan(-1);
-    const branch = sessionSource.slice(start, sessionSource.indexOf("if (this.mode === \"autonomous\" && !this.stopRequested", start));
-    expect(branch).toContain("if (this.modelSwitchPending) this.#retireQuery(");
+    const end = sessionSource.indexOf("} else if (this.mode === \"autonomous\" && !this.stopRequested && !this.dead) {", start);
+    expect(end).toBeGreaterThan(start);
+    const hosted = sessionSource.slice(start, end);
+    // The live hosted branch has no idle handling of its own: it skips only
+    // the autonomous ending and falls through to the shared tail.
+    expect(hosted).not.toContain("modelSwitchPending");
+    expect(hosted).not.toContain("setStatus");
+    expect(hosted).not.toContain("processCommands");
   });
 });
 
