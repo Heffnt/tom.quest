@@ -2,7 +2,7 @@
 // the permission matrix (§4), rules of brewing (§3), the three brew-scale
 // controls (§5), gifting (§5), per-member undo/redo (§5), copyBrew,
 // nickname-by-anyone, deleteBrew (owner/admin), and idempotent + faithful
-// migration (§9). Mirrors the harness/utilities of convex/perfume.test.ts.
+// migration (§9).
 
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
