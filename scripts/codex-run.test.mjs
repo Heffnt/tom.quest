@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 import { renderGrants, skillDirName } from "./skills.mjs";
@@ -384,5 +384,45 @@ describe("codex-run skill grants", () => {
       skillsGranted: [],
       skillsRefused: ["write — its installed SKILL.md is missing"],
     });
+  });
+});
+
+// witness: by 2026-09-23 the Jarvis Box held 5,278 abandoned /tmp/codex-run-*
+// directories, one per run that did not reach its child's `close` — the model
+// backgrounded the run and its turn ended, box-run settled it as a survivor,
+// ssh dropped. The reap lived in the close handler and nowhere else.
+describe("codex-run work directory", () => {
+  const codexRunDirs = (root) => fs.readdirSync(root).filter((name) => name.startsWith("codex-run-"));
+
+  it("leaves nothing behind when the binary will not start", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-tmp-"));
+    const result = run(["--cwd", process.cwd()], {
+      TMPDIR: tmp,
+      TTS_CODEX_BIN: path.join(tmp, "no-such-codex"),
+      FAKE_CODEX_ARGS: path.join(tmp, "args.json"),
+    });
+    expect(result.status).not.toBe(0);
+    expect(codexRunDirs(tmp)).toEqual([]);
+  });
+
+  it("leaves nothing behind when the run is hung up on", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-tmp-"));
+    const slow = path.join(tmp, "slow-codex.mjs");
+    fs.writeFileSync(slow, "#!/usr/bin/env node\nsetTimeout(() => {}, 60_000);\n");
+    fs.chmodSync(slow, 0o755);
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-state-"));
+    const child = spawn(process.execPath, [RUNNER, "--cwd", process.cwd()], {
+      env: { ...process.env, TMPDIR: tmp, TTS_CODEX_BIN: slow, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration") },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin.end("answer this\n");
+    const deadline = Date.now() + 20_000;
+    while (codexRunDirs(tmp).length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(codexRunDirs(tmp)).toHaveLength(1);
+    child.kill("SIGHUP");
+    await new Promise((resolve) => child.on("close", resolve));
+    expect(codexRunDirs(tmp)).toEqual([]);
   });
 });

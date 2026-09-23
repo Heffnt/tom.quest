@@ -489,6 +489,28 @@ const workDir = mkdtempSync(join(tmpdir(), "codex-run-"));
 const lastMessage = join(workDir, "last.txt");
 const errLog = join(workDir, "stderr.log");
 
+// THE WORK DIRECTORY GOES ON EVERY EXIT, not only on the child's `close`. A
+// Codex run is routinely cut short — the model backgrounded it and its turn
+// ended, box-run settled it as a survivor, ssh dropped — and each of those
+// left the directory in /tmp for good: 5,278 of them, 158 MB, by 2026-09-23.
+// `exit` covers fail() and every ordinary return, the three signals turn a
+// kill into an exit, and rmSync in an exit handler is synchronous, which is
+// the only kind of work an exit handler can finish. A SIGKILL is the one that
+// still leaks, and nothing in this process can change that.
+let reaped = false;
+function reapWorkDir() {
+  if (reaped || opts.keepLogs) return;
+  reaped = true;
+  try { rmSync(workDir, { recursive: true, force: true }); } catch {}
+}
+process.on("exit", reapWorkDir);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    try { killTree(child); } catch {}
+    process.exit(130);
+  });
+}
+
 const args = [
   "exec",
   "--sandbox", opts.sandbox,
@@ -580,8 +602,7 @@ child.on("close", (code) => {
 
   if (opts.keepLogs) {
     process.stderr.write(`codex-run: stderr log at ${errLog}\n`);
-  } else {
-    rmSync(workDir, { recursive: true, force: true });
   }
+  // The exit handler does the reap, here and on every other way out.
   process.exit(timedOut ? 124 : (code ?? 1));
 });
