@@ -39,6 +39,7 @@ import { Session, gitErrorText } from "./session.mjs";
 import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
+import { sweepWorkdirs } from "./workdir-sweep.mjs";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -365,6 +366,31 @@ function failSession(s, err) {
   s.requestFlush(true);
   s.cleanupWorkdir();
   return msg;
+}
+
+// ── the workdir sweep ────────────────────────────────────────────────────────
+// Hourly, not per tick: the sweep stats every session directory, and the thing
+// it looks for takes a day to appear (STALE_WORKDIR_MS). The timestamp lives in
+// this process only — a restart simply sweeps once more, which costs one
+// readdir and frees the same disk.
+const WORKDIR_SWEEP_EVERY_MS = 60 * 60_000;
+let lastWorkdirSweepAt = 0;
+
+function reapStaleWorkdirs(sessions, now = Date.now()) {
+  if (now - lastWorkdirSweepAt < WORKDIR_SWEEP_EVERY_MS) return;
+  lastWorkdirSweepAt = now;
+  // A workdir is held only while something is writing in it. An idle session
+  // is not: #deliverUserTurn re-clones a vanished workdir before it resumes.
+  const busy = new Set();
+  for (const [id, s] of sessions) {
+    if (s.status === "starting" || s.status === "running") busy.add(String(id));
+  }
+  const swept = sweepWorkdirs({ busy, now, log });
+  if (swept.deleted > 0 || swept.keptOverflow > 0) {
+    log(
+      `workdir-sweep: ${swept.deleted} deleted, ${swept.keptOverflow} trimmed to overflow, ${swept.bytes} bytes freed`,
+    );
+  }
 }
 
 // ── claim: a browser-created session ("requested") becomes a live one ────────
@@ -706,6 +732,13 @@ async function main() {
         sessions.delete(id);
       }
     }
+
+    // THE WORKDIRS NO SESSION SPEAKS FOR. cleanupWorkdir is a method, so a
+    // session that finished in another daemon's process — or never finished at
+    // all, because an adoption parks it idle — leaves its clone behind for
+    // good. The reap above deletes the map entry and the directory stays.
+    // workdir-sweep.mjs says the whole reasoning; this is its one caller.
+    reapStaleWorkdirs(sessions);
 
     // Adaptive cadence (quiet in logs on purpose — journald noise is not
     // observability; the server-side heartbeat is).
