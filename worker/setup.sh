@@ -854,6 +854,33 @@ for TRUSTED in "$DESKTOP_DIR" "$DESKTOP_DIR"/*/; do
     echo "  codex now trusts $TRUSTED"
   fi
 done
+# OpenRouter as a Codex model provider, for cheap runs named
+# openrouter/<vendor>/<model> (scripts/codex-run.mjs selects it per run with
+# -c model_provider="openrouter"). The entry holds no key: env_key names the
+# variable, and codex-run.mjs hands that one variable from /etc/tts/worker.env
+# to the Codex process alone. Written only while the key is set, because an
+# entry with no key behind it only turns codex-run's clear missing-key refusal
+# into a 401 from OpenRouter; an entry already there is left alone. wire_api
+# "responses" is the only value Codex 0.153.3 accepts ("chat" is refused at
+# startup), and OpenRouter serves the Responses API at base_url + /responses.
+if grep -qE '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=[^[:space:]]' /etc/tts/worker.env 2>/dev/null; then
+  if grep -qxF '[model_providers.openrouter]' /root/.codex/config.toml; then
+    echo "  codex already has the openrouter provider"
+  else
+    cat >> /root/.codex/config.toml <<'OPENROUTERCFG'
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+env_key_instructions = "Put OPENROUTER_API_KEY in /etc/tts/worker.env; scripts/codex-run.mjs hands it to the Codex process."
+wire_api = "responses"
+OPENROUTERCFG
+    echo "  codex now has the openrouter provider"
+  fi
+else
+  echo "  OPENROUTER_API_KEY not set in /etc/tts/worker.env — no openrouter provider"
+fi
 
 echo "== [11/11] done =="
 cat <<'STEPS'
@@ -892,6 +919,11 @@ NEXT STEPS (manual, in order):
      turing-api/.env on every login node, and differ from both other keys.
      Only a runner step's process receives it; sessions never do. Restart
      tts-session-host after adding it, the same as the read key.
+
+     OPENROUTER_API_KEY is optional and spends money: it lets a Codex run
+     named openrouter/<vendor>/<model> run on OpenRouter. Set its spend limit
+     on openrouter.ai, then re-run this script so /root/.codex/config.toml
+     gains the openrouter provider. Sessions never receive it.
 
   2. Log in both Claude Max accounts (interactive, over this SSH session —
      run it twice, switching the BROWSER profile between runs; each login is

@@ -31,7 +31,8 @@
 //   --cli claude|codex      which CLI runs                 (default: claude)
 //   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
 //   --ref REF               branch, tag or sha to check out
-//   --model NAME            model for the run
+//   --model NAME            model for the run; openrouter/<vendor>/<model>
+//                           needs --cli codex
 //   --effort LEVEL          codex only, passed through
 //   --sandbox MODE          codex only, passed through
 //   --schema FILE           codex only, passed through
@@ -364,6 +365,11 @@ function normalize(input) {
   // .claude/agents/codex.md's "the defaults are already the strongest model"
   // false for every run that went through the box, which is now all of them.
   if (!opts.model) opts.model = opts.cli === "codex" ? "gpt-5.6-sol" : "opus";
+  // REMOVAL CHECK: an openrouter/<vendor>/<model> name is served through
+  // Codex's model provider (scripts/codex-run.mjs), and Claude Code has no such
+  // door. Without this the default --cli claude hands the name to `claude -p`,
+  // which fails after the slot, the worktree and the registration are spent.
+  if (opts.cli !== "codex" && String(opts.model).startsWith("openrouter/")) fail(`${opts.model} runs through Codex; pass --cli codex`);
   // REMOVAL CHECK on --install as its own flag: --tests implies it, but the
   // reverse is not true and folding them together would arm the memory guard
   // for work that does not need it. A run that builds, lints, typechecks or
