@@ -178,7 +178,6 @@ export const SHARED_PROMPT_INPUTS = [
 export const JOB_INPUTS = {
   prepare: ["worker/jobs/plan-graphs.mjs", "convex/ttsCompose.ts", "convex/ttsShared.ts"],
   "code-brief": ["worker/jobs/plan-graphs.mjs", "worker/jobs/context-relevance.mjs"],
-  "batch-plan": ["worker/jobs/plan-graphs.mjs", "worker/jobs/weekly.mjs"],
   explanation: [],
   run: ["worker/jobs/skill-router.mjs", "worker/bin/tts-ask", "worker/jobs/delegate.mjs"],
   learning: ["worker/jobs/nightly.mjs", "worker/jobs/learning-ground.mjs"],

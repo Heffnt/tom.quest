@@ -14,7 +14,6 @@ import {
   PREPARE_MAX,
   PREPARED,
   briefPrompt,
-  graphPrompt,
   loadStandardRules,
   prepareDoorFaults,
   preparePrompt,
@@ -69,8 +68,6 @@ function stubIo(answers) {
   return {
     runClaude: vi.fn(() => queue.shift() ?? answer()),
     post: vi.fn(async () => ({ ok: true })),
-    readHash: () => null,
-    writeHash: vi.fn(),
   };
 }
 
@@ -111,7 +108,7 @@ describe("selectPrepareTargets", () => {
 });
 
 describe("prepareLifeTodos", () => {
-  it("writes the write-up through the prepare pen with readiness prepared and marks the row", async () => {
+  it("writes the write-up through the prepare pen with readiness prepared", async () => {
     const t = todo();
     const io = stubIo(answer());
     const result = await prepareLifeTodos(
@@ -132,9 +129,6 @@ describe("prepareLifeTodos", () => {
       groundUpExplanation: JSON.parse(answer()).groundUpExplanation,
       readiness: PREPARED,
     });
-    // The plan pass in the same run reads the write-up off the object.
-    expect(t.brief).toBe(JSON.parse(answer()).brief);
-    expect(t.readiness).toBe("prepared");
   });
 
   it("sends the statement's own date as a first date, at New York noon, and never over an existing one", async () => {
@@ -248,38 +242,6 @@ describe("prepareLifeTodos", () => {
     );
   });
 });
-
-describe("graphPrompt", () => {
-  it("puts the fixed schema before fetched graph data and uses neutral explanation placeholders", () => {
-    const text = graphPrompt({
-      writingStandard: "WRITE STANDARD",
-      vocabulary: "VOCABULARY",
-      graphs: [{ id: "batch-1", statement: "Existing batch", tasks: [], goals: [] }],
-      graphsHeldBack: 0,
-      activeStatements: ["Existing batch"],
-      candidates: [{ id: "todo-1", statement: "Candidate" }],
-      candidatesHeldBack: 0,
-      code: [],
-      archivedStatements: [],
-      repairs: [],
-      revises: [],
-      notes: [],
-      recentRulings: [],
-    });
-    expect(text.startsWith("WRITE STANDARD\n\nVOCABULARY")).toBe(true);
-    expect(text.indexOf('"groundUpExplanation": "<explanation>"')).toBeLessThan(
-      text.indexOf('"batch-1"'),
-    );
-    expect(text.indexOf('"batch-1"')).toBeGreaterThan(
-      text.indexOf('never output its id and never archive it.'),
-    );
-    expect(text).not.toContain("<!DOCTYPE html>");
-  });
-});
-
-// ── The code-brief prompt ───────────────────────────────────────────────────
-// The brief PASS is retired (ruling 70 moved CMT's todos into TTS); the prompt
-// stays because the evals' "code-brief" job replays recorded briefs through it.
 
 describe("briefPrompt", () => {
   it("asks for the four verdict words and nothing else", () => {
