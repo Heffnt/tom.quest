@@ -69,6 +69,7 @@ import {
   buildDoneSet,
   isPrepared,
   isReadyForTom,
+  waitingReason,
   wakeAtPassed,
 } from "@/convex/ttsShared";
 export {
@@ -244,6 +245,219 @@ export function selectToday(
   take(ready, "ready");
   take(waking, "waking");
   return { overdue, due, scheduled, ready, waking, entries };
+}
+
+// ── The whole set at a glance (vqc/pages.md, the toolbox page) ─────────────
+// A page opens with the whole: every todo falls in exactly one SHAPE, so the
+// area figure's cells add up to the set. The shape is the waiting reason
+// (ttsShared.waitingReason, the one home of that rule) in Tom's words, with
+// two facts that outrank it: done and archived are where a todo ended, and
+// overdue — a date already behind it — is the fact that outranks why it waits,
+// the same precedence selectToday gives it.
+
+type TodoShape =
+  | "overdue"
+  | "waiting on you"
+  | "waiting on another todo"
+  | "waiting on a credential"
+  | "not yet prepared"
+  | "with a date"
+  | "with an agent"
+  | "done"
+  | "archived";
+
+/** The shapes in the order a page lists them: what needs Tom first. */
+export const SHAPES: readonly TodoShape[] = [
+  "overdue",
+  "waiting on you",
+  "waiting on another todo",
+  "waiting on a credential",
+  "not yet prepared",
+  "with a date",
+  "with an agent",
+  "done",
+  "archived",
+];
+
+/** Where one todo sits. `doneSet` is buildDoneSet over the whole list. */
+function shapeOf(
+  todo: Todo,
+  doneSet: ReadonlySet<string>,
+  now: number,
+): TodoShape {
+  if (todo.status === "done") return "done";
+  if (todo.status === "archived") return "archived";
+  if (todo.dueAt !== undefined && todo.dueAt < now) return "overdue";
+  const reason = waitingReason(todo, { now, doneSet });
+  switch (reason?.kind) {
+    case "wake":
+      return "with a date";
+    case "need":
+      return "waiting on another todo";
+    case "credential":
+      return "waiting on a credential";
+    case "unprepared":
+      return "not yet prepared";
+    case "tom":
+      return "waiting on you";
+    default:
+      return "with an agent";
+  }
+}
+
+/** A source name as a page shows it: its words, not its hyphens. */
+export function sourceWords(source: string): string {
+  return source.replace(/[-_]+/g, " ");
+}
+
+/** One cell of the shape figure: the todos of one shape from one source. */
+type ShapeCell = {
+  key: string;
+  label: string;
+  count: number;
+  group: TodoShape;
+  todos: Todo[];
+};
+
+/**
+ * Counts by shape × source, one cell per pair that holds a todo, in SHAPES
+ * order and then by count. Each cell carries its todos, soonest date first and
+ * then newest, so the drawer that lists a cell reads them from here.
+ */
+export function shapeCells(todos: Todo[], now: number): ShapeCell[] {
+  const doneSet = buildDoneSet(todos);
+  const byKey = new Map<string, ShapeCell>();
+  for (const todo of todos) {
+    const group = shapeOf(todo, doneSet, now);
+    const key = `${group}|${todo.source}`;
+    let cell = byKey.get(key);
+    if (!cell) {
+      cell = { key, label: sourceWords(todo.source), count: 0, group, todos: [] };
+      byKey.set(key, cell);
+    }
+    cell.count += 1;
+    cell.todos.push(todo);
+  }
+  const soonest = (a: Todo, b: Todo) =>
+    (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) ||
+    b._creationTime - a._creationTime;
+  const cells = [...byKey.values()];
+  for (const cell of cells) cell.todos.sort(soonest);
+  return cells.sort(
+    (a, b) =>
+      SHAPES.indexOf(a.group) - SHAPES.indexOf(b.group) || b.count - a.count,
+  );
+}
+
+/** How many todos are in each shape, every shape present (zero included). */
+export function shapeCounts(cells: readonly ShapeCell[]): Record<TodoShape, number> {
+  const counts = Object.fromEntries(SHAPES.map((s) => [s, 0])) as Record<TodoShape, number>;
+  for (const cell of cells) counts[cell.group] += cell.count;
+  return counts;
+}
+
+/** One row of the by-source table. */
+type SourceRow = {
+  source: string;
+  waitingOnYou: number;
+  notYetPrepared: number;
+  done: number;
+  total: number;
+};
+
+/** The shape cells folded by source, largest source first. */
+export function sourceRows(cells: readonly ShapeCell[]): SourceRow[] {
+  const rows = new Map<string, SourceRow>();
+  for (const cell of cells) {
+    let row = rows.get(cell.label);
+    if (!row) {
+      row = { source: cell.label, waitingOnYou: 0, notYetPrepared: 0, done: 0, total: 0 };
+      rows.set(cell.label, row);
+    }
+    if (cell.group === "waiting on you") row.waitingOnYou += cell.count;
+    if (cell.group === "not yet prepared") row.notYetPrepared += cell.count;
+    if (cell.group === "done") row.done += cell.count;
+    row.total += cell.count;
+  }
+  return [...rows.values()].sort((a, b) => b.total - a.total || a.source.localeCompare(b.source));
+}
+
+/**
+ * The one todo a page puts in front of Tom to rule on: the needs-me life rows
+ * (selectNeedsMe, so a todo he has already ruled on stays off until it is
+ * prepared again), soonest date first, then oldest. Undefined when none waits.
+ */
+export function nextForTom(
+  todos: Todo[],
+  rulings: readonly ListedRuling[],
+  now: number,
+): Todo | undefined {
+  const { lifeRows } = selectNeedsMe(todos, [], [], rulings, now);
+  return [...lifeRows].sort(
+    (a, b) =>
+      (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) ||
+      a._creationTime - b._creationTime,
+  )[0];
+}
+
+export type EventRow = Doc<"dtsEvents">;
+
+/**
+ * Events per time bin per kind, for a time figure: the `laneCount` kinds with
+ * the most events in the window, each its own lane, and every other kind
+ * together in one more. The window is `binCount` bins of `binMs` ending at
+ * `now`; an event outside it is not counted. Labels are each bin's start as a
+ * local hour.
+ */
+export function eventLanes(
+  events: readonly EventRow[],
+  now: number,
+  binCount: number,
+  binMs: number,
+  laneCount: number,
+): { lanes: { name: string; bins: number[] }[]; binLabels: string[] } {
+  const start = now - binCount * binMs;
+  const inWindow = events.filter((e) => e.at >= start && e.at < now);
+  const perKind = new Map<string, number>();
+  for (const e of inWindow) perKind.set(e.kind, (perKind.get(e.kind) ?? 0) + 1);
+  const top = [...perKind.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, laneCount)
+    .map(([kind]) => kind);
+  const laneOf = (kind: string) => {
+    const i = top.indexOf(kind);
+    return i === -1 ? top.length : i;
+  };
+  const lanes = top.map((kind) => ({ name: sourceWords(kind), bins: new Array<number>(binCount).fill(0) }));
+  if (perKind.size > top.length) {
+    lanes.push({ name: "every other kind", bins: new Array<number>(binCount).fill(0) });
+  }
+  for (const e of inWindow) {
+    const bin = Math.min(binCount - 1, Math.floor((e.at - start) / binMs));
+    lanes[laneOf(e.kind)].bins[bin] += 1;
+  }
+  const binLabels = Array.from({ length: binCount }, (_, i) => {
+    const d = new Date(start + i * binMs);
+    return `${String(d.getHours()).padStart(2, "0")}:00`;
+  });
+  return { lanes, binLabels };
+}
+
+/** The agents a session list holds, by status, as a figure strip's figures:
+ *  "working" is the stored `running`, "starting" is requested or starting. */
+export function agentFigures(
+  sessions: readonly { status: Doc<"claudeSessions">["status"] }[],
+): { value: number; name: string }[] {
+  const count = (...statuses: Doc<"claudeSessions">["status"][]) =>
+    sessions.filter((s) => statuses.includes(s.status)).length;
+  return [
+    { value: sessions.length, name: "agents" },
+    { value: count("running"), name: "working" },
+    { value: count("idle"), name: "idle" },
+    { value: count("requested", "starting"), name: "starting" },
+    { value: count("ended"), name: "ended" },
+    { value: count("failed"), name: "failed" },
+  ];
 }
 
 /** A runner's status in words, the same on the everything tab and the run view. */

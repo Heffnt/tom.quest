@@ -14,8 +14,15 @@ import {
   codeSubjectKey,
   liveRulingsByKey,
   rulingSubjectKey,
+  agentFigures,
+  eventLanes,
+  nextForTom,
   selectNeedsMe,
   selectToday,
+  shapeCells,
+  shapeCounts,
+  sourceRows,
+  type EventRow,
   type CodeBrief,
   type MirrorRow,
   type Ruling,
@@ -292,5 +299,112 @@ describe("selectToday", () => {
     const view = selectToday(todos, [], { start: DAY_START, end: DAY_END }, NOW);
     expect(view.due.map((t) => t._id)).toEqual(["sooner", "later"]);
     expect(selectToday([], [], { start: DAY_START, end: DAY_END }, NOW).entries).toEqual([]);
+  });
+});
+
+// ── The whole set at a glance (the toolbox page) ─────────────────────────────
+
+describe("shapeCells", () => {
+  const NOW = 10_000_000;
+  const at = (id: string, over: Partial<Todo>) =>
+    todo({ _id: id as unknown as Todo["_id"], source: "manual", ...over });
+
+  it("puts every todo in exactly one shape, overdue before the waiting reason", () => {
+    const todos = [
+      at("a", { actor: "tom" }),
+      at("b", { actor: "tom", dueAt: NOW - 1 }),
+      at("c", { readiness: "unprepared" }),
+      at("d", { needs: ["a" as unknown as Todo["_id"]] }),
+      at("e", { wakeAt: NOW + 1000 }),
+      at("f", { actor: "agent" }),
+      at("g", { status: "done" }),
+      at("h", { status: "archived", source: "slack-capture" }),
+    ];
+    const cells = shapeCells(todos, NOW);
+    const counts = shapeCounts(cells);
+    expect(counts).toMatchObject({
+      overdue: 1,
+      "waiting on you": 1,
+      "not yet prepared": 1,
+      "waiting on another todo": 1,
+      "with a date": 1,
+      "with an agent": 1,
+      done: 1,
+      archived: 1,
+    });
+    expect(cells.reduce((n, c) => n + c.count, 0)).toBe(todos.length);
+    expect(cells.find((c) => c.group === "archived")?.label).toBe("slack capture");
+  });
+
+  it("splits one shape by source and folds the cells back by source", () => {
+    const todos = [
+      at("a", { actor: "tom", source: "email" }),
+      at("b", { actor: "tom", source: "email" }),
+      at("c", { actor: "tom", source: "manual" }),
+      at("d", { status: "done", source: "email" }),
+    ];
+    const cells = shapeCells(todos, NOW);
+    expect(cells.map((c) => [c.group, c.label, c.count])).toEqual([
+      ["waiting on you", "email", 2],
+      ["waiting on you", "manual", 1],
+      ["done", "email", 1],
+    ]);
+    expect(sourceRows(cells)).toEqual([
+      { source: "email", waitingOnYou: 2, notYetPrepared: 0, done: 1, total: 3 },
+      { source: "manual", waitingOnYou: 1, notYetPrepared: 0, done: 0, total: 1 },
+    ]);
+  });
+});
+
+describe("nextForTom", () => {
+  it("picks the soonest-dated todo waiting on Tom, and skips one he has ruled on", () => {
+    const a = todo({ _id: "a" as unknown as Todo["_id"], _creationTime: 1 });
+    const b = todo({ _id: "b" as unknown as Todo["_id"], _creationTime: 2, dueAt: 5_000 });
+    expect(nextForTom([a, b], [], 2_000)?._id).toBe("b");
+    const ruled = { subjectType: "life", todoId: "b", ruledAt: 3_000, _creationTime: 3 } as unknown as Ruling;
+    expect(nextForTom([a, b], [ruled], 2_000)?._id).toBe("a");
+    expect(nextForTom([], [], 2_000)).toBeUndefined();
+  });
+});
+
+describe("eventLanes", () => {
+  const HOUR = 3_600_000;
+  const NOW = 100 * HOUR;
+  const ev = (kind: string, at: number) => ({ kind, at }) as unknown as EventRow;
+
+  it("counts per bin per kind, keeps the top kinds and folds the rest", () => {
+    const events = [
+      ev("slack-sent", NOW - 1),
+      ev("slack-sent", NOW - 1),
+      ev("slack-sent", NOW - 3 * HOUR - 1),
+      ev("capture", NOW - 1),
+      ev("prepare", NOW - 2 * HOUR - 1),
+      ev("prepare", NOW - 30 * HOUR),
+    ];
+    const { lanes, binLabels } = eventLanes(events, NOW, 4, HOUR, 1);
+    expect(binLabels).toHaveLength(4);
+    expect(lanes).toEqual([
+      { name: "slack sent", bins: [1, 0, 0, 2] },
+      { name: "every other kind", bins: [0, 1, 0, 1] },
+    ]);
+  });
+});
+
+describe("agentFigures", () => {
+  it("counts the agents by status, working for running", () => {
+    const figures = agentFigures([
+      { status: "running" },
+      { status: "running" },
+      { status: "requested" },
+      { status: "failed" },
+    ]);
+    expect(figures).toEqual([
+      { value: 4, name: "agents" },
+      { value: 2, name: "working" },
+      { value: 0, name: "idle" },
+      { value: 1, name: "starting" },
+      { value: 0, name: "ended" },
+      { value: 1, name: "failed" },
+    ]);
   });
 });
