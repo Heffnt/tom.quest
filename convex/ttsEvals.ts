@@ -131,7 +131,6 @@ const TIMELINE_READ_LIMIT = 2_000;
 const SESSION_READ_LIMIT = 2_000;
 const INBOUND_READ_LIMIT = 1_000;
 const GOLDEN_RULING_READ_LIMIT = 2_000;
-const BATCH_MEMBER_READ_LIMIT = 500;
 export const EVALS_REQUEST_SCAN_LIMIT = 500;
 const EVALS_SEARCH_SCAN_LIMIT = 2_000;
 
@@ -273,7 +272,7 @@ export const internalLatestPreludeDeliveryAt = internalQuery({
 });
 
 type GoldenItemForPartition = {
-  job: "prepare" | "code-brief" | "batch-plan";
+  job: "prepare" | "code-brief";
   category?: string | null;
   repo?: string | null;
 };
@@ -281,8 +280,7 @@ type GoldenItemForPartition = {
 /** Job/category is the one stable grouping for golden-set selection. */
 export function partitionOf(item: GoldenItemForPartition): string {
   if (item.job === "prepare") return `prepare/${item.category || "uncategorised"}`;
-  if (item.job === "code-brief") return `code-brief/${item.repo || "unknown"}`;
-  return "batch-plan/batch";
+  return `code-brief/${item.repo || "unknown"}`;
 }
 
 type GoldenCandidate = {
@@ -291,7 +289,7 @@ type GoldenCandidate = {
   appliedAt: number | null;
   verdict: "approve" | "revise";
   sentence: string | null;
-  job: "prepare" | "code-brief" | "batch-plan";
+  job: "prepare" | "code-brief";
   partition: string;
   subject: Record<string, unknown>;
   resolution: Record<string, unknown>;
@@ -368,29 +366,9 @@ export const internalGoldenInput = internalQuery({
             input: { repo: ruling.repo, externalId: ruling.externalId, statement: mirror.statement },
           },
         });
-      } else if (ruling.subjectType === "batch" && ruling.batchId !== undefined) {
-        const batch = await ctx.db.get("batches", ruling.batchId);
-        if (batch === null) continue;
-        const members = await ctx.db
-          .query("dtsTodos")
-          .withIndex("by_batch", (q) => q.eq("batchId", ruling.batchId))
-          .take(BATCH_MEMBER_READ_LIMIT);
-        candidates.push({
-          rulingId: ruling._id,
-          ruledAt: ruling.ruledAt,
-          appliedAt: ruling.appliedAt ?? null,
-          verdict: ruling.verdict,
-          sentence: ruling.sentence ?? null,
-          job: "batch-plan",
-          partition: partitionOf({ job: "batch-plan" }),
-          subject: { type: "batch", batchId: ruling.batchId },
-          resolution: {
-            table: "batches",
-            rowId: batch._id,
-            input: { statement: batch.statement, memberStatements: members.map((member) => member.statement) },
-          },
-        });
       }
+      // A stored ruling on a batch reaches no item: the schema narrow removes
+      // that subject.
     }
 
     const grouped = new Map<string, GoldenCandidate[]>();
@@ -481,16 +459,17 @@ export type LabelItem = {
     contextRow: Doc<"claudeMessages"> | null;
     spanRows: Doc<"claudeMessages">[];
   };
-  link: { todoId?: string; batchId?: string; subjectKey: string | null };
+  link: { todoId?: string; subjectKey: string | null };
 };
 
 /** The subject's identity in the one spelling convex/ttsRulings.ts subjectKey
  *  defines. Read locally rather than imported for the reason runLabels gives:
  *  ttsRulings schedules into the label writer, and this file is on the other
  *  side of that edge. */
-function rulingSubjectKey(ruling: Doc<"dtsRulings">): string {
+function rulingSubjectKey(ruling: Doc<"dtsRulings">): string | null {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
-  if (ruling.subjectType === "batch") return `batch ${ruling.batchId}`;
+  // A stored ruling on a batch has no subject key: the schema narrow removes it.
+  if (ruling.subjectType === "batch") return null;
   return `code ${ruling.repo} ${ruling.externalId}`;
 }
 
@@ -531,14 +510,13 @@ async function linkOf(
   ctx: QueryCtx,
   label: Doc<"runLabels">,
   digestDays: Map<string, string>,
-): Promise<{ todoId?: string; batchId?: string; subjectKey: string | null }> {
+): Promise<{ todoId?: string; subjectKey: string | null }> {
   if (label.source === "ruling") {
     const rulingId = ctx.db.normalizeId("dtsRulings", label.ref.slice("ruling:".length));
     const ruling = rulingId === null ? null : await ctx.db.get(rulingId);
     if (ruling === null) return { subjectKey: null };
     return {
       ...(ruling.todoId === undefined ? {} : { todoId: ruling.todoId }),
-      ...(ruling.batchId === undefined ? {} : { batchId: ruling.batchId }),
       subjectKey: rulingSubjectKey(ruling),
     };
   }

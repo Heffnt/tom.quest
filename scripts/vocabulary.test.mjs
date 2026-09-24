@@ -199,8 +199,6 @@ const EVENT_KINDS = [
   "slack-claimed",
   "job-failed",
   "job-recovered",
-  "session-created",
-  "session-outcome",
   "delegate-decision",
   "delegate-objection",
   "evals-request",
@@ -211,7 +209,7 @@ const EVENT_KINDS = [
   "deploy",
 ];
 
-function schemaTs(kinds = EVENT_KINDS, declaredWord = "seventeen") {
+function schemaTs(kinds = EVENT_KINDS, declaredWord = "fifteen") {
   const rows = kinds.map((kind) => `    //   "${kind}"  — a row.`).join("\n");
   return `import { defineSchema, defineTable } from "convex/server";
 
@@ -438,9 +436,9 @@ describe("the dtsEvents.key register", () => {
     expect(parseEventKinds(schemaTs())).toEqual([...EVENT_KINDS].sort((a, b) => a.localeCompare(b)));
   });
 
-  it("fails when the comment says seventeen and fewer than seventeen parse", () => {
-    expect(() => parseEventKinds(schemaTs(EVENT_KINDS.slice(0, 16)))).toThrow(
-      /dtsEvents\.key: the source declares 17 and the parser read 16/,
+  it("fails when the comment says fifteen and fewer than fifteen parse", () => {
+    expect(() => parseEventKinds(schemaTs(EVENT_KINDS.slice(0, 14)))).toThrow(
+      /dtsEvents\.key: the source declares 15 and the parser read 14/,
     );
   });
 
@@ -451,7 +449,7 @@ describe("the dtsEvents.key register", () => {
     const kinds = parseEventKinds(fs.readFileSync(path.join(REPO_ROOT, "convex/schema.ts"), "utf8"));
     expect(kinds).toContain("deploy");
     expect(kinds).toContain("merge");
-    expect(() => run(makeCheckouts({ schema: schemaTs(EVENT_KINDS.filter((kind) => kind !== "deploy"), "sixteen") }))).toThrow(
+    expect(() => run(makeCheckouts({ schema: schemaTs(EVENT_KINDS.filter((kind) => kind !== "deploy"), "fourteen") }))).toThrow(
       /spellings/,
     );
   });

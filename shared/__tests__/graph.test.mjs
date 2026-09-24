@@ -411,6 +411,19 @@ describe("the two versions move at their own rates", () => {
     expect(after.recordVersion).not.toBe(before.recordVersion);
     expect(after.nodes.some((row) => row.id === recordId("todo", "t1"))).toBe(true);
   });
+
+  it("mints no batch node and no batch edge from rows that still carry a batch id", () => {
+    const graph = buildGraph({
+      ...base,
+      record: {
+        todos: [{ id: "t1", status: "active", batchId: "b1" }],
+        batches: [{ id: "b1", status: "active", needs: [] }],
+        rulings: [{ id: "r1", batchId: "b1" }],
+      },
+    });
+    expect(graph.nodes.some((row) => row.kind === "batch")).toBe(false);
+    expect(graph.edges.some((row) => row.from === "batch:b1" || row.to === "batch:b1")).toBe(false);
+  });
 });
 
 // ── 9. Line endings ──────────────────────────────────────────────────────────
@@ -612,10 +625,9 @@ describe("givenNodes", () => {
 });
 
 describe("seedsFor", () => {
-  it("makes the subject the highest-weight seed for each of todo, batch, area and repo", () => {
+  it("makes the subject the highest-weight seed for each of todo, area and repo", () => {
     for (const [subject, id] of [
       [{ kind: "todo", todoId: "t1" }, recordId("todo", "t1")],
-      [{ kind: "batch", batchId: "b1" }, recordId("batch", "b1")],
       [{ kind: "area", area: "research" }, areaId("research")],
       [{ kind: "repo", repo: "tom.quest" }, repoId("tom.quest")],
     ]) {

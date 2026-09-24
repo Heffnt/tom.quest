@@ -232,8 +232,7 @@ export function renderFactLines(facts) {
 
   lines.push(`Completed: ${facts.completions.length}.`);
   for (const c of facts.completions) {
-    const where = [c.kind, c.batch ? `batch "${c.batch}"` : null].filter(Boolean).join(", ");
-    lines.push(`- ${c.statement} (${utcDay(c.doneAt)}${where ? `; ${where}` : ""}; id ${c.id})`);
+    lines.push(`- ${c.statement} (${utcDay(c.doneAt)}${c.kind ? `; ${c.kind}` : ""}; id ${c.id})`);
   }
 
   const captured = facts.captures.reduce((n, c) => n + c.count, 0);
@@ -266,15 +265,10 @@ export function renderFactLines(facts) {
     lines.push(`- ${s.statement} (surfaced ${count(s.surfaced, "time")} since ${utcDay(s.firstAt)}; id ${s.id})`);
   }
 
-  lines.push(`Goals with no open task in their batch: ${facts.goalsWithoutOpenTask.length}.`);
-  for (const g of facts.goalsWithoutOpenTask) {
-    lines.push(`- ${g.statement}${g.batch ? ` (batch "${g.batch}")` : ""} (id ${g.id})`);
-  }
-
   lines.push(`Open goals no worker has evaluated in seven days: ${facts.goalsNotEvaluated.length}.`);
   for (const g of facts.goalsNotEvaluated) {
     lines.push(
-      `- ${g.statement}${g.batch ? ` (batch "${g.batch}")` : ""} — last evaluated ${g.lastEvaluatedAt === null ? "never" : utcDay(g.lastEvaluatedAt)} (id ${g.id})`,
+      `- ${g.statement} — last evaluated ${g.lastEvaluatedAt === null ? "never" : utcDay(g.lastEvaluatedAt)} (id ${g.id})`,
     );
   }
 
@@ -573,7 +567,7 @@ export function buildAgendaPrompt({ writingStandard, factLines, priorLines }) {
     "",
     '1. "lines": the week - one string per line, plain sentences, each carrying its date or count from the facts. Every fact section below is represented; a fact with nothing in it is one line saying so.',
     "",
-    '2. "forks": every fork the facts support — a real trade-off Tom has to rule on, where the record cannot decide for him: an item surfaced and never touched, a goal with no open task, a date missed twice, an integration waiting on him, a page past its window, a thread that waited days. (The cadence of these sessions is not yours to raise: the job puts a fixed line at the top of the agenda when two in a row were missed.) Each fork is an object: "title" (one line naming the fork), "subject" (null, or {"type": "life"|"batch", "id": "<the id from the facts>"} when the fork is about one todo or batch), "sides": exactly two objects each with "option" (what would be done) and "cost" (what that side gives up, from the facts), "recommendation" (one sentence naming which side and why, from the facts; Tom rules, this is only what you would pick). Order the forks by dependency: a fork whose answer changes another comes first. NO CAPS: write every fork the facts support and not one more; ZERO forks is a valid answer when the facts support none, and then "forks" is an empty array. A recommendation with no trade-off behind it is not a fork; do not manufacture one.',
+    '2. "forks": every fork the facts support — a real trade-off Tom has to rule on, where the record cannot decide for him: an item surfaced and never touched, a goal no worker has evaluated, a date missed twice, an integration waiting on him, a page past its window, a thread that waited days. (The cadence of these sessions is not yours to raise: the job puts a fixed line at the top of the agenda when two in a row were missed.) Each fork is an object: "title" (one line naming the fork), "subject" (null, or {"type": "life", "id": "<the id from the facts>"} when the fork is about one todo), "sides": exactly two objects each with "option" (what would be done) and "cost" (what that side gives up, from the facts), "recommendation" (one sentence naming which side and why, from the facts; Tom rules, this is only what you would pick). Order the forks by dependency: a fork whose answer changes another comes first. NO CAPS: write every fork the facts support and not one more; ZERO forks is a valid answer when the facts support none, and then "forks" is an empty array. A recommendation with no trade-off behind it is not a fork; do not manufacture one.',
     "",
     "Do not ask the sustainability question and do not answer it; the agenda asks it in fixed words after your lines.",
     "",
@@ -617,7 +611,7 @@ export function parseAgendaAnswer(answerText) {
     let subject = null;
     if (f.subject !== null && f.subject !== undefined) {
       const s = f.subject;
-      if ((s.type === "life" || s.type === "batch") && typeof s.id === "string" && s.id.trim() !== "") {
+      if (s.type === "life" && typeof s.id === "string" && s.id.trim() !== "") {
         subject = { type: s.type, id: s.id.trim() };
       }
     }
@@ -660,7 +654,7 @@ export function renderAgenda({ day, lines, priorLines, forks, modelError = null,
   return out.join("\n");
 }
 
-/** The todo and batch ids the forks name, each once, in agenda order — what
+/** The todo ids the forks name, each once, in agenda order — what
  * POST /tts/session stores on the session row as the subjects its turns may
  * rule on. */
 export function agendaSubjects(forks) {
@@ -698,7 +692,7 @@ export function sessionPrompt({ day, agenda, file, checkout }) {
     `0. If the agenda opens with "${CADENCE_LINE}", take that up first: the last two weekly sessions were missed, and what is to be decided is what to change so the next one happens — the day, the hour, the length, the form. His answer goes into the outcome (step 5) in his words.`,
     "1. Read the facts with him, as they are.",
     `2. Ask him, in exactly these words: "${SUSTAINABILITY_QUESTION}" Keep his answer verbatim; it is the primary variable and goes into the outcome as he said it.`,
-    `3. Go through the forks by number. Take his ruling on each in his own words. A fork that names a subject (a todo or a batch, by id) is ruled through the ruling route the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"inbound row:\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|batch>", "subjectId": "<the id the fork names>", "quote": "<one whole sentence of that turn, copied exactly>", "sentence": "<on revise only: the one sentence of that turn that redirects the preparing agent, copied exactly; omit on every other verdict>"}' — this session may rule only on the subjects the forks name (the ruling route refuses any other id), and the morning digest quotes every ruling written this way. If his words leave the verdict unclear, do not guess; ask. A fork with no subject is a ruling about the system, recorded in the outcome (step 5) in his words. Zero forks is a real answer: then there is nothing to rule on.`,
+    `3. Go through the forks by number. Take his ruling on each in his own words. A fork that names a subject (a todo, by id) is ruled through the ruling route the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"inbound row:\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "life", "subjectId": "<the id the fork names>", "quote": "<one whole sentence of that turn, copied exactly>", "sentence": "<on revise only: the one sentence of that turn that redirects the preparing agent, copied exactly; omit on every other verdict>"}' — this session may rule only on the subjects the forks name (the ruling route refuses any other id), and the morning digest quotes every ruling written this way. If his words leave the verdict unclear, do not guess; ask. A fork with no subject is a ruling about the system, recorded in the outcome (step 5) in his words. Zero forks is a real answer: then there is nothing to rule on.`,
     `4. The area pages past their window are named under the facts. For each, read ${WIKITOM_DIR}/${MODEL_OF_TOM_AREAS_DIR}/<page>.md with him. When he confirms a page, run: node /opt/tts/weekly.mjs reviewed ${MODEL_OF_TOM_AREAS_DIR}/<page>.md <today, YYYY-MM-DD> — it sets reviewed: on that page, commits and pushes under the WikiTom writer lock, and records the review. Never run it for a page he did not confirm; this command changes only its reviewed: frontmatter.`,
     `5. At the end, write the outcome to a file and run: node /opt/tts/weekly.mjs outcome ${day} <that file>. The file's first line is one of "timing: on time" (the session held by Sunday), "timing: late", or "timing: skipped"; then "sustainable: <his answer, verbatim>"; then "rulings:" and one line per fork, "<number>. <his ruling, in his words>". The command appends the text under the agenda's Outcome heading, commits and pushes. Next Friday's agenda reads it.`,
     "",

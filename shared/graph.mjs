@@ -47,7 +47,7 @@ export class GraphError extends Error {}
 // ── The kinds ────────────────────────────────────────────────────────────────
 
 /**
- * THE TWELVE NODE KINDS born of a file or the vocabulary, plus the five RECORD
+ * THE TWELVE NODE KINDS born of a file or the vocabulary, plus the four RECORD
  * kinds. Closed: a node of any other kind fails the build (G1).
  *
  * Under KIND_AUTHORITY = "vocabulary" this list is also checked against
@@ -70,12 +70,12 @@ export const STATIC_NODE_KINDS = Object.freeze([
 ]);
 
 /**
- * The record kinds. `todo`, `batch` and `ruling` enter the file as ids only;
+ * The record kinds. `todo` and `ruling` enter the file as ids only;
  * `run` and `outcome` are never rows in the file at all — they are addressable
  * and their edges live on the run row in Convex, which is already the one home
  * for every per-run fact.
  */
-export const RECORD_NODE_KINDS = Object.freeze(["batch", "outcome", "ruling", "run", "todo"]);
+export const RECORD_NODE_KINDS = Object.freeze(["outcome", "ruling", "run", "todo"]);
 
 export const NODE_KINDS = Object.freeze([...new Set([...STATIC_NODE_KINDS, ...RECORD_NODE_KINDS])].sort());
 
@@ -114,7 +114,6 @@ export const RENDER_ORDER = Object.freeze([
   "job",
   "question",
   "todo",
-  "batch",
   "ruling",
   "run",
   "outcome",
@@ -138,8 +137,8 @@ const RENDER_RANK = Object.freeze(
  *
  * The order these encode, read out: the first area page beats everything; the
  * root AGENTS.md and the todo's own rulings come next; the second area page,
- * the intent sections and the schedule bullets follow; nested AGENTS.md files,
- * the batch's rulings and the session outcomes are last in and first out. That
+ * the intent sections and the schedule bullets follow; nested AGENTS.md files
+ * and the session outcomes are last in and first out. That
  * is the retired EXPAND_SHRINK order read backwards, which is how it should be:
  * the shrink order was Tom's judgement about what a run can most afford to lose.
  *
@@ -167,14 +166,11 @@ export const WEIGHTS = Object.freeze({
   // grant block says. The line and heading edges keep 560: a run finds a skill
   // through its page, never by walking up from one of its lines.
   "member-of/page-skill": 1000,
-  "member-of/todo-batch": 780,
-  "member-of/outcome-batch": 600,
   "applies-to/caller-priorities": 880,
   "applies-to/page-repo-root": 870,
   "applies-to/page-repo-nested": 700,
   "applies-to/area-term": 480,
   "labeled/ruling-own-todo": 860,
-  "labeled/ruling-batch": 700,
   "defines/area-term-intent-line": 820,
   "defines/term-line": 500,
   "defines/term-rule": 500,
@@ -182,7 +178,6 @@ export const WEIGHTS = Object.freeze({
   "mentions/token-rules-file": 800,
   "mentions/token-page": 640,
   "depends-on/todo-todo": 680,
-  "depends-on/batch-batch": 680,
   "evidences/entry-line": 200,
   "evidences/source-entry": 180,
   "supersedes/line-line": 100,
@@ -196,7 +191,7 @@ const DEFAULT_WEIGHT = 500;
 
 /** Seeds, by what the task is. A seed's cost is `1000 - weight`. */
 export const SEED_WEIGHTS = Object.freeze({
-  task: 1000, // the todo, batch, area or repo the run is for
+  task: 1000, // the todo, area or repo the run is for
   caller: 980, // the CONTEXT_CALLERS row
   repo: 900,
   dueDay: 850, // one per schedule weekday the todo owes
@@ -238,7 +233,7 @@ export const GRAPH_MAX_BYTES = 2_097_152; // 2 MiB
  * means the record itself wants a pass, and the file failing loudly is how that
  * gets noticed — a silently truncated graph would make `near` quietly wrong.
  */
-export const RECORD_CAPS = Object.freeze({ batches: 400, todos: 4000, rulings: 2000 });
+export const RECORD_CAPS = Object.freeze({ todos: 4000, rulings: 2000 });
 
 /**
  * The most `defines` edges one term may take.
@@ -573,7 +568,7 @@ class Builder {
  *   repoRules?: {repo: string, path: string, body: string, commit?: string}[],
  *   vocabulary?: object|null,
  *   skills?: {name: string, group?: string, shape?: string, sourcePaths?: string[]}[],
- *   record?: {todos?: object[], batches?: object[], rulings?: object[]},
+ *   record?: {todos?: object[], rulings?: object[]},
  *   changes?: {before: string, after: string, day?: string}[],
  *   commits?: {wikitom?: string, tomQuest?: string},
  *   hash?: (text: string) => string,
@@ -957,7 +952,6 @@ function addRecord(b, record, pages) {
   // with finished work and put the row count past RECORD_CAPS, which fails the
   // build. `status === undefined` is an older row, which is active.
   const todos = (record.todos ?? []).filter((row) => row?.status === undefined || row.status === "active");
-  const batches = (record.batches ?? []).filter((row) => row?.status === undefined || row.status === "active");
   const rulings = record.rulings ?? [];
   // REMOVAL CHECK on the cap itself, not on the message. A record half with no
   // ceiling is a graph that grows past GRAPH_MAX_BYTES and is then truncated or
@@ -966,7 +960,7 @@ function addRecord(b, record, pages) {
   // record outliving its own shape is a thing that wants a pass, and a build
   // that stops is how that gets noticed rather than a `near` that quietly
   // stopped reaching half the work.
-  for (const [table, rows] of [["todos", todos], ["batches", batches], ["rulings", rulings]]) {
+  for (const [table, rows] of [["todos", todos], ["rulings", rulings]]) {
     if (rows.length > RECORD_CAPS[table]) {
       throw new GraphError(
         `graph: the record half holds ${rows.length} ${table}, over the cap of ${RECORD_CAPS[table]} — `
@@ -982,20 +976,8 @@ function addRecord(b, record, pages) {
     .filter((page) => isAreaPath(page.path))
     .map((page) => ({ area: areaName(page.path), terms: areaCategories(page.path, page.body) }));
 
-  for (const batch of batches) {
-    b.node(node("batch", recordId("batch", batch.id), { title: batch.title ?? null, ref: `batches/${batch.id}` }));
-  }
   for (const todo of todos) {
     b.node(node("todo", recordId("todo", todo.id), { title: todo.title ?? null, ref: `dtsTodos/${todo.id}` }));
-    if (typeof todo.batchId === "string" && todo.batchId !== "") {
-      b.edge(
-        "member-of",
-        recordId("todo", todo.id),
-        recordId("batch", todo.batchId),
-        "member-of/todo-batch",
-        "convex:dtsTodos.batchId",
-      );
-    }
     const category = String(todo.category ?? "").trim();
     if (category !== "") {
       if (areaNames.has(category)) {
@@ -1039,17 +1021,6 @@ function addRecord(b, record, pages) {
       );
     }
   }
-  for (const batch of batches) {
-    for (const need of batch.needs ?? []) {
-      b.edge(
-        "depends-on",
-        recordId("batch", batch.id),
-        recordId("batch", need),
-        "depends-on/batch-batch",
-        "convex:batches.needs",
-      );
-    }
-  }
   for (const ruling of rulings) {
     b.node(node("ruling", recordId("ruling", ruling.id), { ref: `dtsRulings/${ruling.id}` }));
     if (typeof ruling.todoId === "string" && ruling.todoId !== "") {
@@ -1059,15 +1030,6 @@ function addRecord(b, record, pages) {
         recordId("todo", ruling.todoId),
         "labeled/ruling-own-todo",
         "convex:dtsRulings.todoId",
-      );
-    }
-    if (typeof ruling.batchId === "string" && ruling.batchId !== "") {
-      b.edge(
-        "labeled",
-        recordId("ruling", ruling.id),
-        recordId("batch", ruling.batchId),
-        "labeled/ruling-batch",
-        "convex:dtsRulings.batchId",
       );
     }
   }
@@ -1562,7 +1524,7 @@ export function renderNodes(nodes) {
 /**
  * The seed ids of a run's own task, with their weights.
  *
- * THE SUBJECT IS THE SEED. `todo:<id>`, `batch:<id>`, `area:<name>`,
+ * THE SUBJECT IS THE SEED. `todo:<id>`, `area:<name>`,
  * `repo:<name>` — the node the run's task IS. Everything else it gets, it gets
  * by walking outward from there.
  *
@@ -1576,7 +1538,6 @@ export function seedsFor({ subject, repo = null, paths = [], brief = "", terms =
   };
   const kind = subject?.kind ?? "none";
   if (kind === "todo") push(recordId("todo", subject.todoId), SEED_WEIGHTS.task);
-  else if (kind === "batch") push(recordId("batch", subject.batchId), SEED_WEIGHTS.task);
   else if (kind === "area") push(areaId(subject.area), SEED_WEIGHTS.task);
   else if (kind === "repo") push(repoId(subject.repo), SEED_WEIGHTS.task);
   if (repo !== null) push(repoId(repo), SEED_WEIGHTS.repo);

@@ -548,6 +548,8 @@ describe("--no-record", () => {
     expect(staticOnly.version).toBe(full.version);
     expect(staticOnly.counts.byNodeKind.todo).toBeUndefined();
     expect(full.counts.byNodeKind.todo).toBe(2);
+    // The table copy still holds batches.jsonl; the graph reads no batch.
+    expect(full.counts.byNodeKind.batch).toBeUndefined();
     expect(staticOnly.graph.generatedFrom.recordSource).toBe("none");
   });
 });

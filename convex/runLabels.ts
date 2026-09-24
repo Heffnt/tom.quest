@@ -250,9 +250,6 @@ async function tokenForRulingSubject(
   if (ruling.subjectType === "life" && ruling.todoId !== undefined) {
     return (await ctx.db.get(ruling.todoId))?.producedByRunToken;
   }
-  if (ruling.subjectType === "batch" && ruling.batchId !== undefined) {
-    return (await ctx.db.get(ruling.batchId))?.producedByRunToken;
-  }
   if (ruling.subjectType === "code" && ruling.repo !== undefined && ruling.externalId !== undefined) {
     const brief = await ctx.db
       .query("dtsCodeBriefs")
@@ -262,15 +259,18 @@ async function tokenForRulingSubject(
       .first();
     return brief?.producedByRunToken;
   }
+  // A stored ruling on a batch reaches no token: the schema narrow removes
+  // that subject.
   return undefined;
 }
 
 /** The subject's identity, in the one spelling ttsRulings.subjectKey defines.
  *  Duplicated as a local read rather than imported to keep this file free of a
  *  cycle through ttsRulings, which schedules into it. */
-function subjectKeyOf(ruling: Doc<"dtsRulings">): string {
+function subjectKeyOf(ruling: Doc<"dtsRulings">): string | null {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
-  if (ruling.subjectType === "batch") return `batch ${ruling.batchId}`;
+  // A stored ruling on a batch has no subject key: the schema narrow removes it.
+  if (ruling.subjectType === "batch") return null;
   return `code ${ruling.repo} ${ruling.externalId}`;
 }
 

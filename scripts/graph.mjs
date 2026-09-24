@@ -176,7 +176,6 @@ const SKIP_DIRECTORIES = new Set([
  * row's id lives in. The snapshot writes Convex's own `_id`. */
 const RECORD_TABLES = Object.freeze({
   todos: "dtsTodos.jsonl",
-  batches: "batches.jsonl",
   rulings: "dtsRulings.jsonl",
 });
 
@@ -272,7 +271,7 @@ export function readRepoRules(dir, repo) {
  * "id-only" none of that enters the file, which is the two-record rule.
  */
 export function readRecord(dir) {
-  const record = { todos: [], batches: [], rulings: [] };
+  const record = { todos: [], rulings: [] };
   for (const [key, file] of Object.entries(RECORD_TABLES)) {
     const text = readIfPresent(path.join(dir, file));
     if (text === null) continue;
@@ -295,7 +294,6 @@ export function readRecord(dir) {
       record[key].push({
         id,
         status: row.status,
-        batchId: typeof row.batchId === "string" ? row.batchId : undefined,
         todoId: typeof row.todoId === "string" ? row.todoId : undefined,
         category: typeof row.category === "string" ? row.category : undefined,
         needs: Array.isArray(row.needs) ? row.needs.filter((one) => typeof one === "string") : [],

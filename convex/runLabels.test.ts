@@ -257,7 +257,7 @@ describe("a ruling becomes a label", () => {
     });
   });
 
-  it("resolves a batch subject through the batch row's own token", async () => {
+  it("links a stored batch ruling to no run, even when the batch row carries a token", async () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-batch", runId: "claude:box:planner" });
     const batchId = await t.run((ctx) =>
@@ -271,7 +271,10 @@ describe("a ruling becomes a label", () => {
     );
     const rulingId = await seedRuling(t, { subjectType: "batch", batchId, verdict: "approve" });
     await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
-    expect((await labels(t))[0].runId).toBe("claude:box:planner");
+    expect(await labels(t)).toEqual([]);
+    const unlinked = await events(t, "run-label-unlinked");
+    expect(unlinked).toHaveLength(1);
+    expect(unlinked[0].data).toMatchObject({ source: "ruling", ref: `ruling:${rulingId}`, subjectKey: null });
   });
 });
 

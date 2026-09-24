@@ -78,7 +78,6 @@ function emptyFacts() {
     captures: [],
     dateOutcomes: [],
     surfacedUntouched: [],
-    goalsWithoutOpenTask: [],
     goalsNotEvaluated: [],
     integrations: [
       { name: "gmail", state: "running", since: null, detail: null },
@@ -101,7 +100,7 @@ function emptyFacts() {
 function fullFacts() {
   return {
     ...emptyFacts(),
-    completions: [{ id: "t1", statement: "file the form", kind: "task", batch: "the paper", doneAt: UNTIL - 2 * DAY }],
+    completions: [{ id: "t1", statement: "file the form", kind: "task", doneAt: UNTIL - 2 * DAY }],
     captures: [
       { source: "email", count: 1, items: [{ id: "t2", statement: "from mail", createdAt: UNTIL - DAY }] },
       { source: "slack-capture", count: 1, items: [{ id: "t3", statement: "from slack", createdAt: UNTIL - DAY }] },
@@ -111,8 +110,7 @@ function fullFacts() {
       { todoId: "t5", statement: "the other date", outcome: "renegotiated", at: UNTIL - 3 * DAY, newDueAt: UNTIL + 4 * DAY, note: null },
     ],
     surfacedUntouched: [{ id: "t6", statement: "the ignored one", surfaced: 3, firstAt: UNTIL - 5 * DAY }],
-    goalsWithoutOpenTask: [{ id: "g1", statement: "lease signed", batch: "the lease" }],
-    goalsNotEvaluated: [{ id: "g1", statement: "lease signed", batch: "the lease", lastEvaluatedAt: null }],
+    goalsNotEvaluated: [{ id: "g1", statement: "lease signed", lastEvaluatedAt: null }],
     integrations: [
       { name: "gmail", state: "running", since: null, detail: null },
       { name: "canvas", state: "waiting-on-credential", since: UNTIL - 6 * DAY, detail: "Canvas said 401" },
@@ -168,7 +166,6 @@ describe("renderFactLines", () => {
       "Captured: 0.",
       "Date outcomes: 0.",
       "Surfaced three or more times and untouched: 0.",
-      "Goals with no open task in their batch: 0.",
       "Open goals no worker has evaluated in seven days: 0.",
       "Integrations: gmail running; canvas running; outlook running.",
       "Area pages: 0, past their window: 0.",
@@ -185,15 +182,14 @@ describe("renderFactLines", () => {
 
   it("carries every fact kind, each with its date, count, or duration", () => {
     const text = renderFactLines(fullFacts()).join("\n");
-    expect(text).toContain('- file the form (2026-09-09; task, batch "the paper"; id t1)');
+    expect(text).toContain("- file the form (2026-09-09; task; id t1)");
     expect(text).toContain("Captured: 2 — by source: email 1, slack-capture 1.");
     expect(text).toContain("- (email) from mail (2026-09-10; id t2)");
     expect(text).toContain("Date outcomes: 2 — done 0, renegotiated 1, missed 1.");
     expect(text).toContain("- missed: the deadline (2026-09-08; note: rolled; id t4)");
     expect(text).toContain("- renegotiated: the other date (2026-09-08; new date 2026-09-15; id t5)");
     expect(text).toContain("- the ignored one (surfaced 3 times since 2026-09-06; id t6)");
-    expect(text).toContain('- lease signed (batch "the lease") (id g1)');
-    expect(text).toContain('- lease signed (batch "the lease") — last evaluated never (id g1)');
+    expect(text).toContain("- lease signed — last evaluated never (id g1)");
     expect(text).toContain(
       'Integrations: gmail running; canvas waiting on a credential since 2026-09-05 (Canvas said 401); outlook declined on 2026-09-07 ("the WPI mailbox is read by hand").',
     );
@@ -222,7 +218,6 @@ describe("renderFactLines", () => {
       id: `t${i}`,
       statement: `done ${i}`,
       kind: "task",
-      batch: null,
       doneAt: UNTIL - DAY,
     }));
     const lines = renderFactLines(facts);
@@ -732,7 +727,7 @@ describe("the run — one per day", () => {
     expect(result.sessionId).toBe("sess-new");
     const text = fs.readFileSync(path.join(dir, WEEKLY_DIR, "2026-09-11.md"), "utf8");
     expect(text).toContain("(the model call failed — claude returned an error envelope (subtype: error_max_turns) — so these are the gathered facts as the job rendered them, and no forks were written)");
-    expect(text).toContain("- Completed: 1.\n- - file the form (2026-09-09; task, batch \"the paper\"; id t1)");
+    expect(text).toContain("- Completed: 1.\n- - file the form (2026-09-09; task; id t1)");
     expect(text).toContain(`## Forks\n\n${NO_FORKS_LINE}`);
     expect(calls.model).toHaveLength(1);
     expect(sessions(calls)).toHaveLength(1);
@@ -932,15 +927,15 @@ describe("parseAgendaAnswer", () => {
   });
 
   // What the session may rule on is the forks' subject ids, each once; a
-  // fork about the system names none.
+  // fork about the system names none, and a batch subject is no subject.
   it("names the forks' subjects for the session row, each once", () => {
     const { forks } = parseAgendaAnswer(
       JSON.stringify({
         lines: ["x"],
-        forks: [fork, { ...fork, subject: null }, { ...fork, subject: { type: "batch", id: "b1" } }, fork],
+        forks: [fork, { ...fork, subject: null }, { ...fork, subject: { type: "life", id: "t7" } }, { ...fork, subject: { type: "batch", id: "b1" } }, fork],
       }),
     );
-    expect(agendaSubjects(forks)).toEqual(["t6", "b1"]);
+    expect(agendaSubjects(forks)).toEqual(["t6", "t7"]);
     expect(agendaSubjects([])).toEqual([]);
   });
 });

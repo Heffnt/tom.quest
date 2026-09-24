@@ -4,8 +4,7 @@
 // Box (worker/jobs/weekly.mjs) asks GET /tts/weekly-input for the seven days
 // ending now, and everything below is a query on an index: what was completed,
 // what was captured and from where, every date outcome, the items surfaced
-// three times and never touched, the goals with no open task, the goals no
-// worker has evaluated in seven days, the integrations by state, each area
+// three times and never touched, the goals no worker has evaluated in seven days, the integrations by state, each area
 // page's reviewed age against its window, the size of the model-of-tom files,
 // what the nightly job wrote and what was reverted, the job failures by job,
 // the threads that needed Tom and how long each waited for his reply, and the
@@ -20,7 +19,7 @@
 // BOUNDED READS: each list is read on an index with the kind or the status
 // pinned and the window on the range, so the cost is the week's own rows of
 // that kind, never the table. The active set is read once (by_status) and
-// serves four facts.
+// serves three facts.
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -177,8 +176,7 @@ export function ablationFindings(
 // ── What counts as Tom touching an item ──────────────────────────────────────
 // ONE HOME. "Surfaced three times and untouched" means Tom did nothing with
 // the item — not that the system did nothing: the preparer's "prepared" row,
-// the digest's own "surfaced", the planner's batch rows, a Canvas or triage
-// edit are all the system's hands, and a row of theirs must not clear the
+// the digest's own "surfaced", a Canvas or triage edit are all the system's hands, and a row of theirs must not clear the
 // item off this list. These are the kinds only his hand writes: a status
 // change, an edit of his, a note of his (Slack), a time note, a ruling in his
 // words, a Slack turn of his, and a date outcome he recorded.
@@ -211,7 +209,7 @@ export function isTomTouch(e: Pick<Doc<"dtsEvents">, "kind" | "data">): boolean 
 export type WeeklyFacts = {
   since: number;
   until: number;
-  completions: { id: string; statement: string; kind: string | null; batch: string | null; doneAt: number }[];
+  completions: { id: string; statement: string; kind: string | null; doneAt: number }[];
   captures: { source: string; count: number; items: { id: string; statement: string; createdAt: number }[] }[];
   dateOutcomes: {
     todoId: string;
@@ -222,8 +220,7 @@ export type WeeklyFacts = {
     note: string | null;
   }[];
   surfacedUntouched: { id: string; statement: string; surfaced: number; firstAt: number }[];
-  goalsWithoutOpenTask: { id: string; statement: string; batch: string | null }[];
-  goalsNotEvaluated: { id: string; statement: string; batch: string | null; lastEvaluatedAt: number | null }[];
+  goalsNotEvaluated: { id: string; statement: string; lastEvaluatedAt: number | null }[];
   integrations: {
     name: string;
     state: "running" | "waiting-on-credential" | "declined";
@@ -517,41 +514,26 @@ async function standingCredentialFailure(
 }
 
 /** The event kinds that mean a worker evaluated a goal: a session opened on
- * it (or on its batch), or a session's recorded outcome for it. */
+ * it, or a session's recorded outcome for it. */
 const EVALUATION_KINDS = ["session-created", "session-outcome"] as const;
 
 /**
  * When a goal was last evaluated, or null when never: the newest evaluation
  * row on the goal's own id (by_todo, newest first, stopped at the first hit
- * rather than collecting its history) and the newest on its batch's id
- * (by_kind_key per kind, `.first()`), whichever is later.
+ * rather than collecting its history).
  */
 async function lastGoalEvaluation(
   ctx: QueryCtx,
   goal: Doc<"dtsTodos">,
   until: number,
 ): Promise<number | null> {
-  let last: number | null = null;
   for await (const e of ctx.db
     .query("dtsEvents")
     .withIndex("by_todo", (q) => q.eq("todoId", goal._id).lt("at", until))
     .order("desc")) {
-    if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) {
-      last = e.at;
-      break;
-    }
+    if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) return e.at;
   }
-  if (goal.batchId !== undefined) {
-    for (const kind of EVALUATION_KINDS) {
-      const row = await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_kind_key", (q) => q.eq("kind", kind).eq("key", goal.batchId).lt("at", until))
-        .order("desc")
-        .first();
-      if (row !== null && (last === null || row.at > last)) last = row.at;
-    }
-  }
-  return last;
+  return null;
 }
 
 export async function gatherWeeklyFacts(
@@ -566,15 +548,6 @@ export async function gatherWeeklyFacts(
     const row = await ctx.db.get(id);
     todoCache.set(id, row);
     return row;
-  };
-  const batchCache = new Map<string, string | null>();
-  const batchName = async (id: Id<"batches"> | undefined) => {
-    if (id === undefined) return null;
-    const hit = batchCache.get(id);
-    if (hit !== undefined) return hit;
-    const name = (await ctx.db.get(id))?.statement ?? null;
-    batchCache.set(id, name);
-    return name;
   };
   const eventsOfKind = async (kind: string) =>
     await ctx.db
@@ -604,7 +577,6 @@ export async function gatherWeeklyFacts(
       id: t._id,
       statement: t.statement,
       kind: t.kind ?? null,
-      batch: await batchName(t.batchId),
       doneAt,
     });
   }
@@ -672,31 +644,19 @@ export async function gatherWeeklyFacts(
   }
   surfacedUntouched.sort((a, b) => b.surfaced - a.surfaced || a.firstAt - b.firstAt);
 
-  // 5, 6, 13: the active set, read once.
+  // 6, 13: the active set, read once.
   const active = await ctx.db
     .query("dtsTodos")
     .withIndex("by_status", (q) => q.eq("status", "active"))
     .collect();
-  const openTasksByBatch = new Set<string>();
-  for (const t of active) {
-    if (t.kind !== "goal" && t.batchId !== undefined) openTasksByBatch.add(t.batchId);
-  }
-  const goalsWithoutOpenTask: WeeklyFacts["goalsWithoutOpenTask"] = [];
   const goalsNotEvaluated: WeeklyFacts["goalsNotEvaluated"] = [];
   for (const t of active) {
     if (t.kind !== "goal") continue;
-    const batch = await batchName(t.batchId);
-    if (t.batchId !== undefined && !openTasksByBatch.has(t.batchId)) {
-      goalsWithoutOpenTask.push({ id: t._id, statement: t.statement, batch });
-    }
-    // Evaluated = a session opened on the goal, or on its batch, or one that
-    // recorded an outcome for either, in the last seven days. The goal's own
-    // sessions are on by_todo; the batch's are keyed on the batch id
-    // (claudeSessions.insertSession writes both kinds with key = batchId),
-    // because a session opened ON a batch has no todoId at all.
+    // Evaluated = a session opened on the goal, or one that recorded an
+    // outcome for it, in the last seven days (both rows are on by_todo).
     const lastEvaluatedAt = await lastGoalEvaluation(ctx, t, until);
     if (lastEvaluatedAt !== null && lastEvaluatedAt >= until - WEEK_MS) continue;
-    goalsNotEvaluated.push({ id: t._id, statement: t.statement, batch, lastEvaluatedAt });
+    goalsNotEvaluated.push({ id: t._id, statement: t.statement, lastEvaluatedAt });
   }
   let prepared = 0;
   let unprepared = 0;
@@ -1112,7 +1072,6 @@ export async function gatherWeeklyFacts(
     captures,
     dateOutcomes,
     surfacedUntouched,
-    goalsWithoutOpenTask,
     goalsNotEvaluated,
     integrations,
     areaPages,
