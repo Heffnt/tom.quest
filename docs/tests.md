@@ -155,6 +155,24 @@ node_modules/vitest/vitest.mjs run`): `pnpm` and `npx` each leave a
 `node-compile-cache` directory there, which is the package manager's cache and
 not the suite's.
 
+## No test reads the box's state
+
+A test asserts what the code does, so it must give the same answer on the box,
+on the laptop and on CI. The box launcher's config (`worker/runs/config.mjs`)
+reads `RUN_HOST` and the env file `/etc/tts/worker.env`, and the run state
+directory it names holds the semaphore and the Fable availability file
+(`worker/runs/models.mjs`). A test that reaches the launcher with none of that
+pointed elsewhere asserts the box's state that day: the delegate test expected
+the model `fable` and failed on the box on 2026-09-24, because Fable was
+unavailable there, while it passed everywhere else.
+
+A test file whose code reaches the launcher calls `withoutBoxState()` from
+`test/box-state.mjs`. For each of its tests the run state directory is an
+empty `tempDir`, the env file is a path that does not exist, and `RUN_HOST`
+and the inherited run slot are empty. The delegate, evals, runner check-in
+and tts-lib tests call it; a test that wants a Fable availability fixture
+writes it into the directory the helper returns.
+
 ## What is not a test
 
 The session daemon's Bash classifier rules whether a command may run. That is a

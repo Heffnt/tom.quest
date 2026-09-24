@@ -10,7 +10,13 @@ import {
   parseAnswer,
 } from "./delegate.mjs";
 import { runClaude } from "./tts-lib.mjs";
+import { markFableUnavailable } from "../runs/models.mjs";
+import { withoutBoxState } from "../../test/box-state.mjs";
 import { tempDir } from "../../test/temp.mjs";
+
+// The model the record names comes from the box's Fable availability file, so
+// every test here reads a fixture run state directory instead of the box's.
+const runState = withoutBoxState();
 
 // The narrow list as GET /tts/state serves it (convex/ttsShared.ts NARROW_LIST).
 const NARROW_LIST = [
@@ -225,6 +231,13 @@ describe("askDelegate", () => {
     expect(calls.posted.promptSha).toMatch(/^[0-9a-f]{8}$/);
     expect(calls.posted.refused).toBe(false);
     expect(calls.posted.ms).toBe(0);
+  });
+
+  it("names the model that ran on the record while Fable is unavailable", async () => {
+    markFableUnavailable(runState(), { at: 500, reason: "You've hit your monthly spend limit" });
+    const { io, calls } = harness();
+    await askDelegate(ask(), io);
+    expect(calls.posted.model).toBe("opus (fable requested, at the ceiling)");
   });
 
   it("puts Tom's prior objections, read before the ask, into the prompt", async () => {

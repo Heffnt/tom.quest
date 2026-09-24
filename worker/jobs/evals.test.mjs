@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withoutBoxState } from "../../test/box-state.mjs";
 import { tempDir } from "../../test/temp.mjs";
 import { bareSkillName, repoSkillName } from "../../shared/skills.mjs";
 import { NO_BODY, routeSkills } from "../../shared/skill-router.mjs";
@@ -93,6 +94,10 @@ import {
 } from "./evals.mjs";
 import { EVALS_PROTOCOL } from "./evals-row.mjs";
 import { DENIABLE_TOOLS } from "./tts-lib.mjs";
+
+// The regen and judge model labels are read from the box's Fable availability
+// file: every test here reads a fixture run state directory instead.
+withoutBoxState();
 
 
 /** THE ONE MAPPING, handed to loadTriggers here exactly as the runner hands it

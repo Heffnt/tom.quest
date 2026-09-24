@@ -13,7 +13,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { withoutBoxState } from "../../test/box-state.mjs";
 import { tempDir } from "../../test/temp.mjs";
 
 import {
@@ -41,16 +42,7 @@ import {
 // semaphore under the run state directory and makes a work directory there.
 // Pointed at a scratch directory, with no env file and no inherited slot, so a
 // suite run on the box neither queues behind real runs nor rides one's slot.
-let runState;
-beforeEach(() => {
-  runState = tempDir("tts-lib-runs-");
-  vi.stubEnv("RUN_SWEEP_STATE_DIR", runState);
-  vi.stubEnv("RUN_ENV_FILE", path.join(runState, "no-such-env"));
-  vi.stubEnv("TTS_RUN_SLOT_HELD", "");
-});
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
+const runState = withoutBoxState();
 
 describe("clip", () => {
   // Any limit will do; 400 is the brief limit scripts/check-writing-standard.mjs holds.
@@ -568,8 +560,8 @@ describe("runClaude through the box launcher", () => {
     .map((name) => JSON.parse(fs.readFileSync(path.join(spool, name), "utf8")));
 
   it("returns the answer text and spools the job's envelope under box-run's name", () => {
-    const spool = path.join(runState, "registration");
-    const record = path.join(runState, "record.json");
+    const spool = path.join(runState(), "registration");
+    const record = path.join(runState(), "record.json");
     vi.stubEnv("TTS_RUN_REG_SPOOL", spool);
     vi.stubEnv("FAKE_RECORD", record);
     vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "success", result: "triaged" })));
@@ -635,7 +627,7 @@ describe("runClaude through the box launcher", () => {
       { id: "held0001", pid: process.pid, at: Date.now() },
       { id: "held0002", pid: process.pid, at: Date.now() },
     ] };
-    const counter = path.join(runState, "semaphore.json");
+    const counter = path.join(runState(), "semaphore.json");
     fs.writeFileSync(counter, JSON.stringify(held));
     const lib = pathToFileURL(path.join(import.meta.dirname, "tts-lib.mjs")).href;
     const call = spawnSync(process.execPath, [
