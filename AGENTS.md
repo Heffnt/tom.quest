@@ -50,7 +50,7 @@ A personal dashboard for cluster management, experiment visibility and TTS. Writ
 - Simple interfaces around deep modules.
 - One central pattern per concern, not a copy per feature.
 - A bug fix carries a regression test that fails if the bug returns; an untestable bug carries a warning comment at the danger point. Neither is logged here.
-- A commit subject is lowercase, names the area, and states the world after the change: `tts: the page has no capture bar`. The body is full sentences, one idea per paragraph, then the `Co-authored-by` trailer. PRs squash-merge: the PR title and body are what land.
+- A commit subject is lowercase, names the area, and states the world after the change: `tts: the page has no capture bar`. The body is full sentences, one idea per paragraph, then the `Co-authored-by` trailer. A pull request lands as a merge commit (Tom's ruling of 2026-09-19), so the branch's own commits are what land and the head sha the merge gate judged stays on `main`; the PR title is the merge commit's subject.
 
 ## binaries
 

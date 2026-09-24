@@ -249,6 +249,22 @@ describe("POST /tts/event", () => {
     expect(rows[0].at).toBeGreaterThan(0);
   });
 
+  it("posts the broken line for a nightly failure, which comes through this door and not logEvent", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    await post(t, "/tts/event", {
+      kind: "nightly-failure",
+      data: { step: "push", error: "rejected" },
+    });
+    const broken = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect())
+        .filter((job) => job.name.includes("sendBroken"))
+        .map((job) => job.args[0] as { job: string; detail?: string }),
+    );
+    expect(broken.map((line) => line.job)).toEqual(["nightly"]);
+    expect(broken[0].detail).toBe("rejected");
+  });
+
   // The Slack bookkeeping kinds carry a `key` the events route looks up by;
   // a worker row of those kinds without one would be a phantom send.
   it("refuses a kind Convex writes itself, and a malformed kind", async () => {

@@ -76,6 +76,16 @@ crons.interval(
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});
 
+// The mirror of open pull requests, and the landing of every approved one
+// whose gate has turned green (convex/observeMerge.ts). The observation page's
+// Approve control records the ruling; this is what merges it afterwards.
+crons.interval(
+  "observe pull requests",
+  { minutes: 5 },
+  internal.observeMerge.refreshOpenPulls,
+  {},
+);
+
 // The model-of-tom files are POSTED by the nightly job on the Jarvis Box
 // (POST /tts/model-of-tom), not pulled by a cron — no Convex-side read of
 // WikiTom exists (the lifeos update, phase 4).

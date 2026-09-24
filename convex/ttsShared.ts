@@ -79,6 +79,54 @@ export function mergeKey(repo: string, sha: string): string {
   return `${repo}:${sha}`;
 }
 
+/**
+ * A FAILURE IS A SHAPE AND NOT A KIND: a job failure is an event kind ending
+ * in "-failed" or in "-failure" — the nightly and the weekly write the second
+ * spelling ("nightly-failure", "weekly-failure"), and reading only the first
+ * left their failures out of both the failures lane and #tts-broken. Two
+ * exclusions, both load-bearing:
+ *   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
+ *                        convex/ttsHourly.ts already warns about: a refused
+ *                        post would write a row that schedules another post.
+ *   "learning-revert-failed"  not a job failure at all — it is an objection
+ *                        the nightly job could not apply, and it belongs to
+ *                        the model-of-Tom line it is about.
+ *
+ * Spelled here, not in convex/tts.ts where the #tts-broken writer applies it,
+ * because the observation page asks the same question of the same events and a
+ * second list of the exceptions is a second answer waiting to drift.
+ */
+export function isFailureKind(kind: string): boolean {
+  return (
+    (kind.endsWith("-failed") || kind.endsWith("-failure")) &&
+    kind !== "slack-send-failed" &&
+    kind !== "learning-revert-failed"
+  );
+}
+
+/**
+ * THE SUBJECT A CHANGE IS RULED ON: a code subject `(repo, externalId)` whose
+ * externalId names the change rather than a code todo. A pull request the
+ * record has mirrored is `pr-<number>`; a merged commit whose pull request the
+ * mirror never saw is `sha-<sha>`. Spelled here because convex/ttsRulings.ts
+ * (which applies such a ruling at write time), convex/observe.ts (which writes
+ * one) and convex/observeMerge.ts (which reads one) all need the same spelling,
+ * and this module is the one all three already import.
+ */
+export function pullRequestChange(number: number): string {
+  return `pr-${number}`;
+}
+
+export function commitChange(sha: string): string {
+  return `sha-${sha}`;
+}
+
+/** True for an externalId that names a change (above) rather than a code todo.
+ *  Code todo ids are registry ids such as `cmt-archive`, never these shapes. */
+export function isChangeSubject(externalId: string): boolean {
+  return /^pr-\d+$/.test(externalId) || /^sha-[0-9a-f]{7,40}$/i.test(externalId);
+}
+
 // <vocabulary generated version=a41d2676336ccc73 — scripts/vocabulary.mjs; do not edit>
 export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
 - A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.

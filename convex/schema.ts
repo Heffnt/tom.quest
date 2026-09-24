@@ -1074,6 +1074,42 @@ export default defineSchema({
     })),
   }).index("by_key", ["key"]),
 
+  // THE CHANGES THAT ARE WAITING — every open pull request, mirrored from
+  // GitHub every five minutes by convex/observeMerge.ts, so the observation
+  // page can show a change before it lands and Tom can approve it there.
+  //
+  // A MIRROR, NOT A RECORD. GitHub owns whether a pull request is open; these
+  // rows are a copy the refresh rewrites. A row GitHub stops listing as open
+  // is marked `closedAt` rather than deleted, and deleted once it is older
+  // than the page's widest window: until then it is how a merged commit on the
+  // page finds the pull request it came from (by its head sha), and so which
+  // ruling of Tom's it carries. Tom's approval itself is a ruling in
+  // `dtsRulings`, which is why deleting a row loses nothing.
+  //
+  // `lastAttempt` is the one fact GitHub cannot be asked for afterwards: what
+  // happened the last time the record tried to merge this. Without it the page
+  // can say a change is approved and cannot say why it has not landed.
+  pullRequests: defineTable({
+    repo: v.string(), // a SESSION_REPOS name
+    number: v.number(),
+    // The pull request's title, which by this repository's commit rule states
+    // the world after the change.
+    title: v.string(),
+    branch: v.string(), // the head branch
+    headSha: v.string(), // what the merge gate's three rows are keyed on
+    baseBranch: v.string(),
+    draft: v.boolean(),
+    updatedAt: v.number(), // GitHub's own updated_at
+    seenAt: v.number(), // when the refresh last saw it open
+    closedAt: v.optional(v.number()), // when the refresh first saw it gone
+    lastAttempt: v.optional(
+      v.object({ at: v.number(), ok: v.boolean(), why: v.string() }),
+    ),
+  })
+    .index("by_repo_number", ["repo", "number"])
+    .index("by_repo_sha", ["repo", "headSha"])
+    .index("by_repo", ["repo"]),
+
   // The repo layer, published the way the model-of-tom files are published.
   //
   // WHY A TABLE AND NOT A PATH: the assembler pre-expands the repo rules for
