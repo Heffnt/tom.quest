@@ -403,9 +403,22 @@ export function nextForTom(
 export type EventRow = Doc<"dtsEvents">;
 
 /**
+ * An event kind as a lane name in Tom's words (vqc/pages.md, principle 6), or
+ * null for a kind whose name cannot be said on a page. Kinds are code: "tests-
+ * run" names a finished check and reads as "tests"; a kind about agent runs'
+ * environment ("runs-environment-defaulted") has no page wording, so it is
+ * counted with every other kind rather than renamed into something it is not.
+ */
+function laneName(kind: string): string | null {
+  const words = sourceWords(kind);
+  if (/\benvironment\b/i.test(words) || /^runs?\b/i.test(words)) return null;
+  return words.replace(/ run$/, "");
+}
+
+/**
  * Events per time bin per kind, for a time figure: the `laneCount` kinds with
- * the most events in the window, each its own lane, and every other kind
- * together in one more. The window is `binCount` bins of `binMs` ending at
+ * the most events in the window, each its own lane, and every other kind —
+ * with any kind laneName cannot name — together in one more. The window is `binCount` bins of `binMs` ending at
  * `now`; an event outside it is not counted. Labels are each bin's start as a
  * local hour.
  */
@@ -421,6 +434,7 @@ export function eventLanes(
   const perKind = new Map<string, number>();
   for (const e of inWindow) perKind.set(e.kind, (perKind.get(e.kind) ?? 0) + 1);
   const top = [...perKind.entries()]
+    .filter(([kind]) => laneName(kind) !== null)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, laneCount)
     .map(([kind]) => kind);
@@ -428,7 +442,7 @@ export function eventLanes(
     const i = top.indexOf(kind);
     return i === -1 ? top.length : i;
   };
-  const lanes = top.map((kind) => ({ name: sourceWords(kind), bins: new Array<number>(binCount).fill(0) }));
+  const lanes = top.map((kind) => ({ name: laneName(kind) ?? kind, bins: new Array<number>(binCount).fill(0) }));
   if (perKind.size > top.length) {
     lanes.push({ name: "every other kind", bins: new Array<number>(binCount).fill(0) });
   }

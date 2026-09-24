@@ -170,7 +170,8 @@ export default function ToolboxClient() {
                   members={selected.todos.map((t) => ({
                     id: t._id,
                     primary: t.statement,
-                    secondary: t.dueAt === undefined ? undefined : `due ${fmtDate(t.dueAt)}`,
+                    secondary:
+                      t.dueAt === undefined ? `added ${fmtDate(t._creationTime)}` : `due ${fmtDate(t.dueAt)}`,
                   }))}
                   onPick={setPickedId}
                   caption="tts.listTodos → the todos of one waiting reason and source"

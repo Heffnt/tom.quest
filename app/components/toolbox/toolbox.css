@@ -12,6 +12,8 @@
   font-size: var(--tb-text-2);
   line-height: 1.5;
   color: var(--color-text);
+  /* A path or a link in a statement breaks rather than widening the page. */
+  overflow-wrap: anywhere;
 }
 .tb-root h1,
 .tb-root h2,
@@ -31,6 +33,7 @@
 .tb-root .is-num {
   font-family: var(--font-ibm-plex-mono), "IBM Plex Mono", monospace;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: normal;
 }
 
 /* ── frame ───────────────────────────────────────────────────────────────── */
@@ -313,7 +316,7 @@
   border-radius: var(--tb-radius);
 }
 .tb-item-statement {
-  font-size: var(--tb-text-4);
+  font-size: var(--tb-text-3);
   line-height: 1.3;
 }
 .tb-item-provenance {
@@ -415,12 +418,19 @@
 .tb-table {
   width: 100%;
   border-collapse: collapse;
+  overflow-wrap: normal;
 }
 .tb-table th,
 .tb-table td {
   padding: var(--tb-space-2);
   text-align: left;
   border-bottom: 1px solid var(--color-border);
+}
+@media (max-width: 639px) {
+  .tb-table th,
+  .tb-table td {
+    padding: var(--tb-space-2) var(--tb-space-1);
+  }
 }
 .tb-table th {
   font-size: var(--tb-text-1);
@@ -429,6 +439,9 @@
 }
 .tb-table .is-num {
   text-align: right;
+}
+.tb-table td.is-num {
+  white-space: nowrap;
 }
 .tb-table tfoot td {
   font-weight: 600;

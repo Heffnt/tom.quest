@@ -388,6 +388,20 @@ describe("eventLanes", () => {
       { name: "every other kind", bins: [0, 1, 0, 1] },
     ]);
   });
+
+  it("names a lane in Tom's words and folds a kind it cannot name", () => {
+    const events = [
+      ev("runs-environment-defaulted", NOW - 1),
+      ev("runs-environment-defaulted", NOW - 1),
+      ev("runs-environment-defaulted", NOW - 1),
+      ev("tests-run", NOW - 1),
+    ];
+    const { lanes } = eventLanes(events, NOW, 1, HOUR, 4);
+    expect(lanes).toEqual([
+      { name: "tests", bins: [1] },
+      { name: "every other kind", bins: [3] },
+    ]);
+  });
 });
 
 describe("agentFigures", () => {
