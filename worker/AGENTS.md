@@ -22,6 +22,7 @@
 - A Codex session spawns a child with `spawn_agent`: type `explorer` reads and searches, type `worker` changes and runs. Four children run at once per session.
 - The tom.quest transcript shows that a child was spawned and what it returned, not its inner steps; the child's full record is a file under `/root/.codex/sessions/`.
 - Children draw on the parent's ChatGPT usage windows; the saving is per-token price, not a separate allowance.
+- A model spelled `openrouter/<vendor>/<model>` runs Codex on OpenRouter instead of the ChatGPT login: `scripts/codex-run.mjs` selects the `openrouter` model provider, which `worker/setup.sh` writes into `/root/.codex/config.toml` while `OPENROUTER_API_KEY` is set in `/etc/tts/worker.env`, and hands that key to the Codex process alone. `tts-run` takes it with `--cli codex`. The key's own limit on openrouter.ai caps the spend; the run record holds the tokens and the model, and no cost.
 
 ## Remote Control (not built)
 

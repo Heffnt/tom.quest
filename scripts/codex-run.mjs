@@ -24,6 +24,7 @@
 //   --cwd DIR          repo Codex works in            (default: current dir)
 //   --sandbox MODE     read-only | workspace-write    (default: workspace-write)
 //   --model NAME       Codex model                    (default: gpt-5.6-sol)
+//                      or openrouter/<vendor>/<model>, served by OpenRouter
 //   --effort LEVEL     minimal|low|medium|high|xhigh  (default: xhigh)
 //   --timeout MS       hard kill after this long      (default: none; 0 = none)
 //   --schema FILE      JSON Schema the answer must match
@@ -107,9 +108,41 @@ const workerEnvUrl = [
   new URL("../worker/jobs/worker-env.mjs", import.meta.url),
   new URL("./worker-env.mjs", import.meta.url),
 ].find((candidate) => existsSync(fileURLToPath(candidate)));
-const readGraphVersion = workerEnvUrl
-  ? (await import(workerEnvUrl.href)).graphVersion
-  : () => null;
+const workerEnv = workerEnvUrl ? await import(workerEnvUrl.href) : null;
+const readGraphVersion = workerEnv ? workerEnv.graphVersion : () => null;
+
+// AN OPENROUTER MODEL IS SPELLED openrouter/<vendor>/<model>, for example
+// openrouter/deepseek/deepseek-v4-flash: OpenRouter's own model id behind one
+// prefix that says which provider serves it. The run is still Codex; only the
+// model provider changes, to the [model_providers.openrouter] entry that
+// worker/setup.sh writes into ~/.codex/config.toml. The whole spelling is what
+// the registration records as the model requested, and the rollout records
+// the id Codex sent, <vendor>/<model>.
+const OPENROUTER_PREFIX = "openrouter/";
+const OPENROUTER_KEY = "OPENROUTER_API_KEY";
+
+// OpenRouter's model id, or null for a model the default provider serves.
+function openrouterModelOf(model) {
+  if (!model.startsWith(OPENROUTER_PREFIX)) return null;
+  const id = model.slice(OPENROUTER_PREFIX.length);
+  if (!/^[^/\s]+\/\S+$/.test(id)) fail(`${model}: an OpenRouter model is spelled openrouter/<vendor>/<model>`);
+  return id;
+}
+
+// THE KEY IS READ HERE, NOT INHERITED. Every model-reachable spawn on the box
+// drops it (worker/session-host/env-scrub.mjs), so a session's shell never
+// holds it; this launcher reads it from the one env file only for a run that
+// names an OpenRouter model, and hands it to that Codex process alone. A
+// caller whose own environment already carries it (a laptop) is used as is.
+// RUN_ENV_FILE is worker/runs/config.mjs's override of the file's path.
+function openrouterKey() {
+  if (process.env[OPENROUTER_KEY]) return process.env[OPENROUTER_KEY];
+  const file = process.env.RUN_ENV_FILE || workerEnv?.ENV_PATH;
+  let value = null;
+  try { value = file && workerEnv ? workerEnv.loadEnv({ path: file })[OPENROUTER_KEY] : null; } catch {}
+  if (!value) fail(`an openrouter/ model needs ${OPENROUTER_KEY}, which is in neither this environment nor ${file ?? "the worker env file"}`);
+  return value;
+}
 
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
@@ -323,6 +356,9 @@ await normalizeSkillDecisions(opts);
 await validateSkillDecisions(opts);
 const prompt = readStdin();
 if (!prompt.trim()) fail("no prompt on stdin");
+// Settled before the registration is spooled, so a refused run leaves none.
+const openrouterModel = openrouterModelOf(opts.model);
+const openrouterApiKey = openrouterModel === null ? null : openrouterKey();
 
 const operate = opts.operate ? operateInstructions() : null;
 
@@ -483,6 +519,9 @@ const childEnv = {
   TTS_RUN_REG_TOKEN: spooled.token,
   TTS_RUN_REG_SPOOL: process.env.TTS_RUN_REG_SPOOL || join(stateDir, "registration"),
 };
+// Only an OpenRouter run's Codex holds the key; any other run's never does.
+delete childEnv[OPENROUTER_KEY];
+if (openrouterApiKey !== null) childEnv[OPENROUTER_KEY] = openrouterApiKey;
 
 const bin = resolveBinary();
 const workDir = mkdtempSync(join(tmpdir(), "codex-run-"));
@@ -542,7 +581,17 @@ args.push("-c", `developer_instructions=${JSON.stringify(developerInstructions)}
 if (opts.sandbox === "workspace-write") {
   args.push("-c", "sandbox_workspace_write.network_access=true");
 }
-if (opts.model) args.push("-m", opts.model);
+if (openrouterModel !== null) {
+  // The provider entry is config.toml's; this selects it for this run only.
+  // Codex reads the key from its own environment through the entry's env_key,
+  // and passes its environment on to every command the model runs unless told
+  // otherwise (shell_environment_policy.ignore_default_excludes defaults to
+  // true, which keeps *KEY* names), so the exclude keeps the key out of the
+  // model's shell.
+  args.push("-c", 'model_provider="openrouter"');
+  args.push("-c", `shell_environment_policy.exclude=${JSON.stringify([OPENROUTER_KEY])}`);
+  args.push("-m", openrouterModel);
+} else if (opts.model) args.push("-m", opts.model);
 if (opts.schema) args.push("--output-schema", opts.schema);
 args.push("-"); // prompt arrives on stdin, so no command-line length limit
 

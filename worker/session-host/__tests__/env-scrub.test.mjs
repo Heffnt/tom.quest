@@ -30,6 +30,7 @@ const SECRETS = [
   "TURING_RUNNER_KEY",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
 ];
 
 describe("scrubbedEnv", () => {
