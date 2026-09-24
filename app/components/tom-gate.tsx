@@ -1,7 +1,7 @@
 "use client";
 
 // Auth gate shared by every Tom-only surface (Forge, Focus, Inventory,
-// Jarvis, Runs): the house loading state while auth resolves, the
+// Runs): the house loading state while auth resolves, the
 // restricted card for anyone else, children for Tom. Purely presentational —
 // callers still use useAuth() themselves for the query "skip" idiom; this
 // only owns the two gate states' JSX so it cannot drift between surfaces.
@@ -9,7 +9,7 @@
 // `label` is load-bearing, not decoration: it is the surface name, and it
 // decides whether the read-only `agent` role gets in. Only the labels listed
 // in convex/agentSurfaces.ts ("TTS", "Turing") admit it — "Runs",
-// "Forge", "Jarvis" and "TTS mockup" stay Tom-only, as does every write
+// "Forge" and "TTS mockup" stay Tom-only, as does every write
 // behind this gate, which Convex refuses independently.
 
 import { useAuth } from "@/app/lib/auth";
