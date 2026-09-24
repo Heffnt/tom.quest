@@ -102,6 +102,21 @@ describe("what a denied session is told", () => {
     expect(text).not.toContain("the tests are green");
   });
 
+  // Tom, 2026-09-24: the evals are reported but not required, for now. The
+  // gate then leaves them out of `missing`, and a failed evals check is not
+  // work the denied session has to finish.
+  it("names only the checks the gate reports missing, not a failed check it does not require", () => {
+    const text = mergeDenial({
+      ...gate,
+      missing: ["audit"],
+    });
+    expect(text).toContain("missing audit.");
+    expect(text).toContain("no audit verdict is recorded");
+    expect(text).toContain("VERDICT: APPROVED");
+    expect(text).not.toContain("no evals run scored");
+    expect(text).not.toContain("evals run at this commit");
+  });
+
   it("says the same three words the prompt and the morning line use", () => {
     for (const word of ["tests", "audit", "evals"]) {
       expect(mergeDenial({ missing: [word], checks: [] })).toContain(word);

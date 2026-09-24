@@ -39,10 +39,24 @@ import { redactSecrets } from "../worker/session-host/redact.mjs";
 //                     context change shipped an item, so this file never
 //                     reimplements gate().
 //
+// FOR NOW THE GATE OPENS ON TWO OF THE THREE (Tom, 2026-09-24). The evals row
+// is still read and still reported in `checks`, with its `passed` and its
+// `why`, so the digest, the pages and the #tts-decisions merge line show it;
+// it is not counted in `allowed` or in `missing` while EVALS_REQUIRED_FOR_MERGE
+// below is false.
+//
 // FAIL-CLOSED, and deliberately unlike the Bash classifier, which fails open:
 // a missing row is a check that did not pass. Guessing wrong here costs a
 // merge nobody looked at; guessing wrong the other way costs a branch that
 // waits, and a branch that waits is visible.
+
+/** Whether the evals row must pass for the gate to open. Tom, 2026-09-24:
+ *  "evals seem to be broken rn so lets remove that requirement for merging for
+ *  now until I have the time to personally look into it." The evals arm had
+ *  failed closed for every pull request because the box's Claude account was
+ *  out of Fable usage and the Fable judge could not answer. Restoring the
+ *  requirement is setting this to true; nothing else changes. */
+export const EVALS_REQUIRED_FOR_MERGE = false;
 
 export const TESTS_RUN = "tests-run";
 export const AUDIT_VERDICT = "audit-verdict";
@@ -287,8 +301,10 @@ export type MergeGateResult = {
   /** The head's recorded test result, or null when the fail-closed row is absent. */
   testsRun: TestsRunRecord | null;
   allowed: boolean;
+  /** Every check, required or not, in gate order. */
   checks: MergeCheck[];
-  /** The names of the checks that did not pass, in gate order. */
+  /** The names of the REQUIRED checks that did not pass, in gate order. The
+   *  evals check is not among them while EVALS_REQUIRED_FOR_MERGE is false. */
   missing: string[];
 };
 
@@ -481,13 +497,15 @@ export async function mergeGateFor(
               };
 
   const checks = [testsCheck, auditCheck, evalsCheck];
+  // Every check is reported; only the required ones open or shut the gate.
+  const required = EVALS_REQUIRED_FOR_MERGE ? checks : [testsCheck, auditCheck];
   return {
     repo,
     sha,
     testsRun,
-    allowed: checks.every((check) => check.passed),
+    allowed: required.every((check) => check.passed),
     checks,
-    missing: checks.filter((check) => !check.passed).map((check) => check.name),
+    missing: required.filter((check) => !check.passed).map((check) => check.name),
   };
 }
 
@@ -759,8 +777,9 @@ export async function mergedOnMain(
 }
 
 /**
- * POST /tts/merge writes exactly this event, and ONLY after the three checks
- * above pass. A merge is reported for objection, never placed on the narrow
+ * POST /tts/merge writes exactly this event, and ONLY after the gate above
+ * allows it (the tests and the audit, and the evals when
+ * EVALS_REQUIRED_FOR_MERGE is true). A merge is reported for objection, never placed on the narrow
  * list: the delegate did not make this decision.
  *
  * The gate runs HERE as well as at the box, on purpose. The box's check is

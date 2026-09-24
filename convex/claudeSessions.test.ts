@@ -3415,11 +3415,12 @@ describe("autonomous session scheduler", () => {
     });
     expect(inbound[0].text).toContain(WORKER_CONTRACT);
     // The repo variant names the checkout, its branch, the delegate, and the
-    // three checks that make a merge mechanical and reportable.
+    // checks that make a merge mechanical and reportable.
     expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
     expect(inbound[0].text).toContain(`session/${sessions[0]._id}`);
     expect(inbound[0].text).toContain("tts-ask --session");
-    expect(inbound[0].text).toContain("the tests are green, an audit approved it");
+    expect(inbound[0].text).toContain("the tests are green");
+    expect(inbound[0].text).toContain("an audit approved it");
     expect(inbound[0].text).toContain("/tts/merge");
     expect(inbound[0].text).not.toContain("EMPTY scratch directory");
   });
@@ -3626,7 +3627,8 @@ describe("the code lane", () => {
     expect(text).toContain(WORKER_CONTRACT);
     expect(text).not.toContain("define every term on first use");
     expect(text).toContain("/tts/session-outcome");
-    expect(text).toContain("the tests are green, an audit approved it");
+    expect(text).toContain("the tests are green");
+    expect(text).toContain("an audit approved it");
     expect(text).toContain("/tts/merge");
     expect(text).toContain(DAEMON_SENTENCE);
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
@@ -5391,7 +5393,8 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("fresh checkout of tom.quest");
     expect(text).toContain(`session/${sessions[0]._id}`);
-    expect(text).toContain("the tests are green, an audit approved it");
+    expect(text).toContain("the tests are green");
+    expect(text).toContain("an audit approved it");
     expect(text).toContain("/tts/merge");
   });
 

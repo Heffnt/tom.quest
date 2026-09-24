@@ -1,7 +1,10 @@
 # vqc/verifiers.md — the three verifiers
 
 There are three verifiers in this repository. They are the merge gate's three
-head rows, and nothing else is one.
+head rows, and nothing else is one. For now the gate opens on the first two
+alone: the evals row is still read and reported, but by Tom's ruling of
+2026-09-24 it is not required for merging (`EVALS_REQUIRED_FOR_MERGE` in
+`convex/ttsMerge.ts`).
 
 **checks** are every deterministic check: a program answering by string, count,
 schema or regex. Cheap, exact, narrow.
