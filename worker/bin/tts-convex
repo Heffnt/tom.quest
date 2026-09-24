@@ -49,6 +49,7 @@ import { fileURLToPath } from "node:url";
 
 const KEY = "CONVEX_DEPLOY_KEY";
 const CHECKOUT = process.env.TOM_QUEST_DIR || "/root/tom.quest";
+// Kept for its test, which runs this command as a process: an environment variable is the one way to keep that test's record out of the box's log.
 const LOG = process.env.TTS_CONVEX_LOG || "/var/log/tts/convex.log";
 
 // The one reader of the env file, from the repo when run from a checkout and
