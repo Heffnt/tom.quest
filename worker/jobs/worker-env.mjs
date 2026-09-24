@@ -1,5 +1,6 @@
-// worker-env.mjs — the ONE reader of /etc/tts/worker.env, shared by the cron
-// jobs (worker/jobs/) and the session-host daemon (worker/session-host/).
+// worker-env.mjs — the ONE reader of /etc/tts/worker.env, and its one writer
+// (setEnvLine, for values from tom.quest/secrets), shared by the cron jobs
+// (worker/jobs/) and the session-host daemon (worker/session-host/).
 // Plain Node ESM, zero npm dependencies, node:fs only — same rule as the rest
 // of the Jarvis Box's code.
 //
@@ -61,6 +62,126 @@ export function loadEnv({ path = ENV_PATH, require: required = [] } = {}) {
     }
   }
   return env;
+}
+
+// ---------------------------------------------------------------------------
+// The one writer: a value delivered from tom.quest/secrets
+// ---------------------------------------------------------------------------
+//
+// The session-host daemon takes each value Tom pastes on tom.quest/secrets
+// (the secretMailbox table in convex/secrets.ts) and writes it here, beside
+// the reader, so the file's format has one home.
+//
+// WHERE A LINE GOES. A name the file already holds keeps its place and its
+// policy: its line is replaced, and whatever passed or scrubbed it before
+// still does. A name the file does not hold goes into the mailbox block,
+// between MAILBOX_BEGIN and MAILBOX_END, and every name in that block is kept
+// out of the daemon's own environment (worker/session-host/secret-mailbox.mjs),
+// so no agent it starts inherits one. The process that needs such a variable
+// reads it from this file by name, through loadEnv. The block has an end line
+// so that a line appended to the file by hand (`>> worker.env`) lands after
+// it and keeps the ordinary treatment.
+//
+// ATOMIC. The new file is written beside the old one under a temporary name,
+// mode 0600, flushed, then renamed over it, so a reader (a cron job starting,
+// systemd starting the daemon) sees the old file or the new one, never half.
+export const MAILBOX_BEGIN = "# tom.quest/secrets: the names from here to the end line are kept out of every agent's environment";
+export const MAILBOX_END = "# end of tom.quest/secrets";
+
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+
+function lineKey(rawLine) {
+  const line = rawLine.trim();
+  if (line === "" || line.startsWith("#")) return null;
+  const eq = line.indexOf("=");
+  if (eq === -1) return null;
+  let key = line.slice(0, eq).trim();
+  if (key.startsWith("export ")) key = key.slice("export ".length).trim();
+  return key;
+}
+
+/** The names in the env file's mailbox block; empty when there is no file or no block. */
+export function mailboxNames({ path = ENV_PATH } = {}) {
+  let text;
+  try {
+    text = fs.readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const lines = text.split("\n");
+  const begin = lines.indexOf(MAILBOX_BEGIN);
+  if (begin === -1) return [];
+  // A block whose end line is gone (only a hand edit removes it) runs to the
+  // end of the file. That is the reading that fails closed: stopping at the
+  // begin line would hand those names back to every agent the daemon starts,
+  // and throwing would stop the daemon at start.
+  const end = lines.indexOf(MAILBOX_END, begin + 1);
+  return lines
+    .slice(begin + 1, end === -1 ? lines.length : end)
+    .map(lineKey)
+    .filter((key) => key !== null);
+}
+
+/**
+ * Write NAME=value into the env file, replacing the name's line if it has one
+ * (and dropping any later duplicate, since the last line wins on read) or
+ * adding it to the mailbox block. Throws on a malformed name or a value
+ * with a line break; a thrown message names the variable, never the value.
+ */
+export function setEnvLine({ path = ENV_PATH, name, value }) {
+  if (!ENV_NAME.test(name)) throw new Error(`setEnvLine: ${JSON.stringify(name)} is not a variable name`);
+  if (typeof value !== "string" || value === "") throw new Error(`setEnvLine: ${name} is empty`);
+  if (/[\r\n\0]/.test(value)) throw new Error(`setEnvLine: ${name} contains a line break`);
+  let text = "";
+  try {
+    text = fs.readFileSync(path, "utf8");
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+  const line = `${name}=${value}`;
+  const lines = text === "" ? [] : text.replace(/\n$/, "").split("\n");
+  let placed = false;
+  const out = [];
+  for (const existing of lines) {
+    if (lineKey(existing) !== name) out.push(existing);
+    else if (!placed) {
+      out.push(line);
+      placed = true;
+    }
+  }
+  if (!placed) {
+    // Make sure the block exists and is closed, then add the line just above
+    // its end line. A begin line with no end line is closed at the end of the
+    // file, which is where mailboxNames already takes such a block to end, so
+    // the writer never moves a line into or out of the block as read.
+    let begin = out.indexOf(MAILBOX_BEGIN);
+    if (begin === -1) {
+      if (out.length > 0 && out[out.length - 1].trim() !== "") out.push("");
+      out.push(MAILBOX_BEGIN);
+      begin = out.length - 1;
+    }
+    if (out.indexOf(MAILBOX_END, begin + 1) === -1) out.push(MAILBOX_END);
+    out.splice(out.indexOf(MAILBOX_END, begin + 1), 0, line);
+  }
+  const tmp = `${path}.tmp-${process.pid}`;
+  fs.rmSync(tmp, { force: true });
+  // flag "wx": the mode applies only to a file this call creates, and the rm
+  // above guarantees it creates one (credential-file.mjs says why this matters).
+  const fd = fs.openSync(tmp, "wx", 0o600);
+  try {
+    fs.fchmodSync(fd, 0o600); // the umask cannot widen it, but say it outright
+    fs.writeSync(fd, `${out.join("\n")}\n`);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, path);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  return { placed: placed ? "replaced" : "added" };
 }
 
 // ---------------------------------------------------------------------------

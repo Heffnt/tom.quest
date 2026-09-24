@@ -13,7 +13,15 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { spawnSync } from "node:child_process";
 
-import { graphVersion, loadEnv, openrouterKeyProblem } from "./worker-env.mjs";
+import {
+  MAILBOX_BEGIN,
+  MAILBOX_END,
+  graphVersion,
+  loadEnv,
+  mailboxNames,
+  openrouterKeyProblem,
+  setEnvLine,
+} from "./worker-env.mjs";
 
 const original = process.env.WIKITOM_DIR;
 const made = [];
@@ -101,6 +109,118 @@ describe("the published graph version", () => {
     // Then back again, which a cached null could never do.
     fs.writeFileSync(path.join(dir, "tts", "graph.json"), JSON.stringify({ version: "third" }));
     expect(graphVersion()).toBe("third");
+  });
+});
+
+// ── The one writer: setEnvLine, for tom.quest/secrets ───────────────────────
+// The session-host daemon writes each value Tom pastes on the /secrets page
+// through this. What must hold: the file is replaced whole (a reader never
+// sees half of it), it stays owner-only, a name has exactly one line, a name
+// already in the file keeps its place, and a new name lands in the block
+// that keeps it out of every agent's environment.
+describe("setEnvLine", () => {
+  const posix = process.platform !== "win32";
+
+  function envFile(body, mode = 0o600) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-env-write-"));
+    made.push(dir);
+    const file = path.join(dir, "worker.env");
+    if (body !== null) fs.writeFileSync(file, body, { mode });
+    if (body !== null && posix) fs.chmodSync(file, mode);
+    return file;
+  }
+
+  afterEach(() => {
+    while (made.length) fs.rmSync(made.pop(), { recursive: true, force: true });
+  });
+
+  it("adds a new name to the mailbox block, and reads back through loadEnv", () => {
+    const file = envFile("CONVEX_SITE_URL=https://x.convex.site\nTTS_WORKER_KEY=k\n");
+    expect(setEnvLine({ path: file, name: "HF_TOKEN", value: "hf_abc" })).toEqual({ placed: "added" });
+    expect(fs.readFileSync(file, "utf8")).toBe(
+      `CONVEX_SITE_URL=https://x.convex.site\nTTS_WORKER_KEY=k\n\n${MAILBOX_BEGIN}\nHF_TOKEN=hf_abc\n${MAILBOX_END}\n`,
+    );
+    expect(loadEnv({ path: file }).HF_TOKEN).toBe("hf_abc");
+    expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN"]);
+  });
+
+  it("replaces a name's line instead of adding a second one", () => {
+    const file = envFile("A=1\n");
+    setEnvLine({ path: file, name: "HF_TOKEN", value: "old" });
+    setEnvLine({ path: file, name: "HF_TOKEN", value: "new" });
+    const text = fs.readFileSync(file, "utf8");
+    expect(text.match(/^HF_TOKEN=/gm)).toHaveLength(1);
+    expect(text.split(MAILBOX_BEGIN)).toHaveLength(2); // one block
+    expect(loadEnv({ path: file }).HF_TOKEN).toBe("new");
+  });
+
+  it("replaces a name already outside the block in place, so its policy stays", () => {
+    const file = envFile("# comment\nexport GH_TOKEN=old\nOTHER=1\nGH_TOKEN=dup\n");
+    expect(setEnvLine({ path: file, name: "GH_TOKEN", value: "new" })).toEqual({ placed: "replaced" });
+    expect(fs.readFileSync(file, "utf8")).toBe("# comment\nGH_TOKEN=new\nOTHER=1\n");
+    expect(mailboxNames({ path: file })).toEqual([]);
+  });
+
+  it.skipIf(!posix)("leaves the file mode 0600, even over a file that was wider", () => {
+    const file = envFile("A=1\n", 0o644);
+    setEnvLine({ path: file, name: "HF_TOKEN", value: "v" });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(!posix)("writes a new file and renames it over the old, leaving no temporary behind", () => {
+    const file = envFile("A=1\n");
+    const before = fs.statSync(file).ino;
+    setEnvLine({ path: file, name: "HF_TOKEN", value: "v" });
+    expect(fs.statSync(file).ino).not.toBe(before); // a rename, not an in-place write
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["worker.env"]);
+  });
+
+  it("leaves the old file whole when the new one cannot be written", () => {
+    const file = envFile("A=1\n");
+    // Something the temporary's path cannot be removed from or created over.
+    fs.mkdirSync(`${file}.tmp-${process.pid}`);
+    fs.writeFileSync(path.join(`${file}.tmp-${process.pid}`, "x"), "");
+    expect(() => setEnvLine({ path: file, name: "HF_TOKEN", value: "v" })).toThrow();
+    expect(fs.readFileSync(file, "utf8")).toBe("A=1\n");
+  });
+
+  it("refuses a value with a line break, naming the variable and not the value", () => {
+    const file = envFile("A=1\n");
+    let message = "";
+    try {
+      setEnvLine({ path: file, name: "HF_TOKEN", value: "secret-part\nEVIL=1" });
+    } catch (err) {
+      message = String(err.message);
+    }
+    expect(message).toMatch(/HF_TOKEN contains a line break/);
+    expect(message).not.toContain("secret-part");
+    expect(fs.readFileSync(file, "utf8")).toBe("A=1\n");
+  });
+
+  it("puts a second name inside the block, and a line appended by hand after it stays outside", () => {
+    const file = envFile("A=1\n");
+    setEnvLine({ path: file, name: "HF_TOKEN", value: "v1" });
+    fs.appendFileSync(file, "OPENROUTER_API_KEY=by-hand\n");
+    setEnvLine({ path: file, name: "WANDB_API_KEY", value: "v2" });
+    expect(fs.readFileSync(file, "utf8")).toBe(
+      `A=1\n\n${MAILBOX_BEGIN}\nHF_TOKEN=v1\nWANDB_API_KEY=v2\n${MAILBOX_END}\nOPENROUTER_API_KEY=by-hand\n`,
+    );
+    expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN", "WANDB_API_KEY"]);
+  });
+
+  it("reads a block whose end line was removed by hand to the end of the file, and closes it on the next write", () => {
+    const file = envFile(`A=1\n${MAILBOX_BEGIN}\nHF_TOKEN=v1\nLATER=by-hand\n`);
+    expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN", "LATER"]);
+    setEnvLine({ path: file, name: "WANDB_API_KEY", value: "v2" });
+    expect(fs.readFileSync(file, "utf8")).toBe(
+      `A=1\n${MAILBOX_BEGIN}\nHF_TOKEN=v1\nLATER=by-hand\nWANDB_API_KEY=v2\n${MAILBOX_END}\n`,
+    );
+    expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN", "LATER", "WANDB_API_KEY"]);
+  });
+
+  it("finds no mailbox names in a file without the block or with no file at all", () => {
+    expect(mailboxNames({ path: envFile("A=1\n") })).toEqual([]);
+    expect(mailboxNames({ path: envFile(null) })).toEqual([]);
   });
 });
 

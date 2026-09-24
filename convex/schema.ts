@@ -2029,4 +2029,17 @@ export default defineSchema({
     defaultModel: v.optional(SESSION_MODEL),
     updatedAt: v.number(),
   }),
+
+  // The /secrets mailbox (convex/secrets.ts). One row per variable name. Tom
+  // sets `value` on the page; the session-host daemon takes it through
+  // GET /sessions/secrets, writes NAME=value into the box's env file and
+  // answers POST /sessions/secrets/taken, which deletes `value` and stamps
+  // `takenAt`. So `value` is present only while a delivery is waiting, and
+  // the row that stays behind holds the name and the two dates, nothing else.
+  secretMailbox: defineTable({
+    name: v.string(),
+    value: v.optional(v.string()),
+    setAt: v.number(),
+    takenAt: v.optional(v.number()),
+  }).index("by_name", ["name"]),
 });

@@ -4353,4 +4353,51 @@ http.route({
   handler: sessionsTranscript,
 });
 
+// GET /sessions/secrets — every value waiting in the /secrets mailbox
+// (convex/secrets.ts), as { secrets: [{ name, value, setAt }] }. The daemon
+// writes each into its env file and answers POST /sessions/secrets/taken
+// { name, setAt }, which deletes the value and keeps the name and dates.
+//
+// THE DAEMON'S DOOR, NOT THE TTS ONE. SESSIONS_WORKER_KEY never enters an
+// agent's shell (worker/session-host/env-scrub.mjs); TTS_WORKER_KEY is in
+// every session's shell and every cron job's agentic run. A pending value
+// behind X-TTS-Key would be readable by any agent with one curl, which is the
+// one thing this mailbox exists to prevent.
+//
+// Errors are fixed strings: the taken body names a variable, and nothing
+// here may echo a value into a response the daemon would log.
+const sessionsSecrets = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const secrets = await ctx.runQuery(internal.secrets.internalPending, {});
+  return jsonResponse(200, { secrets });
+});
+
+http.route({ path: "/sessions/secrets", method: "GET", handler: sessionsSecrets });
+
+const sessionsSecretsTaken = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.name !== "string" || b.name === "") {
+    return jsonResponse(400, { error: "name required" });
+  }
+  if (typeof b.setAt !== "number") {
+    return jsonResponse(400, { error: "setAt (number) required" });
+  }
+  const result = await ctx.runMutation(internal.secrets.internalTaken, {
+    name: b.name,
+    setAt: b.setAt,
+  });
+  return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
+});
+
+http.route({ path: "/sessions/secrets/taken", method: "POST", handler: sessionsSecretsTaken });
+
 export default http;
