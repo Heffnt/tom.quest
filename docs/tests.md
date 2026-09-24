@@ -165,14 +165,23 @@ closed in one place.
 
 **The environment.** A test process starts from the shell's environment, and
 the box's `.bashrc` exports `RUN_HOST=box`. `vitest.config.mts` sets, for every
-test, the variables that name the machine or one of its files: `RUN_HOST` and
-`TTS_RUN_SLOT_HELD` are empty, and `RUN_ENV_FILE` (the launcher's env file,
-`/etc/tts/worker.env` on the box), `WIKITOM_DIR` (the WikiTom checkout) and
-git's configuration (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM`,
-`XDG_CONFIG_HOME`) point into `test/fixtures/no-machine`, a directory that does
-not exist. So the code under test finds no env file, no WikiTom checkout and no
-`~/.gitconfig` of this machine's, and a test that commits names its own author.
-A test that wants one of these sets its own.
+test, the variables that name the machine or one of its files. `RUN_HOST` and
+`TTS_RUN_SLOT_HELD` are empty. These point into `test/fixtures/no-machine`, a
+directory that does not exist:
+
+| Variable | What it names when unset |
+|---|---|
+| `RUN_ENV_FILE` | the launcher's env file, `/etc/tts/worker.env` on the box |
+| `WIKITOM_DIR` | the WikiTom checkout, whose `tts/graph.json` version the launcher stamps on every run |
+| `CLAUDE_BIN`, `CODEX_BIN`, `TTS_CODEX_BIN` | the real CLIs: `claude` and `codex` on `PATH`, `/usr/local/bin/tts-codex` |
+| `RUN_SWEEP_CLAUDE_ROOTS`, `RUN_SWEEP_CODEX_ROOTS` | the transcripts the run sweep reads: every account under `/root/.claude-accounts` on the box, `~/.claude` and `~/.codex` elsewhere |
+| `GIT_CONFIG_GLOBAL`, `XDG_CONFIG_HOME`, with `GIT_CONFIG_NOSYSTEM=1` | git's own configuration: `~/.gitconfig`, `~/.config/git/`, `/etc/gitconfig` |
+
+So the code under test finds no env file, no WikiTom checkout, no CLI and no
+git configuration of this machine's. A launcher refuses a named binary that
+does not exist, so a test that forgets its fake fails instead of starting a
+real run, and a test that commits names its own author. A test that wants one
+of these sets its own.
 
 **The run state directory.** The box launcher's config
 (`worker/runs/config.mjs`) names a run state directory, which holds the
@@ -192,12 +201,15 @@ variable names one (`/var/cache/tts/ComplexMultiTrigger`,
 directory that is not a checkout, or an injected reader. An empty variable is
 not a clear, because the code reads `VALUE || <default>`.
 
-The proof is a full run under `strace`, a Linux tool that logs every file a
-process opens, with each test file run on its own so every path is attributed
-to one file. No test opens anything under `/root`, `/var/cache/tts`, `/etc/tts`
-or `/opt/tts` outside the checkout and `TMPDIR`. The only paths left there are
-the parent directories of the checkout and of `TMPDIR`, which node's module
-resolver and git's repository search look at on their way up.
+The proof is a full run under `strace`, a Linux tool that logs every file
+system call a process makes, with each test file run on its own so every path is
+attributed to one file. Outside the checkout and `TMPDIR`, no call under
+`/root`, `/etc/tts` or `/opt/tts` succeeds, and under `/var/cache/tts` the only
+ones that succeed look at the checkout's own parent directories. What is left
+are lookups of paths that do not exist: node's module resolver and git's
+repository search walking up from the checkout, node's `~/.node_modules` and
+`~/.node_libraries` at startup, and the search along the shell's `PATH` for a
+program a test runs by name.
 
 Two kinds of test read a real machine on purpose, and each runs only when a
 variable names what it reads, so on every other run they are skipped:

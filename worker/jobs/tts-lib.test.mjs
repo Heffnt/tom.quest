@@ -375,12 +375,14 @@ describe("runClaude allowedTools", () => {
 // what a door stamps on the row it stores as producedByRunToken, and it is the
 // one edge convex/runLabels.ts turns into a label's runId. The job's own
 // process.env.TTS_RUN_REG_TOKEN is a DIFFERENT run and would be the wrong edge.
-// BOTH OF THESE SPAWN, and both expect the spawn to fail — that IS the case
-// being made: the receipt is filled before the child is reached. Neither
-// assertion waits on the child, but execFileSync does, and the spawn's own cost
-// is unbounded under a full-suite run; the five-second default made the first
-// of them flaky. The one-millisecond child budget kills it as soon as it
-// exists, and the generous test timeout covers the spawn itself.
+// BOTH OF THESE EXPECT THE CALL TO FAIL — that IS the case being made: the
+// receipt is filled before the child is reached. The suite's CLAUDE_BIN names
+// no binary (vitest.config.mts), so the launcher refuses before it spawns.
+// Until 2026-09-24 they started the machine's real `claude` when it had one,
+// and the one-millisecond child budget below is what killed it; it stays so a
+// test run with a real CLAUDE_BIN still cannot make a call. The generous test
+// timeout is for the launcher's own work under a full-suite run, where the
+// five-second default made the first of them flaky.
 const SPAWN_TIMEOUT_MS = 30_000;
 
 describe("runClaude receipt", () => {
@@ -395,7 +397,8 @@ describe("runClaude receipt", () => {
       // did.
       runClaude("p", { model: "sonnet", timeoutMs: 1, registration: { layersKnown: false }, receipt });
     } catch {
-      // Expected: no `claude` on the test machine's PATH, or the 1 ms budget.
+      // Expected: the suite's CLAUDE_BIN names no binary (vitest.config.mts),
+      // so the launcher refuses before any child starts.
     } finally {
       if (previous === undefined) delete process.env.TTS_RUN_REG_SPOOL;
       else process.env.TTS_RUN_REG_SPOOL = previous;

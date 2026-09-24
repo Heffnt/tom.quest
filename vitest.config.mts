@@ -20,6 +20,20 @@ const WITHOUT_THE_MACHINE = {
   // A suite started inside a box run inherits that run's slot on the
   // semaphore, and every semaphore case would pass for the wrong reason.
   TTS_RUN_SLOT_HELD: "",
+  // The CLIs a launcher runs. Unset, they are `claude` and `codex` on PATH
+  // and /usr/local/bin/tts-codex, so a test that reached a launcher without
+  // naming a fake started the machine's real Claude Code (three tts-lib cases
+  // did, killed after a millisecond). Each launcher refuses a named binary
+  // that does not exist rather than falling through to the real one.
+  CLAUDE_BIN: path.join(NO_MACHINE, "claude"),
+  CODEX_BIN: path.join(NO_MACHINE, "codex"),
+  TTS_CODEX_BIN: path.join(NO_MACHINE, "tts-codex"),
+  // Where the run sweep finds transcripts: on the box every account under
+  // /root/.claude-accounts and /root/.codex/sessions, elsewhere ~/.claude and
+  // ~/.codex. runConfig lists the accounts directory whenever the host is the
+  // box, so a test that asks for the box's branch listed the box's accounts.
+  RUN_SWEEP_CLAUDE_ROOTS: path.join(NO_MACHINE, "claude-projects"),
+  RUN_SWEEP_CODEX_ROOTS: path.join(NO_MACHINE, "codex-sessions"),
   // The WikiTom checkout, whose tts/graph.json version the launcher stamps
   // on every run record and whose HEAD scripts/codex-run.mjs reads.
   WIKITOM_DIR: path.join(NO_MACHINE, "WikiTom"),
