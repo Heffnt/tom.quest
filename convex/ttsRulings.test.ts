@@ -92,7 +92,7 @@ const brief = (over: Partial<{
   recommendation: "approve" | "revise" | "session" | "archive";
   execClass: "box" | "needs-turing";
 }> = {}) => ({
-  repo: "ComplexMultiTrigger",
+  repo: "tom.quest",
   externalId: "cmt-001",
   sourceHash: "hash-a",
   brief: "# Ground-up brief\nwhat, why, how",
@@ -163,7 +163,7 @@ describe("TTS unified rulings", () => {
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
         todoId,
-        repo: "ComplexMultiTrigger",
+        repo: "tom.quest",
         externalId: "cmt-001",
         verdict: "approve",
       }),
@@ -171,7 +171,7 @@ describe("TTS unified rulings", () => {
     // Half a code subject.
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
-        repo: "ComplexMultiTrigger",
+        repo: "tom.quest",
         verdict: "approve",
       }),
     ).rejects.toThrow(/both repo and externalId/);
@@ -184,7 +184,7 @@ describe("TTS unified rulings", () => {
     const tom = await withTom(t);
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
-        repo: "ComplexMultiTrigger",
+        repo: "tom.quest",
         externalId: "cmt-001",
         verdict: "revise",
       }),
@@ -192,7 +192,7 @@ describe("TTS unified rulings", () => {
     // A whitespace-only sentence is no sentence.
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
-        repo: "ComplexMultiTrigger",
+        repo: "tom.quest",
         externalId: "cmt-001",
         verdict: "revise",
         sentence: "   ",
@@ -260,7 +260,7 @@ describe("TTS unified rulings", () => {
       verdict: "session",
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "cmt-001",
       verdict: "approve",
     });
@@ -315,7 +315,7 @@ describe("TTS unified rulings", () => {
   it("code: revise waits for the planner's brief pass; session applies when the code block session opens; approve and archive wait for the scheduler", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const code = (externalId: string) => ({ repo: "ComplexMultiTrigger", externalId });
+    const code = (externalId: string) => ({ repo: "tom.quest", externalId });
     await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-revise"), verdict: "revise", sentence: "again" });
     await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-session"), verdict: "session" });
     await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-approve"), verdict: "approve" });
@@ -340,7 +340,7 @@ describe("TTS unified rulings", () => {
       title: "code block",
       kind: "block",
       blockCategory: "code",
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       initialPrompt: "hello",
     });
     const rulings = await tom.query(api.ttsRulings.listRulings, {});
@@ -361,9 +361,9 @@ describe("TTS unified rulings", () => {
   it("the code block session names every code session verdict it consumes, with Tom's sentence, and consumes only those", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const code = (externalId: string) => ({ repo: "ComplexMultiTrigger", externalId });
+    const code = (externalId: string) => ({ repo: "tom.quest", externalId });
     await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       rows: [
         { externalId: "c-one", tier: "R", status: "open", statement: "drop the CLI flag", url: "u" },
       ],
@@ -391,16 +391,16 @@ describe("TTS unified rulings", () => {
       title: "code block",
       kind: "block",
       blockCategory: "code",
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       initialPrompt: "hello",
     });
     const [inbound] = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
     const text = inbound.text ?? "";
     expect(text).toContain('Tom ruled "session" on these code todos (2)');
     expect(text).toContain(
-      '- ComplexMultiTrigger c-one "drop the CLI flag" — he wrote: talk me through the flag',
+      '- tom.quest c-one "drop the CLI flag" — he wrote: talk me through the flag',
     );
-    expect(text).toContain("- ComplexMultiTrigger c-two — no note written");
+    expect(text).toContain("- tom.quest c-two — no note written");
     expect(text).not.toContain("c-old");
     expect(text).not.toContain("c-done");
 
@@ -487,7 +487,7 @@ describe("TTS unified rulings", () => {
       briefs: [brief({ externalId: "cycle" })],
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "cycle",
       verdict: "revise",
       sentence: "narrower scope",
@@ -519,7 +519,7 @@ describe("TTS unified rulings", () => {
       briefs: [brief({ externalId: "tie" })],
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "tie",
       verdict: "revise",
       sentence: "narrower scope",
@@ -587,7 +587,7 @@ describe("TTS unified rulings", () => {
     // Code subject already applied — not pending.
     await insert({
       subjectType: "code",
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "b",
       ruledAt: base,
       appliedAt: base + 1,
@@ -596,20 +596,20 @@ describe("TTS unified rulings", () => {
     // Code subject keyed (repo, externalId): the newer row supersedes...
     await insert({
       subjectType: "code",
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "c",
       ruledAt: base - 1000,
     });
     const liveCode = await insert({
       subjectType: "code",
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "c",
       ruledAt: base,
     });
     // ...but the same externalId in ANOTHER repo is a distinct subject.
     const otherRepo = await insert({
       subjectType: "code",
-      repo: "tom.quest",
+      repo: "ComplexMultiTrigger",
       externalId: "c",
       ruledAt: base - 500,
     });
@@ -667,7 +667,7 @@ describe("TTS unified rulings", () => {
     // machine would count 3 here; setTimes pins them so this asserts the
     // predicate rather than the clock.
     await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "ruled",
       verdict: "session",
     });
@@ -676,12 +676,18 @@ describe("TTS unified rulings", () => {
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(2);
     // A ruling on the same externalId in ANOTHER repo does not count (the
-    // key is the (repo, externalId) pair)...
-    await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: "tom.quest",
-      externalId: "unruled-1",
-      verdict: "approve",
-    });
+    // key is the (repo, externalId) pair). Written straight into the table:
+    // the pens accept only repos on the code-todo list, and tom.quest is the
+    // one left, so the other repo's ruling is one recorded before ruling 70.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsRulings", {
+        subjectType: "code",
+        repo: "ComplexMultiTrigger",
+        externalId: "unruled-1",
+        verdict: "approve",
+        ruledAt: 2000,
+      }),
+    );
     // ...and neither does a life ruling.
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -1033,7 +1039,7 @@ describe("a ruling from Tom's words", () => {
     const t = testDb();
     const { tom, tomRow } = await sessionWithTurns(t, "code-block");
     await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       rows: [
         { externalId: "cmt-001", tier: "R", status: "open", statement: "s1", url: "u" },
         { externalId: "cmt-002", tier: "R", status: "open", statement: "s2", url: "u" },
@@ -1048,15 +1054,15 @@ describe("a ruling from Tom's words", () => {
       subjectType: "code",
       quote: "archive the dentist one, I already went.",
     };
-    const unbriefed = await post(t, { ...body, subjectId: "ComplexMultiTrigger cmt-002" });
+    const unbriefed = await post(t, { ...body, subjectId: "tom.quest cmt-002" });
     expect(unbriefed.status).toBe(400);
     expect((await unbriefed.json()).error).toMatch(/no brief/);
-    const briefed = await post(t, { ...body, subjectId: "ComplexMultiTrigger cmt-001" });
+    const briefed = await post(t, { ...body, subjectId: "tom.quest cmt-001" });
     expect(briefed.status).toBe(200);
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling).toMatchObject({
       subjectType: "code",
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       externalId: "cmt-001",
       verdict: "approve",
     });
@@ -1160,7 +1166,7 @@ describe("a ruling from Tom's words", () => {
     const t = testDb();
     const { tom, tomRow } = await sessionWithTurns(t, "code-block");
     await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: "ComplexMultiTrigger",
+      repo: "tom.quest",
       rows: [
         { externalId: "cmt-001", tier: "R", status: "open", statement: "s1", url: "u" },
       ],
@@ -1180,7 +1186,7 @@ describe("a ruling from Tom's words", () => {
     // Briefed but not mirrored: the brief alone does not make a subject.
     const unmirrored = await post(t, {
       ...body,
-      subjectId: "ComplexMultiTrigger cmt-999",
+      subjectId: "tom.quest cmt-999",
     });
     expect(unmirrored.status).toBe(400);
     expect((await unmirrored.json()).error).toMatch(/Unknown code todo/);
@@ -1373,7 +1379,7 @@ describe("a ruling from Tom's words", () => {
       inboundId: turn._id,
       verdict: "approve",
       subjectType: "code",
-      subjectId: "ComplexMultiTrigger 42",
+      subjectId: "tom.quest 42",
       quote: "fork 2: approve the paper batch.",
     });
     expect(code.status).toBe(400);

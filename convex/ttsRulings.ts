@@ -10,6 +10,7 @@ import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
+import { tracksCodeTodos } from "./ttsShared";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -46,8 +47,9 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 //            — implement the plan into a pull request on a session/<id>
 //            branch, or close the entry in the repo's todo file the same
 //            way), and the ruling applies at admission with the session id;
-//            revise is consumed by the planner's brief pass once the fresh
-//            brief has posted; session applies the moment Tom opens an
+//            revise was consumed by the planner's brief pass, which is
+//            retired with ComplexMultiTrigger's registry (ruling 70) — a code
+//            ruling needs a brief and nothing writes one now; session applies the moment Tom opens an
 //            interactive session on the code block, whose opener names each
 //            subject and sentence it consumes (liveCodeSessionRulings +
 //            markCodeSessionRulingsApplied, from claudeSessions.insertSession).
@@ -150,6 +152,18 @@ async function insertRuling(
     }
     if (isCode && (repo === undefined || externalId === undefined)) {
       throw new Error("A code ruling requires both repo and externalId");
+    }
+    // A repo taken off the code-todo list keeps its mirror rows and briefs as
+    // records, so an open, briefed row of it still exists — and a ruling on
+    // it would be recorded here and refused by the scheduler, with no session
+    // ever opened. ComplexMultiTrigger is the case: Tom's ruling of 2026-09-22
+    // (CMT adoption ruling 70) moved its todos into TTS, where they are ruled
+    // as todos. One check for every pen: the page's buttons, the session CLI
+    // pen and the ruling from Tom's words all arrive here.
+    if (isCode && !tracksCodeTodos(repo!)) {
+      throw new Error(
+        `refused: ${repo} is off the code-todo list (ttsShared CODE_TODO_REPOS) — its mirror rows are records, and its todos are ruled in TTS`,
+      );
     }
     // One optional written note on EVERY verdict (ratified 2026-08-29): the
     // four verdicts are uniform, each taking an optional note. Its MEANING is
@@ -818,7 +832,7 @@ export async function markCodeSessionRulingsApplied(
 // The rulings a box job should act on: appliedAt unset AND not superseded
 // (a newer ruling on the same subject makes the older one dead history). Every
 // subject type rides the same feed — the planner filters by kind (a life
-// revise → its prepare pass; a code revise → its brief pass; a batch revise →
+// revise → its prepare pass; a batch revise →
 // its plan pass) and consumes only what it served. Code approve and archive
 // rulings ride it too, but their consumer is the auto-session scheduler in
 // Convex, not a box job.

@@ -3196,8 +3196,12 @@ async function admitCodeMissions(
         result: `refused: ${why}`,
       });
     };
-    if (!isSessionRepo(repo) || !tracksCodeTodos(repo)) {
+    if (!isSessionRepo(repo)) {
       await refuse(`no session can check out ${repo}`);
+      continue;
+    }
+    if (!tracksCodeTodos(repo)) {
+      await refuse(`${repo} keeps no code-todo file any more`);
       continue;
     }
     if (

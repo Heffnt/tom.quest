@@ -12,6 +12,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
+  CODE_TODO_REPOS,
   DAY_MS,
   MAX_NEEDS,
   READINESS,
@@ -165,11 +166,35 @@ export const listTodos = query({
   },
 });
 
+/**
+ * The mirror rows of the repos that still keep a code-todo file
+ * (ttsShared CODE_TODO_REPOS). A repo taken OFF that list leaves its rows in
+ * the table as records — ComplexMultiTrigger's 40, frozen at the last refresh
+ * before ruling 70 moved its todos into TTS — and the evals still read them
+ * by (repo, externalId) to rebuild a past code ruling's input, so they cannot
+ * be deleted. What must not happen is a frozen "open" row reaching the page
+ * or the planner as work that is still open: the refresh no longer visits
+ * its repo, so nothing would ever close it. Every live reader goes through
+ * here.
+ */
+async function liveMirrorRows(ctx: QueryCtx): Promise<Doc<"dtsCodeTodoMirror">[]> {
+  const rows: Doc<"dtsCodeTodoMirror">[] = [];
+  for (const repo of Object.keys(CODE_TODO_REPOS)) {
+    rows.push(
+      ...(await ctx.db
+        .query("dtsCodeTodoMirror")
+        .withIndex("by_repo_external", (q) => q.eq("repo", repo))
+        .collect()),
+    );
+  }
+  return rows;
+}
+
 export const listMirror = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgentId(ctx);
-    return await ctx.db.query("dtsCodeTodoMirror").collect();
+    return await liveMirrorRows(ctx);
   },
 });
 
@@ -2458,7 +2483,7 @@ export const internalLogEvent = internalMutation({
 export const internalListMirror = internalQuery({
   args: {},
   handler: async (ctx) => {
-    return await ctx.db.query("dtsCodeTodoMirror").collect();
+    return await liveMirrorRows(ctx);
   },
 });
 
