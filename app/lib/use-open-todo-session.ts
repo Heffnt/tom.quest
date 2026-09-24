@@ -13,9 +13,7 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { isPrepared } from "@/convex/ttsShared";
 import type { SessionModel } from "@/convex/ttsShared";
 import {
-  buildBatchSessionPrompt,
   buildTodoSessionPrompt,
-  type BatchSessionContext,
   type LiveRulingContext,
 } from "@/app/lib/tts-session-prompt";
 
@@ -59,9 +57,8 @@ export function reserveSessionTab(): ReservedTab {
 //     fails;
 //   - failures land in state for the caller to render, never swallowed;
 //   - REPOS ARE NOT PASSED. Omitting them is a real answer, not a default: the
-//     server resolves the session's repos from the todo's batch declaration
-//     (convex/claudeSessions.ts resolveSessionRepos), which is the only place
-//     that knows. A surface that genuinely knows better — the /runs form,
+//     server resolves the session's repos from the item itself
+//     (convex/claudeSessions.ts resolveSessionRepos). A surface that genuinely knows better — the /runs form,
 //     where Tom picks from a dropdown — passes `repos` explicitly.
 export function useOpenSession() {
   const createSession = useMutation(api.claudeSessions.createSession);
@@ -73,9 +70,6 @@ export function useOpenSession() {
     kind: "gate" | "focus-item" | "weekly" | "adhoc" | "block";
     initialPrompt: string;
     todoId?: Id<"dtsTodos">;
-    /** The batch this session is opened ON — its subject, so the server
-     * resolves the batch's declared repos directly. */
-    batchId?: Id<"batches">;
     blockCategory?: string;
     /** Only when the caller genuinely knows — otherwise the server resolves. */
     repos?: string[];
@@ -107,7 +101,6 @@ export function useOpenSession() {
         title: args.title,
         kind: args.kind,
         todoId: args.todoId,
-        batchId: args.batchId,
         blockCategory: args.blockCategory,
         repos: args.repos,
         model: args.model,
@@ -120,39 +113,6 @@ export function useOpenSession() {
     } finally {
       setBusy(false);
     }
-  };
-
-  return { open, busy, error };
-}
-
-// The batch twin of useOpenTodoSession (schema v2). A batch is its own row, not
-// a dtsTodos row, so it cannot go through `open` below with a todoId — its
-// subject is the batch itself, passed as batchId (claudeSessions.batchId,
-// ledger graduation session-repos-need-batch-subject 2026-08-31), so the
-// server's repo resolver reads the batch's declared repos directly and the
-// session starts with the checkout the batch's work needs.
-export function useOpenBatchSession() {
-  const { open: openSession, busy, error } = useOpenSession();
-
-  const open = async (
-    batch: BatchSessionContext,
-    opts?: {
-      // A tab the caller already reserved in its own click handler (the
-      // session verdict, which records a ruling first). Omit it and open
-      // reserves one itself — synchronously, before the mutation.
-      tab?: ReservedTab;
-      // The ruling just recorded (session verdict path) — its sentence goes
-      // into the session prompt so Tom never repeats himself.
-      ruling?: LiveRulingContext;
-    },
-  ) => {
-    await openSession({
-      title: batch.statement,
-      kind: "focus-item",
-      batchId: batch.id,
-      tab: opts?.tab,
-      initialPrompt: buildBatchSessionPrompt(batch, opts?.ruling),
-    });
   };
 
   return { open, busy, error };

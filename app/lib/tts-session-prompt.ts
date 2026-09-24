@@ -7,7 +7,7 @@
 // code block session's ruling lines, and the Convex typecheck (convex/
 // tsconfig.json) knows no path alias — the same reason convex/brews.ts reaches
 // app/perfume by a relative path.
-import type { Doc, Id } from "../../convex/_generated/dataModel";
+import type { Doc } from "../../convex/_generated/dataModel";
 import { briefForPrompt } from "../../worker/jobs/context-relevance.mjs";
 
 // The FRAMING says what this session is and how wide it is; it is only true
@@ -44,7 +44,7 @@ function briefFact(brief: string | undefined): string | null {
 //   wording. The server, not the prompt, is what makes this Tom's pen: it
 //   refuses a turn Tom did not type, a quote or redirect that is not a whole
 //   sentence of that turn, a subject that does not exist or that this
-//   session is not about (the item, batch, or block on its row), and a
+//   session is not about (the item or block on its row), and a
 //   second ruling from the same turn on the same subject
 //   (convex/ttsRulings.ts internalRecordRulingFromTomWords). Every
 //   ruling written this way is quoted in the digest, so a misreading is his
@@ -57,7 +57,7 @@ function briefFact(brief: string | undefined): string | null {
 //   ttsRulings:internalRecordRuling`, which needs a deploy credential no
 //   session holds — ledger graduation session-has-no-ruling-pen, 2026-08-31.)
 const INBOUND_ROW_LABEL = "inbound row:";
-const RULING_PEN = `When Tom states a ruling in plain language — approve, revise, session, or archive, on an item this prompt names — write it the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"${INBOUND_ROW_LABEL}\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|code|batch>", "subjectId": "<the subject's id as this prompt gives it; a code subject is \\"<repo> <externalId>\\">", "quote": "<one whole sentence of that turn, copied exactly — never a fragment or a single word>", "sentence": "<on revise only: the one sentence of that same turn that redirects the preparing agent, copied exactly — it may be the quote itself, and it is never your own wording; omit the field on every other verdict>"}' (both variables are already set in this session's environment). The server writes the ruling only if that turn was typed by Tom, the quote — and on revise the sentence — is a whole sentence of it word for word, and the subject is one this session is about (the item, batch, or block named in this prompt; a ruling on anything else is refused), and applies it exactly as the matching button would; the quote is kept as provenance and never becomes the item's text; the morning digest quotes every ruling written this way, so a misreading is objected there. The message that opened this session is never a source: it carries no "${INBOUND_ROW_LABEL}" line and the server refuses it, so if Tom stated a ruling there, ask him to say it again in a later turn and write it from that turn. If his words leave the verdict or the subject unclear, do not guess: record them as a fact instead: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom said: <his words, verbatim, with the subject named>", "source": "session"}'. A ruling that lives only in chat is lost.`;
+const RULING_PEN = `When Tom states a ruling in plain language — approve, revise, session, or archive, on an item this prompt names — write it the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"${INBOUND_ROW_LABEL}\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|code>", "subjectId": "<the subject's id as this prompt gives it; a code subject is \\"<repo> <externalId>\\">", "quote": "<one whole sentence of that turn, copied exactly — never a fragment or a single word>", "sentence": "<on revise only: the one sentence of that same turn that redirects the preparing agent, copied exactly — it may be the quote itself, and it is never your own wording; omit the field on every other verdict>"}' (both variables are already set in this session's environment). The server writes the ruling only if that turn was typed by Tom, the quote — and on revise the sentence — is a whole sentence of it word for word, and the subject is one this session is about (the item or block named in this prompt; a ruling on anything else is refused), and applies it exactly as the matching button would; the quote is kept as provenance and never becomes the item's text; the morning digest quotes every ruling written this way, so a misreading is objected there. The message that opened this session is never a source: it carries no "${INBOUND_ROW_LABEL}" line and the server refuses it, so if Tom stated a ruling there, ask him to say it again in a later turn and write it from that turn. If his words leave the verdict or the subject unclear, do not guess: record them as a fact instead: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom said: <his words, verbatim, with the subject named>", "source": "session"}'. A ruling that lives only in chat is lost.`;
 
 // Opening prompt for a BLOCK session: committed time over a category of
 // todos, not a single item. Same contract; the session works the set with
@@ -143,44 +143,7 @@ export type LiveRulingContext = {
   sentence?: string;
 };
 
-// ── Batch sessions (schema v2) ───────────────────────────────────────────────
-// A BATCH IS NO LONGER A TODO: it is its own row holding a graph of task- and
-// goal-todos, so a batch session cannot be built by buildTodoSessionPrompt
-// (which describes one dtsTodos row). Same contract, same pens; the item it
-// opens on is the graph.
-export type BatchSessionContext = {
-  /** The batch row itself — the session's SUBJECT (claudeSessions.batchId),
-   * so the server can resolve the batch's declared repos directly (ledger
-   * graduation session-repos-need-batch-subject). Printed once, as the
-   * subject id a ruling on the batch itself names. */
-  id: Id<"batches">;
-  statement: string;
-  groundUp?: string;
-  /** The statements of the batches this batch needs done first. */
-  needs?: string[];
-  tasks: {
-    /** The todo's own id — the life subject a ruling on this task names
-     * (the card's graph carries it as a plain string; only printed here). */
-    id: string;
-    statement: string;
-    actor: "tom" | "agent";
-    /** Done, ready (every need done) or blocked — the card's own three sets. */
-    state: "done" | "ready" | "blocked";
-    waitingOn: string[];
-    evidence?: string;
-  }[];
-  goals: {
-    id: string;
-    statement: string;
-    condition?: string;
-    /** Tom's own line on what the work toward this goal must not break. */
-    mustNotBreak?: string;
-    met: boolean;
-  }[];
-};
-
-// The lines a standing ruling adds to an opening prompt — the same two shapes
-// for a todo and a batch, so the session verdict reads the same on both.
+// The lines a standing ruling adds to an opening prompt.
 function rulingLines(ruling: LiveRulingContext | undefined): string[] {
   if (!ruling) return [];
   const note = ruling.sentence?.trim();
@@ -190,60 +153,6 @@ function rulingLines(ruling: LiveRulingContext | undefined): string[] {
       : `Tom's standing ruling on this item is "${ruling.verdict}" (no note written).`,
     "",
   ];
-}
-
-export function buildBatchSessionPrompt(
-  batch: BatchSessionContext,
-  /** The ruling just recorded (the session verdict) — its sentence goes into
-   * the prompt so Tom never repeats himself. */
-  ruling?: LiveRulingContext,
-): string {
-  const lines: (string | null)[] = [
-    FRAMING,
-    "",
-    "This is a batch session. Work the ready tasks with Tom, first step first.",
-    "",
-    "Walk-through contract:",
-    '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
-    '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-    `- ${RULING_PEN}`,
-    "",
-    `THE BATCH ("${batch.statement}"):`,
-    fact("id (batch subject)", batch.id),
-    fact("ground-up explanation", batch.groundUp),
-    batch.needs && batch.needs.length > 0
-      ? `this batch needs (batches that must land first): ${batch.needs.map((n) => `"${n}"`).join(", ")}`
-      : null,
-  ];
-
-  const say = (t: BatchSessionContext["tasks"][number]) =>
-    `- [${t.actor}, ${t.state}] "${t.statement}" (id ${t.id})${
-      t.waitingOn.length > 0 ? ` — waiting on: ${t.waitingOn.join("; ")}` : ""
-    }${t.evidence ? ` (evidence: ${t.evidence})` : ""}`;
-
-  if (batch.tasks.length === 0) {
-    lines.push("", "The batch has no tasks yet — building the graph with Tom is the first step.");
-  } else {
-    lines.push("", `The tasks (${batch.tasks.length}):`);
-    for (const state of ["ready", "blocked", "done"] as const) {
-      for (const t of batch.tasks.filter((x) => x.state === state))
-        lines.push(say(t));
-    }
-  }
-
-  if (batch.goals.length > 0) {
-    lines.push("", `The goals (${batch.goals.length}):`);
-    for (const g of batch.goals) {
-      lines.push(
-        `- [${g.met ? "met" : "not yet met"}] "${g.statement}" (id ${g.id})${
-          g.condition ? ` — condition: ${g.condition}` : ""
-        }${g.mustNotBreak ? ` — MUST NOT BREAK (Tom's own line, binding on every step toward this goal): ${g.mustNotBreak}` : ""}`,
-      );
-    }
-  }
-
-  lines.push("", ...rulingLines(ruling));
-  return lines.filter((l): l is string => l !== null).join("\n");
 }
 
 export function buildTodoSessionPrompt(
@@ -276,9 +185,5 @@ export function buildTodoSessionPrompt(
     ...rulingLines(ruling),
   ].filter((l): l is string => l !== null);
 
-  // (The v1 BATCH block that used to sit here — a todo carrying `members` was
-  // a batch, and its `plan` was the working order — went with those two
-  // fields. A batch is its own row now, and buildBatchSessionPrompt above is
-  // its prompt. The lifeos update, phase 7.)
   return lines.join("\n");
 }
