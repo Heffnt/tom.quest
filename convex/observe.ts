@@ -288,7 +288,9 @@ export const rulingsInWindow = query({
       sentence: ruling.sentence ?? null,
       subjectType: ruling.subjectType,
       todoId: (ruling.todoId ?? null) as string | null,
-      batchId: (ruling.batchId ?? null) as string | null,
+      // Kept in the shape as null until app/observe stops reading it; the
+      // schema narrow removes it.
+      batchId: null as string | null,
       repo: ruling.repo ?? null,
       externalId: ruling.externalId ?? null,
       // What the ruling is ABOUT, in the subject's own words.
@@ -304,10 +306,6 @@ async function subjectWords(ctx: QueryCtx, ruling: Doc<"dtsRulings">): Promise<s
   if (ruling.todoId !== undefined) {
     const todo = await ctx.db.get(ruling.todoId);
     return todo?.statement ?? "";
-  }
-  if (ruling.batchId !== undefined) {
-    const batch = await ctx.db.get(ruling.batchId);
-    return batch?.statement ?? "";
   }
   const { repo, externalId } = ruling;
   if (repo !== undefined && externalId !== undefined) {

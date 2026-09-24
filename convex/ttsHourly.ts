@@ -3,14 +3,14 @@ import { internalQuery } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import {
-  type BatchWorked,
   type Change,
   type ChangeKind,
   type RunnerFact,
   type RunningSession,
+  type TodoWorked,
 } from "./ttsCompose";
 import { liveRunnerFacts } from "./ttsRunners";
-import { LIVE_STATUSES, TTS_BATCHES_LINK, ttsItemLink, ttsSessionLink } from "./ttsShared";
+import { LIVE_STATUSES, ttsItemLink, ttsSessionLink } from "./ttsShared";
 
 // The hourly update's FACTS. The SEND lives in convex/ttsSync.ts (a Node
 // action: it does the network I/O, through the one Slack door) and the TEXT in
@@ -21,9 +21,10 @@ import { LIVE_STATUSES, TTS_BATCHES_LINK, ttsItemLink, ttsSessionLink } from "./
 // nothing changed (slack-design.md §4.4). The facts, in the order the sentence
 // prefers them:
 //   (1) what the box is running now — every live session with its kind, the
-//       todo or batch it is on, and how long it has been open;
-//   (2) which batches were worked since the last update — sessions opened or
-//       ended in the window, and worker events, grouped by batch;
+//       todo it is on, and how long it has been open;
+//   (2) which todos were worked since the last update — sessions live or
+//       ended in the window, and worker events, grouped by todo (Tom,
+//       2026-09-24: no batches);
 //   (3) what changed since the last update — the dtsEvents rows that are
 //       captures, completions, archives, rulings, date outcomes, failures.
 // When all three are empty there is no message: the marker is written with
@@ -123,19 +124,17 @@ export const internalLastHourlyWindowEnd = internalQuery({
 
 // ── (1) Running now ─────────────────────────────────────────────────────────
 
+// What a session is on: its todo, by id and statement. (A session opened on a
+// batch, before batches went on 2026-09-24, reads as on nothing.)
 async function subjectStatement(
   ctx: QueryCtx,
   s: Doc<"claudeSessions">,
-): Promise<{ statement: string | null; batchId: Id<"batches"> | null }> {
-  if (s.batchId !== undefined) {
-    const batch = await ctx.db.get(s.batchId);
-    return { statement: batch?.statement ?? null, batchId: s.batchId };
-  }
+): Promise<{ statement: string | null; todoId: Id<"dtsTodos"> | null }> {
   if (s.todoId !== undefined) {
     const todo = await ctx.db.get(s.todoId);
-    return { statement: todo?.statement ?? null, batchId: todo?.batchId ?? null };
+    return { statement: todo?.statement ?? null, todoId: todo === null ? null : todo._id };
   }
-  return { statement: null, batchId: null };
+  return { statement: null, todoId: null };
 }
 
 async function liveSessions(ctx: QueryCtx): Promise<Doc<"claudeSessions">[]> {
@@ -165,7 +164,7 @@ export const internalRunningNow = internalQuery({
           mode: s.mode ?? "interactive",
           status: s.status,
           statement: subject.statement,
-          batchId: subject.batchId,
+          todoId: subject.todoId,
           elapsedMs: Math.max(0, now - s.createdAt),
         };
       }),
@@ -180,63 +179,42 @@ export const internalLiveRunners = internalQuery({
   handler: async (ctx): Promise<RunnerFact[]> => liveRunnerFacts(ctx),
 });
 
-// ── (2) Batches worked in the window ────────────────────────────────────────
-// A batch counts as worked when a session on it (directly, or through one of
-// its todos) was live or ended inside the window, or a worker wrote an event
-// about it. The worker event kinds are the two the box's workers write with a
-// batch in reach: the planner's "graph-stored" (data.batchId) and a worker's
-// "plan-repair" (todoId, whose todo names the batch).
+// ── (2) Todos worked in the window ──────────────────────────────────────────
+// A todo counts as worked when a session on it was live or ended inside the
+// window. A session on no todo is not counted: the hourly line speaks only for
+// work that names a todo, as it spoke only for work that named a batch, so an
+// hour of chats on no todo stays silent.
 
-const WORKER_EVENT_KINDS = ["graph-stored", "plan-repair"] as const;
+/** The live sessions and the ones that ended inside the window. */
+async function windowSessions(ctx: QueryCtx, since: number): Promise<Doc<"claudeSessions">[]> {
+  const sessions = await liveSessions(ctx);
+  for (const status of ["ended", "failed"] as const) {
+    sessions.push(
+      ...(await ctx.db
+        .query("claudeSessions")
+        .withIndex("by_status", (q) => q.eq("status", status).gte("statusChangedAt", since))
+        .collect()), // bounded by the window
+    );
+  }
+  return sessions;
+}
 
-export const internalBatchesWorked = internalQuery({
-  args: { since: v.number(), now: v.number() },
-  handler: async (ctx, { since, now }): Promise<BatchWorked[]> => {
-    const sessions = await liveSessions(ctx);
-    for (const status of ["ended", "failed"] as const) {
-      sessions.push(
-        ...(await ctx.db
-          .query("claudeSessions")
-          .withIndex("by_status", (q) =>
-            q.eq("status", status).gte("statusChangedAt", since),
-          )
-          .collect()), // bounded by the window
-      );
-    }
-    const byBatch = new Map<string, BatchWorked>();
-    const touch = async (batchId: Id<"batches">, field: "sessions" | "workerEvents") => {
-      let row = byBatch.get(batchId);
+export const internalTodosWorked = internalQuery({
+  args: { since: v.number() },
+  handler: async (ctx, { since }): Promise<TodoWorked[]> => {
+    const byTodo = new Map<string, TodoWorked>();
+    for (const s of await windowSessions(ctx, since)) {
+      if (s.todoId === undefined) continue;
+      let row = byTodo.get(s.todoId);
       if (row === undefined) {
-        const batch = await ctx.db.get(batchId);
-        row = {
-          batchId,
-          statement: batch?.statement ?? batchId,
-          sessions: 0,
-          workerEvents: 0,
-        };
-        byBatch.set(batchId, row);
+        const todo = await ctx.db.get(s.todoId);
+        if (todo === null) continue;
+        row = { todoId: s.todoId, statement: todo.statement, sessions: 0 };
+        byTodo.set(s.todoId, row);
       }
-      row[field] += 1;
-    };
-    for (const s of sessions) {
-      const { batchId } = await subjectStatement(ctx, s);
-      if (batchId !== null) await touch(batchId, "sessions");
+      row.sessions += 1;
     }
-    const events: Doc<"dtsEvents">[] = [];
-    for (const kind of WORKER_EVENT_KINDS) {
-      events.push(...(await kindRange(ctx, kind, since, now, PER_KIND_LIMIT)));
-    }
-    for (const e of events) {
-      const data = e.data as { batchId?: unknown } | undefined;
-      let batchId: Id<"batches"> | null = null;
-      if (typeof data?.batchId === "string") {
-        batchId = data.batchId as Id<"batches">;
-      } else if (e.todoId !== undefined) {
-        batchId = (await ctx.db.get(e.todoId))?.batchId ?? null;
-      }
-      if (batchId !== null) await touch(batchId, "workerEvents");
-    }
-    return [...byBatch.values()];
+    return [...byTodo.values()];
   },
 });
 
@@ -322,10 +300,6 @@ export const internalChangedSince = internalQuery({
       } else if (sessionId !== null) {
         text = str(data.title) ?? "session";
         link = ttsSessionLink(sessionId);
-      } else if (typeof data.batchId === "string") {
-        const batch = await ctx.db.get(data.batchId as Id<"batches">);
-        text = batch?.statement ?? "batch";
-        link = TTS_BATCHES_LINK;
       } else {
         text = e.kind;
         link = null;

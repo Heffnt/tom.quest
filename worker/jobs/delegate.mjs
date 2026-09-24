@@ -321,11 +321,11 @@ export async function askDelegate(ask, suppliedIo = {}) {
       let layers = assembled.layers;
       let fallback = false;
       if (!layers && assembled.missing) {
-        const batch = await io.convexFetch(env, "/tts/batch-context");
-        if (typeof batch?.writingStandard !== "string" || batch.writingStandard.trim() === "") {
-          throw new Error("the prelude assembler is absent and batch-context has no writingStandard");
+        const planner = await io.convexFetch(env, "/tts/planner-context");
+        if (typeof planner?.writingStandard !== "string" || planner.writingStandard.trim() === "") {
+          throw new Error("the prelude assembler is absent and /tts/planner-context has no writingStandard");
         }
-        layers = { operate: "", write: batch.writingStandard, know: "" };
+        layers = { operate: "", write: planner.writingStandard, know: "" };
         fallback = true;
       }
       if (!layers) {
@@ -381,7 +381,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
                   layersGiven: fallback ? [] : [...DELEGATE_LAYERS],
                   layersDenied: [],
                   promptSha256,
-                  ...(fallback ? { writingStandardSource: "/tts/batch-context" } : { wikitomCommit: assembled.commit }),
+                  ...(fallback ? { writingStandardSource: "/tts/planner-context" } : { wikitomCommit: assembled.commit }),
                 },
               }),
             );

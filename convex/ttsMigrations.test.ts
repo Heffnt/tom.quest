@@ -12,6 +12,9 @@ import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   BATCH_NEEDS_MIGRATION,
+  BATCH_REMOVED_EVENT,
+  BATCHES_REMOVED_MIGRATION,
+  BATCHES_REMOVED_RULING,
   CLEAR_MIGRATION,
   CLOSED_UPSTREAM_CONDITIONS,
   CLOSED_UPSTREAM_MIGRATION,
@@ -1555,5 +1558,293 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
       "steering-grad-archived": 0,
       "already-converted": 4,
     });
+  });
+});
+
+// ── 9. Batches removed (Tom's ruling, 2026-09-24) ────────────────────────────
+
+describe("batches removed (every todo stands alone)", () => {
+  type T = ReturnType<typeof convexTest>;
+  const NOW = 1_790_000_000_000;
+
+  const insertRun = (t: T, runId: string, batchId?: Id<"batches">) =>
+    t.run((ctx) =>
+      ctx.db.insert("runs", {
+        runId,
+        rootRunId: runId,
+        depth: 0,
+        linkKnown: true,
+        origin: "cron:plan-graphs",
+        host: "box",
+        cli: "claude",
+        environment: "worker",
+        parserVersion: "runs-parser-1",
+        kind: "job",
+        status: "ended",
+        startedAt: 1_000,
+        lastLineAt: 2_000,
+        attachments: [],
+        file: {
+          path: "/var/log/run.jsonl",
+          sourceHash: "a".repeat(64),
+          storedHash: "b".repeat(64),
+          bytes: 10,
+          storedBytes: 8,
+          committedLine: 1,
+          committedPrefixSha256: "c".repeat(64),
+        },
+        ingestedAt: 3_000,
+        ...(batchId === undefined ? {} : { batchId }),
+      } as never),
+    );
+
+  /** Two batches and every case the migration names, plus a run on each side. */
+  async function seed(t: T) {
+    return await t.run(async (ctx) => {
+      const batch = (statement: string, status: "active" | "archived" = "active") =>
+        ctx.db.insert("batches", { statement, status, createdAt: 1, updatedAt: 5 });
+      const lease = await batch("get the apartment");
+      const paper = await batch("submit the paper");
+      const todo = (
+        statement: string,
+        over: Partial<Doc<"dtsTodos">>,
+      ) =>
+        ctx.db.insert("dtsTodos", {
+          statement,
+          source: "migration",
+          status: "active",
+          timingClass: "whenever",
+          readiness: "unprepared",
+          createdAt: 1,
+          updatedAt: 7,
+          ...over,
+        });
+      const ids = {
+        lease,
+        paper,
+        goal: await todo("the lease is signed", { kind: "goal", batchId: lease, source: "prospecting" }),
+        doneGoal: await todo("the deposit is paid", { kind: "goal", batchId: lease, status: "done", doneAt: 3 }),
+        migrationTask: await todo("call the landlord", { kind: "task", batchId: lease, actor: "tom" }),
+        plannerTask: await todo("draft the questions", {
+          kind: "task",
+          batchId: lease,
+          source: "planner",
+          actor: "agent",
+        }),
+        touchedPlannerTask: await todo("read the lease", {
+          kind: "task",
+          batchId: lease,
+          source: "planner",
+          tomTouchedAt: 4,
+        }),
+        otherTask: await todo("ask about parking", { kind: "task", batchId: paper, source: "tts-session" }),
+        donePlannerTask: await todo("book the viewing", {
+          kind: "task",
+          batchId: paper,
+          source: "planner",
+          status: "done",
+          doneAt: 2,
+        }),
+        archivedTask: await todo("old step", { kind: "task", batchId: paper, source: "planner", status: "archived", archivedAt: 2 }),
+        standalone: await todo("renew the passport", {}),
+      };
+      // The plan step the migration task needs: archived below, and an
+      // archived need counts as done.
+      await ctx.db.patch(ids.migrationTask, { needs: [ids.plannerTask] });
+      return ids;
+    });
+  }
+  type Ids = Awaited<ReturnType<typeof seed>>;
+
+  const todos = async (t: T) =>
+    new Map((await t.run((ctx) => ctx.db.query("dtsTodos").collect())).map((row) => [row._id, row]));
+
+  async function runToEnd(t: T, args: { dryRun?: boolean } = {}) {
+    vi.useFakeTimers();
+    try {
+      const first = await t.mutation(internal.ttsMigrations.internalRemoveBatches, args);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      return first;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  const summary = async (t: T, dryRun = false) => {
+    const events = await eventsOfKind(
+      t,
+      `${BATCHES_REMOVED_MIGRATION}-${dryRun ? "dry-run" : "migrated"}`,
+    );
+    return events.map((e) => e.data);
+  };
+
+  const firstRunCounts = {
+    "batches-scanned": 2,
+    "batches-archived": 2,
+    "batches-already-archived": 0,
+    "batches-already-removed": 0,
+    "goals-unbound": 2,
+    "migration-tasks-made-standalone": 1,
+    "other-tasks-made-standalone": 2,
+    "planner-tasks-archived": 1,
+    "done-or-archived-tasks-cleared": 2,
+    "runs-scanned": 2,
+    "runs-cleared": 1,
+  };
+
+  // witness: archive a migration task, clear a goal's kind, or write an
+  // unarchiveCondition — each case below names where one of Tom's things went.
+  it("unbinds goals, makes migration tasks standalone, archives planner tasks, and archives every batch", async () => {
+    vi.setSystemTime(NOW);
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    await insertRun(t, "claude:box:on-a-batch", ids.lease);
+    await insertRun(t, "claude:box:on-nothing");
+    await runToEnd(t);
+    vi.useRealTimers();
+    const rows = await todos(t);
+    const row = (id: Id<"dtsTodos">) => rows.get(id)!;
+
+    // No todo carries a batchId any more, and no row is deleted.
+    expect(rows.size).toBe(9);
+    expect([...rows.values()].every((r) => r.batchId === undefined)).toBe(true);
+    // Goals keep kind and status.
+    expect(row(ids.goal)).toMatchObject({ kind: "goal", status: "active" });
+    expect(row(ids.doneGoal)).toMatchObject({ kind: "goal", status: "done" });
+    // A migration task (Tom's earlier todo) stands alone, as it was.
+    expect(row(ids.migrationTask)).toMatchObject({ kind: "task", status: "active", actor: "tom" });
+    // The planner's step is archived, with no return condition.
+    expect(row(ids.plannerTask).status).toBe("archived");
+    expect(row(ids.plannerTask).archivedAt).toBeTypeOf("number");
+    expect(row(ids.plannerTask).unarchiveCondition).toBeUndefined();
+    // A planner task Tom touched, and a task from another source, stand alone.
+    expect(row(ids.touchedPlannerTask).status).toBe("active");
+    expect(row(ids.otherTask).status).toBe("active");
+    // Done and archived tasks keep their status.
+    expect(row(ids.donePlannerTask).status).toBe("done");
+    expect(row(ids.archivedTask).status).toBe("archived");
+    // updatedAt is never bumped: nothing resurfaces on Tom's pile.
+    expect([...rows.values()].every((r) => r.updatedAt === 7)).toBe(true);
+    // needs stays, and the ready rule is unchanged: the archived plan step
+    // counts as done, so the migration task that needed it is ready.
+    expect(row(ids.migrationTask).needs).toEqual([ids.plannerTask]);
+    expect(isReady(row(ids.migrationTask), buildDoneSet([...rows.values()]), NOW)).toBe(true);
+
+    // Every batch is archived, its updatedAt untouched and no condition set.
+    const batches = await t.run((ctx) => ctx.db.query("batches").collect());
+    expect(batches.map((b) => [b.status, b.updatedAt, b.unarchiveCondition])).toEqual([
+      ["archived", 5, undefined],
+      ["archived", 5, undefined],
+    ]);
+    // runs.batchId is cleared.
+    const runs = await t.run((ctx) => ctx.db.query("runs").collect());
+    expect(runs.every((r) => r.batchId === undefined)).toBe(true);
+
+    // One event per batch naming the batch, the ruling verbatim, and every id
+    // grouped by what happened to it.
+    const perBatch = await eventsOfKind(t, BATCH_REMOVED_EVENT);
+    expect(perBatch.map((e) => e.data.batchId)).toEqual([ids.lease, ids.paper]);
+    expect(perBatch[0].data).toMatchObject({
+      batchId: ids.lease,
+      statement: "get the apartment",
+      ruling: BATCHES_REMOVED_RULING,
+      goalsUnbound: [ids.goal, ids.doneGoal],
+      migrationTasksMadeStandalone: [ids.migrationTask],
+      otherTasksMadeStandalone: [ids.touchedPlannerTask],
+      plannerTasksArchived: [ids.plannerTask],
+      doneOrArchivedTasksCleared: [],
+    });
+    expect(perBatch[1].data).toMatchObject({
+      statement: "submit the paper",
+      goalsUnbound: [],
+      otherTasksMadeStandalone: [ids.otherTask],
+      doneOrArchivedTasksCleared: [ids.donePlannerTask, ids.archivedTask],
+    });
+    expect(BATCHES_REMOVED_RULING).toBe(
+      "I dont want to have batches at all anymore because I want to remove structure to allow agents to freely move toward completing all todos in the best way they (or the orchistrator) see fit.",
+    );
+    expect(await summary(t)).toEqual([{ ...firstRunCounts, "todos-still-bound": 0 }]);
+  });
+
+  // witness: patch in the dry run — the counts must be known before anything
+  // moves on prod.
+  it("a dry run counts every case and writes nothing but its summary event", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    await insertRun(t, "claude:box:on-a-batch", ids.paper);
+    const before = await todos(t);
+    await runToEnd(t, { dryRun: true });
+    expect(await todos(t)).toEqual(before);
+    expect((await t.run((ctx) => ctx.db.query("batches").collect())).every((b) => b.status === "active")).toBe(true);
+    expect((await t.run((ctx) => ctx.db.query("runs").collect()))[0].batchId).toBe(ids.paper);
+    expect(await eventsOfKind(t, BATCH_REMOVED_EVENT)).toHaveLength(0);
+    expect(await summary(t)).toEqual([]);
+    expect(await summary(t, true)).toEqual([
+      { ...firstRunCounts, "runs-scanned": 1, "todos-still-bound": 8 },
+    ]);
+  });
+
+  // witness: count an archived batch with no todos as archived again — the
+  // verification run would not read zero.
+  it("is idempotent: a second run reports zero changes", async () => {
+    const t = convexTest({ schema, modules });
+    const ids: Ids = await seed(t);
+    await insertRun(t, "claude:box:on-a-batch", ids.lease);
+    await runToEnd(t);
+    const between = await todos(t);
+    await runToEnd(t);
+    expect(await todos(t)).toEqual(between);
+    const [, second] = await summary(t);
+    expect(second).toEqual({
+      "batches-scanned": 2,
+      "batches-archived": 0,
+      "batches-already-archived": 0,
+      "batches-already-removed": 2,
+      "goals-unbound": 0,
+      "migration-tasks-made-standalone": 0,
+      "other-tasks-made-standalone": 0,
+      "planner-tasks-archived": 0,
+      "done-or-archived-tasks-cleared": 0,
+      "runs-scanned": 1,
+      "runs-cleared": 0,
+      "todos-still-bound": 0,
+    });
+    expect(await eventsOfKind(t, BATCH_REMOVED_EVENT)).toHaveLength(2);
+  });
+
+  // witness: schedule the walk from a batchId call — "one batch" would walk
+  // every batch.
+  it("walks one named batch and schedules nothing", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    const report = await t.mutation(internal.ttsMigrations.internalRemoveBatches, {
+      batchId: ids.paper,
+    });
+    expect(report.done).toBe(true);
+    expect(report.removal).toMatchObject({
+      otherTasksMadeStandalone: [ids.otherTask],
+      doneOrArchivedTasksCleared: [ids.donePlannerTask, ids.archivedTask],
+    });
+    const batches = await t.run((ctx) => ctx.db.query("batches").collect());
+    expect(batches.find((b) => b._id === ids.lease)?.status).toBe("active");
+    expect(batches.find((b) => b._id === ids.paper)?.status).toBe("archived");
+    expect((await todos(t)).get(ids.goal)?.batchId).toBe(ids.lease);
+    expect(await summary(t)).toEqual([]);
+  });
+
+  it("walks one batch per call", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest({ schema, modules });
+      const ids = await seed(t);
+      const first = await t.mutation(internal.ttsMigrations.internalRemoveBatches, {});
+      expect(first).toMatchObject({ done: false, phase: "batches", batchId: ids.lease });
+      expect(first.page["batches-scanned"]).toBe(1);
+      const batches = await t.run((ctx) => ctx.db.query("batches").collect());
+      expect(batches.map((b) => b.status)).toEqual(["archived", "active"]);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

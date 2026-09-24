@@ -654,7 +654,7 @@ export const sendRunnerCheckIn = internalAction({
 
 // ── The hourly update (Tom's ruling 2026-08-30; the lifeos update, phase 2) ──
 // Every hour, 24/7, in #tts-hourly (SLACK_TTS_HOURLY_CHANNEL_ID — its OWN
-// channel, not #tts): what the box is running now, which batches were worked
+// channel, not #tts): what the box is running now, which todos were worked
 // since the last update, what changed since the last update — or ONE line
 // saying nothing did. The facts are read by convex/ttsHourly.ts and the text
 // composed by convex/ttsCompose.ts; this action is the send, and it sends
@@ -789,10 +789,7 @@ export const sendHourlyUpdate = internalAction({
         ? { sinceLabel: nyHhmm(since) }
         : {}),
       running: await ctx.runQuery(internal.ttsHourly.internalRunningNow, { now }),
-      batches: await ctx.runQuery(internal.ttsHourly.internalBatchesWorked, {
-        since,
-        now,
-      }),
+      todosWorked: await ctx.runQuery(internal.ttsHourly.internalTodosWorked, { since }),
       changes: await ctx.runQuery(internal.ttsHourly.internalChangedSince, {
         start: since,
         end: now,
@@ -801,7 +798,7 @@ export const sendHourlyUpdate = internalAction({
     };
 
     // ── THE SILENCE RULE (slack-design.md §4.4) ─────────────────────────────
-    // Nothing running, no batch worked, nothing changed: NOTHING IS POSTED,
+    // Nothing running, no todo worked, nothing changed: NOTHING IS POSTED,
     // and the marker is still written, with posted:false. The marker is what
     // advances the window; skipping it would make the next hour re-read this
     // one and the message would slowly grow a tail of hours nobody saw.

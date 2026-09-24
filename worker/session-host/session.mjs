@@ -1126,7 +1126,7 @@ export class Session {
         // process env MINUS the daemon's own secrets (the SDK child still
         // needs PATH, HOME, CLAUDE_CONFIG_DIR…). ONLY the TTS worker key
         // enters a session's shell — its write surface (capture, prep,
-        // briefs, batches, ruling-applied, session-outcome, and a ruling
+        // briefs, ruling-applied, session-outcome, and a ruling
         // from Tom's own typed words via /tts/ruling) is the same one the
         // cron jobs' agentic runs already expose to a model.
         // The daemon's own secrets are SCRUBBED above (inheritedEnv, the

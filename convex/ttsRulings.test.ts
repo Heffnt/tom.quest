@@ -1149,13 +1149,15 @@ describe("a ruling from Tom's words", () => {
     });
     expect(inboundAsTodo.status).toBe(400);
     expect((await inboundAsTodo.json()).error).toMatch(/Unknown todo id/);
+    // A batch is no longer a subject (Tom's ruling of 2026-09-24): the door
+    // refuses the subject type before it looks anything up.
     const todoAsBatch = await post(t, {
       ...body,
       subjectType: "batch",
       subjectId: todoId,
     });
     expect(todoAsBatch.status).toBe(400);
-    expect((await todoAsBatch.json()).error).toMatch(/Unknown batch id/);
+    expect((await todoAsBatch.json()).error).toMatch(/subjectType must be one of life, code/);
     expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
   });
 
@@ -1238,88 +1240,50 @@ describe("a ruling from Tom's words", () => {
     expect((await post(t, { ...body, subjectId: todoId })).status).toBe(200);
   });
 
-  // A session on a batch is about the batch AND the todos in it — one turn
-  // may rule on several of those (the dedupe stays per subject) — and about
-  // nothing outside it.
-  it("binds a batch session's turns to the batch and its member todos", async () => {
+  // witness: put batchId back into createSession's or recordRuling's
+  // arguments — a session or a ruling could again name a batch.
+  it("refuses a session opened on a batch, and a ruling on a batch at every door", async () => {
     const t = testDb();
-    const { tom, todoId, tomRow } = await sessionWithTurns(t, "adhoc");
-    const memberId = await tom.mutation(api.tts.createTodo, {
-      statement: "find the insurance card",
-    });
-    const strayId = await tom.mutation(api.tts.createTodo, {
-      statement: "renew the passport",
-    });
-    const batchId = await t.run(async (ctx) => {
-      const now = Date.now();
-      const id = await ctx.db.insert("batches", {
+    const { tom, todoId } = await sessionWithTurns(t, "adhoc");
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
         statement: "the dentist visit",
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-      });
-      await ctx.db.patch(todoId, { batchId: id });
-      await ctx.db.patch(memberId, { batchId: id });
-      return id;
-    });
-    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
-      title: "the batch",
-      kind: "adhoc",
-      repo: "none",
-      batchId,
-      initialPrompt: "hello",
-    });
-    await tom.mutation(api.claudeSessions.sendMessage, {
-      sessionId,
-      text: "approve the whole dentist batch, both bits.",
-    });
-    const turn = (
-      await t.run(async (ctx) => ctx.db.query("claudeInbound").collect())
-    ).find((r) => r.sessionId === sessionId && r.author === "tom")!;
-    const body = {
-      inboundId: turn._id,
-      verdict: "approve",
-      quote: "approve the whole dentist batch, both bits.",
-    };
-    expect(
-      (await post(t, { ...body, subjectType: "batch", subjectId: batchId })).status,
-    ).toBe(200);
-    expect(
-      (await post(t, { ...body, subjectType: "life", subjectId: todoId })).status,
-    ).toBe(200);
-    expect(
-      (await post(t, { ...body, subjectType: "life", subjectId: memberId })).status,
-    ).toBe(200);
-    const stray = await post(t, { ...body, subjectType: "life", subjectId: strayId });
-    expect(stray.status).toBe(400);
-    expect((await stray.json()).error).toMatch(/session about the batch/);
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
-    expect(rulings).toHaveLength(3);
-    expect(rulings.every((r) => r.provenance?.inboundId === turn._id)).toBe(true);
-    // The dentist turn from the adhoc session (no subject at all) rules nothing,
-    // not even the todo it names.
-    const adhoc = await post(t, {
-      inboundId: tomRow._id,
-      verdict: "archive",
-      subjectType: "life",
-      subjectId: todoId,
-      quote: "archive the dentist one, I already went.",
-    });
-    expect(adhoc.status).toBe(400);
-    expect((await adhoc.json()).error).toMatch(/about no todo, batch, or block/);
+        status: "archived",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    await expect(
+      tom.mutation(api.claudeSessions.createSession, {
+        title: "the batch",
+        kind: "adhoc",
+        repo: "none",
+        batchId,
+        initialPrompt: "hello",
+      } as never),
+    ).rejects.toThrow(/batchId/);
+    await expect(
+      tom.mutation(api.ttsRulings.recordRuling, { batchId, verdict: "approve" } as never),
+    ).rejects.toThrow(/batchId/);
+    // A todo is still a subject at the same door.
+    await tom.mutation(api.ttsRulings.recordRuling, { todoId, verdict: "approve" });
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
   });
 
-  // The weekly session's turns rule on what its agenda names — the todo and
-  // batch ids the Friday job stored on the row (the lifeos update, phase 8) —
-  // and on nothing else: not a todo the agenda did not name, never code.
+  // The weekly session's turns rule on what its agenda names — the todo ids
+  // the Friday job stored on the row (the lifeos update, phase 8) — and on
+  // nothing else: not a todo the agenda did not name, never code.
   it("binds a weekly session's turns to the subjects its agenda names", async () => {
     const t = testDb();
     const { tom, todoId } = await sessionWithTurns(t, "adhoc");
-    const { batchId, otherId } = await t.run(async (ctx) => {
+    const { paperId, otherId } = await t.run(async (ctx) => {
       const now = Date.now();
-      const batchId = await ctx.db.insert("batches", {
-        statement: "the paper",
+      const paperId = await ctx.db.insert("dtsTodos", {
+        statement: "submit the paper",
         status: "active",
+        readiness: "prepared",
+        timingClass: "whenever",
+        source: "tom",
         createdAt: now,
         updatedAt: now,
       });
@@ -1332,14 +1296,14 @@ describe("a ruling from Tom's words", () => {
         createdAt: now,
         updatedAt: now,
       });
-      return { batchId, otherId };
+      return { paperId, otherId };
     });
-    // The job's pen: the agenda names the dentist todo and the paper batch.
+    // The job's pen: the agenda names the dentist todo and the paper todo.
     const sessionId = await t.mutation(internal.claudeSessions.internalCreateWeeklySession, {
       title: "Weekly 2026-09-11",
       initialPrompt: "the agenda",
       day: "2026-09-11",
-      agendaSubjects: [todoId, batchId],
+      agendaSubjects: [todoId, paperId],
     });
     await tom.mutation(api.claudeSessions.sendMessage, {
       sessionId,
@@ -1356,14 +1320,14 @@ describe("a ruling from Tom's words", () => {
       quote: "fork 1: archive the dentist one.",
     });
     expect(life.status).toBe(200);
-    const batch = await post(t, {
+    const paper = await post(t, {
       inboundId: turn._id,
       verdict: "approve",
-      subjectType: "batch",
-      subjectId: batchId,
+      subjectType: "life",
+      subjectId: paperId,
       quote: "fork 2: approve the paper batch.",
     });
-    expect(batch.status).toBe(200);
+    expect(paper.status).toBe(200);
     // A todo the agenda did not name: refused as not what the session was
     // about, even though the turn mentions it.
     const unnamed = await post(t, {

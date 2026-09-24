@@ -28,7 +28,7 @@
 // where acting on the cluster lives; tts-turing itself keeps no write verb.
 //
 // TTS_WORKER_KEY is the one key that MAY enter a session shell (its write
-// surface — capture, prep, briefs, batches, session-outcome — is the same one
+// surface — capture, prep, briefs, session-outcome — is the same one
 // the cron jobs' agentic runs already expose to a model); `keepTtsKey: true`
 // leaves it in, every other caller drops it too.
 //

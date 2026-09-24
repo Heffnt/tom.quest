@@ -485,11 +485,11 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   // runs, and the record then takes the parent's word — deleting the key here
   // would erase that silence into a guess.
   if (ENVIRONMENTS.has(registration.environment)) run.environment = registration.environment;
-  for (const key of ["todoId", "batchId", "mergeKey", "continuesRunId"]) setOptional(run, key, registration[key]);
+  for (const key of ["todoId", "mergeKey", "continuesRunId"]) setOptional(run, key, registration[key]);
 
   run.context.registered = true;
   // THE TOKEN BECOMES A FIELD OF THE RUN, not only a name on disk. It is the
-  // one exact edge from a row an agent wrote for Tom (dtsTodos, batches and
+  // one exact edge from a row an agent wrote for Tom (dtsTodos and
   // dtsCodeBriefs each carry it as producedByRunToken) back to the run that
   // wrote it, and convex/runLabels.ts resolves it on runs.by_reg_token. It is
   // set only on the applied path: an envelope that was refused for a host

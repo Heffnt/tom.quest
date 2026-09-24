@@ -9,10 +9,10 @@
   "facts": {
     "busy": {
       "running": [{ "id": "s1", "title": "the unified agent context round", "startedAt": 1757404800000 }],
-      "batches": [{ "batchId": "b1", "statement": "the unified agent context round", "added": 2, "reworked": 1, "dropped": 0 }],
+      "todosWorked": [{ "todoId": "t1", "statement": "Finish the unified agent context round.", "sessions": 1 }],
       "changes": [{ "kind": "ruling", "id": "r1", "text": "the passport item was approved" }]
     },
-    "quiet": { "running": [], "batches": [], "changes": [] }
+    "quiet": { "running": [], "todosWorked": [], "changes": [] }
   },
   "expect": {
     "mustName": ["are working"],

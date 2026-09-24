@@ -72,8 +72,10 @@ const nodesGiven = givenNodes as (input: {
  * subject (the planner, the weekly gather, time notes): nothing routes off a
  * subject, and the caller's own row is the whole of what it is granted. */
 export type ContextSubject =
-  | { kind: "todo"; todoId: Id<"dtsTodos"> }
-  | { kind: "batch"; batchId: Id<"batches"> }
+  // `repos`: the repositories the run works in, as its caller named them (a
+  // session's resolved repos). A todo declares none of its own since batches,
+  // which declared them, went (Tom's ruling of 2026-09-24).
+  | { kind: "todo"; todoId: Id<"dtsTodos">; repos?: readonly string[] }
   | { kind: "repo"; repo: string; paths?: string[] }
   | { kind: "area"; area: string }
   | { kind: "none" };
@@ -118,11 +120,10 @@ const SESSION_SCAN_PER_STATUS = SESSION_SCAN_MAX / 2;
  * REMOVAL CHECK: retain this read-time ceiling as defence in depth. A bad or
  * legacy writer must not turn context assembly into an unbounded read. */
 const MODEL_OF_TOM_FILES_MAX = 64;
-const BATCH_TODOS_MAX = 40;
 /** The catalog is fourteen rows; the ceiling is the door's. */
 const SKILLS_MAX = 64;
 const RULINGS_PER_SUBJECT = 5;
-const OUTCOMES_PER_BATCH = 3;
+const OUTCOMES_PER_SUBJECT = 3;
 // The former relevance assembler gave these volatile facts this total room.
 // They still ride the opener, so removing the caps would recreate its large tail.
 export const RULINGS_BYTES = 2048;
@@ -179,21 +180,17 @@ type ContextRecord = {
     brief?: string;
     workDescription?: string;
     entryAction?: string;
-    batchId?: string;
     repos?: string[];
     codeRepo?: string;
   }[];
-  batches: { id: string; repos?: string[] }[];
   rulings: {
     todoId?: string;
-    batchId?: string;
     verdict: string;
     sentence?: string;
     ruledAt: number;
     ruledDay: string;
   }[];
   sessions: {
-    batchId?: string;
     repos?: string[];
     outcome: string;
     outcomeSummary?: string;
@@ -202,7 +199,7 @@ type ContextRecord = {
   }[];
 };
 
-function todoRow(todo: Doc<"dtsTodos">): ContextRecord["todos"][number] {
+function todoRow(todo: Doc<"dtsTodos">, repos: string[]): ContextRecord["todos"][number] {
   return {
     id: todo._id,
     category: todo.category,
@@ -214,16 +211,17 @@ function todoRow(todo: Doc<"dtsTodos">): ContextRecord["todos"][number] {
     brief: todo.brief,
     workDescription: todo.workDescription,
     entryAction: todo.entryAction,
-    batchId: todo.batchId,
+    // The repositories the caller named for this run (see ContextSubject).
+    repos,
     // The goal's CODE SUBJECT repository, carried for the router's area row
     // alone: a goal bound to an upstream code todo names the repository that
-    // work lives in even when its batch declares no repos. The 60 active
+    // work lives in even when the caller names no repos. The 60 active
     // ComplexMultiTrigger goals that carried it lose it once
     // ttsMigrations.internalConvertClosedUpstreamGoals has run (ruling 70
-    // retires CMT's registry); from then on only a batch's declared repos give
-    // its todos the CMT area row. The paired `codeExternalId` is NOT carried — nothing in the
-    // routing table reads it, and this record holds exactly what the router
-    // reads.
+    // retires CMT's registry); from then on only the repos a caller names give
+    // a todo the CMT area row. The paired `codeExternalId` is NOT carried —
+    // nothing in the routing table reads it, and this record holds exactly
+    // what the router reads.
     codeRepo: todo.codeRepo,
   };
 }
@@ -231,7 +229,6 @@ function todoRow(todo: Doc<"dtsTodos">): ContextRecord["todos"][number] {
 function rulingRow(ruling: Doc<"dtsRulings">): ContextRecord["rulings"][number] {
   return {
     todoId: ruling.todoId,
-    batchId: ruling.batchId,
     verdict: ruling.verdict,
     sentence: ruling.sentence,
     ruledAt: ruling.ruledAt,
@@ -242,7 +239,6 @@ function rulingRow(ruling: Doc<"dtsRulings">): ContextRecord["rulings"][number] 
 function sessionRow(session: Doc<"claudeSessions">): ContextRecord["sessions"][number] | null {
   if (session.outcome === undefined) return null;
   return {
-    batchId: session.batchId,
     repos: session.repos ?? [session.repo],
     outcome: session.outcome,
     outcomeSummary: session.outcomeSummary,
@@ -261,9 +257,13 @@ async function readRecord(
   subject: ContextSubject,
   now: number,
 ): Promise<{ record: ContextRecord; repos: string[] }> {
-  const record: ContextRecord = { today: nyCalendarDayKey(now), todos: [], batches: [], rulings: [], sessions: [] };
-  let batch: Doc<"batches"> | null = null;
+  const record: ContextRecord = { today: nyCalendarDayKey(now), todos: [], rulings: [], sessions: [] };
   let todoId: Id<"dtsTodos"> | null = null;
+  const repos = subject.kind === "repo"
+    ? [subject.repo]
+    : subject.kind === "todo"
+      ? [...new Set(subject.repos ?? [])].sort()
+      : [];
 
   if (subject.kind === "todo") {
     const todo = await ctx.db.get(subject.todoId);
@@ -271,25 +271,10 @@ async function readRecord(
     // that stops — the same refusal the CLI makes for an unresolvable subject.
     if (todo === null) throw new Error(`context subject todo ${subject.todoId} does not exist`);
     todoId = todo._id;
-    record.todos.push(todoRow(todo));
-    if (todo.batchId !== undefined) batch = await ctx.db.get(todo.batchId);
-  } else if (subject.kind === "batch") {
-    batch = await ctx.db.get(subject.batchId);
-    if (batch === null) throw new Error(`context subject batch ${subject.batchId} does not exist`);
-    const members = await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_batch", (q) => q.eq("batchId", batch!._id))
-      .take(BATCH_TODOS_MAX);
-    for (const member of members) record.todos.push(todoRow(member));
+    record.todos.push(todoRow(todo, repos));
   }
 
-  if (batch !== null) record.batches.push({ id: batch._id, repos: batch.repos });
-
-  const repos = subject.kind === "repo"
-    ? [subject.repo]
-    : [...new Set(batch?.repos ?? [])].sort();
-
-  // His rulings on this todo and on its batch.
+  // His rulings on this todo.
   if (todoId !== null) {
     const own = await ctx.db
       .query("dtsRulings")
@@ -297,36 +282,18 @@ async function readRecord(
       .take(RULINGS_PER_SUBJECT);
     for (const ruling of own) record.rulings.push(rulingRow(ruling));
   }
-  if (batch !== null) {
-    const onBatch = await ctx.db
-      .query("dtsRulings")
-      .withIndex("by_batch", (q) => q.eq("batchId", batch!._id))
-      .take(RULINGS_PER_SUBJECT);
-    for (const ruling of onBatch) record.rulings.push(rulingRow(ruling));
-  }
 
-  // A session is read two ways — by its batch and by its repos — and one
-  // session is very often both. The batch walk gets the three context slots
-  // first, in its indexed recency order; repository outcomes fill only what is
-  // left. Deduplicate by id here rather than rendered text, so a batch's own
-  // last session cannot appear twice in one record.
+  // The last outcomes of sessions in the run's repositories. (A batch's own
+  // sessions used to take these slots first; batches went with Tom's ruling
+  // of 2026-09-24.)
   const seenSessions = new Set<string>();
   const addSession = (session: Doc<"claudeSessions">) => {
-    if (seenSessions.has(session._id) || record.sessions.length >= OUTCOMES_PER_BATCH) return;
+    if (seenSessions.has(session._id) || record.sessions.length >= OUTCOMES_PER_SUBJECT) return;
     const row = sessionRow(session);
     if (row === null) return;
     seenSessions.add(session._id);
     record.sessions.push(row);
   };
-
-  if (batch !== null) {
-    const onBatch = await ctx.db
-      .query("claudeSessions")
-      .withIndex("by_batch", (q) => q.eq("batchId", batch!._id))
-      .order("desc")
-      .take(OUTCOMES_PER_BATCH);
-    for (const session of onBatch) addSession(session);
-  }
 
   // The unindexed half: each terminal-status walk is newest first, then their
   // matching rows compete by timestamp before they fill the remaining slots.
@@ -364,10 +331,8 @@ async function readRecord(
  *                                                       area's categories: line
  *                                                       is readable)
  *   ttsSkills by_name                              ≤ 64 (the catalog's names)
- *   dtsTodos get / by_batch                        ≤ 40
- *   batches get                                    ≤  1
- *   dtsRulings by_todo + by_batch                  ≤ 10
- *   claudeSessions by_batch                        ≤  3
+ *   dtsTodos get                                   ≤  1
+ *   dtsRulings by_todo                             ≤  5
  *   claudeSessions by_status ×2, filtered in memory ≤ 60 (SESSION_SCAN_MAX)
  *
  * THE REPO RULES TABLE IS NO LONGER READ HERE. It was read to pre-expand the
@@ -419,7 +384,7 @@ export async function assembleContext(
 
   const now = options.now ?? Date.now();
   const { record } = subject.kind === "none"
-    ? { record: { today: nyCalendarDayKey(now), todos: [], batches: [], rulings: [], sessions: [] } }
+    ? { record: { today: nyCalendarDayKey(now), todos: [], rulings: [], sessions: [] } }
     : await readRecord(ctx, subject, now);
 
   const routed = routeSkills({

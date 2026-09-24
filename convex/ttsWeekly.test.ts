@@ -67,7 +67,6 @@ async function todo(
     status: "active" | "waiting" | "archived" | "done";
     readiness: "unprepared" | "prepared";
     kind: "task" | "goal";
-    batchId: Id<"batches">;
     source: string;
     doneAt: number;
     createdAt: number;
@@ -82,7 +81,6 @@ async function todo(
     timingClass: "whenever",
     source: fields.source ?? "tom",
     kind: fields.kind,
-    batchId: fields.batchId,
     doneAt: fields.doneAt,
     createdAt: fields.createdAt ?? now,
     updatedAt: fields.updatedAt ?? now,
@@ -110,7 +108,6 @@ describe("gatherWeeklyFacts", () => {
     expect(f.captures).toEqual([]);
     expect(f.dateOutcomes).toEqual([]);
     expect(f.surfacedUntouched).toEqual([]);
-    expect(f.goalsWithoutOpenTask).toEqual([]);
     expect(f.goalsNotEvaluated).toEqual([]);
     // The known pollers are listed even with nothing recorded: "running" is
     // the state of an integration nothing has said anything about.
@@ -180,24 +177,11 @@ describe("gatherWeeklyFacts", () => {
     const t = convexTest({ schema, modules });
     const now = Date.now();
     const seeded = await t.run(async (ctx) => {
-      const batch = await ctx.db.insert("batches", {
-        statement: "the paper",
-        status: "active",
-        createdAt: now - 20 * DAY,
-        updatedAt: now - 20 * DAY,
-      });
-      const emptyBatch = await ctx.db.insert("batches", {
-        statement: "the lease",
-        status: "active",
-        createdAt: now - 20 * DAY,
-        updatedAt: now - 20 * DAY,
-      });
       // 1. a completion inside the week, and one from before it
       const done = await todo(ctx, {
         statement: "file the form",
         status: "done",
         kind: "task",
-        batchId: batch,
         doneAt: now - 2 * DAY,
         updatedAt: now - 2 * DAY,
       });
@@ -224,10 +208,10 @@ describe("gatherWeeklyFacts", () => {
         await event(ctx, "surfaced", now - (5 - i) * DAY, { todoId: touched, data: { via: "digest" } });
       }
       await event(ctx, "status-changed", now - DAY, { todoId: touched, data: { to: "done" } });
-      // 5. a goal whose batch has an open task, and one whose batch has none
-      const goalWithTask = await todo(ctx, { statement: "paper submitted", kind: "goal", batchId: batch });
-      await todo(ctx, { statement: "write section 3", kind: "task", batchId: batch });
-      const goalAlone = await todo(ctx, { statement: "lease signed", kind: "goal", batchId: emptyBatch });
+      // 5. two goals and a task
+      const goalWithTask = await todo(ctx, { statement: "paper submitted", kind: "goal" });
+      await todo(ctx, { statement: "write section 3", kind: "task" });
+      const goalAlone = await todo(ctx, { statement: "lease signed", kind: "goal" });
       // 6. evaluated this week vs not for eight days
       await event(ctx, "session-outcome", now - DAY, { todoId: goalWithTask, data: { outcome: "completed" } });
       await event(ctx, "session-created", now - 8 * DAY, { todoId: goalAlone, data: {} });
@@ -309,7 +293,7 @@ describe("gatherWeeklyFacts", () => {
     const f = await gather(t);
 
     expect(f.completions).toEqual([
-      { id: seeded.done, statement: "file the form", kind: "task", batch: "the paper", doneAt: expect.any(Number) },
+      { id: seeded.done, statement: "file the form", kind: "task", doneAt: expect.any(Number) },
     ]);
     expect(f.captures.map((c) => [c.source, c.count])).toEqual([
       ["email", 1],
@@ -330,11 +314,8 @@ describe("gatherWeeklyFacts", () => {
     expect(f.surfacedUntouched).toEqual([
       { id: seeded.ignored, statement: "the ignored one", surfaced: 3, firstAt: expect.any(Number) },
     ]);
-    expect(f.goalsWithoutOpenTask).toEqual([
-      { id: seeded.goalAlone, statement: "lease signed", batch: "the lease" },
-    ]);
     expect(f.goalsNotEvaluated).toEqual([
-      { id: seeded.goalAlone, statement: "lease signed", batch: "the lease", lastEvaluatedAt: expect.any(Number) },
+      { id: seeded.goalAlone, statement: "lease signed", lastEvaluatedAt: expect.any(Number) },
     ]);
     expect(f.integrations).toEqual([
       { name: "gmail", state: "running", since: null, detail: null },
@@ -385,7 +366,7 @@ describe("gatherWeeklyFacts", () => {
   });
 
   // "Untouched" is about Tom's hand. The system writes rows on a todo all
-  // week — the preparer's "prepared", the planner's batch rows, the
+  // week — the preparer's "prepared", the
   // rollover's own date outcome, a Canvas edit — and none of them is Tom
   // doing something with the item.
   it("still lists a surfaced item the system touched, and drops one Tom touched", async () => {
@@ -408,8 +389,6 @@ describe("gatherWeeklyFacts", () => {
       });
       const synced = await make("moved by canvas");
       await event(ctx, "updated", now - DAY, { todoId: synced, data: { fields: ["dueAt"], via: "canvas-sync" } });
-      const batched = await make("put in a batch");
-      await event(ctx, "batch-formed", now - DAY, { todoId: batched, data: {} });
       // Tom's hand, each its own kind
       const noted = await make("noted by tom");
       await event(ctx, "tom-note", now - DAY, { todoId: noted, data: { text: "later" } });
@@ -419,44 +398,44 @@ describe("gatherWeeklyFacts", () => {
       await event(ctx, "updated", now - DAY, { todoId: edited, data: { fields: ["statement"] } });
       const ruled = await make("ruled on by tom");
       await event(ctx, "ruling", now - DAY, { todoId: ruled, data: { verdict: "archive" } });
-      return { prepared, rolled, synced, batched };
+      return { prepared, rolled, synced };
     });
     const f = await gather(t);
     expect(f.surfacedUntouched.map((s) => s.id).sort()).toEqual(
-      [seeded.prepared, seeded.rolled, seeded.synced, seeded.batched].sort(),
+      [seeded.prepared, seeded.rolled, seeded.synced].sort(),
     );
   });
 
-  // A goal is worked through its batch: the session is opened ON the batch
-  // (no todoId), so the evaluation is the batch's row, keyed on the batch.
-  it("counts a session on the goal's batch as an evaluation of the goal", async () => {
+  // Evaluated = a session row on the goal's own id. A row keyed on some
+  // other id (an old session opened on a batch) is not the goal's.
+  it("counts only a session on the goal itself as an evaluation of the goal", async () => {
     const t = convexTest({ schema, modules });
     const now = Date.now();
     const seeded = await t.run(async (ctx) => {
-      const mk = async (statement: string) =>
-        await ctx.db.insert("batches", { statement, status: "active", createdAt: now - 20 * DAY, updatedAt: now - 20 * DAY });
-      const worked = await mk("the paper");
-      const stale = await mk("the lease");
-      const never = await mk("the move");
-      const workedGoal = await todo(ctx, { statement: "paper submitted", kind: "goal", batchId: worked });
-      const staleGoal = await todo(ctx, { statement: "lease signed", kind: "goal", batchId: stale });
-      const neverGoal = await todo(ctx, { statement: "moved in", kind: "goal", batchId: never });
-      // this week, on the batch (the row the one row-builder writes)
+      const workedGoal = await todo(ctx, { statement: "paper submitted", kind: "goal" });
+      const staleGoal = await todo(ctx, { statement: "lease signed", kind: "goal" });
+      const keyedGoal = await todo(ctx, { statement: "moved in", kind: "goal" });
+      // this week, on the goal
       await event(ctx, "session-created", now - 2 * DAY, {
-        key: worked,
-        data: { sessionId: "s1", title: "work the paper", kind: "focus-item", mode: "autonomous", repos: [], batchId: worked },
+        todoId: workedGoal,
+        data: { sessionId: "s1", title: "work the paper", kind: "focus-item", mode: "autonomous", repos: [] },
       });
-      // nine days ago, on the batch: not this week, but a date to report
+      // nine days ago, on the goal: not this week, but a date to report
       await event(ctx, "session-outcome", now - 9 * DAY, {
-        key: stale,
-        data: { sessionId: "s0", title: "the lease", outcome: "completed", batchId: stale },
+        todoId: staleGoal,
+        data: { sessionId: "s0", title: "the lease", outcome: "completed" },
       });
-      return { workedGoal, staleGoal, neverGoal };
+      // this week, keyed on another id and not on the goal
+      await event(ctx, "session-created", now - DAY, {
+        key: "k57batchid",
+        data: { sessionId: "s2", title: "the move", kind: "focus-item", mode: "autonomous", repos: [] },
+      });
+      return { workedGoal, staleGoal, keyedGoal };
     });
     const f = await gather(t);
     expect(f.goalsNotEvaluated).toEqual([
-      { id: seeded.staleGoal, statement: "lease signed", batch: "the lease", lastEvaluatedAt: now - 9 * DAY },
-      { id: seeded.neverGoal, statement: "moved in", batch: "the move", lastEvaluatedAt: null },
+      { id: seeded.staleGoal, statement: "lease signed", lastEvaluatedAt: now - 9 * DAY },
+      { id: seeded.keyedGoal, statement: "moved in", lastEvaluatedAt: null },
     ]);
   });
 

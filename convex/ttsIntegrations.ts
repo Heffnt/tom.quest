@@ -79,7 +79,7 @@ export type DeclinedIntegration = {
  * ruling.
  *
  * Both halves are required. The archived status alone is not enough — an
- * agent, a batch archive, or a cleanup can archive a row, and none of those is
+ * agent or a cleanup can archive a row, and none of those is
  * Tom deciding. The ruling alone is not enough either: a later approve leaves
  * the archive ruling in the history, and the row's status is what says which
  * ruling is in force. Read together they mean one thing, which is why they are

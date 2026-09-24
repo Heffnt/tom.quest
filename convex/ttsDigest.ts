@@ -8,6 +8,7 @@ import {
   type BatchOutcome,
   type BrokenFact,
   type TodayFacts,
+  type TodoOutcome,
 } from "./ttsCompose";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
@@ -60,8 +61,8 @@ import { redactSecrets } from "../shared/redact.mjs";
 //   2. the objection list — what the delegate decided while he was asleep,
 //      numbered in printed order; silence means it stands
 //   3. the calendar — his day, WITH EVERY PRIVATE FEED'S ROWS DROPPED
-//   4. overnight — one line per BATCH saying what the batch now is, never one
-//      line per logged event
+//   4. overnight — one line per TODO saying what the sessions on it came to,
+//      never one line per logged event (Tom, 2026-09-24: no batches)
 //   5. broken — the jobs that failed, and what that means for him
 //
 // What LEFT the morning message in this round (§4.3): the WikiTom commit list
@@ -371,7 +372,8 @@ export async function gatherTodayFacts(
   // Names for the ids the sections actually touch, fetched one at a time and
   // remembered. The whole dtsTodos and batches tables were read here before —
   // two full-table scans that grow with the record forever, for a handful of
-  // lookups.
+  // lookups. The batch lookups below are KEPT FOR ONE ROLLOUT with the
+  // old-shape overnight facts they feed (BatchOutcome).
   const todoCache = new Map<string, Doc<"dtsTodos"> | null>();
   const todoOf = async (id: Id<"dtsTodos"> | undefined): Promise<Doc<"dtsTodos"> | null> => {
     if (id === undefined) return null;
@@ -501,9 +503,36 @@ export async function gatherTodayFacts(
       .take(EVENT_SCAN)
   ).reverse();
 
-  // OUTCOMES, NEVER LOGGED EVENTS. One line per BATCH, from every event in the
-  // window that named it: a night of five "plan stored" rows on one batch is
-  // ONE sentence about that batch.
+  // OUTCOMES, NEVER LOGGED EVENTS. One line per TODO, from every session
+  // event in the window that named it: a night of five sessions on one todo is
+  // ONE sentence about that todo. A session on no todo, or on a todo that is
+  // gone, joins the one tail row, printed last.
+  const byTodo = new Map<string, TodoOutcome>();
+  const todoOutcomeFor = async (
+    todoId: Id<"dtsTodos"> | undefined,
+    sessionId: string | undefined,
+  ): Promise<TodoOutcome> => {
+    const todo = await todoOf(todoId);
+    const key = todo === null ? "none" : (todo._id as string);
+    let row = byTodo.get(key);
+    if (row === undefined) {
+      row = {
+        todoId: todo === null ? null : (todo._id as string),
+        statement: todo?.statement ?? "Work on no item",
+        sessionId: null,
+        finished: 0,
+        running: false,
+      };
+      byTodo.set(key, row);
+    }
+    // Events are read oldest first, so the last one seen is the newest.
+    if (sessionId !== undefined) row.sessionId = sessionId;
+    return row;
+  };
+
+  // KEPT FOR ONE ROLLOUT: one row per BATCH, the old shape the box's
+  // un-rolled worker/jobs/write-slack.mjs writes from (BatchOutcome). Removed
+  // in the follow-up pull request that ends the widen step.
   const outcomes = new Map<string, BatchOutcome>();
   const outcomeFor = (batchId: string | null, statement: string): BatchOutcome => {
     const key = batchId ?? "none";
@@ -552,6 +581,8 @@ export async function gatherTodayFacts(
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     switch (e.kind) {
+      // "graph-stored" and "graph-batch-formed" feed only the old batch shape,
+      // KEPT FOR ONE ROLLOUT; the plan pass that wrote them is gone.
       case "graph-stored": {
         const batchId = str(d.batchId);
         const named = batchId
@@ -572,6 +603,7 @@ export async function gatherTodayFacts(
         const sessionId = str(d.sessionId);
         const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
         const session = rowId ? await ctx.db.get(rowId) : null;
+        (await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId)).finished += 1;
         const named =
           (await batchName(session?.batchId)) ?? (await batchOfTodo(session?.todoId ?? e.todoId));
         if (named !== null) outcomeFor(session?.batchId ?? null, named).finished += 1;
@@ -588,6 +620,9 @@ export async function gatherTodayFacts(
         const sessionId = str(d.sessionId);
         const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
         const session = rowId ? await ctx.db.get(rowId) : null;
+        const live = session !== null && LIVE_STATUSES.includes(session.status as never);
+        const todoRow = await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId);
+        if (live) todoRow.running = true;
         const named =
           (await batchName(session?.batchId)) ?? (await batchOfTodo(session?.todoId ?? e.todoId));
         if (named !== null) {
@@ -811,6 +846,10 @@ export async function gatherTodayFacts(
   const runners = await liveRunnerFacts(ctx);
 
   const overnight = [...outcomes.values()];
+  // The tail row, if any, last: it is the one line that names no todo.
+  const overnightByTodo = [...byTodo.values()].sort(
+    (a, b) => Number(a.todoId === null) - Number(b.todoId === null),
+  );
   return {
     day,
     today: dated,
@@ -838,6 +877,8 @@ export async function gatherTodayFacts(
       .sort((a, b) => a.rank - b.rank)
       .map(({ n }) => n),
     runners,
+    overnightByTodo,
+    // KEPT FOR ONE ROLLOUT (BatchOutcome): the old batch-grouped fields.
     overnight,
     batchesPlanned: overnight.length,
     batchesFinished: overnight.filter((o) => o.finished > 0).length,

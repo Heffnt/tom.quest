@@ -117,7 +117,10 @@ export function formRules(kind, canReply) {
           `     today, one line per item with its reason; no one else has told him`,
           `  4. runners — the box's live runners, one line each`,
           `  5. the calendar — the shape of his day`,
-          `  6. overnight — one line per batch saying what the batch now is`,
+          `  6. overnight — one line per todo saying what the sessions on it came`,
+          `     to, from the facts whose id starts "overnight-todo:"; the facts whose`,
+          `     id is "overnight:count" or starts "batch:" are kept for an older`,
+          `     writer, and no line cites them`,
           `  7. broken — what failed, and what that means for him`,
           `It must fit ONE Slack message: 3,900 characters rendered.`,
         ]

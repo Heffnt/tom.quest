@@ -45,7 +45,7 @@
 // prose they are "an incomprehensible wall of text"). Every explanation this
 // job writes is a complete self-contained HTML page, which the /tts page shows
 // fullscreen in a sandboxed, script-less iframe. The form is specified once,
-// in the writing standard that rides in on /tts/batch-context; the prompt
+// in the writing standard that rides in on /tts/planner-context; the prompt
 // below only names the requirement.
 //
 // REVISE RULINGS. Tom can rule "revise" with one written sentence on a life
@@ -125,7 +125,7 @@ export const PREPARED = "prepared";
  *
  * NOT the same thing as the `writingStandard` string the passes take. That
  * value is the published model-of-tom prelude, assembled by Convex and served
- * on /tts/batch-context (main() below refuses to run without it); it is PROSE
+ * on /tts/planner-context (main() below refuses to run without it); it is PROSE
  * FOR THE MODEL and has no rule objects in it. This is the executable half:
  * RULES (the HTML-document form), BRIEF_RULES (the four mechanical demands on
  * a stored brief) and briefFormRules() (the two of those four that bind any
@@ -320,7 +320,11 @@ export function prepareDoorFaults(parsed, standard) {
 
 /** A row inside a batch that is not a goal: a step of a graph, never prepared
  * on its own ("unprepared" is a task's resting state; briefing one would
- * flood the needs-me feed with plan steps). */
+ * flood the needs-me feed with plan steps). Batches went on 2026-09-24 and
+ * ttsMigrations.internalRemoveBatches clears every batchId, after which this
+ * matches nothing; it goes with the schema narrow, and until the migration has
+ * run it keeps the planner's own steps, about to be archived, from being
+ * prepared. */
 const isGraphTask = (t) =>
   t.batchId !== undefined && t.batchId !== null && t.kind !== "goal";
 
@@ -411,7 +415,7 @@ export async function prepareLifeTodos(
               layersKnown: false,
               layersGiven: [],
               layersDenied: [],
-              writingStandardSource: "/tts/batch-context",
+              writingStandardSource: "/tts/planner-context",
             },
             receipt,
           },
@@ -576,7 +580,7 @@ async function main() {
   };
 
   // --- Gather context (one read each) ----------------------------------------
-  const context = await convexFetch(env, "/tts/batch-context");
+  const context = await convexFetch(env, "/tts/planner-context");
   const { pending } = await convexFetch(env, "/tts/rulings");
 
   // The writing standard is the published write + know prelude. It rides this
@@ -591,7 +595,7 @@ async function main() {
   // server owns the clock (the /tts/state convention); the planner repeats it
   // back and never computes a day of its own.
   if (typeof context.nyCalendarDay !== "string") {
-    throw new Error("/tts/batch-context returned no nyCalendarDay");
+    throw new Error("/tts/planner-context returned no nyCalendarDay");
   }
 
   let failures = 0;

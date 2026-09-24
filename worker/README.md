@@ -256,7 +256,7 @@ matched case-insensitively, so `Integration: Outlook` is the same ruling.
 
 Both halves are required — the row must be **archived** *and* its newest ruling
 must be **archive**. An archived row alone is not a decision of his (a cleanup
-or a batch archive can archive a row), and a ruling alone is not either. Ruling
+can archive a row), and a ruling alone is not either. Ruling
 again takes the decline back: an approve after an archive re-enables the
 integration and leaves the history of having declined it. The Friday weekly
 gather lists integrations by state, with the ruling date.
@@ -794,7 +794,7 @@ working token with an empty string on the next sync.
 ## The hourly update channel (one-time)
 
 Every hour, 24/7, `internal.ttsSync.sendHourlyUpdate` posts to `#tts-hourly`:
-what the box is running now, which batches were worked since the last update,
+what the box is running now, which todos were worked since the last update,
 what changed since the last update (captures, completions, archives, rulings,
 date outcomes, failures, each with its link) — or one line saying nothing did.
 It goes through the one Slack door in `convex/ttsSync.ts` like every other

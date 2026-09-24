@@ -61,7 +61,7 @@ function grantBlock(granted: string[], refused: string[] = []): string {
 
 const NO_BODY = "no published body at this commit";
 
-type Ids = { todos: Record<string, Id<"dtsTodos">>; batches: Record<string, Id<"batches">> };
+type Ids = { todos: Record<string, Id<"dtsTodos">> };
 
 /** The fixture as rows: the base publication (operate alone), one
  * modelOfTomFiles row per page, the catalog, the repo rules, and the record the
@@ -124,16 +124,6 @@ async function seed(
         syncedAt: COMMITTED_AT,
       });
     }
-    const batches: Record<string, Id<"batches">> = {};
-    for (const batch of record.batches) {
-      batches[batch.id] = await ctx.db.insert("batches", {
-        statement: batch.id,
-        status: "active",
-        repos: batch.repos,
-        createdAt: 1,
-        updatedAt: 1,
-      });
-    }
     const todos: Record<string, Id<"dtsTodos">> = {};
     for (const todo of record.todos) {
       todos[todo.id] = await ctx.db.insert("dtsTodos", {
@@ -144,7 +134,6 @@ async function seed(
         dueAt: todo.dueDay === undefined ? undefined : at(todo.dueDay),
         category: todo.category,
         brief: todo.brief,
-        batchId: todo.batchId === undefined ? undefined : batches[todo.batchId],
         source: "manual",
         createdAt: 1,
         updatedAt: 1,
@@ -152,9 +141,8 @@ async function seed(
     }
     for (const ruling of record.rulings) {
       await ctx.db.insert("dtsRulings", {
-        subjectType: ruling.todoId === undefined ? "batch" : "life",
-        todoId: ruling.todoId === undefined ? undefined : todos[ruling.todoId],
-        batchId: ruling.batchId === undefined ? undefined : batches[ruling.batchId],
+        subjectType: "life",
+        todoId: todos[ruling.todoId],
         verdict: ruling.verdict as "approve" | "revise" | "session" | "archive",
         sentence: ruling.sentence,
         ruledAt: at(ruling.ruledDay),
@@ -166,7 +154,6 @@ async function seed(
         kind: "adhoc",
         repos: session.repos,
         repo: session.repos?.[0] ?? "none",
-        batchId: session.batchId === undefined ? undefined : batches[session.batchId],
         status: session.outcome === "errored" ? "failed" : "ended",
         statusChangedAt: at(session.endedDay),
         outcome: session.outcome as "completed" | "errored",
@@ -175,7 +162,7 @@ async function seed(
         createdAt: 1,
       });
     }
-    return { todos, batches };
+    return { todos };
   });
 }
 
@@ -228,10 +215,12 @@ describe("assembleContext", () => {
   it("grants a repo skill when the brief names paths in it, with its rulings and prior outcomes", async () => {
     const t = convexTest({ schema, modules });
     const ids = await seed(t);
-    const context = await assemble(t, { kind: "todo", todoId: ids.todos[IDS.paths] });
+    // The repositories come from the caller (a session's repos): a todo
+    // declares none of its own since batches went.
+    const context = await assemble(t, { kind: "todo", todoId: ids.todos[IDS.paths], repos: ["tom.quest"] });
     const granted = ["write", "know-agent-systems", "know-intent", "repo-tom-quest"];
     expect(context.granted).toEqual(granted);
-    expect(context.grants).toBe(`${grantBlock(granted)}\n\nRULINGS ON THIS SUBJECT\n- 2026-09-03 approve: ship it\n- 2026-09-02 revise: smaller steps\n- 2026-09-01 approve: again\nRECENT SESSION OUTCOMES\n- 2026-09-08 completed: the prelude landed\n- 2026-09-07 errored: the daemon died\n- 2026-09-06 completed: the search tool landed`);
+    expect(context.grants).toBe(`${grantBlock(granted)}\n\nRECENT SESSION OUTCOMES\n- 2026-09-08 completed: the prelude landed\n- 2026-09-07 errored: the daemon died\n- 2026-09-06 completed: the search tool landed`);
     // Convex has no cwd, so the native-rules rule is inert here — see the cwd
     // gap at assembleContext.
     expect(context.repoRulesSource).toBeNull();
@@ -267,47 +256,10 @@ describe("assembleContext", () => {
     }
   });
 
-  it("keeps batch outcomes ahead of newer same-repository outcomes", async () => {
-    const t = convexTest({ schema, modules });
-    const ids = await seed(t);
-    await t.run(async (ctx) => {
-      await ctx.db.patch(ids.batches[IDS.memberBatch], { repos: ["tom.quest"] });
-      for (const [endedDay, outcomeSummary, batchId] of [
-        ["2026-09-09", "the batch outcome", ids.batches[IDS.memberBatch]],
-        ["2026-09-10", "the oldest repository outcome", undefined],
-        ["2026-09-11", "the middle repository outcome", undefined],
-        ["2026-09-12", "the newest repository outcome", undefined],
-      ] as const) {
-        await ctx.db.insert("claudeSessions", {
-          title: outcomeSummary,
-          kind: "adhoc",
-          repo: "tom.quest",
-          repos: ["tom.quest"],
-          batchId,
-          status: "ended",
-          statusChangedAt: at(endedDay),
-          outcome: "completed",
-          outcomeSummary,
-          nextSeq: 0,
-          createdAt: 1,
-        });
-      }
-    });
-
-    const context = await assemble(t, { kind: "batch", batchId: ids.batches[IDS.memberBatch] });
-    const outcomes = context.grants.split("RECENT SESSION OUTCOMES\n")[1].split("\n");
-    expect(outcomes).toEqual([
-      "- 2026-09-09 completed: the batch outcome",
-      "- 2026-09-12 completed: the newest repository outcome",
-      "- 2026-09-11 completed: the middle repository outcome",
-    ]);
-  });
-
   it("fills repository outcome slots by recency across terminal statuses", async () => {
     const t = convexTest({ schema, modules });
     const ids = await seed(t);
     await t.run(async (ctx) => {
-      await ctx.db.patch(ids.batches[IDS.memberBatch], { repos: ["tom.quest"] });
       for (const [endedDay, status, outcome, outcomeSummary] of [
         ["2026-09-09", "ended", "completed", "oldest ended"],
         ["2026-09-10", "ended", "completed", "middle ended"],
@@ -329,7 +281,7 @@ describe("assembleContext", () => {
       }
     });
 
-    const context = await assemble(t, { kind: "batch", batchId: ids.batches[IDS.memberBatch] });
+    const context = await assemble(t, { kind: "todo", todoId: ids.todos[IDS.member1], repos: ["tom.quest"] });
     const outcomes = context.grants.split("RECENT SESSION OUTCOMES\n")[1].split("\n");
     expect(outcomes).toEqual([
       "- 2026-09-12 errored: newer failed",
@@ -367,16 +319,6 @@ describe("assembleContext", () => {
     const context = await assemble(t, { kind: "todo", todoId: ids.todos[IDS.paths] });
     expect(context.grants).not.toContain("OVERLONG-RULING-");
     expect(context.grants).not.toContain("OVERLONG-OUTCOME-");
-  });
-
-  it("grants a batch at most two areas, by todo count then name", async () => {
-    const t = convexTest({ schema, modules });
-    const ids = await seed(t);
-    const context = await assemble(t, { kind: "batch", batchId: ids.batches[IDS.memberBatch] });
-    // Four members: two climbing, one admin, one research. Climbing and admin
-    // take the two places; research does not.
-    expect(context.granted).toEqual(["write", "know-admin", "know-climbing", "know-intent"]);
-    expect(context.granted.filter((name) => name.startsWith("know-") && name !== "know-intent")).toHaveLength(2);
   });
 
   it("assembles byte-identically twice at one commit and one day", async () => {
@@ -504,8 +446,7 @@ describe("assembleContext", () => {
     const ids = await seed(t);
     for (const subject of [
       { kind: "none" } as const,
-      { kind: "todo", todoId: ids.todos[IDS.paths] } as const,
-      { kind: "batch", batchId: ids.batches[IDS.memberBatch] } as const,
+      { kind: "todo", todoId: ids.todos[IDS.paths], repos: ["tom.quest"] } as const,
     ]) {
       const context = await assemble(t, subject);
       expect(context.bytes.grants).toBeLessThan(512);
@@ -620,13 +561,14 @@ describe("insertSession's context", () => {
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "a session with prior work",
       kind: "focus-item",
-      repo: "none",
-      todoId: ids.todos[IDS.paths],
+      // The session's repos reach its context: the prior outcomes in them.
+      repos: ["tom.quest"],
+      todoId: ids.todos[IDS.oversize],
       initialPrompt: "THE MISSION BODY",
     });
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
     const text = inbound[0].text ?? "";
-    expect(text).toContain("RULINGS ON THIS SUBJECT\n- 2026-09-03 approve: ship it");
+    expect(text).toContain("RULINGS ON THIS SUBJECT\n- 2026-09-05 revise: narrow it first");
     expect(text).toContain("RECENT SESSION OUTCOMES\n- 2026-09-08 completed: the prelude landed");
     expect(text.indexOf("RECENT SESSION OUTCOMES")).toBeLessThan(text.indexOf("THE MISSION BODY"));
   });
@@ -714,7 +656,7 @@ describe("insertSession's context", () => {
       });
     });
     expect(context.granted.length).toBeGreaterThan(0);
-    // Two `get`s (the todo and its batch); everything else is an indexed,
+    // One `get` (the todo); everything else is an indexed,
     // take()-bounded query.
     expect(reads).toBeLessThan(SESSION_SCAN_MAX + 20);
   });
