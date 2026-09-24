@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
@@ -318,8 +318,15 @@ describe("POST /tts/canvas-assignments", () => {
 // does not read. This route is how an expired Canvas token becomes a line in
 // the morning digest instead.
 describe("POST /tts/job-failed", () => {
+  // A report schedules its #tts-broken send. Fake timers hold it until a test
+  // runs it on purpose, so no send fires after its own test has ended.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   async function report(
@@ -416,6 +423,70 @@ describe("POST /tts/job-failed", () => {
     await report(t, { job: "poll-canvas", error: "one bad run" });
     await report(t, { job: "poll-canvas", error: "another bad run" });
     expect(await failures(t)).toHaveLength(4);
+  });
+
+  // #TTS-BROKEN GETS A LINE PER DISTINCT FAILURE. This route once inserted its
+  // row beside logEvent rather than through it, so postBroken never ran and no
+  // box job's failure (runs-sweep, deploy, the needs-you drop) ever reached
+  // #tts-broken, while the comments here said the digest carried it there.
+  const brokenScheduled = async (t: ReturnType<typeof convexTest>) =>
+    await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect())
+        .filter((job) => job.name.includes("sendBroken"))
+        .map((job) => job.args[0] as { job: string; detail?: string }),
+    );
+
+  it("schedules one #tts-broken line for a report, and none for a condition already standing", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const failure = {
+      job: "runs-sweep",
+      error: "the sweep could not read the run table",
+      key: "runs-sweep:read",
+    };
+    expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
+    const first = await brokenScheduled(t);
+    expect(first).toHaveLength(1);
+    expect(first[0].job).toBe("runs-sweep");
+    expect(first[0].detail).toBe(failure.error);
+
+    // The same condition again the same day: suppressed as standing, so it
+    // schedules nothing at all.
+    expect(await (await report(t, failure)).json()).toMatchObject({ reported: false });
+    expect(await brokenScheduled(t)).toHaveLength(1);
+  });
+
+  it("posts exactly one #tts-broken line per job per day, however many reports", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "C0BROKEN");
+    const posts: { channel: string; text: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
+        posts.push({ channel: body.channel, text: body.text });
+        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
+      }),
+    );
+    const t = convexTest({ schema, modules });
+    // Unkeyed, so each report is its own row; the line is still one per job.
+    // Each report's scheduled send runs before the next report arrives, as a
+    // poller's ticks would.
+    for (const body of [
+      { job: "deploy", error: "vercel build failed" },
+      { job: "deploy", error: "vercel build failed again" },
+      { job: "runs-sweep", error: "sweep failed" },
+    ]) {
+      await report(t, body);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    }
+
+    expect(await failures(t)).toHaveLength(3);
+    const broken = posts.filter((p) => p.channel === "C0BROKEN");
+    expect(broken).toHaveLength(2);
+    expect(broken.filter((p) => p.text.includes("deploy"))).toHaveLength(1);
+    expect(broken.filter((p) => p.text.includes("runs-sweep"))).toHaveLength(1);
   });
 
   it("refuses a blank key on either route, and an unnamed clean run", async () => {
