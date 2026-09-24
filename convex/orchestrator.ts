@@ -105,8 +105,27 @@ export const INITIAL_DOCUMENT = [
  * weekly cap every Codex model is out, and Fable runs it (the agent rules put
  * Opus at the cap for a box run; the orchestrator's own ruling names Fable as
  * its fallback, so Fable it is).
+ *
+ * The model ceiling (worker/runs/models.mjs) is applied where every session
+ * starts, the daemon's modelSpec: while the heartbeat's fableAvailability says
+ * Fable is unavailable, a session asked for Fable runs Opus, and the first
+ * Fable probe that answers lifts it. So the choice stays "fable", and only
+ * the recorded reason says the ceiling is in force.
  */
-type Health = { codexModels?: string[]; codexUsage?: { weeklyUsedPercent: number; readAt: number } } | null;
+type Health = {
+  codexModels?: string[];
+  codexUsage?: { weeklyUsedPercent: number; readAt: number };
+  fableAvailability?: { available: boolean };
+} | null;
+
+/** The Fable choice, its reason naming the ceiling while it is in force. */
+function fableChoice(health: Health, why: string): { model: SessionModel; reason: string } {
+  const atCeiling = health?.fableAvailability?.available === false;
+  return {
+    model: "fable",
+    reason: atCeiling ? `${why}, so Fable, which runs as Opus at the model ceiling while Fable is unavailable on the box` : `${why}, so Fable`,
+  };
+}
 
 /** True when a fresh reading puts Codex's weekly usage at or past the cap,
  * the same test the auto-session scheduler applies. */
@@ -117,7 +136,7 @@ function codexCapped(health: Health, now: number): boolean {
 
 export function orchestratorModel(health: Health, now: number): { model: SessionModel; reason: string } {
   if (codexCapped(health, now)) {
-    return { model: "fable", reason: `Codex's weekly usage is at ${Math.round(health!.codexUsage!.weeklyUsedPercent)}%, past the ${CODEX_WEEKLY_CAP_PERCENT}% cap, so Fable` };
+    return fableChoice(health, `Codex's weekly usage is at ${Math.round(health!.codexUsage!.weeklyUsedPercent)}%, past the ${CODEX_WEEKLY_CAP_PERCENT}% cap`);
   }
   const listed = health?.codexModels;
   if (listed === undefined) {
@@ -125,7 +144,7 @@ export function orchestratorModel(health: Health, now: number): { model: Session
   }
   if (listed.includes("gpt-6-astra")) return { model: "gpt-6-astra", reason: "the box's Codex CLI lists gpt-6-astra" };
   if (listed.includes("gpt-5.6-sol")) return { model: "gpt-5.6-sol", reason: "the box's Codex CLI does not list Astra, so gpt-5.6-sol" };
-  return { model: "fable", reason: "the box's Codex CLI lists neither Astra nor gpt-5.6-sol, so Fable" };
+  return fableChoice(health, "the box's Codex CLI lists neither Astra nor gpt-5.6-sol");
 }
 
 export function crashBackoffMs(crashes: number): number {

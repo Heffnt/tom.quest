@@ -123,6 +123,12 @@ describe("orchestratorModel", () => {
     expect(orchestratorModel({ codexModels: ["gpt-6-astra"], codexUsage: { weeklyUsedPercent: 95, readAt: now } }, now).model).toBe("fable");
     expect(orchestratorModel({ codexModels: ["gpt-6-astra"], codexUsage: { weeklyUsedPercent: 95, readAt: 0 } }, now).model).toBe("gpt-6-astra");
   });
+  it("keeps Fable under the model ceiling and records that it runs as Opus", () => {
+    const capped = orchestratorModel({ codexModels: [], fableAvailability: { available: false } }, now);
+    expect(capped.model).toBe("fable");
+    expect(capped.reason).toContain("runs as Opus at the model ceiling");
+    expect(orchestratorModel({ codexModels: [], fableAvailability: { available: true } }, now).reason).not.toContain("ceiling");
+  });
 });
 
 describe("crashBackoffMs", () => {
