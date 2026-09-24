@@ -1792,7 +1792,9 @@ export default defineSchema({
     // with the heartbeat. The scheduler's weekly gate reads it: at or past
     // CODEX_WEEKLY_CAP_PERCENT (ttsShared) the fleet starts no Codex session.
     // The five-hour figure is recorded but NOT gated on (Tom, 2026-09-04) —
-    // that window refills by itself while the week does not. `readAt` is the
+    // that window refills by itself while the week does not — and it is
+    // absent when the account reports no five-hour window at all (codex-cli
+    // 0.153 on a "prolite" plan reports only the weekly one). `readAt` is the
     // instant the reading was TAKEN, not the instant it was reported: the
     // daemon keeps resending its last successful reading unchanged while later
     // reads fail, so an old readAt means "nobody has managed to ask Codex for a
@@ -1802,7 +1804,7 @@ export default defineSchema({
     codexUsage: v.optional(
       v.object({
         weeklyUsedPercent: v.number(),
-        fiveHourUsedPercent: v.number(),
+        fiveHourUsedPercent: v.optional(v.number()),
         weeklyResetsAt: v.optional(v.number()),
         readAt: v.number(),
       }),

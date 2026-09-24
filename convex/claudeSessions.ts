@@ -1499,11 +1499,12 @@ export const internalPoll = internalMutation({
     // keeps resending its last successful reading with that reading's OWN
     // readAt while later reads fail, so age is the signal. Unknown admits: a
     // daemon that cannot read the CLI must not freeze the fleet. Reported on
-    // the same throttled heartbeat as `load`.
+    // the same throttled heartbeat as `load`. The five-hour figure is absent
+    // when the account reports no such window (schema.ts says which plans).
     codexUsage: v.optional(
       v.object({
         weeklyUsedPercent: v.number(),
-        fiveHourUsedPercent: v.number(),
+        fiveHourUsedPercent: v.optional(v.number()),
         weeklyResetsAt: v.optional(v.number()),
         readAt: v.number(),
       }),

@@ -92,3 +92,58 @@ describe("codexArgs has one home", () => {
     expect(query.codexArgs).toBe(bin.codexArgs);
   });
 });
+
+// The one parse of account/rateLimits/read. The windows are told apart by
+// windowDurationMins, not by position: the 0.153.3 fixture is the real
+// answer the box got on 2026-09-21 (weekly window alone, in `primary`,
+// `secondary: null`), which the positional read rejected on every daemon
+// start; the 0.130 shape is the one that read was written against.
+describe("parseCodexRateLimits", () => {
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(here, "fixtures", "codex-rate-limits-0.153.3.json"), "utf8"),
+  );
+
+  it("reads codex-cli 0.153.3: the weekly window alone, in primary", async () => {
+    const { parseCodexRateLimits } = await load({ bin: FAKE });
+    expect(parseCodexRateLimits(fixture.rateLimits)).toEqual({
+      weeklyUsedPercent: 51,
+      weeklyResetsAt: 1790414227 * 1000,
+    });
+  });
+
+  it("still reads codex-cli 0.130: 5-hour in primary, weekly in secondary", async () => {
+    const { parseCodexRateLimits } = await load({ bin: FAKE });
+    const limits = {
+      primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1757000000 },
+      secondary: { usedPercent: 34, windowDurationMins: 10080, resetsAt: 1757500000 },
+    };
+    expect(parseCodexRateLimits(limits)).toEqual({
+      weeklyUsedPercent: 34,
+      fiveHourUsedPercent: 12,
+      weeklyResetsAt: 1757500000 * 1000,
+    });
+  });
+
+  it("reads the windows swapped, by duration rather than position", async () => {
+    const { parseCodexRateLimits } = await load({ bin: FAKE });
+    const limits = {
+      primary: { usedPercent: 34, windowDurationMins: 10080 },
+      secondary: { usedPercent: 12, windowDurationMins: 300 },
+    };
+    expect(parseCodexRateLimits(limits)).toEqual({ weeklyUsedPercent: 34, fiveHourUsedPercent: 12 });
+  });
+
+  it("throws the shape when no weekly window is present", async () => {
+    const { parseCodexRateLimits } = await load({ bin: FAKE });
+    for (const limits of [
+      undefined,
+      null,
+      {},
+      { primary: null, secondary: null },
+      { primary: { usedPercent: 12, windowDurationMins: 300 }, secondary: null },
+      { primary: { usedPercent: "51", windowDurationMins: 10080 }, secondary: null },
+    ]) {
+      expect(() => parseCodexRateLimits(limits)).toThrow(/unexpected rateLimits shape/);
+    }
+  });
+});
