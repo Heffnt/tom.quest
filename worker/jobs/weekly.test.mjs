@@ -14,7 +14,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import {
   CADENCE_LINE,
@@ -52,15 +53,9 @@ const SINCE = UNTIL - 7 * DAY;
 // run test reads the machine it happens to be running on (readGoldenSet).
 const NO_GOLDEN = path.join(os.tmpdir(), "weekly-test-no-tom-quest-checkout");
 
-const tmpDirs = [];
 function tmp() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "weekly-"));
-  tmpDirs.push(dir);
-  return dir;
+  return tempDir("weekly-");
 }
-afterEach(() => {
-  for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-});
 
 function write(dir, rel, content) {
   const abs = path.join(dir, rel);

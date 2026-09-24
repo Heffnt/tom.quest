@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 
 import {
   AGENT_RULES_THRESHOLD_LF_BYTES,
@@ -286,7 +287,7 @@ function write(root, rel, body) {
 
 /** A WikiTom and a tom.quest, both minimal, both complete enough to generate. */
 function makeCheckouts(overrides = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vocabulary-"));
+  const root = tempDir("vocabulary-");
   const wikitom = path.join(root, "wikitom");
   const tomQuest = path.join(root, "tom.quest");
   write(wikitom, "tts/spec.md", overrides.spec ?? SPEC);
@@ -338,9 +339,7 @@ async function withConstant(line, replacement) {
     .replace(/from "\.\/(graph\.mjs|closed-vocabulary\.mjs)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, "scripts", rel)).href}"`);
   // Inside the project root: the test runner resolves a dynamic import only
   // under the root it was started in.
-  const root = path.join(REPO_ROOT, "node_modules", ".vocabulary-variants");
-  fs.mkdirSync(root, { recursive: true });
-  const dir = fs.mkdtempSync(path.join(root, "v-"));
+  const dir = tempDir(".vocabulary-variant-", path.join(REPO_ROOT, "node_modules"));
   const file = path.join(dir, "vocabulary.mjs");
   fs.writeFileSync(file, source, "utf8");
   return import(pathToFileURL(file).href);

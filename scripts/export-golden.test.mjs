@@ -1,8 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   buildGoldenSet,
   buildItem,
@@ -21,14 +20,9 @@ import {
   splitPrelude,
   summariseRuns,
 } from "./export-golden.mjs";
+import { tempDir } from "../test/temp.mjs";
 
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "core.autocrlf=false"];
-const dirs = [];
-
-afterEach(() => {
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
-
 function git(dir, at, ...args) {
   const stamp = new Date(at).toISOString();
   return execFileSync("git", ["-c", `safe.directory=${fs.realpathSync.native(dir)}`, "-C", dir, ...IDENTITY, ...args], {
@@ -43,8 +37,7 @@ const T2 = Date.UTC(2026, 8, 3, 12);
 
 /** A WikiTom-shaped checkout with two snapshot commits of one table. */
 function fixture(rowsAtT1, rowsAtT2) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "export-golden-"));
-  dirs.push(dir);
+  const dir = tempDir("export-golden-");
   execFileSync("git", ["init", "-q", "-b", "main", dir]);
   const file = path.join(dir, "tts", "snapshot", "dtsTodos.jsonl");
   fs.mkdirSync(path.dirname(file), { recursive: true });

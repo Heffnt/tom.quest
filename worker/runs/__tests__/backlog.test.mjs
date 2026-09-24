@@ -3,10 +3,10 @@
 // a synthetic sessions/ archive built from them.
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import {
   claudeAssistant,
@@ -33,7 +33,7 @@ import {
 import { deletable, stateFileFor, storeText } from "../sweep.mjs";
 
 const NOW = Date.parse("2026-09-01T00:00:00.000Z");
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-backlog-"));
+const temp = () => tempDir("runs-backlog-");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const REMOVERS = ["unlink", "unlinkSync", "rm", "rmSync", "rmdir", "rmdirSync", "truncate", "truncateSync"];
 

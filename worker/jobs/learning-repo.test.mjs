@@ -3,8 +3,8 @@
 // already a rule, and moving an entry from its proposed heading to the live
 // one once the line is in the repository.
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
@@ -38,7 +38,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const CHECKER = fs.readFileSync(path.join(here, "fixtures", "check-evidence.mjs"), "utf8");
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "repo-learn-"));
+  return tempDir("repo-learn-");
 }
 function write(dir, rel, content) {
   const abs = path.join(dir, rel);

@@ -13,12 +13,12 @@
 // that is why it is one of the two files the script exempts by name.
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
+import { tempDir } from "../test/temp.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-vocabulary.mjs");
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,7 +52,7 @@ function sharedBlock({ version = VERSION, nodeKinds = NODE_KINDS, edgeKinds = ED
 
 /** A tree that passes all eight. `files` replaces or adds paths on top of it. */
 function fixture(files = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "check-vocabulary-"));
+  const dir = tempDir("check-vocabulary-");
   const base = {
     // COPIED FROM THE REPOSITORY, not written by hand: check 8 asserts that the
     // generator's regex reads every key the imported SKILL_SHAPES declares, and

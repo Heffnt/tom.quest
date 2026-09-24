@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import {
   areaResults,
@@ -25,10 +26,6 @@ import { buildGraph, lineId } from "./graph.mjs";
 import { serializeGraph } from "../../scripts/graph.mjs";
 import { writeRegistration } from "../runs/registration.mjs";
 
-const temporary = [];
-afterEach(() => {
-  for (const dir of temporary.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
 
 describe("formatDatabaseResult", () => {
   it("starts with stable id and day, collapses values, and preserves the server URL", () => {
@@ -61,8 +58,7 @@ describe("purpose-shaped formatters", () => {
 
 describe("archive search", () => {
   it("streams gzipped JSONL and bounds the returned matching excerpt", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const archive = path.join(root, "sessions", "2026", "09", "09");
     fs.mkdirSync(archive, { recursive: true });
     const token = `gho_${"A".repeat(36)}`;
@@ -86,8 +82,7 @@ describe("local search parsing", () => {
   });
 
   it("lists all areas as frontmatter-only summaries and reads protected sections by name", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const areas = path.join(root, "model-of-tom", "areas");
     fs.mkdirSync(areas, { recursive: true });
     fs.writeFileSync(path.join(areas, "alpha.md"), "---\nupdated: 2026-09-05\nreviewed: 2026-09-06\n---\n## Current state\nReady now\n");
@@ -110,8 +105,7 @@ describe("local search parsing", () => {
   });
 
   it("limits areas all to the shared default", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const areas = path.join(root, "model-of-tom", "areas");
     fs.mkdirSync(areas, { recursive: true });
     for (let i = 0; i < 21; i += 1) fs.writeFileSync(path.join(areas, `area-${String(i).padStart(2, "0")}.md`), `# ${i}\n`);
@@ -131,8 +125,7 @@ describe("search CLI output boundaries", () => {
   });
 
   it("reports a missing archive as text or JSON and exits 3", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const text = [];
     expect(await runSearchCli(["archive", "needle"], { env: { WIKITOM_DIR: root }, write: (line) => text.push(line), error: () => {} })).toBe(3);
     expect(text).toEqual([`tts-search: no session archive at ${path.join(root, "sessions")}`]);
@@ -144,16 +137,14 @@ describe("search CLI output boundaries", () => {
 
   it("redacts credential-shaped paths in missing archive and filesystem errors", async () => {
     const token = `gho_${"A".repeat(36)}`;
-    const missingRoot = path.join(os.tmpdir(), `tts-search-${token}`);
+    const missingRoot = path.join(tempDir("tts-search-"), `tts-search-${token}`);
     fs.mkdirSync(missingRoot, { recursive: true });
-    temporary.push(missingRoot);
     const missing = [];
     expect(await runSearchCli(["archive", "needle"], { env: { WIKITOM_DIR: missingRoot }, write: (line) => missing.push(line), error: () => {} })).toBe(3);
     expect(missing[0]).toContain("[redacted:github]");
     expect(missing[0]).not.toContain(token);
 
-    const errorRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(errorRoot);
+    const errorRoot = tempDir("tts-search-");
     const archive = path.join(errorRoot, "sessions", "2026", "09", "09");
     fs.mkdirSync(archive, { recursive: true });
     fs.writeFileSync(path.join(archive, `${token}.gz`), "not gzip");
@@ -190,8 +181,7 @@ describe("search CLI output boundaries", () => {
   });
 
   it("filters archive rows by --since through the injected WikiTom root", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     for (const day of ["08", "09"]) {
       const archive = path.join(root, "sessions", "2026", "09", day);
       fs.mkdirSync(archive, { recursive: true });
@@ -204,8 +194,7 @@ describe("search CLI output boundaries", () => {
   });
 
   it("stops archive matching at --limit even when matches span files", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const archive = path.join(root, "sessions", "2026", "09", "09");
     fs.mkdirSync(archive, { recursive: true });
     for (const name of ["first.jsonl", "second.jsonl", "third.jsonl"]) {
@@ -225,8 +214,7 @@ describe("search CLI output boundaries", () => {
 // `proposals` is what a run about to edit a nested AGENTS.md reads first.
 describe("evidence search", () => {
   function vault() {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const dir = path.join(root, "model-of-tom", "evidence", "areas");
     fs.mkdirSync(dir, { recursive: true });
     return { root, dir };
@@ -297,8 +285,7 @@ describe("evidence search", () => {
   });
 
   it("reports a missing evidence directory as text or JSON and exits 3, like the archive", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const text = [];
     expect(await runSearchCli(["evidence", "needle"], { env: { WIKITOM_DIR: root }, write: (line) => text.push(line), error: () => {} })).toBe(3);
     expect(text).toEqual([`tts-search: no evidence directory at ${path.join(root, "model-of-tom", "evidence")}`]);
@@ -468,8 +455,7 @@ describe("repository-rule proposals", () => {
 // skills directory, so the answer is exactly what this run could load.
 describe("installed skills", () => {
   function installed() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tts-skills-"));
-    temporary.push(dir);
+    const dir = tempDir("tts-skills-");
     const publish = (name, description, body, references = {}) => {
       const skill = path.join(dir, name);
       fs.mkdirSync(skill, { recursive: true });
@@ -553,8 +539,7 @@ describe("installed skills", () => {
 
   it("refuses an unknown name with its near misses and appends the refusal to the run's envelope", async () => {
     const dir = installed();
-    const state = fs.mkdtempSync(path.join(os.tmpdir(), "tts-skills-reg-"));
-    temporary.push(state);
+    const state = tempDir("tts-skills-reg-");
     const spoolDir = path.join(state, "registration");
     const token = "77777777-7777-4777-8777-777777777777";
     writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1 });
@@ -610,8 +595,7 @@ describe("installed skills", () => {
   });
 
   it("does not read a catalog without launcher identity and reports the notice in both forms", async () => {
-    const env = { HOME: fs.mkdtempSync(path.join(os.tmpdir(), "tts-unidentified-skills-")) };
-    temporary.push(env.HOME);
+    const env = { HOME: tempDir("tts-unidentified-skills-") };
     expect(runningCli(env)).toBeNull();
     const plain = [];
     expect(await runSearchCli(["skills"], { env, write: (line) => plain.push(line), error: () => {} })).toBe(0);
@@ -622,8 +606,7 @@ describe("installed skills", () => {
   });
 
   it("does not read a stale Claude catalog during a Codex run", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tts-cli-catalog-"));
-    temporary.push(home);
+    const home = tempDir("tts-cli-catalog-");
     const claude = path.join(home, ".claude", "skills", "tom-write");
     const codexHome = path.join(home, "custom-codex");
     const codex = path.join(codexHome, "skills", "tom-write");
@@ -710,8 +693,7 @@ describe("the graph", () => {
   const infer = lineId("- Mark what you infer about him.");
 
   function vault() {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const graph = buildGraph({
       pages: [
         { path: "model-of-tom/agent-rules.md", body: AGENT_RULES },
@@ -860,8 +842,7 @@ describe("the graph", () => {
   });
 
   it("reports a missing tts/graph.json as text or JSON and exits 3, like the archive", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const text = await run(["node", "area:research"], root);
     expect(text.code).toBe(3);
     expect(text.output).toEqual([`tts-search: no graph at ${path.join(root, "tts", "graph.json")}`]);
@@ -936,8 +917,7 @@ describe("the vocabulary", () => {
   };
 
   function vault(body = FILE) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     fs.mkdirSync(path.join(root, "tts"), { recursive: true });
     fs.writeFileSync(path.join(root, "tts", "vocabulary.json"), `${JSON.stringify(body, null, 2)}\n`);
     return root;
@@ -1007,8 +987,7 @@ describe("the vocabulary", () => {
   });
 
   it("reports a missing tts/vocabulary.json as text or JSON and exits 3", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
-    temporary.push(root);
+    const root = tempDir("tts-search-");
     const text = await run(["define", "batch"], root);
     expect(text.code).toBe(3);
     expect(text.output).toEqual([`tts-search: no vocabulary at ${path.join(root, "tts", "vocabulary.json")}`]);

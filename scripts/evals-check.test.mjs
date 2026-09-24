@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 import { noItemTrailer as rowTrailer } from "../shared/evals-row.mjs";
 import {
   COVERAGE_NOT_REQUIRED,
@@ -398,33 +398,29 @@ describe("unaffectedBy", () => {
 // move a delete and an add, and the delete is watched.
 describe("the changed-path diff", () => {
   it("sees a watched file moved out of a watched directory", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "evals-rename-"));
+    const dir = tempDir("evals-rename-");
     const git = (...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    try {
-      git("init", "-q", "-b", "main");
-      git("config", "user.email", "t@example.com");
-      git("config", "user.name", "t");
-      mkdirSync(path.join(dir, "model-of-tom"), { recursive: true });
-      writeFileSync(path.join(dir, "model-of-tom", "intent.md"), ["a line", "and another", ""].join("\n"));
-      git("add", "-A");
-      git("commit", "-qm", "base");
-      const base = git("rev-parse", "HEAD").trim();
-      mkdirSync(path.join(dir, "docs"), { recursive: true });
-      git("mv", "model-of-tom/intent.md", "docs/intent.md");
-      git("commit", "-qm", "move it out");
-      const head = git("rev-parse", "HEAD").trim();
-      const paths = (...flags) => git("diff", ...flags, "--name-only", `${base}...${head}`)
-        .split(new RegExp("\\r?\\n"))
-        .filter((line) => line !== "");
-      // The hole, stated: rename detection hides the watched path entirely.
-      expect(paths()).toEqual(["docs/intent.md"]);
-      expect(unaffectedBy(paths())).toBe(true);
-      // And the flag the check passes closes it.
-      expect(paths("--no-renames").sort()).toEqual(["docs/intent.md", "model-of-tom/intent.md"]);
-      expect(unaffectedBy(paths("--no-renames"))).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    mkdirSync(path.join(dir, "model-of-tom"), { recursive: true });
+    writeFileSync(path.join(dir, "model-of-tom", "intent.md"), ["a line", "and another", ""].join("\n"));
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD").trim();
+    mkdirSync(path.join(dir, "docs"), { recursive: true });
+    git("mv", "model-of-tom/intent.md", "docs/intent.md");
+    git("commit", "-qm", "move it out");
+    const head = git("rev-parse", "HEAD").trim();
+    const paths = (...flags) => git("diff", ...flags, "--name-only", `${base}...${head}`)
+      .split(new RegExp("\\r?\\n"))
+      .filter((line) => line !== "");
+    // The hole, stated: rename detection hides the watched path entirely.
+    expect(paths()).toEqual(["docs/intent.md"]);
+    expect(unaffectedBy(paths())).toBe(true);
+    // And the flag the check passes closes it.
+    expect(paths("--no-renames").sort()).toEqual(["docs/intent.md", "model-of-tom/intent.md"]);
+    expect(unaffectedBy(paths("--no-renames"))).toBe(false);
   });
 
   // The check reads its own diff inside main(), which no test can call, so the

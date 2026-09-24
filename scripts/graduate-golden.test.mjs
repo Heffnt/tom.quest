@@ -1,9 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   clip,
   graduationsFrom,
@@ -13,15 +12,10 @@ import {
   runFrom,
   summarise,
 } from "./graduate-golden.mjs";
+import { tempDir } from "../test/temp.mjs";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "graduate-golden.mjs");
 const FINISHED_AT = Date.UTC(2026, 8, 5, 8, 30);
-const dirs = [];
-
-afterEach(() => {
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
-
 /** A run item as phase 7 files it. The field order matters to one of the tests
  *  below — the rewrite must not reorder what it copies through. */
 const item = (over = {}) => ({
@@ -67,8 +61,7 @@ const run = (results, over = {}) => ({
 
 /** A golden directory on disk, laid out the way evals/golden/runs/ is. */
 function fixture(items) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "graduate-golden-"));
-  dirs.push(dir);
+  const dir = tempDir("graduate-golden-");
   const golden = path.join(dir, "evals", "golden");
   fs.mkdirSync(path.join(golden, "runs"), { recursive: true });
   for (const one of items) {

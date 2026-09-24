@@ -3,10 +3,9 @@
 // source that fails says so in its own field, the done count is read top-down
 // within its budget and cached, and GPU-hours accumulate across steps.
 
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 import { checkDone, gpusInGres, launchShortfall, launchVerdict, readCache, renderFacts, sense } from "../runner-sensor.mjs";
 
 const NOW = Date.parse("2026-09-19T12:00:00Z");
@@ -50,7 +49,7 @@ function deps(over = {}) {
 
 describe("sense", () => {
   it("reads every field and caches what it learned", async () => {
-    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "sensor-"));
+    const cacheDir = tempDir("sensor-");
     const d = deps();
     const facts = await sense({ runnerId: "r1", cwd: "/checkout", specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 100, failures: [{ at: 1, text: "the step ended without checking in (exit 1)" }], cacheDir }, d);
     expect(Object.keys(facts)).toEqual(["version", "at", "jobs", "gpus", "frontier", "failures", "gpuHours"]);
@@ -76,7 +75,7 @@ describe("sense", () => {
   });
 
   it("carries the runner's ceiling into the cache beside the budget, and drops it when the claim has none", async () => {
-    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "sensor-"));
+    const cacheDir = tempDir("sensor-");
     const ceiling = { gpus: 16, minutes: 1440, memoryMb: 512000 };
     await sense({ runnerId: "r3", cwd: "/checkout", specs: [], budgetGpuHours: 10, ceiling, failures: [], cacheDir }, deps());
     expect(readCache(path.join(cacheDir, "r3.json"))).toMatchObject({ ceiling });
@@ -85,7 +84,7 @@ describe("sense", () => {
   });
 
   it("says in its own field what it could not read, and keeps every field", async () => {
-    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "sensor-"));
+    const cacheDir = tempDir("sensor-");
     const facts = await sense({ runnerId: "r2", cwd: "/checkout", specs: [], failures: [], cacheDir }, deps({
       async turing() { throw Object.assign(new Error("exit 3"), { stderr: "tts-turing: TURING_READ_KEY is not set in this environment." }); },
     }));

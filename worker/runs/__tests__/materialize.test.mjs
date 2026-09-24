@@ -1,8 +1,7 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { claudeToolResult, claudeUserTurn, jsonl } from "./fixtures.mjs";
 import { PARSER_VERSION, parseClaudeFile } from "../ingest.mjs";
@@ -12,7 +11,7 @@ import { FAILURE, MAX_SLICES, normalizeRequest, serveMaterialize } from "../mate
 
 const NOW = Date.parse("2026-01-01T00:00:00.000Z");
 const EMPTY_SHA = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-materialize-"));
+const temp = () => tempDir("runs-materialize-");
 const identity = (rows) => rows.map((row) => [row.seq, row.digest]);
 
 // The run id comes from the file, not from the store key, so a fixture's

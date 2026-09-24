@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { reapUnlisted, removeOrphanWorkdirs, removeWorkdir } from "../workdir.mjs";
 
-const root = () => fs.mkdtempSync(path.join(os.tmpdir(), "session-workdir-"));
+const root = () => tempDir("session-workdir-");
 
 /** A session workdir with one repo checkout in it, and a refused payload if asked. */
 function workdir(base, id, { overflow = null } = {}) {

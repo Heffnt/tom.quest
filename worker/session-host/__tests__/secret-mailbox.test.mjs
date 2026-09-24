@@ -10,10 +10,10 @@
 // daemon's environment before anything is spawned.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { dropNames, deliverSecrets } from "../secret-mailbox.mjs";
 import { loadEnv, mailboxNames, setEnvLine } from "../../jobs/worker-env.mjs";
@@ -22,11 +22,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const hostSource = fs.readFileSync(path.join(here, "..", "session-host.mjs"), "utf8");
 
 const VALUE = "hf_live_value_1234567890";
-const dirs = [];
-
 function envFile(body = "CONVEX_SITE_URL=https://x.convex.site\n") {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "secret-mailbox-"));
-  dirs.push(dir);
+  const dir = tempDir("secret-mailbox-");
   const file = path.join(dir, "worker.env");
   fs.writeFileSync(file, body, { mode: 0o600 });
   return file;
@@ -52,9 +49,6 @@ function harness(file, rows, { markTaken } = {}) {
   };
 }
 
-afterEach(() => {
-  while (dirs.length) fs.rmSync(dirs.pop(), { recursive: true, force: true });
-});
 
 describe("deliverSecrets", () => {
   it("writes a waiting value into the env file and reports it taken", async () => {

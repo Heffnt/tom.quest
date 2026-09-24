@@ -7,10 +7,10 @@
 // and the missing-checkout error a daemon must be able to name.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import {
   STAGING_DIR,
@@ -26,15 +26,11 @@ import {
   claudeEntry,
 } from "./session-archive.mjs";
 
-const tmpDirs = [];
 function tmp() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-"));
-  tmpDirs.push(dir);
-  return dir;
+  return tempDir("archive-");
 }
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
 describe("run manifests", () => {

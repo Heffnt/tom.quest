@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { runConfig } from "../config.mjs";
 
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-config-"));
+const temp = () => tempDir("runs-config-");
 
 describe("run configuration", () => {
   it("layers explicit values over the first readable env file without guessing host", () => {

@@ -6,20 +6,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import { pruneStaleWorktrees, STALE_WORKTREE_MS, takeEvalsLock } from "./evals-lock.mjs";
-
-const made = [];
-const tempDir = (name) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), name));
-  made.push(dir);
-  return dir;
-};
-
-afterEach(() => {
-  while (made.length > 0) fs.rmSync(made.pop(), { recursive: true, force: true });
-});
 
 // A pid no process can have, so `kill(pid, 0)` says ESRCH on every platform
 // this runs on. The maximum is 2^22 on Linux and lower on Windows.

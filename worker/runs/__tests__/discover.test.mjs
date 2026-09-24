@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { describeRunFile, discoverRunFiles } from "../discover.mjs";
 
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-discover-"));
+const temp = () => tempDir("runs-discover-");
 
 describe("run discovery", () => {
   it("classifies Claude roots, subagents, attachments, and Codex rollouts", () => {

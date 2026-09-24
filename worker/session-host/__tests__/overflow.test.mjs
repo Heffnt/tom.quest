@@ -18,9 +18,9 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 vi.mock("../worker-env.mjs", () => ({
   ENV_PATH: "/etc/tts/worker.env",
@@ -146,7 +146,7 @@ describe("cutWithOverflow", () => {
 
 describe("sendOverflow", () => {
   function tmpRoot() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), "tts-overflow-"));
+    return tempDir("tts-overflow-");
   }
 
   it("uploads every chunk in order", async () => {
@@ -280,7 +280,7 @@ describe("isPermanentStatus", () => {
 // force-kill). Rows here are the outbox's own objects, seqs assigned.
 describe("OverflowQueue (the row waits for its chunks)", () => {
   function tmpRoot() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), "tts-overflow-queue-"));
+    return tempDir("tts-overflow-queue-");
   }
 
   /** A post whose every call waits until the test lets it through. */

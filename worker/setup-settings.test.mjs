@@ -3,10 +3,10 @@
 // is a heredoc inside setup.sh, so the test cuts it out and runs it exactly as
 // the rollout does: `node -` with HOOK_CONFIG_DIR and INCLUDE_CONTEXT_HOOK set.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 
 const setup = fs.readFileSync(path.resolve("worker/setup.sh"), "utf8");
 const block = setup.match(/node - <<'NODE'\n([\s\S]*?)\nNODE\n/)?.[1];
@@ -21,7 +21,7 @@ function runBlock(directory, includeContextHook) {
 }
 
 function slot(existing) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "slot-"));
+  const directory = tempDir("slot-");
   if (existing) fs.writeFileSync(path.join(directory, "settings.json"), JSON.stringify(existing));
   return directory;
 }
@@ -70,7 +70,7 @@ describe("the account slot settings setup.sh writes", () => {
 
   // Codex reads hooks.json, not settings.json; none of these keys are Codex's.
   it("writes none of them for Codex", () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "x-")) + path.sep + ".codex";
+    const directory = path.join(tempDir("setup-settings-codex-"), ".codex");
     fs.mkdirSync(directory);
     runBlock(directory, "0");
     const hooks = read(path.join(directory, "hooks.json"));

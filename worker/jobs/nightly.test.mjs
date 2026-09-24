@@ -10,11 +10,11 @@
 // pointed at the file (the `invokedDirectly` guard at the bottom).
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import {
   BOX_SKILLS_DIRS,
@@ -88,15 +88,9 @@ import { proposalId } from "./learning-repo.mjs";
 
 const REQUIRED_AREA_PATHS = PRELUDE_LAYERS.know.areas.required;
 
-const tmpDirs = [];
 function tmp() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nightly-"));
-  tmpDirs.push(dir);
-  return dir;
+  return tempDir("nightly-");
 }
-afterEach(() => {
-  for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-});
 
 describe("delivery step", () => {
   it("accepts --only=delivery without selecting a locked checkout step", () => {

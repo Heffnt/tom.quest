@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 import { bareSkillName, repoSkillName } from "../../shared/skills.mjs";
 import { NO_BODY, routeSkills } from "../../shared/skill-router.mjs";
 import {
@@ -94,10 +94,6 @@ import {
 import { EVALS_PROTOCOL } from "./evals-row.mjs";
 import { DENIABLE_TOOLS } from "./tts-lib.mjs";
 
-const dirs = [];
-afterEach(() => {
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
 
 /** THE ONE MAPPING, handed to loadTriggers here exactly as the runner hands it
  * the pinned tree's copy. A test that spelled skill names itself would be
@@ -337,12 +333,10 @@ describe("aggregate", () => {
  * Vite, which serves nothing outside the project root. A tree in os.tmpdir()
  * therefore fails those imports with "Cannot find module" while fs.existsSync
  * on the same path answers true, which is as confusing a failure as this file
- * has. The dot prefix keeps it out of every glob; afterEach removes it.
+ * has. The dot prefix keeps it out of every glob; tempDir removes it.
  */
 function tree() {
-  const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-tree-"));
-  dirs.push(dir);
-  return dir;
+  return tempDir(".evals-tree-", process.cwd());
 }
 
 /**
@@ -2239,8 +2233,7 @@ describe("an unaffected request", () => {
   const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
 
   const policyTree = (watched) => {
-    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-policy-"));
-    dirs.push(dir);
+    const dir = tempDir(".evals-policy-", process.cwd());
     const file = path.join(dir, "scripts", "evals-check.mjs");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, [
@@ -2439,8 +2432,7 @@ describe("an unaffected request", () => {
   // a failed row per request whose `answersRequestAt` stayed current after the
   // merge, leaving the checks red until a human reran them.
   const policyTreeBeforeTheExport = () => {
-    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-policy-old-"));
-    dirs.push(dir);
+    const dir = tempDir(".evals-policy-old-", process.cwd());
     const file = path.join(dir, "scripts", "evals-check.mjs");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'export const WATCHED_PATHS = ["model-of-tom/**"];\n');
@@ -2938,8 +2930,7 @@ describe("the verifier scorecard", () => {
   });
 
   const faultDir = () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "evals-faults-"));
-    dirs.push(dir);
+    const dir = tempDir("evals-faults-");
     for (const id of ["alpha", "beta", "gamma"]) {
       fs.writeFileSync(
         path.join(dir, `${id}.diff`),
@@ -3198,26 +3189,22 @@ describe("the real io's model calls", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("reaches the launcher for a trial and for the planted-fault auditor", async () => {
-    const state = fs.mkdtempSync(path.join(os.tmpdir(), "evals-real-io-"));
-    try {
-      const fake = path.join(state, "claude");
-      fs.writeFileSync(fake, [
-        "#!/usr/bin/env node",
-        'try { require("node:fs").readFileSync(0, "utf8"); } catch {}',
-        `process.stdout.write(${JSON.stringify(JSON.stringify({ type: "result", subtype: "success", result: "answered" }))});`,
-      ].join("\n"));
-      fs.chmodSync(fake, 0o755);
-      vi.stubEnv("CLAUDE_BIN", fake);
-      vi.stubEnv("RUN_SWEEP_STATE_DIR", state);
-      vi.stubEnv("RUN_ENV_FILE", path.join(state, "no-such-env"));
-      vi.stubEnv("TTS_RUN_REG_SPOOL", path.join(state, "spool"));
-      vi.stubEnv("TTS_RUN_SLOT_HELD", "");
-      const io = realIo({});
-      await expect(io.runClaude("p", { model: "sonnet", cwd: state })).resolves.toBe("answered");
-      await expect(io.audit("p")).resolves.toBe("answered");
-    } finally {
-      fs.rmSync(state, { recursive: true, force: true });
-    }
+    const state = tempDir("evals-real-io-");
+    const fake = path.join(state, "claude");
+    fs.writeFileSync(fake, [
+      "#!/usr/bin/env node",
+      'try { require("node:fs").readFileSync(0, "utf8"); } catch {}',
+      `process.stdout.write(${JSON.stringify(JSON.stringify({ type: "result", subtype: "success", result: "answered" }))});`,
+    ].join("\n"));
+    fs.chmodSync(fake, 0o755);
+    vi.stubEnv("CLAUDE_BIN", fake);
+    vi.stubEnv("RUN_SWEEP_STATE_DIR", state);
+    vi.stubEnv("RUN_ENV_FILE", path.join(state, "no-such-env"));
+    vi.stubEnv("TTS_RUN_REG_SPOOL", path.join(state, "spool"));
+    vi.stubEnv("TTS_RUN_SLOT_HELD", "");
+    const io = realIo({});
+    await expect(io.runClaude("p", { model: "sonnet", cwd: state })).resolves.toBe("answered");
+    await expect(io.audit("p")).resolves.toBe("answered");
   }, 30_000);
 });
 

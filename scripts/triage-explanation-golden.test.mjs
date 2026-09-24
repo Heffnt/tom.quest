@@ -1,17 +1,12 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 import { triage, triageItem } from "./triage-explanation-golden.mjs";
 
-const dirs = [];
-afterEach(() => {
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
 
 function tree() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "triage-golden-"));
-  dirs.push(dir);
+  const dir = tempDir("triage-golden-");
   return dir;
 }
 

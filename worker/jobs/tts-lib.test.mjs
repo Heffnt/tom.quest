@@ -14,6 +14,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import {
   runClaude,
@@ -42,14 +43,13 @@ import {
 // suite run on the box neither queues behind real runs nor rides one's slot.
 let runState;
 beforeEach(() => {
-  runState = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-runs-"));
+  runState = tempDir("tts-lib-runs-");
   vi.stubEnv("RUN_SWEEP_STATE_DIR", runState);
   vi.stubEnv("RUN_ENV_FILE", path.join(runState, "no-such-env"));
   vi.stubEnv("TTS_RUN_SLOT_HELD", "");
 });
 afterEach(() => {
   vi.unstubAllEnvs();
-  fs.rmSync(runState, { recursive: true, force: true });
 });
 
 describe("clip", () => {
@@ -392,7 +392,7 @@ const SPAWN_TIMEOUT_MS = 30_000;
 
 describe("runClaude receipt", () => {
   it("fills the token before the child runs, so a failed call still names its run", () => {
-    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-receipt-"));
+    const spool = tempDir("tts-lib-receipt-");
     const previous = process.env.TTS_RUN_REG_SPOOL;
     process.env.TTS_RUN_REG_SPOOL = spool;
     const receipt = {};
@@ -406,7 +406,6 @@ describe("runClaude receipt", () => {
     } finally {
       if (previous === undefined) delete process.env.TTS_RUN_REG_SPOOL;
       else process.env.TTS_RUN_REG_SPOOL = previous;
-      fs.rmSync(spool, { recursive: true, force: true });
     }
     expect(typeof receipt.runToken).toBe("string");
     expect(receipt.runToken.length).toBeGreaterThan(0);
@@ -414,7 +413,7 @@ describe("runClaude receipt", () => {
 
   it("names a worker unless the caller named another environment", () => {
     const envelopeFor = (registration) => {
-      const spool = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-environment-"));
+      const spool = tempDir("tts-lib-environment-");
       const previous = process.env.TTS_RUN_REG_SPOOL;
       process.env.TTS_RUN_REG_SPOOL = spool;
       try {
@@ -427,7 +426,6 @@ describe("runClaude receipt", () => {
       }
       const [name] = fs.readdirSync(spool).filter((entry) => entry.endsWith(".json"));
       const envelope = JSON.parse(fs.readFileSync(path.join(spool, name), "utf8"));
-      fs.rmSync(spool, { recursive: true, force: true });
       return envelope.registration;
     };
     expect(envelopeFor({ layersKnown: false }).environment).toBe("worker");
@@ -546,7 +544,7 @@ describe("runClaude with no tools", () => {
 // this, and read what the child was given and what the spool holds.
 describe("runClaude through the box launcher", () => {
   function fakeClaude(answer, exitCode = 0, stderr = "") {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-fake-claude-"));
+    const dir = tempDir("tts-lib-fake-claude-");
     const script = path.join(dir, "fake.mjs");
     fs.writeFileSync(script, [
       'import fs from "node:fs";',
@@ -667,7 +665,7 @@ describe("runClaude through the box launcher", () => {
 // repository, where the cwd fallbacks cannot rescue a wrong candidate.
 describe("the launcher import in the installed layout", () => {
   it("imports tts-lib.mjs from a flat /opt/tts-shaped copy", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-flat-"));
+    const root = tempDir("tts-lib-flat-");
     const flat = path.join(root, "opt-tts");
     const copyAll = (from, to) => {
       fs.mkdirSync(to, { recursive: true });
@@ -688,6 +686,5 @@ describe("the launcher import in the installed layout", () => {
       url,
     ], { cwd: root, encoding: "utf8" });
     expect(out.trim()).toBe("function true");
-    fs.rmSync(root, { recursive: true, force: true });
   }, SPAWN_TIMEOUT_MS);
 });

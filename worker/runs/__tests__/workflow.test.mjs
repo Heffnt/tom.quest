@@ -5,16 +5,16 @@
 // id is the identity, so the folder changes nothing about the run: one tree,
 // one thread id, one way to view it, however deep the spawning goes.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { describeRunFile, discoverRunFiles } from "../discover.mjs";
 import { discoverChildren, parseClaudeFile } from "../ingest.mjs";
 import { openStore } from "../store.mjs";
 import { claudeUserTurn, jsonl, subagentMeta } from "./fixtures.mjs";
 
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-workflow-"));
+const temp = () => tempDir("runs-workflow-");
 const write = (file, body) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, body); return file; };
 
 /**

@@ -5,14 +5,14 @@
 
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 const RUNNER = path.resolve("worker/runs/box-run.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
 
-const temp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `box-run-${tag}-`));
+const temp = (tag) => tempDir(`box-run-${tag}-`);
 
 function git(dir, ...args) {
   return execFileSync("git", ["-C", dir, ...IDENTITY, ...args], { encoding: "utf8" });

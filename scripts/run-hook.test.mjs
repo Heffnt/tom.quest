@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { registrationSidecarPath, writeRegistration, writeRegistrationReceipt } from "../worker/runs/registration.mjs";
+import { tempDir } from "../test/temp.mjs";
 
 const SCRIPT = path.resolve("scripts/run-hook.mjs");
 
@@ -22,7 +22,7 @@ function currentRunPointerPath(stateDir, cwd) {
 }
 
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "run-hook-"));
+  const root = tempDir("run-hook-");
   const state = path.join(root, "state");
   const sweep = path.join(root, "sweep.mjs");
   fs.writeFileSync(sweep, "process.exit(0);\n");

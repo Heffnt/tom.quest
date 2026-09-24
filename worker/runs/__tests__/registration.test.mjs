@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import {
   appendSkillAsk,
@@ -22,7 +22,7 @@ import {
 import { GRAPH_NODES_CAP } from "../../jobs/graph.mjs";
 import { codexResponseItem, jsonl } from "./fixtures.mjs";
 
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-registration-"));
+const temp = () => tempDir("runs-registration-");
 const parsed = () => ({
   run: {
     runId: "codex:laptop:child", parentRunId: "codex:laptop:file-parent", rootRunId: "codex:laptop:file-parent", depth: 1,

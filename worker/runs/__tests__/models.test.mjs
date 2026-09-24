@@ -1,10 +1,8 @@
 // models.mjs: the model table, the ceiling rule and the Fable availability
 // state it reads. Pure functions over a temporary state directory.
 
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import {
   FABLE_LIMIT_RE,
@@ -20,7 +18,7 @@ import {
   underCeiling,
 } from "../models.mjs";
 
-const stateDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "models-state-"));
+const stateDir = () => tempDir("models-state-");
 
 describe("the model table", () => {
   it("names no Haiku model: Sonnet is the budget model", () => {

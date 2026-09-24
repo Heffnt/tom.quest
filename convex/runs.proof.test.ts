@@ -2,10 +2,10 @@
 // This proof asserts pointers only. It never logs transcript content or paths.
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 import { internal, api } from "./_generated/api";
 import schema from "./schema";
 import { discoverChildren, parseClaudeFile, parseCodexFile } from "../worker/runs/ingest.mjs";
@@ -29,7 +29,7 @@ async function tom(t: ReturnType<typeof convexTest>) {
 
 describe.skipIf(!source || !codexSource)("runs proof", () => {
   it("takes mandatory Claude root/child and Codex fixtures through immutable storage and Convex", async () => {
-    const scratch = process.env.RUNS_PROOF_STORE ?? fs.mkdtempSync(path.join(os.tmpdir(), "runs-proof-"));
+    const scratch = process.env.RUNS_PROOF_STORE ?? tempDir("runs-proof-");
     const store = openStore({ backend: "local", dir: scratch } as never);
     const host = "laptop";
     const parentBytes = fs.readFileSync(source!);
@@ -155,7 +155,7 @@ describe.skipIf(!source)("runs sweep proof", () => {
       return observed;
     };
 
-    const state = fs.mkdtempSync(path.join(os.tmpdir(), "runs-proof-"));
+    const state = tempDir("runs-proof-");
     const result = await runSweepProof({
       claude: source!,
       state,

@@ -11,10 +11,10 @@
 // `cp worker/session-host/*.mjs`, so neither this file nor the fixture ships.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(here, "fixtures", "fake-codex.mjs");
@@ -26,14 +26,8 @@ const { codexQuery, codexArgs, translateEvent } = await import("../codex-query.m
 let tmp;
 let argsFile;
 beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-query-test-"));
+  tmp = tempDir("codex-query-test-");
   argsFile = path.join(tmp, "args.jsonl");
-});
-afterEach(() => {
-  // Retries: on Windows a just-exited child can still hold its cwd for a
-  // few ms, and every test drains its iterator to `done` (which awaits the
-  // exit) before this runs — the retries cover the remaining gap.
-  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 // The async iterable of user turns session.mjs hands the runner: one item

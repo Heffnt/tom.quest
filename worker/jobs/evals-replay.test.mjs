@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 import {
   REPLAY_NO_REF,
   REPLAY_NO_REQUEST,
@@ -15,15 +15,8 @@ import {
   toolsAfterRequest,
 } from "./evals-replay.mjs";
 
-const trees = [];
-afterEach(() => {
-  for (const dir of trees.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
-
 function tree() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "evals-replay-"));
-  trees.push(dir);
-  return dir;
+  return tempDir("evals-replay-");
 }
 
 /** A session in the archive, at the day the caller names. Entries are written

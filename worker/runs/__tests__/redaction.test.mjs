@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 import { parseClaudeFile } from "../ingest.mjs";
 import { openStore } from "../store.mjs";
 import { overflowFor } from "../../session-host/overflow.mjs";
@@ -53,7 +53,7 @@ it("redacts named assignments before parser rows and overflow are derived", () =
 it("redacts a named secret through store retrieval before parser overflow", () => {
   const secret = ["r4Nd0m", "-Secret_Value.1234567890-abcdefghijklmnopqrstuvwxyz"].join("");
   const source = jsonl([claudeToolResult({ content: `CLIENT_SECRET=${secret} ${"x".repeat(40_000)}` })]);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "runs-redaction-pipeline-"));
+  const dir = tempDir("runs-redaction-pipeline-");
   const store = openStore({ dir });
   const stored = store.put({ runtime: "claude", threadId: "session", host: "laptop", sourceBytes: Buffer.from(source) });
   const storedBytes = store.get({ runtime: "claude", threadId: "session", host: "laptop", fileVersion: stored.fileVersion });

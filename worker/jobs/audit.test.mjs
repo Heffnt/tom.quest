@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import {
   AUDIT_CHUNK_MAX_CHARS,
@@ -1117,8 +1117,8 @@ describe("the fallback auditor through box-run", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("runs read-only with forty turns, in the checkout, and registers under box-run with its merge key", async () => {
-    const state = fs.mkdtempSync(path.join(os.tmpdir(), "audit-fallback-"));
-    const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "audit-fallback-dir-"));
+    const state = tempDir("audit-fallback-");
+    const checkout = tempDir("audit-fallback-dir-");
     const record = path.join(state, "record.json");
     const fake = path.join(state, "fake.mjs");
     const answer = JSON.stringify({ type: "result", subtype: "success", result: `${AUDIT_VERDICT_LINE}\n\nIt does what it says.` });
@@ -1162,8 +1162,6 @@ describe("the fallback auditor through box-run", () => {
     expect(envelope.writer.file).toBe("worker/runs/box-run.mjs");
     expect(envelope.registration.origin).toBe("cron:audit");
     expect(envelope.registration.mergeKey).toMatch(/a1b2c3d/);
-    fs.rmSync(state, { recursive: true, force: true });
-    fs.rmSync(checkout, { recursive: true, force: true });
   }, 30_000);
 });
 
@@ -1197,7 +1195,7 @@ describe("the audit's registration spool", () => {
   const spools = (dir) => fs.readdirSync(dir).filter((name) => name.startsWith("tts-audit-reg-"));
 
   it("removes the spool when the auditor answers", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "audit-spool-ok-"));
+    const tmp = tempDir("audit-spool-ok-");
     const runner = path.join(tmp, "fake-codex.mjs");
     fs.writeFileSync(runner, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(`${AUDIT_VERDICT_LINE}\n\nIt does what it says.`)});\n`);
     fs.chmodSync(runner, 0o755);
@@ -1206,7 +1204,7 @@ describe("the audit's registration spool", () => {
   });
 
   it("removes the spool when the auditor throws", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "audit-spool-throw-"));
+    const tmp = tempDir("audit-spool-throw-");
     const runner = path.join(tmp, "fake-codex.mjs");
     fs.writeFileSync(runner, "#!/usr/bin/env node\nprocess.stderr.write(\"broken\\n\");\nprocess.exit(3);\n");
     fs.chmodSync(runner, 0o755);

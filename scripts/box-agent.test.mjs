@@ -5,10 +5,10 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 
 const AGENT = path.resolve("scripts/box-agent.mjs");
 const HOOK = path.resolve("scripts/run-hook.mjs");
@@ -25,7 +25,7 @@ function currentRunPointerPath(stateDir, cwd) {
   return result.stdout;
 }
 
-const temp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `box-agent-${tag}-`));
+const temp = (tag) => tempDir(`box-agent-${tag}-`);
 
 /** A fake ssh: it writes its argv and its stdin where the test can read them,
  * prints what the test chose, and exits with the code the test chose. */
