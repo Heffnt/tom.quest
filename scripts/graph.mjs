@@ -111,13 +111,13 @@ export const RECORD_NODES = "id-only";
 // happened to be taken at, without which it refused everything and so enforced
 // nothing.
 
-/** Tom's, pending (phase 10 switch (a)). "candidate": the generator writes
- *  agent-rules.candidate.md and a diff and never touches the live file — the
+/** Tom's, pending (phase 10 switch (a)). "candidate": the generator renders
+ *  the map's restating blocks and returns the diff, and writes no file — the
  *  hand-written map stays authoritative. "live": the four restating blocks of
- *  model-of-tom/agent-rules.md are replaced in place, with their evidence
- *  entries, and the file becomes partly generated.
+ *  model-of-tom/agent-rules.md are replaced in place by the vocabulary
+ *  generator's `--write`, and the file becomes partly generated.
  *
- *  ONE HOME. scripts/vocabulary.mjs writes the candidate, because the four
+ *  ONE HOME. scripts/vocabulary.mjs renders the candidate, because the four
  *  blocks restate the vocabulary's repositories, questions, jobs and tools; the
  *  constant lives here because the candidate IS the root node's rendering and
  *  this is the graph's generator. It is imported there, never re-declared. */
