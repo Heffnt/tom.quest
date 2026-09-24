@@ -199,9 +199,10 @@ const EVENT_KINDS = [
   "tests-run",
   "audit-verdict",
   "merge",
+  "deploy",
 ];
 
-function schemaTs(kinds = EVENT_KINDS, declaredWord = "sixteen") {
+function schemaTs(kinds = EVENT_KINDS, declaredWord = "seventeen") {
   const rows = kinds.map((kind) => `    //   "${kind}"  — a row.`).join("\n");
   return `import { defineSchema, defineTable } from "convex/server";
 
@@ -422,9 +423,21 @@ describe("the dtsEvents.key register", () => {
     expect(parseEventKinds(schemaTs())).toEqual([...EVENT_KINDS].sort((a, b) => a.localeCompare(b)));
   });
 
-  it("fails when the comment says sixteen and fewer than sixteen parse", () => {
-    expect(() => parseEventKinds(schemaTs(EVENT_KINDS.slice(0, 15)))).toThrow(
-      /dtsEvents\.key: the source declares 16 and the parser read 15/,
+  it("fails when the comment says seventeen and fewer than seventeen parse", () => {
+    expect(() => parseEventKinds(schemaTs(EVENT_KINDS.slice(0, 16)))).toThrow(
+      /dtsEvents\.key: the source declares 17 and the parser read 16/,
+    );
+  });
+
+  // The deploy job in Heffnt/Jarvis posts "deploy" rows keyed `<repo>:<sha>`.
+  // The real schema must register it, and a spelling must claim it, or the
+  // generator stops on the comment the job's rows are described by.
+  it("registers the deploy kind in the real schema, and a spelling claims it", () => {
+    const kinds = parseEventKinds(fs.readFileSync(path.join(REPO_ROOT, "convex/schema.ts"), "utf8"));
+    expect(kinds).toContain("deploy");
+    expect(kinds).toContain("merge");
+    expect(() => run(makeCheckouts({ schema: schemaTs(EVENT_KINDS.filter((kind) => kind !== "deploy"), "sixteen") }))).toThrow(
+      /spellings/,
     );
   });
 });

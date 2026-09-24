@@ -510,11 +510,20 @@ function resolveSessionRepos(input: {
     // tom.quest and WikiTom now gets both, which is the whole point of the
     // multi-repo ruling.
     return normalizeSessionRepos(
-      SESSION_REPO_NAMES.filter((repo) => text.includes(repo)),
+      SESSION_REPO_NAMES.filter(
+        (repo) => !TEXT_SCAN_SKIPPED.includes(repo) && text.includes(repo),
+      ),
     );
   }
   return [];
 }
+
+// The repos the substring scan above never matches. "Jarvis" is also the name
+// of the whole agent system, and "the Jarvis Box" is in prose everywhere, so a
+// match on it would clone Heffnt/Jarvis for every todo that mentions the box.
+// Work in the Jarvis repository reaches a session through its batch's declared
+// repos, which is the normal path.
+const TEXT_SCAN_SKIPPED: readonly string[] = ["Jarvis"];
 
 type SessionSeed = {
   title: string;

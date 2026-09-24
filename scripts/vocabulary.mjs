@@ -578,7 +578,7 @@ const EVENT_KEY_SPELLINGS = Object.freeze([
   { id: "eventKey:batch", shape: "the batch id the session was opened on", kinds: ["session-created", "session-outcome"], example: null },
   { id: "eventKey:ask", shape: "the ask's own id", kinds: ["delegate-decision", "delegate-objection"], example: "9f14a2c7" },
   { id: "eventKey:commit", shape: "<repo>@<sha>", kinds: ["audit-verdict", "evals-request", "evals-run", "tests-run"], example: "tom.quest@d07e0e3ac1f0b4a9d3e5c7b118f2a6d4e9c0b3a7" },
-  { id: "eventKey:merge", shape: "<repo>:<sha>", kinds: ["merge"], example: "tom.quest:d07e0e3ac1f0b4a9d3e5c7b118f2a6d4e9c0b3a7" },
+  { id: "eventKey:merge", shape: "<repo>:<sha>", kinds: ["deploy", "merge"], example: "tom.quest:d07e0e3ac1f0b4a9d3e5c7b118f2a6d4e9c0b3a7" },
 ]);
 
 /**

@@ -29,7 +29,7 @@
 //   node /opt/tts/runs/box-run.mjs [options] < prompt.txt
 //
 //   --cli claude|codex      which CLI runs                 (default: claude)
-//   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
+//   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | Jarvis | none
 //   --ref REF               branch, tag or sha to check out
 //   --model NAME            model for the run; openrouter/<vendor>/<model>
 //                           needs --cli codex
@@ -102,6 +102,7 @@ const REPO_GITHUB = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
+  Jarvis: "Heffnt/Jarvis",
 };
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace". */

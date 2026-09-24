@@ -856,7 +856,7 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly sixteen kinds. Five are convex/ttsSlack.ts:
+    // The lookup key, set on exactly seventeen kinds. Five are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
@@ -906,6 +906,10 @@ export default defineSchema({
     //                   once for the same reason;
     //   "merge"       — `<repo>:<sha>` (its own older spelling), so a retried
     //                   report of one merge is one event.
+    // One is written by the deploy job in Heffnt/Jarvis through POST /tts/event
+    // (data { repo, from, to, commits, setupNeeded }):
+    //   "deploy"      — `<repo>:<sha>`, the spelling "merge" uses, naming the
+    //                   head the box now runs, so one deploy is one event.
     // `data` is v.any() and cannot be indexed, which is why the key is its
     // own field: the events route must answer inside Slack's 3-second budget,
     // and a thread root can be days old, so a bounded scan is not enough.
@@ -1197,7 +1201,7 @@ export default defineSchema({
     // row by buildSessionRow (convex/claudeSessions.ts — the one insert path),
     // with repo = repos[0] ?? "none"; readers prefer `repos ?? [repo]`.
     repos: v.optional(v.array(v.string())),
-    repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "Jarvis" | "none"
     // Mode, status and outcome belong to the run; the session row's copies are
     // aliases. The run row is where a lifecycle fact lives, because every
     // runtime has runs and only some have sessions. These session-shaped copies

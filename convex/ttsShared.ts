@@ -733,6 +733,7 @@ export const SESSION_REPOS = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
+  Jarvis: "Heffnt/Jarvis",
 } as const;
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
