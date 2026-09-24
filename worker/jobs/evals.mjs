@@ -568,7 +568,7 @@ export const JOBS = {
     build: (item, layers, mod) => mod.briefPrompt(item.input.entryYaml ?? item.input.statement, item.input.priorReviseSentence, layers.text),
     parse: (answer) => extractJsonObject(answer),
     fields: ["brief", "recommendation", "execClass", "evidence"],
-    // Needs a CMT checkout and read-only tools, like the real brief pass.
+    // Needs a CMT checkout and read-only tools, as the retired brief pass did.
     opts: { cwd: "@cmt", maxTurns: 8 },
   },
   // The planner writes for a whole run, not for one batch, so the context is

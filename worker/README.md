@@ -9,7 +9,7 @@ each; `setup.sh` writes exactly this list into `/etc/cron.d/tts`:
 3. **poll-canvas** (every 30 min) — syncs dated assignments as todos and captures action-implying announcements; see "The pollers".
 4. **poll-outlook** (no cron line yet) — the Outlook counterpart of poll-gmail, a skeleton until the `OUTLOOK_*` credential exists; see "The pollers".
 5. **apply-time-notes** (every 2 min) — turns each time note Tom wrote into concrete date and block changes.
-6. **plan-graphs** (every 30 min) — the planner: prepares every unprepared life todo, briefs every changed or revise-ruled code todo, then plans the graph inside every batch; see "The planner".
+6. **plan-graphs** (every 30 min) — the planner: prepares every unprepared life todo, then plans the graph inside every batch; see "The planner".
 7. **nightly** (4:00 a.m. New York) — copies the Convex record and the verified run manifest into WikiTom, runs the learning step, pushes, and posts the model-of-tom files back to Convex; see "The nightly job".
 8. **reingest-overflow** (hourly) — the session daemon's helper: finishes storing the transcript payloads the daemon could not (`worker/session-host/`).
 9. **weekly** (4:00 a.m. New York, Fridays) — gathers the week's facts from Convex, makes one model call, commits the agenda file to the WikiTom checkout, and opens the one `weekly` session (`worker/jobs/weekly.mjs`).
@@ -102,7 +102,7 @@ child cannot give (`worker/session-host/README.md`).
 
 ## The planner
 
-`plan-graphs.mjs` runs three passes on one half-hourly tick, under flock:
+`plan-graphs.mjs` runs two passes on one half-hourly tick, under flock:
 
 - **prepare** — every unprepared life todo (a `#dump` capture, an email or
   Canvas capture, a todo Tom ruled `revise` on) gets its brief, the smallest
@@ -111,7 +111,6 @@ child cannot give (`worker/session-host/README.md`).
   never a guess). A `revise` re-prepares with Tom's sentence in the prompt
   and is consumed once the re-prep lands. Nothing here posts to Slack — the
   capture posts its own threaded reply.
-- **brief** — see "The code-todo ruling loop".
 - **plan** — the graph inside every batch (goals, tasks, `needs` edges, the
   needs between batches), exiting early on an unchanged input hash
   (`/var/lib/tts/plan-input-hash`).
@@ -397,39 +396,33 @@ Heffnt/tom.quest --description "the removal loop's one open pull request"`.
 
 ## The code-todo ruling loop
 
-CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
-`vqc/todos.yaml`; the Jarvis Box turns that file into rulings Tom can make from the
-tom.quest UI in seconds:
+A repository may keep decided work in its own `vqc/todos.yaml`; the list of
+such repositories is `CODE_TODO_REPOS` in `convex/ttsShared.ts`, and today it
+holds tom.quest alone. The Convex mirror (`convex/ttsSync.ts`, every six
+hours) copies each listed file into `dtsCodeTodoMirror`, a prospector in a
+listed checkout is told to read the file before capturing, and Tom's
+`approve` or `archive` ruling on an entry becomes a worker mission the
+auto-session scheduler admits (`convex/claudeSessions.ts`), which ends in a
+pull request. A code ruling needs a brief on the entry, and nothing writes one today, so no code ruling can be
+recorded until something does.
 
-- **The planner's brief pass** (`plan-graphs.mjs`, every 30 minutes)
-  refreshes a shallow cache clone of CMT, and for every OPEN todo entry
-  whose YAML changed since its last brief (sha256 cursor in
-  `/var/lib/tts/brief-hashes.json`) — or that Tom ruled `revise` on, with
-  his sentence as the replan note — has headless Claude write a ground-up
-  brief against the current tree and a recommendation in the four verdict
-  words — `archive` (already done/moot, with evidence), `revise` (intent
-  live, plan stale), `session` (open judgment call; all tier C), or
-  `approve` — plus an exec class (`box` vs `needs-turing`). Briefs POST to
-  Convex, the one copy.
-- Tom rules on each brief in the UI. There is no apply job: every verdict's
-  effect is applied at write time in Convex (`convex/ttsRulings.ts`), or at
-  the one moment its effect can exist. `revise` is consumed by the brief
-  pass once the fresh brief has posted, with Tom's sentence as the replan
-  note. `session` is applied when Tom opens the code block session from
-  the calendar; that session's opening prompt names each code todo whose
-  verdict it consumed, with Tom's sentence, so the conversation he asked
-  for reaches the session.
-- **`approve` and `archive` are worker missions.** The auto-session
-  scheduler in Convex (`convex/claudeSessions.ts`, the code lane, every
-  5 minutes) takes the oldest unapplied one (an archive ahead of any approve: setting work aside is one edit, and should not wait behind an hour of implementing), admits a worker on
-  that repo's checkout — one code mission at a time, under the same load
-  gate, circuit breaker and per-subject ceiling as every other mission —
-  and marks the ruling applied with the session id. The session implements
-  the plan (approve) or only closes the entry (archive), runs the registry's
-  own guard test, pushes `session/<id>`, and opens a PR whose body starts
-  with `CHANGE REPORT:`. **Merging the PR is the human gate** — nothing
-  lands on the default branch autonomously. A mission that fails is not
-  retried by the fleet; ruling again is the retry.
+ComplexMultiTrigger used to be the loop's main repository. Tom's ruling of
+2026-09-22 ("i dont think vqc should have its own todos since tts covers
+that"), ratified as CMT adoption ruling 70 on 2026-09-24, moved CMT's todos
+into TTS, so it is off the list:
+
+- the planner's **brief pass**, which briefed every open CMT entry every
+  30 minutes (with its cursor `/var/lib/tts/brief-hashes.json`), is gone —
+  it read no other file. Its prompt stays in `plan-graphs.mjs` for the evals'
+  `code-brief` replay.
+- the 40 CMT rows already in `dtsCodeTodoMirror` (31 of them `open`) and the
+  31 CMT briefs in `dtsCodeBriefs` stay as records: the evals read past code
+  rulings' inputs off them. Every live reader of the mirror (the /tts page,
+  the planner's context) reads only listed repositories, so none of them
+  shows as open work, and a code ruling on a CMT subject is refused.
+- the nightly job refreshes the CMT cache clone at `/var/cache/tts/ComplexMultiTrigger`
+  itself, which the brief pass used to do as a side effect; the graph,
+  skills and repo-rules steps read CMT from there.
 
 ## Codex
 
@@ -605,10 +598,8 @@ harmless to lose:
 - `/var/lib/tts/canvas-announcements-cursor` — timestamp of the newest
   announcement poll-canvas has processed; losing it re-examines the last
   7 days, at worst re-capturing a few announcements as duplicates.
-- `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
-  losing it re-briefs everything once (the Convex POST upserts).
-- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone the brief
-  pass reads, the session daemon's per-session workdirs, the nightly job's
+- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone the nightly
+  job refreshes and reads, the session daemon's per-session workdirs, the nightly job's
   snapshot staging directory, and run sweep cursors/queues. Any still-present
   CLI run files are rediscovered by the full sweep; already-uploaded bytes are
   recovered through the object store and their Convex index.
@@ -872,8 +863,8 @@ node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still missing
 node /opt/tts/apply-time-notes.mjs        # apply pending time notes now
-node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
-node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
+node /opt/tts/plan-graphs.mjs             # prepare, plan — now
+node /opt/tts/plan-graphs.mjs --force     # also re-prepare EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 node /opt/tts/runs/sweep.mjs --full       # recover every changed run file
 node /opt/tts/runs/sweep.mjs --refresh-claude-headers 200  # re-send up to 200 Claude runs' whole-file totals; repeat until left=0 and failed=0
