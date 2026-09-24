@@ -50,9 +50,10 @@ export const EVALS_PROTOCOL = 2;
  *
  * A MISSING `runId` IS NOT THE TEST, though every pre-bump request carries
  * none. WikiTom's Action sends no run id until its copy of the workflow is
- * re-installed (evals/wikitom/evals.yml), so condemning a request for the
- * absence of one would leave that repository's heads unservable for good. The
- * time is exact; the id is a proxy that misfires.
+ * re-installed (evals/wikitom/evals.yml in the Jarvis repository), so
+ * condemning a request for the absence of one would leave that repository's
+ * heads unservable for good. The time is exact; the id is a proxy that
+ * misfires.
  */
 export const EVALS_PROTOCOL_SINCE = "2026-09-15T01:24:01Z";
 export const EVALS_PROTOCOL_SINCE_MS = Date.parse(EVALS_PROTOCOL_SINCE);
