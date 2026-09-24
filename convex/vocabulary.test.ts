@@ -150,7 +150,7 @@ describe("the prompt's vocabulary block", () => {
     term,
     definition: `The posted ${term} entry (§12).`,
   }));
-  const RENDERED = [OPENING, ...PROMPT_TERMS.map((term: string) => `- The posted ${term} entry.`)].join("\n");
+  const RENDERED = [OPENING, ...PROMPT_TERMS.map((term: string) => `- ${term} — The posted ${term} entry.`)].join("\n");
 
   it("is the constant when no row exists", () => {
     expect(closedVocabularyFrom(null)).toBe(TTS_CLOSED_VOCABULARY);
@@ -166,7 +166,7 @@ describe("the prompt's vocabulary block", () => {
     expect(await t.query(internal.vocabulary.internalClosedVocabulary, {})).toBe(TTS_CLOSED_VOCABULARY);
     expect((await post(t, { terms: [TERM, ...SEVEN.slice(1)] })).status).toBe(200);
     // TERM is the batch entry the other tests post, so the row carries all seven.
-    const expected = RENDERED.replace("- The posted batch entry.", `- ${TERM.definition}`);
+    const expected = RENDERED.replace("- batch — The posted batch entry.", `- batch — ${TERM.definition}`);
     expect(await t.query(internal.vocabulary.internalClosedVocabulary, {})).toBe(expected);
     vi.unstubAllEnvs();
   });
@@ -174,7 +174,10 @@ describe("the prompt's vocabulary block", () => {
   it("the constant is the rendering of its own wordings, so the fallback says what the spec says", () => {
     const lines = TTS_CLOSED_VOCABULARY.split("\n");
     expect(lines).toHaveLength(1 + PROMPT_TERMS.length);
-    const terms = PROMPT_TERMS.map((term: string, index: number) => ({ term, definition: lines[index + 1].slice(2) }));
+    const terms = PROMPT_TERMS.map((term: string, index: number) => ({
+      term,
+      definition: lines[index + 1].slice(`- ${term} — `.length),
+    }));
     expect(closedVocabularyFrom({ terms })).toBe(TTS_CLOSED_VOCABULARY);
   });
 });

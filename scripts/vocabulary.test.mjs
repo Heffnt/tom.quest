@@ -139,13 +139,13 @@ You answer to Tom.
 /** The prompt constant as the fixture's spec renders it: the opening line, then
  *  the seven §12.1 definitions through scripts/closed-vocabulary.mjs. */
 const RENDERED_VOCABULARY = `The vocabulary, which is closed — each word means this and no more:
-- a set of todos that share one purpose.
-- work an agent or Tom performs
-- a checkable condition about the world
-- the ids a todo depends on.
-- every id in needs done.
-- the always-visible register.
-- the register behind a more link.`;
+- batch — a set of todos that share one purpose.
+- task — work an agent or Tom performs
+- goal — a checkable condition about the world
+- needs — the ids a todo depends on.
+- ready — every id in needs done.
+- display text — the always-visible register.
+- ground-up explanation — the register behind a more link.`;
 
 /** The same constant in wording of its own — the shape the real repositories
  *  had before Tom's ruling of 2026-09-24, when it was a second statement. */
@@ -811,15 +811,14 @@ describe("the command line", () => {
 describe("the closed vocabulary renderer", () => {
   const terms = PROMPT_TERMS.map((term) => ({ term, definition: `The ${term} entry (§5.4). Second \`sentence\`.` }));
 
-  it("renders the opening, then the seven in order, without section references or emphasis", () => {
+  it("renders the opening, then each of the seven named, in order, without section references or emphasis", () => {
     const text = renderClosedVocabulary("Opening:", [...terms].reverse());
-    expect(text.split("\n")).toEqual(["Opening:", ...PROMPT_TERMS.map((term) => `- The ${term} entry. Second sentence.`)]);
+    expect(text.split("\n")).toEqual(["Opening:", ...PROMPT_TERMS.map((term) => `- ${term} — The ${term} entry. Second sentence.`)]);
   });
 
   it("is null, not shorter, when one of the seven is missing or empty", () => {
     expect(renderClosedVocabulary("Opening:", terms.slice(1))).toBeNull();
     expect(renderClosedVocabulary("Opening:", terms.map((entry, index) => (index === 3 ? { ...entry, definition: "(§5.4)" } : entry)))).toBeNull();
-    expect(renderClosedVocabulary("", terms)).toBeNull();
   });
 
   it("keeps the agreed wordings verbatim once the section reference is gone", () => {

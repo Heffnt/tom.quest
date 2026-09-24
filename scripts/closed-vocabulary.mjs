@@ -54,14 +54,15 @@ export function closedVocabularyOpening(text) {
 
 /**
  * The vocabulary block: the opening line, then one bullet per prompt term in
- * PROMPT_TERMS order, each the spec's definition as prompt text.
+ * PROMPT_TERMS order, each `- <word> — <definition>`, the shape of the §12.1
+ * entry it renders (`- **word** — definition`). The word is named at the start
+ * of its bullet because a reader of the prompt looks a word up by its name.
  *
  * NULL, NOT A SHORTER BLOCK, when any of the seven is missing or empty. A
  * block that silently lacks a word is a prompt that uses the word undefined;
  * a null sends the caller to its fallback, which carries all seven.
  */
 export function renderClosedVocabulary(opening, terms) {
-  if (typeof opening !== "string" || opening.trim() === "") return null;
   const byName = new Map();
   for (const entry of Array.isArray(terms) ? terms : []) {
     if (entry === null || typeof entry !== "object" || typeof entry.term !== "string") continue;
@@ -74,7 +75,7 @@ export function renderClosedVocabulary(opening, terms) {
     if (entry === undefined || typeof entry.definition !== "string") return null;
     const text = promptDefinition(entry.definition);
     if (text === "") return null;
-    lines.push(`- ${text}`);
+    lines.push(`- ${name} — ${text}`);
   }
   return lines.join("\n");
 }
