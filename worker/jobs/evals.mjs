@@ -2606,10 +2606,7 @@ export async function verifierScorecard(io, env, { at, force = false } = {}) {
  * shortcuts below is that a run scores the items its diff can move; this is
  * what makes the ones it does score take less of an afternoon.
  */
-export const ITEM_CONCURRENCY = (() => {
-  const named = Number(process.env.TTS_EVALS_CONCURRENCY);
-  return Number.isInteger(named) && named > 0 ? named : 4;
-})();
+export const ITEM_CONCURRENCY = 4;
 
 /**
  * `worker` over every entry of `list`, at most `limit` at a time, answers in
@@ -2765,12 +2762,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // box's checkout holds today. Cached per item because a retried item
       // would otherwise gunzip a half-megabyte transcript again.
       replay: (item) => {
-        if (!replayCache.has(item.id)) {
-          const found = typeof io.replay === "function"
-            ? io.replay(wikitom.dir, item)
-            : { unreplayable: "the io in use wired no replay reader" };
-          replayCache.set(item.id, found);
-        }
+        if (!replayCache.has(item.id)) replayCache.set(item.id, io.replay(wikitom.dir, item));
         const found = replayCache.get(item.id);
         // A THROW RATHER THAN AN EMPTY BLOCK. Building the prompt without the
         // session would score the model on a gap in the harness and report the
@@ -2953,16 +2945,17 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // warn on a slow run reads a number instead of subtracting two stamps and
       // guessing what filled the gap.
       //
-      // The four counts are a partition of the items this run was handed:
-      // `regenerated` paid for calls, `cached` came from the base row
-      // unchanged, `unreplayable` could not be put in front of the model at
-      // all, and `skipped` is everything the runner could not assemble this
-      // time. `concurrency` is here because a duration means nothing without
-      // it — the same work at four lanes and at one is the same calls and a
-      // different afternoon.
+      // The four counts do not overlap: `regenerated` is the golden items
+      // that paid for calls, `cached` came from the base row unchanged,
+      // `unreplayable` could not be put in front of the model at all, and
+      // `skipped` is every golden item and trigger case the runner could not
+      // assemble this time. A golden item sent to a lane that then skipped is
+      // counted as skipped only. `concurrency` is here because a duration
+      // means nothing without it — the same work at four lanes and at one is
+      // the same calls and a different afternoon.
       timing: {
         durationMs: finishedAt - startedAt,
-        regenerated: toScore.length,
+        regenerated: toScore.filter((item) => byId.get(item.id)?.judged !== "skip").length,
         cached: carried.size,
         skipped: [...results, ...triggerResults].filter((result) => result?.judged === "skip").length,
         unreplayable: unreplayableItems.length,

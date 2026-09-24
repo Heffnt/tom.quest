@@ -3292,6 +3292,8 @@ describe("an item whose input no prompt can carry", () => {
       { id: "explanation-p1", reason: "the session transcript is not in WikiTom's archive", method: undefined },
     ]);
     expect(run.calls).toBe(0);
+    // Counted once, as skipped: the timing counts do not overlap.
+    expect(run.timing).toMatchObject({ regenerated: 0, cached: 0, skipped: 1, unreplayable: 0 });
   });
 });
 
