@@ -4,12 +4,16 @@ import { requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
 import { RECOMMENDATION } from "./ttsShared";
 
-// TTS code-todo BRIEFS — the Jarvis Box writes ground-up briefs for each open
-// code todo (from the dtsCodeTodoMirror's repos); Tom's rulings on them live in
-// the unified ttsRulings table (ttsRulings.ts, ratified 2026-08-28), and worker
-// jobs read pending rulings back from there to apply/execute them. Tom-facing
-// functions are Tom-gated (tts.ts pattern); everything the worker touches goes
-// through internal functions behind the key-authed /tts/code-* routes in http.ts.
+// TTS code-todo BRIEFS — ground-up briefs for open code todos (from the
+// dtsCodeTodoMirror's repos). Their one writer was the planner's brief pass
+// over ComplexMultiTrigger's vqc/todos.yaml, retired when CMT adoption ruling
+// 70 moved CMT's todos into TTS; the 31 CMT rows here are records, and
+// nothing writes a new brief today (POST /tts/code-briefs in http.ts still
+// accepts one). Tom's rulings on them live in the unified ttsRulings table
+// (ttsRulings.ts, ratified 2026-08-28), and worker jobs read pending rulings
+// back from there to apply/execute them. Tom-facing functions are Tom-gated
+// (tts.ts pattern); everything the worker touches goes through internal
+// functions behind the key-authed /tts/code-* routes in http.ts.
 
 const EXEC_CLASS = v.union(v.literal("box"), v.literal("needs-turing"));
 

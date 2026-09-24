@@ -938,7 +938,7 @@ export default defineSchema({
   // id, never copy — the repo stays the system of record; acting on one means
   // working in that repo). Refreshed by cron from GitHub default branches.
   dtsCodeTodoMirror: defineTable({
-    repo: v.string(), // "ComplexMultiTrigger" | "tom.quest"
+    repo: v.string(), // "tom.quest"; "ComplexMultiTrigger" rows are records since ruling 70 (ttsShared CODE_TODO_REPOS)
     externalId: v.string(),
     tier: v.string(), // repo's own vocabulary, verbatim (R/C/H or readiness words)
     status: v.string(), // "open" | "closed"

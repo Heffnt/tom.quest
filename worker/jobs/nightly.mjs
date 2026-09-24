@@ -3140,6 +3140,21 @@ async function main() {
       await recordFailure(run, "golden-export", err);
     }
   }
+  // THE CMT CACHE CLONE, refreshed here because nothing else refreshes it any
+  // more. graph, the skills half of post and repo-rules read ComplexMultiTrigger
+  // at CMT_DIR at its HEAD; the planner's brief pass kept that clone at
+  // origin/master every 30 minutes as a side effect of reading vqc/todos.yaml,
+  // and that pass is retired (Tom's ruling of 2026-09-22, CMT adoption ruling
+  // 70: CMT's todos live in TTS). Without this, every night would read CMT's
+  // rules from whatever commit the last brief pass left. A refused refresh is
+  // a failure row, and the steps read the clone as it stood.
+  if (process.platform !== "win32") {
+    try {
+      cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master", dir: CMT_DIR });
+    } catch (err) {
+      await recordFailure(run, "cmt-refresh", err);
+    }
+  }
   // No checkout is a bad night, not a silent one: the digest reads these two
   // rows, and a run that threw here wrote neither — the one morning Tom would
   // see nothing at all is the morning the checkout is gone.
