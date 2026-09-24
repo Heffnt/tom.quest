@@ -3547,13 +3547,15 @@ describe("autonomous session scheduler", () => {
 // (the lifeos update, phase 7). The ruling applies at admission with the
 // session id; the mission ends in a pull request Tom merges.
 describe("the code lane", () => {
-  const CMT = "ComplexMultiTrigger";
+  // tom.quest: the one repo left on the code-todo list (ttsShared
+  // CODE_TODO_REPOS) since ruling 70 took ComplexMultiTrigger off it.
+  const REPO = "tom.quest";
 
   // Open, briefed code todos — what Tom rules on. One mirror replace for the
   // whole set (a replace drops the rows it is not handed).
   async function briefedCodeTodos(t: ReturnType<typeof convexTest>, ids: string[]) {
     await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: CMT,
+      repo: REPO,
       rows: ids.map((externalId) => ({
         externalId,
         tier: "R",
@@ -3564,7 +3566,7 @@ describe("the code lane", () => {
     });
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: ids.map((externalId) => ({
-        repo: CMT,
+        repo: REPO,
         externalId,
         sourceHash: "h",
         brief: `# Brief for ${externalId}\nwhat, why, how`,
@@ -3583,7 +3585,7 @@ describe("the code lane", () => {
     sentence?: string,
   ) {
     return await tom.mutation(api.ttsRulings.recordRuling, {
-      repo: CMT,
+      repo: REPO,
       externalId,
       verdict,
       sentence,
@@ -3604,9 +3606,9 @@ describe("the code lane", () => {
     expect(sessions).toHaveLength(1);
     const session = sessions[0];
     expect(session.mode).toBe("autonomous");
-    expect(session.codeRepo).toBe(CMT);
+    expect(session.codeRepo).toBe(REPO);
     expect(session.codeExternalId).toBe("cmt-001");
-    expect(session.repos).toEqual([CMT]);
+    expect(session.repos).toEqual([REPO]);
     expect(session.todoId).toBeUndefined();
     expect(session.status).toBe("requested");
 
@@ -3621,7 +3623,7 @@ describe("the code lane", () => {
     expect(text).toContain("Brief for cmt-001");
     expect(text).toContain("keep the CLI flag");
     expect(text).toContain(`session/${session._id}`);
-    expect(text).toContain("python3 -m pytest tests/guards/test_bb_todos.py -q");
+    expect(text).toContain("pnpm vitest run vqc/todos.test.ts");
     expect(text).toContain("gh pr create");
     expect(text).toContain("CHANGE REPORT:");
     expect(text).toContain(WORKER_CONTRACT);
@@ -3778,7 +3780,7 @@ describe("the code lane", () => {
     const tom = await withTom(t);
     await briefedCodeTodo(t, "cmt-closed");
     await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: CMT,
+      repo: REPO,
       rows: [
         { externalId: "cmt-closed", tier: "R", status: "closed", statement: "s", url: "u" },
         { externalId: "cmt-unbriefed", tier: "R", status: "open", statement: "s", url: "u" },
@@ -3799,6 +3801,64 @@ describe("the code lane", () => {
     expect(await t.query(internal.ttsRulings.internalPendingRulings, {})).toHaveLength(0);
   });
 
+  // Ruling 70 took ComplexMultiTrigger off the code-todo list, and its mirror
+  // rows and briefs stay as records — so an open, briefed CMT row still
+  // exists. witness: drop the tracksCodeTodos check from recordRuling's
+  // subject resolver and the first expectation goes red; drop it from
+  // admitCodeMissions and a ruling recorded before the change starts a
+  // mission on a repo whose todos now live in TTS.
+  it("refuses a CMT code ruling at the pen, and one recorded before ruling 70 at admission", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: "ComplexMultiTrigger",
+      rows: [{ externalId: "cmt-open", tier: "R", status: "open", statement: "s", url: "u" }],
+    });
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [{
+        repo: "ComplexMultiTrigger",
+        externalId: "cmt-open",
+        sourceHash: "h",
+        brief: "a brief",
+        recommendation: "approve" as const,
+        execClass: "box" as const,
+      }],
+    });
+    await expect(
+      tom.mutation(api.ttsRulings.recordRuling, {
+        repo: "ComplexMultiTrigger",
+        externalId: "cmt-open",
+        verdict: "approve",
+      }),
+    ).rejects.toThrow(/off the code-todo list/);
+
+    const earlier = await t.run(async (ctx) =>
+      ctx.db.insert("dtsRulings", {
+        subjectType: "code",
+        repo: "ComplexMultiTrigger",
+        externalId: "cmt-open",
+        verdict: "approve",
+        ruledAt: Date.now() - 60_000,
+      }),
+    );
+    await enableAuto(t);
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await codeSessions(t)).toHaveLength(0);
+    const ruling = await t.run(async (ctx) => ctx.db.get(earlier));
+    expect(ruling?.applyResult).toBe("refused: ComplexMultiTrigger keeps no code-todo file any more");
+
+    // A ruling on a CHANGE in CMT (a pull request, not a code todo) is not
+    // what the refusal is for: it is recorded and applied at write time.
+    // witness: drop the isChangeSubject exemption from insertRuling.
+    const change = await tom.mutation(api.ttsRulings.recordRuling, {
+      repo: "ComplexMultiTrigger",
+      externalId: "pr-105",
+      verdict: "approve",
+    });
+    expect((await t.run(async (ctx) => ctx.db.get(change)))?.appliedAt).toBeGreaterThan(0);
+  });
+
   // witness: drop the by_code_subject history read — a code todo could draw
   // missions without end.
   it("holds the per-subject session ceiling", async () => {
@@ -3810,9 +3870,9 @@ describe("the code lane", () => {
         await ctx.db.insert("claudeSessions", {
           title: "past code mission",
           kind: "adhoc",
-          repo: CMT,
+          repo: REPO,
           mode: "autonomous",
-          codeRepo: CMT,
+          codeRepo: REPO,
           codeExternalId: "cmt-loop",
           status: "ended",
           statusChangedAt: Date.now() - 86_400_000,
@@ -4118,7 +4178,9 @@ describe("prospecting lane", () => {
   // and the tom.quest half goes red — which is exactly how it shipped, while
   // the mirror cron read tom.quest's registry all along and /tts/state showed
   // none of it. A prospector blind to that file re-captures decided work.
-  it("tells a prospector in EITHER registry repo to read vqc/todos.yaml first", async () => {
+  // The CMT half is the other direction since ruling 70: CMT keeps no
+  // registry, so its prospector is not sent to read one.
+  it("tells a prospector to read vqc/todos.yaml first in a registry repo, and only there", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await enableAuto(t);
@@ -4138,6 +4200,10 @@ describe("prospecting lane", () => {
         sessionId: prospector._id,
       });
       const text = inbound[0].text ?? "";
+      if (prospector.repo === "ComplexMultiTrigger") {
+        expect(text).not.toContain("vqc/todos.yaml");
+        continue;
+      }
       expect(text).toContain("vqc/todos.yaml");
       // Read the registry BEFORE the capture pen, like the /tts/state read.
       expect(text.indexOf("vqc/todos.yaml")).toBeLessThan(

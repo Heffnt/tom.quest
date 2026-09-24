@@ -45,8 +45,6 @@ export const MODEL_CEILING = "opus";
 //
 //   planner          the planning passes (prepare a life todo, plan the
 //                    graphs): judgment over Tom's own words and his goals.
-//   codeBrief        the read-only pass over a real repo checkout that writes
-//                    the brief a code todo is worked from.
 //   triage           a capture verdict over a batch of inbound items (Gmail,
 //                    Canvas): classify-shaped, high volume, the budget model.
 //   timeNotes        reading one of Tom's time sentences into actions.
@@ -69,7 +67,6 @@ export const MODEL_CEILING = "opus";
 // TTS_LEARNING_MODEL, at their use); the ceiling applies to an override too.
 export const MODELS = Object.freeze({
   planner: "opus",
-  codeBrief: "opus",
   triage: "claude-sonnet-5",
   timeNotes: "claude-sonnet-5",
   simplify: "claude-fable-5-1",

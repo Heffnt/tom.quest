@@ -1,4 +1,4 @@
-// plan-graphs.mjs — THE PLANNER. One run, three passes, in this order:
+// plan-graphs.mjs — THE PLANNER. One run, two passes, in this order:
 //
 // NO SHEBANG LINE, for nightly.mjs's reason (write-slack.mjs and
 // scripts/check-writing-standard.mjs say it too): since the door check landed
@@ -18,15 +18,14 @@
 //      the planner already reads every todo every run, and a capture's
 //      write-up and its place in a graph are one job's worth of reading.
 //      Nothing here posts to Slack — the events route replies at capture.
-//   2. BRIEF — every open CMT code todo whose YAML changed, or that Tom ruled
-//      "revise" on, gets a ground-up brief against the current tree and a
-//      recommendation in the four verdict words (was brief-code-todos.mjs).
-//   3. PLAN — maintain the graph inside every batch via headless Claude.
+//   2. PLAN — maintain the graph inside every batch via headless Claude.
+//
+// (A third pass, BRIEF, wrote a brief for every open entry of CMT's
+// vqc/todos.yaml. It is retired: see "The code-brief prompt" below.)
 //
 // Run by cron every 30 minutes under flock (see /etc/cron.d/tts). Manual run:
-//   node /opt/tts/plan-graphs.mjs            # all three passes
+//   node /opt/tts/plan-graphs.mjs            # both passes
 //   node /opt/tts/plan-graphs.mjs --force    # also re-prepare prepared todos
-//                                            # and re-brief EVERY open entry
 //
 // WHAT A BATCH IS (schema v2, ratified 2026-08-29). A batch is NOT a todo.
 // It is its own row, and it holds one thing: HOW a set of todos gets
@@ -85,10 +84,10 @@
 // (/tts/plan-repairs-consumed): an instruction re-asserted every half hour
 // after it has been carried out is an instruction to change something else.
 //
-// THE DOOR CHECK (phase 9). Passes 1 and 2 both READ WHAT THEY WROTE before
-// posting it, against the writing standard's own rules — see THE DOOR CHECK
-// below for the loop, the two-attempt bound and what a fault costs. Pass 3 has
-// no such check: its output is a graph, and the explanations inside it are
+// THE DOOR CHECK (phase 9). Pass 1 READS WHAT IT WROTE before posting it,
+// against the writing standard's own rules — see THE DOOR CHECK below for the
+// loop, the two-attempt bound and what a fault costs. Pass 2 has no such
+// check: its output is a graph, and the explanations inside it are
 // written by the same pen the prepare pass writes through.
 //
 // NO-STATE RULE: Convex is read and written each run. The only local file is
@@ -117,16 +116,6 @@ import {
   JSON_ONLY_ANSWER,
   MODELS,
 } from "./tts-lib.mjs";
-import {
-  CMT_REPO,
-  TODOS_PATH,
-  cmtRepoDir,
-  yamlToJson,
-  sourceHash,
-  readBriefHashes,
-  writeBriefHashes,
-  findEntryBlock,
-} from "./tts-code-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
 // Bump when the plan prompt changes semantics: it joins the input hash, so a
@@ -206,10 +195,10 @@ function explanationPreview(value, max) {
 // WHAT A FAULT COSTS. Tom ruled on 2026-09-12 ("Agreed.") that a write-up that
 // fails this check on both attempts is STILL POSTED and reaches him CARRYING
 // THE MARK. It is never withheld, never retried forever and never silently
-// downgraded: a silent hole — a todo with no brief, a code brief left standing
-// under a subject that changed — costs him more than a brief he can see is
-// faulty. The mark rides the "prepared" event (pass 1) and the brief row (pass
-// 2), and both surfaces on /tts print it under the brief.
+// downgraded: a silent hole — a todo with no brief — costs him more than a
+// brief he can see is faulty. The mark rides the "prepared" event, and /tts
+// prints it under the brief. (The retired code-brief pass carried the same
+// mark on its brief row.)
 //
 // TWO ATTEMPTS, ONE RETRY, and the number is the digest writer's
 // (worker/jobs/write-slack.mjs writeOne) for the digest writer's reason: a
@@ -261,7 +250,8 @@ export async function loadStandardRules() {
 // WHICH RULES BIND WHICH FIELD, and it is not "all of them on everything".
 // The two SIZE rules in BRIEF_RULES — brief-sentences and brief-length — bind
 // the LIFE TODO'S brief and nothing else; the two FORM rules bind every short
-// prose field this door reads (workDescription, recommendation, a code brief).
+// prose field this door reads (workDescription, and the retired code brief's
+// brief and recommendation, which the evals still score).
 // That split has ONE HOME and this file does not keep a copy of it: it is
 // BRIEF_SIZE_RULE_IDS and briefFormRules() in scripts/check-writing-standard.mjs,
 // where the argument is written out at length — a size rule pointed at a
@@ -615,36 +605,17 @@ export async function prepareLifeTodos(
   return { prepared: preparedIds.length, failed, preparedIds };
 }
 
-// ── PASS 2: brief ────────────────────────────────────────────────────────────
-// Every OPEN entry of CMT's vqc/todos.yaml gets a ground-up brief against the
-// CURRENT tree and a recommendation in the four verdict words. This pass used
-// to be brief-code-todos.mjs (every 2 hours at :17), absorbed here in the
-// lifeos update, phase 7. Incremental: an entry is re-briefed only when its
-// YAML changed since the last posted brief (a sha256 source hash per entry in
-// /var/lib/tts/brief-hashes.json — losing the file re-briefs everything once,
-// and the Convex POST upserts) or when Tom ruled "revise" on it (the pending
-// ruling's sentence rides into the prompt as the replan note, and the ruling
-// is consumed once the fresh brief has posted). Each success is durable in
-// dependency order (Convex, then the cursor), so a crash mid-run loses at
-// most the entry in flight. Convex holds the one copy of a brief: the worker
-// mission that carries out an approve or archive reads it from there.
-
-// At most this many briefs per run (all pending with --force). Bounds the run:
-// 8 entries × the 10-minute per-entry timeout is 80 minutes worst case; the
-// cron line's flock turns an overrun into skipped ticks, never a second run.
-export const BRIEF_MAX_PER_RUN = 8;
-export const BRIEF_TIMEOUT_MS = 10 * 60 * 1000;
-// Briefing gets a real exploration budget (vs runClaude's default of 8):
-// the model must open cited ledger/constitution/code files to judge whether a
-// plan still matches the tree, and each file read is a turn.
-export const BRIEF_MAX_TURNS = 40;
-
-// The four verdict words (the lifeos update): the recommendation is the
-// worker's read of what Tom will rule, spelled in the words he rules in.
-// convex/ttsShared.ts RECOMMENDATION_VALUES is the one home; this is the
-// box's literal mirror (Node never loads .ts).
-export const RECOMMENDATIONS = new Set(["approve", "revise", "session", "archive"]);
-export const EXEC_CLASSES = new Set(["needs-turing", "box"]);
+// ── The code-brief prompt (the brief PASS is retired) ────────────────────────
+// This file used to run a second pass between prepare and plan: every open
+// entry of ComplexMultiTrigger's vqc/todos.yaml got a ground-up brief against
+// the current tree and a recommendation in the four verdict words, posted to
+// /tts/code-briefs. That file was the only one the pass ever read, and Tom's
+// ruling of 2026-09-22 (CMT adoption ruling 70, 2026-09-24) moved CMT's todos
+// into TTS, where the prepare pass above writes them up like any other todo —
+// so the pass, its hash cursor and its door check are gone. The prompt stays
+// for one reader: the evals' "code-brief" job (worker/jobs/evals.mjs) replays
+// the recorded briefs through it, and retiring that partition is its own
+// change.
 
 // Build the per-entry prompt. `entryYaml` is the entry's RAW block from
 // todos.yaml (real YAML beats re-serialized JSON: Tom's comments and block
@@ -695,213 +666,7 @@ export function briefPrompt(entryYaml, replanNote, writingStandard, complaints =
   ].join("\n");
 }
 
-/**
- * What is missing or unusable in a brief answer — the three checks this pass
- * has always made, moved in here so there is ONE fault list and ONE refusal
- * path. Same distinction as the prepare pass's: a brief with a garbage
- * recommendation is NOTHING TO POST (it would render as a broken ruling card),
- * so the entry fails and the next run retries it; a badly-WRITTEN brief is
- * something to post, marked.
- */
-export function briefShapeFaults(parsed) {
-  const faults = [];
-  if (typeof parsed?.brief !== "string" || parsed.brief.trim() === "") {
-    faults.push(`brief: missing — the answer must carry brief as non-empty text`);
-  }
-  if (!RECOMMENDATIONS.has(parsed?.recommendation)) {
-    faults.push(
-      `recommendation: not one of the four verdict words — ` +
-        `${[...RECOMMENDATIONS].join(" | ")}, not ${JSON.stringify(parsed?.recommendation)}`,
-    );
-  }
-  if (!EXEC_CLASSES.has(parsed?.execClass)) {
-    faults.push(
-      `execClass: not one of ${[...EXEC_CLASSES].join(" | ")}, ` +
-        `but ${JSON.stringify(parsed?.execClass)}`,
-    );
-  }
-  return faults;
-}
-
-/**
- * Everything wrong with one code brief, as one list of short sentences. Shape
- * first and alone, for prepareDoorFaults's reason. Then the writing standard
- * over `brief` and `recommendation`, in the FORM rules only — a code brief is
- * 250-400 words by the prompt above and a recommendation is one word, so the
- * two size rules cannot bind either (WHICH RULES BIND WHICH FIELD above names
- * the one home, which says why at length).
- */
-export function briefDoorFaults(parsed, standard) {
-  const shape = briefShapeFaults(parsed);
-  if (shape.length > 0) return shape;
-  const rules = standard?.briefFormRules?.();
-  return [
-    ...standardComplaints("brief", parsed.brief, rules, standard),
-    ...standardComplaints("recommendation", parsed.recommendation, rules, standard),
-  ];
-}
-
-/**
- * Which entries this run briefs: every open entry whose source hash moved
- * since its last brief, plus every open entry with a pending code "revise"
- * ruling (re-briefed whatever its hash, with the sentence as the replan
- * note), plus everything with `force`. `entries` are the parsed open entries
- * of todos.yaml, `hashes` the cursor file's map.
- */
-export function selectBriefTargets(entries, hashes, pending, { force = false } = {}) {
-  const reviseById = new Map();
-  for (const r of Array.isArray(pending) ? pending : []) {
-    if (r.subjectType !== "code" || r.verdict !== "revise") continue;
-    if (r.repo !== CMT_REPO || typeof r.externalId !== "string") continue;
-    reviseById.set(r.externalId, r);
-  }
-  const targets = [];
-  for (const entry of entries) {
-    const key = `${CMT_REPO}:${entry.id}`;
-    const hash = sourceHash(entry);
-    const revise = reviseById.get(entry.id) ?? null;
-    if (!force && !revise && hashes[key] === hash) continue; // unchanged
-    targets.push({ entry, key, hash, revise });
-  }
-  return targets;
-}
-
-/**
- * The brief pass. `repo` is the CMT checkout the model reads from: its
- * directory (the model's cwd), the raw todos.yaml text (for the entry blocks)
- * and the parsed OPEN entries. `io` adds two file-shaped hooks to the pass
- * contract — `readHashes()` and `writeHashes(map)` — so the tests keep the
- * cursor in memory.
- */
-export async function briefCodeTodos(
-  { repo, pending, writingStandard, standard = null, force = false },
-  io,
-) {
-  const hashes = io.readHashes();
-  const targets = selectBriefTargets(repo.entries, hashes, pending, { force });
-  if (targets.length === 0) return { briefed: 0, failed: 0 }; // quiet when idle
-  const batch = force ? targets : targets.slice(0, BRIEF_MAX_PER_RUN);
-  console.log(
-    `[plan-graphs] brief: ${targets.length} entr${targets.length === 1 ? "y" : "ies"} to brief, ` +
-      `processing ${batch.length}${force ? " (--force)" : ""}`,
-  );
-  let briefed = 0;
-  let failed = 0;
-  for (const { entry, key, hash, revise } of batch) {
-    try {
-      // The raw YAML block for the prompt; fall back to JSON if the block
-      // scan somehow misses (it shouldn't — the entry came from this file).
-      const found = findEntryBlock(repo.todosText, entry.id);
-      const entryYaml = found ? found.block : JSON.stringify(entry, null, 2);
-      const replanNote = revise ? (revise.sentence ?? "") : null;
-
-      // TWO ATTEMPTS, ONE RETRY (see THE DOOR CHECK above for the number).
-      let receipt;
-      let parsed;
-      let faults = [];
-      let complaints = [];
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        // A fresh receipt per entry AND per attempt, for the reason the
-        // prepare pass gives: one shared object would report the last run for
-        // words another run wrote, and the token that matters is the one whose
-        // text was accepted.
-        receipt = {};
-        const answer = io.runClaude(
-          briefPrompt(entryYaml, replanNote, writingStandard, complaints),
-          {
-            cwd: repo.dir, // non-agentic: read-only tools over the repo, no edits
-            timeoutMs: BRIEF_TIMEOUT_MS,
-            maxTurns: BRIEF_MAX_TURNS,
-            model: MODELS.codeBrief,
-            registration: {
-              origin: "cron:plan-graphs",
-              kind: "job",
-              layersKnown: false,
-              layersGiven: [],
-              layersDenied: [],
-              writingStandardSource: "/tts/batch-context",
-            },
-            receipt,
-          },
-        );
-        // Not JSON at all throws here and the entry fails, as before: a broken
-        // envelope is not a door fault.
-        parsed = extractJsonObject(answer);
-        faults = briefDoorFaults(parsed, standard);
-        if (faults.length === 0) break;
-        complaints = faults;
-        console.error(
-          `[plan-graphs] brief ${entry.id}: the door check refused attempt ${attempt} — ` +
-            faults.join("; "),
-        );
-      }
-
-      // A SHAPE FAULT ON THE LAST ATTEMPT IS NOTHING TO POST: a brief with a
-      // garbage recommendation would render as a broken ruling card, so fail
-      // THIS entry loudly and leave the cursor where it is. A STANDARD fault
-      // posts, marked — withholding the brief would leave the PREVIOUS brief
-      // standing under an entry that has since changed, which is the silent
-      // hole Tom's ruling refuses, and a code brief sits on /tts in front of
-      // him exactly as a life todo's brief does.
-      const shape = briefShapeFaults(parsed);
-      if (shape.length > 0) throw new Error(shape.join("; "));
-      const evidence =
-        typeof parsed.evidence === "string" && parsed.evidence.trim() !== ""
-          ? parsed.evidence
-          : undefined;
-
-      // Durable in dependency order: Convex first (the system of record),
-      // then the cursor — so a crash can only leave us re-doing work, never
-      // believing work happened that didn't.
-      await io.post("/tts/code-briefs", {
-        briefs: [
-          {
-            repo: CMT_REPO,
-            externalId: entry.id,
-            sourceHash: hash,
-            brief: parsed.brief,
-            recommendation: parsed.recommendation,
-            execClass: parsed.execClass,
-            ...(evidence ? { evidence } : {}),
-            // THE MARK, sent only when there is one. Unlike the prepare pass's
-            // event, this one is a FIELD ON AN UPSERTED ROW, so the absence of
-            // the key is what CLEARS a previous refused brief's mark: the pen
-            // always writes the field, and a re-brief that passed leaves no
-            // stale mark under text it does not describe (convex/ttsCode.ts
-            // says why at the patch).
-            ...(faults.length > 0 ? { doorFaults: faults } : {}),
-          },
-        ],
-        // One brief per call here, so the pass's one token is this brief's.
-        ...(receipt.runToken ? { runToken: receipt.runToken } : {}),
-      });
-      hashes[key] = hash;
-      io.writeHashes(hashes);
-      if (revise) {
-        // The fresh brief landed — consume the ruling so the UI shows the
-        // outcome and the next run does not re-brief on the same sentence.
-        await io.post("/tts/ruling-applied", {
-          id: revise._id,
-          result: "revised: brief re-written with a fresh plan",
-        });
-      }
-      briefed++;
-      console.log(
-        `[plan-graphs] briefed ${entry.id}: ${parsed.recommendation} ` +
-          `(${parsed.execClass}${revise ? ", fresh plan after revise" : ""})` +
-          `${faults.length > 0 ? " — posted CARRYING THE DOOR MARK" : ""}`,
-      );
-    } catch (err) {
-      // Per-entry failure: the entry keeps its old cursor (or its revise
-      // ruling stays pending) and the next run retries it.
-      failed++;
-      console.error(`[plan-graphs] brief ${entry.id} FAILED: ${err.message}`);
-    }
-  }
-  return { briefed, failed };
-}
-
-// ── PASS 3: plan ─────────────────────────────────────────────────────────────
+// ── PASS 2: plan ─────────────────────────────────────────────────────────────
 
 export function graphPrompt(ctx) {
   return [
@@ -1577,7 +1342,7 @@ async function main() {
 
   let failures = 0;
 
-  // The DOOR CHECK's rules, loaded once for both writing passes. A different
+  // The DOOR CHECK's rules, loaded once for the prepare pass. A different
   // thing from context.writingStandard above, which is the prose the model is
   // given: this is the executable half, and an unreachable file is "no rules
   // ran" rather than a failure (loadStandardRules says why).
@@ -1611,42 +1376,7 @@ async function main() {
     console.error(`[plan-graphs] prepare pass FAILED: ${err.message}`);
   }
 
-  // --- Pass 2: brief --------------------------------------------------------
-  // The CMT checkout is refreshed only when the pass runs at all: without
-  // GH_TOKEN there is no clone to read, and a planner that cannot brief still
-  // prepares and plans — one line says which half is standing down.
-  if (!env.GH_TOKEN) {
-    console.log("[plan-graphs] brief: GH_TOKEN missing in worker.env — skipping");
-  } else {
-    try {
-      const dir = cmtRepoDir(env);
-      const todosFile = path.join(dir, TODOS_PATH);
-      const parsed = yamlToJson(todosFile);
-      if (!Array.isArray(parsed)) throw new Error(`${TODOS_PATH} did not parse to a list`);
-      // Open = no `closed` field. (The file also keeps closed entries below a
-      // banner comment, but the field is the machine-readable truth — the
-      // banner is for humans and the guard test enforces the pairing.)
-      const entries = parsed.filter(
-        (e) => e && typeof e === "object" && !("closed" in e),
-      );
-      const result = await briefCodeTodos(
-        {
-          repo: { dir, todosText: fs.readFileSync(todosFile, "utf8"), entries },
-          pending,
-          writingStandard: context.writingStandard,
-          standard,
-          force,
-        },
-        { ...io, readHashes: readBriefHashes, writeHashes: writeBriefHashes },
-      );
-      failures += result.failed;
-    } catch (err) {
-      failures++;
-      console.error(`[plan-graphs] brief pass FAILED: ${err.message}`);
-    }
-  }
-
-  // --- Pass 3: plan ---------------------------------------------------------
+  // --- Pass 2: plan ---------------------------------------------------------
   try {
     const result = await planGraphs(context, pending, io);
     if (result.ran) failures += result.failed;

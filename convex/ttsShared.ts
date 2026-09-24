@@ -1056,12 +1056,17 @@ export const CODE_TODO_PATH = "vqc/todos.yaml";
  * They drifted once: only ComplexMultiTrigger was named in the prompt, while
  * the cron mirrored tom.quest too, so tom.quest prospectors were blind to
  * tom.quest's own registry.
+ *
+ * ComplexMultiTrigger is OFF this list since Tom's ruling of 2026-09-22,
+ * ratified as CMT adoption ruling 70 on 2026-09-24: "i dont think vqc should
+ * have its own todos since tts covers that." CMT's todos live in TTS; its
+ * vqc/todos.yaml is deleted after they are homed. The mirror rows it left in
+ * dtsCodeTodoMirror stay in the table as records (the evals read past code
+ * rulings' inputs off them), and every live reader of the mirror reads only
+ * the repos on this list (tts.ts liveMirrorRows), so a frozen row can never
+ * read as open work.
  */
 export const CODE_TODO_REPOS = {
-  ComplexMultiTrigger: {
-    branch: "master",
-    guard: "python3 -m pytest tests/guards/test_bb_todos.py -q",
-  },
   "tom.quest": { branch: "main", guard: "pnpm vitest run vqc/todos.test.ts" },
 } as const;
 
