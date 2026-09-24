@@ -227,6 +227,9 @@ function harness({
       if (repoDirThrows) throw new Error("missing GH_TOKEN in /etc/tts/worker.env — the cache clones need it");
       return repoDir;
     },
+    // The clone a failed fetch falls back to: none, so the fallback reads
+    // nothing on any machine (the box's own is at TOMQUEST_DIR).
+    cacheCloneDir: path.join(repoDir, "no-cache-clone"),
     markerRead: (day) => markers.get(day) ?? null,
     markerWrite: (day, record) => markers.set(day, record),
     reportFailed: async (env, body) => reports.failed.push(body),
@@ -649,6 +652,8 @@ describe("the tom.quest cache clone", () => {
     const { run } = harness({ repoDirThrows: true });
     const result = await run({ repoDir: null });
     expect(result.failures.some((line) => line.includes("cache clone could not be refreshed"))).toBe(true);
+    // The fallback is the clone as it stands on disk, and this machine has none.
+    expect(result.facts.repoReadable).toBe(false);
     // No credential is in the stated failure beyond the name of the variable
     // the fetch said was missing, which is what the operator has to know.
     expect(result.failures.join("\n")).not.toContain("x-access-token");

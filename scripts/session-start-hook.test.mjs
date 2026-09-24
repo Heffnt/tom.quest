@@ -62,9 +62,12 @@ function fixture({ writing = true } = {}) {
 /**
  * The hook, with every destination pointed at `skills` and every other source
  * of one neutralised. `TTS_SKILLS_DIRS` is the seam scripts/session-start-hook.mjs
- * declares; `CLAUDE_CONFIG_DIR` and `CMT_DIR` are cleared so this laptop's own
- * configuration cannot reach a test, and `TOM_QUEST_DIR` is pointed at a
- * directory that is not a checkout so the run publishes no repo but WikiTom's.
+ * declares; `CLAUDE_CONFIG_DIR` is cleared so this laptop's own configuration
+ * cannot reach a test, and `TOM_QUEST_DIR` and `CMT_DIR` are pointed at
+ * directories that are not checkouts so the run publishes no repo but
+ * WikiTom's. `CMT_DIR` was cleared with "" until 2026-09-24, and the hook reads
+ * `CMT_DIR || <default>`, so on the box every run published the box's own
+ * /var/cache/tts/ComplexMultiTrigger clone.
  *
  * `RUN_HOST` IS CLEARED FOR THE SAME REASON, and it was the one source of a
  * destination this list forgot. The hook publishes only when it is NOT on the
@@ -88,7 +91,7 @@ function run({ wikitom, skills, tomQuest, env = {}, payload = {
       TTS_SKILLS_DIRS: Array.isArray(skills) ? skills.join(";") : skills,
       TOM_QUEST_DIR: tomQuest ?? path.join(os.tmpdir(), "no-tom-quest-checkout"),
       CLAUDE_CONFIG_DIR: "",
-      CMT_DIR: "",
+      CMT_DIR: path.join(os.tmpdir(), "no-cmt-checkout"),
       RUN_HOST: "",
       ...env,
     },

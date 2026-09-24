@@ -428,11 +428,11 @@ describe("runClaude receipt", () => {
       vi.stubEnv("CLAUDE_BIN", bin);
       vi.stubEnv("FAKE_PROMPT_AT", promptAt);
       vi.stubEnv("TTS_RUN_SLOT_HELD", "");
-      try {
-        runClaude("p", { model: "sonnet", registration });
-      } finally {
-        vi.unstubAllEnvs();
-      }
+      // NO vi.unstubAllEnvs() HERE: it also undid withoutBoxState's stubs, so
+      // the second call ran with no run state directory and, on the box, read
+      // /etc/tts/worker.env and made its work directory in the box's own
+      // /var/cache/tts/runs. The helper's afterEach restores the environment.
+      runClaude("p", { model: "sonnet", registration });
       return parseRegistrationBlock(fs.readFileSync(promptAt, "utf8")).registration;
     };
     expect(envelopeFor({ layersKnown: false }).environment).toBe("worker");

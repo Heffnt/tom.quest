@@ -160,20 +160,52 @@ not the suite's.
 ## No test reads the box's state
 
 A test asserts what the code does, so it must give the same answer on the box,
-on the laptop and on CI. The box launcher's config (`worker/runs/config.mjs`)
-reads `RUN_HOST` and the env file `/etc/tts/worker.env`, and the run state
-directory it names holds the semaphore and the Fable availability file
-(`worker/runs/models.mjs`). A test that reaches the launcher with none of that
-pointed elsewhere asserts the box's state that day: the delegate test expected
-the model `fable` and failed on the box on 2026-09-24, because Fable was
-unavailable there, while it passed everywhere else.
+on the laptop and on CI. The machine reaches a test in three ways, and each is
+closed in one place.
 
-A test file whose code reaches the launcher calls `withoutBoxState()` from
-`test/box-state.mjs`. For each of its tests the run state directory is an
-empty `tempDir`, the env file is a path that does not exist, and `RUN_HOST`
-and the inherited run slot are empty. The delegate, evals, runner check-in
-and tts-lib tests call it; a test that wants a Fable availability fixture
-writes it into the directory the helper returns.
+**The environment.** A test process starts from the shell's environment, and
+the box's `.bashrc` exports `RUN_HOST=box`. `vitest.config.mts` sets, for every
+test, the variables that name the machine or one of its files: `RUN_HOST` and
+`TTS_RUN_SLOT_HELD` are empty, and `RUN_ENV_FILE` (the launcher's env file,
+`/etc/tts/worker.env` on the box), `WIKITOM_DIR` (the WikiTom checkout) and
+git's configuration (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM`,
+`XDG_CONFIG_HOME`) point into `test/fixtures/no-machine`, a directory that does
+not exist. So the code under test finds no env file, no WikiTom checkout and no
+`~/.gitconfig` of this machine's, and a test that commits names its own author.
+A test that wants one of these sets its own.
+
+**The run state directory.** The box launcher's config
+(`worker/runs/config.mjs`) names a run state directory, which holds the
+semaphore, the work directories and the Fable availability file
+(`worker/runs/models.mjs`). It must be a new directory per test, so it cannot be
+set in the config. A test file whose code reaches the launcher calls
+`withoutBoxState()` from `test/box-state.mjs`, which makes it an empty
+`tempDir` for each test. The delegate, evals, runner check-in and tts-lib tests
+call it; a test that wants a Fable availability fixture writes it into the
+directory the helper returns. The delegate test expected the model `fable` and
+failed on the box on 2026-09-24, because Fable was unavailable there, while it
+passed everywhere else.
+
+**A default path in the code.** A module that falls back to a box path when no
+variable names one (`/var/cache/tts/ComplexMultiTrigger`,
+`/var/cache/tts/tom.quest`) is given a path in the test: a variable pointed at a
+directory that is not a checkout, or an injected reader. An empty variable is
+not a clear, because the code reads `VALUE || <default>`.
+
+The proof is a full run under `strace`, a Linux tool that logs every file a
+process opens, with each test file run on its own so every path is attributed
+to one file. No test opens anything under `/root`, `/var/cache/tts`, `/etc/tts`
+or `/opt/tts` outside the checkout and `TMPDIR`. The only paths left there are
+the parent directories of the checkout and of `TMPDIR`, which node's module
+resolver and git's repository search look at on their way up.
+
+Two kinds of test read a real machine on purpose, and each runs only when a
+variable names what it reads, so on every other run they are skipped:
+
+| Test | What it reads | The variable |
+|---|---|---|
+| the three `REAL` cases in `shared/__tests__/skills.test.mjs` | Tom's own model-of-tom: its skill descriptions fit the cap, no category term is in two area pages, the map names eight repositories | `REAL_WIKITOM_DIR`, a WikiTom checkout |
+| `convex/runs.proof.test.ts` | two real transcripts, ingested end to end | `RUNS_PROOF_CLAUDE` and `RUNS_PROOF_CODEX` |
 
 ## What is not a test
 

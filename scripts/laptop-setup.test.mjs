@@ -30,7 +30,10 @@ function run({ home, wikiTom, tomQuest }) {
       CLAUDE_CONFIG_DIR: "",
       TTS_SKILLS_DIRS: "",
       CODEX_HOME: path.join(home, ".codex"),
-      CMT_DIR: "",
+      // A directory that is not a checkout. An empty value is not a clear:
+      // session-start-hook.mjs reads `CMT_DIR || <default>`, so "" published
+      // the box's own /var/cache/tts/ComplexMultiTrigger into the fixture.
+      CMT_DIR: path.join(home, "no-cmt-checkout"),
     },
   });
 }

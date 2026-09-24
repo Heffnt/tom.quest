@@ -1450,6 +1450,10 @@ export const REAL_IO = {
   // the same one function so the two cannot drift about what the clone is.
   // GH_TOKEN rides inside it and is never read, printed or logged here.
   repoDir: (env) => cacheRepoDir(env, { name: "tom.quest", owner: "Heffnt", branch: "main" }),
+  // Where the cache clone is on disk, which a failed fetch above falls back
+  // to. In io so a test names its own, and a failed fetch in a test run on
+  // the box does not measure the box's real clone.
+  cacheCloneDir: TOMQUEST_DIR,
   markerRead: (day) => {
     try {
       return JSON.parse(fs.readFileSync(path.join(MARKER_DIR, `simplify-${day}.json`), "utf8"));
@@ -1606,7 +1610,7 @@ export async function runSimplify({
       repoDir = io.repoDir(resolvedEnv);
     } catch (error) {
       note(`the tom.quest cache clone could not be refreshed: ${String(error?.message ?? error).slice(0, 200)}`);
-      repoDir = TOMQUEST_DIR;
+      repoDir = io.cacheCloneDir;
     }
   }
   const repoReadable = io.exists(path.join(repoDir, "convex", "schema.ts"));

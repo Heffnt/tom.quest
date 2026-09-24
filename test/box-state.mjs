@@ -6,10 +6,12 @@
 // test expected the model "fable" and failed on the box on 2026-09-24, because
 // Fable was unavailable there, while it passed on every other machine.
 //
-// A test file that calls withoutBoxState() gets, for each of its tests, an
-// empty run state directory, no env file, no RUN_HOST and no inherited run
-// slot, so it runs the same on the box, on the laptop and on CI.
-import path from "node:path";
+// The suite's environment (vitest.config.mts) already names no host, no env
+// file, no inherited run slot and no WikiTom checkout, for every test. What it
+// cannot name is a directory per test, and the run state directory has to be
+// one: the launcher writes its semaphore and work directories there. A test
+// file that calls withoutBoxState() gets, for each of its tests, an empty run
+// state directory, so it runs the same on the box, on the laptop and on CI.
 import { afterEach, beforeEach, vi } from "vitest";
 import { tempDir } from "./temp.mjs";
 
@@ -20,9 +22,6 @@ export function withoutBoxState() {
   beforeEach(() => {
     runState = tempDir("run-state-");
     vi.stubEnv("RUN_SWEEP_STATE_DIR", runState);
-    vi.stubEnv("RUN_ENV_FILE", path.join(runState, "no-such-env"));
-    vi.stubEnv("RUN_HOST", "");
-    vi.stubEnv("TTS_RUN_SLOT_HELD", "");
   });
   afterEach(() => {
     vi.unstubAllEnvs();
