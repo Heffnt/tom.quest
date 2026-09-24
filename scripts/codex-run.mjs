@@ -124,11 +124,9 @@ const OPENROUTER_PREFIX = "openrouter/";
 const OPENROUTER_KEY = "OPENROUTER_API_KEY";
 
 // OpenRouter's model id, or null for a model the default provider serves.
+// OpenRouter refuses an id it does not serve, so the id is not checked here.
 function openrouterModelOf(model) {
-  if (!model.startsWith(OPENROUTER_PREFIX)) return null;
-  const id = model.slice(OPENROUTER_PREFIX.length);
-  if (!/^[^/\s]+\/\S+$/.test(id)) fail(`${model}: an OpenRouter model is spelled openrouter/<vendor>/<model>`);
-  return id;
+  return model.startsWith(OPENROUTER_PREFIX) ? model.slice(OPENROUTER_PREFIX.length) : null;
 }
 
 // THE KEY IS READ HERE, NOT INHERITED. Every model-reachable spawn on the box

@@ -492,15 +492,6 @@ describe("codex-run OpenRouter models", () => {
     expect(fs.existsSync(path.join(result.state, "registration"))).toBe(false);
   });
 
-  it("refuses a spelling without a vendor", () => {
-    const result = run(["--model", "openrouter/deepseek-v4-flash", "--no-operate"], {
-      CODEX_BIN: fakeCodex(),
-      OPENROUTER_API_KEY: "sk-or-env",
-    });
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("an OpenRouter model is spelled openrouter/<vendor>/<model>");
-  });
-
   it("keeps the key from a run on the default provider", () => {
     const out = files();
     const result = run(["--no-operate"], {
