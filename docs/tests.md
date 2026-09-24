@@ -211,13 +211,14 @@ repository search walking up from the checkout, node's `~/.node_modules` and
 `~/.node_libraries` at startup, and the search along the shell's `PATH` for a
 program a test runs by name.
 
-Two kinds of test read a real machine on purpose, and each runs only when a
+Three test files read a real machine on purpose, and each runs only when a
 variable names what it reads, so on every other run they are skipped:
 
 | Test | What it reads | The variable |
 |---|---|---|
 | the three `REAL` cases in `shared/__tests__/skills.test.mjs` | Tom's own model-of-tom: its skill descriptions fit the cap, no category term is in two area pages, the map names eight repositories | `REAL_WIKITOM_DIR`, a WikiTom checkout |
 | `convex/runs.proof.test.ts` | two real transcripts, ingested end to end | `RUNS_PROOF_CLAUDE` and `RUNS_PROOF_CODEX` |
+| `convex/runs.proof5.test.ts` | the laptop's transcripts and the WikiTom session archive, imported, evicted and opened again | `RUNS_PROOF5_STATE`, a scratch directory |
 
 ## What is not a test
 
