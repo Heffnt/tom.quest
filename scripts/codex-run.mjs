@@ -592,9 +592,7 @@ const args = [
 const developerInstructions = [operate?.text ?? "", grantBlock]
   .filter(Boolean)
   .join("\n");
-// A run with neither (--no-operate, no skills) passes no developer instruction
-// at all rather than an empty one.
-if (developerInstructions) args.push("-c", `developer_instructions=${JSON.stringify(developerInstructions)}`);
+args.push("-c", `developer_instructions=${JSON.stringify(developerInstructions)}`);
 // Under workspace-write, a sandboxed Codex has no network by default, which
 // turns "run the tests" into a dependency-install failure. Harmless under
 // read-only, but say it only where it applies so the read-only path stays

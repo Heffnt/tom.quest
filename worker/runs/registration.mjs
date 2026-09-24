@@ -223,6 +223,7 @@ function spoolTokenForBlock(spoolDir, hash, fs) {
     const spooled = jsonAt(path.join(path.resolve(String(spoolDir)), name), fs);
     if (spooled?.blockSha256 === hash && typeof spooled.token === "string") found.push(spooled.token);
   }
+  // Two spools with one hash are two launches whose blocks are byte-identical, and the rollout cannot say which token is its own: claiming either could give it the other run's token, the wrong producedByRunToken edge convex/runLabels.ts exists to prevent.
   return found.length === 1 ? found[0] : null;
 }
 
