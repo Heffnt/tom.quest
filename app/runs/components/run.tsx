@@ -714,14 +714,6 @@ function Lead({
             linked item
           </Link>
         )}
-        {run?.batchId !== undefined && (
-          <Link
-            href={`/tts?batch=${run.batchId}`}
-            className="text-accent underline underline-offset-2 hover:text-text"
-          >
-            linked batch
-          </Link>
-        )}
         {runner && (
           <span className="text-text-muted">
             a step of the runner {runner.title}, which is {RUNNER_STATUS_WORDS[runner.status]}
