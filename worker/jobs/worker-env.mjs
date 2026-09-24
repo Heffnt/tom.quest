@@ -133,3 +133,26 @@ export function graphVersion() {
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// A secret's value as an HTTP bearer token
+// ---------------------------------------------------------------------------
+
+/**
+ * What makes `value` unusable as a bearer token, as a sentence of character
+ * counts, or null when every character is printable ASCII other than space
+ * (0x21-0x7e). Never names a character or a position: the value is a secret.
+ *
+ * THE ONE DEFINITION of a clean OPENROUTER_API_KEY. scripts/codex-run.mjs
+ * refuses a run's key with it, and worker/setup.sh's rollout warning calls it
+ * through node on the value loadEnv above reads, so the rollout and the run
+ * judge the same value by the same rule. Codex, given a value holding a
+ * control character, sends its request with no Authorization header at all.
+ */
+export function bearerTokenProblem(value) {
+  const bad = [...String(value)].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
+  if (bad.length === 0) return null;
+  const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
+  const space = bad.filter((ch) => ch === " ").length;
+  return `${bad.length} character(s) outside printable ASCII (${control} control, ${space} space, ${bad.length - control - space} non-ASCII)`;
+}

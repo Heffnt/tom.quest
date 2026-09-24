@@ -50,5 +50,9 @@ describe("the session daemon's use of box-run.mjs", () => {
     expect(launcher.TOOLS_ALLOWED).toEqual(expect.arrayContaining(["Read", "Write", "Edit", "Bash", "Task"]));
     expect(launcher.BANNED_TOOLS).toEqual(["AskUserQuestion"]);
     expect(launcher.TOOLS_ALLOWED).not.toContain("AskUserQuestion");
+    // The account slots deny these two (worker/setup.sh); the list does not
+    // pre-approve them either.
+    expect(launcher.TOOLS_ALLOWED).not.toEqual(expect.arrayContaining(["WebFetch"]));
+    expect(launcher.TOOLS_ALLOWED).not.toEqual(expect.arrayContaining(["WebSearch"]));
   });
 });
