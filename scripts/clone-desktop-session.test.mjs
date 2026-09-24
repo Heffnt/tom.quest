@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 // vitest, like every other test in this repository: `npx vitest run` collects
 // every *.test.mjs, and a file importing node:test cannot even be loaded by it.
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { beforeEach, describe, test } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 
 // Resolved from the repository root, the way every other script test spells it:
 // under the test runner `import.meta.url` is not always a file URL.
@@ -62,10 +62,9 @@ function ledger() {
 }
 
 beforeEach(() => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "clone-desktop-session-"));
+  const temporary = tempDir("clone-desktop-session-");
   const claudeApp = path.join(temporary, "appdata", "Claude");
   fixture = {
-    temporary,
     home: path.join(temporary, "home"),
     root: path.join(claudeApp, "claude-code-sessions"),
   };
@@ -90,10 +89,6 @@ beforeEach(() => {
   writeJson(sourceFile("local_alpha_two.json"), record("Alpha follow-up", { lastActivityAt: 1789315200000 }));
   writeJson(sourceFile("local_archived.json"), record("Archived Alpha", { isArchived: true }));
   writeJson(sourceFile("local_unique.json"), record("Unique handoff", { customField: "preserve me" }));
-});
-
-afterEach(() => {
-  fs.rmSync(fixture.temporary, { recursive: true, force: true });
 });
 
 describe("clone-desktop-session", () => {

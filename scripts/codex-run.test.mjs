@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 
 import { renderGrants, skillDirName } from "../shared/skills.mjs";
 
@@ -21,7 +22,7 @@ function write(dir, relative, body) {
 }
 
 function wikitomFixture({ rules = "# Rules\n\nKeep the promise.\n" } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-wikitom-"));
+  const dir = tempDir("codex-run-wikitom-");
   execFileSync("git", ["init", "-q", "-b", "main", dir]);
   if (rules !== null) write(dir, "model-of-tom/agent-rules.md", rules);
   git(dir, "add", "-A");
@@ -30,7 +31,7 @@ function wikitomFixture({ rules = "# Rules\n\nKeep the promise.\n" } = {}) {
 }
 
 function installedSkills(...names) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+  const home = tempDir("codex-run-skills-");
   for (const name of names) {
     write(home, path.join("skills", skillDirName(name), "SKILL.md"), "---\nname: fixture\n---\n");
     write(home, path.join("skills", skillDirName(name), ".tom-skill.json"), `${JSON.stringify({ commit: PUBLISHED_COMMIT })}\n`);
@@ -39,7 +40,7 @@ function installedSkills(...names) {
 }
 
 function fakeCodex() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-fake-"));
+  const dir = tempDir("codex-run-fake-");
   const script = path.join(dir, "fake-codex.mjs");
   fs.writeFileSync(script, [
     'import fs from "node:fs";',
@@ -59,7 +60,7 @@ function fakeCodex() {
 }
 
 function run(args, env) {
-  const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-state-"));
+  const state = tempDir("codex-run-state-");
   const result = spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: "utf8",
     input: "answer this\n",
@@ -84,7 +85,7 @@ function spooledEnvelope(state) {
 describe("codex-run operate instructions", () => {
   it("injects the exact committed operate file as a TOML string", () => {
     const rules = '# Rules\n\nSay "hello".\n';
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run([], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: wikitomFixture({ rules }),
@@ -101,7 +102,7 @@ describe("codex-run operate instructions", () => {
   });
 
   it("skips the read entirely with --no-operate", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-skip.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run(["--no-operate"], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: path.join(os.tmpdir(), "no-wikitom-here"),
@@ -115,7 +116,7 @@ describe("codex-run operate instructions", () => {
   });
 
   it("continues after one unavailable-instructions warning", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-missing.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run([], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: path.join(os.tmpdir(), "no-wikitom-here"),
@@ -134,7 +135,7 @@ describe("codex-run operate instructions", () => {
 
 describe("codex-run registration", () => {
   it("spools the launcher's envelope under the token the run carries", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-spool.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run([], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: wikitomFixture(),
@@ -173,7 +174,7 @@ describe("codex-run registration", () => {
   });
 
   it("records no skills when the spawner named none", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-noskills.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run([], { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture(), FAKE_CODEX_ARGS: argsFile });
     expect(result.status).toBe(0);
     // A mechanical Codex child gets the base and nothing else: no block at all.
@@ -182,7 +183,7 @@ describe("codex-run registration", () => {
   });
 
   it("records a job with no parent, and --no-operate as a denial", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-denied.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run(["--no-operate"], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: wikitomFixture(),
@@ -203,7 +204,7 @@ describe("codex-run registration", () => {
 
   it("takes a launcher's named environment over both defaults, and ignores a word that is not one", () => {
     const environmentWith = (env) => {
-      const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-${Math.random()}-environment.json`);
+      const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
       const result = run([], { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture(), FAKE_CODEX_ARGS: argsFile, ...env });
       expect(result.status).toBe(0);
       return spooledEnvelope(result.state).envelope.registration.environment;
@@ -217,7 +218,7 @@ describe("codex-run registration", () => {
 describe("codex-run skill grants", () => {
   it("puts the grant block between the operate text and the token line", () => {
     const rules = "# Rules\n\nKeep the promise.\n";
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-grants.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const vault = wikitomFixture({ rules });
     const result = run(["--grant", "write", "--grant", "know-research"], {
       CODEX_BIN: fakeCodex(),
@@ -246,7 +247,7 @@ describe("codex-run skill grants", () => {
   });
 
   it("carries a refusal and its reason into both the block and the record", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-refuse.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run(["--refuse", "know-research=mechanical run, no planning"], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: wikitomFixture(),
@@ -261,7 +262,7 @@ describe("codex-run skill grants", () => {
   });
 
   it("records a normalized grant with the spelling rendered in the prompt", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-normalized-grant.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run(["--grant", "repo-tom.quest"], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: wikitomFixture(),
@@ -274,7 +275,7 @@ describe("codex-run skill grants", () => {
   });
 
   it("refuses a named grant whose installed SKILL.md is missing", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-missing-skill.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run(["--grant", "write", "--grant", "know-research"], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: wikitomFixture(),
@@ -292,7 +293,7 @@ describe("codex-run skill grants", () => {
   });
 
   it("grants a published skill even when the checkout is unavailable", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-nocommit.json`);
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run(["--grant", "write"], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: path.join(os.tmpdir(), "no-wikitom-here"),
@@ -310,8 +311,8 @@ describe("codex-run skill grants", () => {
   });
 
   it("refuses a hand-written SKILL.md that has no published catalog metadata", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-missing-metadata.json`);
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
+    const home = tempDir("codex-run-skills-");
     write(home, path.join("skills", skillDirName("write"), "SKILL.md"), "---\nname: fixture\n---\n");
     const result = run(["--grant", "write"], {
       CODEX_BIN: fakeCodex(),
@@ -370,8 +371,8 @@ describe("codex-run skill grants", () => {
   });
 
   it("refuses a named grant when SKILL.md is a directory rather than an installed skill file", () => {
-    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-skill-directory.json`);
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+    const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
+    const home = tempDir("codex-run-skills-");
     fs.mkdirSync(path.join(home, "skills", skillDirName("write"), "SKILL.md"), { recursive: true });
     const result = run(["--grant", "write"], {
       CODEX_BIN: fakeCodex(),
@@ -395,17 +396,17 @@ describe("codex-run skill grants", () => {
 describe("codex-run OpenRouter models", () => {
   const MODEL = "openrouter/deepseek/deepseek-v4-flash";
   const envFile = (body) => {
-    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-envfile-")), "worker.env");
+    const file = path.join(tempDir("codex-run-envfile-"), "worker.env");
     fs.writeFileSync(file, body);
     return file;
   };
-  const files = (tag) => ({
-    args: path.join(os.tmpdir(), `codex-run-args-${Date.now()}-${tag}.json`),
-    env: path.join(os.tmpdir(), `codex-run-env-${Date.now()}-${tag}.json`),
+  const files = () => ({
+    args: path.join(tempDir("codex-run-args-"), "args.json"),
+    env: path.join(tempDir("codex-run-env-"), "env.json"),
   });
 
   it("selects the openrouter provider, sends OpenRouter's model id, and hands the key from the env file to Codex alone", () => {
-    const out = files("openrouter");
+    const out = files();
     const result = run(["--model", MODEL, "--no-operate"], {
       CODEX_BIN: fakeCodex(),
       FAKE_CODEX_ARGS: out.args,
@@ -424,7 +425,7 @@ describe("codex-run OpenRouter models", () => {
   });
 
   it("refuses an OpenRouter run with no key before anything is spooled", () => {
-    const out = files("nokey");
+    const out = files();
     const result = run(["--model", MODEL, "--no-operate"], {
       CODEX_BIN: fakeCodex(),
       FAKE_CODEX_ARGS: out.args,
@@ -445,7 +446,7 @@ describe("codex-run OpenRouter models", () => {
   // line is quoted or terminated, and a key carrying a paste's escape
   // sequences is refused before Codex starts, without printing the value.
   it("hands the caller's own key to the Codex child unchanged", () => {
-    const out = files("callerkey");
+    const out = files();
     const result = run(["--model", MODEL, "--no-operate"], {
       CODEX_BIN: fakeCodex(),
       FAKE_CODEX_ARGS: out.args,
@@ -463,7 +464,7 @@ describe("codex-run OpenRouter models", () => {
     ["an export line", "export OPENROUTER_API_KEY=sk-or-v1-abc123\n"],
   ]) {
     it(`reads the key from ${label} into the Codex child exactly`, () => {
-      const out = files(`shape-${label.replace(/\W+/g, "-")}`);
+      const out = files();
       const result = run(["--model", MODEL, "--no-operate"], {
         CODEX_BIN: fakeCodex(),
         FAKE_CODEX_ARGS: out.args,
@@ -477,7 +478,7 @@ describe("codex-run OpenRouter models", () => {
   }
 
   it("refuses a key carrying a paste's escape sequences, without printing it", () => {
-    const out = files("pasted");
+    const out = files();
     const result = run(["--model", MODEL, "--no-operate"], {
       CODEX_BIN: fakeCodex(),
       FAKE_CODEX_ARGS: out.args,
@@ -501,7 +502,7 @@ describe("codex-run OpenRouter models", () => {
   });
 
   it("keeps the key from a run on the default provider", () => {
-    const out = files("default");
+    const out = files();
     const result = run(["--no-operate"], {
       CODEX_BIN: fakeCodex(),
       FAKE_CODEX_ARGS: out.args,
@@ -520,7 +521,7 @@ describe("codex-run work directory", () => {
   const codexRunDirs = (root) => fs.readdirSync(root).filter((name) => name.startsWith("codex-run-"));
 
   it("leaves nothing behind when the binary will not start", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-tmp-"));
+    const tmp = tempDir("codex-run-tmp-");
     // A file that exists but cannot be executed: codex-run.mjs accepts it as
     // CODEX_BIN and makes its work directory, and the spawn then fails.
     const unstartable = path.join(tmp, "unstartable-codex");
@@ -541,11 +542,11 @@ describe("codex-run work directory", () => {
   // found") until vitest's 5-second default ended it. The 30-second limit
   // covers the loop's own 20-second deadline.
   it("leaves nothing behind when the run is hung up on", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-tmp-"));
+    const tmp = tempDir("codex-run-tmp-");
     const slow = path.join(tmp, "slow-codex.mjs");
     fs.writeFileSync(slow, "#!/usr/bin/env node\nsetTimeout(() => {}, 60_000);\n");
     fs.chmodSync(slow, 0o755);
-    const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-state-"));
+    const state = tempDir("codex-run-state-");
     const child = spawn(process.execPath, [RUNNER, "--cwd", process.cwd()], {
       env: { ...process.env, TMPDIR: tmp, CODEX_BIN: slow, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration") },
       stdio: ["pipe", "pipe", "pipe"],

@@ -7,9 +7,9 @@
 // seen on a laptop or a fresh box.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import { spawnSync } from "node:child_process";
 
@@ -24,15 +24,12 @@ import {
 } from "./worker-env.mjs";
 
 const original = process.env.WIKITOM_DIR;
-const made = [];
-
 /** A WikiTom directory whose tts/ holds exactly the given file bodies. Each
  * case gets a fresh directory so that the case before it cannot be what a
  * reader sees; worker-env.mjs holds no cache to defeat, it reads the file on
  * every call. */
 function wikitom(files) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-env-wikitom-"));
-  made.push(dir);
+  const dir = tempDir("worker-env-wikitom-");
   fs.mkdirSync(path.join(dir, "tts"), { recursive: true });
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, "tts", name), body);
   process.env.WIKITOM_DIR = dir;
@@ -122,17 +119,13 @@ describe("setEnvLine", () => {
   const posix = process.platform !== "win32";
 
   function envFile(body, mode = 0o600) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-env-write-"));
-    made.push(dir);
+    const dir = tempDir("worker-env-write-");
     const file = path.join(dir, "worker.env");
     if (body !== null) fs.writeFileSync(file, body, { mode });
     if (body !== null && posix) fs.chmodSync(file, mode);
     return file;
   }
 
-  afterEach(() => {
-    while (made.length) fs.rmSync(made.pop(), { recursive: true, force: true });
-  });
 
   it("adds a new name to the mailbox block, and reads back through loadEnv", () => {
     const file = envFile("CONVEX_SITE_URL=https://x.convex.site\nTTS_WORKER_KEY=k\n");
@@ -262,8 +255,7 @@ describe.skipIf(process.platform === "win32")("setup.sh's OpenRouter key warning
   const snippet = setup.match(/node --input-type=module -e '([\s\S]*?)' "\$WORKER_DIR\/jobs\/worker-env\.mjs"/)[1];
   const repair = setup.match(/echo "    (LC_ALL=C sed -i -E '[^']*') \/etc\/tts\/worker\.env"/)[1].replace(/\\\\/g, "\\");
   const envFile = (body) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-env-key-"));
-    made.push(dir);
+    const dir = tempDir("worker-env-key-");
     const file = path.join(dir, "worker.env");
     fs.writeFileSync(file, body);
     return file;

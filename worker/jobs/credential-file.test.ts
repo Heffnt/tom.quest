@@ -10,9 +10,9 @@
 //      browser-interactive one-shots that cannot be executed in a test.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 // Plain ESM worker module — types come from allowJs inference, not a .d.ts.
 import { writeCredentialFile, credentialFileNotice } from "./credential-file.mjs";
@@ -22,7 +22,7 @@ const JOBS_DIR = path.dirname(new URL(import.meta.url).pathname);
 // os.homedir() reads $HOME on POSIX, so pointing HOME at a temp directory is
 // enough to redirect the helper without mocking a built-in module.
 function withFakeHome(run: (home: string) => void) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "credential-file-test-"));
+  const home = tempDir("credential-file-test-");
   const previous = process.env.HOME;
   process.env.HOME = home;
   try {
@@ -30,7 +30,6 @@ function withFakeHome(run: (home: string) => void) {
   } finally {
     if (previous === undefined) delete process.env.HOME;
     else process.env.HOME = previous;
-    fs.rmSync(home, { recursive: true, force: true });
   }
 }
 

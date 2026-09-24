@@ -133,6 +133,46 @@ Write-once is a rule about the verdict on one commit, which must not move; how
 long today's run took is a fact about today's run, and the nightly full suite
 runs on a main sha whose row was written that morning.
 
+## Scratch directories
+
+Every directory a test makes on disk comes from `tempDir(prefix)` in
+`test/temp.mjs`, and the helper removes it: when the test that asked for it
+finishes, pass or fail, or, for a directory asked for outside a test (module
+scope, a describe body, `beforeAll`), when the test file finishes. No test
+removes its own directories.
+
+The reason is the box's `/tmp`, a 3.8 GB filesystem held in memory, which
+filled three times on 2026-09-24 and failed workers' test runs. Before the
+helper, one full suite run left about 700 directories there, from tests that
+made a directory and never removed it, and 57,000 had built up. One fixture
+was 16 MiB on its own: the rotation test of `scripts/instructions-loaded-hook.mjs`
+now writes its over-the-limit log as a sparse file, which has the length the
+hook checks and takes no space.
+
+The proof is to run the whole suite with `TMPDIR` pointed at an empty directory
+and find it empty afterwards. Run vitest directly (`node
+node_modules/vitest/vitest.mjs run`): `pnpm` and `npx` each leave a
+`node-compile-cache` directory there, which is the package manager's cache and
+not the suite's.
+
+## No test reads the box's state
+
+A test asserts what the code does, so it must give the same answer on the box,
+on the laptop and on CI. The box launcher's config (`worker/runs/config.mjs`)
+reads `RUN_HOST` and the env file `/etc/tts/worker.env`, and the run state
+directory it names holds the semaphore and the Fable availability file
+(`worker/runs/models.mjs`). A test that reaches the launcher with none of that
+pointed elsewhere asserts the box's state that day: the delegate test expected
+the model `fable` and failed on the box on 2026-09-24, because Fable was
+unavailable there, while it passed everywhere else.
+
+A test file whose code reaches the launcher calls `withoutBoxState()` from
+`test/box-state.mjs`. For each of its tests the run state directory is an
+empty `tempDir`, the env file is a path that does not exist, and `RUN_HOST`
+and the inherited run slot are empty. The delegate, evals, runner check-in
+and tts-lib tests call it; a test that wants a Fable availability fixture
+writes it into the directory the helper returns.
+
 ## What is not a test
 
 The session daemon's Bash classifier rules whether a command may run. That is a

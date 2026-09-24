@@ -2,6 +2,7 @@
 // rest on: an unchecked overlap claim, a routing entry nobody wrote, or a
 // write the evidence checker would refuse.
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,9 +49,6 @@ const ROUTING = path.join(here, "laptop-memory-routing.json");
 // one home, which check-session-mirrors.mjs refuses.
 const PROJECTS = JSON.parse(fs.readFileSync(ROUTING, "utf8"))._projects;
 
-function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "import-"));
-}
 function write(dir, rel, content) {
   const abs = path.join(dir, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -223,7 +221,7 @@ describe("verifyOverlap", () => {
 // ── The directories, joined ──────────────────────────────────────────────────
 describe("walkMemoryFiles and joinToDisk", () => {
   it("finds what the catalogue misses and what the disk misses", () => {
-    const projects = tmp();
+    const projects = tempDir("import-");
     write(projects, "proj-a/memory/MEMORY.md", "index");
     write(projects, "proj-a/memory/one.md", "one");
     write(projects, "proj-a/memory/extra.md", "not catalogued");
@@ -245,7 +243,7 @@ describe("walkMemoryFiles and joinToDisk", () => {
 
 // ── The two records, and the real checker over them ──────────────────────────
 function wikitom() {
-  const dir = tmp();
+  const dir = tempDir("import-");
   write(dir, "scripts/check-evidence.mjs", CHECKER);
   for (const rel of ["intent.md", "ground.md", "writing.md", "priorities.md", "schedule.md"]) {
     write(dir, `model-of-tom/${rel}`, `# ${rel}\n\n## Only\n\n`);

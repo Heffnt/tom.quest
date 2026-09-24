@@ -16,9 +16,9 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 
 import {
   ADMIT_PER_RUN,
@@ -56,15 +56,9 @@ const DAY = "2026-09-11";
 // 2026-09-11 08:00 UTC is 4 a.m. EDT — the cron slot the NY-hour guard keeps.
 const NOW = Date.UTC(2026, 8, 11, 8);
 
-const tmpDirs = [];
 function tmp(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tmpDirs.push(dir);
-  return dir;
+  return tempDir(prefix);
 }
-afterEach(() => {
-  for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-});
 
 function write(dir, rel, content) {
   const abs = path.join(dir, rel);

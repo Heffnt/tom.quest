@@ -5,12 +5,12 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 const ACT = path.resolve("worker/bin/tts-turing-act");
-const temp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `turing-act-${tag}-`));
+const temp = (tag) => tempDir(`turing-act-${tag}-`);
 
 function fakeTuring(jobs) {
   const dir = temp("bin");

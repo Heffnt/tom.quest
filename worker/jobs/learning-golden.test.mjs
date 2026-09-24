@@ -8,8 +8,8 @@
 // The runner regenerates the answer with the current prompt at two shas and
 // compares `applied` and `refused` the same way.
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,7 @@ const GOLDEN = path.join(here, "..", "..", "evals", "golden", "learning");
 const CHECKER = fs.readFileSync(path.join(here, "fixtures", "check-evidence.mjs"), "utf8");
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "golden-"));
+  return tempDir("golden-");
 }
 function write(dir, rel, content) {
   const abs = path.join(dir, rel);

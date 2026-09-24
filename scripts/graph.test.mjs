@@ -5,7 +5,7 @@
 // `model-of-tom/` tree, an `AGENTS.md`, and, where the test needs them, a
 // `tts/vocabulary.json` and a `tts/snapshot/*.jsonl`. Nothing here reads the real
 // WikiTom, the real snapshot or the network, and nothing is written outside the
-// tmpdir, which `afterAll` removes.
+// tmpdir, which test/temp.mjs removes when the file ends.
 //
 // Each fixture carries its own `.git/HEAD` holding a fixed 40-hex commit, because
 // `headCommit` parses `.git` rather than shelling out and a checkout with no
@@ -13,11 +13,11 @@
 // serialization test says must never be written.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 
 import { GRAPH_MAX_BYTES } from "../shared/graph.mjs";
 import {
@@ -34,15 +34,7 @@ const REPO = path.resolve(HERE, "..");
 
 // ── The fixture checkout ─────────────────────────────────────────────────────
 
-let root;
-
-beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), "graph-cli-test-"));
-});
-
-afterAll(() => {
-  if (root !== undefined) fs.rmSync(root, { recursive: true, force: true });
-});
+const root = tempDir("graph-cli-test-");
 
 const WIKITOM_COMMIT = "a".repeat(40);
 const TOM_QUEST_COMMIT = "b".repeat(40);

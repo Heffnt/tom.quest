@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 
 import { RUNS_SWEEP_TASK_NAME, runsSweepTaskArgs, runsSweepTaskXml } from "./laptop-setup.mjs";
 
@@ -65,7 +65,7 @@ function claudeRulesImport(wikiTom) {
 
 describe("laptop setup", () => {
   it("installs its imports and hooks without disturbing local configuration", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-"));
+    const root = tempDir("laptop-setup-");
     const home = path.join(root, "home");
     const wikiTom = path.join(root, "WikiTom");
     const tomQuest = path.join(root, "tom.quest");
@@ -184,7 +184,7 @@ describe("laptop setup", () => {
   });
 
   it("prefixes a laptop CLAUDE.md that has no import", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-prefix-"));
+    const root = tempDir("laptop-setup-prefix-");
     const home = path.join(root, "home");
     const wikiTom = path.join(root, "WikiTom");
     const tomQuest = path.join(root, "tom.quest");
@@ -197,7 +197,7 @@ describe("laptop setup", () => {
   });
 
   it("preserves CRLF when replacing the existing rules import", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-crlf-"));
+    const root = tempDir("laptop-setup-crlf-");
     const home = path.join(root, "home");
     const wikiTom = path.join(root, "WikiTom");
     const tomQuest = path.join(root, "tom.quest");
@@ -213,7 +213,7 @@ describe("laptop setup", () => {
   });
 
   it("keeps a different first-line import after the required rules import", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-other-import-"));
+    const root = tempDir("laptop-setup-other-import-");
     const home = path.join(root, "home");
     const wikiTom = path.join(root, "WikiTom");
     const tomQuest = path.join(root, "tom.quest");
@@ -228,7 +228,7 @@ describe("laptop setup", () => {
   // The skills half of setup: the same publish the SessionStart hook runs on
   // every session, done once so the directories are there before the first one.
   it("installs both skills directories and leaves other skills alone", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-skills-"));
+    const root = tempDir("laptop-setup-skills-");
     const home = path.join(root, "home");
     const wikiTom = wikiTomFixture(path.join(root, "WikiTom"));
     // Not a checkout, so no repo but WikiTom's is published: A REPO DIRECTORY
@@ -261,7 +261,7 @@ describe("laptop setup", () => {
   }, 15_000);
 
   it("says so in one line when the skills cannot be published, and finishes setup", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-no-skills-"));
+    const root = tempDir("laptop-setup-no-skills-");
     const home = path.join(root, "home");
     // No WikiTom checkout at all — the case every other test above runs in.
     const wikiTom = path.join(root, "WikiTom");

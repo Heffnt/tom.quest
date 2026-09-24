@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { afterAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { areaPaths, publishSkills, readObject } from "./publish-skills.mjs";
+import { tempDir } from "../test/temp.mjs";
 
 const SCRIPT = path.resolve("scripts/publish-skills.mjs");
 // core.autocrlf=false so the committed bytes are the bytes written here: on
@@ -13,8 +14,6 @@ const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com", "
 // git on Windows costs seconds per repository, and every test here builds at
 // least one. The 5-second default is a clock, not a symptom.
 const SLOW = 120_000;
-const MADE = [];
-
 function git(dir, ...args) {
   return execFileSync(
     "git",
@@ -23,21 +22,11 @@ function git(dir, ...args) {
   );
 }
 
-function temp(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  MADE.push(dir);
-  return dir;
-}
-
 function write(dir, relative, body) {
   const target = path.join(dir, relative);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, body);
 }
-
-afterAll(() => {
-  for (const dir of MADE) fs.rmSync(dir, { recursive: true, force: true });
-});
 
 const AGENT_RULES = [
   "# Agent rules",
@@ -69,7 +58,7 @@ const AREAS = Object.freeze({
 
 /** A WikiTom with everything the set draws on, committed. */
 function wikitom({ schedule = "# Schedule\n\nTuesday is practice.\n" } = {}) {
-  const dir = temp("publish-skills-wikitom-");
+  const dir = tempDir("publish-skills-wikitom-");
   execFileSync("git", ["init", "-q", "-b", "main", dir]);
   write(dir, "model-of-tom/agent-rules.md", AGENT_RULES);
   write(dir, "model-of-tom/writing.md", "# Writing\n\n## Registers\n\nPlain.\n\n## Form\n\nShort.\n");
@@ -92,7 +81,7 @@ function wikitom({ schedule = "# Schedule\n\nTuesday is practice.\n" } = {}) {
 
 /** A repository with a root AGENTS.md and one nested one. */
 function repo(name) {
-  const dir = temp(`publish-skills-${name.replace(/[^a-z0-9]/gi, "-")}-`);
+  const dir = tempDir(`publish-skills-${name.replace(/[^a-z0-9]/gi, "-")}-`);
   execFileSync("git", ["init", "-q", "-b", "main", dir]);
   write(dir, "AGENTS.md", `# ${name}\n\nRoot rules.\n`);
   write(dir, "convex/AGENTS.md", `# ${name} convex\n\nNested rules.\n`);
@@ -102,21 +91,18 @@ function repo(name) {
   return dir;
 }
 
-// One vault and one pair of repositories, built once and never edited, for
-// every test that only cares about what lands under its own --out.
+// One vault and one pair of repositories, built once before the first test
+// and never edited, for every test that only cares about what lands under its
+// own --out. Built in beforeAll, so tempDir keeps them until the file ends.
 const shared = {};
-function sharedVault() {
-  shared.vault ??= wikitom();
-  return shared.vault;
-}
-function sharedRepos() {
-  shared.tomquest ??= repo("tom.quest");
-  shared.cmt ??= repo("cmt");
-  return shared;
-}
+beforeAll(() => {
+  shared.vault = wikitom();
+  shared.tomquest = repo("tom.quest");
+  shared.cmt = repo("cmt");
+});
 
 function publish(vault, out, options = {}) {
-  const fallback = options.tomquest === undefined || options.cmt === undefined ? sharedRepos() : {};
+  const fallback = options.tomquest === undefined || options.cmt === undefined ? shared : {};
   return publishSkills({
     wikitom: vault,
     out,
@@ -156,8 +142,8 @@ describe("publish-skills", () => {
   });
 
   it("writes one directory per skill, with SKILL.md and one file per reference", () => {
-    const vault = sharedVault();
-    const out = temp("publish-skills-out-");
+    const vault = shared.vault;
+    const out = tempDir("publish-skills-out-");
     const result = publish(vault, out);
     expect(result.refused).toEqual([]);
     expect(result.skills).toHaveLength(14);
@@ -196,21 +182,21 @@ describe("publish-skills", () => {
     const vault = wikitom();
     const tomquest = repo("tom.quest");
     const cmt = repo("cmt");
-    const first = temp("publish-skills-clean-");
+    const first = tempDir("publish-skills-clean-");
     publish(vault, first, { tomquest, cmt });
     const clean = tree(first);
 
     write(vault, "model-of-tom/areas/admin.md", "---\ncategories: [wrecked]\n---\n\n## Ruined\n");
     write(vault, "model-of-tom/areas/uncommitted.md", "---\ncategories: [ghost]\n---\n\n## Ghost\n");
     write(tomquest, "AGENTS.md", "# scratch\n");
-    const second = temp("publish-skills-dirty-");
+    const second = tempDir("publish-skills-dirty-");
     publish(vault, second, { tomquest, cmt });
     expect(tree(second)).toEqual(clean);
   }, SLOW);
 
   it("is idempotent: the second run writes nothing", () => {
-    const vault = sharedVault();
-    const out = temp("publish-skills-idempotent-");
+    const vault = shared.vault;
+    const out = tempDir("publish-skills-idempotent-");
     const first = publish(vault, out);
     expect(first.skills.every((skill) => skill.wrote > 0)).toBe(true);
     expect(first.skills.every((skill) => skill.unchanged === 0)).toBe(true);
@@ -221,8 +207,8 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("rewrites only the file whose bytes changed", () => {
-    const vault = sharedVault();
-    const out = temp("publish-skills-changed-");
+    const vault = shared.vault;
+    const out = tempDir("publish-skills-changed-");
     publish(vault, out);
     fs.writeFileSync(path.join(out, "tom-know-money", "SKILL.md"), "tampered\n");
     const again = publish(vault, out);
@@ -231,7 +217,7 @@ describe("publish-skills", () => {
 
   it("refuses a missing source in the result and still writes the other skills", () => {
     const vault = wikitom({ schedule: null });
-    const out = temp("publish-skills-refused-");
+    const out = tempDir("publish-skills-refused-");
     const result = publish(vault, out);
     expect(result.refused).toEqual([
       { name: "know-week", why: "model-of-tom/schedule.md is absent at this commit" },
@@ -242,8 +228,8 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("deletes a stale tom- directory and leaves everything else in --out alone", () => {
-    const vault = sharedVault();
-    const out = temp("publish-skills-stale-");
+    const vault = shared.vault;
+    const out = tempDir("publish-skills-stale-");
     fs.mkdirSync(path.join(out, "tom-know-retired"), { recursive: true });
     fs.writeFileSync(path.join(out, "tom-know-retired", "SKILL.md"), "gone\n");
     fs.mkdirSync(path.join(out, "graphify"), { recursive: true });
@@ -258,8 +244,8 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("aborts a listed-object read failure before stale directories are deleted", () => {
-    const vault = sharedVault();
-    const out = temp("publish-skills-read-failure-");
+    const vault = shared.vault;
+    const out = tempDir("publish-skills-read-failure-");
     fs.mkdirSync(path.join(out, "tom-know-retired"), { recursive: true });
     fs.writeFileSync(path.join(out, "tom-know-retired", "SKILL.md"), "last good catalog\n");
 
@@ -275,12 +261,12 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("aborts an empty root AGENTS.md before it can replace the previous publication", () => {
-    const vault = sharedVault();
+    const vault = shared.vault;
     const empty = repo("tom.quest");
     write(empty, "AGENTS.md", "\n");
     git(empty, "add", "AGENTS.md");
     git(empty, "commit", "-q", "-m", "empty root rules");
-    const out = temp("publish-skills-empty-root-");
+    const out = tempDir("publish-skills-empty-root-");
     fs.mkdirSync(path.join(out, "tom-repo-tom-quest"), { recursive: true });
     fs.writeFileSync(path.join(out, "tom-repo-tom-quest", "SKILL.md"), "last good root rules\n");
 
@@ -289,12 +275,12 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("aborts an empty nested AGENTS.md before it can replace the previous publication", () => {
-    const vault = sharedVault();
+    const vault = shared.vault;
     const empty = repo("tom.quest");
     write(empty, "convex/AGENTS.md", " \n");
     git(empty, "add", "convex/AGENTS.md");
     git(empty, "commit", "-q", "-m", "empty nested rules");
-    const out = temp("publish-skills-empty-nested-");
+    const out = tempDir("publish-skills-empty-nested-");
     fs.mkdirSync(path.join(out, "tom-repo-tom-quest"), { recursive: true });
     fs.writeFileSync(path.join(out, "tom-repo-tom-quest", "SKILL.md"), "last good nested rules\n");
 
@@ -303,8 +289,8 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("removes a ghost file inside a directory it owns", () => {
-    const vault = sharedVault();
-    const out = temp("publish-skills-ghost-");
+    const vault = shared.vault;
+    const out = tempDir("publish-skills-ghost-");
     publish(vault, out);
     fs.writeFileSync(path.join(out, "tom-know-admin", "renamed-AGENTS.md"), "ghost\n");
     const result = publish(vault, out);
@@ -313,8 +299,8 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("computes everything and writes nothing on --dry-run", () => {
-    const vault = sharedVault();
-    const out = temp("publish-skills-dry-");
+    const vault = shared.vault;
+    const out = tempDir("publish-skills-dry-");
     const result = publish(vault, out, { publish: { dryRun: true } });
     expect(result.skills).toHaveLength(14);
     expect(result.skills.every((skill) => skill.wrote > 0)).toBe(true);
@@ -322,7 +308,7 @@ describe("publish-skills", () => {
   }, SLOW);
 
   it("exits 2 with a publish-skills: line for a bad argument", () => {
-    const run = spawnSync(process.execPath, [SCRIPT, "--out", temp("publish-skills-bad-")], { encoding: "utf8" });
+    const run = spawnSync(process.execPath, [SCRIPT, "--out", tempDir("publish-skills-bad-")], { encoding: "utf8" });
     expect(run.status).toBe(2);
     expect(run.stderr.trim()).toBe("publish-skills: --wikitom DIR is required");
   }, SLOW);
@@ -330,7 +316,7 @@ describe("publish-skills", () => {
   it("exits 2 for an unreadable WikiTom", () => {
     const run = spawnSync(
       process.execPath,
-      [SCRIPT, "--wikitom", path.join(os.tmpdir(), "no-such-wikitom-dir"), "--out", temp("publish-skills-nope-")],
+      [SCRIPT, "--wikitom", path.join(os.tmpdir(), "no-such-wikitom-dir"), "--out", tempDir("publish-skills-nope-")],
       { encoding: "utf8" },
     );
     expect(run.status).toBe(2);
@@ -340,7 +326,7 @@ describe("publish-skills", () => {
   it("exits 2 for a --repo without NAME=DIR", () => {
     const run = spawnSync(
       process.execPath,
-      [SCRIPT, "--wikitom", sharedVault(), "--repo", "tom.quest", "--out", temp("publish-skills-repo-")],
+      [SCRIPT, "--wikitom", shared.vault, "--repo", "tom.quest", "--out", tempDir("publish-skills-repo-")],
       { encoding: "utf8" },
     );
     expect(run.status).toBe(2);

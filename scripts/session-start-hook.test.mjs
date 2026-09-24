@@ -7,6 +7,7 @@ import { assemblePrelude } from "./prelude.mjs";
 import { renderGrants } from "../shared/skills.mjs";
 import { PULL_TIMEOUT_MS, pullWikiTom } from "./session-start-hook.mjs";
 import { registrationSidecarPath } from "../worker/runs/registration.mjs";
+import { tempDir } from "../test/temp.mjs";
 
 const HOOK = path.resolve("scripts/session-start-hook.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -32,17 +33,13 @@ function write(dir, relative, body) {
   fs.writeFileSync(target, body);
 }
 
-function temp(name) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), name));
-}
-
 /**
  * A WikiTom the whole catalog can be published out of: the map (with a
  * `### Repos` block, which is where a `repo-` skill's description comes from),
  * the write layer and the know layer.
  */
 function fixture({ writing = true } = {}) {
-  const dir = temp("session-start-wikitom-");
+  const dir = tempDir("session-start-wikitom-");
   execFileSync("git", ["init", "-q", "-b", "main", dir]);
   // The repository's own rules, which is what a `repo-` skill's body IS.
   write(dir, "AGENTS.md", "# WikiTom\n\nThe vault. Never edit tom-text/.\n");
@@ -80,7 +77,7 @@ function fixture({ writing = true } = {}) {
  */
 function run({ wikitom, skills, tomQuest, env = {}, payload = {
   hook_event_name: "SessionStart",
-  transcript_path: path.join(temp("session-start-default-run-"), "session.jsonl"),
+  transcript_path: path.join(tempDir("session-start-default-run-"), "session.jsonl"),
 } }) {
   return spawnSync(process.execPath, [HOOK], {
     encoding: "utf8",
@@ -116,7 +113,7 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
   // operate layer and the names this run may load — and NOTHING ELSE.
   it("emits the operate layer and the grant block, and nothing else", () => {
     const wikitom = fixture();
-    const skills = temp("session-start-skills-");
+    const skills = tempDir("session-start-skills-");
     const commit = git(wikitom, "rev-parse", "HEAD").trim();
 
     const context = contextOf(run({ wikitom, skills }));
@@ -138,8 +135,8 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
 
   it("hands the actual granted and refused names to the independent receipt", () => {
     const wikitom = fixture({ writing: false });
-    const skills = temp("session-start-registration-skills-");
-    const transcript = path.join(temp("session-start-registration-run-"), "session.jsonl");
+    const skills = tempDir("session-start-registration-skills-");
+    const transcript = path.join(tempDir("session-start-registration-run-"), "session.jsonl");
 
     contextOf(run({
       wikitom,
@@ -159,21 +156,21 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
 
   it("accepts only Claude's transcript_path and Codex's rollout_path run-file fields", () => {
     const wikitom = fixture();
-    const skills = temp("session-start-run-file-skills-");
-    const legacy = path.join(temp("session-start-legacy-run-"), "legacy.jsonl");
+    const skills = tempDir("session-start-run-file-skills-");
+    const legacy = path.join(tempDir("session-start-legacy-run-"), "legacy.jsonl");
     contextOf(run({ wikitom, skills, payload: { hook_event_name: "SessionStart", transcriptPath: legacy } }));
     expect(fs.existsSync(registrationSidecarPath(legacy))).toBe(false);
 
-    const rollout = path.join(temp("session-start-rollout-run-"), "rollout.jsonl");
+    const rollout = path.join(tempDir("session-start-rollout-run-"), "rollout.jsonl");
     contextOf(run({ wikitom, skills, payload: { hook_event_name: "SessionStart", rollout_path: rollout } }));
     expect(JSON.parse(fs.readFileSync(registrationSidecarPath(rollout), "utf8")).receipt.runFile).toBe(path.resolve(rollout));
   });
 
   it("keeps operate context but does not route skills for an invalid or ambiguous payload", () => {
     const wikitom = fixture();
-    const skills = path.join(temp("session-start-unidentified-skills-"), "skills");
-    const invalid = path.join(temp("session-start-invalid-run-"), "session.jsonl");
-    const transcript = path.join(temp("session-start-unidentified-run-"), "session.jsonl");
+    const skills = path.join(tempDir("session-start-unidentified-skills-"), "skills");
+    const invalid = path.join(tempDir("session-start-invalid-run-"), "session.jsonl");
+    const transcript = path.join(tempDir("session-start-unidentified-run-"), "session.jsonl");
     const invalidContext = contextOf(run({
       wikitom,
       skills,
@@ -198,10 +195,10 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
 
   it("routes ordinary Claude and Codex SessionStart payloads from their own fields", () => {
     const wikitom = fixture();
-    const claudeSkills = temp("session-start-payload-claude-skills-");
-    const codexSkills = temp("session-start-payload-codex-skills-");
-    const claudeRun = path.join(temp("session-start-payload-claude-run-"), "session.jsonl");
-    const codexRun = path.join(temp("session-start-payload-codex-run-"), "rollout.jsonl");
+    const claudeSkills = tempDir("session-start-payload-claude-skills-");
+    const codexSkills = tempDir("session-start-payload-codex-skills-");
+    const claudeRun = path.join(tempDir("session-start-payload-claude-run-"), "session.jsonl");
+    const codexRun = path.join(tempDir("session-start-payload-codex-run-"), "rollout.jsonl");
 
     expect(contextOf(run({
       wikitom,
@@ -217,7 +214,7 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
 
   it("stays inside the laptop budget, on the fixture and on the real vault", () => {
     const wikitom = fixture();
-    const skills = temp("session-start-budget-");
+    const skills = tempDir("session-start-budget-");
     expect(Buffer.byteLength(contextOf(run({ wikitom, skills })))).toBeLessThan(LAPTOP_BUDGET);
 
     // The real operate layer is the one that costs something, and it is the one
@@ -236,7 +233,7 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
   // load are recorded refused, and the whole cost of the failure is one line.
   it("keeps the base when the skills refresh fails, and says the catalog may be stale", () => {
     const wikitom = fixture();
-    const blocked = path.join(temp("session-start-blocked-"), "a-file");
+    const blocked = path.join(tempDir("session-start-blocked-"), "a-file");
     fs.writeFileSync(blocked, "not a directory\n");
 
     const context = contextOf(run({ wikitom, skills: path.join(blocked, "skills") }));
@@ -250,7 +247,7 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
   });
 
   it("reports a one-line load failure and exits successfully", () => {
-    const skills = temp("session-start-missing-");
+    const skills = tempDir("session-start-missing-");
     const context = contextOf(run({ wikitom: path.join(os.tmpdir(), "missing-session-start-wikitom"), skills }));
     const lines = context.split("\n");
     expect(lines[0]).toMatch(/^model-of-tom context could not be loaded: .+$/);
@@ -264,8 +261,8 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
   // it to manage.
   it("publishes the tom- directories and leaves every other skill alone", () => {
     const wikitom = fixture();
-    const skills = temp("session-start-publish-");
-    const other = temp("session-start-publish-codex-");
+    const skills = tempDir("session-start-publish-");
+    const other = tempDir("session-start-publish-codex-");
     fs.mkdirSync(path.join(skills, "graphify"), { recursive: true });
     fs.writeFileSync(path.join(skills, "graphify", "SKILL.md"), "---\nname: graphify\n---\n\nNot Tom's.\n");
 
@@ -283,7 +280,7 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
   // A page Tom emptied is a REFUSAL, not a dead session.
   it("records a skill with no page as refused and still starts the session", () => {
     const wikitom = fixture({ writing: false });
-    const skills = temp("session-start-refused-");
+    const skills = tempDir("session-start-refused-");
     const context = contextOf(run({ wikitom, skills }));
     expect(context).toContain("── model-of-tom/agent-rules.md ──");
     expect(context).toContain("granted: —");
@@ -293,7 +290,7 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
 
   it("labels box grants with the commit in their existing skill bodies", () => {
     const wikitom = fixture();
-    const skills = temp("session-start-box-stale-");
+    const skills = tempDir("session-start-box-stale-");
     const oldCommit = git(wikitom, "rev-parse", "HEAD").trim();
     contextOf(run({ wikitom, skills }));
 
@@ -310,8 +307,8 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
 
   it("routes the Claude SessionStart grant from Claude's directory only", () => {
     const wikitom = fixture();
-    const claude = temp("session-start-claude-catalog-");
-    const codex = temp("session-start-codex-catalog-");
+    const claude = tempDir("session-start-claude-catalog-");
+    const codex = tempDir("session-start-codex-catalog-");
     const commit = git(wikitom, "rev-parse", "HEAD").trim();
     fs.mkdirSync(path.join(codex, "tom-write"));
     fs.writeFileSync(
@@ -326,8 +323,8 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
 
   it("routes a Codex SessionStart grant from Codex's directory only", () => {
     const wikitom = fixture();
-    const claude = temp("session-start-claude-catalog-");
-    const codex = temp("session-start-codex-catalog-");
+    const claude = tempDir("session-start-claude-catalog-");
+    const codex = tempDir("session-start-codex-catalog-");
     const commit = git(wikitom, "rev-parse", "HEAD").trim();
     fs.mkdirSync(path.join(claude, "tom-write"));
     fs.writeFileSync(
@@ -339,7 +336,7 @@ describe("session-start-hook", { timeout: 30_000 }, () => {
       wikitom,
       skills: [claude, codex],
       env: { RUN_HOST: "box" },
-      payload: { hook_event_name: "SessionStart", rollout_path: path.join(temp("session-start-codex-route-"), "rollout.jsonl") },
+      payload: { hook_event_name: "SessionStart", rollout_path: path.join(tempDir("session-start-codex-route-"), "rollout.jsonl") },
     }));
     expect(context).toContain("granted: —");
     expect(context).toContain("refused: write — no published body at this commit");

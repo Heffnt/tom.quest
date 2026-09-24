@@ -1,8 +1,8 @@
 // The two records: what each half looks like byte for byte, where the entry
 // goes, and that the pair the writer leaves passes WikiTom's own checker.
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../test/temp.mjs";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -25,7 +25,7 @@ const FIXTURES = path.join(here, "fixtures");
 const CHECKER = path.join(FIXTURES, "check-evidence.mjs");
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "records-"));
+  return tempDir("records-");
 }
 
 function write(dir, rel, text) {

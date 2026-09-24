@@ -1,13 +1,13 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { gzipDeterministic, openStore } from "../store.mjs";
 
 describe("run store", () => {
   it("keeps a redacted immutable version and its rewrite descriptor", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "runs-store-"));
+    const dir = tempDir("runs-store-");
     const store = openStore({ dir });
     const token = ["gh", "p_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"].join("");
     const first = store.put({ runtime: "claude", threadId: "thread", host: "laptop", sourceBytes: Buffer.from(`token ${token}\n`) });
@@ -27,14 +27,14 @@ describe("run store", () => {
     expect(gzipDeterministic(Buffer.from("same"))).toEqual(gzipDeterministic(Buffer.from("same")));
   });
   it("accepts a Claude child identity as two safe key segments", () => {
-    const store = openStore({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "runs-store-child-")) });
+    const store = openStore({ dir: tempDir("runs-store-child-") });
     const stored = store.put({ runtime: "claude", threadId: "session/agent", host: "laptop", sourceBytes: Buffer.from("child\n") });
     expect(stored.key).toMatch(/^runs\/claude\/laptop\/session\/agent\/[a-f0-9]+\.jsonl\.gz$/);
     expect(store.get({ runtime: "claude", threadId: "session/agent", host: "laptop", fileVersion: stored.fileVersion }).toString()).toBe("child\n");
   });
 
   it("keeps distinct source descriptors for equivalent redacted objects", () => {
-    const store = openStore({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "runs-store-equivalent-")) });
+    const store = openStore({ dir: tempDir("runs-store-equivalent-") });
     const firstToken = ["gh", "p_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"].join("");
     const secondToken = ["gh", "p_", "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"].join("");
     const first = store.put({ runtime: "claude", threadId: "thread", host: "laptop", sourceBytes: Buffer.from(`token=${firstToken}\n`) });
@@ -48,7 +48,7 @@ describe("run store", () => {
   });
 
   it("stores redacted sidecars as distinct immutable objects", () => {
-    const store = openStore({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "runs-store-sidecar-")) });
+    const store = openStore({ dir: tempDir("runs-store-sidecar-") });
     const token = ["r4Nd0m", "-Secret_Value.1234567890-abcdefghijklmnopqrstuvwxyz"].join("");
     const sidecar = store.put({
       runtime: "claude",

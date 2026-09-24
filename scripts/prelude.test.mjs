@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 import { assemblePrelude, assemblePreludePublication, collectIntentSources, collectRepoRules, PRELUDE_LAYERS } from "./prelude.mjs";
 import { CONTEXT_REPO_RULES } from "./context-fixture.mjs";
 
@@ -22,7 +22,7 @@ function write(dir, relative, body) {
 }
 
 function fixture({ ground = false } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prelude-"));
+  const dir = tempDir("prelude-");
   execFileSync("git", ["init", "-q", "-b", "main", dir]);
   write(dir, "model-of-tom/agent-rules.md", "# Rules\n\nDo the thing.\n");
   write(dir, "model-of-tom/writing.md", "# Writing\n\nBe plain.\n");
@@ -206,7 +206,7 @@ describe("prelude", () => {
 
 describe("collectRepoRules", () => {
   it("reads every AGENTS.md out of one immutable commit, sorted, with its bytes", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-rules-"));
+    const dir = tempDir("repo-rules-");
     execFileSync("git", ["init", "-q", "-b", "main", dir]);
     for (const rule of CONTEXT_REPO_RULES) write(dir, rule.path, rule.body);
     write(dir, "convex/schema.ts", "not a rules file\n");
@@ -230,7 +230,7 @@ describe("collectRepoRules", () => {
 
 describe("collectIntentSources", () => {
   function repo(files) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "intent-sources-"));
+    const dir = tempDir("intent-sources-");
     execFileSync("git", ["init", "-q", "-b", "main", dir]);
     for (const [name, body] of Object.entries(files)) write(dir, name, body);
     git(dir, "add", "-A");

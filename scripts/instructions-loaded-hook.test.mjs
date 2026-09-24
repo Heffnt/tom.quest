@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../test/temp.mjs";
 import {
   appendLine,
   logLine,
@@ -39,9 +39,13 @@ describe("instructions-loaded hook", () => {
   });
 
   it("rotates an oversized log and swallows an unwritable destination", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "instructions-loaded-"));
+    const dir = tempDir("instructions-loaded-");
     const logPath = path.join(dir, "instructions-loaded.jsonl");
-    fs.writeFileSync(logPath, Buffer.alloc(MAX_LOG_BYTES + 1, "x"));
+    // One byte over the threshold, written as a sparse file: truncate sets the
+    // length the hook reads from stat() and writes no data, so the fixture
+    // takes no space. It used to be 16 MiB of "x", and /tmp is held in memory.
+    fs.writeFileSync(logPath, "");
+    fs.truncateSync(logPath, MAX_LOG_BYTES + 1);
 
     appendLine(logPath, { session: "after-rotation" });
     expect(fs.statSync(path.join(dir, "instructions-loaded.1.jsonl")).size).toBe(MAX_LOG_BYTES + 1);
@@ -53,7 +57,7 @@ describe("instructions-loaded hook", () => {
   });
 
   it("claims a UTC rollup slot once per day", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "instructions-loaded-stamp-"));
+    const dir = tempDir("instructions-loaded-stamp-");
     const stamp = path.join(dir, "last-rollup");
     const day = new Date("2026-09-09T23:59:00.000Z");
 

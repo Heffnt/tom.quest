@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { checkCheckIn, checkInJudgePrompt, parseCheckInVerdict } from "./runner-checkin.mjs";
 import { JOBS, loadGolden, scoreCheckIn } from "./evals.mjs";
+import { withoutBoxState } from "../../test/box-state.mjs";
+
+// The judge's model label is read from the box's Fable availability file:
+// every test here reads a fixture run state directory instead.
+withoutBoxState();
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STANDARD = "Write plainly. Define every term.";

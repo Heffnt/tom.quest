@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 import { claudeAssistant, claudeLine, claudeToolUseBlock, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
@@ -24,7 +24,7 @@ import {
 } from "../sweep.mjs";
 
 const NOW = Date.parse("2026-01-01T00:00:00.000Z");
-const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-sweep-"));
+const temp = () => tempDir("runs-sweep-");
 const hash = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 
 function store() {

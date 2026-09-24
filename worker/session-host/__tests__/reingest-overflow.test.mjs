@@ -11,9 +11,9 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 vi.mock("../worker-env.mjs", () => ({
   ENV_PATH: "/etc/tts/worker.env",
@@ -35,7 +35,7 @@ const noBackoff = () => 0;
 const quiet = () => {};
 
 function tmpRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "tts-reingest-"));
+  return tempDir("tts-reingest-");
 }
 
 /** A payload file the daemon would have left, aged past MIN_AGE_MS. */

@@ -8,10 +8,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../test/temp.mjs";
 
 const COMMAND = path.resolve("worker/bin/tts-convex");
 const FAKE_KEY = "prod:fake-deployment-123|fakesecretvalue0123456789";
-const temp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `tts-convex-${tag}-`));
+const temp = (tag) => tempDir(`tts-convex-${tag}-`);
 
 function fakeCheckout() {
   const dir = temp("checkout");
