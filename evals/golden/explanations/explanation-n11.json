@@ -6,6 +6,7 @@
   "label": "did not",
   "sentence": "I don't understand your section 3. I also don't understand section 2, but I don't really care to understand everything that has transpired. I just want to understand the takeaways. So, please re-explain The important findings and why you think they happened and what you think we should do based on that.",
   "confirmedByTom": false,
+  "unreplayable": "the session transcript is not in WikiTom's archive",
   "ruledOn": "2026-09-07",
   "input": {
     "topic": "September campaign findings and mechanism",

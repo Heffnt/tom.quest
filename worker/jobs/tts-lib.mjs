@@ -34,7 +34,7 @@ const launcherFile = [
 ].find((candidate) => existsSync(candidate));
 if (!launcherFile) throw new Error("the box launcher (runs/box-run.mjs) is not installed");
 const boxRunModule = await import(pathToFileURL(launcherFile).href);
-const { boxRunSync } = boxRunModule;
+const { boxRunSync, boxRunNoSlot } = boxRunModule;
 
 export { ENV_PATH };
 
@@ -572,10 +572,17 @@ export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 // run, and stamping it on the row would make exactly the wrong edge
 // convex/runLabels.ts is built to avoid. This is the token that names the run
 // that wrote the text.
-export function runClaude(
-  prompt,
-  { cwd, timeoutMs, maxTurns, model, allowedTools, registration, receipt } = {},
-) {
+/**
+ * The box-run options ONE claude call is made with, and the envelope it is
+ * registered under.
+ *
+ * SPLIT OUT SO THERE IS STILL ONE ENVELOPE. runClaude and runClaudeAsync are
+ * the same call waited for two ways, and the thing that must not differ between
+ * them is what the record says a run was: its origin, its layers, its tools,
+ * its prompt hash. A second copy of this block is how one of the two comes to
+ * register runs the sweep reads differently.
+ */
+function claudeRunOptions(prompt, { cwd, timeoutMs, maxTurns, model, allowedTools, registration } = {}) {
   // Refused before anything is spooled or started: a malformed list must not
   // quietly widen the run to every tool the CLI has.
   if (allowedTools !== undefined && (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === ""))) {
@@ -618,31 +625,34 @@ export function runClaude(
       graphVersion: graphVersion() ?? undefined,
     };
   }
-  let result;
-  try {
-    result = boxRunSync({
-      prompt: String(prompt),
-      cli: "claude",
-      model,
-      cwd: runCwd,
-      outputFormat: "json",
-      maxTurns: maxTurns ?? 8,
-      allowedTools,
-      timeoutMs: timeoutMs ?? 10 * 60 * 1000,
-      registration: envelope,
-      // Every headless Claude invocation on the box runs under the `active`
-      // account, whatever the calling process happens to carry.
-      env: { ...process.env, CLAUDE_CONFIG_DIR },
-    });
-  } catch (error) {
-    // Filled even for a call that never reached its child: a caller that
-    // wants to report which run failed needs its token.
-    if (receipt !== undefined && receipt !== null && error?.runToken) receipt.runToken = error.runToken;
-    throw Object.assign(new Error(`claude failed: ${error?.message ?? error}`), {
-      exitCode: error?.exitCode ?? null,
-      runToken: error?.runToken ?? null,
-    });
-  }
+  return {
+    prompt: String(prompt),
+    cli: "claude",
+    model,
+    cwd: runCwd,
+    outputFormat: "json",
+    maxTurns: maxTurns ?? 8,
+    allowedTools,
+    timeoutMs: timeoutMs ?? 10 * 60 * 1000,
+    registration: envelope,
+    // Every headless Claude invocation on the box runs under the `active`
+    // account, whatever the calling process happens to carry.
+    env: { ...process.env, CLAUDE_CONFIG_DIR },
+  };
+}
+
+/** What a caller that could not reach its child throws. Filled receipt and
+ *  all: a caller that wants to report which run failed needs its token. */
+function claudeStartFailure(error, receipt) {
+  if (receipt !== undefined && receipt !== null && error?.runToken) receipt.runToken = error.runToken;
+  return Object.assign(new Error(`claude failed: ${error?.message ?? error}`), {
+    exitCode: error?.exitCode ?? null,
+    runToken: error?.runToken ?? null,
+  });
+}
+
+/** One finished box run as the answer text, or the throw that says why not. */
+function claudeAnswer(result, receipt) {
   if (receipt !== undefined && receipt !== null && result.runToken) receipt.runToken = result.runToken;
 
   if (result.exitCode !== 0) {
@@ -677,6 +687,43 @@ export function runClaude(
     );
   }
   return result.text;
+}
+
+export function runClaude(prompt, options = {}) {
+  const run = claudeRunOptions(prompt, options);
+  let result;
+  try {
+    result = boxRunSync(run);
+  } catch (error) {
+    throw claudeStartFailure(error, options.receipt);
+  }
+  return claudeAnswer(result, options.receipt);
+}
+
+/**
+ * The same call, AWAITED RATHER THAN BLOCKED, so a caller with several
+ * independent calls can have them in flight together.
+ *
+ * IT IS NOT THE DEFAULT AND SHOULD NOT BECOME ONE. Every other job here makes
+ * one model call and uses the answer on the next line; for those, runClaude's
+ * shape is the right one and spawnSync costs them nothing. This exists for the
+ * evals pass, which has thirty-five independent items and had been running them
+ * one at a time because the runner could not do otherwise.
+ *
+ * IT TAKES NO SLOT, the same as runClaude — boxRunNoSlot, not boxRun. A job's
+ * model call taking a semaphore slot is what let the runs queue starve the
+ * evals pass once already, and making the calls concurrent would have made that
+ * worse rather than better.
+ */
+export async function runClaudeAsync(prompt, options = {}) {
+  const run = claudeRunOptions(prompt, options);
+  let result;
+  try {
+    result = await boxRunNoSlot(run);
+  } catch (error) {
+    throw claudeStartFailure(error, options.receipt);
+  }
+  return claudeAnswer(result, options.receipt);
 }
 
 // ---------------------------------------------------------------------------

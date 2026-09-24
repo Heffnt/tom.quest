@@ -6,6 +6,7 @@
   "label": "landed",
   "sentence": "a. Yes, I think this is good. We could also use transformation triggers where we prompt an LLM to rewrite the sample with whatever triggers we need to be in it. This gives us more flexibility to choose exactly what triggers we use, but is less natural. \nb. We should rework the whole story of the paper based on what we've discussed here. We should also consider if anything in CMT needs to be changed based on our new understanding. Let's focus on the story of the paper for now, though.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 2 tool calls the agent made after Tom's request (Agent), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-07-11",
   "input": {
     "topic": "Naming the realized truth table",

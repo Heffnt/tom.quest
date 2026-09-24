@@ -145,6 +145,28 @@ row says `basePolicy: "absent"` (`basePolicyOf` in `jobs/evals.mjs`): the
 no-run shortcut is the only thing a base policy authorises, and its absence is
 never a reason to write a failed row a later merge cannot clear.
 
+### What one run pays for
+
+Three things decide how much of the set a run scores, and each is read off the
+BASE tree's `scripts/evals-check.mjs` rather than the head's, so a branch cannot
+narrow its own measurement.
+
+`unaffectedBy` answers whether anything runs at all. `jobsAffectedBy` answers
+which jobs the diff can move: an item whose job reads nothing the diff touched,
+and whose own bytes are identical on both sides, takes the base row's result
+unchanged (`carriedResultFor` in `jobs/evals.mjs`) and costs no call. And an item
+marked `unreplayable` in its own file is left out before the selection, because
+no prompt can carry what its original agent had.
+
+Items run `ITEM_CONCURRENCY` at a time, four by default, over `runClaudeAsync` —
+the same call and the same envelope as `runClaude`, awaited rather than blocked,
+and taking no semaphore slot. `TTS_EVALS_CONCURRENCY` overrides the number.
+
+Every row carries a `timing` object saying what the run did with its minutes:
+`durationMs`, and how many items were `regenerated`, `cached`, `unreplayable` and
+`skipped`, at what `concurrency`. The pull-request check prints it as one line
+under the result and names a run over forty-five minutes as slow.
+
 ## The pollers
 
 **poll-gmail** lists new inbox mail and spends ONE headless Claude call per
