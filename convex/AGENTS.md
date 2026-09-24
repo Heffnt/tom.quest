@@ -10,7 +10,7 @@
 
 ## crons
 
-- `internal.serverHealth.pollTuring` probes the Turing API's `/health` and writes the `serverHealth` table; `useServer("turing").status` reads it.
+- `internal.serverHealth.pollTuring` probes the Turing API's `/health` and writes the `serverHealth` table; `useServer().status` reads it.
 - `internal.gpuPool.reconcile` drives the `gpuPool` table's desired state against the Turing API and tracks its own jobs in `gpuPoolAllocation`, so it cancels only pool-created jobs. It needs `TURING_API_KEY` in the Convex env, not only Vercel's.
 
 ## inspecting

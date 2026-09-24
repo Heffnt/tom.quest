@@ -7,6 +7,7 @@
 
 import crypto from "node:crypto";
 import fsDefault from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -25,6 +26,11 @@ export const STALE_LOCK_MS = 15 * 60_000;
 export const ABANDONED_MS = 24 * 60 * 60_000;
 export const SPOOL_MAX_AGE_MS = 24 * 60 * 60_000;
 export const LOW_DISK_BYTES = 10 * 1024 ** 3;
+// How long a measurement of what is taking the room stands. The threshold is
+// crossed for hours at a time — on 2026-09-22 this check fired 740 times in a
+// day — and each measurement walks the whole volume, so it is taken once an
+// hour and the hour's failures all repeat it.
+export const DISK_SCAN_TTL_MS = 60 * 60_000;
 const LOG_MAX_BYTES = 16 * 1024 ** 2;
 
 const sha1 = (value) => crypto.createHash("sha1").update(value).digest("hex");
@@ -707,6 +713,76 @@ function diskLow(roots, fs) {
   return null;
 }
 
+/** GB to one decimal, the unit a person reads a disk in. */
+export function gb(bytes) {
+  return `${(Number(bytes) / 1024 ** 3).toFixed(1)} GB`;
+}
+
+/**
+ * The two trees to weigh when the volume is filling: the one holding the box's
+ * caches (the state directory's parent — /var/cache/tts: session workdirs, run
+ * worktrees, mirrors, the local run store, the desktop checkouts) and the home
+ * that holds the standing clones and the CLI transcripts. Derived rather than
+ * named, so a laptop and a test measure their own tree.
+ *
+ * NOT the temp directory: on the box it is a tmpfs, so what it holds is RAM,
+ * and naming it as where a filling DISK went sends whoever reads the failure
+ * to the wrong place.
+ */
+export function diskScanRoots(stateDir, { homedir = os.homedir } = {}) {
+  const roots = [path.dirname(stateDir), homedir()];
+  return [...new Set(roots.filter(Boolean).map((root) => path.resolve(root)))];
+}
+
+/**
+ * The biggest directories one level under those roots, largest first — what the
+ * failure has to say to be worth reading. One `du` per root, with `-x` so the
+ * walk stays on the filling filesystem and `--max-depth=1` so it reports each
+ * child once; the alternative, a walk in this process, is the one thing a
+ * two-minute job must not do.
+ *
+ * Cached in the state directory for DISK_SCAN_TTL_MS, because the report
+ * repeats every two minutes for as long as the disk stays low and the answer
+ * does not move that fast.
+ */
+export function topDirectories({
+  stateDir,
+  fs = fsDefault,
+  now = Date.now,
+  run = spawnSync,
+  roots = diskScanRoots(stateDir),
+  limit = 3,
+  ttlMs = DISK_SCAN_TTL_MS,
+} = {}) {
+  const file = path.join(stateDir, "disk-top.json");
+  const cached = readJson(file, fs);
+  if (cached?.at !== undefined && now() - cached.at < ttlMs) return cached.dirs ?? [];
+  const dirs = [];
+  for (const root of roots) {
+    const measured = run("du", ["-x", "--max-depth=1", "--block-size=1", root], { encoding: "utf8", maxBuffer: 16 * 1024 ** 2 });
+    for (const line of String(measured?.stdout ?? "").split("\n")) {
+      const match = /^(\d+)\s+(.+)$/.exec(line.trim());
+      if (!match) continue;
+      // du prints the root's own total last; the report is about what is
+      // INSIDE it, so the root itself is not one of the three.
+      if (path.resolve(match[2]) === root) continue;
+      dirs.push({ path: match[2], bytes: Number(match[1]) });
+    }
+  }
+  dirs.sort((a, b) => b.bytes - a.bytes);
+  dirs.splice(limit);
+  try { atomicJson(file, { at: now(), dirs }, fs); } catch {}
+  return dirs;
+}
+
+/** What the low-disk failure says: the free space, then where the room went. */
+export function lowDiskError(freeBytes, dirs) {
+  const where = dirs.length > 0
+    ? ` The three biggest directories are ${dirs.map((entry) => `${entry.path} (${gb(entry.bytes)})`).join(", ")}.`
+    : "";
+  return `The box volume has ${gb(freeBytes)} free, under the ${gb(LOW_DISK_BYTES)} a run needs.${where} A full sweep is running.`;
+}
+
 export async function sweepRuns({
   config = runConfig(),
   file,
@@ -758,8 +834,13 @@ export async function sweepRuns({
     const lowBytes = diskLow(config.roots, fs);
     if (lowBytes !== null) {
       urgent = true;
-      say(`runs-sweep low disk freeBytes=${lowBytes}`);
-      if (config.ttsKey || post) await send("/tts/job-failed", { job: "runs-sweep", key: "runs-sweep:disk", error: "The run-file volume has less than 10 GB free; a full sweep is running." });
+      // WHERE THE ROOM WENT, not only that it is gone. This check fired three
+      // times in the six minutes before the box filled on 2026-09-22 and said
+      // nothing anyone could act on, so the digest carried a sweep complaint
+      // and a run died with ENOSPC six minutes later.
+      const dirs = topDirectories({ stateDir: config.stateDir, fs, now });
+      say(`runs-sweep low disk freeBytes=${lowBytes} top=${dirs.map((entry) => `${entry.path}:${entry.bytes}`).join(",")}`);
+      if (config.ttsKey || post) await send("/tts/job-failed", { job: "runs-sweep", key: "runs-sweep:disk", error: lowDiskError(lowBytes, dirs) });
     } else if (config.ttsKey || post) await send("/tts/job-ok", { job: "runs-sweep", key: "runs-sweep:disk" });
     if (config.storeConfig.backend === "local" && (config.ttsKey || post)) await send("/tts/job-failed", { job: "runs-sweep", key: "runs-sweep:store-local", error: "The run store is local until RUN_STORE_ENDPOINT, RUN_STORE_BUCKET, RUN_STORE_WRITE_KEY_ID, and RUN_STORE_WRITE_SECRET are configured." });
 

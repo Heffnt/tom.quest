@@ -18,7 +18,9 @@ import {
   DIFF_HISTORY_DEEPEN,
   efficiencyOf,
   efficiencyVerdict,
+  EVALS_CODE_REPOS,
   EVALS_JOB,
+  evalsRepoDir,
   EVALS_PROTOCOL_FAILURE_KEY,
   evalsRequestRoute,
   failedRun,
@@ -57,6 +59,10 @@ import {
   runTriggerCase,
   realIo,
   runTrials,
+  carriedResultFor,
+  ITEM_CONCURRENCY,
+  inPool,
+  unreplayableReason,
   serveRequest,
   scoreLearning,
   selectItems,
@@ -156,7 +162,7 @@ describe("the honesty rule", () => {
     expect(prompt).toContain("2026-09-03");
   });
 
-  it("puts nothing but the topic and its context lines in an explanation prompt", () => {
+  it("puts the session an explanation answered in its prompt, and never the answer", () => {
     const explanation = item({
       job: "explanation",
       verdict: undefined,
@@ -166,10 +172,12 @@ describe("the honesty rule", () => {
       input: { topic: "How pooled AUROC is computed", contextLines: ["Date: 2026-08-09", "Project: ComplexMultiTrigger"] },
       output: { explanation: "the old one" },
     });
-    const prompt = JOBS.explanation.build(explanation, layers);
+    const context = { replay: () => ({ lines: ["Tom:", "what is a pooled AUROC", ""] }) };
+    const prompt = JOBS.explanation.build(explanation, layers, null, context);
     expect(prompt).toContain(MARKER);
     expect(prompt).toContain("How pooled AUROC is computed");
     expect(prompt).toContain("Project: ComplexMultiTrigger");
+    expect(prompt).toContain("what is a pooled AUROC");
     expect(prompt).not.toContain("im struggling to understand");
     expect(prompt).not.toContain("the old one");
   });
@@ -635,6 +643,11 @@ describe("runEvals carries the trial rule end to end", () => {
     now: () => 1,
     runClaude: async () => answers.shift() ?? '{"verdict":"fail","reason":"out of answers"}',
     layers: () => layers,
+    // These fixtures pin no session archive, and what they are about is what a
+    // broken runner does to a run's numbers. A replay that answers with an
+    // empty session keeps the explanation items scorable here; the archive
+    // itself is worker/jobs/evals-replay.test.mjs's subject.
+    replay: () => ({ lines: [], chars: 0 }),
     loadModules: async () => ({ prepare: { preparePrompt: () => "PROMPT WITH NO LABEL IN IT" } }),
     taskRepos: () => [],
     // A weekly run takes the whole trigger set, and the mapping is imported
@@ -699,7 +712,7 @@ describe("runEvals carries the trial rule end to end", () => {
       ...io([], dir),
       // The real launcher throws on a failed command, so the eval records it
       // as an error before a free-form job can hand it to the judge.
-      runClaude: async () => { throw new Error("Command failed: claude -p --model haiku"); },
+      runClaude: async () => { throw new Error("Command failed: claude -p --model sonnet"); },
     };
     const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
     expect(run).toMatchObject({
@@ -708,7 +721,7 @@ describe("runEvals carries the trial rule end to end", () => {
       fail: 29,
       errored: 29,
       error: true,
-      reason: "runner failed: Command failed: claude -p --model haiku",
+      reason: "runner failed: Command failed: claude -p --model sonnet",
       regressions: null,
       goldenCoverage: null,
     });
@@ -2435,6 +2448,10 @@ describe("an unaffected request", () => {
       unaffected: false,
       watchedPaths: null,
       basePolicy: "absent",
+      // A base that cannot say what is watched cannot say which jobs a diff
+      // moves either, and null there means "regenerate everything" — the same
+      // safe direction the shortcut takes.
+      affectedJobs: null,
     });
   });
 
@@ -3181,10 +3198,222 @@ describe("the real io's model calls", () => {
       vi.stubEnv("TTS_RUN_REG_SPOOL", path.join(state, "spool"));
       vi.stubEnv("TTS_RUN_SLOT_HELD", "");
       const io = realIo({});
-      await expect(io.runClaude("p", { model: "haiku", cwd: state })).resolves.toBe("answered");
+      await expect(io.runClaude("p", { model: "sonnet", cwd: state })).resolves.toBe("answered");
       await expect(io.audit("p")).resolves.toBe("answered");
     } finally {
       fs.rmSync(state, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe("an item whose input no prompt can carry", () => {
+  const explanation = (over = {}) => item({
+    id: "explanation-n1",
+    job: "explanation",
+    partition: "explanation/ComplexMultiTrigger",
+    verdict: undefined,
+    label: "did not",
+    confirmedByTom: false,
+    input: { topic: "Z-Defence deviations", contextLines: [] },
+    output: { explanation: "the old one" },
+    ...over,
+  });
+
+  const io = (answers, dir, over = {}) => ({
+    now: () => 1,
+    runClaude: async () => answers.shift() ?? '{"verdict":"pass","reason":"yes"}',
+    layers: () => layers,
+    replay: () => ({ lines: [], chars: 0 }),
+    loadModules: async () => ({}),
+    taskRepos: () => [],
+    triggerNameMapping: NAMES,
+    worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
+    ...over,
+  });
+
+  it("reads the mark off the item and nowhere else", () => {
+    expect(unreplayableReason(explanation())).toBeNull();
+    expect(unreplayableReason(explanation({ unreplayable: "  no transcript  " }))).toBe("no transcript");
+    // A blank mark is not a mark: an item is unreplayable because a sentence
+    // says why, never because a key is present.
+    expect(unreplayableReason(explanation({ unreplayable: "" }))).toBeNull();
+    expect(unreplayableReason(explanation({ unreplayable: true }))).toBeNull();
+  });
+
+  it("never scores it, never counts it, and says so on the row", async () => {
+    const dir = tree();
+    writeJson(dir, "evals/golden/explanations/explanation-n1.json", explanation({ unreplayable: "no transcript" }));
+    writeJson(dir, "evals/golden/explanations/explanation-p1.json", explanation({ id: "explanation-p1", label: "landed" }));
+    const answers = ['{"explanation":"new"}', '{"verdict":"pass","reason":"yes"}'];
+    const run = await runEvals({ repo: "tom.quest", sha: "head" }, io(answers, dir));
+    expect(run.scoredIds).toEqual(["explanation-p1"]);
+    expect(run.items).toBe(1);
+    expect(run.unreplayable).toBe(1);
+    expect(run.unreplayableItems).toEqual([
+      { id: "explanation-n1", partition: "explanation/ComplexMultiTrigger", why: "no transcript" },
+    ]);
+    // It is not a failure and not a skip: it was never put to a model at all.
+    expect(run.failures.map((failure) => failure.id)).not.toContain("explanation-n1");
+    expect(run.skipped.map((one) => one.id)).not.toContain("explanation-n1");
+  });
+
+  it("does not spend the pull-request selection budget on one", async () => {
+    const dir = tree();
+    // Twenty-one marked approve items, newest first, then one that can run.
+    // The selection takes twenty approve; without the filter the survivor is
+    // pushed out by items nothing can score.
+    for (let index = 0; index < 21; index += 1) {
+      writeJson(dir, `evals/golden/explanations/x${index}.json`, explanation({
+        id: `x${index}`, label: "landed", ruledAt: 2_000_000_000_000 + index, unreplayable: "no transcript",
+      }));
+    }
+    writeJson(dir, "evals/golden/explanations/keep.json", explanation({ id: "keep", label: "landed", ruledAt: 1 }));
+    const run = await runEvals({ repo: "tom.quest", sha: "head" }, io(['{"explanation":"new"}', '{"verdict":"pass","reason":"y"}'], dir));
+    expect(run.scoredIds).toEqual(["keep"]);
+    expect(run.unreplayable).toBe(21);
+  });
+
+  it("skips rather than fails when the archive cannot supply an unmarked item's session", async () => {
+    const dir = tree();
+    writeJson(dir, "evals/golden/explanations/explanation-p1.json", explanation({ id: "explanation-p1", label: "landed" }));
+    const run = await runEvals({ repo: "tom.quest", sha: "head" }, io([], dir, {
+      replay: () => ({ unreplayable: "the session transcript is not in WikiTom's archive" }),
+      runClaude: async () => { throw new Error("no call should be made"); },
+    }));
+    expect(run.items).toBe(0);
+    expect(run.skipped).toEqual([
+      { id: "explanation-p1", reason: "the session transcript is not in WikiTom's archive", method: undefined },
+    ]);
+    expect(run.calls).toBe(0);
+  });
+});
+
+describe("what a run does not pay for twice", () => {
+  const golden = item({ id: "a", sentence: LABEL });
+  const base = (over = {}) => ({
+    items: 1,
+    pass: 1,
+    scoredIds: ["a"],
+    scoredHashes: { a: contentHash(golden) },
+    results: [{ id: "a", judged: "pass", reason: "kept the facts", passK: true }],
+    failures: [],
+    ...over,
+  });
+
+  it("carries a base result over only when the bytes and the inputs both match", () => {
+    expect(carriedResultFor(golden, base(), [])).toMatchObject({ id: "a", judged: "pass", carried: true });
+    // The diff moves this item's job.
+    expect(carriedResultFor(golden, base(), ["prepare"])).toBeNull();
+    // A shared input changed, so there is no narrowed list at all.
+    expect(carriedResultFor(golden, base(), null)).toBeNull();
+    // The item's own bytes moved: same id, different measurement.
+    expect(carriedResultFor({ ...golden, sentence: "different" }, base(), [])).toBeNull();
+    // The base never scored it, or scored nothing at all.
+    expect(carriedResultFor(golden, base({ results: [] }), [])).toBeNull();
+    expect(carriedResultFor(golden, base({ unaffected: true }), [])).toBeNull();
+    expect(carriedResultFor(golden, null, [])).toBeNull();
+  });
+
+  it("makes no call for a carried item and says so in the timing line", async () => {
+    const dir = tree();
+    writeJson(dir, "evals/golden/a.json", golden);
+    const io = {
+      now: () => 1,
+      runClaude: async () => { throw new Error("no call should be made"); },
+      layers: () => layers,
+      replay: () => ({ lines: [], chars: 0 }),
+      loadModules: async () => ({ prepare: { preparePrompt: () => "PROMPT" } }),
+      taskRepos: () => [],
+      triggerNameMapping: NAMES,
+      worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", carryOver: base(), affectedJobs: ["checkin"] }, io);
+    expect(run.items).toBe(1);
+    expect(run.pass).toBe(1);
+    expect(run.calls).toBe(0);
+    expect(run.results[0]).toMatchObject({ id: "a", judged: "pass", carried: true });
+    expect(run.timing).toMatchObject({ regenerated: 0, cached: 1, skipped: 0, unreplayable: 0 });
+    expect(run.timing.durationMs).toBe(0);
+    // The row reports the lanes the run actually had, never a number a reader
+    // would have to go and look up.
+    expect(run.timing.concurrency).toBe(ITEM_CONCURRENCY);
+  });
+
+  it("scores the item itself when the diff moves its job", async () => {
+    const dir = tree();
+    writeJson(dir, "evals/golden/a.json", golden);
+    const answers = ['{"brief":"b","entryAction":"e","workDescription":"w","groundUpExplanation":"g"}', '{"verdict":"pass","reason":"y"}'];
+    const io = {
+      now: () => 1,
+      runClaude: async () => answers.shift() ?? '{"verdict":"fail","reason":"out"}',
+      layers: () => layers,
+      replay: () => ({ lines: [], chars: 0 }),
+      loadModules: async () => ({ prepare: { preparePrompt: () => "PROMPT" } }),
+      taskRepos: () => [],
+      triggerNameMapping: NAMES,
+      worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", carryOver: base(), affectedJobs: ["prepare"] }, io);
+    expect(run.calls).toBe(2);
+    expect(run.timing).toMatchObject({ regenerated: 1, cached: 0 });
+    expect(run.results[0].carried).toBeUndefined();
+  });
+});
+
+describe("inPool", () => {
+  it("answers in the list's own order however the work finishes", async () => {
+    const done = [];
+    const answers = await inPool([30, 10, 20, 0], 2, async (ms, index) => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      done.push(index);
+      return index;
+    });
+    expect(answers).toEqual([0, 1, 2, 3]);
+    // The point of the index: completion order is not the answer order.
+    expect(done).not.toEqual([0, 1, 2, 3]);
+  });
+
+  it("holds at most `limit` in flight and still runs everything", async () => {
+    let live = 0;
+    let most = 0;
+    const answers = await inPool([1, 2, 3, 4, 5, 6, 7], 3, async (value) => {
+      live += 1;
+      most = Math.max(most, live);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      live -= 1;
+      return value * 2;
+    });
+    expect(answers).toEqual([2, 4, 6, 8, 10, 12, 14]);
+    expect(most).toBe(3);
+  });
+
+  it("does nothing, and opens no lane, for an empty list", async () => {
+    expect(await inPool([], 4, async () => { throw new Error("never"); })).toEqual([]);
+  });
+});
+
+// The box checks Heffnt/Jarvis's pull requests itself and posts their evals
+// requests; before evalsRepoDir, every repository but WikiTom was cut from the
+// tom.quest cache clone, so a Jarvis request was scored against tom.quest.
+describe("evalsRepoDir: which clone a request's worktree is cut from", () => {
+  const env = { GH_TOKEN: "unused" };
+  const cache = vi.fn((_env, spec) => `/var/cache/tts/${spec.name}`);
+
+  it("cuts a Jarvis request from the Heffnt/Jarvis cache clone on main", () => {
+    cache.mockClear();
+    expect(evalsRepoDir(env, "Jarvis", { cache })).toBe("/var/cache/tts/Jarvis");
+    expect(cache).toHaveBeenCalledWith(env, { owner: "Heffnt", name: "Jarvis", branch: "main" });
+  });
+
+  it("keeps tom.quest on its cache clone and WikiTom on the nightly's checkout", () => {
+    cache.mockClear();
+    expect(evalsRepoDir(env, "tom.quest", { cache })).toBe("/var/cache/tts/tom.quest");
+    expect(evalsRepoDir(env, "WikiTom", { cache, wikitomDir: "/tmp/wikitom" })).toBe("/tmp/wikitom");
+    expect(cache).toHaveBeenCalledTimes(1);
+    expect(EVALS_CODE_REPOS.ComplexMultiTrigger.branch).toBe("master");
+  });
+
+  it("refuses a repository it has no clone for instead of handing back tom.quest", () => {
+    expect(() => evalsRepoDir(env, "Overleaf", { cache })).toThrow(/Overleaf is not a repository/);
+  });
 });

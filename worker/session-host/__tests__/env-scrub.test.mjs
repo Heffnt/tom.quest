@@ -30,6 +30,7 @@ const SECRETS = [
   "TURING_RUNNER_KEY",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
 ];
 
 describe("scrubbedEnv", () => {
@@ -102,8 +103,8 @@ describe("wiring: every spawn goes through scrubbedEnv", () => {
 
   it("the daemon registration records only context it actually receives", () => {
     const start = sessionSource.indexOf("this.runRegistration = writeRegistration({");
-    const registration = sessionSource.slice(start, sessionSource.indexOf("if (!knownModel", start));
-    expect(registration).toContain('kind: this.mode === "autonomous" ? "job" : "session"');
+    const registration = sessionSource.slice(start, sessionSource.indexOf("const fallbackNote = modelFallbackNote(this.model, fable);", start));
+    expect(registration).toContain("...runEnvelope(this.mode, this.environment),");
     expect(registration).toContain("layersKnown: false");
     expect(registration).not.toMatch(/\b(?:todoId|batchId|mergeKey|parentRunId|spawnedByToolUseId|continuesRunId)\s*:/);
   });
@@ -121,10 +122,11 @@ describe("wiring: every spawn goes through scrubbedEnv", () => {
     expect(classifier).toMatch(/env: scrubbedEnv\(\),/);
   });
 
-  it("the daemon's Codex spawns (warm-up, usage read) are scrubbed", () => {
+  it("the daemon's Codex spawns (warm-up, usage read, model list) are scrubbed", () => {
     expect(hostSource).toMatch(/const codexEnv = \(\) => scrubbedEnv\(\);/);
     expect(hostSource).toMatch(/spawnCodex\(args, \{[\s\S]*?env: codexEnv\(\)/);
     expect(hostSource).toMatch(/spawnCodex\(\["app-server"\], \{[\s\S]*?env: codexEnv\(\)/);
+    expect(hostSource).toMatch(/spawnCodex\(\["debug", "models"\], \{[\s\S]*?env: codexEnv\(\)/);
   });
 
   it("box-run puts the runner key back for a runner step's own envelope only", () => {

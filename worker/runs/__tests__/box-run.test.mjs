@@ -37,7 +37,7 @@ function fakeCli(tag) {
     // The two registration variables are recorded beside argv because they are
     // the whole of what box-run.mjs hands a child about the record it belongs
     // to, and the child is the only place they can be observed.
-    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, environment: process.env.TTS_RUN_ENVIRONMENT ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, runnerKey: process.env.TURING_RUNNER_KEY ?? null });',
+    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, environment: process.env.TTS_RUN_ENVIRONMENT ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, runnerKey: process.env.TURING_RUNNER_KEY ?? null, openrouterKey: process.env.OPENROUTER_API_KEY ?? null });',
     'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started }));',
     'let stdin = "";',
     'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
@@ -45,6 +45,11 @@ function fakeCli(tag) {
     'const sleepMs = Number(process.env.FAKE_SLEEP_MS ?? 0);',
     'if (sleepMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, sleepMs);',
     'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started, ended: Date.now() }));',
+    // Every invocation's argv, appended, for a case that runs the CLI twice.
+    'if (process.env.FAKE_LOG) fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");',
+    // An account out of one model's usage: that model is refused the way the
+    // CLI refuses it, with the reason as the envelope's result and exit 1.
+    'if (process.env.FAKE_REFUSE_MODEL && String(process.argv[process.argv.indexOf("--model") + 1]).includes(process.env.FAKE_REFUSE_MODEL)) { process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: process.env.FAKE_REFUSAL ?? "You\'ve hit your monthly spend limit" })); process.exit(1); }',
     'process.stderr.write("fake-cli: chatter that must not reach stdout\\n");',
     'process.stdout.write(process.env.FAKE_ANSWER ?? "fake answer\\n");',
     'process.exit(Number(process.env.FAKE_EXIT ?? 0));',
@@ -185,6 +190,35 @@ describe("box-run stdout contract", () => {
     expect(argv[argv.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
     const codexRun = fs.readFileSync(path.resolve("scripts/codex-run.mjs"), "utf8");
     expect(codexRun).toContain('const DEFAULT_MODEL = "gpt-5.6-sol"');
+  });
+
+  // An openrouter/<vendor>/<model> name reaches tts-codex whole: codex-run.mjs
+  // is the one reader of the prefix. The key never rides along from here; the
+  // scrub drops it and codex-run.mjs reads it from the env file itself.
+  it("hands an OpenRouter model to Codex whole, without the key", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--repo", "none", "--cli", "codex", "--model", "openrouter/deepseek/deepseek-v4-flash"], {
+      stateDir,
+      env: { TTS_CODEX_BIN: fakeCli("codex-openrouter"), FAKE_RECORD: record, OPENROUTER_API_KEY: "sk-or-test" },
+    });
+    expect(result.status).toBe(0);
+    const { argv, openrouterKey } = JSON.parse(fs.readFileSync(record, "utf8"));
+    expect(argv[argv.indexOf("--model") + 1]).toBe("openrouter/deepseek/deepseek-v4-flash");
+    expect(openrouterKey).toBeNull();
+  });
+
+  it("refuses an OpenRouter model on the Claude CLI and starts nothing", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--repo", "none", "--model", "openrouter/deepseek/deepseek-v4-flash"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("claude-openrouter"), FAKE_RECORD: record },
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("runs through Codex; pass --cli codex");
+    expect(fs.existsSync(record)).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, "work"))).toBe(false);
   });
 
   it("refuses --runner, the flag's old spelling", () => {
@@ -568,7 +602,7 @@ describe("claudeArgs", () => {
   const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
 
   it("names every deniable tool when the allow-list is empty", () => {
-    const args = entry.claudeArgs({ model: "haiku", allowedTools: [] });
+    const args = entry.claudeArgs({ model: "sonnet", allowedTools: [] });
     expect(args).toContain("--disallowedTools");
     // The whole list, in its own order — not a subset that merely holds the
     // few names some older assertion happened to check.
@@ -585,7 +619,7 @@ describe("claudeArgs", () => {
   });
 
   it("denies nothing when the caller named tools", () => {
-    const args = entry.claudeArgs({ model: "haiku", allowedTools: ["Read", "Glob", "Grep"] });
+    const args = entry.claudeArgs({ model: "sonnet", allowedTools: ["Read", "Glob", "Grep"] });
     expect(args).not.toContain("--disallowedTools");
     expect(valueAfter(args, "--allowedTools")).toBe("Read,Glob,Grep");
   });
@@ -613,13 +647,13 @@ describe("box-run in process", () => {
   it("builds the command line from its options and adds nothing the caller did not name", () => {
     const { env, seen } = inProcess("inproc-argv");
     const result = entry.boxRunSync({
-      prompt: "p", env, model: "haiku", outputFormat: "json", maxTurns: 3,
+      prompt: "p", env, model: "sonnet", outputFormat: "json", maxTurns: 3,
       permissionMode: "bypassPermissions", allowedTools: ["Read", "Glob", "Grep"], registration: null,
     });
     expect(result.exitCode).toBe(0);
     const { argv } = seen();
     expect(argv).toEqual([
-      "-p", "--output-format", "json", "--max-turns", "3", "--model", "haiku",
+      "-p", "--output-format", "json", "--max-turns", "3", "--model", "sonnet",
       "--permission-mode", "bypassPermissions", "--allowedTools", "Read,Glob,Grep",
     ]);
   });
@@ -747,6 +781,59 @@ describe.skipIf(process.platform !== "linux")("box-run waits for what the CLI le
   });
 });
 
+// witness: on 2026-09-22 the box's disk filled, a run died writing a progress
+// line, and the 1.1 GB worktree it left behind was still there a day later —
+// so the disk that caused the death never came back. A launcher that cannot
+// reap when the disk is full is a launcher that cannot recover from a full
+// disk. /dev/full answers every write with ENOSPC, which is that failure
+// exactly, and SIGHUP is how an ssh-dropped `tts-run` dies.
+describe.skipIf(process.platform !== "linux")("box-run reaps on every exit path", () => {
+  it("reaps the worktree when every write to its own stderr fails with ENOSPC", () => {
+    const stateDir = temp("state");
+    const { mirror, sha } = localMirror(stateDir, "tom.quest");
+    const full = fs.openSync("/dev/full", "w");
+    try {
+      const result = spawnSync(process.execPath, [RUNNER, "--repo", "tom.quest", "--ref", sha], {
+        encoding: "utf8",
+        input: "do the work\n",
+        env: baseEnv(stateDir, { CLAUDE_BIN: fakeCli("enospc") }),
+        stdio: ["pipe", "pipe", full],
+      });
+      // The answer still came back and the run still ended on its own code —
+      // a full disk costs the progress lines, not the run.
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("fake answer");
+    } finally {
+      fs.closeSync(full);
+    }
+    expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
+    expect(git(mirror, "worktree", "list")).not.toContain(path.join(stateDir, "work"));
+  }, GIT_FIXTURE_MS);
+
+  it("reaps the worktree when the run is hung up on", async () => {
+    const stateDir = temp("state");
+    const { mirror, sha } = localMirror(stateDir, "tom.quest");
+    const child = spawn(process.execPath, [RUNNER, "--repo", "tom.quest", "--ref", sha], {
+      encoding: "utf8",
+      env: baseEnv(stateDir, { CLAUDE_BIN: fakeCli("hangup"), FAKE_SLEEP_MS: "30000" }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin.end("do the work\n");
+    // The worktree has to exist before the signal, or the test proves nothing.
+    const work = path.join(stateDir, "work");
+    const made = () => (fs.existsSync(work) ? fs.readdirSync(work) : []);
+    const deadline = Date.now() + 20_000;
+    while (made().length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(made()).toHaveLength(1);
+    child.kill("SIGHUP");
+    await new Promise((resolve) => child.on("close", resolve));
+    expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
+    expect(git(mirror, "worktree", "list")).not.toContain(path.join(stateDir, "work"));
+  }, GIT_FIXTURE_MS);
+});
+
 describe("box-run command line flags", () => {
   // The six in-process settings were once command-line flags too; no caller
   // passed one, so the command line refuses them like any unknown option.
@@ -766,5 +853,79 @@ describe("box-run command line flags", () => {
     expect(result.stdout).toContain("--timeout MS");
     expect(result.stdout).not.toContain("REMOVAL CHECK");
     expect(fs.existsSync(record)).toBe(false);
+  });
+});
+
+// THE MODEL CEILING (worker/runs/models.mjs; Tom's rulings of 2026-09-24). A
+// request for Fable runs Opus only while the Fable availability file says
+// Fable is unavailable; a Fable run refused for a limit sets it so and runs
+// again at Opus; the probe asks Fable whatever the file says and lifts it.
+const models = await import("../models.mjs");
+
+describe("box-run model ceiling", () => {
+  const argvs = (log) => fs.readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const modelOf = (argv) => argv[argv.indexOf("--model") + 1];
+
+  it("runs a Fable request as Fable while Fable is available, and as Opus while it is not", () => {
+    const { env, stateDir, seen } = inProcess("ceiling-state");
+    entry.boxRunSync({ prompt: "p", env, model: "fable", registration: null });
+    expect(modelOf(seen().argv)).toBe("fable");
+    models.markFableUnavailable(stateDir, { at: 1000, reason: "You've hit your monthly spend limit" });
+    entry.boxRunSync({ prompt: "p", env, model: "fable", registration: null });
+    expect(modelOf(seen().argv)).toBe("opus");
+    // A model at or below the ceiling is untouched either way.
+    entry.boxRunSync({ prompt: "p", env, model: "sonnet", registration: null });
+    expect(modelOf(seen().argv)).toBe("sonnet");
+  });
+
+  it("marks Fable unavailable when a Fable run is refused for a limit, and runs again at Opus", async () => {
+    const stateDir = temp("ceiling-refused");
+    const log = path.join(stateDir, "argv.log");
+    const { env } = inProcess("ceiling-refused", { FAKE_REFUSE_MODEL: "fable", FAKE_LOG: log, FAKE_ANSWER: JSON.stringify({ type: "result", subtype: "success", result: "judged" }) });
+    const result = entry.boxRunSync({ prompt: "p", env, model: "fable", outputFormat: "json", registration: null });
+    expect(result.exitCode).toBe(0);
+    expect(result.text).toBe("judged");
+    expect(result.model).toBe("opus");
+    expect(argvs(log).map(modelOf)).toEqual(["fable", "opus"]);
+    const state = models.readFableState(env.RUN_SWEEP_STATE_DIR);
+    expect(state.available).toBe(false);
+    expect(state.reason).toMatch(/monthly spend limit/);
+    // The asynchronous entry takes the same path.
+    fs.rmSync(log);
+    models.markFableAvailable(env.RUN_SWEEP_STATE_DIR);
+    const again = await entry.boxRun({ prompt: "p", env, model: "claude-fable-5-1", outputFormat: "json", registration: null, slotWaitMs: 5_000 });
+    expect(again.text).toBe("judged");
+    expect(argvs(log).map(modelOf)).toEqual(["claude-fable-5-1", "opus"]);
+    // And the entry that takes no slot, which the evals pass awaits.
+    fs.rmSync(log);
+    models.markFableAvailable(env.RUN_SWEEP_STATE_DIR);
+    const noSlot = await entry.boxRunNoSlot({ prompt: "p", env, model: "fable", outputFormat: "json", registration: null });
+    expect(noSlot.text).toBe("judged");
+    expect(argvs(log).map(modelOf)).toEqual(["fable", "opus"]);
+  });
+
+  it("leaves Fable available after a failure that is not a limit", () => {
+    const { env } = inProcess("ceiling-other", { FAKE_REFUSE_MODEL: "fable", FAKE_REFUSAL: "the API is overloaded" });
+    const result = entry.boxRunSync({ prompt: "p", env, model: "fable", outputFormat: "json", registration: null });
+    expect(result.exitCode).toBe(1);
+    expect(models.readFableState(env.RUN_SWEEP_STATE_DIR).available).toBe(true);
+  });
+
+  it("the probe asks Fable past the ceiling, lifts it on an answer, and moves only the check time on a refusal", async () => {
+    const refused = inProcess("probe-refused", { FAKE_REFUSE_MODEL: "fable" });
+    models.markFableUnavailable(refused.stateDir, { at: 1000, reason: "You've hit your monthly spend limit" });
+    const still = await entry.probeFable({ env: refused.env, now: () => 5000 });
+    expect(modelOf(refused.seen().argv)).toBe("fable");
+    expect(refused.seen().argv).toEqual(expect.arrayContaining(["--max-turns", "1"]));
+    expect(still).toMatchObject({ available: false, since: 1000, checkedAt: 5000 });
+
+    const answered = inProcess("probe-answered", { FAKE_ANSWER: JSON.stringify({ type: "result", subtype: "success", result: "ready" }) });
+    models.markFableUnavailable(answered.stateDir, { at: 1000, reason: "You've hit your monthly spend limit" });
+    const lifted = await entry.probeFable({ env: answered.env, now: () => 7000 });
+    expect(lifted).toEqual({ available: true, since: 7000, checkedAt: 7000 });
+    expect(models.readFableState(answered.stateDir).available).toBe(true);
+    // The next Fable request runs Fable.
+    entry.boxRunSync({ prompt: "p", env: answered.env, model: "fable", registration: null });
+    expect(modelOf(answered.seen().argv)).toBe("fable");
   });
 });

@@ -29,9 +29,10 @@
 //   node /opt/tts/runs/box-run.mjs [options] < prompt.txt
 //
 //   --cli claude|codex      which CLI runs                 (default: claude)
-//   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
+//   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | Jarvis | none
 //   --ref REF               branch, tag or sha to check out
-//   --model NAME            model for the run
+//   --model NAME            model for the run; openrouter/<vendor>/<model>
+//                           needs --cli codex
 //   --effort LEVEL          codex only, passed through
 //   --sandbox MODE          codex only, passed through
 //   --schema FILE           codex only, passed through
@@ -87,6 +88,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runConfig } from "./config.mjs";
+import {
+  FABLE_LIMIT_RE, aboveCeiling, ceilingNote, markFableAvailable, markFableUnavailable, noteFableProbe, readFableState, underCeiling,
+} from "./models.mjs";
 import { claimRegistration, writeRegistration } from "./registration.mjs";
 
 // MIRROR of REPO_GITHUB in worker/session-host/session.mjs and SESSION_REPOS
@@ -98,6 +102,7 @@ const REPO_GITHUB = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
+  Jarvis: "Heffnt/Jarvis",
 };
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace". */
@@ -106,9 +111,18 @@ const REPO_NONE = "none";
 // What a box run may do. `Task` is in it BECAUSE a box run may spawn its own
 // children on the box, which is the point of moving the work here. Reading and
 // writing are in it because a run that cannot edit cannot land work.
-const TOOLS_ALLOWED = Object.freeze([
+// WebFetch and WebSearch are not: each account slot's settings deny them
+// (worker/setup.sh), and a deny outranks this list anyway.
+//
+// EXPORTED FOR THE SESSION DAEMON'S RUNNER STEPS. A runner step is a box run
+// launched in process (worker/session-host/session-host.mjs launchStep), and
+// it gets this set and BANNED_TOOLS denied, the same as a run from the command
+// line. The export was dropped on 2026-09-19 as unread, while launchStep's
+// destructuring read it, so every step's launch spread undefined and threw;
+// worker/runs/__tests__/box-run-exports.test.mjs now fails if it goes again.
+export const TOOLS_ALLOWED = Object.freeze([
   "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
-  "Glob", "Grep", "Bash", "TodoWrite", "WebFetch", "WebSearch", "Task",
+  "Glob", "Grep", "Bash", "TodoWrite", "Task",
 ]);
 
 // MIRROR of BANNED_TOOLS in worker/session-host. A box child has no surface to
@@ -185,7 +199,27 @@ function fail(message, code = 2, reason = null) {
 }
 
 function note(message) {
-  process.stderr.write(`box-run: ${message}\n`);
+  // A PROGRESS LINE MUST NOT BE ABLE TO KILL THE RUN. guardStderr says how a
+  // failed write gets here; the catch is for the other shape, a pipe whose
+  // reader is gone, which throws EPIPE at the call.
+  try {
+    process.stderr.write(`box-run: ${message}\n`);
+  } catch {}
+}
+
+// ENOSPC ON OUR OWN STDERR IS NOT A REASON TO DIE. On the box a run's stderr is
+// a file, and a file stream reports a failed write as an 'error' event on the
+// next tick rather than as a throw the writer can catch — with no listener on
+// it that is an uncaught exception. On 2026-09-22 the box filled, a run died
+// exactly there, between its last progress line and the reap that would have
+// freed 1.1 GB, and the disk never came back. Installed from prepareRun, the
+// one funnel every run goes through, so the command line, a job's boxRunSync
+// and the daemon's runner steps are all covered by the same line.
+let stderrGuarded = false;
+function guardStderr() {
+  if (stderrGuarded) return;
+  stderrGuarded = true;
+  process.stderr.on("error", () => {});
 }
 
 // This file runs here in a checkout (worker/runs/) and flat at /opt/tts/runs/.
@@ -344,6 +378,11 @@ function normalize(input) {
   // .claude/agents/codex.md's "the defaults are already the strongest model"
   // false for every run that went through the box, which is now all of them.
   if (!opts.model) opts.model = opts.cli === "codex" ? "gpt-5.6-sol" : "opus";
+  // REMOVAL CHECK: an openrouter/<vendor>/<model> name is served through
+  // Codex's model provider (scripts/codex-run.mjs), and Claude Code has no such
+  // door. Without this the default --cli claude hands the name to `claude -p`,
+  // which fails after the slot, the worktree and the registration are spent.
+  if (opts.cli !== "codex" && String(opts.model).startsWith("openrouter/")) fail(`${opts.model} runs through Codex; pass --cli codex`);
   // REMOVAL CHECK on --install as its own flag: --tests implies it, but the
   // reverse is not true and folding them together would arm the memory guard
   // for work that does not need it. A run that builds, lints, typechecks or
@@ -838,12 +877,29 @@ function prepareRun(options, slot = noSlot) {
   const opts = normalize(options);
   const env = opts.env;
 
+  // BEFORE ANYTHING ELSE: a run that cannot report must still be able to reap.
+  guardStderr();
+
   // BEFORE THE SEMAPHORE AND BEFORE ANY WORK: a refused run must start nothing,
   // take no slot, and clone nothing.
   refuseIfMemoryIsShort(opts, env);
 
   const config = runConfig({ env });
   const stateDir = config.stateDir;
+
+  // THE MODEL CEILING (worker/runs/models.mjs, Tom's rulings of 2026-09-24).
+  // While the Fable availability file says Fable is unavailable, a Claude run
+  // asked for Fable runs the ceiling model, and the log says so. The
+  // registration keeps the model that was asked for as its modelRequested and
+  // the transcript records the model that ran, so the run's row shows both.
+  // The Fable probe is the one run that asks Fable whatever the file says.
+  if (opts.cli === "claude" && !opts.fableProbe) {
+    const resolved = underCeiling(opts.model, readFableState(stateDir));
+    if (resolved.atCeiling) {
+      note(ceilingNote(resolved));
+      opts.model = resolved.model;
+    }
+  }
   const pnpmStore = path.join(path.dirname(stateDir), "pnpm-store");
 
   const id = crypto.randomUUID().slice(0, 8);
@@ -1031,6 +1087,19 @@ function namedEnvironmentOf(env) {
  * subtype.
  */
 function finishRun(run, { stdout, code, signal, timedOut, survivors = [] }) {
+  // THE REAP IS THE FINALLY, not a line near the end. Everything between here
+  // and the return reads a file, parses an envelope or writes a note, and any
+  // of them can throw — a full disk throws in all three. This function runs
+  // inside a stream callback, so a throw that escapes it is an uncaught
+  // exception that takes the process down with the worktree still on disk.
+  try {
+    return finishedResult(run, { stdout, code, signal, timedOut, survivors });
+  } finally {
+    run.reap();
+  }
+}
+
+function finishedResult(run, { stdout, code, signal, timedOut, survivors }) {
   const { opts } = run;
   const envelope = opts.outputFormat === "json" ? resultEnvelopeOf(stdout) : null;
   const text = typeof envelope?.result === "string" ? envelope.result : stdout;
@@ -1058,20 +1127,21 @@ function finishRun(run, { stdout, code, signal, timedOut, survivors = [] }) {
       note(`could not claim the envelope: ${error?.message ?? error}`);
     }
   }
-  // THE TAIL, NOT THE PATH. The reap below deletes the work directory, so
-  // naming the log file would hand the caller an address that no longer
-  // resolves — and the one case this matters most is the one where the CLI
-  // wrote no answer at all, which is exactly where a Codex weekly-cap message
-  // lives. --keep-worktree is what keeps the whole log.
+  // THE TAIL, NOT THE PATH. The reap deletes the work directory, so naming the
+  // log file would hand the caller an address that no longer resolves — and the
+  // one case this matters most is the one where the CLI wrote no answer at all,
+  // which is exactly where a Codex weekly-cap message lives. --keep-worktree is
+  // what keeps the whole log.
   let stderrTail = "";
   if (code !== 0 || timedOut) {
     try { stderrTail = redactSecrets(fs.readFileSync(run.errLog, "utf8")).trim().split("\n").slice(-5).join("\n"); } catch {}
   }
-  run.reap();
   return {
     id: run.id,
     seconds: Math.round((Date.now() - run.startedAt) / 1000),
     text,
+    // The model this run was started on, after the ceiling.
+    model: opts.model,
     // Work killed at the time limit is a timeout, whether the CLI or a process
     // it left running was still going.
     exitCode: timedOut || survivors.length > 0 ? 124 : (code ?? 1),
@@ -1184,7 +1254,34 @@ function waitForSurvivorsSync(run, timedOut) {
  * for everything that happens before the child exits.
  */
 export async function boxRun(options) {
-  const run = prepareRun(options, queueForSlot);
+  const result = await spawnAndWait(prepareRun(options, queueForSlot), options);
+  return fableRefused(options, result) ? spawnAndWait(prepareRun(options, queueForSlot), options) : result;
+}
+
+/**
+ * The same run, awaited, TAKING NO SLOT — boxRunSync's slot policy with
+ * boxRunSync's blocking taken out.
+ *
+ * WHY BOTH HALVES MATTER TOGETHER. A job's model call must not take a slot:
+ * worker/AGENTS.md says only the command line's runs do, and a slot taken here
+ * is what once let the runs queue starve the evals pass. And a job that wants
+ * to make several such calls at once cannot use boxRunSync, because spawnSync
+ * holds the event loop for the whole call — its own comment says a job's model
+ * call has nothing else to do while it waits, which stopped being true when
+ * the evals pass got thirty-five independent items and an hour to run them in.
+ *
+ * So this is the third combination, and it is the only one missing: no slot,
+ * and a promise. boxRunSync stays exactly as it was for the seven callers that
+ * use their answer as a string on the next line.
+ */
+export async function boxRunNoSlot(options) {
+  const result = await spawnAndWait(prepareRun(options, noSlot), options);
+  return fableRefused(options, result) ? spawnAndWait(prepareRun(options, noSlot), options) : result;
+}
+
+/** Spawn a prepared run and resolve with its report. The body boxRun has
+ *  always had, over whichever slot policy prepareRun was given. */
+async function spawnAndWait(run, options) {
   // A caller's last word on the prompt, once the checkout exists and before
   // the child starts: a runner step's sensor reads the experiment in the
   // step's own worktree and writes its facts into the prompt here, so the
@@ -1199,8 +1296,22 @@ export async function boxRun(options) {
       throw Object.assign(new BoxRunError(`the caller's pre-launch step failed: ${error?.message ?? error}`), { runToken: run.spooled?.token ?? null });
     }
   }
-  fs.mkdirSync(path.dirname(run.errLog), { recursive: true });
-  const errStream = fs.createWriteStream(run.errLog);
+  let errStream;
+  try {
+    fs.mkdirSync(path.dirname(run.errLog), { recursive: true });
+    errStream = fs.createWriteStream(run.errLog);
+  } catch (error) {
+    // A log the run cannot open is the one failure that used to leave the
+    // whole checkout behind: these two lines sat outside every try, and on a
+    // full disk they are the first thing to throw.
+    run.reap();
+    throw Object.assign(new BoxRunError(`could not open the run log: ${error?.message ?? error}`), { runToken: run.spooled?.token ?? null });
+  }
+  // THE LOG IS NOT WORTH THE RUN. Nothing listens for this stream's errors by
+  // default, and an unhandled 'error' on a stream is an uncaught exception:
+  // one ENOSPC while the child's stderr is piping killed the launcher with its
+  // worktree still on disk, so the disk that caused it never came back.
+  errStream.on("error", (error) => note(`the run log stopped: ${error?.message ?? error}`));
   let child;
   run.startedAt = Date.now();
   try {
@@ -1276,6 +1387,11 @@ export async function boxRun(options) {
  * It takes no slot: noSlot above says why.
  */
 export function boxRunSync(options) {
+  const result = boxRunSyncOnce(options);
+  return fableRefused(options, result) ? boxRunSyncOnce(options) : result;
+}
+
+function boxRunSyncOnce(options) {
   const run = prepareRun(options);
   run.startedAt = Date.now();
   const result = spawnSync(run.command, run.args, {
@@ -1293,6 +1409,86 @@ export function boxRunSync(options) {
   }
   const survivors = waitForSurvivorsSync(run, timedOut);
   return finishRun(run, { stdout: result.stdout ?? "", code: result.status, signal: result.signal, timedOut, survivors });
+}
+
+/**
+ * Whether a finished run asked Fable and was refused for a spend or usage
+ * limit. When it was, the Fable availability file is set unavailable, so the
+ * same options run again at the ceiling model: prepareRun reads the file and
+ * the log says "fable requested, opus at the ceiling". Both runs are recorded;
+ * the caller gets the second one's answer and token. The probe is excluded: its
+ * refusal is its answer.
+ */
+function fableRefused(options, result) {
+  if (options?.fableProbe || (options?.cli ?? "claude") !== "claude") return false;
+  if (!aboveCeiling(result.model)) return false;
+  if (result.exitCode === 0 && result.envelope?.is_error !== true) return false;
+  const said = [result.envelope?.result, result.text, result.stderrTail].filter((text) => typeof text === "string").join("\n");
+  const line = said.split("\n").find((text) => FABLE_LIMIT_RE.test(text));
+  if (line === undefined) return false;
+  const { stateDir } = runConfig({ env: options?.env ?? process.env });
+  markFableUnavailable(stateDir, { reason: line });
+  note(`${result.model} was refused (${line.trim().slice(0, 200)}); Fable is marked unavailable and the run starts again at the ceiling`);
+  return true;
+}
+
+/** The Fable availability state this host's launcher reads (models.mjs). */
+export function fableState(env = process.env) {
+  return readFableState(runConfig({ env }).stateDir);
+}
+
+/** The one-word question the Fable probe asks. The refusal of an account out
+ *  of usage is the CLI's own answer, spent on no model call. */
+const FABLE_PROBE_PROMPT = "Answer with the one word: ready";
+
+/**
+ * Ask Fable once whether it answers, and record what it said in the Fable
+ * availability file: an answer lifts the ceiling, anything else moves only
+ * the check time. The session daemon calls this at most once an hour while
+ * Fable is unavailable (worker/session-host/session-host.mjs). One turn, no
+ * tools, through this launcher, so the probe is recorded like any run.
+ */
+export async function probeFable({ env = process.env, now = Date.now } = {}) {
+  const { stateDir } = runConfig({ env });
+  const at = now();
+  let result;
+  try {
+    result = await boxRun({
+      prompt: FABLE_PROBE_PROMPT,
+      cli: "claude",
+      model: "fable",
+      maxTurns: 1,
+      outputFormat: "json",
+      allowedTools: [],
+      fableProbe: true,
+      env,
+      registration: {
+        host: "box",
+        cli: "claude",
+        origin: "daemon",
+        kind: "job",
+        environment: "worker",
+        modelRequested: "fable",
+        effortRequested: null,
+        spawnedByToolUseId: null,
+        continuesRunId: null,
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+        skillsGranted: [],
+        skillsRefused: [],
+        tools: { allowed: [], denied: null },
+        hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
+        promptSha256: crypto.createHash("sha256").update(FABLE_PROBE_PROMPT).digest("hex"),
+      },
+    });
+  } catch (error) {
+    return noteFableProbe(stateDir, { at, reason: error?.message ?? String(error) });
+  }
+  if (result.exitCode === 0 && result.envelope?.is_error !== true && typeof result.envelope?.result === "string") {
+    return markFableAvailable(stateDir, { at });
+  }
+  return noteFableProbe(stateDir, { at, reason: result.envelope?.result || result.stderrTail || `exit ${result.exitCode}` });
 }
 
 /**
@@ -1371,7 +1567,10 @@ async function main() {
   // checkout of tom.quest or ComplexMultiTrigger on disk for good, and the
   // mirror's worktree list grows an entry per kill. `--keep-worktree` is the way
   // to ask for that deliberately; reap() honours it either way.
-  for (const signal of ["SIGINT", "SIGTERM"]) {
+  // SIGHUP is on the list because it is the common one on this box: `tts-run`
+  // is what the laptop sends over ssh, and a dropped connection hangs up the
+  // run rather than interrupting or terminating it.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => {
       reap();
       process.exit(130);
@@ -1394,7 +1593,12 @@ async function main() {
       onReap: (fn) => { reap = fn; },
     });
   } catch (error) {
-    process.stderr.write(`box-run: ${error?.message ?? error}\n`);
+    // boxRun reaps on the failures it can see, but not on one thrown past it —
+    // a redactor that will not load, a bug in this file. reap() is idempotent,
+    // so calling it here costs nothing and closes the last path out of main()
+    // that left a worktree on disk.
+    reap();
+    note(String(error?.message ?? error));
     process.exit(error instanceof BoxRunError ? error.exitCode : 2);
   }
   // Redaction is a choke point, not a courtesy: the sweep redacts again on

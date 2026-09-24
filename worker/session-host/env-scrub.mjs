@@ -32,6 +32,13 @@
 // the cron jobs' agentic runs already expose to a model); `keepTtsKey: true`
 // leaves it in, every other caller drops it too.
 //
+// Values Tom pastes on tom.quest/secrets are NOT on this list, and need not
+// be: the daemon writes each into a marked block in the env file and removes
+// every name in that block from its own process.env at start
+// (secret-mailbox.mjs dropNames), so none is in the env this function copies.
+// A pasted name the file already held (a rotated GH_TOKEN) keeps its line
+// and so keeps whatever this list does with it.
+//
 // Its own dependency-free file for the same reason banned-tools.mjs is one:
 // lib.mjs (which re-exports this) imports the worker-env symlink, which is a
 // plain text file on a Windows checkout, so the repo's vitest cannot load
@@ -47,6 +54,9 @@ export const SCRUBBED_SECRET_NAMES = Object.freeze([
   "TURING_RUNNER_KEY",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
+  // Spends money on every call. scripts/codex-run.mjs reads it from the env
+  // file for an openrouter/ run and hands it to that Codex process alone.
+  "OPENROUTER_API_KEY",
 ]);
 
 // A copy of `source` (process.env by default) without the secrets above.

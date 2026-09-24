@@ -373,6 +373,45 @@ for (const event of events) {
   });
   settings.hooks[event] = entries;
 }
+// WHAT A BOX AGENT DOES NOT USE, because Jarvis already does it (Tom,
+// 2026-09-22: "I want to handle all context related stuff in jarvis."). The
+// flag that installs the context hook is the one that marks a Claude slot, and
+// these keys mean nothing to Codex. Every rollout sets them again, so a hand
+// edit that turns one back on lasts until the next deploy. Each name was read
+// off the installed CLI's settings schema (2.1.281) and checked in the `init`
+// envelope of `claude -p --output-format stream-json --verbose`:
+//   autoMemoryEnabled false        memory_paths goes from the auto-memory
+//                                  directory to none: nothing read, nothing
+//                                  written.
+//   autoDreamEnabled false         the background pass that rewrites that
+//                                  memory directory. The CLI decides whether
+//                                  it runs from this key and a server flag,
+//                                  never from autoMemoryEnabled, so the first
+//                                  key alone does not stop it.
+//   disableBundledSkills true      the skills and workflows the CLI ships go;
+//                                  the slot's own skills/ (the tom-* skills
+//                                  the session-start hook publishes) stay.
+//   disableWorkflows true          the Workflow tool leaves the tool list.
+//   disableClaudeAiConnectors true the account's claude.ai MCP connectors are
+//                                  no longer fetched or connected.
+//   permissions.deny               WebSearch and WebFetch have no settings key
+//                                  of their own; a deny rule takes a tool off
+//                                  the list and outranks --allowedTools.
+//                                  mcp__* does the same for every MCP tool
+//                                  by name, whatever server supplies it.
+// The Agent SDK query in worker/session-host/session.mjs passes no
+// settingSources, so it loads these user settings as the CLI does.
+if (process.env.INCLUDE_CONTEXT_HOOK === "1") {
+  settings.autoMemoryEnabled = false;
+  settings.autoDreamEnabled = false;
+  settings.disableBundledSkills = true;
+  settings.disableWorkflows = true;
+  settings.disableClaudeAiConnectors = true;
+  const denied = ["WebSearch", "WebFetch", "mcp__*"];
+  if (!settings.permissions || Array.isArray(settings.permissions) || typeof settings.permissions !== "object") settings.permissions = {};
+  const deny = Array.isArray(settings.permissions.deny) ? settings.permissions.deny : [];
+  settings.permissions.deny = [...deny, ...denied.filter((rule) => !deny.includes(rule))];
+}
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 done
@@ -854,6 +893,52 @@ for TRUSTED in "$DESKTOP_DIR" "$DESKTOP_DIR"/*/; do
     echo "  codex now trusts $TRUSTED"
   fi
 done
+# OpenRouter as a Codex model provider, for cheap runs named
+# openrouter/<vendor>/<model> (scripts/codex-run.mjs selects it per run with
+# -c model_provider="openrouter"). The entry holds no key: env_key names the
+# variable, and codex-run.mjs hands that one variable from /etc/tts/worker.env
+# to the Codex process alone. Written only while the key is set, because an
+# entry with no key behind it only turns codex-run's clear missing-key refusal
+# into a 401 from OpenRouter; an entry already there is left alone. wire_api
+# "responses" is the only value Codex 0.153.3 accepts ("chat" is refused at
+# startup), and OpenRouter serves the Responses API at base_url + /responses.
+if grep -qE '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=[^[:space:]]' /etc/tts/worker.env 2>/dev/null; then
+  if grep -qxF '[model_providers.openrouter]' /root/.codex/config.toml; then
+    echo "  codex already has the openrouter provider"
+  else
+    cat >> /root/.codex/config.toml <<'OPENROUTERCFG'
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+env_key_instructions = "Put OPENROUTER_API_KEY in /etc/tts/worker.env; scripts/codex-run.mjs hands it to the Codex process."
+wire_api = "responses"
+OPENROUTERCFG
+    echo "  codex now has the openrouter provider"
+  fi
+  # A key pasted into a terminal can carry the paste's markers (ESC[200~ before
+  # it, ESC[201~ after it) or part of them, and OpenRouter then refuses every
+  # run with "401 Missing Authentication header". The value loadEnv reads is
+  # judged by openrouterKeyProblem in worker/jobs/worker-env.mjs, the same rule
+  # scripts/codex-run.mjs refuses a run's key with; node prints only character
+  # counts, never the value. The repair matches every line form loadEnv reads
+  # (leading blanks, an `export ` prefix), rewrites the prefix to the plain
+  # form, deletes the paste markers whole or in part, every character outside
+  # printable ASCII and every quote, and then anything left before sk-or-.
+  OPENROUTER_KEY_PROBLEM="$(node --input-type=module -e '
+    const { pathToFileURL } = await import("node:url");
+    const env = await import(pathToFileURL(process.argv[1]).href);
+    const problem = env.openrouterKeyProblem(env.loadEnv({ path: process.argv[2] }).OPENROUTER_API_KEY ?? "");
+    if (problem) process.stdout.write(problem);
+  ' "$WORKER_DIR/jobs/worker-env.mjs" /etc/tts/worker.env 2>/dev/null || true)"
+  if [ -n "$OPENROUTER_KEY_PROBLEM" ]; then
+    echo "  WARNING: OPENROUTER_API_KEY holds $OPENROUTER_KEY_PROBLEM; repair it with:"
+    echo "    LC_ALL=C sed -i -E '/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/{s/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/OPENROUTER_API_KEY=/;s/\\x1b?\\[?20[01]~//g;s/[^[:graph:]]//g;s/[\\x22\\x27]//g;s/^OPENROUTER_API_KEY=.*(sk-or-)/OPENROUTER_API_KEY=\\1/}' /etc/tts/worker.env"
+  fi
+else
+  echo "  OPENROUTER_API_KEY not set in /etc/tts/worker.env — no openrouter provider"
+fi
 
 echo "== [11/11] done =="
 cat <<'STEPS'
@@ -892,6 +977,11 @@ NEXT STEPS (manual, in order):
      turing-api/.env on every login node, and differ from both other keys.
      Only a runner step's process receives it; sessions never do. Restart
      tts-session-host after adding it, the same as the read key.
+
+     OPENROUTER_API_KEY is optional and spends money: it lets a Codex run
+     named openrouter/<vendor>/<model> run on OpenRouter. Set its spend limit
+     on openrouter.ai, then re-run this script so /root/.codex/config.toml
+     gains the openrouter provider. Sessions never receive it.
 
   2. Log in both Claude Max accounts (interactive, over this SSH session —
      run it twice, switching the BROWSER profile between runs; each login is

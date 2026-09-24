@@ -145,6 +145,28 @@ row says `basePolicy: "absent"` (`basePolicyOf` in `jobs/evals.mjs`): the
 no-run shortcut is the only thing a base policy authorises, and its absence is
 never a reason to write a failed row a later merge cannot clear.
 
+### What one run pays for
+
+Three things decide how much of the set a run scores, and each is read off the
+BASE tree's `scripts/evals-check.mjs` rather than the head's, so a branch cannot
+narrow its own measurement.
+
+`unaffectedBy` answers whether anything runs at all. `jobsAffectedBy` answers
+which jobs the diff can move: an item whose job reads nothing the diff touched,
+and whose own bytes are identical on both sides, takes the base row's result
+unchanged (`carriedResultFor` in `jobs/evals.mjs`) and costs no call. And an item
+marked `unreplayable` in its own file is left out before the selection, because
+no prompt can carry what its original agent had.
+
+Items run `ITEM_CONCURRENCY` at a time, four by default, over `runClaudeAsync` —
+the same call and the same envelope as `runClaude`, awaited rather than blocked,
+and taking no semaphore slot. `TTS_EVALS_CONCURRENCY` overrides the number.
+
+Every row carries a `timing` object saying what the run did with its minutes:
+`durationMs`, and how many items were `regenerated`, `cached`, `unreplayable` and
+`skipped`, at what `concurrency`. The pull-request check prints it as one line
+under the result and names a run over forty-five minutes as slow.
+
 ## The pollers
 
 **poll-gmail** lists new inbox mail and spends ONE headless Claude call per
@@ -464,7 +486,7 @@ fine" to a session that only checked the status.
 **Those two keys hold an account at role `agent`** — tom.quest's fourth role,
 which exists for this and nothing else. It reads `/turing` and `/tts`; it
 writes nothing anywhere; and it sees no other page, including `/runs`,
-`/forge`, `/jarvis` and `/canvas`. On `/turing` it gets the `GET` that lists
+`/forge` and `/canvas`. On `/turing` it gets the `GET` that lists
 GPUs and jobs, but not the `POST` that allocates, the `DELETE` that cancels,
 or the terminal's credential endpoint. The single list that defines the reach
 is `convex/agentSurfaces.ts`; widening it is adding one name there.
@@ -601,6 +623,29 @@ harmless to lose:
   next night's run makes them again from the same sources.
 
 Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
+
+## Values from tom.quest/secrets
+
+Tom pastes a variable on `tom.quest/secrets`. Convex holds the value in the
+`secretMailbox` table until the session-host daemon, at most 30 s later, reads
+it through `GET /sessions/secrets` (its own `SESSIONS_WORKER_KEY` door), writes
+`NAME=value` into `/etc/tts/worker.env` (a temporary file beside it, mode 0600,
+renamed over it) and posts `POST /sessions/secrets/taken`, after which Convex
+deletes the value and keeps the name and the two dates. The page never shows a
+value. The journal line names the variable only.
+
+A name the file did not hold goes into a block that opens with
+`# tom.quest/secrets: the names from here to the end line are kept out of every agent's environment`
+and closes with `# end of tom.quest/secrets`; a line appended by hand lands
+after the block and is treated as before. The daemon removes every name in
+the block from its own environment when it starts, so no session, Codex run or runner step it launches inherits one. A
+cron job reads the file at each start, so `loadEnv()` returns the value from
+the job's next run. A name the file already held keeps its line and its
+treatment (`env-scrub.mjs`); the daemon holds its old value until
+`tts-session-host` restarts, and restarting it is Tom's.
+
+The file on the box is the only copy after delivery. Rebuilding the box from
+scratch loses every value set this way unless Tom keeps a copy elsewhere.
 
 ## Rebuild from scratch
 
@@ -766,6 +811,34 @@ tts-account status       # which account is active
 tts-account use wpi      # switch; takes effect on the next job run
 ```
 
+## What a box agent does not use
+
+Tom ruled on 2026-09-22 that context is Jarvis's: *"I want to handle all
+context related stuff in jarvis."* So a box agent works without the CLI
+features that do the same jobs as systems he built. `worker/setup.sh` writes
+them off into both account slots' `settings.json` on every rollout, so a hand
+edit that turns one back on lasts until the next deploy:
+
+| Feature | How it is off |
+|---------|---------------|
+| Auto-memory | `autoMemoryEnabled: false`; `autoDreamEnabled: false` stops the background pass over the same memory directory, which the first key does not |
+| Bundled skills | `disableBundledSkills: true`; the tom-* skills the session-start hook publishes stay |
+| The Workflow tool | `disableWorkflows: true` |
+| MCP servers | `disableClaudeAiConnectors: true`, and the deny rule `mcp__*` |
+| WebSearch, WebFetch | the deny rules `WebSearch` and `WebFetch` |
+
+WebSearch and WebFetch have no settings key of their own, and MCP servers
+reach a run from more than one place (the account's claude.ai connectors,
+plugins, a project's `.mcp.json`, the desktop app), so those three are
+`permissions.deny` rules: a denied tool leaves the model's tool list, and a
+deny outranks `--allowedTools`. The daemon's Agent SDK sessions load the same
+user settings, since they pass no `settingSources`. In a desktop session
+`mcp__*` also matches the desktop app's own MCP tools, which are named the same
+way.
+
+The box keeps the CLI itself, the Agent SDK for the daemon's live sessions,
+hooks and prompt caching.
+
 ## Desktop sessions
 
 A desktop session is Tom's laptop Claude app, Code tab, connected to the box
@@ -786,7 +859,12 @@ first in that file, above its "not running interactively" guard:
 the CLI runs under the active account slot: the slot's login, its `CLAUDE.md`
 importing the agent rules, its hooks, and its `projects/` directory, which the
 run sweep and the nightly archive read. Without it the CLI falls back to
-`/root/.claude`, which no sweep reads. `RUN_HOST=box` rides the same line
+`/root/.claude`, which no sweep reads. The server keeps the environment it
+started with: one the app started before the line existed goes on writing to
+`/root/.claude/projects` until the app reconnects. To check a running session,
+read the CLI process's own `/proc/<pid>/environ`; `echo $CLAUDE_CONFIG_DIR` in
+the Bash tool proves nothing, because that shell sources `/root/.bashrc`
+itself. `RUN_HOST=box` rides the same line
 because the box's hooks and scripts learn where they run from it; without it
 the session-start hook would take its laptop branch, pull `/root/wikitom` and
 republish the skills that only the nightly job publishes. The line reaches
@@ -807,7 +885,7 @@ URL, so pulls and pushes go through the credential helper and no checkout holds
 a token. Point the app's project folder at the parent to see all three, or at
 one checkout. Codex trusts the parent and each checkout, so `tts-codex` runs
 from any of them. Nothing resets these checkouts; the session pulls and
-branches itself.
+branches itself, and puts a review worktree beside them.
 
 ## Testing jobs by hand
 

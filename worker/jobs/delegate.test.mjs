@@ -38,6 +38,16 @@ const prompt = (over = {}, opts = {}) =>
   delegatePrompt(ask(over), { layers: LAYERS, narrowList: NARROW_LIST, ...opts });
 
 describe("delegatePrompt", () => {
+  it("shows an elevation's trade-off with no recommendation and says the choice is the delegate's", () => {
+    const text = prompt({ sessionId: undefined, elevationId: "k17elev", recommendation: undefined });
+    expect(text).toContain("who: the orchestrator, for a worker that raised this decision");
+    expect(text).toContain("NO recommendation");
+    expect(text).not.toContain("what it recommends:");
+    expect(text).not.toContain("recommendation is the default");
+    // Nor the fallback, which is the orchestrator's own default side.
+    expect(text).not.toContain("what it will do if you do not answer");
+  });
+
   it("renders every narrow-list item's decision line, in order", () => {
     const text = prompt();
     let at = -1;

@@ -781,6 +781,7 @@ export const SESSION_REPOS = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
+  Jarvis: "Heffnt/Jarvis",
 } as const;
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
@@ -957,9 +958,13 @@ export const SESSION_REPO_NAMES = Object.keys(
 export const SESSION_MODELS = {
   opus: { family: "claude", id: null, effort: null },
   sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
-  fable: { family: "claude", id: "claude-fable-5", effort: null },
+  fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
+  // OpenAI's Astra, the orchestrator's first choice (Tom, 2026-09-21). Listed
+  // by the box's Codex CLI as `gpt-6-astra`; convex/orchestrator.ts takes it
+  // only when the daemon's heartbeat says the CLI lists it.
+  "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
 } as const;
 export type SessionModel = keyof typeof SESSION_MODELS;
 export type ModelFamily = (typeof SESSION_MODELS)[SessionModel]["family"];
@@ -983,6 +988,32 @@ export const CODEX_WEEKLY_CAP_PERCENT = 90;
  * Codex door shut forever.
  */
 export const CODEX_USAGE_STALE_MS = 15 * 60_000;
+/**
+ * Whether Fable answers on the box, as the session daemon reports it on its
+ * heartbeat from worker/runs/models.mjs's availability file. While
+ * `available` is false a request for Fable runs Opus (the model ceiling, Tom's
+ * rulings of 2026-09-24); the daemon's hourly probe sets it true again.
+ * `since` is when the value last changed, `checkedAt` the last run or probe
+ * that found it out, `reason` the CLI's refusal. One validator for the
+ * heartbeat's argument and the stored field.
+ */
+/**
+ * The latest usage limit a Claude session on the box hit that was not a Fable
+ * refusal, as the daemon reports it on its heartbeat: when, the CLI's words,
+ * and which session. A fact for the pages; the daemon never switches the
+ * account on it (Tom's ruling of 2026-09-24 keeps the box on the wpi account).
+ */
+export const USAGE_LIMIT_REPORT = v.object({
+  at: v.number(),
+  text: v.string(),
+  sessionId: v.string(),
+});
+export const FABLE_AVAILABILITY = v.object({
+  available: v.boolean(),
+  since: v.number(),
+  checkedAt: v.number(),
+  reason: v.optional(v.string()),
+});
 /** The stored form. One union of literals, DERIVED from the table above so a
  * model added there is accepted by the validator in the same edit — a
  * hand-copied union rejected a model the table already knew. An unknown model
@@ -1145,8 +1176,33 @@ export const SLACK_SUBJECT = v.union(
   // two above do; a reply in either thread is an answer to that runner's
   // newest open question.
   v.object({ kind: v.literal("runner"), id: v.id("runners") }),
+  // AN ELEVATION the orchestrator judged reserved (convex/orchestrator.ts):
+  // its #tts-needs-you thread. Tom's reply there is the answer, delivered into
+  // the worker that asked.
+  v.object({ kind: v.literal("elevation"), id: v.id("elevations") }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
+
+// ── The orchestrator (Tom, 2026-09-21) ───────────────────────────────────────
+// The three kinds of decision an agent meets. Obvious: one side is clearly
+// better, and the agent makes it and says so in one sentence. Trade-off: a
+// good reason either way; the delegate rules on it, shown no recommendation.
+// Reserved: only Tom decides (the four things the Never list keeps his), and
+// he is asked with a recommendation.
+export const DECISION_KIND = v.union(
+  v.literal("obvious"),
+  v.literal("trade-off"),
+  v.literal("reserved"),
+);
+export type DecisionKind = Infer<typeof DECISION_KIND>;
+/**
+ * How many hosted workers may be live at once. Its own number, not the box
+ * launcher's two slots: those bound the command line's runs, which each hold
+ * a CPU-heavy CLI for their whole life, while a hosted worker spends most of
+ * its life idle, waiting on an answer. Four is Tom's default in the brief of
+ * 2026-09-21; the box's Codex usage, not its CPU, is what four spends.
+ */
+export const HOSTED_WORKERS_MAX = 4;
 
 /** The lookup key of a Slack THREAD: the channel and the thread root's ts —
  * a message's own ts when it is a root, its thread_ts when it is a reply.

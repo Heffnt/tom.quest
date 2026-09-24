@@ -34,7 +34,10 @@ const launcherFile = [
 ].find((candidate) => existsSync(candidate));
 if (!launcherFile) throw new Error("the box launcher (runs/box-run.mjs) is not installed");
 const boxRunModule = await import(pathToFileURL(launcherFile).href);
-const { boxRunSync } = boxRunModule;
+// The model table sits beside the launcher in both layouts (worker/runs/ in a
+// checkout, /opt/tts/runs/ on the box), so it is found where the launcher was.
+const modelsModule = await import(pathToFileURL(path.join(path.dirname(launcherFile), "models.mjs")).href);
+const { boxRunSync, boxRunNoSlot } = boxRunModule;
 
 export { ENV_PATH };
 
@@ -474,45 +477,22 @@ export function serverErrorMessage(err) {
 // accounts is one `tts-account use` away and no job hardcodes an account.
 export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 
-// ONE HOME FOR MODEL NAMES. Every spawn names its model in the code rather than
-// falling through to whatever the active account happens to default to: a job's
-// tier is a decision this repo makes, and switching Max accounts must not
-// silently re-tier the fleet. The keys are ROLES, not job names, so two jobs
-// doing the same shape of work cannot drift apart:
-//
-//   planner    the planning passes (prepare a life todo, plan the graphs) —
-//              judgment over Tom's own words and his goal structure.
-//   codeBrief  the read-only pass over a real repo checkout that writes the
-//              brief a code todo is worked from — judgment plus code reading.
-//   triage     a capture verdict over a batch of inbound items (Gmail, Canvas):
-//              classify-shaped, high volume, cheap tier.
-//   timeNotes  reading one of Tom's time sentences into concrete actions —
-//              mechanical parsing; the tier here is flagged for Tom's ruling.
-//   simplify   the weekly simplification pass (worker/jobs/simplify.mjs, spec
-//              §23.9): one run a week that reads a deterministic facts block
-//              and may answer only with deletions. Fable, because judging what
-//              a system can lose is the hardest judgment the fleet makes, and
-//              because it is one call a week over a bounded prompt.
-//
-// `simplify` SPELLS THE ID IN FULL rather than using the `fable` alias the
-// session model list takes, so the model recorded on the run matches the row
-// in worker/runs/prices.mjs and this job's weekly cost is readable. It
-// duplicates one string with delegate.mjs's DELEGATE_MODEL deliberately:
-// MODELS is where "every spawn names its model" is enforced for jobs, and
-// reaching into the delegate's constant would tier two unrelated jobs
-// together.
-//
-// Model literals still live in nightly.mjs (LEARNING_MODEL), weekly.mjs
-// (WEEKLY_MODEL), delegate.mjs (DELEGATE_MODEL), write-slack.mjs (MODEL) and
-// evals.mjs (REGEN_MODEL / JUDGE_MODEL). They belong in this table too and
-// should move here in a later pass.
-export const MODELS = {
-  planner: "opus",
-  codeBrief: "opus",
-  triage: "claude-haiku-4-5-20251001",
-  timeNotes: "claude-sonnet-5",
-  simplify: "claude-fable-5-1",
-};
+// ONE HOME FOR MODEL NAMES: worker/runs/models.mjs, beside the launcher. Every
+// spawn names its model in the code rather than falling through to whatever the
+// active account happens to default to: a job's tier is a decision this repo
+// makes, and switching Max accounts must not silently re-tier the fleet. That
+// file holds the table of roles (MODELS) and the model ceiling that stands in
+// for Fable while Fable is unavailable, which box-run.mjs applies to every run.
+// These are forwards, never copies, so a job imports them from the library as
+// it always has.
+export const { MODELS, MODEL_CEILING } = modelsModule;
+
+// The model a job's record names for a call it made: the requested model, or
+// "opus (fable requested, at the ceiling)" while Fable is unavailable. Read
+// when the record is written, from the same file the launcher read.
+export function modelLabel(requested) {
+  return modelsModule.modelLabel(requested, boxRunModule.fableState());
+}
 
 // THE ARGV, THE TOOL LISTS AND THE ENVELOPE READER LIVE IN box-run.mjs, the
 // box's one launcher, because that is where a command line is built now.
@@ -520,6 +500,11 @@ export const MODELS = {
 // names from here (worker/jobs/evals.test.mjs reads DENIABLE_TOOLS).
 export const DENIABLE_TOOLS = boxRunModule.DENIABLE_TOOLS;
 export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
+
+// How much of the envelope's text and of the stderr tail a failure message
+// carries, each. Enough for the CLI's one-sentence reason and a stack's head;
+// the message lands in a cron log and in a Slack line, not a report.
+const FAILURE_TEXT_CHARS = 300;
 
 // Run headless Claude Code (`claude -p`) through box-run.mjs and return the
 // model's ANSWER TEXT (the envelope is unwrapped there; parsing the answer is
@@ -572,10 +557,17 @@ export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 // run, and stamping it on the row would make exactly the wrong edge
 // convex/runLabels.ts is built to avoid. This is the token that names the run
 // that wrote the text.
-export function runClaude(
-  prompt,
-  { cwd, timeoutMs, maxTurns, model, allowedTools, registration, receipt } = {},
-) {
+/**
+ * The box-run options ONE claude call is made with, and the envelope it is
+ * registered under.
+ *
+ * SPLIT OUT SO THERE IS STILL ONE ENVELOPE. runClaude and runClaudeAsync are
+ * the same call waited for two ways, and the thing that must not differ between
+ * them is what the record says a run was: its origin, its layers, its tools,
+ * its prompt hash. A second copy of this block is how one of the two comes to
+ * register runs the sweep reads differently.
+ */
+function claudeRunOptions(prompt, { cwd, timeoutMs, maxTurns, model, allowedTools, registration } = {}) {
   // Refused before anything is spooled or started: a malformed list must not
   // quietly widen the run to every tool the CLI has.
   if (allowedTools !== undefined && (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === ""))) {
@@ -618,31 +610,34 @@ export function runClaude(
       graphVersion: graphVersion() ?? undefined,
     };
   }
-  let result;
-  try {
-    result = boxRunSync({
-      prompt: String(prompt),
-      cli: "claude",
-      model,
-      cwd: runCwd,
-      outputFormat: "json",
-      maxTurns: maxTurns ?? 8,
-      allowedTools,
-      timeoutMs: timeoutMs ?? 10 * 60 * 1000,
-      registration: envelope,
-      // Every headless Claude invocation on the box runs under the `active`
-      // account, whatever the calling process happens to carry.
-      env: { ...process.env, CLAUDE_CONFIG_DIR },
-    });
-  } catch (error) {
-    // Filled even for a call that never reached its child: a caller that
-    // wants to report which run failed needs its token.
-    if (receipt !== undefined && receipt !== null && error?.runToken) receipt.runToken = error.runToken;
-    throw Object.assign(new Error(`claude failed: ${error?.message ?? error}`), {
-      exitCode: error?.exitCode ?? null,
-      runToken: error?.runToken ?? null,
-    });
-  }
+  return {
+    prompt: String(prompt),
+    cli: "claude",
+    model,
+    cwd: runCwd,
+    outputFormat: "json",
+    maxTurns: maxTurns ?? 8,
+    allowedTools,
+    timeoutMs: timeoutMs ?? 10 * 60 * 1000,
+    registration: envelope,
+    // Every headless Claude invocation on the box runs under the `active`
+    // account, whatever the calling process happens to carry.
+    env: { ...process.env, CLAUDE_CONFIG_DIR },
+  };
+}
+
+/** What a caller that could not reach its child throws. Filled receipt and
+ *  all: a caller that wants to report which run failed needs its token. */
+function claudeStartFailure(error, receipt) {
+  if (receipt !== undefined && receipt !== null && error?.runToken) receipt.runToken = error.runToken;
+  return Object.assign(new Error(`claude failed: ${error?.message ?? error}`), {
+    exitCode: error?.exitCode ?? null,
+    runToken: error?.runToken ?? null,
+  });
+}
+
+/** One finished box run as the answer text, or the throw that says why not. */
+function claudeAnswer(result, receipt) {
   if (receipt !== undefined && receipt !== null && result.runToken) receipt.runToken = result.runToken;
 
   if (result.exitCode !== 0) {
@@ -654,14 +649,22 @@ export function runClaude(
     const failed = result.envelope;
     const said = [
       failed?.subtype ? `subtype: ${failed.subtype}` : null,
+      typeof failed?.is_error === "boolean" ? `is_error: ${failed.is_error}` : null,
       result.signal ? `signal ${result.signal}` : `exit ${result.exitCode}`,
     ].filter((part) => part !== null);
-    // The stderr head only when the envelope said nothing — a config directory
-    // the CLI cannot read prints there and produces no envelope at all.
-    const stderr = failed !== null ? "" : result.stderrTail.trim();
+    // THE CAUSE, IN THE CLI'S OWN WORDS. An account out of usage exits 1 with
+    // subtype "success", is_error true and the reason as the envelope's
+    // `result` ("You've hit your monthly spend limit"); from 2026-09-22 every
+    // evals judge call failed that way and the log said only "subtype: success,
+    // exit 1". So the message carries the envelope's text and the stderr tail
+    // box-run.mjs kept (its last five lines), each on one line and trimmed.
+    const oneLine = (text) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, FAILURE_TEXT_CHARS);
+    const detail = [
+      typeof failed?.result === "string" && failed.result.trim() !== "" ? `result: ${oneLine(failed.result)}` : null,
+      result.stderrTail.trim() !== "" ? `stderr: ${oneLine(result.stderrTail)}` : null,
+    ].filter((part) => part !== null);
     throw Object.assign(new Error(
-      `claude failed (${said.join(", ")})` +
-        `${stderr === "" ? "" : `: ${stderr.split("\n")[0].slice(0, 200)}`}`,
+      `claude failed (${said.join(", ")})${detail.length === 0 ? "" : `: ${detail.join("; ")}`}`,
     ), { exitCode: result.exitCode, runToken: result.runToken });
   }
   // With --output-format json the CLI prints an envelope like
@@ -677,6 +680,43 @@ export function runClaude(
     );
   }
   return result.text;
+}
+
+export function runClaude(prompt, options = {}) {
+  const run = claudeRunOptions(prompt, options);
+  let result;
+  try {
+    result = boxRunSync(run);
+  } catch (error) {
+    throw claudeStartFailure(error, options.receipt);
+  }
+  return claudeAnswer(result, options.receipt);
+}
+
+/**
+ * The same call, AWAITED RATHER THAN BLOCKED, so a caller with several
+ * independent calls can have them in flight together.
+ *
+ * IT IS NOT THE DEFAULT AND SHOULD NOT BECOME ONE. Every other job here makes
+ * one model call and uses the answer on the next line; for those, runClaude's
+ * shape is the right one and spawnSync costs them nothing. This exists for the
+ * evals pass, which has thirty-five independent items and had been running them
+ * one at a time because the runner could not do otherwise.
+ *
+ * IT TAKES NO SLOT, the same as runClaude — boxRunNoSlot, not boxRun. A job's
+ * model call taking a semaphore slot is what let the runs queue starve the
+ * evals pass once already, and making the calls concurrent would have made that
+ * worse rather than better.
+ */
+export async function runClaudeAsync(prompt, options = {}) {
+  const run = claudeRunOptions(prompt, options);
+  let result;
+  try {
+    result = await boxRunNoSlot(run);
+  } catch (error) {
+    throw claudeStartFailure(error, options.receipt);
+  }
+  return claudeAnswer(result, options.receipt);
 }
 
 // ---------------------------------------------------------------------------

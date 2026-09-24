@@ -39,10 +39,24 @@ import { redactSecrets } from "../worker/session-host/redact.mjs";
 //                     context change shipped an item, so this file never
 //                     reimplements gate().
 //
+// FOR NOW THE GATE OPENS ON TWO OF THE THREE (Tom, 2026-09-24). The evals row
+// is still read and still reported in `checks`, with its `passed` and its
+// `why`, so the digest, the pages and the #tts-decisions merge line show it;
+// it is not counted in `allowed` or in `missing` while EVALS_REQUIRED_FOR_MERGE
+// below is false.
+//
 // FAIL-CLOSED, and deliberately unlike the Bash classifier, which fails open:
 // a missing row is a check that did not pass. Guessing wrong here costs a
 // merge nobody looked at; guessing wrong the other way costs a branch that
 // waits, and a branch that waits is visible.
+
+/** Whether the evals row must pass for the gate to open. Tom, 2026-09-24:
+ *  "evals seem to be broken rn so lets remove that requirement for merging for
+ *  now until I have the time to personally look into it." The evals arm had
+ *  failed closed for every pull request because the box's Claude account was
+ *  out of Fable usage and the Fable judge could not answer. Restoring the
+ *  requirement is setting this to true; nothing else changes. */
+export const EVALS_REQUIRED_FOR_MERGE = false;
 
 export const TESTS_RUN = "tests-run";
 export const AUDIT_VERDICT = "audit-verdict";
@@ -271,12 +285,26 @@ export type MergeCheck = {
   why: string;
 };
 
+/** The bounded part of the `tests-run` row the worker needs before it audits.
+ * The merge gate already reads this exact row; carrying its three declared
+ * data fields in the GET response avoids a second record door and does not
+ * add another condition to the gate. */
+type TestsRunRecord = {
+  ok: boolean | null;
+  detail?: string;
+  url?: string;
+};
+
 export type MergeGateResult = {
   repo: string;
   sha: string;
+  /** The head's recorded test result, or null when the fail-closed row is absent. */
+  testsRun: TestsRunRecord | null;
   allowed: boolean;
+  /** Every check, required or not, in gate order. */
   checks: MergeCheck[];
-  /** The names of the checks that did not pass, in gate order. */
+  /** The names of the REQUIRED checks that did not pass, in gate order. The
+   *  evals check is not among them while EVALS_REQUIRED_FOR_MERGE is false. */
   missing: string[];
 };
 
@@ -300,7 +328,14 @@ export async function mergeGateFor(
   const short = sha.slice(0, 7);
 
   const tests = await rowFor(ctx, TESTS_RUN, key);
-  const testsData = (tests?.data ?? {}) as { ok?: unknown; detail?: unknown };
+  const testsData = (tests?.data ?? {}) as { ok?: unknown; detail?: unknown; url?: unknown };
+  const testsRun: TestsRunRecord | null = tests === null
+    ? null
+    : {
+        ok: typeof testsData.ok === "boolean" ? testsData.ok : null,
+        ...(typeof testsData.detail === "string" ? { detail: testsData.detail } : {}),
+        ...(typeof testsData.url === "string" ? { url: testsData.url } : {}),
+      };
   const testsCheck: MergeCheck =
     tests === null
       ? { name: "tests", passed: false, why: `no tests result is recorded for ${short}` }
@@ -462,12 +497,15 @@ export async function mergeGateFor(
               };
 
   const checks = [testsCheck, auditCheck, evalsCheck];
+  // Every check is reported; only the required ones open or shut the gate.
+  const required = EVALS_REQUIRED_FOR_MERGE ? checks : [testsCheck, auditCheck];
   return {
     repo,
     sha,
-    allowed: checks.every((check) => check.passed),
+    testsRun,
+    allowed: required.every((check) => check.passed),
     checks,
-    missing: checks.filter((check) => !check.passed).map((check) => check.name),
+    missing: required.filter((check) => !check.passed).map((check) => check.name),
   };
 }
 
@@ -479,9 +517,102 @@ export const internalMergeGate = internalQuery({
     await mergeGateFor(ctx, repo, sha),
 });
 
-/** The Guardrails `tests` job's own result, at the end of its run. Recorded
+// ── HOW LONG THE CHECKS TOOK, AND WHEN THAT IS NEWS ──────────────────────────
+// Tom's ruling (2026-09-22): quality is never traded for speed or cost, and a
+// useful test is never left unwritten because the suite is slow. The answer to
+// a slow suite is dedicated effort on speed at constant quality — and the
+// trigger for that effort is a WARNING WHEN A THRESHOLD IS CROSSED, not a
+// judgement anybody has to remember to make.
+//
+// SO NOTHING HERE FAILS ANYTHING. The thresholds are read after the row is
+// recorded, on a fact that has already happened, and the only thing they can do
+// is write one "job-failed" row — the channel the morning digest and the hourly
+// update already read (convex/ttsJobs.ts). A time check that could fail a build
+// would be a fourth condition on the merge gate, which §23.8 refuses, and it
+// would trade quality for speed in exactly the direction the ruling forbids.
+//
+// IT LIVES IN CONVEX RATHER THAN IN CI for two reasons. CI holds the narrow
+// evals key and POST /tts/job-failed takes the worker key, so a warning written
+// from the workflow would mean widening a credential's reach to say a suite is
+// slow. And a threshold spelled in a workflow is a threshold nothing tests: the
+// row is already here, and so is the reporting.
+
+/** The `tests` job's wall time above which the run is worth a word. */
+export const TESTS_JOB_SLOW_SECONDS = 5 * 60;
+/** The whole vitest suite's own wall time above which it is. */
+export const SUITE_SLOW_SECONDS = 10 * 60;
+/** The job name every timing warning is filed under, and the two conditions it
+ *  reports. KEYED, so a suite that has been slow for a week is one row rather
+ *  than one per push (convex/ttsJobs.ts), and a run back under the threshold
+ *  writes the recovery that re-arms it. */
+const TESTS_SLOW_JOB = "guardrails";
+export const TESTS_JOB_SLOW_KEY = "guardrails:tests-slow";
+export const SUITE_SLOW_KEY = "guardrails:suite-slow";
+
+type TestsTiming = {
+  durations?: Record<string, number>;
+  mode?: string;
+  slowest?: { file: string; seconds: number }[];
+};
+
+/** The slowest files, as the one clause a warning ends with. A number with no
+ *  names is a number nobody can act on, and acting on it is the point. */
+function slowestClause(slowest: TestsTiming["slowest"]): string {
+  if (!Array.isArray(slowest) || slowest.length === 0) return "";
+  return ` — slowest: ${slowest
+    .slice(0, 5)
+    .map((entry) => `${entry.file} ${entry.seconds}s`)
+    .join(", ")}`;
+}
+
+/**
+ * The two thresholds, against one run's durations. Answers a row per condition
+ * — `{ key, crossed, error }` — so the caller reports the crossed ones and
+ * recovers the rest with one pass and no second spelling of either key.
+ *
+ * The suite threshold is asked only of a FULL run. A related-mode run that took
+ * ten minutes crossed the five-minute job threshold seven minutes earlier, and
+ * one slow run should arrive as one sentence.
+ */
+export function slowConditions(timing: TestsTiming): {
+  key: string;
+  crossed: boolean;
+  error: string;
+}[] {
+  const durations = timing.durations ?? {};
+  const rows: { key: string; crossed: boolean; error: string }[] = [];
+  const job = durations.tests;
+  if (typeof job === "number" && job > 0) {
+    rows.push({
+      key: TESTS_JOB_SLOW_KEY,
+      crossed: job > TESTS_JOB_SLOW_SECONDS,
+      error:
+        `the tests job took ${Math.round(job)}s, over the ${TESTS_JOB_SLOW_SECONDS}s threshold` +
+        slowestClause(timing.slowest),
+    });
+  }
+  const suite = durations.suite;
+  if (timing.mode === "full" && typeof suite === "number" && suite > 0) {
+    rows.push({
+      key: SUITE_SLOW_KEY,
+      crossed: suite > SUITE_SLOW_SECONDS,
+      error:
+        `the full suite took ${Math.round(suite)}s, over the ${SUITE_SLOW_SECONDS}s threshold` +
+        slowestClause(timing.slowest),
+    });
+  }
+  return rows;
+}
+
+/** The Guardrails run's own result, at the end of it. Recorded
  *  ONCE per commit: a rerun of the same sha keeps the first answer, so a red
- *  run cannot be turned green by pressing re-run until it flakes through. */
+ *  run cannot be turned green by pressing re-run until it flakes through.
+ *
+ *  THE TIMING IS READ EVERY TIME, including on a rerun the row already answers.
+ *  Write-once is a rule about the VERDICT on one commit, which must not move;
+ *  how long today's run took is a fact about today's run, and the nightly full
+ *  suite on an already-recorded main sha is precisely the run whose duration
+ *  there would otherwise be no way to hear about. */
 export const internalRecordTests = internalMutation({
   args: {
     repo: v.string(),
@@ -489,10 +620,34 @@ export const internalRecordTests = internalMutation({
     ok: v.boolean(),
     detail: v.optional(v.string()),
     url: v.optional(v.string()),
+    /** Which scope the tests job ran — "full" or "related"
+     *  (scripts/tests-affected.mjs) — and how many changed files chose it. A
+     *  green related-mode row is a narrower fact than a green full one, so the
+     *  row says which it is rather than leaving a reader to open the run. */
+    mode: v.optional(v.string()),
+    files: v.optional(v.number()),
+    /** Seconds per Guardrails job, by the job's own name, plus `suite` for the
+     *  vitest run inside the tests job. */
+    durations: v.optional(v.record(v.string(), v.number())),
+    slowest: v.optional(v.array(v.object({ file: v.string(), seconds: v.number() }))),
   },
   handler: async (ctx, args) => {
     const key = commitKey(args.repo, args.sha);
     const existing = await rowFor(ctx, TESTS_RUN, key);
+    for (const condition of slowConditions(args)) {
+      if (condition.crossed) {
+        await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
+          job: TESTS_SLOW_JOB,
+          error: condition.error,
+          key: condition.key,
+        });
+      } else {
+        await ctx.runMutation(internal.ttsJobs.internalReportJobOk, {
+          job: TESTS_SLOW_JOB,
+          key: condition.key,
+        });
+      }
+    }
     if (existing) {
       return { existing: true, ok: (existing.data as { ok?: unknown } | undefined)?.ok === true };
     }
@@ -739,8 +894,9 @@ export async function mergedOnMain(
 }
 
 /**
- * POST /tts/merge writes exactly this event, and ONLY after the three checks
- * above pass. A merge is reported for objection, never placed on the narrow
+ * POST /tts/merge writes exactly this event, and ONLY after the gate above
+ * allows it (the tests and the audit, and the evals when
+ * EVALS_REQUIRED_FOR_MERGE is true). A merge is reported for objection, never placed on the narrow
  * list: the delegate did not make this decision.
  *
  * The gate runs HERE as well as at the box, on purpose. The box's check is

@@ -31,7 +31,10 @@ const between = (text, start, end) => {
 describe("unknown model name degrades to opus (finding 1)", () => {
   it("modelFamily/modelSpec fall back to the opus spec for an unknown name", () => {
     expect(sessionSource).toMatch(/export function knownModel\(name\) \{\s*\n\s*return Object\.hasOwn\(SESSION_MODELS, name \?\? "opus"\);/);
-    expect(sessionSource).toMatch(/export function modelSpec\(name\) \{\s*\n\s*return SESSION_MODELS\[knownModel\(name\) \? \(name \?\? "opus"\) : "opus"\];/);
+    const spec = between(sessionSource, "export function modelSpec(name, fable = { available: true }) {", "\n}\n");
+    expect(spec).toMatch(/return SESSION_MODELS\[knownModel\(name\) \? \(name \?\? "opus"\) : "opus"\];/);
+    // The model ceiling is the second rung of the same fallback.
+    expect(spec).toMatch(/const resolved = underCeiling\(name \?\? "opus", fable\);\s*\n\s*if \(resolved\.atCeiling\) return SESSION_MODELS\[resolved\.model\];/);
     const family = between(sessionSource, "export function modelFamily(name) {", "\n}\n");
     expect(family).toMatch(/if \(!knownModel\(name\)\) name = "opus";/);
     // The mirror check's fenced expression stays (scripts/check-session-mirrors.mjs).
@@ -40,11 +43,42 @@ describe("unknown model name degrades to opus (finding 1)", () => {
 
   it("the constructor logs the fallback once per session, and startQuery writes the row", () => {
     const ctor = between(sessionSource, "this.family = modelFamily(this.model);", "this.modelSwitchPending = false;");
-    expect(ctor).toMatch(/if \(!knownModel\(this\.model\)\) \{\s*\n\s*log\(`session \$\{id\}: model \$\{this\.model\} unknown to this daemon — running as opus`\);/);
+    expect(ctor).toMatch(/const fallbackNote = modelFallbackNote\(this\.model, this\.fableState\(\)\);\s*\n\s*if \(fallbackNote !== null\) log\(`session \$\{id\}: \$\{fallbackNote\}`\);/);
+    const note = between(sessionSource, "export function modelFallbackNote(name, fable = { available: true }) {", "\n}\n");
+    expect(note).toMatch(/if \(!knownModel\(name\)\) return `model \$\{name\} unknown to this daemon — running as opus`;/);
+    expect(note).toMatch(/return resolved\.atCeiling \? ceilingNote\(resolved\) : null;/);
     const startQuery = between(sessionSource, "startQuery({ resume } = {})", "async #readLoop(");
-    expect(startQuery).toMatch(/const spec = modelSpec\(this\.model\);/);
+    expect(startQuery).toMatch(/const spec = modelSpec\(this\.model, fable\);/);
     expect(startQuery).not.toMatch(/SESSION_MODELS\[this\.model\]/);
-    expect(startQuery).toMatch(/!this\.modelFallbackNoted[\s\S]*?unknown to this daemon — running as opus/);
+    expect(startQuery).toMatch(/const fallbackNote = modelFallbackNote\(this\.model, fable\);\s*\n\s*if \(fallbackNote !== null && !this\.modelFallbackNoted\)[\s\S]*?this\.finalizeRow\("system", \{ text: fallbackNote \}\);/);
+  });
+
+  // THE FABLE RUNG. A fable session refused for a limit marks Fable
+  // unavailable and retires its query at the turn boundary, ahead of the
+  // usage-limit record, which it does not reach.
+  it("a fable session refused for a limit marks Fable unavailable instead of recording a usage limit", () => {
+    const signal = between(sessionSource, "  #maybeUsageSignal(text) {", "\n  }\n");
+    expect(signal).toMatch(/if \(aboveCeiling\(this\.model\) && this\.fableState\(\)\.available !== false\)/);
+    expect(signal).toMatch(/markFableUnavailable\(this\.stateDir\(\), \{ reason: line \}\);[\s\S]*?this\.modelSwitchPending = true;[\s\S]*?return;/);
+    expect(signal.indexOf("markFableUnavailable")).toBeLessThan(signal.indexOf("this.onUsageSignal"));
+  });
+
+  it("the daemon probes Fable in the background and reports the state on its heartbeat", () => {
+    const probe = between(hostSource, "function refreshFableProbe() {", "\n}\n");
+    expect(probe).toMatch(/if \(fableProbeInFlight \|\| now < fableProbeNextAt\) return;/);
+    expect(probe).toMatch(/if \(!fableProbeDue\(readFableState\(fableStateDir\(\)\), now\)\) return;/);
+    expect(probe).toMatch(/void \(async \(\) => \{[\s\S]*?probeFable\(/);
+    expect(hostSource).toMatch(/refreshFableProbe\(\);/);
+    expect(hostSource).toMatch(/\.\.\.\(fableAvailability !== undefined \? \{ fableAvailability \} : \{\}\)/);
+  });
+
+  // Tom's ruling of 2026-09-24 keeps the box on the wpi account: a usage limit
+  // is recorded on the heartbeat, and the daemon never switches the account.
+  it("records a usage limit on the heartbeat and never switches the account", () => {
+    expect(hostSource).not.toMatch(/usr\/local\/bin\/tts-account|\["use", /);
+    expect(hostSource).not.toMatch(/maybeSwitchAccount|lastAccountSwitchAt|SWITCH_THROTTLE_MS/);
+    expect(hostSource.match(/onUsageSignal: recordUsageLimit,/g)).toHaveLength(2);
+    expect(hostSource).toMatch(/\.\.\.\(lastUsageLimit !== undefined \? \{ usageLimit: lastUsageLimit \} : \{\}\)/);
   });
 
   it("the poll walk fences every row in try/catch around planRow", () => {
@@ -87,7 +121,7 @@ describe("fork transcript timing (finding 2)", () => {
 // Finding 3: the usage read never holds the poll loop, keeps the last
 // successful reading, and backs off after failures.
 describe("codex usage read (finding 3)", () => {
-  const refresh = between(hostSource, "function refreshCodexUsage() {", "// ── usage-limit account auto-switch");
+  const refresh = between(hostSource, "function refreshCodexUsage() {", "// ── the Fable probe");
 
   it("is fire-and-forget with an in-flight guard", () => {
     expect(hostSource).not.toMatch(/async function refreshCodexUsage/);
@@ -121,6 +155,16 @@ describe("codex usage read (finding 3)", () => {
   it("readCodexUsage swallows stdin errors like the sibling spawns", () => {
     const readFn = between(hostSource, "async function readCodexUsage() {", "function refreshCodexUsage() {");
     expect(readFn).toMatch(/child\.stdin\.on\("error", \(\) => \{/);
+  });
+
+  // The shape is parsed in ONE place, parseCodexRateLimits (codex-bin.mjs,
+  // exercised in codex-bin.test.mjs); the daemon adds readAt and nothing
+  // else. A positional read of .primary/.secondary here is the bug that
+  // blinded the weekly cap under codex-cli 0.153.
+  it("readCodexUsage hands the answer to parseCodexRateLimits", () => {
+    const readFn = between(hostSource, "async function readCodexUsage() {", "function refreshCodexUsage() {");
+    expect(readFn).toMatch(/\.\.\.parseCodexRateLimits\(result\?\.rateLimits\),\s*\n\s*readAt: Date\.now\(\),/);
+    expect(readFn).not.toMatch(/\.primary|\.secondary|usedPercent/);
   });
 });
 
@@ -160,7 +204,9 @@ describe("codex warm-up (finding 4)", () => {
 // Finding 5: the binary/spawn shim has one home.
 describe("codex binary has one home (finding 5)", () => {
   it("session-host.mjs and codex-query.mjs import from codex-bin.mjs", () => {
-    expect(hostSource).toMatch(/import \{ CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex \} from "\.\/codex-bin\.mjs";/);
+    expect(hostSource).toMatch(
+      /import \{\s*CODEX_BIN,\s*codexArgs,\s*parseCodexRateLimits,\s*resolveCodexBin,\s*spawnCodex,?\s*\} from "\.\/codex-bin\.mjs";/,
+    );
     expect(hostSource).not.toMatch(/process\.env\.CODEX_BIN/);
     expect(hostSource).not.toMatch(/function spawnCodex/);
     const query = read("codex-query.mjs");

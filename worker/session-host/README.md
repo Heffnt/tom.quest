@@ -15,10 +15,10 @@ Files:
   loadavg, free RAM, live-session count — the auto-session scheduler's
   admission signal, and the Codex account usage described below), claim new
   sessions, adopt survivors after a restart, reap terminal ones, adaptive
-  cadence (1s hot / 5s warm / 30s idle), the Codex warm-up at start, and the
-  usage-limit account auto-switch (a usage/rate-limit signal from a CLAUDE
-  session flips the tts-account symlink to the other Max account, at most
-  once per 3h).
+  cadence (1s hot / 5s warm / 30s idle), the Codex warm-up at start, the
+  hourly Fable probe while Fable is unavailable (`worker/runs/models.mjs`),
+  and the usage-limit record (the latest usage limit a CLAUDE session hit,
+  sent on the heartbeat; the account is never switched).
 - `codex-query.mjs` — the Codex runner: `codex exec --json` wrapped in the
   Agent SDK's query() surface, so `session.mjs` drives both families with one
   body of code. See "Codex sessions" below.
@@ -197,6 +197,10 @@ surfaces the decision in the PR, rather than stopping to wait.
   file so the repo's vitest can execute the rule
   (`__tests__/banned-tools.test.mjs`) — `session.mjs` cannot be imported
   there, since the SDK is installed only on the box.
+- `hosted.mjs` — what the daemon does with a hosted run between its turns
+  (the orchestrator and the workers it spawned), the compact word, and the
+  run envelope's names; dependency-free (`__tests__/hosted.test.mjs`). See
+  "Hosted runs" below.
 - `runner-step.mjs` — how one runner step is claimed, launched through
   `box-run.mjs` and reported; dependency-free so
   `__tests__/runner-step.test.mjs` can drive it. See "Runner steps" below.
@@ -303,9 +307,12 @@ still runs Claude sessions.
 **Usage heartbeat.** At most once per 5 minutes the daemon reads the Codex
 account's limits token-free — `codex app-server` over stdio JSON-RPC
 (`initialize`, `initialized`, `account/rateLimits/read`), whose
-`rateLimits.primary` is the 5-hour window and `.secondary` the weekly one —
-and the heartbeat carries `codexUsage: { weeklyUsedPercent,
-fiveHourUsedPercent, weeklyResetsAt, readAt }`. The read runs in the
+`rateLimits.primary` and `.secondary` are told apart by `windowDurationMins`
+(10080 is the weekly window, 300 the 5-hour one; codex-cli 0.153 reports
+only the weekly one, in `primary`, with `secondary: null`) — the parse is
+`parseCodexRateLimits` in codex-bin.mjs — and the heartbeat carries
+`codexUsage: { weeklyUsedPercent, fiveHourUsedPercent?, weeklyResetsAt?,
+readAt }`. The read runs in the
 background (a hung app-server never holds the poll loop; the reading rides
 the next heartbeat). The last SUCCESSFUL reading, with its original
 `readAt`, rides every heartbeat until a later read succeeds — the server
@@ -313,9 +320,41 @@ judges staleness from `readAt` (`CODEX_USAGE_STALE_MS` in ttsShared, 15
 minutes) and treats stale or absent as unknown, and unknown admits. Absent
 only while no read has ever succeeded (Codex not installed, or every read
 failed — logged once, then retried with doubling backoff capped at 30
-minutes). The Claude account auto-switch fires
-for family `claude` only — a Codex cap has no second account to switch to;
-the scheduler's breaker reads it from the error text keyed on family.
+minutes). The usage-limit record is kept
+for family `claude` only; the scheduler's breaker reads a Codex cap from the
+error text keyed on family.
+
+## Hosted runs (Tom, 2026-09-21)
+
+The orchestrator is one long-lived unattended run that hands work to workers
+and answers the decisions they raise (convex/orchestrator.ts). It and every
+worker it spawns are claudeSessions rows with mode `autonomous`, like any
+unattended session, and the poll row says the daemon HOSTS them: its
+`environment` is `orchestrator` or `worker`, read off the `hostedRuns` table.
+A hosted run is kept alive across turns instead of ending after one, so a
+message can reach it mid-run: an elevation into the orchestrator, an answer
+back into a worker, a plain message either way. Each arrives as the run's next
+user turn, between turns, the way Tom's turns reach an interactive session.
+
+- The orchestrator ends only when its final message's last line is
+  `JARVIS-COMPACT` (it has rewritten its document first). The daemon ends it
+  with the reason `orchestrator compacted`, and the record starts the next run
+  from the document at once, naming this one as its `continuesRunId`.
+- A worker goes idle at the end of each turn. On the first poll SENT after
+  that, it ends if the server says it recorded its outcome, or has no
+  elevation still unanswered; with one open it waits, up to 12 hours.
+- A failed turn, the 90-minute turn cap and a daemon restart end a hosted run
+  errored, exactly as they end any unattended session. The record restarts
+  the orchestrator from its document after a backoff that doubles from a
+  minute, and tells the orchestrator when one of its workers ends.
+- The poll body says `hosts: ["orchestrator", "worker"]`; the server shows a
+  hosted row to no daemon that does not, so an older copy of this daemon never
+  ends one after its first turn. It also lists `held`, the sessions this
+  process holds: the orchestrator's lease is renewed while its run is among
+  them, and a claimed run whose lease runs out is restarted.
+- The heartbeat carries `codexModels`, the slugs `codex debug models` lists,
+  read beside the usage. The orchestrator runs on `gpt-6-astra` when it is
+  listed, else `gpt-5.6-sol`, else Fable.
 
 ## Runner steps
 
@@ -406,7 +445,8 @@ systemctl start tts-session-host
 It reads `/etc/tts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
 `GH_TOKEN` optional but needed for private-repo clones) and expects
 `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active` (baked into the systemd
-unit) so `tts-account use` switches which Max account sessions run under.
+unit), so a `tts-account use` Tom runs by hand switches which Max account
+sessions run under. The daemon never runs it.
 
 ## GitHub credentials (2026-08-31)
 
@@ -422,9 +462,11 @@ serve it (both installed by `setup.sh`, both outside every work tree):
   every setup.sh run, so `gh pr create` works — the sanctioned way a session
   finishes. Every `gh` call pays a classifier verdict, except a lone merge:
   `git merge` and `gh pr merge` are ruled on by the MECHANICAL MERGE GATE
-  before the classifier (`merge-gate.mjs`), which allows them once the tests,
-  an audit and the evals are on record for the commit at HEAD and denies them
-  naming which are missing. API writes past the session's own PR stay denied.
+  before the classifier (`merge-gate.mjs`), which allows them once the tests
+  and an audit are on record for the commit at HEAD and denies them naming
+  which are missing. The evals are read and reported but, by Tom's ruling of
+  2026-09-24, not required for now (`EVALS_REQUIRED_FOR_MERGE` in
+  `convex/ttsMerge.ts`). API writes past the session's own PR stay denied.
 
 A credential-shaped string that still reaches an ingest payload is replaced
 with `[redacted:<kind>]` by the daemon (`redactSecrets` in redact.mjs,

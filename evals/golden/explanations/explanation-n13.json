@@ -6,6 +6,7 @@
   "label": "did not",
   "sentence": "Explain the one thing that genuinely needs me in more detail. What is the 20-sample test? I don't understand the revisiting exclusions sentence either.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 1 tool call the agent made after Tom's request (Agent), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-08-13",
   "input": {
     "topic": "What still needs Tom's decision",

@@ -42,7 +42,15 @@ import {
   mergeUnreadableDenial,
 } from "./merge-gate.mjs";
 import { codexQuery } from "./codex-query.mjs";
+import { removeWorkdir } from "./workdir.mjs";
 import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
+import {
+  COMPACT_ENDED_REASON,
+  hostedIdleVerdict,
+  hostedTurnEnd,
+  runEnvelope,
+} from "./hosted.mjs";
+import { FABLE_LIMIT_RE, MODELS, aboveCeiling, ceilingNote, markFableUnavailable, readFableState, underCeiling } from "../runs/models.mjs";
 import { claimRegistration, writeRegistration } from "../runs/registration.mjs";
 
 const execFile = promisify(execFileCb);
@@ -64,6 +72,7 @@ const REPO_GITHUB = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
+  Jarvis: "Heffnt/Jarvis",
 };
 
 // MIRROR of NARROW_LIST in convex/ttsShared.ts (the daemon cannot import .ts).
@@ -88,9 +97,10 @@ const NARROW_LIST_COMMANDS = [
 const SESSION_MODELS = {
   opus: { family: "claude", id: null, effort: null },
   sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
-  fable: { family: "claude", id: "claude-fable-5", effort: null },
+  fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
+  "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
 };
 // The default is the SAME on both sides of the mirror: a row written before
 // the model field existed ran Claude on the account default, so absent reads
@@ -106,8 +116,23 @@ const SESSION_MODELS = {
 export function knownModel(name) {
   return Object.hasOwn(SESSION_MODELS, name ?? "opus");
 }
-export function modelSpec(name) {
+// THE MODEL CEILING is the second rung of the same fallback: while the Fable
+// availability state (worker/runs/models.mjs, Tom's rulings of 2026-09-24)
+// says Fable is unavailable, a fable session runs as the ceiling's spec. The
+// row keeps the name it was asked for, exactly as for an unknown name, and
+// modelFallbackNote says which rung applied. `fable` is that state, which a
+// Session reads from its run state directory.
+export function modelSpec(name, fable = { available: true }) {
+  const resolved = underCeiling(name ?? "opus", fable);
+  if (resolved.atCeiling) return SESSION_MODELS[resolved.model];
   return SESSION_MODELS[knownModel(name) ? (name ?? "opus") : "opus"];
+}
+/** The line the log and the transcript carry when modelSpec did not run the
+ *  model asked for, or null when it did. */
+export function modelFallbackNote(name, fable = { available: true }) {
+  if (!knownModel(name)) return `model ${name} unknown to this daemon — running as opus`;
+  const resolved = underCeiling(name ?? "opus", fable);
+  return resolved.atCeiling ? ceilingNote(resolved) : null;
 }
 export function modelFamily(name) {
   if (!knownModel(name)) name = "opus";
@@ -232,9 +257,9 @@ const DAEMON_SELF_DESTRUCT_RE =
   /systemctl\s+(?:restart|stop|kill)\s+\S*tts-session-host|service\s+tts-session-host\s+(?:restart|stop)|pkill\s+[^|;&]*session-host/;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
-// cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
-// model, short timeout. A verdict must never cost more than the command.
-const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
+// cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), the budget
+// model (worker/runs/models.mjs MODELS.classifier), short timeout. A verdict must never cost more than the command.
+const CLASSIFIER_MODEL = MODELS.classifier;
 const CLASSIFIER_TIMEOUT_MS = 30_000;
 const CLASSIFIER_MAXBUFFER = 256 * 1024; // a one-line verdict; nothing more
 // Per-session verdict memo. Agentic loops re-run the same command constantly
@@ -313,15 +338,14 @@ const AUTO_MAX_TURNS = 200;
 const AUTO_TURN_CAP_MS = 90 * 60 * 1000;
 
 // Usage-limit signals in SDK errors / error results — the session-host
-// reacts by switching the active Max account (see maybeSwitchAccount), for
-// family "claude" only; a Codex cap has no second account to switch to and
-// is handled server-side by the scheduler's breaker keyed on family.
-// Deliberately NARROW: "overloaded" (a transient API 529) must not burn the
-// 3h switch throttle on a signal that resolves by itself. "session limit" is
-// here from observation, not caution: on 2026-08-30 the CLI's actual text was
+// records the latest on its heartbeat (see recordUsageLimit), for family
+// "claude" only; a Codex cap is handled server-side by the scheduler's
+// breaker keyed on family. Deliberately NARROW: "overloaded" (a transient API
+// 529) is not a usage limit and resolves by itself. "session limit" is here
+// from observation, not caution: on 2026-08-30 the CLI's actual text was
 // "You've hit your session limit · resets 8:10am (UTC)", which matched
-// NEITHER alternative — the account never switched and the scheduler burned a
-// dozen launches against a wall for an hour. The Codex alternatives
+// NEITHER alternative, and the scheduler burned a dozen launches against a
+// wall for an hour. The Codex alternatives
 // (usage_limit_reached / usage_limit_exceeded / rate_limit_reached, and the
 // prose "hit your usage limit") are the CLI's own cap vocabulary, added
 // 2026-09-04 so a capped Codex turn's error text reads as a cap to the
@@ -445,8 +469,19 @@ export class Session {
     onUsageSignal,
     model,
     forkedFrom,
+    environment,
   }) {
     this.id = id;
+    // "orchestrator" or "worker" when the server says the daemon HOSTS this
+    // row (hosted.mjs): an unattended run kept alive across turns so a message
+    // can reach it mid-run. Absent for every other session.
+    this.environment = environment ?? undefined;
+    this.hosted = this.environment !== undefined;
+    // When a hosted run's last turn ended (hostedIdleVerdict reads it), and
+    // the text of the newest top-level assistant row — the Codex runner's
+    // result carries no text, so the compact word is read from here.
+    this.idleSince = undefined;
+    this.lastAssistantText = "";
     // The repos this session checks out (Tom's ruling 2026-08-30: a session may
     // hold MORE THAN ONE). `repos` is the live field; `repo` is the single
     // string every row written before the ruling carries, so a row with no
@@ -471,11 +506,11 @@ export class Session {
     this.model = model ?? "opus";
     this.family = modelFamily(this.model);
     // The row keeps its name (so processServerState's compare stays quiet);
-    // the spec it resolves to is opus. Logged once here; startQuery writes
-    // the matching system row so the transcript says it too.
-    if (!knownModel(this.model)) {
-      log(`session ${id}: model ${this.model} unknown to this daemon — running as opus`);
-    }
+    // the spec it resolves to is opus, for an unknown name or one above the
+    // model ceiling. Logged once here; startQuery writes the matching system
+    // row so the transcript says it too.
+    const fallbackNote = modelFallbackNote(this.model, this.fableState());
+    if (fallbackNote !== null) log(`session ${id}: ${fallbackNote}`);
     this.modelFallbackNoted = false;
     // Set when the server changed the model while a turn was running: the
     // live query keeps its model until the turn ends, then is retired so the
@@ -485,8 +520,8 @@ export class Session {
     // transcript is fetched into the workdir as .tts-transcript.md
     // (#writeForkTranscript) so the new model can read where it left off.
     this.forkedFrom = forkedFrom ?? undefined;
-    // Host-provided callback for usage-limit signals (account auto-switch
-    // lives in session-host.mjs — it is box-level, not per-session).
+    // Host-provided callback for usage-limit signals: session-host.mjs records
+    // the latest on its heartbeat (box-level, not per-session).
     this.onUsageSignal = onUsageSignal;
     this.autoTurnTimer = null; // wall-clock cap timer (autonomous only)
 
@@ -618,6 +653,9 @@ export class Session {
   // its chunks. A payload that cannot be stored releases the row without a
   // stamp and reports the loss (#overflowUnstored).
   finalizeRow(kind, content, parentToolUseId, overflow) {
+    if (kind === "assistant-text" && !parentToolUseId && typeof content?.text === "string") {
+      this.lastAssistantText = content.text;
+    }
     if (this.env.ROWS_FROM_FILES === "1" || process.env.ROWS_FROM_FILES === "1") return undefined;
     const seq = this.nextSeq++;
     const row = {
@@ -996,30 +1034,10 @@ export class Session {
   }
 
   // Best-effort teardown. Losing this dir loses nothing durable (no-state
-  // rule) — that is precisely why deleting it is safe here.
+  // rule) — that is precisely why deleting it is safe here. workdir.mjs holds
+  // the one exception (overflow/) and the other callers.
   cleanupWorkdir() {
-    const base = path.join(SESSIONS_ROOT, String(this.id));
-    try {
-      // ONE exception to "losing this dir loses nothing durable": the overflow
-      // dir holds complete payloads Convex refused, which exist nowhere else.
-      // When it has files, everything BESIDE it goes and it stays.
-      const overflowDir = path.join(base, "overflow");
-      const rescued =
-        fs.existsSync(overflowDir) && fs.readdirSync(overflowDir).length > 0;
-      if (!rescued) {
-        fs.rmSync(base, { recursive: true, force: true });
-        return;
-      }
-      for (const entry of fs.readdirSync(base)) {
-        if (entry === "overflow") continue;
-        fs.rmSync(path.join(base, entry), { recursive: true, force: true });
-      }
-      log(
-        `session ${this.id}: kept ${overflowDir} — it holds payloads Convex refused`,
-      );
-    } catch (err) {
-      log(`session ${this.id}: workdir cleanup failed (ignored):`, String(err));
-    }
+    removeWorkdir(this.id, { log });
   }
 
   // ── the SDK query ──────────────────────────────────────────────────────────
@@ -1041,10 +1059,11 @@ export class Session {
     this.abort = new AbortController();
     this.interruptRequested = false;
     this.modelSwitchPending = false;
-    const spec = modelSpec(this.model);
+    const fable = this.fableState();
+    const spec = modelSpec(this.model, fable);
     this.family = spec.family;
     if (!resume && !this.runRegistration) {
-      const stateDir = this.env.RUN_SWEEP_STATE_DIR || process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+      const stateDir = this.stateDir();
       const host = this.env.RUN_HOST === "box" || this.env.RUN_HOST === "laptop"
         ? this.env.RUN_HOST
         : (process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null);
@@ -1054,9 +1073,7 @@ export class Session {
         registration: {
           host,
           cli: spec.family,
-          origin: this.mode === "autonomous" ? "daemon" : "session",
-          kind: this.mode === "autonomous" ? "job" : "session",
-          environment: this.mode === "autonomous" ? "worker" : "session",
+          ...runEnvelope(this.mode, this.environment),
           modelRequested: this.model,
           effortRequested: spec.effort ?? null,
           cwd: this.workdir,
@@ -1077,12 +1094,11 @@ export class Session {
         },
       });
     }
-    if (!knownModel(this.model) && !this.modelFallbackNoted) {
-      // The transcript's copy of the constructor's log line, once.
+    const fallbackNote = modelFallbackNote(this.model, fable);
+    if (fallbackNote !== null && !this.modelFallbackNoted) {
+      // The transcript's copy of the constructor's log line, once per model.
       this.modelFallbackNoted = true;
-      this.finalizeRow("system", {
-        text: `model ${this.model} unknown to this daemon — running as opus`,
-      });
+      this.finalizeRow("system", { text: fallbackNote });
     }
     const sessionEnv = {
       ...inheritedEnv,
@@ -1227,14 +1243,40 @@ export class Session {
     }
   }
 
-  // The Claude-account auto-switch (session-host.mjs maybeSwitchAccount)
-  // fires for family "claude" only: it flips the Max-account symlink, which
-  // means nothing to a Codex session. A Codex cap still reaches the
+  // The usage-limit record (session-host.mjs recordUsageLimit) is for family
+  // "claude" only: a Codex cap is read by the server's breaker instead. A Codex cap still reaches the
   // autonomous outcomeSummary / error rows through lastTurnErrorText, where
   // the server's breaker reads it keyed on the session's family.
+  //
+  // THE FABLE RUNG COMES FIRST. A fable session refused for a spend or usage
+  // limit is Fable being out, not the account: the Fable availability state
+  // is set unavailable, the query is retired at the turn boundary, and the
+  // next turn runs at the ceiling (modelSpec). Any other usage limit is only
+  // recorded; the box stays on its account (Tom's ruling of 2026-09-24).
   #maybeUsageSignal(text) {
     if (this.family !== "claude") return;
+    if (aboveCeiling(this.model) && this.fableState().available !== false) {
+      const line = text.split("\n").find((part) => FABLE_LIMIT_RE.test(part));
+      if (line !== undefined) {
+        markFableUnavailable(this.stateDir(), { reason: line });
+        log(`session ${this.id}: ${this.model} was refused (${line.trim().slice(0, 200)}); Fable is marked unavailable`);
+        this.finalizeRow("system", { text: `${this.model} was refused for a limit; Fable is marked unavailable and the next turn runs at the ceiling` });
+        this.modelSwitchPending = true;
+        this.modelFallbackNoted = false;
+        return;
+      }
+    }
     if (USAGE_LIMIT_RE.test(text)) this.onUsageSignal?.(text.slice(0, 200), this);
+  }
+
+  // The run state directory, where the registration spool and the Fable
+  // availability file live (worker/runs/config.mjs names the same one).
+  stateDir() {
+    return this.env.RUN_SWEEP_STATE_DIR || process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+  }
+
+  fableState() {
+    return readFableState(this.stateDir());
   }
 
   // Retire the live query WITHOUT ending the session: the next
@@ -1521,14 +1563,35 @@ export class Session {
           this.#maybeUsageSignal(String(m.result ?? ""));
         }
         if (this.activeUserTurnId) {
+          // A hosted run's turn whose result failed is settled "failed": the
+          // record hands every turn not "done" to the orchestrator's next run,
+          // and a failed turn was not acted on.
+          const turnFailed = this.hosted && (m.is_error || (m.subtype && m.subtype !== "success"));
           this.outbox.inboundUpdates.push({
             id: this.activeUserTurnId,
-            status: "done",
+            status: turnFailed ? "failed" : "done",
           });
           this.activeUserTurnId = null;
         }
         this.#clearAutoTimer();
-        if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
+        // A HOSTED run outlives its turn (hosted.mjs): the orchestrator ends
+        // only when it asks to compact, a worker when the next poll says it
+        // is done. A successful turn goes idle through the tail below, as an
+        // interactive session's does. A failed turn still ends it errored, as
+        // for any unattended session: the orchestrator is then restarted from
+        // its document by the server, and a worker's orchestrator is told.
+        const hostedLives = this.hosted && !this.stopRequested && !this.dead
+          && !(m.is_error || (m.subtype && m.subtype !== "success"));
+        if (hostedLives) {
+          if (hostedTurnEnd({ environment: this.environment, finalText: this.lastAssistantText }) === "compact") {
+            void this.#endAutonomous(COMPACT_ENDED_REASON, {
+              outcome: "completed",
+              outcomeSummary: "asked to be restarted from its document",
+            });
+            break;
+          }
+          this.idleSince = Date.now();
+        } else if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
           // An autonomous session is ONE mission turn — nobody would ever
           // send stop, so the daemon ends it itself. The agent's own outcome
           // (recorded via the /tts/session-outcome pen) is already
@@ -1855,6 +1918,29 @@ export class Session {
     this.#applyModel(row.model);
     this.serverInbound = row.pendingInbound ?? [];
     this.processCommands();
+    if (this.hosted) this.#settleHosted(row);
+  }
+
+  // An idle hosted run on a poll: a worker whose turn has ended ends once the
+  // server says it recorded its outcome, or that nothing it asked is still
+  // open (hostedIdleVerdict). The orchestrator always waits.
+  #settleHosted(row) {
+    if (this.status !== "idle" || this.delivering || this.stopRequested || this.dead) return;
+    const verdict = hostedIdleVerdict({
+      environment: this.environment,
+      outcomeRecorded: row.outcomeRecorded === true,
+      openElevations: row.openElevations,
+      idleSince: this.idleSince,
+      polledAt: row.polledAt,
+      now: Date.now(),
+    });
+    if (verdict === "end") void this.#endAutonomous("worker run complete");
+    if (verdict === "end-waited") {
+      void this.#endAutonomous("worker waited too long for an answer", {
+        outcome: "errored",
+        outcomeSummary: "waited too long for the answer to an elevation",
+      });
+    }
   }
 
   // The row's model is the truth (setSessionModel, 2026-09-04). A change
@@ -1874,6 +1960,7 @@ export class Session {
     const from = this.model;
     this.model = name;
     this.family = modelFamily(name);
+    this.modelFallbackNoted = false;
     this.finalizeRow("system", { text: `model changed to ${name}` });
     if (this.q && (this.status === "idle" || this.status === "starting")) {
       // "starting": the query exists but no turn has run, so there is no
@@ -1956,6 +2043,8 @@ export class Session {
       }
       this.turn += 1;
       this.segmentsSinceAssistant = 0;
+      this.idleSince = undefined;
+      this.lastAssistantText = "";
       // The transcript records what the model RECEIVED — for a turn Tom
       // typed, his text plus the id line deliveredTurnText appends (the
       // transcript principle: what the agent saw is what is recorded). Tom's
@@ -2018,6 +2107,24 @@ export class Session {
   }
 
   // ── autonomous ending ──────────────────────────────────────────────────────
+
+  // An unattended run a restarted daemon found live: nothing re-enters the
+  // turn the old process died in, so it ends, but first its checkout is
+  // reattached and its commits pushed, as every other unattended ending
+  // does. A hosted worker waiting on an answer when setup.sh rolled the
+  // daemon would otherwise lose its local commits with the workdir.
+  async endAdopted(endedReason, outcome) {
+    // Ending from here on, before the first await: no poll may deliver a
+    // queued turn into a run whose workdir is about to go.
+    this.stopRequested = true;
+    this.status = "idle";
+    try {
+      await this.ensureWorkdir({ forResume: true });
+    } catch (err) {
+      log(`session ${this.id}: could not reattach the workdir before ending:`, String(err?.message ?? err));
+    }
+    await this.#endAutonomous(endedReason, outcome);
+  }
 
   #clearAutoTimer() {
     if (this.autoTurnTimer) {

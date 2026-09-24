@@ -23,22 +23,33 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { execFile as execFileCb } from "node:child_process";
-import { promisify } from "node:util";
 import {
   loadEnv,
   log,
   sleep,
   sessionsFetch,
+  sessionsGet,
+  mailboxNames,
+  setEnvLine,
   backoffMs,
   truncated,
   ERROR_TEXT_LIMIT,
   scrubbedEnv,
 } from "./lib.mjs";
 import { Session, gitErrorText } from "./session.mjs";
-import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
+import { FABLE_PROBE_INTERVAL_MS, fableProbeDue, readFableState } from "../runs/models.mjs";
+import {
+  CODEX_BIN,
+  codexArgs,
+  parseCodexRateLimits,
+  resolveCodexBin,
+  spawnCodex,
+} from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
+import { DAEMON_RESTART_ENDED_REASON, listedCodexModels } from "./hosted.mjs";
+import { reapUnlisted, removeOrphanWorkdirs, removeWorkdir } from "./workdir.mjs";
+import { SECRETS_CHECK_MS, deliverSecrets, dropNames } from "./secret-mailbox.mjs";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -71,8 +82,6 @@ function readActiveAccount() {
     return undefined; // not a symlink / not set up — simply don't report
   }
 }
-
-const execFile = promisify(execFileCb);
 
 // ── Codex on the box (ratified 2026-09-04) ───────────────────────────────────
 // The binary, the spawn shim and the per-turn flags come from codex-bin.mjs
@@ -173,12 +182,12 @@ async function warmUpCodex() {
 
 // Codex account usage for the heartbeat, read TOKEN-FREE: `codex app-server`
 // is a JSON-RPC server over stdio, and account/rateLimits/read answers from
-// the account's cached limits without spending a model call. Verified against
-// codex-cli 0.130 on 2026-09-04: result.rateLimits.primary is the 5-hour
-// window (windowDurationMins 300) and .secondary the weekly one (10080), each
-// { usedPercent, windowDurationMins, resetsAt } with resetsAt in EPOCH
-// SECONDS. The scheduler gates new Codex sessions on the weekly figure
-// (CODEX_WEEKLY_CAP_PERCENT in ttsShared); the 5-hour one is recorded only.
+// the account's cached limits without spending a model call. The answer's
+// result.rateLimits is parsed by parseCodexRateLimits (codex-bin.mjs, which
+// says which window is which and why NOT by position). The scheduler gates
+// new Codex sessions on the weekly figure (CODEX_WEEKLY_CAP_PERCENT in
+// ttsShared); the 5-hour one is recorded only, and absent when the account
+// reports no such window.
 //
 // At most once per 5 minutes, in the BACKGROUND: refreshCodexUsage starts a
 // read and returns at once, so a hung app-server never holds the poll loop
@@ -194,16 +203,11 @@ async function warmUpCodex() {
 const CODEX_USAGE_INTERVAL_MS = 5 * 60 * 1000;
 const CODEX_USAGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
 const CODEX_USAGE_TIMEOUT_MS = 15_000;
-let codexUsage; // { weeklyUsedPercent, fiveHourUsedPercent, weeklyResetsAt?, readAt }
+let codexUsage; // { weeklyUsedPercent, fiveHourUsedPercent?, weeklyResetsAt?, readAt }
 let codexUsageNextAt = 0; // earliest start of the next read
 let codexUsageFailures = 0; // consecutive failures — the backoff exponent
 let codexUsageInFlight = false; // two reads never overlap
 let codexUsageWarned = false; // log the failure ONCE, not on every retry
-
-function toEpochMs(value) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return value < 1e12 ? value * 1000 : value; // seconds → ms
-}
 
 async function readCodexUsage() {
   const child = spawnCodex(["app-server"], {
@@ -264,17 +268,8 @@ async function readCodexUsage() {
   });
   try {
     const result = await done;
-    const limits = result?.rateLimits;
-    const weekly = limits?.secondary;
-    const fiveHour = limits?.primary;
-    if (typeof weekly?.usedPercent !== "number" || typeof fiveHour?.usedPercent !== "number") {
-      throw new Error(`unexpected rateLimits shape: ${JSON.stringify(limits).slice(0, 200)}`);
-    }
-    const weeklyResetsAt = toEpochMs(weekly.resetsAt);
     return {
-      weeklyUsedPercent: weekly.usedPercent,
-      fiveHourUsedPercent: fiveHour.usedPercent,
-      ...(weeklyResetsAt !== undefined ? { weeklyResetsAt } : {}),
+      ...parseCodexRateLimits(result?.rateLimits),
       readAt: Date.now(),
     };
   } finally {
@@ -294,6 +289,13 @@ function refreshCodexUsage() {
   codexUsageInFlight = true;
   void (async () => {
     try {
+      // The model list first and on its own: a usage read that fails must not
+      // leave the orchestrator's model unknowable.
+      try {
+        codexModels = await readCodexModels();
+      } catch (err) {
+        log("codex model list read failed (continuing):", String(err?.message ?? err));
+      }
       codexUsage = await readCodexUsage();
       codexUsageFailures = 0;
       codexUsageWarned = false;
@@ -318,38 +320,119 @@ function refreshCodexUsage() {
   })();
 }
 
-// ── usage-limit account auto-switch (ratified 2026-08-28) ────────────────────
-// A session that hits a usage/rate limit signals here; the daemon flips the
-// active symlink to the OTHER Max account via tts-account so the fleet (and
-// Tom) keep working, at most once per 3h (in-memory throttle — a restart
-// resets it, harmlessly). Tradeoff, stated: NEW queries run under the new
-// account; existing sdkSessionIds live in the old account's config dir, so a
-// resume after a switch starts fresh context — the restart-adoption rules
-// already record that honestly in the transcript.
-const SWITCH_THROTTLE_MS = 3 * 60 * 60 * 1000;
-let lastAccountSwitchAt = 0;
+// The model slugs the box's Codex CLI lists, for the heartbeat: the server
+// picks the orchestrator's model from them (Astra when listed, Tom
+// 2026-09-21; convex/orchestrator.ts orchestratorModel). `codex debug models`
+// prints the raw catalog without a model call. Read with the usage, on the
+// same cadence and in the background; an empty list means the CLI is not
+// installed, and absent means no read has finished yet.
+const CODEX_MODELS_TIMEOUT_MS = 15_000;
+let codexModels; // string[] | undefined
 
-async function maybeSwitchAccount(signalText, session) {
-  const now = Date.now();
-  if (now - lastAccountSwitchAt < SWITCH_THROTTLE_MS) return;
-  const active = readActiveAccount();
-  if (active !== "gmail" && active !== "wpi") {
-    log(`usage limit signaled but active account unknown (${active}) — not switching`);
-    return;
-  }
-  lastAccountSwitchAt = now;
-  const other = active === "gmail" ? "wpi" : "gmail";
-  try {
-    await execFile("/usr/local/bin/tts-account", ["use", other]);
-    log(`usage limit detected — switched account ${active} -> ${other} (${signalText})`);
-    session?.finalizeRow("system", {
-      text: `usage limit detected — switched account ${active} -> ${other}`,
+async function readCodexModels() {
+  if (!resolveCodexBin()) return [];
+  const child = spawnCodex(["debug", "models"], { env: codexEnv(), stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    out += chunk;
+  });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      reject(new Error(`codex debug models did not answer within ${CODEX_MODELS_TIMEOUT_MS}ms`));
+    }, CODEX_MODELS_TIMEOUT_MS);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
     });
-    session?.requestFlush(true);
-  } catch (err) {
-    lastAccountSwitchAt = 0; // the switch didn't happen; don't throttle a retry
-    log(`account switch ${active} -> ${other} FAILED:`, String(err?.message ?? err));
-  }
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`codex debug models exited ${code}`));
+    });
+  });
+  return listedCodexModels(out);
+}
+
+// ── the Fable probe (Tom's ruling, 2026-09-24) ───────────────────────────────
+// "make sure that the opus ceiling is temporary and we switch back to fable
+// when my weekly limit resets." While the Fable availability file
+// (worker/runs/models.mjs) says Fable is unavailable, a request for Fable runs
+// Opus. This is what lifts it: at most once an hour, in the BACKGROUND beside
+// the Codex usage read, one Fable call of one turn and one word through the
+// launcher (box-run.mjs probeFable), recorded like any run. An account out of
+// usage refuses without a model call; an answer sets Fable available, and the
+// next Fable request runs Fable. The reset date never has to be known: the
+// CLI's refusal names a monthly spend limit, Tom's ruling a weekly limit, and
+// the probe finds out either way.
+//
+// The file's own checkedAt is the hourly clock, so a daemon restart does not
+// probe early; fableProbeNextAt is the same hour kept in memory, so a probe
+// that fails before it can write the file is not retried on every poll.
+let fableProbeInFlight = false;
+let fableProbeNextAt = 0;
+
+function fableStateDir() {
+  return process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+}
+
+// Start a probe when one is due and none is running; returns at once. Never
+// throws.
+function refreshFableProbe() {
+  const now = Date.now();
+  if (fableProbeInFlight || now < fableProbeNextAt) return;
+  if (!fableProbeDue(readFableState(fableStateDir()), now)) return;
+  fableProbeInFlight = true;
+  fableProbeNextAt = now + FABLE_PROBE_INTERVAL_MS;
+  void (async () => {
+    try {
+      const { probeFable } = await boxRunner();
+      const state = await probeFable({ env: { ...process.env, RUN_SWEEP_STATE_DIR: fableStateDir() } });
+      log(state.available
+        ? "fable probe: Fable answered; a request for Fable runs Fable again"
+        : `fable probe: Fable is still unavailable (${state.reason ?? "no reason given"})`);
+    } catch (err) {
+      log("fable probe failed:", String(err?.message ?? err));
+    } finally {
+      fableProbeInFlight = false;
+    }
+  })();
+}
+
+/** The Fable availability state for the heartbeat, or undefined while none
+ *  is recorded (an absent file reads as available, and says nothing new). */
+function fableAvailabilityReport() {
+  const state = readFableState(fableStateDir());
+  if (!Number.isFinite(state.since) || !Number.isFinite(state.checkedAt)) return undefined;
+  return {
+    available: state.available,
+    since: state.since,
+    checkedAt: state.checkedAt,
+    ...(typeof state.reason === "string" && state.reason !== "" ? { reason: state.reason } : {}),
+  };
+}
+
+// ── usage limits, recorded ───────────────────────────────────────────────────
+// A Claude session that hits a usage limit other than a Fable refusal (which
+// session.mjs turns into the model ceiling) is recorded here and nothing
+// else: the latest one rides every heartbeat as `usageLimit`, and the session
+// itself waits (interactive) or ends errored (autonomous) through its own
+// turn-failure path. The box stays on the active account. Tom's ruling,
+// 2026-09-24, verbatim: "lets keep the box on my wpi claude account even
+// though it is out of fable usage and have it max out at opus for now. even
+// for delegate. I want to save my usage for my heffnt account for personal
+// use." The account switch that stood here spent the other account on any
+// limit, so it is gone; `tts-account use` is Tom's to run by hand.
+let lastUsageLimit; // { at, text, sessionId } — the latest, kept until replaced
+
+function recordUsageLimit(text, session) {
+  lastUsageLimit = { at: Date.now(), text: String(text).slice(0, 200), sessionId: session.id };
+  log(`session ${session.id}: usage limit (${lastUsageLimit.text}); recorded on the heartbeat, account unchanged`);
 }
 
 // Fail a session outright — the one class of ending with nothing to resume
@@ -383,10 +466,12 @@ function claimSession(env, sessions, row) {
     // is the session whose transcript this one continues ("reopen as").
     model: row.model,
     forkedFrom: row.forkedFrom,
+    // "orchestrator" or "worker" on a row this daemon HOSTS (hosted.mjs).
+    environment: row.environment,
     // The reopen generation this Session speaks for: stamped into every ingest
     // so the server can tell a live flush from a pre-reopen replay.
     reopenEpoch: row.reopenEpoch ?? 0,
-    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
+    onUsageSignal: recordUsageLimit,
   });
   sessions.set(row.id, s);
   void (async () => {
@@ -451,8 +536,9 @@ function adoptSession(env, sessions, row) {
     mode: row.mode,
     model: row.model,
     forkedFrom: row.forkedFrom,
+    environment: row.environment,
     reopenEpoch: row.reopenEpoch ?? 0,
-    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
+    onUsageSignal: recordUsageLimit,
   });
   sessions.set(row.id, s);
   s.sdkSessionId = row.sdkSessionId;
@@ -462,18 +548,17 @@ function adoptSession(env, sessions, row) {
     // session has no Tom to send that turn, so an adopted one would sit live
     // forever (counted against the fleet cap, its todo excluded). End it
     // errored; the scheduler's backoff owns the retry. The outcome rides the
-    // ingest and never overwrites one the agent already recorded.
+    // ingest and never overwrites one the agent already recorded. A HOSTED
+    // run ends the same way: nothing re-enters a run whose turn died with the
+    // old process. The server restarts the orchestrator from its document and
+    // tells the orchestrator a worker of its ended (convex/orchestrator.ts).
     s.finalizeRow("system", {
       text: "session-host restarted mid-mission; autonomous session ended",
     });
-    s.outcomeToSend = {
+    void s.endAdopted(DAEMON_RESTART_ENDED_REASON, {
       outcome: "errored",
       outcomeSummary: "daemon restarted mid-mission",
-    };
-    s.setStatus("ended");
-    s.endedReasonToSend = "daemon restarted mid-mission";
-    s.requestFlush(true);
-    s.cleanupWorkdir();
+    });
     return;
   }
   s.status = "idle";
@@ -528,10 +613,40 @@ function launchStep(env, steps, row) {
   });
 }
 
+// ── tom.quest/secrets: values Tom pasted, written into the env file ──────────
+// secret-mailbox.mjs holds the steps. Here: at most one check per
+// SECRETS_CHECK_MS, in the background with one in flight, so a slow Convex
+// never holds the heartbeat. A delivered name never enters this process's
+// environment, so no child started later inherits it; whatever needs it reads
+// the env file by name.
+let secretsNextAt = 0;
+let secretsInFlight = false;
+
+function checkSecrets(env) {
+  const now = Date.now();
+  if (secretsInFlight || now < secretsNextAt) return;
+  secretsInFlight = true;
+  secretsNextAt = now + SECRETS_CHECK_MS;
+  void deliverSecrets({
+    fetchPending: () => sessionsGet(env, "/sessions/secrets"),
+    write: (name, value) => setEnvLine({ name, value }),
+    markTaken: (name, setAt) => sessionsFetch(env, "/sessions/secrets/taken", { name, setAt }),
+    log,
+  }).finally(() => {
+    secretsInFlight = false;
+  });
+}
+
 // ── the main loop ────────────────────────────────────────────────────────────
 
 async function main() {
   const env = loadEnv();
+  // Before anything is spawned: systemd loaded the whole env file into this
+  // process, the names in the /secrets block included, and every child
+  // inherits process.env. They leave it here (secret-mailbox.mjs dropNames).
+  const delivered = mailboxNames();
+  dropNames(process.env, delivered);
+  dropNames(env, delivered);
   log(`starting session-host v${VERSION} -> ${env.CONVEX_SITE_URL}`);
   // In the background, never ahead of the first poll (the heartbeat must not
   // wait on Codex); Codex claims await codexReady instead — see warmUpCodex.
@@ -543,9 +658,13 @@ async function main() {
   // still live; a row this daemon cannot construct a Session for) — cleared
   // when the row leaves the poll, so a later change is reported again.
   const notedRows = new Set();
+  let orphansRemoved = false;
 
   for (;;) {
     refreshCodexUsage(); // starts a read when due; never waits on it
+    refreshFableProbe(); // the same, for the Fable probe
+    checkSecrets(env); // the same: a mailbox check when due, never awaited
+    const fableAvailability = fableAvailabilityReport();
     // Surface the most recent permanent ingest rejection (review fix:
     // permanent-400 wedge) — a dropped flush must be visible server-side, not
     // only in journald. One report is enough: cleared after the poll that
@@ -560,6 +679,9 @@ async function main() {
     }
 
     let data;
+    // When this poll was sent: an idle hosted run decides nothing on facts
+    // older than the end of its own last turn (hostedIdleVerdict).
+    const polledAt = Date.now();
     try {
       data = await sessionsFetch(env, "/sessions/poll", {
         version: `session-host/${VERSION}`,
@@ -579,7 +701,22 @@ async function main() {
         // readAt (see refreshCodexUsage); absent only while no read has ever
         // succeeded, which the server reads as unknown, like a stale readAt.
         ...(codexUsage !== undefined ? { codexUsage } : {}),
+        ...(codexModels !== undefined ? { codexModels } : {}),
+        // The Fable availability file (worker/runs/models.mjs), for the pages
+        // that show whether the ceiling is in force; absent while none is
+        // recorded.
+        ...(fableAvailability !== undefined ? { fableAvailability } : {}),
+        // The latest usage limit a Claude session hit that was not a Fable
+        // refusal (recordUsageLimit); absent until one happens.
+        ...(lastUsageLimit !== undefined ? { usageLimit: lastUsageLimit } : {}),
         ...(lastIngestError !== undefined ? { lastIngestError } : {}),
+        // This daemon hosts orchestrator and worker rows (hosted.mjs). A
+        // daemon that does not say so is never shown one, so an old copy on
+        // the box never ends a hosted run after its first turn.
+        hosts: ["orchestrator", "worker"],
+        // The sessions this process holds. The orchestrator's lease is renewed
+        // only while its run is in this list.
+        held: [...sessions].filter(([, s]) => !s.dead && s.status !== "ended" && s.status !== "failed").map(([id]) => String(id)),
       });
       pollAttempt = 0;
       if (lastIngestError !== undefined) {
@@ -602,6 +739,7 @@ async function main() {
     const liveIds = new Set((data.sessions ?? []).map((row) => String(row.id)));
     for (const row of data.sessions ?? []) {
       listed.add(row.id);
+      row.polledAt = polledAt;
       const local = sessions.get(row.id);
       // The whole per-row walk is fenced: one row this daemon cannot handle
       // (a shape the server grew before the box was redeployed — an unknown
@@ -688,22 +826,17 @@ async function main() {
       }
     }
 
-    // Locals the server no longer lists are terminal server-side: either our
-    // own ended/failed report landed (reap once the outbox drains) or the
-    // browser force-closed a session it thought orphaned (kill the process —
-    // the server's word is final).
-    for (const [id, s] of sessions) {
-      if (listed.has(id)) continue;
-      if (s.dead) {
-        // Review fix: force-killed sessions were never drained (their outbox
-        // is dropped, not flushed), so waiting on isDrained() leaked the map
-        // entry forever. Dead means gone — delete unconditionally.
-        sessions.delete(id);
-      } else if (s.status === "ended" || s.status === "failed") {
-        if (s.isDrained()) sessions.delete(id);
-      } else {
-        s.forceKill("server no longer lists this session");
-        sessions.delete(id);
+    // Locals the server no longer lists are terminal server-side; the reap
+    // drops each and deletes its workdir (workdir.mjs says why here).
+    reapUnlisted(sessions, listed, { remove: (id) => removeWorkdir(id, { log }) });
+
+    // The endings no process observed: once, on this daemon's first poll.
+    if (!orphansRemoved) {
+      orphansRemoved = true;
+      const known = new Set([...listed, ...sessions.keys()].map(String));
+      const removed = removeOrphanWorkdirs({ known, remove: (id) => removeWorkdir(id, { log }) });
+      if (removed.length > 0) {
+        log(`removed ${removed.length} workdirs of sessions that ended while no daemon ran`);
       }
     }
 
