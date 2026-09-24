@@ -17,7 +17,7 @@ import { redactSecrets } from "../session-host/redact.mjs";
 import { discoverChildren, parseClaudeFile, parseCodexFile, workflowIdOfPath } from "./ingest.mjs";
 import { runConfig } from "./config.mjs";
 import { describeRunFile, discoverRunFiles } from "./discover.mjs";
-import { findCodexRegistration, mergeRegistration, readRegistration } from "./registration.mjs";
+import { envelopeForRun, findCodexRegistration, mergeRegistration, readRegistration } from "./registration.mjs";
 import { openStore } from "./store.mjs";
 import { postJson } from "./transport.mjs";
 
@@ -525,11 +525,14 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
   const stored = await store.put({ runtime: item.runtime, threadId: item.threadId, host: item.host, sourceBytes });
   if (!stored.verified || !stored.key) throw new Error("run store upload was not verified");
   await onStoreVerified();
-  let envelope = readRegistration(item.path, { fs });
-  if (!envelope && item.runtime === "codex") {
-    findCodexRegistration({ text: sourceBytes.toString("utf8"), spoolDir: path.join(stateDir, "registration"), runFile: item.path, claim: { threadId: item.threadId, runFile: item.path }, fs, now });
-    envelope = readRegistration(item.path, { fs });
+  // THE ENVELOPE IS THE SIDE FILE AND THE TRANSCRIPT TOGETHER: a launcher that
+  // composes its prompt puts the registration group at its head, and the side
+  // file keeps the token and what was written after (registration.mjs's header).
+  const sourceTextForEnvelope = sourceBytes.toString("utf8");
+  if (item.runtime === "codex" && !readRegistration(item.path, { fs })) {
+    findCodexRegistration({ text: sourceTextForEnvelope, spoolDir: path.join(stateDir, "registration"), runFile: item.path, claim: { threadId: item.threadId, runFile: item.path }, fs, now });
   }
+  const envelope = envelopeForRun({ runFile: item.path, text: sourceTextForEnvelope, fs });
   let envelopeStored = null;
   if (envelope) {
     envelopeStored = await store.put({ runtime: item.runtime, threadId: item.threadId, host: item.host, sourceBytes: Buffer.from(JSON.stringify(envelope)), kind: "registration" });
@@ -884,6 +887,9 @@ export async function sweepRuns({
       for (const name of fs.readdirSync(path.join(config.stateDir, "state"))) {
         const state = readJson(path.join(config.stateDir, "state", name), fs);
         if (!state?.path || state.deferred) continue;
+        // The side file is enough here: the one kind deletable() asks about is
+        // a session, and the writers of a session's envelope (the daemon and
+        // run-hook.mjs) keep its registration group in the side file.
         const registration = readRegistration(state.path, { fs });
         const run = { host: config.host, kind: registration?.registration?.kind ?? "unknown", cutoverAt: state.cutoverAt };
         state.gitTracked = isGitTracked(state.path, { fs });

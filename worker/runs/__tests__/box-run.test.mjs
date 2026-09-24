@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../../../test/temp.mjs";
+import { parseRegistrationBlock } from "../registration.mjs";
 
 const RUNNER = path.resolve("worker/runs/box-run.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -160,7 +161,11 @@ describe("box-run stdout contract", () => {
       env: { CLAUDE_BIN: fakeCli("argv"), FAKE_RECORD: record, FAKE_PROMPT_AT: promptAt },
     });
     expect(result.status).toBe(0);
-    expect(fs.readFileSync(promptAt, "utf8")).toBe("the exact request\n");
+    // The registration block first, then the request exactly as it was sent.
+    const sent = fs.readFileSync(promptAt, "utf8");
+    const block = parseRegistrationBlock(sent);
+    expect(block).not.toBeNull();
+    expect(sent.endsWith("\n```\n\nthe exact request\n")).toBe(true);
     const { argv, cwd } = JSON.parse(fs.readFileSync(record, "utf8"));
     expect(argv).toContain("-p");
     expect(argv[argv.indexOf("--model") + 1]).toBe("opus");
@@ -253,15 +258,23 @@ describe("box-run stdout contract", () => {
   it("writes a registration envelope naming the parent, the root and the depth", () => {
     const stateDir = temp("state");
     const parent = "claude:laptop:11111111-2222-4333-8444-555555555555";
+    const promptAt = path.join(stateDir, "prompt.txt");
     const result = run(["--repo", "none", "--parent", parent], {
       stateDir,
-      env: { CLAUDE_BIN: fakeCli("register") },
+      env: { CLAUDE_BIN: fakeCli("register"), FAKE_PROMPT_AT: promptAt },
     });
     expect(result.status).toBe(0);
     const spoolDir = path.join(stateDir, "registration");
     const names = fs.readdirSync(spoolDir).filter((name) => name.endsWith(".json"));
     expect(names).toHaveLength(1);
-    const { writer, registration } = JSON.parse(fs.readFileSync(path.join(spoolDir, names[0]), "utf8"));
+    const spool = JSON.parse(fs.readFileSync(path.join(spoolDir, names[0]), "utf8"));
+    const sent = fs.readFileSync(promptAt, "utf8");
+    // THE SPOOL HOLDS THE TOKEN AND THE PROMPT HOLDS THE REST: no registration
+    // group beside the token, and no token in the text the model reads.
+    expect(spool).not.toHaveProperty("registration");
+    expect(sent).not.toContain(spool.token);
+    const { writer, registration } = parseRegistrationBlock(sent);
+    expect(writer).toEqual(spool.writer);
     expect(writer.file).toBe("worker/runs/box-run.mjs");
     expect(registration).toMatchObject({
       host: "box",
@@ -284,11 +297,10 @@ describe("box-run stdout contract", () => {
   it("calls a run with no parent a worker, and takes a launcher's named environment over both", () => {
     const envelopeOf = (args, env) => {
       const stateDir = temp("state");
-      const result = run(["--repo", "none", ...args], { stateDir, env: { CLAUDE_BIN: fakeCli("environment"), ...env } });
+      const promptAt = path.join(stateDir, "prompt.txt");
+      const result = run(["--repo", "none", ...args], { stateDir, env: { CLAUDE_BIN: fakeCli("environment"), FAKE_PROMPT_AT: promptAt, ...env } });
       expect(result.status).toBe(0);
-      const spoolDir = path.join(stateDir, "registration");
-      const [name] = fs.readdirSync(spoolDir).filter((entry) => entry.endsWith(".json"));
-      return JSON.parse(fs.readFileSync(path.join(spoolDir, name), "utf8")).registration;
+      return parseRegistrationBlock(fs.readFileSync(promptAt, "utf8")).registration;
     };
     const parent = "claude:laptop:11111111-2222-4333-8444-555555555555";
     expect(envelopeOf([], {}).environment).toBe("worker");
@@ -689,6 +701,7 @@ describe("box-run in process", () => {
     const sessionId = "0f0e0d0c-0b0a-4908-8706-050403020100";
     const { env, stateDir } = inProcess("inproc-json", {
       FAKE_ANSWER: JSON.stringify({ type: "result", subtype: "success", result: "the answer", session_id: sessionId }),
+      FAKE_PROMPT_AT: path.join(temp("inproc-json-prompt"), "prompt.txt"),
     });
     const own = temp("claim-cwd");
     const result = entry.boxRunSync({
@@ -705,8 +718,12 @@ describe("box-run in process", () => {
     // The launcher the record takes from writer.file is this file, while the
     // origin stays the job's own.
     expect(claimed.writer.file).toBe("worker/runs/box-run.mjs");
-    expect(claimed.registration.origin).toBe("cron:poll-gmail");
-    expect(claimed.registration.cwd).toBe(own);
+    // The claim moved the token, the writer and the block's hash; the
+    // registration group is in the prompt the child read, and nowhere else.
+    expect(claimed).not.toHaveProperty("registration");
+    const { registration } = parseRegistrationBlock(fs.readFileSync(env.FAKE_PROMPT_AT, "utf8"));
+    expect(registration.origin).toBe("cron:poll-gmail");
+    expect(registration.cwd).toBe(own);
   });
 
   it("hands the runner key to a runner step's process and to no other run", () => {

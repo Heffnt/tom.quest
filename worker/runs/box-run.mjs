@@ -967,12 +967,19 @@ function prepareRun(options, slot = noSlot) {
     // transport exists to record was lost. normalize() therefore refuses a
     // registration for Codex, and this hands over the one fact codex-run
     // cannot know: the parent, below.
+    //
+    // THE REGISTRATION GROUP GOES INTO THE PROMPT, the token into the spool.
+    // writeRegistration returns the block and promptToSend puts it at the head
+    // of what the child reads, after the caller's beforeSpawn, so nothing a
+    // caller writes into its prompt can come before it (registration.mjs's
+    // header says why the token stays out).
     const spoolDir = env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration");
     if (opts.registration) {
       spooled = writeRegistration({
         spoolDir,
         writer: { file: "worker/runs/box-run.mjs", job: "box-run" },
         registration: { cwd, ...opts.registration },
+        inPrompt: true,
       });
     }
 
@@ -1057,6 +1064,12 @@ function prepareRun(options, slot = noSlot) {
     if (spooled) wrapped.runToken = spooled.token;
     throw wrapped;
   }
+}
+
+/** The bytes the child reads on stdin: the registration block, when this run
+ *  has one, and then the caller's prompt. */
+function promptToSend(run) {
+  return typeof run.spooled?.block === "string" ? `${run.spooled.block}${run.opts.prompt}` : run.opts.prompt;
 }
 
 /** A runner step's own envelope: the one run that holds the runner key. */
@@ -1317,7 +1330,7 @@ async function spawnAndWait(run, options) {
   // whole, so one stray line there becomes a sentence Tom reads as the report.
   child.stderr.pipe(errStream, { end: false });
   child.stdin.on("error", () => {});
-  child.stdin.end(run.opts.prompt);
+  child.stdin.end(promptToSend(run));
 
   // REMOVAL CHECK on --timeout: the ruling is that there is no time limit BY
   // DEFAULT, and this flag is off unless a caller names it (timeoutMs is 0,
@@ -1384,7 +1397,7 @@ function boxRunSyncOnce(options) {
   run.startedAt = Date.now();
   const result = spawnSync(run.command, run.args, {
     ...run.spawnOptions,
-    input: run.opts.prompt,
+    input: promptToSend(run),
     encoding: "utf8",
     maxBuffer: SYNC_MAX_BUFFER,
     ...(run.opts.timeoutMs > 0 ? { timeout: run.opts.timeoutMs } : {}),

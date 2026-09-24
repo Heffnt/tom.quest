@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { tempDir } from "../test/temp.mjs";
 
 import { renderGrants, skillDirName } from "../shared/skills.mjs";
+import { parseRegistrationBlock } from "../worker/runs/registration.mjs";
 
 const RUNNER = path.resolve("scripts/codex-run.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -46,6 +48,7 @@ function fakeCodex() {
     'import fs from "node:fs";',
     'const output = process.argv[process.argv.indexOf("-o") + 1];',
     'fs.writeFileSync(process.env.FAKE_CODEX_ARGS, JSON.stringify(process.argv.slice(2)));',
+    'if (process.env.FAKE_CODEX_STDIN) fs.writeFileSync(process.env.FAKE_CODEX_STDIN, fs.readFileSync(0, "utf8"));',
     'if (process.env.FAKE_CODEX_ENV) fs.writeFileSync(process.env.FAKE_CODEX_ENV, JSON.stringify({ openrouterKey: process.env.OPENROUTER_API_KEY ?? null }));',
     'fs.writeFileSync(output, "fake answer\\n");',
   ].join("\n"));
@@ -64,7 +67,7 @@ function run(args, env) {
   const result = spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: "utf8",
     input: "answer this\n",
-    env: { ...process.env, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration"), ...env },
+    env: { ...process.env, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration"), FAKE_CODEX_STDIN: path.join(state, "stdin.txt"), ...env },
   });
   result.state = state;
   return result;
@@ -79,7 +82,13 @@ function spooledEnvelope(state) {
   const dir = path.join(state, "registration");
   const names = fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
   if (names.length !== 1) throw new Error(`expected one spool file, found ${names.length}`);
-  return { token: path.basename(names[0], ".json"), envelope: JSON.parse(fs.readFileSync(path.join(dir, names[0]), "utf8")) };
+  const spool = JSON.parse(fs.readFileSync(path.join(dir, names[0]), "utf8"));
+  // THE REGISTRATION GROUP IS IN THE PROMPT, the token in the spool: the
+  // envelope a reader of the run sees is the two put back together.
+  const stdin = fs.readFileSync(path.join(state, "stdin.txt"), "utf8");
+  const block = parseRegistrationBlock(stdin);
+  if (block === null) throw new Error("the prompt Codex read carries no registration block");
+  return { token: path.basename(names[0], ".json"), spool, stdin, block, envelope: { ...spool, registration: block.registration } };
 }
 
 describe("codex-run operate instructions", () => {
@@ -95,9 +104,7 @@ describe("codex-run operate instructions", () => {
     expect(result.stdout).toBe("fake answer\n");
     const codexArgs = JSON.parse(fs.readFileSync(argsFile, "utf8"));
     const developer = codexArgs.find((arg) => arg.startsWith("developer_instructions="));
-    expect(JSON.parse(developer.slice("developer_instructions=".length))).toMatch(
-      new RegExp(`^${rules.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\nTTS-RUN-TOKEN: [0-9a-f-]{36}$`),
-    );
+    expect(JSON.parse(developer.slice("developer_instructions=".length))).toBe(rules);
     expect(codexArgs).not.toContain("--ephemeral");
   });
 
@@ -110,9 +117,10 @@ describe("codex-run operate instructions", () => {
     });
     expect(result.status).toBe(0);
     expect(result.stderr).not.toContain("operate instructions unavailable");
+    // Nothing to instruct: no operate text, no grants, and never the token.
     const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
       .find((arg) => arg.startsWith("developer_instructions="));
-    expect(JSON.parse(developer.slice("developer_instructions=".length))).toMatch(/^TTS-RUN-TOKEN: [0-9a-f-]{36}$/);
+    expect(developer).toBeUndefined();
   });
 
   it("continues after one unavailable-instructions warning", () => {
@@ -127,14 +135,14 @@ describe("codex-run operate instructions", () => {
     expect(result.stderr.match(/operate instructions unavailable/g)).toHaveLength(1);
     const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
       .find((arg) => arg.startsWith("developer_instructions="));
-    expect(JSON.parse(developer.slice("developer_instructions=".length))).toMatch(/^TTS-RUN-TOKEN: [0-9a-f-]{36}$/);
+    expect(developer).toBeUndefined();
     // An unreadable operate file is an absence, not a refusal.
     expect(spooledEnvelope(result.state).envelope.registration.layersDenied).toEqual([]);
   });
 });
 
 describe("codex-run registration", () => {
-  it("spools the launcher's envelope under the token the run carries", () => {
+  it("puts the registration at the head of the prompt and keeps the token in the spool", () => {
     const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const result = run([], {
       CODEX_BIN: fakeCodex(),
@@ -145,12 +153,19 @@ describe("codex-run registration", () => {
       RUN_HOST: "box",
     });
     expect(result.status).toBe(0);
-    const { token, envelope } = spooledEnvelope(result.state);
+    const { token, envelope, spool, stdin, block } = spooledEnvelope(result.state);
     const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
       .find((arg) => arg.startsWith("developer_instructions="));
-    // The rollout names its own token, so the sweeper can bind the envelope
-    // exactly even where `codex exec` fires no hooks.
-    expect(JSON.parse(developer.slice("developer_instructions=".length))).toContain(`TTS-RUN-TOKEN: ${token}`);
+    // THE TOKEN IS IN NO TEXT THE MODEL READS: not the developer instruction,
+    // not the prompt. The sweep binds the rollout by the block's hash instead.
+    expect(developer).not.toContain(token);
+    expect(stdin).not.toContain(token);
+    expect(stdin.endsWith("answer this\n")).toBe(true);
+    expect(spool).not.toHaveProperty("registration");
+    expect(spool.blockSha256).toBe(crypto.createHash("sha256").update(block.body).digest("hex"));
+    expect(block.writer).toEqual(spool.writer);
+    // The hash the record keeps is the caller's prompt, as before the block.
+    expect(envelope.registration.promptSha256).toBe(crypto.createHash("sha256").update("answer this\n").digest("hex"));
     // The envelope version is registration.mjs's to state and its own tests'
     // to assert; this case is about what the LAUNCHER wrote into it.
     expect(envelope).toMatchObject({
@@ -216,7 +231,7 @@ describe("codex-run registration", () => {
 });
 
 describe("codex-run skill grants", () => {
-  it("puts the grant block between the operate text and the token line", () => {
+  it("puts the grant block after the operate text", () => {
     const rules = "# Rules\n\nKeep the promise.\n";
     const argsFile = path.join(tempDir("codex-run-args-"), "args.json");
     const vault = wikitomFixture({ rules });
@@ -238,9 +253,8 @@ describe("codex-run skill grants", () => {
     });
     expect(developer).toContain(block);
     expect(developer.indexOf(rules)).toBeLessThan(developer.indexOf(block));
-    expect(developer.indexOf(block)).toBeLessThan(developer.indexOf("TTS-RUN-TOKEN:"));
-    // findCodexRegistration anchors on a whole line, so the token keeps one.
-    expect(developer).toMatch(/\nTTS-RUN-TOKEN: [0-9a-f-]{36}$/);
+    expect(developer.endsWith(block)).toBe(true);
+    expect(developer).not.toContain("TTS-RUN-TOKEN");
     expect(envelope.registration.skillsGranted).toEqual(["write", "know-research"]);
     expect(envelope.registration.skillsRefused).toEqual([]);
     expect(envelope.registration.wikitomCommit).toBe(PUBLISHED_COMMIT);
