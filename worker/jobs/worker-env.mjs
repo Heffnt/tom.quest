@@ -135,24 +135,45 @@ export function graphVersion() {
 }
 
 // ---------------------------------------------------------------------------
-// A secret's value as an HTTP bearer token
+// The OpenRouter key's shape
 // ---------------------------------------------------------------------------
 
 /**
- * What makes `value` unusable as a bearer token, as a sentence of character
- * counts, or null when every character is printable ASCII other than space
- * (0x21-0x7e). Never names a character or a position: the value is a secret.
+ * What is wrong with `value` as an OpenRouter key, as a sentence of character
+ * counts, or null when it is printable ASCII other than space (0x21-0x7e) and
+ * begins with OpenRouter's `sk-or-` prefix. Never names a character of the
+ * key: the value is a secret, and only counts and the prefix are reported.
  *
  * THE ONE DEFINITION of a clean OPENROUTER_API_KEY. scripts/codex-run.mjs
  * refuses a run's key with it, and worker/setup.sh's rollout warning calls it
  * through node on the value loadEnv above reads, so the rollout and the run
- * judge the same value by the same rule. Codex, given a value holding a
- * control character, sends its request with no Authorization header at all.
+ * judge the same value by the same rule.
+ *
+ * WHY THE PREFIX. OpenRouter answers a bearer token that does not begin with
+ * sk-or- with "401 Missing Authentication header", the same words a reader
+ * takes for a header that never arrived (it answers a request with no header
+ * at all with "No cookie auth credentials found"). On 2026-09-24 the box's key
+ * was stored with four characters before its prefix, the tail of a terminal's
+ * paste marker ESC[200~, and every run failed that way while the header was
+ * sent each time.
  */
-export function bearerTokenProblem(value) {
-  const bad = [...String(value)].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
-  if (bad.length === 0) return null;
-  const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
-  const space = bad.filter((ch) => ch === " ").length;
-  return `${bad.length} character(s) outside printable ASCII (${control} control, ${space} space, ${bad.length - control - space} non-ASCII)`;
+export function openrouterKeyProblem(value) {
+  const text = String(value);
+  const problems = [];
+  const bad = [...text].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
+  if (bad.length > 0) {
+    const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
+    const space = bad.filter((ch) => ch === " ").length;
+    problems.push(`${bad.length} character(s) outside printable ASCII (${control} control, ${space} space, ${bad.length - control - space} non-ASCII)`);
+  }
+  const at = text.indexOf("sk-or-");
+  if (at !== 0) problems.push(at > 0 ? `${[...text.slice(0, at)].length} character(s) before its sk-or- prefix` : "no sk-or- prefix");
+  // After the prefix an OpenRouter key is letters, digits, "-" and "_"
+  // (sk-or-v1-<64 hex> today). The printable class above passes the "~" a
+  // paste marker leaves behind (…201~), which OpenRouter would refuse too.
+  if (at >= 0) {
+    const stray = [...text.slice(at)].filter((ch) => /^[\x21-\x7e]$/.test(ch) && !/^[A-Za-z0-9_-]$/.test(ch)).length;
+    if (stray > 0) problems.push(`${stray} punctuation character(s) after its sk-or- prefix`);
+  }
+  return problems.length > 0 ? problems.join(" and ") : null;
 }
