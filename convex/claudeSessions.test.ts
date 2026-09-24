@@ -3847,6 +3847,16 @@ describe("the code lane", () => {
     expect(await codeSessions(t)).toHaveLength(0);
     const ruling = await t.run(async (ctx) => ctx.db.get(earlier));
     expect(ruling?.applyResult).toBe("refused: ComplexMultiTrigger keeps no code-todo file any more");
+
+    // A ruling on a CHANGE in CMT (a pull request, not a code todo) is not
+    // what the refusal is for: it is recorded and applied at write time.
+    // witness: drop the isChangeSubject exemption from insertRuling.
+    const change = await tom.mutation(api.ttsRulings.recordRuling, {
+      repo: "ComplexMultiTrigger",
+      externalId: "pr-105",
+      verdict: "approve",
+    });
+    expect((await t.run(async (ctx) => ctx.db.get(change)))?.appliedAt).toBeGreaterThan(0);
   });
 
   // witness: drop the by_code_subject history read — a code todo could draw
