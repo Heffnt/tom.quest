@@ -879,12 +879,22 @@ OPENROUTERCFG
     echo "  codex now has the openrouter provider"
   fi
   # A key pasted into a terminal can carry the paste's escape sequences, and
-  # Codex then sends no Authorization header at all (scripts/codex-run.mjs
-  # refuses such a key at run time; this says so at rollout, before a run).
-  # Matched by character class only; the value is never printed.
-  if LC_ALL=C grep -qE "^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=.*[^[:graph:][:blank:]$(printf '\r')]" /etc/tts/worker.env; then
-    echo "  WARNING: OPENROUTER_API_KEY holds a control or non-ASCII character; repair it with:"
-    echo "    LC_ALL=C sed -i -E '/^OPENROUTER_API_KEY=/{s/\\x1b\\[20[01]~//g;s/[^[:graph:]]//g}' /etc/tts/worker.env"
+  # Codex then sends no Authorization header at all. The value loadEnv reads is
+  # judged by bearerTokenProblem in worker/jobs/worker-env.mjs, the same rule
+  # scripts/codex-run.mjs refuses a run's key with; node prints only the
+  # character counts, never the value. The repair matches every line form
+  # loadEnv reads (leading blanks, an `export ` prefix), rewrites the prefix
+  # to the plain form, and deletes the paste markers and every character
+  # outside printable ASCII from the line.
+  OPENROUTER_KEY_PROBLEM="$(node --input-type=module -e '
+    const { pathToFileURL } = await import("node:url");
+    const env = await import(pathToFileURL(process.argv[1]).href);
+    const problem = env.bearerTokenProblem(env.loadEnv({ path: process.argv[2] }).OPENROUTER_API_KEY ?? "");
+    if (problem) process.stdout.write(problem);
+  ' "$WORKER_DIR/jobs/worker-env.mjs" /etc/tts/worker.env 2>/dev/null || true)"
+  if [ -n "$OPENROUTER_KEY_PROBLEM" ]; then
+    echo "  WARNING: OPENROUTER_API_KEY holds $OPENROUTER_KEY_PROBLEM; repair it with:"
+    echo "    LC_ALL=C sed -i -E '/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/{s/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/OPENROUTER_API_KEY=/;s/\\x1b\\[20[01]~//g;s/[^[:graph:]]//g}' /etc/tts/worker.env"
   fi
 else
   echo "  OPENROUTER_API_KEY not set in /etc/tts/worker.env — no openrouter provider"

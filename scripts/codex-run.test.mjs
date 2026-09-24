@@ -485,7 +485,7 @@ describe("codex-run OpenRouter models", () => {
       RUN_ENV_FILE: envFile("OPENROUTER_API_KEY=\u001b[200~sk-or-v1-pasted\u001b[201~\n"),
     });
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("holds 2 character(s) an OpenRouter key never contains (2 control, 0 space, 0 non-ASCII)");
+    expect(result.stderr).toContain("holds 2 character(s) outside printable ASCII (2 control, 0 space, 0 non-ASCII)");
     expect(result.stderr).not.toContain("sk-or-v1-pasted");
     expect(fs.existsSync(out.args)).toBe(false);
     expect(fs.existsSync(path.join(result.state, "registration"))).toBe(false);

@@ -144,23 +144,19 @@ function openrouterKey() {
   }
   if (!value) fail(`an openrouter/ model needs ${OPENROUTER_KEY}, which is in neither this environment nor ${file ?? "the worker env file"}`);
   // REMOVAL CHECK: Codex builds the Authorization header from this value and,
-  // when the value is not a legal header value, SENDS THE REQUEST WITHOUT ONE
+  // when the value holds a control character, SENDS THE REQUEST WITHOUT ONE
   // rather than failing. OpenRouter then answers "401 Missing Authentication
-  // header", which reads as a key that never arrived. A key pasted into a
-  // terminal can carry the paste's escape sequences (ESC[200~ ... ESC[201~)
-  // or a stray control character; nothing earlier on the path can see that,
-  // because the env file is parsed as text and the key's value is never shown.
-  // An OpenRouter key is printable ASCII with no spaces (sk-or-v1-<hex>), so
-  // anything else is refused here, reported by character class, never by value.
-  const bad = [...value].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
-  if (bad.length > 0) {
-    const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
-    const space = bad.filter((ch) => ch === " ").length;
-    const other = bad.length - control - space;
-    const where = fromEnv ? "this environment" : file;
-    fail(`${OPENROUTER_KEY} in ${where} holds ${bad.length} character(s) an OpenRouter key never contains `
-      + `(${control} control, ${space} space, ${other} non-ASCII); with a control character Codex sends no `
-      + `Authorization header at all. Rewrite the line with printable characters only.`);
+  // header", which reads as a key that never arrived (the 2026-09-24 smoke
+  // test). A key pasted into a terminal can carry the paste's escape sequences
+  // (ESC[200~ ... ESC[201~); nothing earlier on the path can see that, because
+  // the env file is parsed as text and the value is never shown. The rule is
+  // worker-env.mjs's bearerTokenProblem, the one setup.sh's rollout warns with.
+  if (!workerEnv) fail("worker-env.mjs is not installed, so the OpenRouter key cannot be checked");
+  const problem = workerEnv.bearerTokenProblem(value);
+  if (problem) {
+    fail(`${OPENROUTER_KEY} in ${fromEnv ? "this environment" : file} holds ${problem}; `
+      + "with a control character Codex sends no Authorization header at all. "
+      + "Rewrite the line with printable characters only.");
   }
   return value;
 }
