@@ -49,7 +49,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import { dueRunnerSteps } from "./ttsRunners";
-import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE } from "./ttsShared";
+import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY } from "./ttsShared";
 import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
   WORKER_CONTRACT,
@@ -1507,6 +1507,10 @@ export const internalPoll = internalMutation({
         readAt: v.number(),
       }),
     ),
+    // Whether Fable answers on the box (ttsShared FABLE_AVAILABILITY), absent
+    // while the daemon has none recorded. Stored for the pages; nothing here
+    // gates on it — the launcher reads its own file.
+    fableAvailability: v.optional(FABLE_AVAILABILITY),
   },
   handler: async (
     ctx,
@@ -1517,6 +1521,7 @@ export const internalPoll = internalMutation({
       lastIngestError,
       load,
       codexUsage,
+      fableAvailability,
     },
   ) => {
     const now = Date.now();
@@ -1536,6 +1541,7 @@ export const internalPoll = internalMutation({
           activeAccount,
           ...(load !== undefined ? { load } : {}),
           ...(codexUsage !== undefined ? { codexUsage } : {}),
+          ...(fableAvailability !== undefined ? { fableAvailability } : {}),
           ...(lastIngestError !== undefined ? { lastIngestError } : {}),
         });
       }
@@ -1547,6 +1553,7 @@ export const internalPoll = internalMutation({
         activeAccount,
         load,
         codexUsage,
+        fableAvailability,
       });
     }
 

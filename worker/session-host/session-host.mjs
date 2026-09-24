@@ -36,6 +36,7 @@ import {
   scrubbedEnv,
 } from "./lib.mjs";
 import { Session, gitErrorText } from "./session.mjs";
+import { FABLE_PROBE_INTERVAL_MS, fableProbeDue, readFableState } from "../runs/models.mjs";
 import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
@@ -319,6 +320,64 @@ function refreshCodexUsage() {
   })();
 }
 
+// ── the Fable probe (Tom's ruling, 2026-09-24) ───────────────────────────────
+// "make sure that the opus ceiling is temporary and we switch back to fable
+// when my weekly limit resets." While the Fable availability file
+// (worker/runs/models.mjs) says Fable is unavailable, a request for Fable runs
+// Opus. This is what lifts it: at most once an hour, in the BACKGROUND beside
+// the Codex usage read, one Fable call of one turn and one word through the
+// launcher (box-run.mjs probeFable), recorded like any run. An account out of
+// usage refuses without a model call; an answer sets Fable available, and the
+// next Fable request runs Fable. The reset date never has to be known: the
+// CLI's refusal names a monthly spend limit, Tom's ruling a weekly limit, and
+// the probe finds out either way.
+//
+// The file's own checkedAt is the hourly clock, so a daemon restart does not
+// probe early; fableProbeNextAt is the same hour kept in memory, so a probe
+// that fails before it can write the file is not retried on every poll.
+let fableProbeInFlight = false;
+let fableProbeNextAt = 0;
+
+function fableStateDir() {
+  return process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+}
+
+// Start a probe when one is due and none is running; returns at once. Never
+// throws.
+function refreshFableProbe() {
+  const now = Date.now();
+  if (fableProbeInFlight || now < fableProbeNextAt) return;
+  if (!fableProbeDue(readFableState(fableStateDir()), now)) return;
+  fableProbeInFlight = true;
+  fableProbeNextAt = now + FABLE_PROBE_INTERVAL_MS;
+  void (async () => {
+    try {
+      const { probeFable } = await boxRunner();
+      const state = await probeFable({ env: { ...process.env, RUN_SWEEP_STATE_DIR: fableStateDir() } });
+      log(state.available
+        ? "fable probe: Fable answered; a request for Fable runs Fable again"
+        : `fable probe: Fable is still unavailable (${state.reason ?? "no reason given"})`);
+    } catch (err) {
+      log("fable probe failed:", String(err?.message ?? err));
+    } finally {
+      fableProbeInFlight = false;
+    }
+  })();
+}
+
+/** The Fable availability state for the heartbeat, or undefined while none
+ *  is recorded (an absent file reads as available, and says nothing new). */
+function fableAvailabilityReport() {
+  const state = readFableState(fableStateDir());
+  if (!Number.isFinite(state.since) || !Number.isFinite(state.checkedAt)) return undefined;
+  return {
+    available: state.available,
+    since: state.since,
+    checkedAt: state.checkedAt,
+    ...(typeof state.reason === "string" && state.reason !== "" ? { reason: state.reason } : {}),
+  };
+}
+
 // ── usage-limit account auto-switch (ratified 2026-08-28) ────────────────────
 // A session that hits a usage/rate limit signals here; the daemon flips the
 // active symlink to the OTHER Max account via tts-account so the fleet (and
@@ -548,6 +607,8 @@ async function main() {
 
   for (;;) {
     refreshCodexUsage(); // starts a read when due; never waits on it
+    refreshFableProbe(); // the same, for the Fable probe
+    const fableAvailability = fableAvailabilityReport();
     // Surface the most recent permanent ingest rejection (review fix:
     // permanent-400 wedge) — a dropped flush must be visible server-side, not
     // only in journald. One report is enough: cleared after the poll that
@@ -581,6 +642,10 @@ async function main() {
         // readAt (see refreshCodexUsage); absent only while no read has ever
         // succeeded, which the server reads as unknown, like a stale readAt.
         ...(codexUsage !== undefined ? { codexUsage } : {}),
+        // The Fable availability file (worker/runs/models.mjs), for the pages
+        // that show whether the ceiling is in force; absent while none is
+        // recorded.
+        ...(fableAvailability !== undefined ? { fableAvailability } : {}),
         ...(lastIngestError !== undefined ? { lastIngestError } : {}),
       });
       pollAttempt = 0;

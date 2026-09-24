@@ -935,6 +935,21 @@ export const CODEX_WEEKLY_CAP_PERCENT = 90;
  * Codex door shut forever.
  */
 export const CODEX_USAGE_STALE_MS = 15 * 60_000;
+/**
+ * Whether Fable answers on the box, as the session daemon reports it on its
+ * heartbeat from worker/runs/models.mjs's availability file. While
+ * `available` is false a request for Fable runs Opus (the model ceiling, Tom's
+ * rulings of 2026-09-24); the daemon's hourly probe sets it true again.
+ * `since` is when the value last changed, `checkedAt` the last run or probe
+ * that found it out, `reason` the CLI's refusal. One validator for the
+ * heartbeat's argument and the stored field.
+ */
+export const FABLE_AVAILABILITY = v.object({
+  available: v.boolean(),
+  since: v.number(),
+  checkedAt: v.number(),
+  reason: v.optional(v.string()),
+});
 /** The stored form. One union of literals, DERIVED from the table above so a
  * model added there is accepted by the validator in the same edit — a
  * hand-copied union rejected a model the table already knew. An unknown model

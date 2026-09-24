@@ -102,7 +102,7 @@ describe("wiring: every spawn goes through scrubbedEnv", () => {
 
   it("the daemon registration records only context it actually receives", () => {
     const start = sessionSource.indexOf("this.runRegistration = writeRegistration({");
-    const registration = sessionSource.slice(start, sessionSource.indexOf("if (!knownModel", start));
+    const registration = sessionSource.slice(start, sessionSource.indexOf("const fallbackNote = modelFallbackNote(this.model, fable);", start));
     expect(registration).toContain('kind: this.mode === "autonomous" ? "job" : "session"');
     expect(registration).toContain("layersKnown: false");
     expect(registration).not.toMatch(/\b(?:todoId|batchId|mergeKey|parentRunId|spawnedByToolUseId|continuesRunId)\s*:/);

@@ -5452,3 +5452,24 @@ describe("frontier scheduler", () => {
     expect(after).toHaveLength(1);
   });
 });
+
+// THE MODEL CEILING (worker/runs/models.mjs; Tom's rulings of 2026-09-24). The
+// daemon reports the box's Fable availability file on its heartbeat, and the
+// health row keeps it for the pages that say "Fable unavailable since <time>,
+// last checked <time>". A heartbeat without it keeps the last report.
+describe("fable availability on the daemon heartbeat", () => {
+  it("stores the daemon's report and keeps it through a heartbeat that carries none", async () => {
+    const t = convexTest({ schema, modules });
+    const report = { available: false, since: 1_000, checkedAt: 2_000, reason: "You've hit your monthly spend limit" };
+    await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+      load: HEALTHY_LOAD,
+      fableAvailability: report,
+    });
+    const stored = async () => (await t.run(async (ctx) => await ctx.db.query("claudeDaemonHealth").first()))?.fableAvailability;
+    expect(await stored()).toEqual(report);
+    await heartbeat(t);
+    expect(await stored()).toEqual(report);
+  });
+});

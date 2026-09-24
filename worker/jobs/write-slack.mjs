@@ -33,7 +33,7 @@
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadEnv, convexFetch, runClaude, extractJsonObject, reportJobFailed } from "./tts-lib.mjs";
+import { MODELS, loadEnv, convexFetch, runClaude, extractJsonObject, reportJobFailed } from "./tts-lib.mjs";
 
 const JOB = "write-slack";
 
@@ -58,8 +58,9 @@ async function loadPrelude() {
 const WIKITOM_DIR = process.env.WIKITOM_DIR ?? "/root/wikitom";
 
 /** Fable, because this is writing to Tom in his own register, over his own
- *  writing standard — the one thing in TTS that is judgment about words. */
-const MODEL = "fable";
+ *  writing standard — the one thing in TTS that is judgment about words.
+ *  Opus while the box's model ceiling holds (worker/runs/models.mjs). */
+const MODEL = MODELS.digest;
 const TIMEOUT_MS = 3 * 60 * 1000;
 
 /**

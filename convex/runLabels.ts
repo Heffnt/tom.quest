@@ -370,7 +370,7 @@ export const internalLabelFromObjection = internalMutation({
  * EVERY SESSION-REPLY LABEL IS `judgment: false`, and phase 7 builds no
  * classifier.
  *
- * A reply is not a judgment until something classifies it as one. A Haiku pass
+ * A reply is not a judgment until something classifies it as one. A Sonnet pass
  * here would put a model's opinion of Tom's tone into the corpus the golden
  * set is mined from, and a wrong one would be invisible — a session reply is
  * the highest-volume door of the four, so a classifier that is wrong one time

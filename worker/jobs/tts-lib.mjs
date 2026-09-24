@@ -34,6 +34,9 @@ const launcherFile = [
 ].find((candidate) => existsSync(candidate));
 if (!launcherFile) throw new Error("the box launcher (runs/box-run.mjs) is not installed");
 const boxRunModule = await import(pathToFileURL(launcherFile).href);
+// The model table sits beside the launcher in both layouts (worker/runs/ in a
+// checkout, /opt/tts/runs/ on the box), so it is found where the launcher was.
+const modelsModule = await import(pathToFileURL(path.join(path.dirname(launcherFile), "models.mjs")).href);
 const { boxRunSync } = boxRunModule;
 
 export { ENV_PATH };
@@ -474,45 +477,22 @@ export function serverErrorMessage(err) {
 // accounts is one `tts-account use` away and no job hardcodes an account.
 export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 
-// ONE HOME FOR MODEL NAMES. Every spawn names its model in the code rather than
-// falling through to whatever the active account happens to default to: a job's
-// tier is a decision this repo makes, and switching Max accounts must not
-// silently re-tier the fleet. The keys are ROLES, not job names, so two jobs
-// doing the same shape of work cannot drift apart:
-//
-//   planner    the planning passes (prepare a life todo, plan the graphs) —
-//              judgment over Tom's own words and his goal structure.
-//   codeBrief  the read-only pass over a real repo checkout that writes the
-//              brief a code todo is worked from — judgment plus code reading.
-//   triage     a capture verdict over a batch of inbound items (Gmail, Canvas):
-//              classify-shaped, high volume, cheap tier.
-//   timeNotes  reading one of Tom's time sentences into concrete actions —
-//              mechanical parsing; the tier here is flagged for Tom's ruling.
-//   simplify   the weekly simplification pass (worker/jobs/simplify.mjs, spec
-//              §23.9): one run a week that reads a deterministic facts block
-//              and may answer only with deletions. Fable, because judging what
-//              a system can lose is the hardest judgment the fleet makes, and
-//              because it is one call a week over a bounded prompt.
-//
-// `simplify` SPELLS THE ID IN FULL rather than using the `fable` alias the
-// session model list takes, so the model recorded on the run matches the row
-// in worker/runs/prices.mjs and this job's weekly cost is readable. It
-// duplicates one string with delegate.mjs's DELEGATE_MODEL deliberately:
-// MODELS is where "every spawn names its model" is enforced for jobs, and
-// reaching into the delegate's constant would tier two unrelated jobs
-// together.
-//
-// Model literals still live in nightly.mjs (LEARNING_MODEL), weekly.mjs
-// (WEEKLY_MODEL), delegate.mjs (DELEGATE_MODEL), write-slack.mjs (MODEL) and
-// evals.mjs (REGEN_MODEL / JUDGE_MODEL). They belong in this table too and
-// should move here in a later pass.
-export const MODELS = {
-  planner: "opus",
-  codeBrief: "opus",
-  triage: "claude-haiku-4-5-20251001",
-  timeNotes: "claude-sonnet-5",
-  simplify: "claude-fable-5-1",
-};
+// ONE HOME FOR MODEL NAMES: worker/runs/models.mjs, beside the launcher. Every
+// spawn names its model in the code rather than falling through to whatever the
+// active account happens to default to: a job's tier is a decision this repo
+// makes, and switching Max accounts must not silently re-tier the fleet. That
+// file holds the table of roles (MODELS) and the model ceiling that stands in
+// for Fable while Fable is unavailable, which box-run.mjs applies to every run.
+// These are forwards, never copies, so a job imports them from the library as
+// it always has.
+export const { MODELS, MODEL_CEILING } = modelsModule;
+
+// The model a job's record names for a call it made: the requested model, or
+// "opus (fable requested, at the ceiling)" while Fable is unavailable. Read
+// when the record is written, from the same file the launcher read.
+export function modelLabel(requested) {
+  return modelsModule.modelLabel(requested, boxRunModule.fableState());
+}
 
 // THE ARGV, THE TOOL LISTS AND THE ENVELOPE READER LIVE IN box-run.mjs, the
 // box's one launcher, because that is where a command line is built now.

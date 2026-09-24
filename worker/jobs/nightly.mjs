@@ -135,7 +135,7 @@ import {
   withWikiTomLock,
   writeArchived,
 } from "./session-archive.mjs";
-import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
+import { MODELS, loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
 import {
   enclosingHeadings,
@@ -874,7 +874,7 @@ export const FORBIDDEN_SECTIONS = ["Directions", "Ideal state", "Must not break"
 export const LEARNING_OPS = ["add", "replace", "remove"];
 // runClaude's --model. The Opus tier: this is judgment over Tom's words, not
 // a mechanical parse. Overridable per box without a deploy.
-export const LEARNING_MODEL = process.env.TTS_LEARNING_MODEL || "opus";
+const LEARNING_MODEL = process.env.TTS_LEARNING_MODEL || MODELS.learning;
 export const LEARNING_TIMEOUT_MS = 20 * 60 * 1000;
 // A turn of Tom's is shown to the model up to this many characters.
 export const LEARNING_TURN_CHARS = 4000;

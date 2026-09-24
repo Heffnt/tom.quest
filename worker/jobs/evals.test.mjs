@@ -699,7 +699,7 @@ describe("runEvals carries the trial rule end to end", () => {
       ...io([], dir),
       // The real launcher throws on a failed command, so the eval records it
       // as an error before a free-form job can hand it to the judge.
-      runClaude: async () => { throw new Error("Command failed: claude -p --model haiku"); },
+      runClaude: async () => { throw new Error("Command failed: claude -p --model sonnet"); },
     };
     const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
     expect(run).toMatchObject({
@@ -708,7 +708,7 @@ describe("runEvals carries the trial rule end to end", () => {
       fail: 29,
       errored: 29,
       error: true,
-      reason: "runner failed: Command failed: claude -p --model haiku",
+      reason: "runner failed: Command failed: claude -p --model sonnet",
       regressions: null,
       goldenCoverage: null,
     });
@@ -3181,7 +3181,7 @@ describe("the real io's model calls", () => {
       vi.stubEnv("TTS_RUN_REG_SPOOL", path.join(state, "spool"));
       vi.stubEnv("TTS_RUN_SLOT_HELD", "");
       const io = realIo({});
-      await expect(io.runClaude("p", { model: "haiku", cwd: state })).resolves.toBe("answered");
+      await expect(io.runClaude("p", { model: "sonnet", cwd: state })).resolves.toBe("answered");
       await expect(io.audit("p")).resolves.toBe("answered");
     } finally {
       fs.rmSync(state, { recursive: true, force: true });

@@ -44,6 +44,7 @@ import {
 import { codexQuery } from "./codex-query.mjs";
 import { removeWorkdir } from "./workdir.mjs";
 import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
+import { FABLE_LIMIT_RE, MODELS, aboveCeiling, ceilingNote, markFableUnavailable, readFableState, underCeiling } from "../runs/models.mjs";
 import { claimRegistration, writeRegistration } from "../runs/registration.mjs";
 
 const execFile = promisify(execFileCb);
@@ -107,8 +108,23 @@ const SESSION_MODELS = {
 export function knownModel(name) {
   return Object.hasOwn(SESSION_MODELS, name ?? "opus");
 }
-export function modelSpec(name) {
+// THE MODEL CEILING is the second rung of the same fallback: while the Fable
+// availability state (worker/runs/models.mjs, Tom's rulings of 2026-09-24)
+// says Fable is unavailable, a fable session runs as the ceiling's spec. The
+// row keeps the name it was asked for, exactly as for an unknown name, and
+// modelFallbackNote says which rung applied. `fable` is that state, which a
+// Session reads from its run state directory.
+export function modelSpec(name, fable = { available: true }) {
+  const resolved = underCeiling(name ?? "opus", fable);
+  if (resolved.atCeiling) return SESSION_MODELS[resolved.model];
   return SESSION_MODELS[knownModel(name) ? (name ?? "opus") : "opus"];
+}
+/** The line the log and the transcript carry when modelSpec did not run the
+ *  model asked for, or null when it did. */
+export function modelFallbackNote(name, fable = { available: true }) {
+  if (!knownModel(name)) return `model ${name} unknown to this daemon — running as opus`;
+  const resolved = underCeiling(name ?? "opus", fable);
+  return resolved.atCeiling ? ceilingNote(resolved) : null;
 }
 export function modelFamily(name) {
   if (!knownModel(name)) name = "opus";
@@ -233,9 +249,9 @@ const DAEMON_SELF_DESTRUCT_RE =
   /systemctl\s+(?:restart|stop|kill)\s+\S*tts-session-host|service\s+tts-session-host\s+(?:restart|stop)|pkill\s+[^|;&]*session-host/;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
-// cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
-// model, short timeout. A verdict must never cost more than the command.
-const CLASSIFIER_MODEL = "claude-haiku-4-5-20251001";
+// cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), the budget
+// model (worker/runs/models.mjs MODELS.classifier), short timeout. A verdict must never cost more than the command.
+const CLASSIFIER_MODEL = MODELS.classifier;
 const CLASSIFIER_TIMEOUT_MS = 30_000;
 const CLASSIFIER_MAXBUFFER = 256 * 1024; // a one-line verdict; nothing more
 // Per-session verdict memo. Agentic loops re-run the same command constantly
@@ -472,11 +488,11 @@ export class Session {
     this.model = model ?? "opus";
     this.family = modelFamily(this.model);
     // The row keeps its name (so processServerState's compare stays quiet);
-    // the spec it resolves to is opus. Logged once here; startQuery writes
-    // the matching system row so the transcript says it too.
-    if (!knownModel(this.model)) {
-      log(`session ${id}: model ${this.model} unknown to this daemon — running as opus`);
-    }
+    // the spec it resolves to is opus, for an unknown name or one above the
+    // model ceiling. Logged once here; startQuery writes the matching system
+    // row so the transcript says it too.
+    const fallbackNote = modelFallbackNote(this.model, this.fableState());
+    if (fallbackNote !== null) log(`session ${id}: ${fallbackNote}`);
     this.modelFallbackNoted = false;
     // Set when the server changed the model while a turn was running: the
     // live query keeps its model until the turn ends, then is retired so the
@@ -1022,10 +1038,11 @@ export class Session {
     this.abort = new AbortController();
     this.interruptRequested = false;
     this.modelSwitchPending = false;
-    const spec = modelSpec(this.model);
+    const fable = this.fableState();
+    const spec = modelSpec(this.model, fable);
     this.family = spec.family;
     if (!resume && !this.runRegistration) {
-      const stateDir = this.env.RUN_SWEEP_STATE_DIR || process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+      const stateDir = this.stateDir();
       const host = this.env.RUN_HOST === "box" || this.env.RUN_HOST === "laptop"
         ? this.env.RUN_HOST
         : (process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null);
@@ -1058,12 +1075,11 @@ export class Session {
         },
       });
     }
-    if (!knownModel(this.model) && !this.modelFallbackNoted) {
-      // The transcript's copy of the constructor's log line, once.
+    const fallbackNote = modelFallbackNote(this.model, fable);
+    if (fallbackNote !== null && !this.modelFallbackNoted) {
+      // The transcript's copy of the constructor's log line, once per model.
       this.modelFallbackNoted = true;
-      this.finalizeRow("system", {
-        text: `model ${this.model} unknown to this daemon — running as opus`,
-      });
+      this.finalizeRow("system", { text: fallbackNote });
     }
     const sessionEnv = {
       ...inheritedEnv,
@@ -1213,9 +1229,36 @@ export class Session {
   // means nothing to a Codex session. A Codex cap still reaches the
   // autonomous outcomeSummary / error rows through lastTurnErrorText, where
   // the server's breaker reads it keyed on the session's family.
+  //
+  // THE FABLE RUNG COMES FIRST. A fable session refused for a spend or usage
+  // limit is Fable being out, not the account: the Fable availability state
+  // is set unavailable, the query is retired at the turn boundary, and the
+  // next turn runs at the ceiling (modelSpec). The account is not switched:
+  // Tom's ruling of 2026-09-24 keeps the box on the wpi account.
   #maybeUsageSignal(text) {
     if (this.family !== "claude") return;
+    if (aboveCeiling(this.model) && this.fableState().available !== false) {
+      const line = text.split("\n").find((part) => FABLE_LIMIT_RE.test(part));
+      if (line !== undefined) {
+        markFableUnavailable(this.stateDir(), { reason: line });
+        log(`session ${this.id}: ${this.model} was refused (${line.trim().slice(0, 200)}); Fable is marked unavailable`);
+        this.finalizeRow("system", { text: `${this.model} was refused for a limit; Fable is marked unavailable and the next turn runs at the ceiling` });
+        this.modelSwitchPending = true;
+        this.modelFallbackNoted = false;
+        return;
+      }
+    }
     if (USAGE_LIMIT_RE.test(text)) this.onUsageSignal?.(text.slice(0, 200), this);
+  }
+
+  // The run state directory, where the registration spool and the Fable
+  // availability file live (worker/runs/config.mjs names the same one).
+  stateDir() {
+    return this.env.RUN_SWEEP_STATE_DIR || process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+  }
+
+  fableState() {
+    return readFableState(this.stateDir());
   }
 
   // Retire the live query WITHOUT ending the session: the next
@@ -1855,6 +1898,7 @@ export class Session {
     const from = this.model;
     this.model = name;
     this.family = modelFamily(name);
+    this.modelFallbackNoted = false;
     this.finalizeRow("system", { text: `model changed to ${name}` });
     if (this.q && (this.status === "idle" || this.status === "starting")) {
       // "starting": the query exists but no turn has run, so there is no

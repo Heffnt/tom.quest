@@ -12,6 +12,7 @@
 - A session's `model` selects its runner: `opus`, `sonnet` and `fable` run Claude Code; `gpt-5.6-sol` and `gpt-5.6-terra` run Codex. It is set on the create form or the select in the session header.
 - A model change within one family takes effect on the next turn. A change across families ends the session and opens a new one on the other runner, seeded with the whole transcript.
 - A worker takes the todo's `model` tag if the planner set one, else the fleet default in the fleet strip. At `CODEX_WEEKLY_CAP_PERCENT` of weekly Codex usage, untagged work falls to `opus` and Codex-tagged work waits.
+- Every job's model is `MODELS` in `worker/runs/models.mjs`. A Claude run asked for Fable runs Opus while that file's Fable availability state says Fable is unavailable: a run refused for a spend or usage limit sets it, and the daemon's hourly Fable probe clears it.
 
 ## codex
 

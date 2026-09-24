@@ -84,7 +84,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { convexFetch, loadEnv, nyHour, reportJobFailed, reportJobOk } from "./tts-lib.mjs";
+import { MODELS, convexFetch, loadEnv, nyHour, reportJobFailed, reportJobOk } from "./tts-lib.mjs";
 import { yamlToJson } from "./tts-code-lib.mjs";
 import { utcDay } from "./session-archive.mjs";
 
@@ -105,7 +105,7 @@ const LOOP_HOUR = 5;
  *  explanation that becomes the pull request's body. Codex was capped when
  *  the loop landed; worker/README.md records what switching would take. */
 const ACTUATOR_RUNNER = "claude";
-const ACTUATOR_MODEL = "opus";
+const ACTUATOR_MODEL = MODELS.removalActuator;
 
 /** The trailer every loop commit carries, the one the loop's own brief named. */
 const COMMIT_TRAILER = "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>";
