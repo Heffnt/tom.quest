@@ -30,6 +30,8 @@ import { isNarrowListId } from "./ttsShared";
 import { auditVerdictOf, mergedOnMain } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
+import { INTENT_SOURCES_MAX, isIntentSourcePath } from "./intent";
+import { VOCABULARY_TERMS_MAX } from "./vocabulary";
 import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../scripts/skills.mjs";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 // The door check's complaints are model-written text that lands where Tom
@@ -1692,18 +1694,48 @@ const ttsAskContext = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
 // ── The mechanical merge gate's three doors (convex/ttsMerge.ts) ────────────
-// A merge is allowed when three facts about the merged head are on record:
-// the tests are green, an audit approved it, and the evals found no
-// regression. These routes are where the first two are written, where all
-// three are read, and where a passed merge is recorded.
+// Three facts about the merged head are read: the tests are green, an audit
+// approved it, and the evals found no regression. A merge is allowed on the
+// first two alone while EVALS_REQUIRED_FOR_MERGE in convex/ttsMerge.ts is
+// false (Tom, 2026-09-24); the third is still read and reported. These routes
+// are where the first two are written, where all three are read, and where a
+// passed merge is recorded.
 
-// POST /tts/tests — the Guardrails `tests` job's own result, at the end of its
-// run. Body: { repo, sha, ok, detail?, url? }.
+// POST /tts/tests — the Guardrails run's own result, posted by the `report` job
+// once the other four have answered (scripts/tests-report.mjs). Body:
+// { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest? }.
 //
 // EITHER KEY, for the reason the evals-run read takes either: CI holds the
 // narrow evals key and this is a CI fact of the same class, while the box
 // holds the worker key and posts its own local runs. The worker key is
 // strictly the more privileged of the two, so accepting it widens nothing.
+/** `{ name: seconds }` when every value is a finite number, else null. The
+ *  schema's `v.record(v.string(), v.number())` refuses anything else, and a
+ *  refused mutation is a missing tests row. */
+function numberRecord(value: unknown): Record<string, number> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const out: Record<string, number> = {};
+  for (const [name, seconds] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds)) return null;
+    out[name] = seconds;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+/** The slowest files, kept to five: the warning names them and a row is a
+ *  record, not the reporter's whole answer. */
+function slowestFiles(value: unknown): { file: string; seconds: number }[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: { file: string; seconds: number }[] = [];
+  for (const entry of value.slice(0, 5)) {
+    const row = (entry ?? {}) as Record<string, unknown>;
+    if (typeof row.file !== "string" || row.file.trim() === "") return null;
+    if (typeof row.seconds !== "number" || !Number.isFinite(row.seconds)) return null;
+    out.push({ file: row.file.trim(), seconds: row.seconds });
+  }
+  return out.length === 0 ? null : out;
+}
+
 const ttsTests = httpAction(async (ctx, request) => {
   const denied = request.headers.get("X-TTS-Key")
     ? ttsAuth(request)
@@ -1721,12 +1753,23 @@ const ttsTests = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
   }
   if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
+  const durations = numberRecord(b.durations);
+  const slowest = slowestFiles(b.slowest);
   const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
     repo: (b.repo as string).trim(),
     sha: (b.sha as string).trim(),
     ok: b.ok,
     ...(nonempty(b.detail) ? { detail: (b.detail as string).trim() } : {}),
     ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
+    // WHICH SCOPE RAN AND HOW LONG IT TOOK. All four are optional and none is a
+    // condition: a caller that sends none records the row it always did, and
+    // the timing warning (convex/ttsMerge.ts slowConditions) simply has nothing
+    // to measure. Each is DROPPED rather than refused when it is the wrong
+    // shape — a malformed duration must not cost the gate its tests row.
+    ...(nonempty(b.mode) ? { mode: (b.mode as string).trim() } : {}),
+    ...(typeof b.files === "number" && Number.isFinite(b.files) ? { files: b.files } : {}),
+    ...(durations === null ? {} : { durations }),
+    ...(slowest === null ? {} : { slowest }),
   });
   //  rather than : the answer's own ok says the POST landed, and
   // the row's ok says whether the tests were green.
@@ -1854,8 +1897,8 @@ const ttsAudit = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/audit", method: "POST", handler: ttsAudit });
 
-// GET /tts/merge-gate?repo=&sha= — the three checks, and which of them are
-// missing. This is what the box asks before it lets a merge command run
+// GET /tts/merge-gate?repo=&sha= — the three checks, and which of the
+// required ones are missing. This is what the box asks before it lets a merge command run
 // (worker/session-host/session.mjs), so it is read-only and opens nothing.
 const ttsMergeGate = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -2286,6 +2329,178 @@ const ttsRepoRules = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/repo-rules", method: "POST", handler: ttsRepoRules });
+
+// POST /tts/intent-sources — the files his intent is written in that no other
+// door carries, replaced whole (convex/intent.ts).
+//
+// A THIRD DOOR, for the reason there are already two: the /intent page reads
+// the evidence behind every model-of-tom line, `vqc/steering.yaml`, and the
+// dated notes of `tts/spec.md` and `vqc/adoption.md` that quote his rulings.
+// None of those is a model-of-tom page and none is an `AGENTS.md`, so neither
+// existing door takes them — and widening one of those two to take them would
+// make a night that could not read the spec cost every run its base prompt.
+// This door's failure costs a page some rows and nothing else.
+//
+// TWO REPOSITORIES IN ONE POST, unlike /tts/repo-rules: these files are not a
+// repository's rules, they are the places one thing is written, and the page
+// wants them together or not at all.
+const ttsIntentSources = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(b.files) || b.files.length === 0) {
+    return jsonResponse(400, { error: "files (non-empty array) required" });
+  }
+  if (b.files.length > INTENT_SOURCES_MAX) {
+    return jsonResponse(400, { error: `at most ${INTENT_SOURCES_MAX} files per post — got ${b.files.length}` });
+  }
+  const files: { repo: string; path: string; body: string; bytes: number; commit: string; syncedAt: number }[] = [];
+  for (let i = 0; i < b.files.length; i++) {
+    const f = b.files[i] as Record<string, unknown> | null;
+    if (typeof f !== "object" || f === null) {
+      return jsonResponse(400, { error: `files[${i}] must be an object` });
+    }
+    if (typeof f.repo !== "string" || f.repo.trim() === "") {
+      return jsonResponse(400, { error: `files[${i}].repo (a session repo name) required` });
+    }
+    if (typeof f.path !== "string" || !isIntentSourcePath(f.path)) {
+      return jsonResponse(400, { error: `files[${i}].path must be a relative path inside the repo` });
+    }
+    if (typeof f.body !== "string" || f.body.trim() === "") {
+      return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
+    }
+    if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes < 0) {
+      return jsonResponse(400, { error: `files[${i}].bytes (nonnegative integer) required` });
+    }
+    if (typeof f.commit !== "string" || !/^[0-9a-f]{40}$/.test(f.commit)) {
+      return jsonResponse(400, { error: `files[${i}].commit (40 hex characters) required` });
+    }
+    if (typeof f.syncedAt !== "number" || !Number.isFinite(f.syncedAt)) {
+      return jsonResponse(400, { error: `files[${i}].syncedAt (epoch ms) required` });
+    }
+    files.push({
+      repo: f.repo, path: f.path, body: f.body, bytes: f.bytes, commit: f.commit, syncedAt: f.syncedAt,
+    });
+  }
+  try {
+    const result = await ctx.runMutation(internal.intent.internalReplaceIntentSources, { files });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/intent-sources", method: "POST", handler: ttsIntentSources });
+
+// POST /tts/vocabulary — the vocabulary as the nightly's graph step last
+// rendered it, and the disagreements it refused to write over
+// (convex/vocabulary.ts says why the record holds this and not the file).
+const ttsVocabularyPost = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.version !== "string" || b.version.trim() === "") {
+    return jsonResponse(400, { error: "version (the render's own hash) required" });
+  }
+  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
+    return jsonResponse(400, { error: "commit (40 hex characters) required" });
+  }
+  if (typeof b.committedAt !== "number" || !Number.isFinite(b.committedAt)) {
+    return jsonResponse(400, { error: "committedAt (epoch ms) required" });
+  }
+  if (typeof b.generatedAt !== "number" || !Number.isFinite(b.generatedAt)) {
+    return jsonResponse(400, { error: "generatedAt (epoch ms) required" });
+  }
+  // WROTE IS A FACT OF THE NIGHT, not a default: it says whether
+  // tts/vocabulary.json exists at this commit, which is the whole difference
+  // between a settled vocabulary and one waiting on him.
+  if (typeof b.wrote !== "boolean") {
+    return jsonResponse(400, { error: "wrote (boolean) required" });
+  }
+  if (!Array.isArray(b.terms) || b.terms.length === 0) {
+    return jsonResponse(400, { error: "terms (non-empty array) required" });
+  }
+  if (b.terms.length > VOCABULARY_TERMS_MAX) {
+    return jsonResponse(400, { error: `at most ${VOCABULARY_TERMS_MAX} terms per post — got ${b.terms.length}` });
+  }
+  const terms: {
+    term: string; kind: string; definition: string;
+    specSection?: string; codeSymbol?: string; related: string[]; refusedFor?: string;
+  }[] = [];
+  for (let i = 0; i < b.terms.length; i++) {
+    const t = b.terms[i] as Record<string, unknown> | null;
+    if (typeof t !== "object" || t === null || typeof t.term !== "string" || t.term.trim() === "") {
+      return jsonResponse(400, { error: `terms[${i}].term (non-empty string) required` });
+    }
+    if (typeof t.kind !== "string" || typeof t.definition !== "string") {
+      return jsonResponse(400, { error: `terms[${i}].kind and .definition (strings) required` });
+    }
+    if (!Array.isArray(t.related) || t.related.some((name) => typeof name !== "string")) {
+      return jsonResponse(400, { error: `terms[${i}].related (array of strings) required` });
+    }
+    // The generator writes null where a word has no section, no symbol or no
+    // replacement. Null and absent are the same fact here — the field is a
+    // string or it is not there — so the nulls are dropped rather than stored.
+    terms.push({
+      term: t.term,
+      kind: t.kind,
+      definition: t.definition,
+      ...(typeof t.specSection === "string" && t.specSection !== "" ? { specSection: t.specSection } : {}),
+      ...(typeof t.codeSymbol === "string" && t.codeSymbol !== "" ? { codeSymbol: t.codeSymbol } : {}),
+      related: t.related as string[],
+      ...(typeof t.refusedFor === "string" && t.refusedFor !== "" ? { refusedFor: t.refusedFor } : {}),
+    });
+  }
+  if (!Array.isArray(b.disagreements)) {
+    return jsonResponse(400, { error: "disagreements (array) required" });
+  }
+  const disagreements: { code: string; subject: string; fix: string; rows: { label: string; where: string; text: string }[] }[] = [];
+  for (let i = 0; i < b.disagreements.length; i++) {
+    const d = b.disagreements[i] as Record<string, unknown> | null;
+    if (typeof d !== "object" || d === null || typeof d.code !== "string"
+      || typeof d.subject !== "string" || typeof d.fix !== "string" || !Array.isArray(d.rows)) {
+      return jsonResponse(400, { error: `disagreements[${i}] must carry code, subject, fix and rows` });
+    }
+    const rows: { label: string; where: string; text: string }[] = [];
+    for (const row of d.rows) {
+      const r = row as Record<string, unknown> | null;
+      if (typeof r !== "object" || r === null || typeof r.label !== "string"
+        || typeof r.where !== "string" || typeof r.text !== "string") {
+        return jsonResponse(400, { error: `disagreements[${i}].rows must carry label, where and text` });
+      }
+      rows.push({ label: r.label, where: r.where, text: r.text });
+    }
+    disagreements.push({ code: d.code, subject: d.subject, fix: d.fix, rows });
+  }
+  try {
+    const result = await ctx.runMutation(internal.vocabulary.internalReplaceVocabulary, {
+      version: b.version,
+      commit: b.commit,
+      committedAt: b.committedAt,
+      generatedAt: b.generatedAt,
+      wrote: b.wrote,
+      terms,
+      disagreements,
+    });
+    return jsonResponse(200, { ok: true, version: b.version, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/vocabulary", method: "POST", handler: ttsVocabularyPost });
 
 // ── The nightly job's three doors (convex/ttsNightly.ts) ─────────────────────
 

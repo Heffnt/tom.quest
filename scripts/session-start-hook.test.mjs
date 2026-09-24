@@ -68,6 +68,15 @@ function fixture({ writing = true } = {}) {
  * declares; `CLAUDE_CONFIG_DIR` and `CMT_DIR` are cleared so this laptop's own
  * configuration cannot reach a test, and `TOM_QUEST_DIR` is pointed at a
  * directory that is not a checkout so the run publishes no repo but WikiTom's.
+ *
+ * `RUN_HOST` IS CLEARED FOR THE SAME REASON, and it was the one source of a
+ * destination this list forgot. The hook publishes only when it is NOT on the
+ * box (the box's nightly is the one publisher there), and worker/setup.sh
+ * exports `RUN_HOST=box` from the first line of the box's `.bashrc` — so on the
+ * box six cases here published nothing, read an empty catalog and got
+ * "refused: write" where they asked for "granted: write". They passed on Tom's
+ * laptop, where the variable is unset, and on a CI runner for the same reason.
+ * The three cases that WANT the box branch pass `RUN_HOST` themselves.
  */
 function run({ wikitom, skills, tomQuest, env = {}, payload = {
   hook_event_name: "SessionStart",
@@ -83,6 +92,7 @@ function run({ wikitom, skills, tomQuest, env = {}, payload = {
       TOM_QUEST_DIR: tomQuest ?? path.join(os.tmpdir(), "no-tom-quest-checkout"),
       CLAUDE_CONFIG_DIR: "",
       CMT_DIR: "",
+      RUN_HOST: "",
       ...env,
     },
   });

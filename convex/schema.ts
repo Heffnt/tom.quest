@@ -1072,6 +1072,65 @@ export default defineSchema({
     .index("by_repo_path", ["repo", "path"])
     .index("by_repo", ["repo"]),
 
+  // THE REST OF WHERE HIS INTENT IS WRITTEN. His intent lives in four kinds of
+  // place (the /intent page): his directions, the standing rules, his rulings,
+  // and the labels he puts on a run's output. Three of the four already have a
+  // home in the record — modelOfTomFiles above, dtsRulings, runLabels — and the
+  // files below are the ones that had none: the evidence behind each
+  // model-of-tom line, `vqc/steering.yaml`, and the two files whose dated notes
+  // quote his rulings (`tts/spec.md`, `vqc/adoption.md`).
+  //
+  // VERBATIM BODIES, PARSED AT READ TIME (convex/intentParse.ts). A curated
+  // table of his intent would be a second copy of what he edits, and the page
+  // exists to show drift rather than to add a place it can drift to. The
+  // nightly replaces every row of this table in one post, the way it replaces
+  // the model-of-tom files, so a file it stops sending leaves no stale row.
+  intentSources: defineTable({
+    repo: v.string(), // "WikiTom" or "tom.quest" — a SESSION_REPOS name
+    path: v.string(), // the path inside that repository
+    body: v.string(),
+    bytes: v.number(),
+    commit: v.string(),
+    syncedAt: v.number(), // the commit's time, not the post's
+  }).index("by_path", ["path"]),
+
+  // THE VOCABULARY AS THE GENERATOR LAST RENDERED IT, and the disagreements it
+  // refused to write over. `scripts/vocabulary.mjs` writes WikiTom
+  // `tts/vocabulary.json` only when the spec and the code say the same thing
+  // about every word; while they do not, it renders, reports and writes
+  // nothing — so the file the /vocabulary page would read does not exist, and
+  // the generator's own render is the only current statement of the vocabulary.
+  //
+  // The nightly's graph step posts that render here every night, written or
+  // not, which is what lets the page show the words as they are AND the
+  // disagreements that are holding the file back. `wrote` says which of those
+  // two nights it was.
+  ttsVocabulary: defineTable({
+    key: v.literal("current"),
+    version: v.string(), // the generator's own content hash of the render
+    commit: v.string(), // the WikiTom commit §12.1 was read at
+    committedAt: v.number(),
+    generatedAt: v.number(),
+    wrote: v.boolean(), // whether tts/vocabulary.json was written that night
+    terms: v.array(v.object({
+      term: v.string(),
+      kind: v.string(),
+      definition: v.string(),
+      specSection: v.optional(v.string()), // the §  the term is defined in
+      codeSymbol: v.optional(v.string()),
+      related: v.array(v.string()),
+      refusedFor: v.optional(v.string()), // the word this one is refused in favour of
+    })),
+    // One per thing the spec and the code do not both say. Each is Tom's to
+    // settle with one ruling, so the rows carry what each source says verbatim.
+    disagreements: v.array(v.object({
+      code: v.string(), // the generator's own class, e.g. "D1"
+      subject: v.string(),
+      fix: v.string(),
+      rows: v.array(v.object({ label: v.string(), where: v.string(), text: v.string() })),
+    })),
+  }).index("by_key", ["key"]),
+
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;
   // rendering + permission rulings 2026-08-29). These comments carry only what
@@ -1792,7 +1851,9 @@ export default defineSchema({
     // with the heartbeat. The scheduler's weekly gate reads it: at or past
     // CODEX_WEEKLY_CAP_PERCENT (ttsShared) the fleet starts no Codex session.
     // The five-hour figure is recorded but NOT gated on (Tom, 2026-09-04) —
-    // that window refills by itself while the week does not. `readAt` is the
+    // that window refills by itself while the week does not — and it is
+    // absent when the account reports no five-hour window at all (codex-cli
+    // 0.153 on a "prolite" plan reports only the weekly one). `readAt` is the
     // instant the reading was TAKEN, not the instant it was reported: the
     // daemon keeps resending its last successful reading unchanged while later
     // reads fail, so an old readAt means "nobody has managed to ask Codex for a
@@ -1802,7 +1863,7 @@ export default defineSchema({
     codexUsage: v.optional(
       v.object({
         weeklyUsedPercent: v.number(),
-        fiveHourUsedPercent: v.number(),
+        fiveHourUsedPercent: v.optional(v.number()),
         weeklyResetsAt: v.optional(v.number()),
         readAt: v.number(),
       }),

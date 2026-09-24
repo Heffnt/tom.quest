@@ -16,6 +16,11 @@ import {
   unaffectedBy,
   waitForEvals,
   WATCHED_PATHS,
+  costLine,
+  JOB_INPUTS,
+  SLOW_RUN_MS,
+  jobsAffectedBy,
+  SHARED_PROMPT_INPUTS,
 } from "./evals-check.mjs";
 
 const failure = (id, over = {}) => ({ id, partition: "prepare/chores", verdict: "revise", reason: `${id} reason`, confirmed: true, ...over });
@@ -673,5 +678,90 @@ describe("the golden-item rule", () => {
     expect(gate(null, run(), { changed: WATCHED, prBody: "" }).goldenCoverage).toBe(false);
     const broken = run({ items: 0, pass: 0, fail: 0, scoredIds: [], error: "could not fetch deadbeef" });
     expect(gate(broken, null, { changed: [], prBody: "" }).goldenCoverage).toBe(true);
+  });
+});
+
+describe("what one job's prompt reads", () => {
+  // THE HOLE THIS CLOSED. `checkin` builds its prompt from
+  // worker/jobs/runner-checkin.mjs and `learning` from worker/jobs/nightly.mjs
+  // and worker/jobs/learning-ground.mjs, and none of the three was watched — so
+  // a change to the check-in judge's own prompt was `unaffected`, wrote a
+  // passing row with nothing scored, and merged with the nine items that exist
+  // to score it never run.
+  it("watches the files the check-in and learning jobs build their prompts from", () => {
+    expect(matchesWatched("worker/jobs/runner-checkin.mjs")).toBe(true);
+    expect(matchesWatched("worker/jobs/nightly.mjs")).toBe(true);
+    expect(matchesWatched("worker/jobs/learning-ground.mjs")).toBe(true);
+    expect(unaffectedBy(["worker/jobs/runner-checkin.mjs"])).toBe(false);
+  });
+
+  // A path named here that WATCHED_PATHS does not carry can never be reached:
+  // the branch would be called unaffected and nothing would consult this table.
+  it("names nothing the watch does not already cover", () => {
+    for (const [job, inputs] of Object.entries(JOB_INPUTS)) {
+      for (const input of inputs) {
+        expect(matchesWatched(input), `${job} reads ${input}, which is not watched`).toBe(true);
+      }
+    }
+    for (const shared of SHARED_PROMPT_INPUTS) expect(WATCHED_PATHS).toContain(shared);
+  });
+
+  it("narrows an ordinary diff to the jobs that read what it touched", () => {
+    expect(jobsAffectedBy(["worker/jobs/runner-checkin.mjs"])).toEqual(["checkin"]);
+    expect(jobsAffectedBy(["worker/jobs/plan-graphs.mjs"])).toEqual(["batch-plan", "code-brief", "prepare"]);
+    // Nothing watched at all: no job reads it, and the whole-run shortcut has
+    // already answered this branch anyway.
+    expect(jobsAffectedBy(["README.md"])).toEqual([]);
+  });
+
+  it("refuses to narrow when a shared input moved, or when nobody supplied a diff", () => {
+    // Every prompt carries the layers, so every item moves.
+    expect(jobsAffectedBy(["model-of-tom/intent.md"])).toBeNull();
+    expect(jobsAffectedBy(["scripts/skills.mjs"])).toBeNull();
+    expect(jobsAffectedBy(["evals/golden/explanations/explanation-p1.json"])).toBeNull();
+    // A weekly run and a run by hand supply no list: null regenerates all.
+    expect(jobsAffectedBy(undefined)).toBeNull();
+    expect(jobsAffectedBy(null)).toBeNull();
+  });
+
+  it("refuses to narrow on a watched path no job claims", () => {
+    // Watched, and not in any job's row: some job may read it by a route this
+    // table does not describe, so the honest answer is the unnarrowed one.
+    expect(WATCHED_PATHS).toContain("convex/ttsDigest.ts");
+    expect(Object.values(JOB_INPUTS).flat()).not.toContain("convex/ttsDigest.ts");
+    expect(jobsAffectedBy(["convex/ttsDigest.ts"])).toBeNull();
+  });
+});
+
+describe("the cost line", () => {
+  const timing = { durationMs: 21 * 60 * 1000, regenerated: 3, cached: 30, skipped: 0, unreplayable: 15, concurrency: 4 };
+
+  it("says what the run spent its minutes on", () => {
+    const [line] = costLine({ timing, calls: 6 });
+    expect(line).toContain("21 min at 4 at a time, 6 calls");
+    expect(line).toContain("3 regenerated");
+    expect(line).toContain("30 carried over from the base");
+    expect(line).toContain("15 unreplayable");
+  });
+
+  it("names a run that ran long, and says nothing about one that did not", () => {
+    expect(costLine({ timing, calls: 6 })).toHaveLength(1);
+    const slow = costLine({ timing: { ...timing, durationMs: SLOW_RUN_MS + 1 }, calls: 6 });
+    expect(slow).toHaveLength(2);
+    expect(slow[1]).toContain("SLOW");
+  });
+
+  it("prints nothing for a row written before the timing field", () => {
+    expect(costLine({ calls: 6 })).toEqual([]);
+    expect(costLine({ timing: null })).toEqual([]);
+    expect(costLine({ timing: {} })).toEqual([]);
+  });
+
+  it("rides on the one-line clean check rather than replacing it", () => {
+    const head = run({ timing });
+    const verdict = gate(head, run({ sha: "9f8e7d6c" }));
+    const lines = report(head, run({ sha: "9f8e7d6c" }), verdict);
+    expect(lines[0]).toContain("0 regressions");
+    expect(lines[1]).toContain("21 min at 4 at a time");
   });
 });

@@ -18,6 +18,8 @@ import type * as crons from "../crons.js";
 import type * as forge from "../forge.js";
 import type * as gpuPool from "../gpuPool.js";
 import type * as http from "../http.js";
+import type * as intent from "../intent.js";
+import type * as intentParse from "../intentParse.js";
 import type * as runLabels from "../runLabels.js";
 import type * as runs from "../runs.js";
 import type * as serverHealth from "../serverHealth.js";
@@ -53,6 +55,7 @@ import type * as ttsSync from "../ttsSync.js";
 import type * as ttsWeekly from "../ttsWeekly.js";
 import type * as users from "../users.js";
 import type * as userSettings from "../userSettings.js";
+import type * as vocabulary from "../vocabulary.js";
 
 import type {
   ApiFromModules,
@@ -71,6 +74,8 @@ declare const fullApi: ApiFromModules<{
   forge: typeof forge;
   gpuPool: typeof gpuPool;
   http: typeof http;
+  intent: typeof intent;
+  intentParse: typeof intentParse;
   runLabels: typeof runLabels;
   runs: typeof runs;
   serverHealth: typeof serverHealth;
@@ -106,6 +111,7 @@ declare const fullApi: ApiFromModules<{
   ttsWeekly: typeof ttsWeekly;
   users: typeof users;
   userSettings: typeof userSettings;
+  vocabulary: typeof vocabulary;
 }>;
 
 /**

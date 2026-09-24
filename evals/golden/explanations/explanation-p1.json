@@ -6,6 +6,7 @@
   "label": "landed",
   "sentence": "Okay, that makes sense.\n\" a text-only detector must score near 1.0 on this test\" Does this mean that I can interpret this value as telling me How much information the detector is utilizing that is not present in the text only? \nAlso, for the methods that detect backdoors by identifying correlations between potential triggers in the input and the label, they observe patterns across the entire dataset, so what are they doing when applying a suspicion score to a single sample?",
   "confirmedByTom": false,
+  "unreplayable": "the session before Tom's request is 978,532 characters, over the 500,000 one prompt carries, so no replay can hold the whole of what the agent had",
   "ruledOn": "2026-08-09",
   "input": {
     "topic": "How pooled AUROC is computed",

@@ -5,11 +5,29 @@ on:
   push:
     branches:
       - main
+  # THE NIGHTLY FULL SUITE. A pull request runs only the tests its diff can
+  # reach (scripts/tests-affected.mjs), so main's own push run is the first
+  # place the whole suite runs on a merged tree — and one a day after that,
+  # because the suite's duration is what the timing warning in
+  # convex/ttsMerge.ts measures, and a number nothing produces on a quiet day is
+  # a number nobody notices growing. 05:00 New York, after the box's 04:00
+  # nightly has pushed.
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
 
 jobs:
   static-boundaries:
     runs-on: ubuntu-latest
+    outputs:
+      seconds: ${{ steps.done.outputs.seconds }}
     steps:
+      # BEFORE THE CHECKOUT, because the job's wall time is what the `report`
+      # job records and what the timing warning reads: install and checkout are
+      # this job's cost too, and a clock that started after them would report a
+      # job faster than the one that ran.
+      - id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
@@ -26,6 +44,9 @@ jobs:
       - run: npm install -g @ast-grep/cli@0.45.3
       - run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
       - run: pnpm check:guardrails
+      - id: done
+        if: always()
+        run: echo "seconds=$(( $(date +%s) - ${{ steps.start.outputs.at }} ))" >> "$GITHUB_OUTPUT"
 
   secret-scan:
     # Private since 2026-09-15: the default token no longer carries pull-request read, which gitleaks needs.
@@ -33,18 +54,25 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
+    outputs:
+      seconds: ${{ steps.done.outputs.seconds }}
     steps:
+      - id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - id: done
+        if: always()
+        run: echo "seconds=$(( $(date +%s) - ${{ steps.start.outputs.at }} ))" >> "$GITHUB_OUTPUT"
 
-  # static-boundaries, secret-scan and tests are ONE verifier: every
+  # static-boundaries, secret-scan, tests and e2e are ONE verifier: every
   # deterministic check either runs in CI and reports through the
-  # `tests-run` head row, or it fails the write it guards. Folding the other
-  # two in here makes the merge gate strictly stricter, so a branch that
+  # `tests-run` head row, or it fails the write it guards. Folding each of the
+  # others in here makes the merge gate strictly stricter, so a branch that
   # merged yesterday might not today.
   tests:
     needs: [static-boundaries, secret-scan]
@@ -53,8 +81,28 @@ jobs:
     # commit — a different and worse failure than a red row.
     if: always()
     runs-on: ubuntu-latest
+    outputs:
+      seconds: ${{ steps.done.outputs.seconds }}
+      summary: ${{ steps.vitest.outputs.summary }}
     steps:
+      - id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        with:
+          # FULL HISTORY on a pull request, for .github/workflows/evals.yml's
+          # reason: scripts/tests-affected.mjs diffs against the merge base to
+          # decide which tests the change can reach, and a shallow clone has no
+          # merge base. A run with no base falls back to the whole suite, which
+          # is correct and slow, so the fetch is what makes the mode real.
+          #
+          # WRITTEN INSIDE OUT ON PURPOSE. GitHub's `a && b || c` is not a
+          # ternary: `&&` answers its right operand only when that operand is
+          # TRUTHY, and 0 is not. Spelled the obvious way round —
+          # `event_name == 'pull_request' && 0 || 1` — a pull request evaluates
+          # `true && 0` to 0, falls through the `||`, and checks out shallow:
+          # the exact opposite of what it reads as, with nothing failing to say
+          # so. The truthy value has to be on the left of the `||`.
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
       - uses: pnpm/action-setup@v4
         with:
           run_install: false
@@ -64,7 +112,27 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: npx tsc --noEmit -p tsconfig.json
-      - run: pnpm test:turing
+      # THE WHOLE SUITE, not a named subset of it. `test:turing` used to be this
+      # step because CI could not afford 200 files on every push; affected-only
+      # is what removed that reason, and a curated list of which tests CI runs
+      # is a list that decays — every file added outside it was a test nobody
+      # ran. A pull request runs what its diff reaches; main, the nightly and a
+      # manual run run everything.
+      - id: vitest
+        run: |
+          node scripts/tests-affected.mjs \
+            --base "$BASE" \
+            ${MODE:+--mode "$MODE"} \
+            --summary "$RUNNER_TEMP/tests-summary.json" \
+            && status=0 || status=$?
+          echo "summary=$(cat "$RUNNER_TEMP/tests-summary.json" 2>/dev/null || echo '')" >> "$GITHUB_OUTPUT"
+          exit $status
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          # INSIDE OUT for the `fetch-depth` reason above, and the empty string
+          # is falsy exactly as 0 is: `event_name == 'pull_request' && '' ||
+          # 'full'` hands every pull request `full`.
+          MODE: ${{ github.event_name != 'pull_request' && 'full' || '' }}
       # The production build, verified on every PR. It runs here rather than
       # relying on the Vercel check because Vercel's PREVIEW build is not the
       # production build (it skips `convex deploy`, which a PR branch must not
@@ -73,27 +141,88 @@ jobs:
       # public Convex URLs live in the committed .env — before that, CI had no
       # NEXT_PUBLIC_CONVEX_URL and `next build` died at the prerender step.
       - run: pnpm build
-      # The merge gate's first check (convex/ttsMerge.ts): this job's own
-      # result, recorded against the commit it ran on. `if: always()` so a
-      # RED run is recorded too — a missing row and a red row are different
-      # facts, and the gate's deny message says which it found. Recorded once
-      # per commit, so re-running until it flakes green changes nothing.
-      # `-f` so a 401 or a 503 from /tts/tests fails THIS step: without it curl
-      # exits 0 on an HTTP error, the row is silently absent, and the gate
-      # denies with "no tests result is recorded" and nothing says why.
-      - if: always() && vars.CONVEX_SITE_URL != ''
-        run: |
-          curl -fsS -X POST "$CONVEX_SITE_URL/tts/tests" \
-            -H "X-Evals-Key: $EVALS_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"repo\":\"tom.quest\",\"sha\":\"$SHA\",\"ok\":$OK,\"detail\":\"$DETAIL\",\"url\":\"$RUN_URL\"}"
+      - id: done
+        if: always()
+        run: echo "seconds=$(( $(date +%s) - ${{ steps.start.outputs.at }} ))" >> "$GITHUB_OUTPUT"
+
+  # IN CI BECAUSE IT IS CHEAP ENOUGH TO BE. Measured 2026-09-22 on the Jarvis
+  # Box: 52 seconds against the dev server, 18 against a built one, and the
+  # install and the browser download put the whole job near two minutes —
+  # comfortably inside the five minutes above which it would have gone to main
+  # only. It runs against `next dev` and not a production build because the
+  # tests job already pays for the build and a second one would cost more than
+  # the tests do.
+  #
+  # IT IS ITS OWN JOB and not a step of `tests` so that it runs BESIDE the
+  # typecheck, the suite and the build rather than after them: nothing about a
+  # browser test needs the other three to have finished.
+  e2e:
+    runs-on: ubuntu-latest
+    outputs:
+      seconds: ${{ steps.done.outputs.seconds }}
+    steps:
+      - id: start
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # CHROMIUM ONLY: playwright.config.ts's two projects are desktop and
+      # mobile viewports of the same browser, so the other engines would be a
+      # download nothing runs.
+      - run: npx playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - id: done
+        if: always()
+        run: echo "seconds=$(( $(date +%s) - ${{ steps.start.outputs.at }} ))" >> "$GITHUB_OUTPUT"
+
+  # THE MERGE GATE'S FIRST CHECK (convex/ttsMerge.ts), recorded against the
+  # commit the four jobs above ran on.
+  #
+  # ITS OWN JOB, because four parallel jobs cannot see each other. The row now
+  # carries every job's wall time — the timing warning in convex/ttsMerge.ts is
+  # what reads them — and a job that `needs` all four is the only place those
+  # four numbers exist together. It also keeps e2e off the critical path: were
+  # the POST still the last step of `tests`, `tests` would have to wait for it.
+  #
+  # `if: always()` so a RED run is recorded too — a missing row and a red row
+  # are different facts, and the gate's deny message says which it found.
+  # Recorded once per commit, so re-running until it flakes green changes
+  # nothing.
+  report:
+    needs: [static-boundaries, secret-scan, tests, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # NO INSTALL: scripts/tests-report.mjs imports nothing, for the reason
+      # scripts/evals-check.mjs imports nothing.
+      - if: vars.CONVEX_SITE_URL != ''
+        run: node scripts/tests-report.mjs
         env:
           CONVEX_SITE_URL: ${{ vars.CONVEX_SITE_URL }}
           EVALS_KEY: ${{ secrets.EVALS_KEY }}
+          REPO: tom.quest
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          OK: ${{ job.status == 'success' && needs.static-boundaries.result == 'success' && needs.secret-scan.result == 'success' }}
-          # QUOTED, and the colon after "guardrails" is gone: an unquoted YAML
-          # scalar may not contain ": ", and one here made the whole workflow
-          # file unparseable — every job in it, not just this step.
-          DETAIL: "guardrails — tests ${{ job.status }}, static-boundaries ${{ needs.static-boundaries.result }}, secret-scan ${{ needs.secret-scan.result }}"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STATIC_RESULT: ${{ needs.static-boundaries.result }}
+          STATIC_SECONDS: ${{ needs.static-boundaries.outputs.seconds }}
+          SECRET_RESULT: ${{ needs.secret-scan.result }}
+          SECRET_SECONDS: ${{ needs.secret-scan.outputs.seconds }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          TESTS_SECONDS: ${{ needs.tests.outputs.seconds }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          E2E_SECONDS: ${{ needs.e2e.outputs.seconds }}
+          # The mode, the file count, the suite's own seconds and its slowest
+          # files, as scripts/tests-affected.mjs wrote them. It reaches the
+          # script as an ENVIRONMENT VALUE and is never interpolated into a
+          # `run:` line, for .github/workflows/evals.yml's PR_BODY reason.
+          SUMMARY: ${{ needs.tests.outputs.summary }}

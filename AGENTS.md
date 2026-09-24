@@ -32,7 +32,8 @@ A personal dashboard for cluster management, experiment visibility and TTS. Writ
 - `pnpm dev:all`: Next.js against prod Convex plus a `convex dev` typegen watcher.
 - `pnpm build`: the production build; CI runs it on every PR; before deployment work it outranks style checks.
 - `pnpm test`, `pnpm test:e2e`, `pnpm lint`, `pnpm check:guardrails` (the static checks CI runs).
-- The merge bar is the three Guardrails jobs green: `static-boundaries`, `secret-scan`, `tests` (typecheck, the Turing suite, the build); no other check is a gate.
+- The merge bar is the four Guardrails jobs green: `static-boundaries`, `secret-scan`, `tests` (typecheck, the vitest suite, the build) and `e2e`; the fifth job, `report`, records them on the `tests-run` row. No other check is a gate.
+- A pull request runs the tests its diff reaches, main and the nightly run all of them; the row says which mode ran. `docs/tests.md` is the inventory of every test and check, what each verifies, where it runs and what it costs.
 
 ## worktrees
 

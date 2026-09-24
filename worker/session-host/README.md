@@ -303,9 +303,12 @@ still runs Claude sessions.
 **Usage heartbeat.** At most once per 5 minutes the daemon reads the Codex
 account's limits token-free — `codex app-server` over stdio JSON-RPC
 (`initialize`, `initialized`, `account/rateLimits/read`), whose
-`rateLimits.primary` is the 5-hour window and `.secondary` the weekly one —
-and the heartbeat carries `codexUsage: { weeklyUsedPercent,
-fiveHourUsedPercent, weeklyResetsAt, readAt }`. The read runs in the
+`rateLimits.primary` and `.secondary` are told apart by `windowDurationMins`
+(10080 is the weekly window, 300 the 5-hour one; codex-cli 0.153 reports
+only the weekly one, in `primary`, with `secondary: null`) — the parse is
+`parseCodexRateLimits` in codex-bin.mjs — and the heartbeat carries
+`codexUsage: { weeklyUsedPercent, fiveHourUsedPercent?, weeklyResetsAt?,
+readAt }`. The read runs in the
 background (a hung app-server never holds the poll loop; the reading rides
 the next heartbeat). The last SUCCESSFUL reading, with its original
 `readAt`, rides every heartbeat until a later read succeeds — the server
@@ -422,9 +425,11 @@ serve it (both installed by `setup.sh`, both outside every work tree):
   every setup.sh run, so `gh pr create` works — the sanctioned way a session
   finishes. Every `gh` call pays a classifier verdict, except a lone merge:
   `git merge` and `gh pr merge` are ruled on by the MECHANICAL MERGE GATE
-  before the classifier (`merge-gate.mjs`), which allows them once the tests,
-  an audit and the evals are on record for the commit at HEAD and denies them
-  naming which are missing. API writes past the session's own PR stay denied.
+  before the classifier (`merge-gate.mjs`), which allows them once the tests
+  and an audit are on record for the commit at HEAD and denies them naming
+  which are missing. The evals are read and reported but, by Tom's ruling of
+  2026-09-24, not required for now (`EVALS_REQUIRED_FOR_MERGE` in
+  `convex/ttsMerge.ts`). API writes past the session's own PR stay denied.
 
 A credential-shaped string that still reaches an ingest payload is replaced
 with `[redacted:<kind>]` by the daemon (`redactSecrets` in redact.mjs,

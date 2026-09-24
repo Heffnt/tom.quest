@@ -6,6 +6,7 @@
   "label": "did not",
   "sentence": "im struggling to understand the deviations because the explanations are very dense and i dont understand the relevance of the facts about how things are done in cmt/paper/repo.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 2 tool calls the agent made after Tom's request (Edit, Write), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-08-17",
   "input": {
     "topic": "Z-Defence deviations from the paper",

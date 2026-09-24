@@ -31,7 +31,8 @@
 //   --cli claude|codex      which CLI runs                 (default: claude)
 //   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
 //   --ref REF               branch, tag or sha to check out
-//   --model NAME            model for the run
+//   --model NAME            model for the run; openrouter/<vendor>/<model>
+//                           needs --cli codex
 //   --effort LEVEL          codex only, passed through
 //   --sandbox MODE          codex only, passed through
 //   --schema FILE           codex only, passed through
@@ -364,6 +365,11 @@ function normalize(input) {
   // .claude/agents/codex.md's "the defaults are already the strongest model"
   // false for every run that went through the box, which is now all of them.
   if (!opts.model) opts.model = opts.cli === "codex" ? "gpt-5.6-sol" : "opus";
+  // REMOVAL CHECK: an openrouter/<vendor>/<model> name is served through
+  // Codex's model provider (scripts/codex-run.mjs), and Claude Code has no such
+  // door. Without this the default --cli claude hands the name to `claude -p`,
+  // which fails after the slot, the worktree and the registration are spent.
+  if (opts.cli !== "codex" && String(opts.model).startsWith("openrouter/")) fail(`${opts.model} runs through Codex; pass --cli codex`);
   // REMOVAL CHECK on --install as its own flag: --tests implies it, but the
   // reverse is not true and folding them together would arm the memory guard
   // for work that does not need it. A run that builds, lints, typechecks or
@@ -1219,7 +1225,32 @@ function waitForSurvivorsSync(run, timedOut) {
  * for everything that happens before the child exits.
  */
 export async function boxRun(options) {
-  const run = prepareRun(options, queueForSlot);
+  return await spawnAndWait(prepareRun(options, queueForSlot), options);
+}
+
+/**
+ * The same run, awaited, TAKING NO SLOT — boxRunSync's slot policy with
+ * boxRunSync's blocking taken out.
+ *
+ * WHY BOTH HALVES MATTER TOGETHER. A job's model call must not take a slot:
+ * worker/AGENTS.md says only the command line's runs do, and a slot taken here
+ * is what once let the runs queue starve the evals pass. And a job that wants
+ * to make several such calls at once cannot use boxRunSync, because spawnSync
+ * holds the event loop for the whole call — its own comment says a job's model
+ * call has nothing else to do while it waits, which stopped being true when
+ * the evals pass got thirty-five independent items and an hour to run them in.
+ *
+ * So this is the third combination, and it is the only one missing: no slot,
+ * and a promise. boxRunSync stays exactly as it was for the seven callers that
+ * use their answer as a string on the next line.
+ */
+export async function boxRunNoSlot(options) {
+  return await spawnAndWait(prepareRun(options, noSlot), options);
+}
+
+/** Spawn a prepared run and resolve with its report. The body boxRun has
+ *  always had, over whichever slot policy prepareRun was given. */
+async function spawnAndWait(run, options) {
   // A caller's last word on the prompt, once the checkout exists and before
   // the child starts: a runner step's sensor reads the experiment in the
   // step's own worktree and writes its facts into the prompt here, so the

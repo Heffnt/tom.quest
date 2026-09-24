@@ -45,6 +45,7 @@ function fakeCodex() {
     'import fs from "node:fs";',
     'const output = process.argv[process.argv.indexOf("-o") + 1];',
     'fs.writeFileSync(process.env.FAKE_CODEX_ARGS, JSON.stringify(process.argv.slice(2)));',
+    'if (process.env.FAKE_CODEX_ENV) fs.writeFileSync(process.env.FAKE_CODEX_ENV, JSON.stringify({ openrouterKey: process.env.OPENROUTER_API_KEY ?? null }));',
     'fs.writeFileSync(output, "fake answer\\n");',
   ].join("\n"));
   if (process.platform === "win32") {
@@ -391,6 +392,76 @@ describe("codex-run skill grants", () => {
 // directories, one per run that did not reach its child's `close` — the model
 // backgrounded the run and its turn ended, box-run settled it as a survivor,
 // ssh dropped. The reap lived in the close handler and nowhere else.
+describe("codex-run OpenRouter models", () => {
+  const MODEL = "openrouter/deepseek/deepseek-v4-flash";
+  const envFile = (body) => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-envfile-")), "worker.env");
+    fs.writeFileSync(file, body);
+    return file;
+  };
+  const files = (tag) => ({
+    args: path.join(os.tmpdir(), `codex-run-args-${Date.now()}-${tag}.json`),
+    env: path.join(os.tmpdir(), `codex-run-env-${Date.now()}-${tag}.json`),
+  });
+
+  it("selects the openrouter provider, sends OpenRouter's model id, and hands the key from the env file to Codex alone", () => {
+    const out = files("openrouter");
+    const result = run(["--model", MODEL, "--no-operate"], {
+      CODEX_BIN: fakeCodex(),
+      FAKE_CODEX_ARGS: out.args,
+      FAKE_CODEX_ENV: out.env,
+      OPENROUTER_API_KEY: "",
+      RUN_ENV_FILE: envFile("GH_TOKEN=not-this-one\nOPENROUTER_API_KEY=sk-or-from-file\n"),
+    });
+    expect(result.status).toBe(0);
+    const argv = JSON.parse(fs.readFileSync(out.args, "utf8"));
+    expect(argv[argv.indexOf("-m") + 1]).toBe("deepseek/deepseek-v4-flash");
+    expect(argv).toContain('model_provider="openrouter"');
+    expect(argv).toContain('shell_environment_policy.exclude=["OPENROUTER_API_KEY"]');
+    expect(argv.join(" ")).not.toContain("sk-or-from-file");
+    expect(JSON.parse(fs.readFileSync(out.env, "utf8")).openrouterKey).toBe("sk-or-from-file");
+    expect(spooledEnvelope(result.state).envelope.registration.modelRequested).toBe(MODEL);
+  });
+
+  it("refuses an OpenRouter run with no key before anything is spooled", () => {
+    const out = files("nokey");
+    const result = run(["--model", MODEL, "--no-operate"], {
+      CODEX_BIN: fakeCodex(),
+      FAKE_CODEX_ARGS: out.args,
+      OPENROUTER_API_KEY: "",
+      RUN_ENV_FILE: envFile("GH_TOKEN=x\n"),
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("an openrouter/ model needs OPENROUTER_API_KEY");
+    expect(fs.existsSync(out.args)).toBe(false);
+    expect(fs.existsSync(path.join(result.state, "registration"))).toBe(false);
+  });
+
+  it("refuses a spelling without a vendor", () => {
+    const result = run(["--model", "openrouter/deepseek-v4-flash", "--no-operate"], {
+      CODEX_BIN: fakeCodex(),
+      OPENROUTER_API_KEY: "sk-or-env",
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("an OpenRouter model is spelled openrouter/<vendor>/<model>");
+  });
+
+  it("keeps the key from a run on the default provider", () => {
+    const out = files("default");
+    const result = run(["--no-operate"], {
+      CODEX_BIN: fakeCodex(),
+      FAKE_CODEX_ARGS: out.args,
+      FAKE_CODEX_ENV: out.env,
+      OPENROUTER_API_KEY: "sk-or-env",
+    });
+    expect(result.status).toBe(0);
+    const argv = JSON.parse(fs.readFileSync(out.args, "utf8"));
+    expect(argv[argv.indexOf("-m") + 1]).toBe("gpt-5.6-sol");
+    expect(argv.some((arg) => arg.startsWith("model_provider="))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(out.env, "utf8")).openrouterKey).toBeNull();
+  });
+});
+
 describe("codex-run work directory", () => {
   const codexRunDirs = (root) => fs.readdirSync(root).filter((name) => name.startsWith("codex-run-"));
 
