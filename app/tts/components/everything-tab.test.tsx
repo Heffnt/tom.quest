@@ -11,6 +11,10 @@
 // The four filters that stay (search, status, kind, category) and the sort are
 // pinned here too, because removing two predicates from a chain of five is
 // exactly where the remaining three get dropped by accident.
+//
+// And the three sections that open the tab since batches went (Tom,
+// 2026-09-24): the todos awaiting his ruling and the rulings still applying,
+// under the runners.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
@@ -68,12 +72,16 @@ const MIRROR = {
   syncedAt: NOW,
 };
 
-function load(todos: unknown[], mirror: unknown[] = []) {
+function load(
+  todos: unknown[],
+  mirror: unknown[] = [],
+  rulings: unknown[] = [],
+) {
   convex.data = {
     [getFunctionName(api.tts.listTodos)]: todos,
     [getFunctionName(api.tts.listMirror)]: mirror,
     [getFunctionName(api.ttsCode.listCodeBriefs)]: [],
-    [getFunctionName(api.ttsRulings.listRulings)]: [],
+    [getFunctionName(api.ttsRulings.listRulings)]: rulings,
     [getFunctionName(api.tts.listTimeNotes)]: [],
   };
 }
@@ -89,7 +97,19 @@ function chip(label: string): HTMLElement | undefined {
     .find((b) => (b.textContent ?? "").startsWith(label));
 }
 
-const body = () => document.body.textContent ?? "";
+/** The list's text: the toolbar and the rows under it. The sections above
+ * the list show some of the same todos, so the filters are read here. */
+const body = () =>
+  screen.getByPlaceholderText("search").parentElement?.parentElement
+    ?.textContent ?? "";
+
+/** The text of the section whose header opens with this title. */
+function section(title: string): string {
+  const header = [...document.querySelectorAll("section > div:first-child")].find(
+    (el) => (el.textContent ?? "").startsWith(`${title} `),
+  );
+  return header?.parentElement?.textContent ?? "";
+}
 
 beforeEach(() => {
   convex.calls.length = 0;
@@ -232,5 +252,67 @@ describe("the filters that stay", () => {
     load([todo({ _id: "t-done", statement: "already finished", status: "done" })]);
     show({ item: "t-done", intent: null });
     expect(body()).toContain("already finished");
+  });
+});
+
+describe("the sections above the list", () => {
+  const ruling = (over: Record<string, unknown>) => ({
+    _id: "r1",
+    _creationTime: 1,
+    verdict: "session",
+    ruledAt: NOW,
+    ...over,
+  });
+
+  it("lists a todo awaiting Tom's ruling, and not one that is not ready for him", () => {
+    load([
+      todo({ _id: "t-ready", statement: "renew the visa" }),
+      todo({ _id: "t-raw", statement: "a raw capture", readiness: "unprepared" }),
+    ]);
+    show();
+    expect(section("awaiting")).toContain("renew the visa");
+    expect(section("awaiting")).not.toContain("a raw capture");
+    // Both are in the list below, whatever the section above shows.
+    expect(body()).toContain("renew the visa");
+    expect(body()).toContain("a raw capture");
+  });
+
+  it("opening an awaiting row does not open the same todo in the list", () => {
+    load([todo({ _id: "t-ready", statement: "renew the visa" })]);
+    show();
+    fireEvent.click(screen.getAllByText("renew the visa")[0]);
+    // The awaiting row's panel holds the options row; the list's row stays
+    // shut, so its session button is not on screen.
+    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "approve" })).toHaveLength(1);
+  });
+
+  it("names the subject of a ruling still applying", () => {
+    load(
+      [todo({ _id: "t-ruled", statement: "renew the visa" })],
+      [MIRROR],
+      [
+        ruling({ subjectType: "life", todoId: "t-ruled" }),
+        ruling({
+          _id: "r2",
+          subjectType: "code",
+          repo: MIRROR.repo,
+          externalId: MIRROR.externalId,
+          verdict: "approve",
+        }),
+      ],
+    );
+    show();
+    const applying = section("ruled, applying");
+    expect(applying).toContain("renew the visa");
+    expect(applying).toContain("fence the session repo list");
+  });
+
+  // witness: drop the subject filter in app/tts/lib.ts liveRulingsByKey — a
+  // ruling on a batch shows here with a blank subject.
+  it("leaves out a ruling on a batch", () => {
+    load([], [], [ruling({ subjectType: "batch", batchId: "b1" })]);
+    show();
+    expect(section("ruled, applying")).toBe("ruled, applying 0");
   });
 });

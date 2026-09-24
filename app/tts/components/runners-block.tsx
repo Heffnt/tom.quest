@@ -1,6 +1,6 @@
 "use client";
 
-// RUNNERS — the box's runners, above the batch cards on the batches tab. The
+// RUNNERS — the box's runners, at the top of the everything tab. The
 // live ones newest first, the ended ones under a fold. A row's title opens its
 // newest step run in the run view on /runs, which already walks the chain
 // of steps back; a row expands to the runner's document, its check-ins and the

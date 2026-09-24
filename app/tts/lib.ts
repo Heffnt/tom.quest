@@ -5,12 +5,22 @@ import type { Doc } from "@/convex/_generated/dataModel";
 import type { runnerStatus } from "@/convex/ttsRunners";
 
 export type Todo = Doc<"dtsTodos">;
-export type Batch = Doc<"batches">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
-// A ruling the page shows: on a todo, a batch or a code entry. Answers to a
-// worker's elevation are rulings too, and listRulings leaves them out.
-export type Ruling = Doc<"dtsRulings"> & { subjectType: "life" | "code" | "batch" };
+// A ruling the page shows: on a todo or a code entry. Answers to a worker's
+// elevation are rulings too, and listRulings leaves them out.
+export type Ruling = Doc<"dtsRulings"> & { subjectType: "life" | "code" };
+
+/** A ruling as listRulings returns it. A ruling on a batch can still come
+ * back until the schema stops declaring that subject (Tom, 2026-09-24: no
+ * batches); the record keeps it, no page shows its subject, and
+ * liveRulingsByKey drops it. Once the schema narrows this is Ruling. */
+type ListedRuling = Doc<"dtsRulings"> & { subjectType: string };
+
+/** Whether a listed ruling is on a subject this page shows. */
+function isPageRuling(r: ListedRuling): r is Ruling {
+  return r.subjectType === "life" || r.subjectType === "code";
+}
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
@@ -28,35 +38,27 @@ export const VERDICTS: RulingVerdict[] = [
 // dialog's verdict buttons read it, so the set of items offering the four
 // verdicts cannot drift between surfaces. The needs-me selector is stricter:
 // it wants the COMPUTED ready (isReadyForTom — awake and unblocked as well).
-// (A batch is always rulable: it is its own row and has no readiness.)
 export function isRulable(t: Todo): boolean {
   return t.status === "active" && isPrepared(t.readiness);
 }
 
 // ── Ruling subject identity + live-ruling derivation ─────────────────────────
 // Client mirror of convex/ttsRulings.ts subjectKey/liveRulings — same key
-// format, same newest-ruledAt/_creationTime rule, so the tabs, the badge, and
+// format, same newest-ruledAt/_creationTime rule, so the tab, the badge, and
 // the worker feed always agree on which ruling is live.
 
 export function rulingSubjectKey(r: {
-  subjectType: "life" | "code" | "batch";
+  subjectType: "life" | "code";
   todoId?: string;
   repo?: string;
   externalId?: string;
-  batchId?: string;
 }): string {
   if (r.subjectType === "life") return `life ${r.todoId}`;
-  if (r.subjectType === "batch") return batchSubjectKey(r.batchId!);
   return codeSubjectKey(r.repo!, r.externalId!);
 }
 
 export function codeSubjectKey(repo: string, externalId: string): string {
   return `code ${repo} ${externalId}`;
-}
-
-/** A schema-v2 batch subject (a `batches` row is its own ruling subject). */
-export function batchSubjectKey(batchId: string): string {
-  return `batch ${batchId}`;
 }
 
 // ── The todo graph (schema v2) ───────────────────────────────────────────────
@@ -79,9 +81,12 @@ export {
   normalizeReadiness,
 } from "@/convex/ttsShared";
 
-export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
+export function liveRulingsByKey(
+  rulings: readonly ListedRuling[],
+): Map<string, Ruling> {
   const newest = new Map<string, Ruling>();
   for (const row of rulings) {
+    if (!isPageRuling(row)) continue;
     const key = rulingSubjectKey(row);
     const prior = newest.get(key);
     if (
@@ -95,8 +100,8 @@ export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
   return newest;
 }
 
-// ── The needs-me selector (ONE definition; the tab renders it, the badge
-// counts it) ─────────────────────────────────────────────────────────────────
+// ── The needs-me selector (ONE definition; the everything tab's awaiting
+// section renders it, the tab's badge counts it) ─────────────────────────────
 // life: READY FOR TOM (ruling 18, ttsShared.isReadyForTom: prepared, active,
 //   awake, every need done), excluding todos whose live ruling is NEWER than
 //   the todo's last update — a ruled gate is answered until the preparer
@@ -104,7 +109,7 @@ export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
 // code: open + briefed, where the live ruling is missing or NOT NEWER than
 //   the brief — a re-brief after a revise ruling returns the item for a fresh
 //   ruling (mirror of convex/ttsRulings.ts briefAwaitsRuling).
-// pending: live rulings not yet applied (the "ruled, applying" strip).
+// pending: live rulings not yet applied (the "ruled, applying" section).
 //
 // BOTH COMPARISONS ARE `<=` ON PURPOSE — DO NOT TIGHTEN EITHER TO `<`.
 // ruledAt, updatedAt and preparedAt are whole-millisecond Date.now() values
@@ -125,7 +130,7 @@ export function selectNeedsMe(
   todos: Todo[],
   mirror: MirrorRow[],
   briefs: CodeBrief[],
-  rulings: Ruling[],
+  rulings: readonly ListedRuling[],
   now: number = Date.now(),
 ): NeedsMe {
   const live = liveRulingsByKey(rulings);
@@ -159,43 +164,6 @@ export function selectNeedsMe(
   return { lifeRows, codeRows, pending };
 }
 
-// ── The batches selector (ONE definition; the batches tab renders it, the
-// badge counts it) ───────────────────────────────────────────────────────────
-// unbatchedLife/unbatchedCode: the selectNeedsMe rows that no BATCH already
-//   shows — a row bound into a graph batch renders inside that batch's card,
-//   its one home, so listing it here too would repeat content.
-// pending: passed through from selectNeedsMe.
-//
-// (The `batches` list this selector also returned — the non-terminal v1 batch
-// rows, a dtsTodos row carrying `members` — is gone with that field: a batch
-// is its own `batches` row, and the tab builds its cards from that table. The
-// lifeos update, phase 7.)
-
-export type BatchesSelection = {
-  unbatchedLife: Todo[];
-  unbatchedCode: { row: MirrorRow; brief: CodeBrief }[];
-  pending: Ruling[];
-};
-
-export function selectBatches(
-  todos: Todo[],
-  mirror: MirrorRow[],
-  briefs: CodeBrief[],
-  rulings: Ruling[],
-): BatchesSelection {
-  const { lifeRows, codeRows, pending } = selectNeedsMe(
-    todos,
-    mirror,
-    briefs,
-    rulings,
-  );
-
-  const unbatchedLife = lifeRows.filter((t) => t.batchId === undefined);
-
-  return { unbatchedLife, unbatchedCode: codeRows, pending };
-}
-
-/** e.message for Errors, String(e) otherwise — the error line under a control. */
 // ── Today's view (the lifeos update, phase 7) ─────────────────────────────────
 // The calendar's today column used to render a queue row a job wrote every
 // morning (dtsDailyQueues). It is COMPUTED now, from the same subscriptions the
@@ -206,13 +174,11 @@ export function selectBatches(
 //   ready     — ready for Tom (ttsShared.isReadyForTom: prepared, active,
 //               awake, every need done)
 //   waking    — its wakeAt inside the day (a sleep that ends today)
-// Every list draws from the same pool, THE ROWS THE RETIRED QUEUE SHOWED
-// (convex/tts.ts internalPrepareFallbackQueue, gone with phase 7): active
-// rows that are not a graph TASK (batchId set and kind not "goal" — a step of
-// a batch's graph, which the batch card shows; a goal is one of Tom's own
-// todos the planner bound, and stays), and
-// not asleep past the day (a wakeAt at or after the day's end — the lifeos
-// spelling of "waiting", which the queue never listed, however it was dated).
+// Every list draws from the same pool: active rows not asleep past the day (a
+// wakeAt at or after the day's end — the lifeos spelling of "waiting", which
+// the retired queue never listed, however it was dated). Every active todo is
+// in the pool: with batches gone (Tom, 2026-09-24) no todo is a step some
+// other card shows instead.
 // A parity note on overdue: the queue took dueAt before the instant it ran
 // (4 a.m., so in effect before the day), this takes dueAt before the day's
 // start — a todo due earlier today is "due", not "overdue": a fact about the
@@ -238,14 +204,11 @@ export function selectToday(
   day: { start: number; end: number },
   now: number = Date.now(),
 ): TodayView {
-  // The pool: what the retired queue showed (the header above). The sleep
-  // test is against the day's last instant, as the queue's was: a sleep that
-  // ends inside the day is over for the day (and a "waking" entry).
+  // The pool (the header above). The sleep test is against the day's last
+  // instant: a sleep that ends inside the day is over for the day (and a
+  // "waking" entry).
   const active = todos.filter(
-    (t) =>
-      t.status === "active" &&
-      !(t.batchId !== undefined && t.kind !== "goal") &&
-      wakeAtPassed(t, day.end - 1),
+    (t) => t.status === "active" && wakeAtPassed(t, day.end - 1),
   );
   const byDue = (a: Todo, b: Todo) => (a.dueAt ?? 0) - (b.dueAt ?? 0);
   const overdue = active
@@ -283,7 +246,7 @@ export function selectToday(
   return { overdue, due, scheduled, ready, waking, entries };
 }
 
-/** A runner's status in words, the same on the batches tab and the run view. */
+/** A runner's status in words, the same on the everything tab and the run view. */
 export const RUNNER_STATUS_WORDS: Record<ReturnType<typeof runnerStatus>, string> = {
   running: "running",
   "waiting-on-tom": "waiting on Tom",
@@ -292,6 +255,7 @@ export const RUNNER_STATUS_WORDS: Record<ReturnType<typeof runnerStatus>, string
   "handed-off": "handed off",
 };
 
+/** e.message for Errors, String(e) otherwise — the error line under a control. */
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -341,38 +305,4 @@ export function untilText(ms: number, now: number): string {
   if (hours < 24) return `in ${hours} h`;
   const days = Math.floor(hours / 24);
   return days === 1 ? "in 1 day" : `in ${days} days`;
-}
-
-// ── Ground-up explanation teasers ────────────────────────────────────────────
-// Since 2026-08-29 a stored ground-up explanation is a COMPLETE HTML DOCUMENT
-// (Tom: rendered as prose it is an incomprehensible wall of text), shown
-// fullscreen in a sandboxed iframe by components/ground-up-view.tsx. Anywhere
-// a surface prints a taste of one inline — the batch card face, the batch
-// detail dialog — it must print the document's readable TEXT, or the card
-// shows a doctype and a stylesheet. The HTML test is the same single rule
-// GroundUpView uses: a leading "<".
-
-/**
- * The readable text of an explanation, clipped for an inline teaser. Legacy
- * plain-text explanations pass through unchanged. Lossy on purpose — the
- * fullscreen view is where the document itself is read.
- */
-export function groundUpTeaser(content: string, maxChars = 220): string {
-  const text = content.trimStart().startsWith("<")
-    ? content
-        .replace(/<!DOCTYPE[^>]*>/gi, " ")
-        .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, " ")
-        .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
-        .replace(/<[^>]*>/g, " ")
-        .replace(/&nbsp;/gi, " ")
-        .replace(/&amp;/gi, "&")
-        .replace(/&lt;/gi, "<")
-        .replace(/&gt;/gi, ">")
-        .replace(/&quot;/gi, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/\s+/g, " ")
-        .trim()
-    : content.trim();
-  if (text === "") return "";
-  return text.length > maxChars ? `${text.slice(0, maxChars).trimEnd()}…` : text;
 }

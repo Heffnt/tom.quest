@@ -1,22 +1,20 @@
 // The verdict row, pinned: the four words convex/ttsRulings.ts accepts and
 // nothing else, each wired to recordRuling with that verdict, each with the
 // popover naming the call (app/AGENTS.md UI rules: the popover is the contract,
-// and a label names its exact backend effect). Rendered on the batch card and
-// in the detail dialog, so both surfaces are checked through the one
-// component and through themselves.
+// and a label names its exact backend effect). Rendered by the options row, so
+// it is checked through the one component and through that row.
 //
 // None of this is visible to a type checker: a fifth button, a button whose
-// popover names another verdict, a revise that records with no sentence, or
-// a detail item that offers verdicts it cannot rule all compile.
+// popover names another verdict, or a revise that records with no sentence
+// all compile.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import VerdictButtons from "./verdict-buttons";
-import BatchCard, { type BatchGraph } from "./batch-card";
-import DetailDialog from "./detail-dialog";
 import OptionsRow from "./options-row";
+import TodoRow from "./todo-row";
 import { VERDICTS as LIB_VERDICTS, type Todo } from "../lib";
 
 // The four words, spelled out once. lib.VERDICTS is asserted equal to them
@@ -76,35 +74,6 @@ function infoBeside(button: HTMLElement): HTMLElement {
   return info as HTMLElement;
 }
 
-const GRAPH: BatchGraph = {
-  id: "batch-1",
-  statement: "Land the lifeos update",
-  groundUp: "<!DOCTYPE html><html><body><p>why</p></body></html>",
-  tasks: [
-    {
-      id: "t1",
-      statement: "Write the spec amendment",
-      actor: "agent",
-      status: "done",
-      needs: [],
-      readiness: "prepared",
-      rulable: false,
-    },
-    {
-      id: "t2",
-      statement: "Ratify the amendment",
-      actor: "tom",
-      status: "active",
-      needs: ["t1"],
-      readiness: "prepared",
-      rulable: true,
-    },
-  ],
-  goals: [
-    { id: "g1", statement: "The spec says what the system does", met: false, rulable: false },
-  ],
-};
-
 describe("the verdict row", () => {
   it("is the same four words lib.VERDICTS holds, in the same order", () => {
     // Everything else in this file, and the popover contract test, reads the
@@ -113,14 +82,14 @@ describe("the verdict row", () => {
   });
 
   it("is exactly the four verdict words, in the mutation's order — no edit", () => {
-    render(<VerdictButtons subject="batch" statement="s" onRule={() => {}} />);
+    render(<VerdictButtons subject="todo" statement="s" onRule={() => {}} />);
     expect(actions().map((b) => b.textContent)).toEqual([...VERDICTS]);
   });
 
-  for (const subject of ["batch", "todo"] as const) {
+  for (const subject of ["todo", "code"] as const) {
     it(`on a ${subject}: every button's popover names recordRuling with that verdict on the ${subject}`, () => {
       render(<VerdictButtons subject={subject} statement="s" onRule={() => {}} />);
-      const field = subject === "batch" ? "batchId" : "todoId";
+      const field = subject === "code" ? "repo, externalId" : "todoId";
       for (const verdict of VERDICTS) {
         fireEvent.click(infoBeside(screen.getByRole("button", { name: verdict })));
         expect(
@@ -135,7 +104,7 @@ describe("the verdict row", () => {
 
   it("approve and session record on the press, with no sentence", async () => {
     const onRule = vi.fn(async () => {});
-    render(<VerdictButtons subject="batch" statement="s" onRule={onRule} />);
+    render(<VerdictButtons subject="todo" statement="s" onRule={onRule} />);
     const approve = screen.getByRole("button", { name: "approve" });
     fireEvent.click(approve);
     // Called inside the press itself, before any await — the session verdict
@@ -155,7 +124,7 @@ describe("the verdict row", () => {
 
   it("revise opens the dialog and records only once there is a sentence", async () => {
     const onRule = vi.fn(async () => {});
-    render(<VerdictButtons subject="batch" statement="s" onRule={onRule} />);
+    render(<VerdictButtons subject="todo" statement="s" onRule={onRule} />);
     fireEvent.click(screen.getByRole("button", { name: "revise" }));
     expect(onRule).not.toHaveBeenCalled();
 
@@ -184,20 +153,20 @@ describe("the verdict row", () => {
   });
 
   it("the dialog's confirm carries the same popover as the button that opened it", () => {
-    render(<VerdictButtons subject="batch" statement="s" onRule={() => {}} />);
+    render(<VerdictButtons subject="todo" statement="s" onRule={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "archive" }));
     const confirm = screen.getByRole("button", { name: "record archive" });
     fireEvent.click(infoBeside(confirm));
     expect(
-      screen.getByText('ttsRulings.recordRuling({ batchId, verdict: "archive", sentence })'),
+      screen.getByText('ttsRulings.recordRuling({ todoId, verdict: "archive", sentence })'),
     ).toBeTruthy();
   });
 
   it("shows a handler that refuses synchronously, before any await", async () => {
-    // What the batches tab does when the todo behind an item is gone: it
-    // throws rather than recording a session ruling it cannot open a session
-    // for, which would pin the item in "ruled, applying" for good. onRule is
-    // called inside the press, so the throw arrives before the first await.
+    // A caller whose todo is gone throws rather than recording a session
+    // ruling it cannot open a session for, which would pin the item in "ruled,
+    // applying" for good. onRule is called inside the press, so the throw
+    // arrives before the first await.
     const onRule = vi.fn(() => {
       throw new Error("TTS todo not found — reload the page");
     });
@@ -216,7 +185,7 @@ describe("the verdict row", () => {
     // verdict whose session never opened has to say so on this row.
     render(
       <VerdictButtons
-        subject="batch"
+        subject="todo"
         statement="s"
         error="the session did not open"
         onRule={() => {}}
@@ -229,7 +198,7 @@ describe("the verdict row", () => {
     const onRule = vi.fn(async () => {
       throw new Error("Not authorised: TTS");
     });
-    render(<VerdictButtons subject="batch" statement="s" onRule={onRule} />);
+    render(<VerdictButtons subject="todo" statement="s" onRule={onRule} />);
     fireEvent.click(screen.getByRole("button", { name: "approve" }));
     await vi.waitFor(() =>
       expect(screen.getByText("Not authorised: TTS")).toBeTruthy(),
@@ -237,188 +206,40 @@ describe("the verdict row", () => {
   });
 });
 
-describe("the batch card", () => {
-  // witness: drop the must-not-break block from batch-card.tsx — Tom's
+describe("the todo row", () => {
+  // witness: drop the must-not-break block from todo-row.tsx — Tom's
   // constraint would be stored and shown nowhere on the page.
-  it("shows Tom's must-not-break lines on the card, with the popover naming the pen", () => {
+  it("shows Tom's must-not-break line on a goal, with the popover naming the pen", () => {
     render(
-      <BatchCard
-        graph={{
-          ...GRAPH,
-          goals: [
-            { ...GRAPH.goals[0], mustNotBreak: "the citations stay verbatim" },
-          ],
-        }}
+      <TodoRow
+        todo={
+          {
+            ...TODO,
+            kind: "goal",
+            mustNotBreak: "the citations stay verbatim",
+            source: "tom",
+            timingClass: "whenever",
+            createdAt: 0,
+            updatedAt: 0,
+          } as unknown as Todo
+        }
         now={Date.now()}
         expanded
         onToggle={() => {}}
-        onRule={() => {}}
-        onDetail={() => {}}
-        onGroundUp={() => {}}
-        onOpenSession={() => {}}
+        intent={null}
+        onIntentCleared={() => {}}
+        timeNotes={[]}
       />,
     );
     expect(screen.getByText("the citations stay verbatim")).toBeTruthy();
     fireEvent.click(infoBeside(screen.getByText("must not break")));
     expect(screen.getByText("tts.updateTodo({ mustNotBreak })")).toBeTruthy();
   });
-
-  it("expanded: the session opener and the four verdicts, each with a popover", () => {
-    render(
-      <BatchCard
-        graph={GRAPH}
-        now={Date.now()}
-        expanded
-        onToggle={() => {}}
-        onRule={() => {}}
-        onDetail={() => {}}
-        onGroundUp={() => {}}
-        onOpenSession={() => {}}
-      />,
-    );
-    const labels = actions().map((b) => b.textContent);
-    expect(labels).toContain("open batch session");
-    for (const v of VERDICTS) expect(labels).toContain(v);
-    expect(labels).not.toContain("edit");
-
-    fireEvent.click(infoBeside(screen.getByRole("button", { name: "open batch session" })));
-    expect(
-      screen.getByText(
-        'claudeSessions.createSession({ kind: "focus-item", batchId, initialPrompt })',
-      ),
-    ).toBeTruthy();
-    fireEvent.keyDown(document, { key: "Escape" });
-    for (const v of VERDICTS) {
-      infoBeside(screen.getByRole("button", { name: v }));
-    }
-  });
-});
-
-describe("the detail dialog", () => {
-  const noop = () => {};
-
-  it("offers the four verdicts on the batch", () => {
-    render(
-      <DetailDialog
-        item={{ kind: "batch", graph: GRAPH }}
-        onClose={noop}
-        onGroundUp={noop}
-        onRule={() => {}}
-      />,
-    );
-    const labels = actions().map((b) => b.textContent);
-    expect(labels.slice(0, 4)).toEqual([...VERDICTS]);
-  });
-
-  it("offers them on a rulable task and withholds them on one that is not", () => {
-    const rulable = GRAPH.tasks[1];
-    const { unmount } = render(
-      <DetailDialog
-        item={{ kind: "task", batchStatement: GRAPH.statement, task: rulable, waiting: null, waitingOn: [] }}
-        onClose={noop}
-        onGroundUp={noop}
-        onRule={() => {}}
-      />,
-    );
-    expect(actions().map((b) => b.textContent).slice(0, 4)).toEqual([...VERDICTS]);
-    unmount();
-
-    const done = GRAPH.tasks[0];
-    render(
-      <DetailDialog
-        item={{ kind: "task", batchStatement: GRAPH.statement, task: done, waiting: null, waitingOn: [] }}
-        onClose={noop}
-        onGroundUp={noop}
-        onRule={() => {}}
-      />,
-    );
-    for (const v of VERDICTS) {
-      expect(screen.queryByRole("button", { name: v })).toBeNull();
-    }
-  });
-
-  it("routes a verdict to the item it was opened on", () => {
-    const onRule = vi.fn();
-    const item = { kind: "goal" as const, batchStatement: GRAPH.statement, goal: { ...GRAPH.goals[0], rulable: true } };
-    render(<DetailDialog item={item} onClose={noop} onGroundUp={noop} onRule={onRule} />);
-    fireEvent.click(screen.getByRole("button", { name: "approve" }));
-    expect(onRule).toHaveBeenCalledWith(item, "approve", "");
-  });
-
-  it("rules a goal that lives in a repository as a code subject", () => {
-    const goal = {
-      ...GRAPH.goals[0],
-      rulable: true,
-      code: { repo: "tom.quest", externalId: "todo-14" },
-    };
-    render(
-      <DetailDialog
-        item={{ kind: "goal", batchStatement: GRAPH.statement, goal }}
-        onClose={noop}
-        onGroundUp={noop}
-        onRule={() => {}}
-      />,
-    );
-    fireEvent.click(infoBeside(screen.getByRole("button", { name: "approve" })));
-    expect(
-      screen.getByText(
-        'ttsRulings.recordRuling({ repo, externalId, verdict: "approve", sentence })',
-      ),
-    ).toBeTruthy();
-    // …and the effect text is the executor's, not a life todo's.
-    expect(screen.getByText(/Jarvis Box/)).toBeTruthy();
-  });
-
-  it("rules a goal with no repository behind it as a life todo", () => {
-    render(
-      <DetailDialog
-        item={{
-          kind: "goal",
-          batchStatement: GRAPH.statement,
-          goal: { ...GRAPH.goals[0], rulable: true },
-        }}
-        onClose={noop}
-        onGroundUp={noop}
-        onRule={() => {}}
-      />,
-    );
-    fireEvent.click(infoBeside(screen.getByRole("button", { name: "approve" })));
-    expect(
-      screen.getByText(
-        'ttsRulings.recordRuling({ todoId, verdict: "approve", sentence })',
-      ),
-    ).toBeTruthy();
-  });
-
-  it("shows a session that failed to open, which the overlay would hide", () => {
-    // The dialog covers the page, including the error line the tab prints
-    // under its cards — so the tab's hook error is handed in here instead.
-    render(
-      <DetailDialog
-        item={{ kind: "batch", graph: GRAPH }}
-        onClose={noop}
-        onGroundUp={noop}
-        onRule={() => {}}
-        error="the session did not open"
-      />,
-    );
-    expect(screen.getByText("the session did not open")).toBeTruthy();
-  });
-
-  it("offers no verdicts when nothing records them (the mockup route)", () => {
-    render(
-      <DetailDialog item={{ kind: "batch", graph: GRAPH }} onClose={noop} onGroundUp={noop} />,
-    );
-    for (const v of VERDICTS) {
-      expect(screen.queryByRole("button", { name: v })).toBeNull();
-    }
-  });
 });
 
 // ── The options row ─────────────────────────────────────────────────────────
-// The row a life todo and a code item carry. It renders the SAME verdict row
-// the batch card and the detail dialog do — not a second set of chips — and it
-// composes nothing between its chips: the row sits inside an expanded panel,
+// The row a life todo and a code item carry. It renders the SAME verdict row —
+// not a second set of chips — and it composes nothing between its chips: the row sits inside an expanded panel,
 // and an input appearing there moves everything under it (app/AGENTS.md UI rules:
 // interactions never shift layout; anything composed opens in a fixed dialog).
 describe("the options row", () => {
