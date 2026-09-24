@@ -115,7 +115,7 @@ export const NODES = [
   { id: "record", label: "the record", unit: "rows", x: 440, y: ROW_MID, shape: "store", tally: { of: "everything" } },
 
   // The box and what it runs.
-  { id: "box", label: "the Jarvis Box", unit: "runs", x: 625, y: ROW_MID, shape: "machine", tally: { of: "host", host: "box" }, opens: "/jarvis" },
+  { id: "box", label: "the Jarvis Box", unit: "runs", x: 625, y: ROW_MID, shape: "machine", tally: { of: "host", host: "box" }, opens: "/runs" },
   { id: "workers", label: "workers", unit: "runs", x: 810, y: ROW_TOP, shape: "work", tally: { of: "lane", lane: "workers" }, filters: "workers" },
   { id: "runners", label: "runners", unit: "runs", x: 810, y: ROW_MID, shape: "work", tally: { of: "lane", lane: "runners" }, filters: "runners" },
   { id: "gate", label: "the merge gate", unit: "head rows", x: 995, y: ROW_MID, shape: "machine", tally: { of: "gate" }, filters: "merges" },
