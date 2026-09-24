@@ -23,9 +23,15 @@ each; `setup.sh` writes exactly this list into `/etc/cron.d/tts`:
 `worker/runs/sweep.mjs` is the one run-file ingestion path. Hooks hand it an
 exact file after each turn or ending; cron provides recovery. Cursor and queue
 state live under `/var/cache/tts/runs`, while verified compressed bytes live
-behind the configured `RUN_STORE_BACKEND`. Registration sidecars preserve the
-launcher-only origin, requested model and supplied context without changing a
-CLI transcript. `RUN_HOST` is required and never guessed.
+behind the configured `RUN_STORE_BACKEND`. A launcher that composes its run's
+prompt (`box-run.mjs`, `scripts/codex-run.mjs`) puts the run's registration,
+its origin, requested model and supplied context, at the head of that prompt
+as a fenced block labelled `registration`, so the agent sees how and why it
+was started and the sweep reads the facts back out of the transcript. The
+registration sidecar beside the transcript keeps what the prompt cannot: the
+run token, which stays out of every transcript, and the claim, receipt, end
+and skills groups written after the prompt was sent. `RUN_HOST` is required
+and never guessed.
 
 `worker/jobs/runs-compare.mjs` sends no transcript text over the comparison
 door. Convex already holds both row sets, returns counts and digests, and flips

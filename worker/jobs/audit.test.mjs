@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { tempDir } from "../../test/temp.mjs";
+import { parseRegistrationBlock } from "../runs/registration.mjs";
 
 import {
   AUDIT_CHUNK_MAX_CHARS,
@@ -1125,8 +1126,9 @@ describe("the fallback auditor through box-run", () => {
     fs.writeFileSync(fake, [
       "#!/usr/bin/env node",
       'import fs from "node:fs";',
-      'try { fs.readFileSync(0, "utf8"); } catch {}',
-      `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));`,
+      'let stdin = "";',
+      'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
+      `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin }));`,
       `process.stdout.write(${JSON.stringify(answer)});`,
     ].join("\n"));
     fs.chmodSync(fake, 0o755);
@@ -1151,7 +1153,7 @@ describe("the fallback auditor through box-run", () => {
     const result = await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: checkout }, fakeIo);
     expect(result.verdict).toBe("APPROVED");
     expect(posted[0].fallback).toBe(AUDIT_FALLBACK_REASON);
-    const { argv, cwd } = JSON.parse(fs.readFileSync(record, "utf8"));
+    const { argv, cwd, stdin } = JSON.parse(fs.readFileSync(record, "utf8"));
     expect(argv[argv.indexOf("--max-turns") + 1]).toBe(String(AUDIT_FALLBACK_MAX_TURNS));
     expect(argv[argv.indexOf("--allowedTools") + 1]).toBe(AUDIT_FALLBACK_TOOLS.join(","));
     expect(argv).not.toContain("--permission-mode");
@@ -1160,8 +1162,10 @@ describe("the fallback auditor through box-run", () => {
     const [envelope] = fs.readdirSync(spool).filter((name) => name.endsWith(".json"))
       .map((name) => JSON.parse(fs.readFileSync(path.join(spool, name), "utf8")));
     expect(envelope.writer.file).toBe("worker/runs/box-run.mjs");
-    expect(envelope.registration.origin).toBe("cron:audit");
-    expect(envelope.registration.mergeKey).toMatch(/a1b2c3d/);
+    // The registration rides at the head of the auditor's prompt.
+    const { registration } = parseRegistrationBlock(stdin);
+    expect(registration.origin).toBe("cron:audit");
+    expect(registration.mergeKey).toMatch(/a1b2c3d/);
   }, 30_000);
 });
 

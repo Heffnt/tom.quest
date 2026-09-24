@@ -9,10 +9,14 @@ import {
   appendSkillAsk,
   claimPointerPath,
   claimRegistration,
+  envelopeForRun,
   findCodexRegistration,
   mergeRegistration,
+  parseRegistrationBlock,
   readRegistration,
+  registrationFromTranscript,
   registrationSidecarPath,
+  renderRegistrationBlock,
   SKILL_ASK_CAP,
   writeRegistration,
   writeRegistrationClaim,
@@ -20,7 +24,7 @@ import {
   writeRegistrationReceipt,
 } from "../registration.mjs";
 import { GRAPH_NODES_CAP } from "../../jobs/graph.mjs";
-import { codexResponseItem, jsonl } from "./fixtures.mjs";
+import { claudeAssistant, claudeAttachment, claudeTextBlock, claudeUserTurn, codexMeta, codexResponseItem, jsonl } from "./fixtures.mjs";
 
 const temp = () => tempDir("runs-registration-");
 const parsed = () => ({
@@ -256,6 +260,8 @@ describe("run registration", () => {
     expect(merged.rows.map((entry) => entry.depth)).toEqual([2]);
   });
 
+  // A rollout launched before the registration block existed carries its
+  // token in the developer instruction; these two pin that retiring path.
   it("claims a Codex spool only from the first persisted developer instruction", () => {
     const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "rollout.jsonl");
     const token = "22222222-2222-4222-8222-222222222222";
@@ -546,5 +552,135 @@ describe("run registration", () => {
     expect(merged.run.context.graphNodes).toHaveLength(GRAPH_NODES_CAP);
     expect(merged.run.context.graphNodes[0]).toBe("line:0");
     expect(merged.run.context.graphNodes.at(-1)).toBe(`line:${GRAPH_NODES_CAP - 1}`);
+  });
+});
+
+// THE REGISTRATION BLOCK: the launcher's groups at the head of the prompt, the
+// token in the spool, and the sweep putting the two back together.
+describe("the registration block", () => {
+  const TOKEN = "abababab-abab-4bab-8bab-abababababab";
+  const REGISTRATION = {
+    host: "box", cli: "claude", origin: "cron:poll-gmail", kind: "job", environment: "worker",
+    modelRequested: "sonnet", cwd: "/work", parentRunId: "claude:box:parent", layersKnown: false,
+    layersGiven: [], layersDenied: [], skillsGranted: ["write"], skillsRefused: [],
+    tools: { allowed: ["Read"], denied: null }, promptSha256: "a".repeat(64),
+  };
+
+  it("round-trips: what is written is what is parsed", () => {
+    const writer = { file: "worker/runs/box-run.mjs", job: "box-run", at: 5 };
+    const block = renderRegistrationBlock({ writer, registration: REGISTRATION });
+    const parsedBlock = parseRegistrationBlock(`${block}the prompt\n`);
+    expect(parsedBlock).toMatchObject({ envelopeVersion: 2, writer, registration: REGISTRATION });
+    expect(parsedBlock.writer).toEqual(writer);
+    expect(parsedBlock.registration).toEqual(REGISTRATION);
+    // One fixed form: the fence and its label, the JSON, the fence, a blank line.
+    expect(block.startsWith("```registration\n{")).toBe(true);
+    expect(block.endsWith("}\n```\n\n")).toBe(true);
+    // A block anywhere but the start is not the launcher's.
+    expect(parseRegistrationBlock(`preamble\n${block}`)).toBeNull();
+    expect(parseRegistrationBlock("```registration\nnot json\n```\n")).toBeNull();
+  });
+
+  it("never carries the token, and the spool keeps it with the block's hash", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool");
+    const written = writeRegistration({ spoolDir, token: TOKEN, writer: { file: "worker/runs/box-run.mjs" }, registration: { ...REGISTRATION, token: TOKEN }, inPrompt: true, now: () => 7 });
+    expect(written.block).not.toContain(TOKEN);
+    const spool = JSON.parse(fs.readFileSync(written.file, "utf8"));
+    expect(spool).toEqual({ envelopeVersion: 2, token: TOKEN, writer: { file: "worker/runs/box-run.mjs", at: 7 }, blockSha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(parseRegistrationBlock(written.block).writer).toEqual(spool.writer);
+    // The claim moves the token, the writer and the hash, and invents no
+    // empty registration group that would hide the block from the sweep.
+    const runFile = path.join(dir, "run.jsonl");
+    claimRegistration({ spoolDir, token: TOKEN, runFile, claim: { by: "hook:SessionStart" }, now: () => 8 });
+    const side = readRegistration(runFile);
+    expect(side).not.toHaveProperty("registration");
+    expect(side).toMatchObject({ token: TOKEN, writer: spool.writer, blockSha256: spool.blockSha256 });
+  });
+
+  it("reads the block from a Claude transcript's first user message and from a Codex prompt after Codex's own", () => {
+    const block = renderRegistrationBlock({ writer: { file: "worker/runs/box-run.mjs" }, registration: REGISTRATION });
+    const claude = jsonl([
+      claudeAttachment("hook_additional_context", { content: "the operate layer" }),
+      claudeUserTurn({ text: `${block}do the job` }),
+      claudeAssistant({ blocks: [claudeTextBlock("done")] }),
+    ]);
+    expect(registrationFromTranscript(claude).registration).toEqual(REGISTRATION);
+    const codex = jsonl([
+      codexMeta({ id: "thread" }),
+      codexResponseItem("message", { role: "developer", content: [{ type: "input_text", text: "the operate layer" }] }),
+      codexResponseItem("message", { role: "user", content: [{ type: "input_text", text: "<environment_context>...</environment_context>" }] }),
+      codexResponseItem("message", { role: "user", content: [{ type: "input_text", text: `${block}do the job` }] }),
+    ]);
+    expect(registrationFromTranscript(codex).registration).toEqual(REGISTRATION);
+    // Quoted after the first answer, a block says nothing about this run.
+    const quoted = jsonl([
+      claudeUserTurn({ text: "hello" }),
+      claudeAssistant({ blocks: [claudeTextBlock("hi")] }),
+      claudeUserTurn({ text: `${block}pasted` }),
+    ]);
+    expect(registrationFromTranscript(quoted)).toBeNull();
+  });
+
+  it("puts the side file and the block together, trusting the block only as far as the side file vouches", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const written = writeRegistration({ spoolDir, token: TOKEN, writer: { file: "worker/runs/box-run.mjs" }, registration: REGISTRATION, inPrompt: true, now: () => 7 });
+    claimRegistration({ spoolDir, token: TOKEN, runFile, claim: { by: "hook:SessionStart" }, now: () => 8 });
+    const text = jsonl([claudeUserTurn({ text: `${written.block}do the job` })]);
+    const envelope = envelopeForRun({ runFile, text });
+    expect(envelope).toMatchObject({ token: TOKEN, writer: { file: "worker/runs/box-run.mjs" }, registration: REGISTRATION });
+    const merged = mergeRegistration({ parsed: parsed(), envelope, host: "box" });
+    expect(merged.envelopeApplied).toBe(true);
+    expect(merged.run).toMatchObject({ regToken: TOKEN, origin: "cron:poll-gmail", parentRunId: "claude:box:parent" });
+
+    // A block that is not the one this run's launcher wrote is not read.
+    const forged = renderRegistrationBlock({ writer: { file: "worker/runs/box-run.mjs" }, registration: { ...REGISTRATION, origin: "forged" } });
+    expect(envelopeForRun({ runFile, text: jsonl([claudeUserTurn({ text: `${forged}x` })]) }).registration).toBeUndefined();
+
+    // A claimer installed before the block turns a spool with no group into
+    // an empty one and drops the hash; the block still stands.
+    const oldClaimed = path.join(dir, "old-claimer.jsonl");
+    fs.writeFileSync(registrationSidecarPath(oldClaimed), JSON.stringify({ envelopeVersion: 2, token: TOKEN, writer: { file: "worker/runs/box-run.mjs", at: 7 }, registration: {}, claim: { by: "hook:SessionStart" } }));
+    expect(envelopeForRun({ runFile: oldClaimed, text }).registration).toEqual(REGISTRATION);
+
+    // A side file whose writer owns no prompt keeps its own group.
+    const hookRun = path.join(dir, "hook.jsonl");
+    writeRegistrationClaim({ runFile: hookRun, token: null, writer: { file: "scripts/run-hook.mjs" }, registration: { host: "box", origin: "session" }, claim: { by: "hook:SessionStart" }, now: () => 9 });
+    expect(envelopeForRun({ runFile: hookRun, text }).registration).toEqual({ host: "box", origin: "session" });
+  });
+
+  it("registers a run from the block alone when nothing claimed its spool, without its token", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const written = writeRegistration({ spoolDir, token: TOKEN, writer: { file: "worker/runs/box-run.mjs" }, registration: REGISTRATION, inPrompt: true, now: () => 7 });
+    const envelope = envelopeForRun({ runFile, text: jsonl([claudeUserTurn({ text: `${written.block}do the job` })]) });
+    expect(envelope).toMatchObject({ token: null, writer: { file: "worker/runs/box-run.mjs" }, registration: REGISTRATION });
+    expect(JSON.stringify(envelope)).not.toContain(TOKEN);
+    // A block naming a launcher that writes none is not trusted on its own.
+    const pasted = renderRegistrationBlock({ writer: { file: "scripts/run-hook.mjs" }, registration: REGISTRATION });
+    expect(envelopeForRun({ runFile: path.join(dir, "other.jsonl"), text: jsonl([claudeUserTurn({ text: `${pasted}x` })]) })).toBeNull();
+  });
+
+  it("binds a Codex rollout to its spool by the block's hash, and to none when two spools could be it", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "rollout.jsonl");
+    const writer = { file: "scripts/codex-run.mjs", job: "codex-run" };
+    const written = writeRegistration({ spoolDir, token: TOKEN, writer, registration: { ...REGISTRATION, cli: "codex" }, inPrompt: true, now: () => 7 });
+    writeRegistration({ spoolDir, writer, registration: { ...REGISTRATION, cli: "codex", cwd: "/elsewhere" }, inPrompt: true, now: () => 7 });
+    const text = jsonl([
+      codexMeta({ id: "thread" }),
+      codexResponseItem("message", { role: "user", content: [{ type: "input_text", text: `${written.block}do the job` }] }),
+    ]);
+    const result = findCodexRegistration({ text, spoolDir, runFile, claim: { threadId: "thread" }, now: () => 9 });
+    expect(result.ok).toBe(true);
+    expect(readRegistration(runFile)).toMatchObject({ token: TOKEN, claim: { by: "sweep:codex-block", threadId: "thread" } });
+    expect(envelopeForRun({ runFile, text }).registration.cwd).toBe("/work");
+
+    // Two spools with one hash: the binding would be a guess, so none is made.
+    const twin = path.join(dir, "twin");
+    const same = { spoolDir: twin, writer: { ...writer, at: 1 }, registration: REGISTRATION, inPrompt: true };
+    const first = writeRegistration(same);
+    writeRegistration(same);
+    const twinText = jsonl([codexResponseItem("message", { role: "user", content: [{ type: "input_text", text: `${first.block}x` }] })]);
+    const twinRun = path.join(dir, "twin.jsonl");
+    expect(findCodexRegistration({ text: twinText, spoolDir: twin, runFile: twinRun })).toMatchObject({ ok: false });
+    expect(fs.existsSync(registrationSidecarPath(twinRun))).toBe(false);
   });
 });

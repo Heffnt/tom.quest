@@ -26,7 +26,7 @@ if (!args.session || !args.subagent || !args.codex || !args.sessionRowId) {
 }
 
 const at = (name) => import(pathToFileURL(path.join(scriptDir, name)).href);
-const [{ runConfig }, { describeRunFile }, { parseClaudeFile, parseCodexFile }, { mergeRegistration, readRegistration }, { sweepRuns }] = await Promise.all([
+const [{ runConfig }, { describeRunFile }, { parseClaudeFile, parseCodexFile }, { envelopeForRun, mergeRegistration }, { sweepRuns }] = await Promise.all([
   at("config.mjs"),
   at("discover.mjs"),
   at("ingest.mjs"),
@@ -63,9 +63,9 @@ const agentId = childItem.threadId.split("/").at(-1);
 let agentMeta = { agentId, spawnDepth: 1 };
 try { agentMeta = { ...JSON.parse(fs.readFileSync(files[1].replace(/\.jsonl$/i, ".meta.json"), "utf8")), agentId }; } catch {}
 const dummyVersion = "0".repeat(64);
-const parsedRoot = mergeRegistration({ parsed: parseClaudeFile({ path: files[0], text: fs.readFileSync(files[0], "utf8"), host: "box", fileVersion: dummyVersion }), envelope: readRegistration(files[0]), host: "box" });
-const parsedChild = mergeRegistration({ parsed: parseClaudeFile({ path: files[1], text: fs.readFileSync(files[1], "utf8"), host: "box", fileVersion: dummyVersion, agentMeta, parentSessionId: rootThread }), envelope: readRegistration(files[1]), host: "box" });
-const parsedCodex = mergeRegistration({ parsed: parseCodexFile({ path: files[2], text: fs.readFileSync(files[2], "utf8"), host: "box", fileVersion: dummyVersion }), envelope: readRegistration(files[2]), host: "box" });
+const parsedRoot = mergeRegistration({ parsed: parseClaudeFile({ path: files[0], text: fs.readFileSync(files[0], "utf8"), host: "box", fileVersion: dummyVersion }), envelope: envelopeForRun({ runFile: files[0], text: fs.readFileSync(files[0], "utf8") }), host: "box" });
+const parsedChild = mergeRegistration({ parsed: parseClaudeFile({ path: files[1], text: fs.readFileSync(files[1], "utf8"), host: "box", fileVersion: dummyVersion, agentMeta, parentSessionId: rootThread }), envelope: envelopeForRun({ runFile: files[1], text: fs.readFileSync(files[1], "utf8") }), host: "box" });
+const parsedCodex = mergeRegistration({ parsed: parseCodexFile({ path: files[2], text: fs.readFileSync(files[2], "utf8"), host: "box", fileVersion: dummyVersion }), envelope: envelopeForRun({ runFile: files[2], text: fs.readFileSync(files[2], "utf8") }), host: "box" });
 const parsed = [parsedRoot, parsedChild, parsedCodex];
 if (!parsedChild.run.linkKnown || !parsedChild.run.spawnedByToolUseId) throw new Error("the subagent hook carried no exact tool-use link");
 if (parsedCodex.run.parentRunId !== parsedChild.run.runId) throw new Error("the Codex launcher did not name the subagent parent");

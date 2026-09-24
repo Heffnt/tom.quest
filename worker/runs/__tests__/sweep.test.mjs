@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { tempDir } from "../../../test/temp.mjs";
 
 import { claudeAssistant, claudeLine, claudeToolUseBlock, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
-import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
+import { claimRegistration, registrationSidecarPath, writeRegistration, writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
   DISK_SCAN_TTL_MS,
   MAX_ATTEMPTS,
@@ -607,6 +607,55 @@ describe("run sweep", () => {
     expect(ingests[0].run.envelopeKey).toBeUndefined();
     expect(ingests[0].run.context.registered).toBe(false);
     expect(events).toContainEqual(expect.objectContaining({ kind: "runs-envelope-host-mismatch" }));
+  });
+
+  // THE REGISTRATION RIDES IN THE PROMPT from 2026-09-24; a run launched
+  // before that has only its side file, and both must register.
+  const ingestOf = async (item, dir) => {
+    const ingests = [];
+    await sweepRunFile(item, { stateDir: path.join(dir, "state"), store: store(), post: async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    }, now: () => NOW });
+    return ingests[0].run;
+  };
+  const LAUNCHED = { host: "laptop", cli: "claude", origin: "cron:poll-gmail", kind: "job", environment: "worker", modelRequested: "sonnet", layersKnown: false, layersGiven: [], layersDenied: [] };
+
+  it("registers a run from the block at the head of its transcript when no side file exists", async () => {
+    const dir = temp();
+    const token = "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd";
+    const { block } = writeRegistration({ spoolDir: path.join(dir, "spool"), token, writer: { file: "worker/runs/box-run.mjs", job: "box-run" }, registration: LAUNCHED, inPrompt: true, now: () => NOW });
+    const item = runFile(dir, [claudeUserTurn({ text: `${block}triage the mail` })]);
+    expect(fs.existsSync(registrationSidecarPath(item.path))).toBe(false);
+    expect(fs.readFileSync(item.path, "utf8")).not.toContain(token);
+    const run = await ingestOf(item, dir);
+    expect(run).toMatchObject({ origin: "cron:poll-gmail", kind: "job", environment: "worker" });
+    expect(run.context).toMatchObject({ registered: true, launcher: "worker/runs/box-run.mjs", modelRequested: "sonnet" });
+    // The token never left the spool, so the record has none for this run.
+    expect(run.regToken).toBeUndefined();
+  });
+
+  it("takes the token from the side file and the rest from the block once the spool is claimed", async () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool");
+    const token = "efefefef-efef-4fef-8fef-efefefefefef";
+    const { block } = writeRegistration({ spoolDir, token, writer: { file: "worker/runs/box-run.mjs", job: "box-run" }, registration: LAUNCHED, inPrompt: true, now: () => NOW });
+    const item = runFile(dir, [claudeUserTurn({ text: `${block}triage the mail` })]);
+    claimRegistration({ spoolDir, token, runFile: item.path, claim: { by: "hook:SessionStart" }, now: () => NOW });
+    const run = await ingestOf(item, dir);
+    expect(run).toMatchObject({ origin: "cron:poll-gmail", regToken: token });
+    expect(run.context.registered).toBe(true);
+  });
+
+  it("still registers a run launched before the block, from its side file alone", async () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool");
+    const token = "12121212-1212-4212-8212-121212121212";
+    // The pre-change launcher: the whole registration group in the spool.
+    writeRegistration({ spoolDir, token, writer: { file: "worker/runs/box-run.mjs", job: "box-run" }, registration: LAUNCHED, now: () => NOW });
+    const item = runFile(dir, [claudeUserTurn({ text: "triage the mail" })]);
+    claimRegistration({ spoolDir, token, runFile: item.path, claim: { by: "hook:SessionStart" }, now: () => NOW });
+    const run = await ingestOf(item, dir);
+    expect(run).toMatchObject({ origin: "cron:poll-gmail", kind: "job", regToken: token });
+    expect(run.context.registered).toBe(true);
   });
 
   it("re-arms the local-store failure only after a verified S3 put", async () => {

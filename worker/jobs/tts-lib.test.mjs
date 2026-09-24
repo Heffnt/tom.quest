@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withoutBoxState } from "../../test/box-state.mjs";
 import { tempDir } from "../../test/temp.mjs";
+import { parseRegistrationBlock } from "../runs/registration.mjs";
 
 import {
   runClaude,
@@ -404,21 +405,35 @@ describe("runClaude receipt", () => {
   }, SPAWN_TIMEOUT_MS);
 
   it("names a worker unless the caller named another environment", () => {
+    // The registration rides at the head of the prompt, so this case needs a
+    // CLI that keeps what it read: a fake that writes its stdin to a file.
+    const dir = tempDir("tts-lib-environment-cli-");
+    const script = path.join(dir, "fake.mjs");
+    fs.writeFileSync(script, [
+      "#!/usr/bin/env node",
+      'import fs from "node:fs";',
+      'fs.writeFileSync(process.env.FAKE_PROMPT_AT, fs.readFileSync(0, "utf8"));',
+      'process.stdout.write(JSON.stringify({ type: "result", subtype: "success", result: "ok" }));',
+    ].join("\n"));
+    fs.chmodSync(script, 0o755);
+    let bin = script;
+    if (process.platform === "win32") {
+      bin = path.join(dir, "claude.cmd");
+      fs.writeFileSync(bin, `@echo off\r\n"${process.execPath}" "%~dp0fake.mjs" %*\r\n`);
+    }
     const envelopeFor = (registration) => {
       const spool = tempDir("tts-lib-environment-");
-      const previous = process.env.TTS_RUN_REG_SPOOL;
-      process.env.TTS_RUN_REG_SPOOL = spool;
+      const promptAt = path.join(spool, "prompt.txt");
+      vi.stubEnv("TTS_RUN_REG_SPOOL", spool);
+      vi.stubEnv("CLAUDE_BIN", bin);
+      vi.stubEnv("FAKE_PROMPT_AT", promptAt);
+      vi.stubEnv("TTS_RUN_SLOT_HELD", "");
       try {
-        runClaude("p", { model: "sonnet", timeoutMs: 1, registration });
-      } catch {
-        // The spawn fails; the envelope is written before it.
+        runClaude("p", { model: "sonnet", registration });
       } finally {
-        if (previous === undefined) delete process.env.TTS_RUN_REG_SPOOL;
-        else process.env.TTS_RUN_REG_SPOOL = previous;
+        vi.unstubAllEnvs();
       }
-      const [name] = fs.readdirSync(spool).filter((entry) => entry.endsWith(".json"));
-      const envelope = JSON.parse(fs.readFileSync(path.join(spool, name), "utf8"));
-      return envelope.registration;
+      return parseRegistrationBlock(fs.readFileSync(promptAt, "utf8")).registration;
     };
     expect(envelopeFor({ layersKnown: false }).environment).toBe("worker");
     expect(envelopeFor({ layersKnown: false, environment: "session" }).environment).toBe("session");
@@ -540,7 +555,9 @@ describe("runClaude through the box launcher", () => {
     const script = path.join(dir, "fake.mjs");
     fs.writeFileSync(script, [
       'import fs from "node:fs";',
-      'try { fs.readFileSync(0, "utf8"); } catch {}',
+      'let stdin = "";',
+      'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
+      'if (process.env.FAKE_PROMPT_AT) fs.writeFileSync(process.env.FAKE_PROMPT_AT, stdin);',
       'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, config: process.env.CLAUDE_CONFIG_DIR ?? null }));',
       `process.stdout.write(${JSON.stringify(answer)});`,
       `process.stderr.write(${JSON.stringify(stderr)});`,
@@ -563,7 +580,9 @@ describe("runClaude through the box launcher", () => {
     const spool = path.join(runState(), "registration");
     const record = path.join(runState(), "record.json");
     vi.stubEnv("TTS_RUN_REG_SPOOL", spool);
+    const promptAt = path.join(runState(), "prompt.txt");
     vi.stubEnv("FAKE_RECORD", record);
+    vi.stubEnv("FAKE_PROMPT_AT", promptAt);
     vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "success", result: "triaged" })));
     vi.stubEnv("RUN_HOST", "");
     const receipt = {};
@@ -572,7 +591,12 @@ describe("runClaude through the box launcher", () => {
     const [envelope] = spooled(spool);
     expect(envelope.token).toBe(receipt.runToken);
     expect(envelope.writer.file).toBe("worker/runs/box-run.mjs");
-    expect(envelope.registration).toMatchObject({ origin: "cron:poll-gmail", kind: "job", environment: "worker", host: null, cli: "claude", modelRequested: "sonnet" });
+    // The job's registration is at the head of the prompt the CLI read; the
+    // spool keeps the token, which that prompt never carries.
+    const sent = fs.readFileSync(promptAt, "utf8");
+    expect(sent).not.toContain(envelope.token);
+    expect(envelope).not.toHaveProperty("registration");
+    expect(parseRegistrationBlock(sent).registration).toMatchObject({ origin: "cron:poll-gmail", kind: "job", environment: "worker", host: null, cli: "claude", modelRequested: "sonnet" });
     const seen = JSON.parse(fs.readFileSync(record, "utf8"));
     // The same flags runClaude always handed the CLI: JSON out, eight turns
     // by default, the model, and nothing else.

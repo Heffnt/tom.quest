@@ -528,6 +528,9 @@ const spooled = writeRegistration({
     // writes no key at all rather than an empty list.
     ...(graphNodes === undefined ? {} : { graphNodes }),
   },
+  // The group rides at the head of the prompt below; the spool keeps the token
+  // and the block's hash, which is how the sweep binds the rollout to it.
+  inPrompt: true,
 });
 const childEnv = {
   ...process.env,
@@ -579,16 +582,19 @@ const args = [
   "-c", "notify=[]",
   "-c", `model_reasoning_effort=${opts.effort}`,
 ];
-// JSON strings are valid TOML basic strings and preserve quotes/newlines. The
-// non-secret token also lets the sweeper bind a rollout when exec fires no hook.
+// JSON strings are valid TOML basic strings and preserve quotes/newlines.
 //
-// Order is operate, then grants, then the token. THE TOKEN LINE IS LAST and
-// alone on its line, because findCodexRegistration anchors its regex to a line
-// start and a line end; nothing may be appended after it.
-const developerInstructions = [operate?.text ?? "", grantBlock, `TTS-RUN-TOKEN: ${spooled.token}`]
+// Order is operate, then grants. THE TOKEN IS NOT HERE: the developer
+// instruction is recorded in the rollout, and the token stays out of every
+// transcript (worker/runs/registration.mjs's header). The sweep binds a
+// rollout exec fired no hook for by the registration block at the head of the
+// prompt instead (findCodexRegistration).
+const developerInstructions = [operate?.text ?? "", grantBlock]
   .filter(Boolean)
   .join("\n");
-args.push("-c", `developer_instructions=${JSON.stringify(developerInstructions)}`);
+// A run with neither (--no-operate, no skills) passes no developer instruction
+// at all rather than an empty one.
+if (developerInstructions) args.push("-c", `developer_instructions=${JSON.stringify(developerInstructions)}`);
 // Under workspace-write, a sandboxed Codex has no network by default, which
 // turns "run the tests" into a dependency-install failure. Harmless under
 // read-only, but say it only where it applies so the read-only path stays
@@ -625,7 +631,7 @@ const child = spawn(useShell ? quote(bin) : bin, args.map(quote), {
 });
 child.stdout.pipe(errStream, { end: false }); // stray sandbox lines land here, not on our stdout
 child.stderr.pipe(errStream, { end: false });
-child.stdin.end(prompt);
+child.stdin.end(`${spooled.block}${prompt}`);
 
 let timedOut = false;
 // No timer at all unless a cap was asked for. An unreferenced timer would also
