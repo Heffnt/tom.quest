@@ -107,7 +107,14 @@ const REPO_NONE = "none";
 // What a box run may do. `Task` is in it BECAUSE a box run may spawn its own
 // children on the box, which is the point of moving the work here. Reading and
 // writing are in it because a run that cannot edit cannot land work.
-const TOOLS_ALLOWED = Object.freeze([
+//
+// EXPORTED FOR THE SESSION DAEMON'S RUNNER STEPS. A runner step is a box run
+// launched in process (worker/session-host/session-host.mjs launchStep), and
+// it gets this set and BANNED_TOOLS denied, the same as a run from the command
+// line. The export was dropped on 2026-09-19 as unread, while launchStep's
+// destructuring read it, so every step's launch spread undefined and threw;
+// worker/runs/__tests__/box-run-exports.test.mjs now fails if it goes again.
+export const TOOLS_ALLOWED = Object.freeze([
   "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
   "Glob", "Grep", "Bash", "TodoWrite", "WebFetch", "WebSearch", "Task",
 ]);
