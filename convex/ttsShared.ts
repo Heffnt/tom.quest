@@ -909,7 +909,7 @@ export const SESSION_REPO_NAMES = Object.keys(
 export const SESSION_MODELS = {
   opus: { family: "claude", id: null, effort: null },
   sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
-  fable: { family: "claude", id: "claude-fable-5", effort: null },
+  fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
 } as const;
