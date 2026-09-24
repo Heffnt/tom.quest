@@ -562,8 +562,8 @@ async function linkOf(
  * more often, not to grow a second reader.
  *
  * THE ROWS ARE A TRANSCRIPT'S BYTES AND THEY END UP IN A FILE ON DISK, and
- * nothing is redacted here on purpose. scripts/export-golden.mjs drops an item
- * WHOLE when redactSecrets would change it (hasCredentialShapedText), because
+ * nothing is redacted here on purpose. Jarvis's scripts/export-golden.mjs drops
+ * an item WHOLE when redactSecrets would change it (hasCredentialShapedText), because
  * a "[redacted:…]" marker in the middle of an output is a difference the judge
  * would score and the item is worthless anyway. A second drop here would be a
  * second rule about the same bytes, and two rules about one thing is how the

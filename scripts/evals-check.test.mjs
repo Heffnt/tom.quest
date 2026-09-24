@@ -217,7 +217,25 @@ describe("gate, continued", () => {
 
   it("watches the paths the two workflows fire on", () => {
     expect(WATCHED_PATHS).toContain("model-of-tom/**");
-    expect(WATCHED_PATHS).toContain("evals/golden/**");
+    expect(WATCHED_PATHS).toContain("evals/triggers/**");
+  });
+
+  // A WATCHED PATH THAT CANNOT CHANGE WATCHES NOTHING. The box's code, the
+  // prelude, the skill publisher and the golden and task sets left for the
+  // Jarvis repository, which judges its own requests by its own list; this
+  // list serves tom.quest and WikiTom, and neither holds those paths.
+  it("names none of the paths that left for the Jarvis repository", () => {
+    for (const gone of [
+      "worker/jobs/plan-graphs.mjs",
+      "worker/jobs/nightly.mjs",
+      "worker/bin/tts-ask",
+      "scripts/prelude.mjs",
+      "scripts/publish-skills.mjs",
+      "evals/golden/x.md",
+      "evals/tasks/slack.json",
+    ]) {
+      expect(matchesWatched(gone), gone).toBe(false);
+    }
   });
 
   // EVERY DIRECTORY THE SET IS READ FROM IS WATCHED. loadTriggers reads
@@ -230,8 +248,6 @@ describe("gate, continued", () => {
   it("watches every directory the eval set is read from", () => {
     expect(WATCHED_PATHS).toContain("evals/triggers/**");
     expect(unaffectedBy(["evals/triggers/layer-know.json"])).toBe(false);
-    expect(unaffectedBy(["evals/tasks/slack.json"])).toBe(false);
-    expect(unaffectedBy(["evals/golden/x.md"])).toBe(false);
   });
 
   // The skill table, its generator, the router that grants them, and the set
@@ -239,9 +255,8 @@ describe("gate, continued", () => {
   // is what this list means by a context file — while the harness's own files
   // stay out, because watching them fires a fifty-minute run on every change to
   // the evals code itself.
-  it("watches the skill table and its generator, and still not the harness", () => {
+  it("watches the skill table and its router, and still not the harness", () => {
     expect(WATCHED_PATHS).toContain("shared/skills.mjs");
-    expect(WATCHED_PATHS).toContain("scripts/publish-skills.mjs");
     expect(WATCHED_PATHS).toContain("shared/skill-router.mjs");
     expect(WATCHED_PATHS).toContain("evals/triggers/**");
     expect(WATCHED_PATHS).not.toContain("worker/jobs/evals.mjs");
@@ -329,8 +344,8 @@ describe("gate, continued", () => {
 describe("matchesWatched", () => {
   it("takes each of the three forms the list is written in", () => {
     // exact
-    expect(matchesWatched("scripts/prelude.mjs")).toBe(true);
-    expect(matchesWatched("scripts/prelude.test.mjs")).toBe(false);
+    expect(matchesWatched("shared/skills.mjs")).toBe(true);
+    expect(matchesWatched("shared/skills.test.mjs")).toBe(false);
     // a leading ** — the name anywhere, including at the root
     expect(matchesWatched("worker/AGENTS.md")).toBe(true);
     expect(matchesWatched("convex/deep/nested/CLAUDE.md")).toBe(true);
@@ -338,7 +353,7 @@ describe("matchesWatched", () => {
     expect(matchesWatched("docs/NOT-AGENTS.md")).toBe(false);
     // a trailing ** — anything under the directory, at any depth
     expect(matchesWatched("model-of-tom/intent.md")).toBe(true);
-    expect(matchesWatched("evals/golden/runs/2026-09-11.json")).toBe(true);
+    expect(matchesWatched("evals/triggers/nested/skill-know-research.json")).toBe(true);
     expect(matchesWatched("model-of-tom-old/intent.md")).toBe(false);
   });
 
@@ -609,7 +624,7 @@ describe("the golden-item rule", () => {
   });
 
   // A trigger directly scores the published descriptions and their router, so
-  // those three watched files may ship one instead of a golden item. Other
+  // those two watched files may ship one instead of a golden item. Other
   // watched files cannot: a trigger is not evidence about an arbitrary prompt
   // context change.
   it("lets a trigger cover only a skill description or router change", () => {
@@ -618,7 +633,6 @@ describe("the golden-item rule", () => {
     expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "")).toBe(false);
     expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "", ["skill-know-research.json"])).toBe(true);
     expect(goldenItemRule(["model-of-tom/intent.md", "evals/triggers/skill-know-research.json"], "")).toBe(false);
-    expect(goldenItemRule(["scripts/publish-skills.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
     expect(goldenItemRule(["shared/skill-router.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
     expect(goldenItemRule([
       "shared/skills.mjs",
@@ -673,19 +687,6 @@ describe("the golden-item rule", () => {
 });
 
 describe("what one job's prompt reads", () => {
-  // THE HOLE THIS CLOSED. `checkin` builds its prompt from
-  // worker/jobs/runner-checkin.mjs and `learning` from worker/jobs/nightly.mjs
-  // and worker/jobs/learning-ground.mjs, and none of the three was watched — so
-  // a change to the check-in judge's own prompt was `unaffected`, wrote a
-  // passing row with nothing scored, and merged with the nine items that exist
-  // to score it never run.
-  it("watches the files the check-in and learning jobs build their prompts from", () => {
-    expect(matchesWatched("worker/jobs/runner-checkin.mjs")).toBe(true);
-    expect(matchesWatched("worker/jobs/nightly.mjs")).toBe(true);
-    expect(matchesWatched("worker/jobs/learning-ground.mjs")).toBe(true);
-    expect(unaffectedBy(["worker/jobs/runner-checkin.mjs"])).toBe(false);
-  });
-
   // A path named here that WATCHED_PATHS does not carry can never be reached:
   // the branch would be called unaffected and nothing would consult this table.
   it("names nothing the watch does not already cover", () => {
@@ -698,8 +699,8 @@ describe("what one job's prompt reads", () => {
   });
 
   it("narrows an ordinary diff to the jobs that read what it touched", () => {
-    expect(jobsAffectedBy(["worker/jobs/runner-checkin.mjs"])).toEqual(["checkin"]);
-    expect(jobsAffectedBy(["worker/jobs/plan-graphs.mjs"])).toEqual(["code-brief", "prepare"]);
+    expect(jobsAffectedBy(["convex/ttsCompose.ts"])).toEqual(["prepare"]);
+    expect(jobsAffectedBy(["convex/ttsShared.ts", "README.md"])).toEqual(["prepare"]);
     // Nothing watched at all: no job reads it, and the whole-run shortcut has
     // already answered this branch anyway.
     expect(jobsAffectedBy(["README.md"])).toEqual([]);
@@ -709,7 +710,7 @@ describe("what one job's prompt reads", () => {
     // Every prompt carries the layers, so every item moves.
     expect(jobsAffectedBy(["model-of-tom/intent.md"])).toBeNull();
     expect(jobsAffectedBy(["shared/skills.mjs"])).toBeNull();
-    expect(jobsAffectedBy(["evals/golden/explanations/explanation-p1.json"])).toBeNull();
+    expect(jobsAffectedBy(["evals/triggers/skill-know-research.json"])).toBeNull();
     // A weekly run and a run by hand supply no list: null regenerates all.
     expect(jobsAffectedBy(undefined)).toBeNull();
     expect(jobsAffectedBy(null)).toBeNull();

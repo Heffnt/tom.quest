@@ -494,7 +494,7 @@ export async function mergeGateFor(
                 passed: false,
                 why:
                   `the evals run did not check golden coverage — re-run it: ` +
-                  `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha} --force`,
+                  `node /opt/jarvis/worker/jobs/evals.mjs --repo ${repo} --sha ${sha} --force`,
               };
 
   const checks = [testsCheck, auditCheck, evalsCheck];
