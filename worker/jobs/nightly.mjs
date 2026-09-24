@@ -3181,6 +3181,7 @@ async function main() {
   // 70: CMT's todos live in TTS). Without this, every night would read CMT's
   // rules from whatever commit the last brief pass left. A refused refresh is
   // a failure row, and the steps read the clone as it stood.
+  // Kept: on the laptop CMT_DIR is Tom's own CMT checkout, which cacheRepoDir's reset --hard and clean -fd would strip of uncommitted work.
   if (process.platform !== "win32") {
     try {
       cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master", dir: CMT_DIR });
