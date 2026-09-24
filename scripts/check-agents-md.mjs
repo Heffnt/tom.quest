@@ -4,7 +4,7 @@ import path from "node:path";
 
 // Byte targets per AGENTS.md, by path relative to the repo root. Crossing one
 // warns; it never fails the check. A nested file not listed here takes the
-// default. The chain cap below is the one hard size limit.
+// default. The chain threshold below warns the same way.
 const BYTE_TARGETS = {
   "AGENTS.md": 4000,
   "app/AGENTS.md": 3500,
@@ -15,7 +15,14 @@ const BYTE_TARGETS = {
   "worker/AGENTS.md": 3500,
 };
 const DEFAULT_BYTE_TARGET = 3500;
-const MAX_CHAIN_BYTES = 32_768;
+// The size a chain of AGENTS.md files (the root file, then each nested one a
+// session in that directory also loads) may reach before the check warns.
+// Crossing it never fails the check. Tom, 2026-09-22: "if I end up finding
+// that more content helps then I dont want to be restricted by an arbitrary
+// cap … the right solution is dedicated effort on improving speed and cost
+// while keeping quality constant. this effort should be triggered by warning
+// signs". The threshold stays because its warning is that trigger.
+const CHAIN_THRESHOLD_BYTES = 32_768;
 
 // The one sentence allowed in more than one AGENTS.md: the pointer at WikiTom.
 const WIKITOM_POINTER = /wikitom.*model-of-tom/;
@@ -183,11 +190,17 @@ for (const leaf of [...leaves].sort((a, b) => relative(a).localeCompare(relative
   chains.push(chain);
 }
 for (const chain of chains) {
-  const bytes = chain.reduce((total, agent) => total + (sourceFor(agent)?.length ?? 0), 0);
+  const sizes = chain.map((agent) => ({ agent, bytes: sourceFor(agent)?.length ?? 0 }));
+  const bytes = sizes.reduce((total, size) => total + size.bytes, 0);
   const label = chain.map(relative).join(" -> ");
   console.log(`AGENTS chain: ${label} = ${bytes} bytes`);
-  if (bytes > MAX_CHAIN_BYTES) {
-    failures.push(`AGENTS chain exceeds ${MAX_CHAIN_BYTES} bytes: ${label} = ${bytes} bytes`);
+  if (bytes > CHAIN_THRESHOLD_BYTES) {
+    const largest = sizes.reduce((a, b) => (b.bytes > a.bytes ? b : a));
+    warnings.push(
+      `the AGENTS chain ${label} is ${bytes} bytes, over the ${CHAIN_THRESHOLD_BYTES}-byte threshold; ` +
+        `its largest file is ${relative(largest.agent)} at ${largest.bytes} bytes. ` +
+        `The threshold asks for dedicated effort on the chain's size; it blocks nothing.`,
+    );
   }
 }
 

@@ -40,7 +40,7 @@ job and is not counted in any row.
 | ↳ `check-vocabulary.mjs` | The closed vocabulary and the graph kinds it is the schema of | CI `static-boundaries` | 0.45 s | checks |
 | ↳ `check-session-mirrors.mjs` | Every model family has a runner; the live-status list matches the schema; each compatibility symlink has one body; no second repo list; the simplify inventory | CI `static-boundaries` | 0.18 s | checks |
 | ↳ `check-auth-boundary.mjs` | No inline `admin`/`tom` role comparison outside the two files that own it | CI `static-boundaries` | 0.10 s | checks |
-| ↳ `check-agents-md.mjs` | Each `AGENTS.md` is under its byte target and has its `CLAUDE.md` beside it | CI `static-boundaries` | 0.07 s | checks |
+| ↳ `check-agents-md.mjs` | Each `AGENTS.md` has its `CLAUDE.md` beside it and no sentence of it is in a second one; a file over its byte target, or a chain over 32,768 bytes, warns and never fails | CI `static-boundaries` | 0.07 s | checks |
 | ↳ `check-heavy-libs.mjs` | The heavy client libraries are imported from one module each | CI `static-boundaries` | 0.06 s | checks |
 | ↳ `check-large-files.mjs` | No untracked-by-LFS blob over 50 MiB | CI `static-boundaries` | 0.05 s | checks |
 | ↳ `check-setup-imports.mjs` | `worker/setup.sh` copies every file the deployed modules import, and the `/opt/tts/shared` copy the scripts import | CI `static-boundaries` | 0.04 s | checks |
