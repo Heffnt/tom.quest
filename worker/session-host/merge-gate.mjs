@@ -3,10 +3,12 @@
 // Merging was the one thing an autonomous session could not do: the Bash
 // classifier's prompt denied it outright and said "merging is Tom's gate". His
 // ruling is that merging is MECHANICAL — tests green, an audit approving the
-// head, evals with no regression — so the daemon checks those three itself and
-// allows the command when they hold. Convex holds the three facts and answers
+// head, evals with no regression — so the daemon asks the gate and allows the
+// command when it opens. Convex holds the three facts and answers
 // GET /tts/merge-gate; convex/ttsMerge.ts is their one home and says why each
-// is what it is.
+// is what it is. Since Tom's ruling of 2026-09-24 the evals are reported but
+// not required, for now (EVALS_REQUIRED_FOR_MERGE there), so this file reads
+// which checks are required from the gate's `missing` and restates no count.
 //
 // This file is the PURE half: which commands are merges, which checkout a
 // merge is about, and what the session is told when the gate refuses. It
@@ -78,22 +80,30 @@ export function mergeUnreadableDenial(reason) {
   return `denied: the merge gate could not be read (${reason}), and a merge is not allowed on an unread gate. Say so in your outcome; the merge is still there to make once the gate answers.`;
 }
 
-/** What a session is told when one or more of the three checks is not met.
+/** How each check is satisfied, by the names the gate answers with. */
+const SATISFIED_BY = {
+  tests: "the tests green (the Guardrails tests job posts its result)",
+  audit: "an audit approving this exact commit (VERDICT: APPROVED, posted to /tts/audit)",
+  evals: "an evals run at this commit with no regression",
+};
+
+/** What a session is told when one or more required checks is not met.
  *  Names them, and says how each is satisfied, so the session can finish the
- *  work rather than retry the command. */
+ *  work rather than retry the command. Only the checks in `missing` are
+ *  named: a check the gate reports but does not require (the evals, for now)
+ *  is not work the session has to finish before it merges. */
 export function mergeDenial(gate) {
   const missing = Array.isArray(gate?.missing) ? gate.missing : [];
   const why = (Array.isArray(gate?.checks) ? gate.checks : [])
-    .filter((check) => !check.passed)
+    .filter((check) => !check.passed && missing.includes(check.name))
     .map((check) => `${check.name}: ${check.why}`)
     .join("; ");
+  const needs = missing.map((name) => SATISFIED_BY[name] ?? name).join("; ");
   return (
     `denied by the merge gate — missing ${missing.join(", ") || "every check"}. ` +
-    `${why}. A merge is allowed once all three are on record: the tests green ` +
-    `(the Guardrails tests job posts its result), an audit approving this exact ` +
-    `commit (VERDICT: APPROVED, posted to /tts/audit), and an evals run at this ` +
-    `commit with no regression. Finish the missing one, or leave the branch for ` +
-    `the next session and say so in your outcome.`
+    `${why}. A merge is allowed once each missing check is on record: ` +
+    `${needs || Object.values(SATISFIED_BY).join("; ")}. Finish the missing one, ` +
+    `or leave the branch for the next session and say so in your outcome.`
   );
 }
 

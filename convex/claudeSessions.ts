@@ -50,6 +50,7 @@ import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import { dueRunnerSteps } from "./ttsRunners";
 import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE } from "./ttsShared";
+import { EVALS_REQUIRED_FOR_MERGE } from "./ttsMerge";
 import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
   WORKER_CONTRACT,
@@ -1498,11 +1499,12 @@ export const internalPoll = internalMutation({
     // keeps resending its last successful reading with that reading's OWN
     // readAt while later reads fail, so age is the signal. Unknown admits: a
     // daemon that cannot read the CLI must not freeze the fleet. Reported on
-    // the same throttled heartbeat as `load`.
+    // the same throttled heartbeat as `load`. The five-hour figure is absent
+    // when the account reports no such window (schema.ts says which plans).
     codexUsage: v.optional(
       v.object({
         weeklyUsedPercent: v.number(),
-        fiveHourUsedPercent: v.number(),
+        fiveHourUsedPercent: v.optional(v.number()),
         weeklyResetsAt: v.optional(v.number()),
         readAt: v.number(),
       }),
@@ -2721,24 +2723,29 @@ function delegateDoctrine(sessionId: Id<"claudeSessions">, todoId?: Id<"dtsTodos
 // A merge is unattended work once its three mechanical checks pass (Tom,
 // 2026-09-09: merging is mechanical when the tests, the audit and the evals
 // pass, and is then REPORTED for objection rather than asked about — which is
-// why it is not on the narrow list).
+// why it is not on the narrow list). Since Tom's ruling of 2026-09-24 the
+// evals are reported but not required, for now: EVALS_REQUIRED_FOR_MERGE in
+// convex/ttsMerge.ts decides, and this paragraph reads the same constant so
+// it and the box say the same thing.
 //
 // THE GATE IS MECHANICAL AND THE BOX ENFORCES IT. A lone `git merge` or
 // `gh pr merge` is ruled on by the daemon before it runs: it reads HEAD in the
-// checkout and asks GET /tts/merge-gate for the three checks
-// (worker/session-host/merge-gate.mjs, convex/ttsMerge.ts). All three on
-// record → the command runs and a transcript row says which checks let it.
-// Any missing → denied, naming them. So this paragraph and the box agree, and
-// a session that reads it and tries to merge finds out immediately which of
-// the three is not there yet.
+// checkout and asks GET /tts/merge-gate for the checks
+// (worker/session-host/merge-gate.mjs, convex/ttsMerge.ts). Every required
+// check on record → the command runs and a transcript row says which checks
+// let it. Any missing → denied, naming them. So this paragraph and the box
+// agree, and a session that reads it and tries to merge finds out immediately
+// which one is not there yet.
 //
 // POST /tts/merge is the REPORT, and it runs the same gate again: it is what
 // puts the merge in the morning's objection list and posts one line to
 // #tts-decisions. It cannot make an ungated merge legitimate.
 function mergeGate(): string {
   return [
-    "Merging is mechanical, not Tom's gate. A merge is allowed when three things are on record for the exact commit you are merging: the tests are green, an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit), and an evals run scored it with no regression.",
-    "Run the merge as its OWN command — `git merge` or `gh pr merge`, nothing chained to it. The box checks the three itself and either runs it or denies it naming which are missing; you never have to ask.",
+    EVALS_REQUIRED_FOR_MERGE
+      ? "Merging is mechanical, not Tom's gate. A merge is allowed when three things are on record for the exact commit you are merging: the tests are green, an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit), and an evals run scored it with no regression."
+      : "Merging is mechanical, not Tom's gate. A merge is allowed when two things are on record for the exact commit you are merging: the tests are green, and an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit). The evals are still scored and reported for the commit, but by Tom's ruling of 2026-09-24 they are not required for merging for now.",
+    "Run the merge as its OWN command — `git merge` or `gh pr merge`, nothing chained to it. The box checks them itself and either runs it or denies it naming which are missing; you never have to ask.",
     "After a merge, POST /tts/merge through the worker-key pen with its repo, the merged sha, and a concise summary. That is the report, not the permission: it puts the merge in Tom's morning objection list and in #tts-decisions, where silence means it stands.",
   ].join("\n\n");
 }

@@ -6,6 +6,7 @@
   "label": "landed",
   "sentence": "Okay, that makes sense. We should rewrite the Rows without triggers as well. I do still want to show that Boolean backdoors fool class B correlation detection, while single-trigger cannot. Using different trigger words for class B is not as important as using different trigger functions, so we should use just one set of common trigger words and one set of rare trigger words swept across all trigger functions from arity 1 to arity 3 So we can show the effect of trigger logic and how single trigger gets caught while certain trigger functions do not.\nThe full word commonness sweep is important for the class A input anomaly detectors.\nThen the other thing we have is the headline result, which is based on the occurrence evidence and the behavioral dormancy. anything else? \nLay out the full path to get the results for Class A detectors, Class B detectors, and the dormancy results.",
   "confirmedByTom": false,
+  "unreplayable": "the session before Tom's request is 1,086,388 characters, over the 500,000 one prompt carries, so no replay can hold the whole of what the agent had",
   "ruledOn": "2026-07-16",
   "input": {
     "topic": "Clean-baseline row is not rewritten",

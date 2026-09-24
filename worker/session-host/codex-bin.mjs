@@ -50,6 +50,46 @@ export function spawnCodex(args, opts) {
   );
 }
 
+// The account's rate limits, as `codex app-server` answers
+// account/rateLimits/read (session-host.mjs's readCodexUsage), turned into
+// the heartbeat's codexUsage figures. The one parse of that shape.
+//
+// The windows are told apart by windowDurationMins, NEVER by position:
+// codex-cli 0.130 (2026-09-04) put the 5-hour window (300) in `primary` and
+// the weekly one (10080) in `secondary`; codex-cli 0.153.3 (2026-09-21, a
+// "prolite" plan) reports ONLY the weekly window, in `primary`, with
+// `secondary: null` — and a positional read threw "unexpected rateLimits
+// shape" on every daemon start, so the heartbeat carried no usage and the
+// fleet's weekly cap (CODEX_WEEKLY_CAP_PERCENT) went blind. The weekly
+// figure is the one the scheduler gates on, so it is required; the 5-hour
+// figure is recorded only, so a reading without that window omits it. Each
+// window is { usedPercent, windowDurationMins, resetsAt } with resetsAt in
+// EPOCH SECONDS; other fields (credits, planType, ...) are ignored.
+const WEEKLY_WINDOW_MINS = 7 * 24 * 60;
+const FIVE_HOUR_WINDOW_MINS = 5 * 60;
+
+function toEpochMs(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value < 1e12 ? value * 1000 : value; // seconds → ms
+}
+
+export function parseCodexRateLimits(limits) {
+  const windows = [limits?.primary, limits?.secondary].filter(
+    (w) => w && typeof w === "object" && typeof w.usedPercent === "number",
+  );
+  const weekly = windows.find((w) => w.windowDurationMins === WEEKLY_WINDOW_MINS);
+  const fiveHour = windows.find((w) => w.windowDurationMins === FIVE_HOUR_WINDOW_MINS);
+  if (!weekly) {
+    throw new Error(`unexpected rateLimits shape: ${String(JSON.stringify(limits)).slice(0, 200)}`);
+  }
+  const weeklyResetsAt = toEpochMs(weekly.resetsAt);
+  return {
+    weeklyUsedPercent: weekly.usedPercent,
+    ...(fiveHour ? { fiveHourUsedPercent: fiveHour.usedPercent } : {}),
+    ...(weeklyResetsAt !== undefined ? { weeklyResetsAt } : {}),
+  };
+}
+
 // The flags every turn carries, first turn and resume alike.
 //   --json                    events as JSONL on stdout — the whole interface
 //   -m <id>                   the model; repeated on EVERY resume because a

@@ -47,6 +47,9 @@ export const SCRUBBED_SECRET_NAMES = Object.freeze([
   "TURING_RUNNER_KEY",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
+  // Spends money on every call. scripts/codex-run.mjs reads it from the env
+  // file for an openrouter/ run and hands it to that Codex process alone.
+  "OPENROUTER_API_KEY",
 ]);
 
 // A copy of `source` (process.env by default) without the secrets above.
