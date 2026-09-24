@@ -57,6 +57,14 @@ export const SCRUBBED_SECRET_NAMES = Object.freeze([
   // Spends money on every call. scripts/codex-run.mjs reads it from the env
   // file for an openrouter/ run and hands it to that Codex process alone.
   "OPENROUTER_API_KEY",
+  // Admin over the production Convex deployment: it runs any function,
+  // internal ones included, and pushes code. tts-convex reads it from the env
+  // file and hands it to one `convex` process. On this list although a value
+  // pasted on tom.quest/secrets lands in the mailbox block: a box built fresh
+  // from worker.env.example holds a CONVEX_DEPLOY_KEY= line outside the block,
+  // the pasted value then replaces that line, and systemd loads it into the
+  // daemon's environment, where only this list removes it.
+  "CONVEX_DEPLOY_KEY",
 ]);
 
 // A copy of `source` (process.env by default) without the secrets above.

@@ -454,7 +454,7 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
   /usr/local/bin/tts-codex /usr/local/bin/tts-run /usr/local/bin/tts-search \
   /usr/local/bin/tts-ask /usr/local/bin/tts-audit /usr/local/bin/tts-runner-step \
-  /usr/local/bin/tts-turing-act
+  /usr/local/bin/tts-turing-act /usr/local/bin/tts-convex
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
