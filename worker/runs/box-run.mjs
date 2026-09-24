@@ -106,9 +106,11 @@ const REPO_NONE = "none";
 // What a box run may do. `Task` is in it BECAUSE a box run may spawn its own
 // children on the box, which is the point of moving the work here. Reading and
 // writing are in it because a run that cannot edit cannot land work.
+// WebFetch and WebSearch are not: each account slot's settings deny them
+// (worker/setup.sh), and a deny outranks this list anyway.
 const TOOLS_ALLOWED = Object.freeze([
   "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
-  "Glob", "Grep", "Bash", "TodoWrite", "WebFetch", "WebSearch", "Task",
+  "Glob", "Grep", "Bash", "TodoWrite", "Task",
 ]);
 
 // MIRROR of BANNED_TOOLS in worker/session-host. A box child has no surface to

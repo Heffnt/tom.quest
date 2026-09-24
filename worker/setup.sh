@@ -373,6 +373,45 @@ for (const event of events) {
   });
   settings.hooks[event] = entries;
 }
+// WHAT A BOX AGENT DOES NOT USE, because Jarvis already does it (Tom,
+// 2026-09-22: "I want to handle all context related stuff in jarvis."). The
+// flag that installs the context hook is the one that marks a Claude slot, and
+// these keys mean nothing to Codex. Every rollout sets them again, so a hand
+// edit that turns one back on lasts until the next deploy. Each name was read
+// off the installed CLI's settings schema (2.1.281) and checked in the `init`
+// envelope of `claude -p --output-format stream-json --verbose`:
+//   autoMemoryEnabled false        memory_paths goes from the auto-memory
+//                                  directory to none: nothing read, nothing
+//                                  written.
+//   autoDreamEnabled false         the background pass that rewrites that
+//                                  memory directory. The CLI decides whether
+//                                  it runs from this key and a server flag,
+//                                  never from autoMemoryEnabled, so the first
+//                                  key alone does not stop it.
+//   disableBundledSkills true      the skills and workflows the CLI ships go;
+//                                  the slot's own skills/ (the tom-* skills
+//                                  the session-start hook publishes) stay.
+//   disableWorkflows true          the Workflow tool leaves the tool list.
+//   disableClaudeAiConnectors true the account's claude.ai MCP connectors are
+//                                  no longer fetched or connected.
+//   permissions.deny               WebSearch and WebFetch have no settings key
+//                                  of their own; a deny rule takes a tool off
+//                                  the list and outranks --allowedTools.
+//                                  mcp__* does the same for every MCP tool
+//                                  by name, whatever server supplies it.
+// The Agent SDK query in worker/session-host/session.mjs passes no
+// settingSources, so it loads these user settings as the CLI does.
+if (process.env.INCLUDE_CONTEXT_HOOK === "1") {
+  settings.autoMemoryEnabled = false;
+  settings.autoDreamEnabled = false;
+  settings.disableBundledSkills = true;
+  settings.disableWorkflows = true;
+  settings.disableClaudeAiConnectors = true;
+  const denied = ["WebSearch", "WebFetch", "mcp__*"];
+  if (!settings.permissions || Array.isArray(settings.permissions) || typeof settings.permissions !== "object") settings.permissions = {};
+  const deny = Array.isArray(settings.permissions.deny) ? settings.permissions.deny : [];
+  settings.permissions.deny = [...deny, ...denied.filter((rule) => !deny.includes(rule))];
+}
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 done
