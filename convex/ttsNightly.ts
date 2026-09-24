@@ -303,7 +303,6 @@ export const internalLearningInput = internalQuery({
       verdict: r.verdict,
       subjectType: r.subjectType,
       todoId: r.todoId,
-      batchId: r.batchId,
       repo: r.repo,
       externalId: r.externalId,
       sentence: r.sentence,

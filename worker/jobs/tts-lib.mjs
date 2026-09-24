@@ -589,7 +589,6 @@ function claudeRunOptions(prompt, { cwd, timeoutMs, maxTurns, model, allowedTool
       effortRequested: null,
       cwd: runCwd,
       todoId: registration.todoId ?? null,
-      batchId: registration.batchId ?? null,
       mergeKey: registration.mergeKey ?? null,
       parentRunId: registration.parentRunId ?? process.env.TTS_RUN_PARENT_RUN_ID ?? null,
       spawnedByToolUseId: registration.spawnedByToolUseId ?? null,

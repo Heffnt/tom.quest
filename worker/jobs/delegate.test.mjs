@@ -200,7 +200,7 @@ function harness(over = {}) {
         calls.posted = body;
         return { ok: true, id: "row", askId: body.askId, attended: false, capped: false, priorObjections: [], ...(over.recorded ?? {}) };
       }
-      if (path === "/tts/batch-context") return { writingStandard: "THE WRITING STANDARD" };
+      if (path === "/tts/planner-context") return { writingStandard: "THE WRITING STANDARD" };
       throw new Error("unexpected fetch " + path);
     },
     now: () => 1_000,
@@ -273,10 +273,24 @@ describe("askDelegate", () => {
   });
 
   it("falls back to the served writing standard only when the assembler is absent", async () => {
-    const { io, calls } = harness({ io: { existsSync: () => false } });
+    let given = null;
+    let prompt = "";
+    const { io, calls } = harness({
+      io: {
+        existsSync: () => false,
+        runClaude: (text, options) => {
+          calls.claude += 1;
+          prompt = text;
+          given = options;
+          return '{"decision":"Move it to Thursday morning.","reason":"He asked for Thursday.","refused":false,"refusedBecause":null}';
+        },
+      },
+    });
     await askDelegate(ask(), io);
     expect(calls.claude).toBe(1);
     expect(calls.posted.promptSha).toBe("prelude-fallback");
+    expect(prompt).toContain("THE WRITING STANDARD");
+    expect(given.registration.writingStandardSource).toBe("/tts/planner-context");
   });
 
   it("does not fall back when the assembler is present and refuses a layer", async () => {

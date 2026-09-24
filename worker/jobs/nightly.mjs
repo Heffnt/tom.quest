@@ -752,7 +752,7 @@ async function graphStep(run) {
   // only current statement of what every word means. It carries the
   // disagreements with it, because each of them is one ruling of his
   // (convex/vocabulary.ts). It is also what every worker's prompt reads its
-  // seven words from: /tts/batch-context renders them from this post's §12.1
+  // seven words from: /tts/planner-context renders them from this post's §12.1
   // entries, so a night that cannot post leaves the last posted wording in
   // force, and a record with none falls back to the constant.
   //
@@ -1751,7 +1751,6 @@ export function learningPrompt(input, pages, evidencePages, signals, day) {
       verdict: r.verdict,
       subjectType: r.subjectType,
       todoId: r.todoId ?? null,
-      batchId: r.batchId ?? null,
       repo: r.repo ?? null,
       externalId: r.externalId ?? null,
       sentence: r.sentence ?? null,

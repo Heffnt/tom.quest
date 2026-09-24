@@ -151,8 +151,8 @@ cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an
 outcome already exists.
 
-An autonomous mission may carry a `repo` (the scheduler picks it from the
-batch's code members, or from a repo the item names outright). Nothing here
+An autonomous mission may carry a `repo` (the scheduler picks it from a repo
+the item names outright). Nothing here
 is special-cased: the workdir is a fresh shallow clone on branch
 `session/<id>`, exactly as for an interactive session, and the mission
 prompt tells the agent to commit, push that branch, and open a PR with `gh

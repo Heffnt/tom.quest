@@ -140,7 +140,7 @@ export function closedVocabularyFrom(
 }
 
 /** The prompt's vocabulary block as the last posted night defines it. Internal:
- *  the box reads it through `/tts/batch-context`, never as a public query. */
+ *  the box reads it through `/tts/planner-context`, never as a public query. */
 export const internalClosedVocabulary = internalQuery({
   args: {},
   handler: async (ctx): Promise<string> => {
