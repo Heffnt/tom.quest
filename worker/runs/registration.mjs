@@ -448,7 +448,7 @@ export function readRegistration(runFile, { fs = fsDefault } = {}) {
   return jsonAt(registrationSidecarPath(runFile), fs);
 }
 
-const ENVIRONMENTS = new Set(["session", "worker", "runner"]);
+const ENVIRONMENTS = new Set(["session", "worker", "runner", "orchestrator"]);
 
 function setOptional(target, key, value) {
   if (value === null || value === undefined || value === "") delete target[key];

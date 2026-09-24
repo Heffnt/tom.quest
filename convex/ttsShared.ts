@@ -912,6 +912,10 @@ export const SESSION_MODELS = {
   fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
+  // OpenAI's Astra, the orchestrator's first choice (Tom, 2026-09-21). Listed
+  // by the box's Codex CLI as `gpt-6-astra`; convex/orchestrator.ts takes it
+  // only when the daemon's heartbeat says the CLI lists it.
+  "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
 } as const;
 export type SessionModel = keyof typeof SESSION_MODELS;
 export type ModelFamily = (typeof SESSION_MODELS)[SessionModel]["family"];
@@ -1123,8 +1127,33 @@ export const SLACK_SUBJECT = v.union(
   // two above do; a reply in either thread is an answer to that runner's
   // newest open question.
   v.object({ kind: v.literal("runner"), id: v.id("runners") }),
+  // AN ELEVATION the orchestrator judged reserved (convex/orchestrator.ts):
+  // its #tts-needs-you thread. Tom's reply there is the answer, delivered into
+  // the worker that asked.
+  v.object({ kind: v.literal("elevation"), id: v.id("elevations") }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
+
+// ── The orchestrator (Tom, 2026-09-21) ───────────────────────────────────────
+// The three kinds of decision an agent meets. Obvious: one side is clearly
+// better, and the agent makes it and says so in one sentence. Trade-off: a
+// good reason either way; the delegate rules on it, shown no recommendation.
+// Reserved: only Tom decides (the four things the Never list keeps his), and
+// he is asked with a recommendation.
+export const DECISION_KIND = v.union(
+  v.literal("obvious"),
+  v.literal("trade-off"),
+  v.literal("reserved"),
+);
+export type DecisionKind = Infer<typeof DECISION_KIND>;
+/**
+ * How many hosted workers may be live at once. Its own number, not the box
+ * launcher's two slots: those bound the command line's runs, which each hold
+ * a CPU-heavy CLI for their whole life, while a hosted worker spends most of
+ * its life idle, waiting on an answer. Four is Tom's default in the brief of
+ * 2026-09-21; the box's Codex usage, not its CPU, is what four spends.
+ */
+export const HOSTED_WORKERS_MAX = 4;
 
 /** The lookup key of a Slack THREAD: the channel and the thread root's ts —
  * a message's own ts when it is a root, its thread_ts when it is a reply.

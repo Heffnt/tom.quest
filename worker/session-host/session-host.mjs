@@ -44,6 +44,7 @@ import {
 } from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
+import { DAEMON_RESTART_ENDED_REASON, listedCodexModels } from "./hosted.mjs";
 import { reapUnlisted, removeOrphanWorkdirs, removeWorkdir } from "./workdir.mjs";
 
 const VERSION = "0.3.0";
@@ -284,6 +285,13 @@ function refreshCodexUsage() {
   codexUsageInFlight = true;
   void (async () => {
     try {
+      // The model list first and on its own: a usage read that fails must not
+      // leave the orchestrator's model unknowable.
+      try {
+        codexModels = await readCodexModels();
+      } catch (err) {
+        log("codex model list read failed (continuing):", String(err?.message ?? err));
+      }
       codexUsage = await readCodexUsage();
       codexUsageFailures = 0;
       codexUsageWarned = false;
@@ -306,6 +314,45 @@ function refreshCodexUsage() {
       codexUsageInFlight = false;
     }
   })();
+}
+
+// The model slugs the box's Codex CLI lists, for the heartbeat: the server
+// picks the orchestrator's model from them (Astra when listed, Tom
+// 2026-09-21; convex/orchestrator.ts orchestratorModel). `codex debug models`
+// prints the raw catalog without a model call. Read with the usage, on the
+// same cadence and in the background; an empty list means the CLI is not
+// installed, and absent means no read has finished yet.
+const CODEX_MODELS_TIMEOUT_MS = 15_000;
+let codexModels; // string[] | undefined
+
+async function readCodexModels() {
+  if (!resolveCodexBin()) return [];
+  const child = spawnCodex(["debug", "models"], { env: codexEnv(), stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    out += chunk;
+  });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      reject(new Error(`codex debug models did not answer within ${CODEX_MODELS_TIMEOUT_MS}ms`));
+    }, CODEX_MODELS_TIMEOUT_MS);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`codex debug models exited ${code}`));
+    });
+  });
+  return listedCodexModels(out);
 }
 
 // ── the Fable probe (Tom's ruling, 2026-09-24) ───────────────────────────────
@@ -415,6 +462,8 @@ function claimSession(env, sessions, row) {
     // is the session whose transcript this one continues ("reopen as").
     model: row.model,
     forkedFrom: row.forkedFrom,
+    // "orchestrator" or "worker" on a row this daemon HOSTS (hosted.mjs).
+    environment: row.environment,
     // The reopen generation this Session speaks for: stamped into every ingest
     // so the server can tell a live flush from a pre-reopen replay.
     reopenEpoch: row.reopenEpoch ?? 0,
@@ -483,6 +532,7 @@ function adoptSession(env, sessions, row) {
     mode: row.mode,
     model: row.model,
     forkedFrom: row.forkedFrom,
+    environment: row.environment,
     reopenEpoch: row.reopenEpoch ?? 0,
     onUsageSignal: recordUsageLimit,
   });
@@ -494,18 +544,17 @@ function adoptSession(env, sessions, row) {
     // session has no Tom to send that turn, so an adopted one would sit live
     // forever (counted against the fleet cap, its todo excluded). End it
     // errored; the scheduler's backoff owns the retry. The outcome rides the
-    // ingest and never overwrites one the agent already recorded.
+    // ingest and never overwrites one the agent already recorded. A HOSTED
+    // run ends the same way: nothing re-enters a run whose turn died with the
+    // old process. The server restarts the orchestrator from its document and
+    // tells the orchestrator a worker of its ended (convex/orchestrator.ts).
     s.finalizeRow("system", {
       text: "session-host restarted mid-mission; autonomous session ended",
     });
-    s.outcomeToSend = {
+    void s.endAdopted(DAEMON_RESTART_ENDED_REASON, {
       outcome: "errored",
       outcomeSummary: "daemon restarted mid-mission",
-    };
-    s.setStatus("ended");
-    s.endedReasonToSend = "daemon restarted mid-mission";
-    s.requestFlush(true);
-    s.cleanupWorkdir();
+    });
     return;
   }
   s.status = "idle";
@@ -595,6 +644,9 @@ async function main() {
     }
 
     let data;
+    // When this poll was sent: an idle hosted run decides nothing on facts
+    // older than the end of its own last turn (hostedIdleVerdict).
+    const polledAt = Date.now();
     try {
       data = await sessionsFetch(env, "/sessions/poll", {
         version: `session-host/${VERSION}`,
@@ -614,6 +666,7 @@ async function main() {
         // readAt (see refreshCodexUsage); absent only while no read has ever
         // succeeded, which the server reads as unknown, like a stale readAt.
         ...(codexUsage !== undefined ? { codexUsage } : {}),
+        ...(codexModels !== undefined ? { codexModels } : {}),
         // The Fable availability file (worker/runs/models.mjs), for the pages
         // that show whether the ceiling is in force; absent while none is
         // recorded.
@@ -622,6 +675,13 @@ async function main() {
         // refusal (recordUsageLimit); absent until one happens.
         ...(lastUsageLimit !== undefined ? { usageLimit: lastUsageLimit } : {}),
         ...(lastIngestError !== undefined ? { lastIngestError } : {}),
+        // This daemon hosts orchestrator and worker rows (hosted.mjs). A
+        // daemon that does not say so is never shown one, so an old copy on
+        // the box never ends a hosted run after its first turn.
+        hosts: ["orchestrator", "worker"],
+        // The sessions this process holds. The orchestrator's lease is renewed
+        // only while its run is in this list.
+        held: [...sessions].filter(([, s]) => !s.dead && s.status !== "ended" && s.status !== "failed").map(([id]) => String(id)),
       });
       pollAttempt = 0;
       if (lastIngestError !== undefined) {
@@ -644,6 +704,7 @@ async function main() {
     const liveIds = new Set((data.sessions ?? []).map((row) => String(row.id)));
     for (const row of data.sessions ?? []) {
       listed.add(row.id);
+      row.polledAt = polledAt;
       const local = sessions.get(row.id);
       // The whole per-row walk is fenced: one row this daemon cannot handle
       // (a shape the server grew before the box was redeployed — an unknown

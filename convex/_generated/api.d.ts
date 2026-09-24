@@ -20,6 +20,7 @@ import type * as gpuPool from "../gpuPool.js";
 import type * as http from "../http.js";
 import type * as intent from "../intent.js";
 import type * as intentParse from "../intentParse.js";
+import type * as orchestrator from "../orchestrator.js";
 import type * as runLabels from "../runLabels.js";
 import type * as runs from "../runs.js";
 import type * as serverHealth from "../serverHealth.js";
@@ -76,6 +77,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   intent: typeof intent;
   intentParse: typeof intentParse;
+  orchestrator: typeof orchestrator;
   runLabels: typeof runLabels;
   runs: typeof runs;
   serverHealth: typeof serverHealth;

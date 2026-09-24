@@ -197,6 +197,10 @@ surfaces the decision in the PR, rather than stopping to wait.
   file so the repo's vitest can execute the rule
   (`__tests__/banned-tools.test.mjs`) — `session.mjs` cannot be imported
   there, since the SDK is installed only on the box.
+- `hosted.mjs` — what the daemon does with a hosted run between its turns
+  (the orchestrator and the workers it spawned), the compact word, and the
+  run envelope's names; dependency-free (`__tests__/hosted.test.mjs`). See
+  "Hosted runs" below.
 - `runner-step.mjs` — how one runner step is claimed, launched through
   `box-run.mjs` and reported; dependency-free so
   `__tests__/runner-step.test.mjs` can drive it. See "Runner steps" below.
@@ -319,6 +323,38 @@ failed — logged once, then retried with doubling backoff capped at 30
 minutes). The usage-limit record is kept
 for family `claude` only; the scheduler's breaker reads a Codex cap from the
 error text keyed on family.
+
+## Hosted runs (Tom, 2026-09-21)
+
+The orchestrator is one long-lived unattended run that hands work to workers
+and answers the decisions they raise (convex/orchestrator.ts). It and every
+worker it spawns are claudeSessions rows with mode `autonomous`, like any
+unattended session, and the poll row says the daemon HOSTS them: its
+`environment` is `orchestrator` or `worker`, read off the `hostedRuns` table.
+A hosted run is kept alive across turns instead of ending after one, so a
+message can reach it mid-run: an elevation into the orchestrator, an answer
+back into a worker, a plain message either way. Each arrives as the run's next
+user turn, between turns, the way Tom's turns reach an interactive session.
+
+- The orchestrator ends only when its final message's last line is
+  `JARVIS-COMPACT` (it has rewritten its document first). The daemon ends it
+  with the reason `orchestrator compacted`, and the record starts the next run
+  from the document at once, naming this one as its `continuesRunId`.
+- A worker goes idle at the end of each turn. On the first poll SENT after
+  that, it ends if the server says it recorded its outcome, or has no
+  elevation still unanswered; with one open it waits, up to 12 hours.
+- A failed turn, the 90-minute turn cap and a daemon restart end a hosted run
+  errored, exactly as they end any unattended session. The record restarts
+  the orchestrator from its document after a backoff that doubles from a
+  minute, and tells the orchestrator when one of its workers ends.
+- The poll body says `hosts: ["orchestrator", "worker"]`; the server shows a
+  hosted row to no daemon that does not, so an older copy of this daemon never
+  ends one after its first turn. It also lists `held`, the sessions this
+  process holds: the orchestrator's lease is renewed while its run is among
+  them, and a claimed run whose lease runs out is restarted.
+- The heartbeat carries `codexModels`, the slugs `codex debug models` lists,
+  read beside the usage. The orchestrator runs on `gpt-6-astra` when it is
+  listed, else `gpt-5.6-sol`, else Fable.
 
 ## Runner steps
 

@@ -44,6 +44,12 @@ import {
 import { codexQuery } from "./codex-query.mjs";
 import { removeWorkdir } from "./workdir.mjs";
 import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
+import {
+  COMPACT_ENDED_REASON,
+  hostedIdleVerdict,
+  hostedTurnEnd,
+  runEnvelope,
+} from "./hosted.mjs";
 import { FABLE_LIMIT_RE, MODELS, aboveCeiling, ceilingNote, markFableUnavailable, readFableState, underCeiling } from "../runs/models.mjs";
 import { claimRegistration, writeRegistration } from "../runs/registration.mjs";
 
@@ -93,6 +99,7 @@ const SESSION_MODELS = {
   fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
+  "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
 };
 // The default is the SAME on both sides of the mirror: a row written before
 // the model field existed ran Claude on the account default, so absent reads
@@ -461,8 +468,19 @@ export class Session {
     onUsageSignal,
     model,
     forkedFrom,
+    environment,
   }) {
     this.id = id;
+    // "orchestrator" or "worker" when the server says the daemon HOSTS this
+    // row (hosted.mjs): an unattended run kept alive across turns so a message
+    // can reach it mid-run. Absent for every other session.
+    this.environment = environment ?? undefined;
+    this.hosted = this.environment !== undefined;
+    // When a hosted run's last turn ended (hostedIdleVerdict reads it), and
+    // the text of the newest top-level assistant row — the Codex runner's
+    // result carries no text, so the compact word is read from here.
+    this.idleSince = undefined;
+    this.lastAssistantText = "";
     // The repos this session checks out (Tom's ruling 2026-08-30: a session may
     // hold MORE THAN ONE). `repos` is the live field; `repo` is the single
     // string every row written before the ruling carries, so a row with no
@@ -634,6 +652,9 @@ export class Session {
   // its chunks. A payload that cannot be stored releases the row without a
   // stamp and reports the loss (#overflowUnstored).
   finalizeRow(kind, content, parentToolUseId, overflow) {
+    if (kind === "assistant-text" && !parentToolUseId && typeof content?.text === "string") {
+      this.lastAssistantText = content.text;
+    }
     if (this.env.ROWS_FROM_FILES === "1" || process.env.ROWS_FROM_FILES === "1") return undefined;
     const seq = this.nextSeq++;
     const row = {
@@ -1051,9 +1072,7 @@ export class Session {
         registration: {
           host,
           cli: spec.family,
-          origin: this.mode === "autonomous" ? "daemon" : "session",
-          kind: this.mode === "autonomous" ? "job" : "session",
-          environment: this.mode === "autonomous" ? "worker" : "session",
+          ...runEnvelope(this.mode, this.environment),
           modelRequested: this.model,
           effortRequested: spec.effort ?? null,
           cwd: this.workdir,
@@ -1543,14 +1562,35 @@ export class Session {
           this.#maybeUsageSignal(String(m.result ?? ""));
         }
         if (this.activeUserTurnId) {
+          // A hosted run's turn whose result failed is settled "failed": the
+          // record hands every turn not "done" to the orchestrator's next run,
+          // and a failed turn was not acted on.
+          const turnFailed = this.hosted && (m.is_error || (m.subtype && m.subtype !== "success"));
           this.outbox.inboundUpdates.push({
             id: this.activeUserTurnId,
-            status: "done",
+            status: turnFailed ? "failed" : "done",
           });
           this.activeUserTurnId = null;
         }
         this.#clearAutoTimer();
-        if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
+        // A HOSTED run outlives its turn (hosted.mjs): the orchestrator ends
+        // only when it asks to compact, a worker when the next poll says it
+        // is done. A successful turn goes idle through the tail below, as an
+        // interactive session's does. A failed turn still ends it errored, as
+        // for any unattended session: the orchestrator is then restarted from
+        // its document by the server, and a worker's orchestrator is told.
+        const hostedLives = this.hosted && !this.stopRequested && !this.dead
+          && !(m.is_error || (m.subtype && m.subtype !== "success"));
+        if (hostedLives) {
+          if (hostedTurnEnd({ environment: this.environment, finalText: this.lastAssistantText }) === "compact") {
+            void this.#endAutonomous(COMPACT_ENDED_REASON, {
+              outcome: "completed",
+              outcomeSummary: "asked to be restarted from its document",
+            });
+            break;
+          }
+          this.idleSince = Date.now();
+        } else if (this.mode === "autonomous" && !this.stopRequested && !this.dead) {
           // An autonomous session is ONE mission turn — nobody would ever
           // send stop, so the daemon ends it itself. The agent's own outcome
           // (recorded via the /tts/session-outcome pen) is already
@@ -1877,6 +1917,29 @@ export class Session {
     this.#applyModel(row.model);
     this.serverInbound = row.pendingInbound ?? [];
     this.processCommands();
+    if (this.hosted) this.#settleHosted(row);
+  }
+
+  // An idle hosted run on a poll: a worker whose turn has ended ends once the
+  // server says it recorded its outcome, or that nothing it asked is still
+  // open (hostedIdleVerdict). The orchestrator always waits.
+  #settleHosted(row) {
+    if (this.status !== "idle" || this.delivering || this.stopRequested || this.dead) return;
+    const verdict = hostedIdleVerdict({
+      environment: this.environment,
+      outcomeRecorded: row.outcomeRecorded === true,
+      openElevations: row.openElevations,
+      idleSince: this.idleSince,
+      polledAt: row.polledAt,
+      now: Date.now(),
+    });
+    if (verdict === "end") void this.#endAutonomous("worker run complete");
+    if (verdict === "end-waited") {
+      void this.#endAutonomous("worker waited too long for an answer", {
+        outcome: "errored",
+        outcomeSummary: "waited too long for the answer to an elevation",
+      });
+    }
   }
 
   // The row's model is the truth (setSessionModel, 2026-09-04). A change
@@ -1979,6 +2042,8 @@ export class Session {
       }
       this.turn += 1;
       this.segmentsSinceAssistant = 0;
+      this.idleSince = undefined;
+      this.lastAssistantText = "";
       // The transcript records what the model RECEIVED — for a turn Tom
       // typed, his text plus the id line deliveredTurnText appends (the
       // transcript principle: what the agent saw is what is recorded). Tom's
@@ -2041,6 +2106,24 @@ export class Session {
   }
 
   // ── autonomous ending ──────────────────────────────────────────────────────
+
+  // An unattended run a restarted daemon found live: nothing re-enters the
+  // turn the old process died in, so it ends, but first its checkout is
+  // reattached and its commits pushed, as every other unattended ending
+  // does. A hosted worker waiting on an answer when setup.sh rolled the
+  // daemon would otherwise lose its local commits with the workdir.
+  async endAdopted(endedReason, outcome) {
+    // Ending from here on, before the first await: no poll may deliver a
+    // queued turn into a run whose workdir is about to go.
+    this.stopRequested = true;
+    this.status = "idle";
+    try {
+      await this.ensureWorkdir({ forResume: true });
+    } catch (err) {
+      log(`session ${this.id}: could not reattach the workdir before ending:`, String(err?.message ?? err));
+    }
+    await this.#endAutonomous(endedReason, outcome);
+  }
 
   #clearAutoTimer() {
     if (this.autoTurnTimer) {

@@ -12,10 +12,11 @@ const RUN_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
   v.literal("subagent"), v.literal("codex-child"), v.literal("runner-step"), v.literal("unknown"),
 );
-// Where a run ran: a session Tom talks to, a worker nobody watches, or a
-// runner. Named by the launcher's envelope, else inherited from the parent row.
-const RUN_ENVIRONMENT = v.union(v.literal("session"), v.literal("worker"), v.literal("runner"));
-type RunEnvironment = "session" | "worker" | "runner";
+// Where a run ran: a session Tom talks to, a worker nobody watches, a
+// runner, or the orchestrator that hands work out. Named by the launcher's
+// envelope, else inherited from the parent row.
+const RUN_ENVIRONMENT = v.union(v.literal("session"), v.literal("worker"), v.literal("runner"), v.literal("orchestrator"));
+type RunEnvironment = "session" | "worker" | "runner" | "orchestrator";
 const RUN_CLI = v.union(v.literal("claude"), v.literal("codex"));
 type RunCli = "claude" | "codex";
 const RUN_STATUS = v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown"));

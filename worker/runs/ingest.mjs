@@ -35,7 +35,7 @@ const sessionModelOf = (model) => {
   if (lower.includes("fable")) return "fable";
   if (lower.includes("sonnet")) return "sonnet";
   if (lower.includes("opus")) return "opus";
-  if (lower === "gpt-5.6-sol" || lower === "gpt-5.6-terra") return lower;
+  if (lower === "gpt-5.6-sol" || lower === "gpt-5.6-terra" || lower === "gpt-6-astra") return lower;
   return undefined;
 };
 const stable = (value) => {
