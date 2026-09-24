@@ -612,7 +612,7 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.why).toBe(
       `the evals run did not check golden coverage — re-run it: ` +
-        `node /opt/tts/evals.mjs --repo ${REPO} --sha ${SHA} --force`,
+        `node /opt/jarvis/worker/jobs/evals.mjs --repo ${REPO} --sha ${SHA} --force`,
     );
   });
 
