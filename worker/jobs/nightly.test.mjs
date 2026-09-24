@@ -21,6 +21,8 @@ import {
   CMT_DIR,
   FORBIDDEN_SECTIONS,
   REPO_CHECKOUTS,
+  VOCABULARY_SIZE_KEY,
+  reportVocabularySize,
   SPLIT_BYTES,
   TOM_QUEST_DIR,
   WIKITOM_DIR,
@@ -3406,5 +3408,26 @@ describe("the git half", { timeout: 60_000 }, () => {
     } finally {
       readFileSync.mockRestore();
     }
+  });
+});
+
+describe("the vocabulary size threshold", () => {
+  it("files the warning as a keyed job-failed report and blocks nothing", async () => {
+    const failed = vi.fn(async () => ({ ok: true }));
+    const ok = vi.fn(async () => ({ ok: true }));
+    const run = { env: { CONVEX_SITE_URL: "https://example.invalid" } };
+    const warning = "vocabulary: warning — the file is 73919 bytes, over the 40960-byte threshold";
+    await reportVocabularySize(run, { sizeWarning: warning }, { failed, ok });
+    expect(failed).toHaveBeenCalledWith(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY, error: warning });
+    expect(ok).not.toHaveBeenCalled();
+  });
+
+  it("re-arms the report on a night back under the threshold", async () => {
+    const failed = vi.fn();
+    const ok = vi.fn(async () => ({ ok: true }));
+    const run = { env: {} };
+    await reportVocabularySize(run, { sizeWarning: null }, { failed, ok });
+    expect(ok).toHaveBeenCalledWith(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY });
+    expect(failed).not.toHaveBeenCalled();
   });
 });

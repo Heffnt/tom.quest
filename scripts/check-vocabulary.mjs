@@ -542,37 +542,31 @@ if (resolved) {
       ["scripts/graph.mjs", "--check", "--wikitom", wikitom, "--no-record"],
     );
   }
-  // 11. THE SAME QUESTION OF THE VOCABULARY, PRINTED AND NOT FAILED, YET.
+  // 11. THE SAME QUESTION OF THE VOCABULARY, PRINTED AND NOT FAILED.
   //
-  //     The vocabulary generator's first run against the real repositories
-  //     found seven disagreements about the prompt's seven words, a terms
-  //     section over the 40 KiB cap and a map candidate over the 7,000-byte
-  //     bound. Tom settled the seven on 2026-09-24: one wording, in WikiTom
-  //     tts/spec.md §12.1, with TTS_CLOSED_VOCABULARY rendered from it, so
-  //     that class no longer exists. The cap and the map bound are numbers to
-  //     re-argue against what was measured rather than estimated, and any
-  //     other disagreement is the generator's own finding.
+  //     The generator's first run against the real repositories found seven
+  //     disagreements about the prompt's seven words, a file over its size
+  //     limit and a map candidate over the 7,000-byte bound. Tom settled the
+  //     seven on 2026-09-24 (one wording, in WikiTom tts/spec.md §12.1, with
+  //     TTS_CLOSED_VOCABULARY rendered from it); the size limit is a threshold
+  //     that warns and never refuses, on his ruling of 2026-09-22; and the map
+  //     candidate is no longer written. The nightly now writes
+  //     tts/vocabulary.json and fails its step on a disagreement
+  //     (worker/jobs/nightly.mjs graphStep).
   //
-  //     A check that failed on them would fail on every run from the day it
-  //     shipped, which is a check nobody can act on. So this one prints the
-  //     generator's report whole and does not read its exit status.
-  //     worker/jobs/nightly.mjs's graphStep holds the vocabulary the same way
-  //     and for the same reason — it runs with `write: false` and logs the
-  //     count — and this matches it rather than holding a second opinion.
+  //     THIS CHECK STILL DOES NOT FAIL, for a reason that is not about
+  //     disagreements: `--check` also exits 2 when tts/vocabulary.json is
+  //     older than the render, and the file is written by the nightly, not
+  //     by the pull request that moved the render. Every pull request that
+  //     changed a term, a job or a repository would fail here until the
+  //     next night — a check nobody can act on inside the pull request. So
+  //     it prints the generator's report whole, the disagreement count
+  //     first, and does not read its exit status; a disagreement fails the
+  //     nightly, which is where the file is written.
   //
-  //     THE DAY THE REST ARE SETTLED THIS BECOMES A FAILING CHECK, in one
-  //     edit: call runGenerator here the way check 10 above does, and delete
-  //     reportGenerator.
-  //
-  //     Check 10 is NOT held this way. The graph's own render is clean, and a
-  //     disagreement there is a difference between the file on disk and what
-  //     the generator produces from the same commit, which is always a fault.
-  //
-  //     REMOVAL CHECK: cannot remove because it cannot fail. What it patches is
-  //     the three findings going UNSEEN — they are Tom's to settle and he
-  //     settles what reaches him, so printing them on every gate run is the
-  //     whole job. Deleting it would not remove a red check; it would remove
-  //     the only place the disagreements and the two caps are said out loud.
+  //     REMOVAL CHECK: cannot remove because it cannot fail. What it patches
+  //     is a disagreement or a stale convex/ttsShared.ts block going UNSEEN
+  //     on tom.quest's gate, where the block can be landed with `--write`.
   const vocabulary = read(GENERATOR_PATH);
   if (vocabulary === null) {
     notes.push(`${GENERATOR_PATH} is not in this checkout — its render check did not run`);
@@ -584,8 +578,8 @@ if (resolved) {
     // line, which is absent when the count is zero.
     const count = matches(/^DISAGREEMENT /gm, output).length;
     reports.push(
-      `check-vocabulary: the vocabulary reports ${count} disagreement(s) and writes nothing — Tom's to settle; `
-        + "check 11 reports and does not fail (see worker/jobs/nightly.mjs graphStep)",
+      `check-vocabulary: the vocabulary reports ${count} disagreement(s); `
+        + "check 11 reports and does not fail — a disagreement fails the nightly (see worker/jobs/nightly.mjs graphStep)",
     );
     reports.push(
       `node ${GENERATOR_PATH} --check --wikitom ${wikitom}:\n`

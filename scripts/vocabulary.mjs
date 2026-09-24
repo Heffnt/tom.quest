@@ -11,9 +11,26 @@
 //
 // It also renders two derived views: the generated block in
 // `convex/ttsShared.ts`, whose `TTS_CLOSED_VOCABULARY` is the seven prompt
-// words rendered from their §12.1 entries, and — under MAP_BLOCKS = "candidate" — a candidate
-// `model-of-tom/agent-rules.candidate.md` beside Tom's map with a unified diff,
-// which is a proposal and never the map.
+// words rendered from their §12.1 entries, and the map with its restating
+// bullets regenerated, returned as a unified diff against Tom's map. Under
+// MAP_BLOCKS = "candidate" that diff is a proposal carried in the result (the
+// nightly puts it in its `nightly-run` row) and is never written to a file.
+//
+// WHO WRITES WHAT. `write` names the writer, because the three outputs belong
+// to three different places:
+//   - `write: "vocabulary"` is the nightly's: `tts/vocabulary.json` in the
+//     WikiTom checkout, and nothing else. The nightly holds the WikiTom lock and
+//     pushes WikiTom; it never writes into a tom.quest checkout.
+//   - `write: true` is the command line's `--write`, run by hand in a tom.quest
+//     pull request: `tts/vocabulary.json` in the WikiTom checkout it is pointed
+//     at, and the generated block in `convex/ttsShared.ts`, which lands through
+//     that pull request's own gate. Under MAP_BLOCKS = "live" it also rewrites
+//     the map's restating blocks in place.
+//   - No writer writes a map candidate FILE. Nothing read
+//     `agent-rules.candidate.md`, its diff or its evidence file: the nightly
+//     carries the diff from the result object, not from disk, and a candidate
+//     written into the box's WikiTom checkout sat in `model-of-tom/` beside the
+//     files the learning step commits.
 //
 // WHAT THIS IS NOT. It is not where a term is defined: §12.1 is (AUTHORITY
 // below), and that includes the seven words a worker's prompt carries — the
@@ -71,11 +88,12 @@ export class VocabularyError extends Error {}
 
 // ── The switches ─────────────────────────────────────────────────────────────
 
-/** Tom's, pending (phase 10 switch (a)). "candidate": the generator writes
- *  agent-rules.candidate.md and a diff and never touches the live file — the
- *  hand-written map stays authoritative. "live": the four restating blocks of
- *  model-of-tom/agent-rules.md are replaced in place and the file becomes partly
- *  generated. Both are implemented; "live" is one edit to this line away. */
+/** Tom's, pending (phase 10 switch (a)). "candidate": the generator renders
+ *  the map's restating blocks and returns the diff, and never writes the map —
+ *  the hand-written map stays authoritative. "live": `--write` replaces the
+ *  four restating blocks of model-of-tom/agent-rules.md in place and the file
+ *  becomes partly generated. Both are implemented; "live" is one edit to this
+ *  line away. */
 export const MAP_BLOCKS = "candidate";
 
 /** Tom's, pending (phase 10 switch (b)). "spec": §12.1 of WikiTom tts/spec.md
@@ -84,10 +102,20 @@ export const MAP_BLOCKS = "candidate";
  *  rendered from it — which is a different program, not a branch of this one. */
 export const AUTHORITY = "spec";
 
-/** 40 KiB. The file is never loaded into a prompt, so this is not a prompt cost:
- *  it is the size past which the file has stopped being something Tom could read
- *  whole, and crossing it means something structural changed. */
-export const VOCABULARY_MAX_BYTES = 40_960;
+/** 40 KiB, A THRESHOLD AND NOT A CAP. Tom's ruling of 2026-09-22: "I dont want
+ *  to compromise quality for speed or cost. ... the right solution is dedicated
+ *  effort on improving speed and cost while keeping quality constant. this
+ *  effort should be triggered by warning signs such as the tests taking longer
+ *  than a threshold." A file over it is written exactly as one under it; the
+ *  crossing is a warning (`sizeWarning`), which the nightly files as a keyed
+ *  report for the digest.
+ *
+ *  WHY KEEP A NUMBER AT ALL: the warning is the trigger he asked for. The file
+ *  is never loaded into a prompt, so its size is not a prompt cost; it is read
+ *  whole by `tts search define` on every call and diffed by the nightly, and a
+ *  file that doubled means something structural changed. Without the number
+ *  nothing would say so, and the dedicated effort would have no start. */
+export const VOCABULARY_THRESHOLD_BYTES = 40_960;
 
 export const GENERATOR_VERSION = 1;
 export const GENERATOR_PATH = "scripts/vocabulary.mjs";
@@ -95,9 +123,6 @@ export const GENERATOR_PATH = "scripts/vocabulary.mjs";
 export const VOCABULARY_PATH = "tts/vocabulary.json";
 export const SHARED_PATH = "convex/ttsShared.ts";
 export const AGENT_RULES_PATH = "model-of-tom/agent-rules.md";
-export const CANDIDATE_PATH = "model-of-tom/agent-rules.candidate.md";
-export const CANDIDATE_DIFF_PATH = "model-of-tom/agent-rules.candidate.diff";
-export const CANDIDATE_EVIDENCE_PATH = "model-of-tom/evidence/agent-rules.candidate.md";
 
 /** The map is under 7,000 bytes by WikiTom's own rule, counted with the carriage
  *  returns removed — the file is CRLF on disk and the rule is about what an
@@ -1147,10 +1172,9 @@ function renderToolsBullet(tools) {
 }
 
 /**
- * The map with its derived bullets regenerated. `destination` is an ARGUMENT and
- * never a constant in this function: under MAP_BLOCKS = "candidate" the only
- * caller passes `agent-rules.candidate.md`, and there is no code path in which
- * the candidate branch reaches the live file.
+ * The map with its derived bullets regenerated. It returns text and writes
+ * nothing: under MAP_BLOCKS = "candidate" the text is only diffed against the
+ * map, and only writeLiveMap, under "live", ever puts it on disk.
  */
 export function renderMapCandidate(agentRulesText, rendered) {
   const lines = normalize(agentRulesText).split("\n");
@@ -1248,20 +1272,6 @@ export function unifiedDiff(beforeText, afterText, beforeName, afterName) {
   return `${out.join("\n")}\n`;
 }
 
-/** The evidence entries for the generated lines, in the form WikiTom's
- *  `check-evidence.mjs` enforces. A generated line is never inferred, so it
- *  carries no `rests on:` and never ends `(inferred)`. */
-export function renderCandidateEvidence(day, blocks) {
-  const out = ["# agent-rules.candidate.md", ""];
-  for (const block of blocks) {
-    out.push(`## ${block.heading.replace(/^#+\s*/, "")}`, "");
-    for (const line of block.lines) {
-      out.push(`- line: ${line}`, `  read: ${day} · tom.quest ${block.read}`, "");
-    }
-  }
-  return `${out.join("\n").trimEnd()}\n`;
-}
-
 // ── The generated block in convex/ttsShared.ts ───────────────────────────────
 
 /**
@@ -1344,12 +1354,20 @@ function checkAuthority() {
  * tests all call; `write` and `check` are the only things that differ between
  * them, and no disagreement is ever written past.
  *
+ * `write` is false (nothing), "vocabulary" (the nightly: tts/vocabulary.json
+ * only) or true (the command line's `--write`: that file, the generated block
+ * in convex/ttsShared.ts, and under MAP_BLOCKS = "live" the map). The header
+ * of this file says why the three belong to different writers.
+ *
  * `record` is accepted and read by nothing: every row in this file comes from
  * source text, and the nightly passes its run so a later record-derived section
  * does not change this signature under it.
  */
 export function generateVocabulary({ wikitom, tomQuest, write = false, check = false } = {}) {
   checkAuthority();
+  if (write !== false && write !== true && write !== "vocabulary") {
+    fail(`write is false, true or "vocabulary", not ${JSON.stringify(write)}`);
+  }
   if (typeof wikitom !== "string" || wikitom === "") fail("a WikiTom checkout is required (--wikitom DIR)");
   if (typeof tomQuest !== "string" || tomQuest === "") fail("a tom.quest checkout is required (--tom-quest DIR)");
   for (const [root, what] of [[wikitom, "WikiTom"], [tomQuest, "tom.quest"]]) {
@@ -1713,16 +1731,16 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     repos: repos.length,
     channels: channels.length,
   };
-  // OVER THE CAP REFUSES THE WRITE, and does not stop the build: the drift check
-  // below is the half of this program that has to run every night whatever the
-  // file's size, and a size failure that also suppressed the disagreements would
-  // hide the more important of the two answers.
-  let overCap = null;
-  if (bytes > VOCABULARY_MAX_BYTES) {
+  // OVER THE THRESHOLD IS A WARNING AND NEVER A REFUSAL (Tom's ruling of
+  // 2026-09-22, at VOCABULARY_THRESHOLD_BYTES). The warning names the size, the
+  // threshold and the largest section, because the section is where the
+  // dedicated effort on size would start; the file is written either way.
+  let sizeWarning = null;
+  if (bytes > VOCABULARY_THRESHOLD_BYTES) {
     const sections = Object.entries({ terms, entities, relations, jobs: jobRows, searchQuestions, skills, repos, channels })
       .map(([name, rows]) => ({ name, bytes: byteLength(JSON.stringify(rows, null, 2)) }))
       .sort((a, b) => b.bytes - a.bytes);
-    overCap = `vocabulary: the file is ${bytes} bytes, over the ${VOCABULARY_MAX_BYTES}-byte cap; its largest section is ${sections[0].name} at ${sections[0].bytes} bytes — nothing written`;
+    sizeWarning = `vocabulary: warning — the file is ${bytes} bytes, over the ${VOCABULARY_THRESHOLD_BYTES}-byte threshold; its largest section is ${sections[0].name} at ${sections[0].bytes} bytes. The threshold asks for dedicated effort on the file's size; it blocks nothing`;
   }
 
   // ── The derived views ─────────────────────────────────────────────────────
@@ -1735,49 +1753,61 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     convexJobs: renderConvexJobsBullet(jobRows),
     tools: renderToolsBullet(boxTools(tomQuest)),
   });
-  // OVER THE MAP'S BYTE RULE REFUSES THE CANDIDATE, and does not stop the build:
-  // the candidate is the inert side of switch (a) and the vocabulary does not
-  // depend on it, so a candidate that grew past the rule must not take the drift
-  // check and the file down with it.
+  // OVER THE MAP'S BYTE RULE WITHHOLDS THE LIVE MAP, and does not stop the
+  // build: WikiTom's own rule keeps the map under the bound, so under "live" a
+  // render past it is not written over the map; under "candidate" nothing is
+  // written to the map anyway and the line is a report. Either way the
+  // vocabulary does not depend on the map, so the drift check and the file are
+  // not taken down with it.
   const candidateLfBytes = byteLength(candidate.text);
   const candidateOverBudget =
     candidateLfBytes < AGENT_RULES_MAX_LF_BYTES
       ? null
-      : `vocabulary: the map candidate is ${candidateLfBytes} LF bytes, at or over the ${AGENT_RULES_MAX_LF_BYTES}-byte rule; the blocks this run regenerated are ${candidate.blocks.join(", ")} — no candidate written`;
-  const candidateDiff = unifiedDiff(agentRulesText, candidate.text, AGENT_RULES_PATH, CANDIDATE_PATH);
+      : `vocabulary: the map's render is ${candidateLfBytes} LF bytes, at or over the ${AGENT_RULES_MAX_LF_BYTES}-byte rule; the blocks this run regenerated are ${candidate.blocks.join(", ")}${MAP_BLOCKS === "live" ? " — the map is not written" : ""}`;
+  const candidateDiff = unifiedDiff(agentRulesText, candidate.text, AGENT_RULES_PATH, AGENT_RULES_PATH);
 
   // ── What is out of date ───────────────────────────────────────────────────
   const serialized = serialize(vocabulary);
   const onDiskVocabulary = readOptional(wikitom, VOCABULARY_PATH);
-  const onDiskCandidate = readOptional(wikitom, CANDIDATE_PATH);
   const changed = [];
   if (onDiskVocabulary !== serialized) changed.push(VOCABULARY_PATH);
   if (sharedText !== sharedAfter) changed.push(SHARED_PATH);
-  const mapCandidateChanged = onDiskCandidate !== candidate.text;
+  // Whether the map's restating bullets say something other than the code they
+  // restate. Under "candidate" that is a proposal, not a file out of date.
+  const mapDiffersFromRender = candidate.text !== agentRulesText;
 
   const report = buildReport({
-    version, counts, bytes, changed, disagreements, mapCandidateChanged, candidateLfBytes, overCap, candidateOverBudget,
+    version, counts, bytes, changed, disagreements, mapDiffersFromRender, candidateLfBytes, sizeWarning, candidateOverBudget,
   });
 
   // ── Write ─────────────────────────────────────────────────────────────────
   // A disagreement is never written past: the whole value of this file is that
   // it never states something the code and the spec do not both say.
-  if (write && disagreements.length === 0 && overCap === null && !check) {
+  const written = [];
+  if (write !== false && disagreements.length === 0 && !check) {
     fs.writeFileSync(path.join(wikitom, VOCABULARY_PATH), serialized, "utf8");
-    fs.writeFileSync(path.join(tomQuest, SHARED_PATH), restoreEndings(sharedRaw, sharedAfter), "utf8");
-    if (candidateOverBudget === null) writeMapCandidate({ wikitom, agentRulesRaw, candidate, candidateDiff });
+    written.push(VOCABULARY_PATH);
+    if (write === true) {
+      fs.writeFileSync(path.join(tomQuest, SHARED_PATH), restoreEndings(sharedRaw, sharedAfter), "utf8");
+      written.push(SHARED_PATH);
+      if (MAP_BLOCKS === "live" && candidateOverBudget === null) {
+        writeLiveMap({ wikitom, agentRulesRaw, candidate });
+        written.push(AGENT_RULES_PATH);
+      }
+    }
   }
 
   return {
     version,
     counts,
     bytes,
-    overCap,
+    sizeWarning,
     candidateOverBudget,
     changed,
+    written,
     disagreements,
     report,
-    mapCandidateChanged,
+    mapDiffersFromRender,
     mapCandidateDiff: candidateDiff,
     candidateLfBytes,
     vocabulary,
@@ -1811,67 +1841,37 @@ function restoreEndings(originalRaw, text) {
 }
 
 /**
- * The three candidate files, under the WikiTom checkout.
+ * The map with its restating blocks replaced in place — MAP_BLOCKS = "live"
+ * only, and only from the command line's `--write`.
  *
- * `destination` is passed in, and under MAP_BLOCKS = "candidate" the only value
- * it ever takes is `agent-rules.candidate.md`. `"live"` is the one other branch,
- * and it is the only place `agent-rules.md` is ever a destination.
+ * REMOVAL CHECK: the "live" branch cannot be deleted while MAP_BLOCKS exists.
+ * It IS the switch: deleting it would leave a constant Tom can set to "live"
+ * that writes nothing, which is a setting that silently does the opposite of
+ * what it says. The switch and its branch are ratified or deleted together,
+ * and that ruling is phase 10 switch (a).
  */
-function writeMapCandidate({ wikitom, agentRulesRaw, candidate, candidateDiff }) {
-  // REMOVAL CHECK: the "live" branch cannot be deleted while MAP_BLOCKS exists.
-  // It IS the switch: deleting it would leave a constant Tom can set to "live"
-  // that keeps writing the candidate, which is a setting that silently does the
-  // opposite of what it says. The switch and its branch are ratified or deleted
-  // together, and that ruling is phase 10 switch (a).
-  const destination = MAP_BLOCKS === "live" ? AGENT_RULES_PATH : CANDIDATE_PATH;
-  const body = restoreEndings(agentRulesRaw, candidate.text);
-  fs.writeFileSync(path.join(wikitom, destination), body, "utf8");
-  if (MAP_BLOCKS === "live") return;
-  fs.writeFileSync(path.join(wikitom, CANDIDATE_DIFF_PATH), candidateDiff, "utf8");
-  const evidenceDir = path.join(wikitom, path.dirname(CANDIDATE_EVIDENCE_PATH));
-  fs.mkdirSync(evidenceDir, { recursive: true });
-  const day = candidateDay(wikitom);
-  const blocks = candidate.blocks.map((heading) => ({
-    heading,
-    read: `${GENERATOR_PATH} · regenerated from the code this line restates`,
-    lines: [],
-  }));
-  fs.writeFileSync(path.join(wikitom, CANDIDATE_EVIDENCE_PATH), renderCandidateEvidence(day, blocks), "utf8");
-}
-
-/** The day an evidence entry is dated. It comes from the map's own most recent
- *  `read:` date rather than from the clock, because a clock in this program
- *  would change the bytes of a file whose whole test is whether its bytes
- *  changed. */
-function candidateDay(wikitom) {
-  const evidence = readOptional(wikitom, "model-of-tom/evidence/agent-rules.md");
-  const days = evidence === null ? [] : [...evidence.matchAll(/read:\s*(\d{4}-\d{2}-\d{2})/g)].map((hit) => hit[1]);
-  // REMOVAL CHECK on the sentinel: failing here would take the drift check and
-  // the whole vocabulary down over the CANDIDATE, which is the inert side of
-  // switch (a) and which nothing reads — the same trade candidateOverBudget
-  // argues below. An impossible date is also the loudest thing a well-formed
-  // date field can say; a missing evidence file is the one way to reach it.
-  return days.sort((a, b) => a.localeCompare(b)).at(-1) ?? "0000-00-00";
+function writeLiveMap({ wikitom, agentRulesRaw, candidate }) {
+  fs.writeFileSync(path.join(wikitom, AGENT_RULES_PATH), restoreEndings(agentRulesRaw, candidate.text), "utf8");
 }
 
 function buildReport({
-  version, counts, bytes, changed, disagreements, mapCandidateChanged, candidateLfBytes, overCap, candidateOverBudget,
+  version, counts, bytes, changed, disagreements, mapDiffersFromRender, candidateLfBytes, sizeWarning, candidateOverBudget,
 }) {
   const lines = [];
   for (const entry of disagreements) lines.push(formatDisagreement(entry), "");
   if (disagreements.length > 0) {
     lines.push(`vocabulary: ${disagreements.length} disagreement${disagreements.length === 1 ? "" : "s"} — nothing written.`);
-    if (overCap !== null) lines.push(overCap);
+    if (sizeWarning !== null) lines.push(sizeWarning);
     if (candidateOverBudget !== null) lines.push(candidateOverBudget);
     return lines.join("\n");
   }
-  if (overCap !== null) lines.push(overCap);
+  if (sizeWarning !== null) lines.push(sizeWarning);
   if (candidateOverBudget !== null) lines.push(candidateOverBudget);
   lines.push(
     `vocabulary/@version ${version} terms=${counts.terms} entities=${counts.entities} relations=${counts.relations} jobs=${counts.jobs} search=${counts.searchQuestions} skills=${counts.skills} repos=${counts.repos} channels=${counts.channels}`,
-    `bytes ${bytes} of ${VOCABULARY_MAX_BYTES}; map candidate ${candidateLfBytes} of ${AGENT_RULES_MAX_LF_BYTES} LF bytes`,
+    `bytes ${bytes} (threshold ${VOCABULARY_THRESHOLD_BYTES}); map render ${candidateLfBytes} of ${AGENT_RULES_MAX_LF_BYTES} LF bytes`,
     `changed: ${changed.length === 0 ? "nothing" : changed.join(", ")}`,
-    `map candidate: ${mapCandidateChanged ? "changed" : "unchanged"} (MAP_BLOCKS=${MAP_BLOCKS})`,
+    `map render: ${mapDiffersFromRender ? "differs from the map" : "matches the map"} (MAP_BLOCKS=${MAP_BLOCKS})`,
   );
   return lines.join("\n");
 }
@@ -1910,13 +1910,16 @@ export function parseArgs(argv) {
 /** Exit codes: 0 clean · 2 a disagreement, or --check found the disk out of
  *  date · 3 THE RUN REFUSED TO STAND BEHIND ITS OUTPUT.
  *
- *  3 is not only "an input is missing". It is also `overCap` — the rendered
- *  file is past VOCABULARY_MAX_BYTES, and nothing at all was written — and
+ *  3 is "an input is missing", and under MAP_BLOCKS = "live" also
  *  `candidateOverBudget`, where the vocabulary and convex/ttsShared.ts WERE
- *  written and only the map candidate was withheld. A caller must not read 3 as
- *  "nothing happened"; it means read the report, which names which of the three
- *  it was. The header said "an input is missing" and two of the three cases
- *  were not that. */
+ *  written and only the map was withheld. A caller must not read 3 as "nothing
+ *  happened"; it means read the report, which names which it was.
+ *
+ *  THE SIZE THRESHOLD NEVER CHANGES THE EXIT CODE. `sizeWarning` is printed in
+ *  the report and exits 0, because a non-zero exit is a refusal to whatever runs
+ *  this and Tom ruled the size is not a reason to refuse (VOCABULARY_THRESHOLD_BYTES).
+ *  The nightly is where the warning is acted on: it files it as a keyed report
+ *  the digest carries. */
 export async function main(argv, { write = console.log, error = console.error, env = process.env } = {}) {
   let options;
   try {
@@ -1934,17 +1937,16 @@ export async function main(argv, { write = console.log, error = console.error, e
     error(problem instanceof VocabularyError ? problem.message : `vocabulary: ${problem.message}`);
     return 3;
   }
-  if (options.json) write(JSON.stringify({ version: result.version, counts: result.counts, bytes: result.bytes, changed: result.changed, disagreements: result.disagreements, mapCandidateChanged: result.mapCandidateChanged }, null, 2));
+  if (options.json) write(JSON.stringify({ version: result.version, counts: result.counts, bytes: result.bytes, sizeWarning: result.sizeWarning, changed: result.changed, written: result.written, disagreements: result.disagreements, mapDiffersFromRender: result.mapDiffersFromRender }, null, 2));
   else write(result.report);
-  // REMOVAL CHECK: cannot remove. What it patches is a run that printed a
-  // report nobody read and exited 0 — the nightly logs the line and moves on,
-  // so a silent 0 over a file past its cap is how the cap stops meaning
-  // anything. The two cases differ in what was written, and the header above
-  // says so rather than this line pretending they are one.
-  if (result.overCap !== null || result.candidateOverBudget !== null) return 3;
+  // Only under "live" is the map a file this program writes, so only then is a
+  // withheld map a refusal and a map that differs from its render out of date.
+  const live = MAP_BLOCKS === "live";
+  if (live && result.candidateOverBudget !== null) return 3;
   if (result.disagreements.length > 0) return 2;
-  if (options.check && (result.changed.length > 0 || result.mapCandidateChanged)) {
-    error(`vocabulary: --check found ${result.changed.length === 0 ? "the map candidate" : result.changed.join(", ")} out of date`);
+  const stale = [...result.changed, ...(live && result.mapDiffersFromRender ? [AGENT_RULES_PATH] : [])];
+  if (options.check && stale.length > 0) {
+    error(`vocabulary: --check found ${stale.join(", ")} out of date`);
     return 2;
   }
   if (!options.write && !options.check) write(`(dry run — nothing written; pass --write to land ${result.changed.length === 0 ? "nothing" : result.changed.join(", ")})`);

@@ -30,8 +30,8 @@
 //      checkouts and the copy step 3 has just written, and makes ONE commit
 //      for tts/vocabulary.json and tts/graph.json. A disagreement in either
 //      is a failed step and nothing is written. See graphStep for why it sits
-//      here and why the tom.quest half of the vocabulary's write is never
-//      committed by this job.
+//      here and why the tom.quest half of the vocabulary is never written by
+//      this job.
 //   5. learning — applies Tom's objections from the digest thread (the
 //      inverse of each named change, or a row saying why not), then reads
 //      what he did since the last learning run (his session turns with the
@@ -135,7 +135,7 @@ import {
   withWikiTomLock,
   writeArchived,
 } from "./session-archive.mjs";
-import { MODELS, loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
+import { MODELS, loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip, reportJobFailed, reportJobOk } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
 import {
   enclosingHeadings,
@@ -678,15 +678,14 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
  * generators refuse to write past one, and the throw here carries the report so
  * the "nightly-failure" row says which disagreement it was.
  *
- * THE TOM.QUEST SIDE IS NEVER COMMITTED BY THIS JOB. The generated block in
+ * THE TOM.QUEST SIDE IS NEVER WRITTEN BY THIS JOB. The generated block in
  * convex/ttsShared.ts is tom.quest's file; this job holds the WikiTom lock and
- * pushes WikiTom. The vocabulary generator rewrites that block in the tom.quest
- * checkout on disk, which leaves that checkout modified, and a block that
- * differed from the render is recorded as a failure — it reaches #tts-broken
- * through recordFailure, where a person lands it through tom.quest's own gate.
- * Recorded rather than thrown for the reason skillsHalf is: the WikiTom half of
- * the night is written and committed by then, and the summary must still carry
- * the two versions it produced.
+ * pushes WikiTom. It calls the generator with `write: "vocabulary"`, which
+ * writes tts/vocabulary.json into the WikiTom checkout and nothing else — not
+ * the tom.quest block, which lands only through the generator's `--write` in a
+ * tom.quest pull request and is reported stale by `check:vocabulary` on that
+ * repository's gate, and not a map candidate file, which nothing reads (the
+ * diff rides this step's result into the `nightly-run` row instead).
  */
 async function graphStep(run) {
   // Both generators live in scripts/, which is a directory in a checkout and a
@@ -709,6 +708,14 @@ async function graphStep(run) {
   if (typeof generateGraph !== "function") {
     throw new Error("scripts/graph.mjs exports no generateGraph");
   }
+  // REMOVAL CHECK: cannot remove, for the same reason as the two above. A
+  // generator older than `write: "vocabulary"` reads any truthy `write` as the
+  // command line's --write and would rewrite convex/ttsShared.ts in the
+  // tom.quest checkout, which this job must never do; the threshold constant
+  // arrived in the same change, so its absence names that generator.
+  if (typeof vocabularyModule.VOCABULARY_THRESHOLD_BYTES !== "number") {
+    throw new Error("scripts/vocabulary.mjs is older than write: \"vocabulary\" — re-run worker/setup.sh before the vocabulary is written");
+  }
 
   // The repositories this job already names, LESS tom.quest, which the
   // generator reads through its own `tomQuest` argument — a second entry for it
@@ -719,51 +726,43 @@ async function graphStep(run) {
     .filter(({ repo, dir }) => repo !== "tom.quest" && fs.existsSync(path.join(dir, ".git")))
     .map(({ repo, dir }) => ({ repo, dir }));
 
-  // THE VOCABULARY REPORTS AND DOES NOT WRITE, YET, and the yet is the point.
+  // THE VOCABULARY WRITES tts/vocabulary.json, AND A DISAGREEMENT FAILS THE
+  // STEP. The seven disagreements about the prompt's seven words are settled
+  // (Tom, 2026-09-24: one wording, in spec §12.1, rendered into the prompt by
+  // convex/vocabulary.ts); the size limit is a threshold that warns and never
+  // refuses (Tom, 2026-09-22; VOCABULARY_THRESHOLD_BYTES); and the map
+  // candidate is no longer written anywhere. What is left is the generator's
+  // own finding, and a file written over one would state something the spec
+  // and the code do not both say, which is the one thing the file exists to
+  // prevent — so the generator refuses the write and this step throws, AFTER
+  // the post below, like the graph's own half.
   //
-  // Its first run against the real repositories found seven disagreements
-  // about the prompt's seven words, a terms section over the 40 KiB cap and a
-  // map candidate over the 7,000-byte bound. Tom settled the seven on
-  // 2026-09-24 — one wording, in spec §12.1, and the prompt renders from it
-  // (convex/vocabulary.ts) — so that class of disagreement no longer exists.
-  // The cap and the map bound are numbers to re-argue against what was
-  // measured rather than estimated, and any other disagreement the generator
-  // reports is its own finding; while any of them stands nothing is written.
+  // `write: "vocabulary"` writes tts/vocabulary.json into this checkout and
+  // nothing else (see the header of this function). Whether it did is read off
+  // the generator's own `written`, once, and that one value is what the post,
+  // the commit and the row all say.
+  const vocabularyFile = vocabularyModule.VOCABULARY_PATH;
+  const vocabulary = generateVocabulary({ wikitom: run.dir, tomQuest: TOM_QUEST_DIR, write: "vocabulary" });
+  const vocabularyWrote = vocabulary.written.includes(vocabularyFile);
+  // THE RENDER GOES TO THE RECORD WHETHER OR NOT IT WAS WRITTEN, which is what
+  // makes the /vocabulary page possible at all: on a night with a
+  // disagreement `tts/vocabulary.json` is not written, and this render is the
+  // only current statement of what every word means. It carries the
+  // disagreements with it, because each of them is one ruling of his
+  // (convex/vocabulary.ts). It is also what every worker's prompt reads its
+  // seven words from: /tts/batch-context renders them from this post's §12.1
+  // entries, so a night that cannot post leaves the last posted wording in
+  // force, and a record with none falls back to the constant.
   //
-  // A step that failed on them would fail every night from the night it shipped,
-  // which is a red job nobody can act on. A step that wrote over them would put
-  // a file on disk that states something the spec and the code do not both say,
-  // which is the one thing the file exists to prevent. So it runs, its
-  // disagreements ride the step's result into the `nightly-run` row and the
-  // digest, and it writes nothing. When those three are settled this becomes
-  // `write: true` and a throw, in one edit, and the graph's own half already
-  // works that way.
-  // The one place the "yet" above is written down, read twice: by the call
-  // that renders and by the post that says whether tts/vocabulary.json exists
-  // at this commit. Two spellings of it could disagree, and the page's whole
-  // question is whether the file is written.
-  const VOCABULARY_WRITES = false;
-  const vocabulary = generateVocabulary({ wikitom: run.dir, tomQuest: TOM_QUEST_DIR, write: VOCABULARY_WRITES });
+  // Recorded and not thrown: losing the night's files to a refused post would
+  // be a worse night than a stale page.
+  await postVocabulary(run, vocabulary, { wrote: vocabularyWrote });
+  await reportVocabularySize(run, vocabulary);
   if (vocabulary.disagreements.length > 0) {
-    console.log(
-      `[nightly] graph: the vocabulary reports ${vocabulary.disagreements.length} disagreement(s) `
-        + "and writes nothing; they are Tom's to settle, see graphStep",
+    throw new Error(
+      `vocabulary: ${vocabulary.disagreements.length} disagreement(s) — nothing written\n${vocabulary.report}`,
     );
   }
-  // THE RENDER GOES TO THE RECORD WHETHER OR NOT IT WAS WRITTEN, which is what
-  // makes the /vocabulary page possible at all: while the disagreements stand,
-  // `tts/vocabulary.json` does not exist, and this render is the only current
-  // statement of what every word means. It carries the disagreements with it,
-  // because each of them is one ruling of his and settling them is what makes
-  // the file exist (convex/vocabulary.ts). It is also what every worker's
-  // prompt reads its seven words from: /tts/batch-context renders them from
-  // this post's §12.1 entries, so a night that cannot post leaves the last
-  // posted wording in force, and a record with none falls back to the constant.
-  //
-  // Recorded and not thrown, like the tom.quest half below: the graph's own
-  // files are written and committed by the end of this step, and losing that
-  // to a refused post would be a worse night than a stale page.
-  await postVocabulary(run, vocabulary, { wrote: VOCABULARY_WRITES });
   const graph = generateGraph({
     wikitom: run.dir,
     tomQuest: TOM_QUEST_DIR,
@@ -775,12 +774,15 @@ async function graphStep(run) {
     throw new Error(`graph: ${graph.disagreements.length} disagreement(s) — nothing written\n${graph.report}`);
   }
 
-  // ONLY THE GRAPH'S OWN WRITES. The graph runs `write: true` and its `changed`
-  // is therefore what it put on disk; the vocabulary runs `write: false` and
-  // writes nothing at all, so its `changed` — which both generators compute by
-  // comparing the render against disk, written or not — names files this step
-  // did not touch. Committing those would claim a write that never happened.
-  const paths = graph.changed.filter((entry) => entry.startsWith("tts/"));
+  // ONLY WHAT THIS STEP WROTE. The graph runs `write: true` and its `changed`
+  // is what it put on disk. The vocabulary's `changed` is a comparison of the
+  // render against disk and can name convex/ttsShared.ts, which this step never
+  // writes, so the vocabulary's half is read from `written` — and only when the
+  // file's bytes actually moved, so an unchanged night makes no commit.
+  const paths = [
+    ...(vocabularyWrote && vocabulary.changed.includes(vocabularyFile) ? [vocabularyFile] : []),
+    ...graph.changed.filter((entry) => entry.startsWith("tts/")),
+  ];
   if (paths.length > 0) {
     run.commits.push({
       paths,
@@ -793,7 +795,7 @@ async function graphStep(run) {
     `[nightly] graph: vocabulary ${vocabulary.version}, graph ${graph.version} (record ${graph.recordVersion}), `
       + `${graph.counts.nodes} nodes, ${graph.counts.edges} edges, ${graph.bytes}/${graph.cap} bytes; `
       + `${paths.length === 0 ? "nothing changed" : paths.join(", ")}`
-      + `; map candidate ${vocabulary.mapCandidateChanged ? "changed" : "unchanged"}`,
+      + `; map render ${vocabulary.mapDiffersFromRender ? "differs from the map" : "matches the map"}`,
   );
 
   const result = {
@@ -801,15 +803,15 @@ async function graphStep(run) {
       version: vocabulary.version,
       counts: vocabulary.counts,
       bytes: vocabulary.bytes,
-      // NOT `changed`: this run wrote nothing, so the list is what DIFFERS
-      // between the render and disk. The old name said the generator had
-      // changed them, which was never true while `write` is false.
+      sizeWarning: vocabulary.sizeWarning,
+      // What DIFFERED between the render and disk before this run; it can name
+      // convex/ttsShared.ts, which this job never writes.
       differsOnDisk: vocabulary.changed,
       // The row says what the vocabulary found and whether it wrote, so the
       // digest can carry the count and the morning reader can act on it. It
-      // reads the same flag the render and the post read, so the three cannot
-      // disagree about a file that either exists at this commit or does not.
-      wrote: VOCABULARY_WRITES,
+      // reads the same value the post read, so the two cannot disagree about a
+      // file that either exists at this commit or does not.
+      wrote: vocabularyWrote,
       disagreements: vocabulary.disagreements.length,
       report: String(vocabulary.report ?? "").slice(0, 2_000),
     },
@@ -823,24 +825,47 @@ async function graphStep(run) {
       wrote: graph.wrote,
     },
     changed: paths,
-    mapCandidateChanged: vocabulary.mapCandidateChanged === true,
+    mapDiffersFromRender: vocabulary.mapDiffersFromRender === true,
     // Enough of the diff to read in a failure row or a digest line, and no
-    // more: the whole diff is the candidate file, which is in the commit.
+    // more. No file holds the whole diff: nothing read one, and the generator
+    // renders it again from the same two commits on demand.
     mapCandidateDiff: String(vocabulary.mapCandidateDiff ?? "").slice(0, 2_000),
   };
 
   // THERE IS NO CHECK HERE FOR A FILE CHANGED OUTSIDE tts/, and there was one.
   // It read the vocabulary's `changed` list and recorded a failure saying the
   // generator "rewrote convex/ttsShared.ts in the tom.quest checkout". That
-  // sentence could never be true: the call above passes `write: false`, so
-  // nothing is written anywhere, and `changed` is a disk COMPARISON that fills
-  // in the moment any input moves the vocabulary version. It therefore fired
-  // every night, said something false, and asked for something impossible —
-  // `--write` refuses to write past a standing disagreement. A check
-  // that cannot fire truthfully is deleted, not corrected. The drift it was
-  // reaching for is convex/ttsShared.ts's, and `check:vocabulary` reports that
-  // on tom.quest's own gate, where the file lives and can actually be landed.
+  // sentence cannot be true: `write: "vocabulary"` never writes that file, and
+  // `changed` is a disk COMPARISON that fills in the moment any input moves the
+  // vocabulary version. A check that cannot fire truthfully is deleted, not
+  // corrected. The drift it was reaching for is convex/ttsShared.ts's, and
+  // `check:vocabulary` reports that on tom.quest's own gate, where the file
+  // lives and can actually be landed.
   return result;
+}
+
+/** The condition the size warning is filed under. KEYED, so a file that stays
+ *  over the threshold for a month is one row rather than one a night, and a
+ *  night back under it writes the recovery that re-arms it (convex/ttsJobs.ts). */
+export const VOCABULARY_SIZE_KEY = "nightly:vocabulary-size";
+
+/**
+ * The size threshold's warning, as a "job-failed" row: the channel the morning
+ * digest and the hourly update already read, and the one the test-time
+ * thresholds use (convex/ttsMerge.ts). Tom ruled on 2026-09-22 that a size or
+ * time limit never blocks work and that crossing one is the trigger for
+ * dedicated effort on speed and cost; a warning printed only in a log he does
+ * not read would trigger nothing, which is why it is filed here.
+ *
+ * Never throws (reportJobFailed and reportJobOk log a refused post), because a
+ * warning about size is never worth the night's files.
+ */
+export async function reportVocabularySize(run, vocabulary, { failed = reportJobFailed, ok = reportJobOk } = {}) {
+  if (vocabulary.sizeWarning) {
+    await failed(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY, error: vocabulary.sizeWarning });
+  } else {
+    await ok(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY });
+  }
 }
 
 /**
@@ -849,7 +874,7 @@ async function graphStep(run) {
  * reports, so the /vocabulary page shows the words as they are AND what is
  * holding `tts/vocabulary.json` back.
  *
- * `wrote` is the fact the page turns on: false means the file does not exist
+ * `wrote` is the fact the page turns on: false means the file was not written
  * at this commit and these disagreements are why.
  */
 async function postVocabulary(run, vocabulary, { wrote, fetch = convexFetch } = {}) {
@@ -3260,8 +3285,8 @@ async function recordSummary(run, only) {
       : null,
     runs: run.results.runs ?? null,
     delivery: run.results.delivery ?? null,
-    // Both versions, the counts, the bytes against the cap, which of the two
-    // files changed, and whether the map candidate moved — the whole of what
+    // Both versions, the counts, the bytes and any size warning, which of the
+    // two files changed, and whether the map differs from its render — the whole of what
     // the 5 a.m. digest can say about tonight's graph without reading it.
     graph: run.results.graph ?? null,
     // The clone path is not carried: it is a cache directory on this box and

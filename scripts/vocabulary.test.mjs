@@ -9,7 +9,7 @@ import {
   AUTHORITY,
   MAP_BLOCKS,
   PROMPT_TERMS,
-  VOCABULARY_MAX_BYTES,
+  VOCABULARY_THRESHOLD_BYTES,
   formatDisagreement,
   generateVocabulary,
   main,
@@ -348,7 +348,7 @@ describe("the switches", () => {
   it("ships the defaults", () => {
     expect(MAP_BLOCKS).toBe("candidate");
     expect(AUTHORITY).toBe("spec");
-    expect(VOCABULARY_MAX_BYTES).toBe(40_960);
+    expect(VOCABULARY_THRESHOLD_BYTES).toBe(40_960);
   });
 
   it("refuses an AUTHORITY it has not built, naming the missing work", async () => {
@@ -538,20 +538,54 @@ describe("the serialization and the version", () => {
 
 // ── The cap ──────────────────────────────────────────────────────────────────
 
-describe("the byte cap", () => {
-  it("refuses to write over the cap, naming the size and the largest section", async () => {
+describe("the size threshold", () => {
+  it("warns over the threshold, naming the size, the threshold and the largest section, and writes anyway", async () => {
     const fat = SPEC.replace("- **TTS** — Toms Todo System.", `- **TTS** — ${"a".repeat(60_000)}`);
     const checkouts = makeCheckouts({ spec: fat });
-    const result = run(checkouts, { write: true });
-    expect(result.overCap).toMatch(new RegExp(`over the ${VOCABULARY_MAX_BYTES}-byte cap; its largest section is terms at \\d+ bytes`));
-    expect(fs.existsSync(path.join(checkouts.wikitom, "tts/vocabulary.json"))).toBe(false);
+    const result = run(checkouts, { write: "vocabulary" });
+    expect(result.sizeWarning).toMatch(
+      new RegExp(`the file is ${result.bytes} bytes, over the ${VOCABULARY_THRESHOLD_BYTES}-byte threshold; its largest section is terms at \\d+ bytes`),
+    );
+    expect(result.written).toEqual(["tts/vocabulary.json"]);
+    expect(fs.existsSync(path.join(checkouts.wikitom, "tts/vocabulary.json"))).toBe(true);
     const lines = [];
     const code = await main(["--wikitom", checkouts.wikitom, "--tom-quest", checkouts.tomQuest], {
       write: (text) => lines.push(text),
       error: (text) => lines.push(text),
     });
-    expect(code).toBe(3);
-    expect(lines.join("\n")).toContain("over the 40960-byte cap");
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("over the 40960-byte threshold");
+  });
+
+  it("is silent under the threshold", () => {
+    expect(run(makeCheckouts()).sizeWarning).toBeNull();
+  });
+});
+
+// ── Who writes what ──────────────────────────────────────────────────────────
+
+describe("the writers", () => {
+  it("the nightly's write puts tts/vocabulary.json in WikiTom and touches no tom.quest file and no map file", () => {
+    const checkouts = makeCheckouts();
+    const shared = fs.readFileSync(path.join(checkouts.tomQuest, "convex/ttsShared.ts"), "utf8");
+    const before = fs.readdirSync(path.join(checkouts.wikitom, "model-of-tom"), { recursive: true }).sort();
+    const result = run(checkouts, { write: "vocabulary" });
+    expect(result.changed).toContain("convex/ttsShared.ts");
+    expect(result.written).toEqual(["tts/vocabulary.json"]);
+    expect(fs.readFileSync(path.join(checkouts.wikitom, "tts/vocabulary.json"), "utf8")).toBe(result.serialized);
+    expect(fs.readFileSync(path.join(checkouts.tomQuest, "convex/ttsShared.ts"), "utf8")).toBe(shared);
+    expect(fs.readdirSync(path.join(checkouts.wikitom, "model-of-tom"), { recursive: true }).sort()).toEqual(before);
+  });
+
+  it("--write also lands the generated block in convex/ttsShared.ts", () => {
+    const checkouts = makeCheckouts();
+    const result = run(checkouts, { write: true });
+    expect(result.written).toEqual(["tts/vocabulary.json", "convex/ttsShared.ts"]);
+    expect(fs.readFileSync(path.join(checkouts.tomQuest, "convex/ttsShared.ts"), "utf8")).toBe(result.sharedAfter);
+  });
+
+  it("refuses a write target it does not know", () => {
+    expect(() => run(makeCheckouts(), { write: "shared" })).toThrow('write is false, true or "vocabulary"');
   });
 });
 
@@ -654,7 +688,7 @@ describe("the disagreement check", () => {
 // ── The map candidate ────────────────────────────────────────────────────────
 
 describe("the map candidate", () => {
-  it("never writes agent-rules.md under MAP_BLOCKS = candidate", () => {
+  it("writes no map file under MAP_BLOCKS = candidate, and returns the diff", () => {
     const checkouts = makeCheckouts();
     const before = fs.readFileSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.md"));
     const result = run(checkouts, { write: true });
@@ -665,8 +699,10 @@ describe("the map candidate", () => {
       "model-of-tom/agent-rules.candidate.diff",
       "model-of-tom/evidence/agent-rules.candidate.md",
     ]) {
-      expect(fs.existsSync(path.join(checkouts.wikitom, rel))).toBe(true);
+      expect(fs.existsSync(path.join(checkouts.wikitom, rel))).toBe(false);
     }
+    expect(result.mapDiffersFromRender).toBe(true);
+    expect(result.mapCandidateDiff).toContain("--- a/model-of-tom/agent-rules.md");
   });
 
   it("keeps every line of the map it did not derive", () => {
@@ -694,16 +730,29 @@ describe("the map candidate", () => {
     expect(fs.existsSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.candidate.md"))).toBe(false);
   });
 
-  it("counts the candidate on LF bytes and fails naming the blocks that grew", () => {
+  it("counts the render on LF bytes and names the blocks that grew", () => {
     const fat = AGENT_RULES.replace("You answer to Tom.", `You answer to Tom. ${"padding ".repeat(880)}`);
     const checkouts = makeCheckouts({ agentRules: fat });
     const result = run(checkouts, { write: true });
     expect(result.candidateOverBudget).toMatch(
       new RegExp(`LF bytes, at or over the ${AGENT_RULES_MAX_LF_BYTES}-byte rule; the blocks this run regenerated are ### Repos`),
     );
-    // The candidate is refused; the file itself is not held hostage to it.
-    expect(fs.existsSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.candidate.md"))).toBe(false);
+    // The file itself is not held hostage to the map's bound.
     expect(fs.existsSync(path.join(checkouts.wikitom, "tts/vocabulary.json"))).toBe(true);
+  });
+
+  it("withholds the live map over the bound under MAP_BLOCKS = live, and exits 3 saying so", async () => {
+    const variant = await withConstant('export const MAP_BLOCKS = "candidate";', 'export const MAP_BLOCKS = "live";');
+    const fat = AGENT_RULES.replace("You answer to Tom.", `You answer to Tom. ${"padding ".repeat(880)}`);
+    const checkouts = makeCheckouts({ agentRules: fat });
+    const lines = [];
+    const code = await variant.main(["--wikitom", checkouts.wikitom, "--tom-quest", checkouts.tomQuest, "--write"], {
+      write: (text) => lines.push(text),
+      error: (text) => lines.push(text),
+    });
+    expect(code).toBe(3);
+    expect(lines.join("\n")).toContain("the map is not written");
+    expect(fs.readFileSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.md"), "utf8")).toBe(fat);
   });
 
   it("writes a unified diff with three lines of context", () => {
@@ -747,7 +796,7 @@ describe("the generated block", () => {
     expect(first.changed).toContain("convex/ttsShared.ts");
     const second = run(checkouts);
     expect(second.changed).toEqual([]);
-    expect(second.mapCandidateChanged).toBe(false);
+    expect(second.written).toEqual([]);
     expect(second.version).toBe(first.version);
     const third = run(checkouts, { write: true });
     expect(third.version).toBe(first.version);
