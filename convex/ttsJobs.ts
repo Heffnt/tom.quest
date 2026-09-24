@@ -1,10 +1,12 @@
 // A box job's own report about itself (the lifeos update, phase 6).
 //
 // A cron job on the Jarvis Box has one voice Tom hears: a dtsEvents row. The
-// digest reads every "-failed" kind into its job-failures section
-// (convex/ttsDigest.ts) and the hourly update names "job-failed" among the
-// kinds it reports (convex/ttsHourly.ts), so a row written here is in front of
-// him within the hour. POST /tts/job-failed is the door.
+// row is written through logEvent (convex/tts.ts), the one event writer, so it
+// schedules the #tts-broken line in the same transaction (postBroken, deduped
+// by job for the TTS day in internal.ttsSync.sendBroken). The digest then reads
+// every "-failed" kind into its job-failures section (convex/ttsDigest.ts) and
+// the hourly update names "job-failed" among the kinds it reports
+// (convex/ttsHourly.ts). POST /tts/job-failed is the door.
 //
 // ONE ROW PER CONDITION, NOT ONE PER TICK. The first thing that ever spoke
 // through this channel was a dead Canvas access token — and a dead token is
@@ -27,6 +29,7 @@ import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
+import { logEvent } from "./tts";
 
 /** The kind the digest and the hourly update read as a job failure. */
 export const JOB_FAILED = "job-failed";
@@ -71,12 +74,9 @@ export const internalReportJobFailed = internalMutation({
       // Already said, and still true. Saying it again adds no fact.
       if (standing !== null) return { reported: false, since: standing.at };
     }
-    await ctx.db.insert("dtsEvents", {
-      at: Date.now(),
-      kind: JOB_FAILED,
-      key,
-      data: { job, error },
-    });
+    // Through the one event writer, which also schedules the #tts-broken
+    // line. A suppressed report returned above, so it posts nothing.
+    await logEvent(ctx, JOB_FAILED, undefined, { job, error }, key);
     return { reported: true };
   },
 });

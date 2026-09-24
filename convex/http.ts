@@ -500,8 +500,9 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   // that the things only he can settle stopped arriving, so the drop is
   // reported through the same door a box job's failure comes through
   // (convex/ttsJobs.ts): one "job-failed" row, keyed on the condition so a
-  // poller running every half hour writes it once, and the digest and the
-  // hourly update carry it to #tts-broken for as long as it stands.
+  // poller running every half hour writes it once. Writing the row schedules
+  // its #tts-broken line (logEvent's postBroken, once per job per TTS day);
+  // the digest and the hourly update list it for as long as it stands.
   const channel = channelFor("needsYou");
   if (channel === null) {
     const reported = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
