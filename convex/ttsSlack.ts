@@ -726,7 +726,7 @@ async function routeReply(
     case "runner":
       // A reply in a runner's thread, its check-ins or its question: the next
       // step reads it whole, and it answers the newest open question. Not a
-      // ruling — the rulings table is for todos and batches.
+      // ruling — the rulings table is for todos.
       return await recordRunnerReply(ctx, subject.id, text, at);
     case "elevation":
       // A reserved decision's thread: his reply is the answer, recorded as
@@ -845,9 +845,9 @@ export const GOLDEN_CONFIRMED = "golden-confirmed";
  * be confirmed ONE AT A TIME, and a thumbs-up on the message says only that
  * Tom read it.
  *
- * WHY NOT A RULING WORD. A ruling needs a subject — life, code or batch — and
+ * WHY NOT A RULING WORD. A ruling needs a subject — life or code — and
  * ttsRulings.insertRuling refuses anything else by construction. A mined
- * golden item is none of the three. Bending the four verdicts to fit it would
+ * golden item is neither. Bending the four verdicts to fit it would
  * widen the one vocabulary in this system with a closed verdict set, and every
  * ruling button, worker filter and pending feed reads that set.
  */
@@ -999,7 +999,6 @@ async function sessionReply(
       kind: session.kind,
       repos: session.repos ?? [session.repo],
       todoId: session.todoId,
-      batchId: session.batchId,
       blockCategory: session.blockCategory,
       model: session.model,
       initialPrompt: continuationPrompt(

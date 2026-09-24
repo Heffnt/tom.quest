@@ -74,28 +74,23 @@ export const IDS = Object.freeze({
   member2: "t-member2",
   member3: "t-member3",
   member4: "t-member4",
-  batch: "b-batch",
-  memberBatch: "b-members",
 });
 
 /**
- * The record a run's context is built against: the todos, batches, rulings and
- * session outcomes the Convex side holds as rows and passes in memory.
+ * The record a run's context is built against: the todos, rulings and session
+ * outcomes the Convex side holds as rows and passes in memory.
  */
 export function contextRecord() {
   return {
     today: CONTEXT_TODAY,
-    batches: [
-      { id: IDS.batch, repos: ["tom.quest"] },
-      { id: IDS.memberBatch, repos: [] },
-    ],
     todos: [
       { id: IDS.climb, category: "climbing", timingClass: "dated", dueDay: MONDAY },
       {
         id: IDS.paths,
         category: "agent-systems",
         timingClass: "whenever",
-        batchId: IDS.batch,
+        // The repositories its caller named for the run (a session's repos).
+        repos: ["tom.quest"],
         brief: "Rework `convex/tts.ts` and worker/jobs/x.mjs together.",
       },
       // A brief past SUPPLEMENTAL_CAPS.brief: the prompt carries its head and
@@ -106,25 +101,22 @@ export function contextRecord() {
         timingClass: "whenever",
         brief: `# The brief\n\n${"- a long line of brief, long enough to matter.\n".repeat(200)}`,
       },
-      { id: IDS.oversize, category: "oversize", timingClass: "dated", dueDay: MONDAY, batchId: IDS.batch },
-      { id: IDS.member1, category: "climbing", timingClass: "whenever", batchId: IDS.memberBatch },
-      { id: IDS.member2, category: "climbing", timingClass: "whenever", batchId: IDS.memberBatch },
-      { id: IDS.member3, category: "admin", timingClass: "whenever", batchId: IDS.memberBatch },
-      { id: IDS.member4, category: "research", timingClass: "whenever", batchId: IDS.memberBatch },
+      { id: IDS.oversize, category: "oversize", timingClass: "dated", dueDay: MONDAY },
+      { id: IDS.member1, category: "climbing", timingClass: "whenever" },
+      { id: IDS.member2, category: "climbing", timingClass: "whenever" },
+      { id: IDS.member3, category: "admin", timingClass: "whenever" },
+      { id: IDS.member4, category: "research", timingClass: "whenever" },
     ],
-    // Only the oversize todo and its batch carry rulings and outcomes, so the
-    // other assertions stay about the pages they are testing.
+    // Only the oversize todo carries rulings, and only tom.quest has session
+    // outcomes, so the other assertions stay about the pages they are testing.
     rulings: [
       { todoId: IDS.oversize, verdict: "revise", sentence: "narrow it first", ruledAt: 500, ruledDay: "2026-09-05" },
       { todoId: IDS.oversize, verdict: "session", sentence: "talk it through", ruledAt: 400, ruledDay: "2026-09-04" },
-      { batchId: IDS.batch, verdict: "approve", sentence: "ship it", ruledAt: 300, ruledDay: "2026-09-03" },
-      { batchId: IDS.batch, verdict: "revise", sentence: "smaller steps", ruledAt: 200, ruledDay: "2026-09-02" },
-      { batchId: IDS.batch, verdict: "approve", sentence: "again", ruledAt: 100, ruledDay: "2026-09-01" },
     ],
     sessions: [
-      { batchId: IDS.batch, repos: ["tom.quest"], outcome: "completed", outcomeSummary: "the prelude landed", statusChangedAt: 900, endedDay: "2026-09-08" },
-      { batchId: IDS.batch, repos: ["tom.quest"], outcome: "errored", outcomeSummary: "the daemon died", statusChangedAt: 800, endedDay: "2026-09-07" },
-      { batchId: IDS.batch, repos: ["tom.quest"], outcome: "completed", outcomeSummary: "the search tool landed", statusChangedAt: 700, endedDay: "2026-09-06" },
+      { repos: ["tom.quest"], outcome: "completed", outcomeSummary: "the prelude landed", statusChangedAt: 900, endedDay: "2026-09-08" },
+      { repos: ["tom.quest"], outcome: "errored", outcomeSummary: "the daemon died", statusChangedAt: 800, endedDay: "2026-09-07" },
+      { repos: ["tom.quest"], outcome: "completed", outcomeSummary: "the search tool landed", statusChangedAt: 700, endedDay: "2026-09-06" },
     ],
   };
 }

@@ -13,16 +13,11 @@ import { requireTom, requireTomOrAgent } from "./authRoles";
 import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
   CODE_TODO_REPOS,
-  DAY_MS,
-  MAX_NEEDS,
   READINESS,
-  SESSION_MODEL,
   goalCheckable,
   isFailureKind,
-  isPrepared,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
-  normalizeSessionRepos,
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
@@ -63,38 +58,6 @@ const DATE_OUTCOME = v.union(
   v.literal("renegotiated"),
   v.literal("missed"),
 );
-// ── Schema v2 graph shapes (ratified 2026-08-29) ─────────────────────────────
-const ACTOR = v.union(v.literal("tom"), v.literal("agent"));
-// A `needs` reference inside a plan-graph payload: a STRING is an existing
-// dtsTodos id; a NUMBER is the index of a task EARLIER in the same payload, so
-// a model can lay down a small graph in one call. The two are unambiguous (a
-// Convex id is never a bare integer) and the backward-only index rule keeps
-// in-payload edges acyclic by construction.
-const NEED_REF = v.union(v.string(), v.number());
-const GRAPH_TASK = v.object({
-  id: v.optional(v.string()), // absent = create
-  statement: v.string(),
-  actor: ACTOR,
-  needs: v.optional(v.array(NEED_REF)),
-  condition: v.optional(v.string()),
-  groundUpExplanation: v.optional(v.string()),
-  evidence: v.optional(v.string()),
-  status: v.optional(v.union(v.literal("active"), v.literal("done"))),
-  // The model this task needs (schema: dtsTodos.model; the union is
-  // ttsShared SESSION_MODELS). Absent means the fleet default the scheduler
-  // resolves; the planner tags only the task that needs a particular model.
-  // The HTTP route drops an unrecognized name before it reaches this union.
-  model: v.optional(SESSION_MODEL),
-});
-
-// Array caps (Convex guideline: array fields on a document must be bounded —
-// an unbounded array grows a single row without limit). A batch is FOR at
-// most 20 goals and holds at most 40 tasks — the two numbers the retired v1
-// batch used for its members and its plan steps, kept because the graph
-// succeeds both and a batch has not become a bigger thing.
-const MAX_BATCH_GOALS = 20;
-const MAX_GRAPH_TASKS = 40;
-
 // ── #tts-broken, from the one place failures are already written ─────────────
 // Rather than making each producer remember to post, the ONE event writer
 // schedules the broken line, on the shape convex/ttsShared.ts calls a failure
@@ -203,18 +166,6 @@ export const listMirror = query({
   },
 });
 
-// Every batches row (schema v2), for the page's batches tab. The Tom-facing
-// twin of internalListBatches: a full collect, because the table holds a few
-// dozen rows for years and the client picks its own grouping (paths) and
-// filtering (status) out of the whole set.
-export const listBatches = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTomOrAgentId(ctx);
-    return await ctx.db.query("batches").collect();
-  },
-});
-
 // Focus: today's queue row (entries joined with their todos) — null when no
 // prep has happened yet today.
 export const listRecentEvents = query({
@@ -308,8 +259,8 @@ export const updateTodo = mutation({
       );
     }
     const now = Date.now();
-    // Every updateTodo edit is a Tom touch — tomTouchedAt marks the row FROZEN
-    // to the planner (tts.internalStorePlanGraph never rewrites it).
+    // Every updateTodo edit is a Tom touch — tomTouchedAt marks the row FROZEN:
+    // no agent pen rewrites it or closes it behind him.
     const patch: Record<string, unknown> = { updatedAt: now, tomTouchedAt: now };
     for (const [key, value] of Object.entries(fields)) {
       if (value === undefined) continue;
@@ -414,9 +365,9 @@ export const setStatus = mutation({
     if (!todo) throw new Error("TTS todo not found");
     await applyStatusChange(ctx, todo, args);
     // Stamped HERE, not in applyStatusChange: agent-driven writes go through
-    // that same transition (tts.internalMigrateToGraph archives a superseded
-    // row with it), and an agent action must not stamp a Tom touch
-    // (tomTouchedAt freezes the row to the planner).
+    // that same transition (the worker pen's completion closes a row with it),
+    // and an agent action must not stamp a Tom touch (tomTouchedAt freezes the
+    // row to every agent pen).
     await ctx.db.patch(id, { tomTouchedAt: Date.now() });
   },
 });
@@ -1382,22 +1333,22 @@ export const internalPrepareTodo = internalMutation({
     // "prepared"). The literal "unprepared" is refused too: an agent must
     // never erase the record that a todo was written up.
     readiness: v.optional(v.literal("prepared")),
-    // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
-    // A worker session claims ONE ready todo inside a batch and advances it by
-    // one stable state, and this is the pen it writes that state with. It
-    // needs three things the plan-era pen did not have:
+    // ── The worker's three args (schema v2, 2026-08-29) ──────────────────────
+    // A worker session advances one todo by one stable state, and this is the
+    // pen it writes that state with. It needs three things the plan-era pen
+    // did not have:
     //   evidence             — the artifact that shows the work happened (a
     //                          branch, a pull request, a written brief). The
     //                          schema field of the same name, per row.
     //   groundUpExplanation  — the self-contained "more" layer, written when a
     //                          task turns out to need Tom's judgment and he has
     //                          to be able to rule on it cold.
-    //   status: "done"       — closes the row, which is what makes every task
-    //                          that NEEDS it ready. Accepted only for a row
-    //                          inside a batch (batchId set): a standalone life
-    //                          todo is Tom's to close and no agent write may
-    //                          close one behind him. "done" is the only value —
-    //                          archiving and sleeping stay Tom's verdicts.
+    //   status: "done"       — closes the row, which is what makes every todo
+    //                          that NEEDS it ready. Accepted for any todo Tom
+    //                          has not ruled on, once its evidence is recorded
+    //                          (the bars are at the end of the handler). "done"
+    //                          is the only value — archiving and sleeping stay
+    //                          Tom's verdicts.
     evidence: v.optional(v.string()),
     groundUpExplanation: v.optional(v.string()),
     status: v.optional(v.literal("done")),
@@ -1504,21 +1455,30 @@ export const internalPrepareTodo = internalMutation({
       // would report work as landed that is still open, and only this row
       // would say otherwise.
       //
-      //   (a) inside a batch — a standalone life todo is Tom's to close.
-      //   (b) not frozen, unless it is a checkable goal. tomTouchedAt is the
-      //       freeze every other agent write in this file respects, and goal
-      //       binding is explicitly allowed on Tom-touched rows, so without
-      //       this bar every bound goal became a row an agent could close.
-      //       A CHECKABLE goal is the one exception, and it is the design:
-      //       checking the world and recording the answer is a goal's whole
-      //       contract.
-      //   (c) a goal's condition is a GOAL CONDITION — a sentence about the
+      //   (a) evidence recorded. Tom ruled on 2026-09-24 to have no batches,
+      //       so agents move toward completing all todos, and any todo he has
+      //       not ruled on may be closed by an agent with its evidence
+      //       recorded. The bar that stood here before — only a todo inside a
+      //       batch could be completed by the pen — cannot stay: with no
+      //       batches it would let no agent complete anything, the opposite of
+      //       the ruling. The evidence bar replaces it as the thing that stops
+      //       a bare status write closing one of Tom's todos with nothing to
+      //       show for it.
+      //   (b) a goal's condition is a GOAL CONDITION — a sentence about the
       //       world that is either true yet or not. A goal with no condition
       //       and no code subject has nothing an agent can go and check, and
-      //       closing it would be closing Tom's todo for him.
+      //       closing it would be closing Tom's todo for him. A todo with a
+      //       condition is closed only when the condition is met, which is what
+      //       its evidence has to show.
+      //   (c) not frozen, unless it is a checkable goal. tomTouchedAt is the
+      //       mark that Tom has ruled on the row, and every other agent write
+      //       in this file respects it. A CHECKABLE goal is the one exception,
+      //       and it is the design: its condition, not a judgment, decides it,
+      //       and checking the world and recording the answer is a goal's
+      //       whole contract.
       const why =
-        fresh.batchId === undefined
-          ? "only a todo inside a batch may be completed by the pen"
+        (fresh.evidence ?? "").trim() === ""
+          ? "a todo is completed by the pen only with its evidence recorded"
           : fresh.kind === "goal" && !goalCheckable(fresh)
             ? "a goal is completed by the pen only when it has a checkable condition or a code subject"
             : fresh.tomTouchedAt !== undefined && fresh.kind !== "goal"
@@ -1533,848 +1493,6 @@ export const internalPrepareTodo = internalMutation({
         });
       }
     }
-  },
-});
-
-// ── The plan graph (schema v2, ratified 2026-08-29) ──────────────────────────
-// A BATCH IS NO LONGER A TODO: it is a `batches` row holding HOW a set of
-// todos gets completed, and its contents are dtsTodos rows pointing back at it
-// (batchId) as kind "task" (work) or kind "goal" (a checkable state of the
-// world). Dependencies between them are `needs`; the todos whose needs are all
-// done are "ready" (the frontier — ttsShared owns that rule).
-
-/**
- * The nodes that cannot be ordered: everything still standing after repeatedly
- * removing nodes whose needs are all resolved (Kahn's algorithm, run to a
- * fixed point). That set is exactly the cycles PLUS everything downstream of
- * one — which is what makes dropping all of them a safe repair: no surviving
- * task is left needing a dropped one.
- */
-function cycleBoundNodes(edges: Map<string, string[]>): Set<string> {
-  const remaining = new Set(edges.keys());
-  let progressed = true;
-  while (progressed) {
-    progressed = false;
-    for (const node of [...remaining]) {
-      if ((edges.get(node) ?? []).every((dep) => !remaining.has(dep))) {
-        remaining.delete(node);
-        progressed = true;
-      }
-    }
-  }
-  return remaining;
-}
-
-/**
- * WHAT HAPPENS TO A BATCH'S CONTENTS WHEN THE BATCH GOES AWAY. Archiving only
- * the `batches` row leaves its todos behind as active rows with a batchId
- * nothing will ever schedule: the frontier skips them (their batch is not
- * active), every legacy lane skips them (they carry a batchId), and the
- * preparer skips them too. They become open work that is invisible to the
- * whole system.
- *
- * So the two kinds part ways, each to the place it came from:
- *   tasks — the batch's own work, archived with it. Their statements only ever
- *           meant something inside this batch's plan.
- *   goals — TOM'S OWN TODOS, which the planner merely bound here. They are
- *           unbound (batchId and kind cleared) and returned to the general
- *           pool, where the preparer and the legacy lanes pick them up again
- *           and the planner may bind them into a batch that is still live.
- *
- * Never touches a done row (its resting state is the record of what landed) or
- * a Tom-touched task (he ruled on it; the archive is not an agent's to make).
- */
-export async function archiveBatchContents(
-  ctx: MutationCtx,
-  batchId: Id<"batches">,
-  note: string,
-) {
-  const rows = await ctx.db
-    .query("dtsTodos")
-    .withIndex("by_batch", (q) => q.eq("batchId", batchId))
-    .collect();
-  let archivedTasks = 0;
-  let unboundGoals = 0;
-  for (const row of rows) {
-    if (row.kind === "goal") {
-      // No updatedAt bump, the mirror of the binding rule: binding and
-      // unbinding are both structural annotations, and bumping would resurface
-      // a gate Tom already ruled on (the needs-me ruledAt<updatedAt
-      // predicate). The row's own content is untouched either way.
-      await ctx.db.patch(row._id, { batchId: undefined, kind: undefined });
-      unboundGoals++;
-      continue;
-    }
-    if (row.status === "done" || row.status === "archived") continue;
-    if (row.tomTouchedAt !== undefined) continue;
-    await applyStatusChange(ctx, row, {
-      status: "archived",
-      unarchiveCondition: "the batch it belonged to comes back",
-      note,
-    });
-    archivedTasks++;
-  }
-  if (archivedTasks > 0 || unboundGoals > 0) {
-    await logEvent(ctx, "graph-batch-emptied", undefined, {
-      batchId,
-      archivedTasks,
-      unboundGoals,
-      note,
-    });
-  }
-  return { archivedTasks, unboundGoals };
-}
-
-// The planner's pen, one batch per call: upserts ONE batch's graph — the batch row, its tasks, and the goals bound to
-// it. Drop-don't-reject: a task that fails validation is SKIPPED with a named
-// reason and the rest of the graph still lands; only a batch that is unknown
-// or FROZEN (Tom-touched, or terminal) costs the whole call.
-export const internalStorePlanGraph = internalMutation({
-  args: {
-    batchId: v.optional(v.string()), // absent = create the batch
-    statement: v.string(),
-    groundUpExplanation: v.optional(v.string()),
-    // Sequencing between batches: the batches this one needs done first.
-    // Absent PRESERVES the stored value, like every field on this pen.
-    needs: v.optional(v.array(v.string())),
-    // The repos this batch's work lives in (Tom's ruling 2026-08-30: a batch
-    // DECLARES its repos; the session scheduler no longer guesses them from a
-    // substring search). Normalized here — an unknown name is dropped rather
-    // than stored, so nothing downstream has to re-check it, and the planner
-    // naming a repo that does not exist costs a checkout, not a dead session.
-    repos: v.optional(v.array(v.string())),
-    tasks: v.array(GRAPH_TASK),
-    goalIds: v.optional(v.array(v.string())), // existing todos to bind as goals
-    archive: v.optional(v.boolean()),
-    // THE PLANNER RUN THAT WROTE THIS GRAPH. Tom rules on the BATCH, so the
-    // batch row is where the edge back to the run belongs (convex/runLabels.ts
-    // tokenForRulingSubject reads it there). Absent is a supported value and
-    // is never inferred.
-    runToken: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const now = Date.now();
-    const statement = args.statement.trim();
-    const result = {
-      batchId: null as Id<"batches"> | null,
-      // Did THIS BATCH's graph store? The caller consumes Tom's revise ruling
-      // on exactly this fact, and it cannot be read off `skipped`: a task's
-      // skip carries the task's statement as its ref, and a task whose
-      // statement happens to equal the batch's would read as a refused batch.
-      // One field, stated by the only code that knows.
-      batchStored: false,
-      created: 0,
-      updated: 0,
-      unchanged: 0,
-      goalsBound: 0,
-      retired: 0,
-      archived: 0,
-      skipped: [] as { ref: string; why: string }[],
-    };
-
-    // ── The batch row ────────────────────────────────────────────────────────
-    let batch: Doc<"batches"> | null = null;
-    if (args.batchId !== undefined) {
-      const normalized = ctx.db.normalizeId("batches", args.batchId);
-      batch = normalized ? await ctx.db.get(normalized) : null;
-      if (!batch) {
-        result.skipped.push({
-          ref: statement,
-          why: `unknown batch id: ${args.batchId}`,
-        });
-        return result;
-      }
-    } else {
-      // IDENTITY WITHOUT AN ID: to the planner a batch IS its statement. v1
-      // got idempotence for free from the occupied-member map — a re-post
-      // could not re-create a batch claiming the same subjects. Here nothing
-      // else carries identity, so a scheduled planner that re-posts a graph
-      // without echoing the batch id would mint a fresh batch, and a fresh
-      // copy of every task in it, on every run, unbounded. Only ACTIVE
-      // batches match (an archived one is history; re-posting its statement
-      // starts a new batch); oldest wins, so the choice is deterministic.
-      const activeBatches = await ctx.db
-        .query("batches")
-        .withIndex("by_status", (q) => q.eq("status", "active"))
-        .collect();
-      batch =
-        activeBatches
-          .filter((b) => b.statement === statement)
-          .sort((a, b) => a.createdAt - b.createdAt)[0] ?? null;
-    }
-    if (batch) {
-      result.batchId = batch._id;
-      // The freeze: a Tom-touched batch is never rewritten by an agent, and a
-      // terminal one is not rewritten at all.
-      const frozen =
-        batch.tomTouchedAt !== undefined
-          ? "Tom-touched (frozen)"
-          : batch.status !== "active"
-            ? `status ${batch.status}`
-            : null;
-      if (frozen) {
-        result.skipped.push({ ref: statement, why: frozen });
-        return result;
-      }
-    }
-    const currentBatchId = batch?._id;
-
-    // The batch's existing contents — the other half of the graph a payload
-    // edge may point into (by_batch, not a full collect).
-    const existingRows = currentBatchId
-      ? await ctx.db
-          .query("dtsTodos")
-          .withIndex("by_batch", (q) => q.eq("batchId", currentBatchId))
-          .collect()
-      : [];
-
-    // ── Validate every task BEFORE anything is written ───────────────────────
-    // A todo is addressable by this graph while it is in THIS batch or in none
-    // (claiming another batch's todo is the cross-batch edge Tom ruled out).
-    const addressable = (todo: Doc<"dtsTodos">) =>
-      todo.batchId === undefined ||
-      (currentBatchId !== undefined && todo.batchId === currentBatchId);
-
-    // The PER-ROW freeze, applied to a task target (addressable() only says
-    // which batch a row is in, not whether the planner may write it). null =
-    // writable; otherwise the plain-language reason it is not. Without this
-    // the pen would rewrite a life todo Tom wrote by hand or reopen a task he
-    // closed. A `done` task IS writable: it is the resting state of a landed
-    // step inside a live graph, and a re-post must still read as unchanged.
-    const notWritable = (todo: Doc<"dtsTodos">): string | null => {
-      if (todo.tomTouchedAt !== undefined) return "Tom-touched (frozen)";
-      if (todo.source !== "planner" && todo.source !== "migration") {
-        return `source ${todo.source} is not the planner's`;
-      }
-      if (todo.status === "archived" || todo.status === "waiting") {
-        return `status ${todo.status}`;
-      }
-      return null;
-    };
-
-    type Accepted = {
-      key: string; // "#<index>" for a create, the todo id for a rewrite
-      existing: Doc<"dtsTodos"> | null;
-      task: (typeof args.tasks)[number];
-      deps: string[]; // node keys, resolved to ids at write time
-    };
-    const accepted: Accepted[] = [];
-    // Payload index → the accepted task's NODE KEY (its todo id for a rewrite,
-    // "#<index>" for a create). An index ref resolves through this, so it can
-    // never name a node the write step cannot find.
-    const keyByIndex = new Map<number, string>();
-    const claimedIds = new Set<string>();
-    // Rows this batch would hold once the payload lands — the cap below is on
-    // the BATCH, not on one payload: without it a re-post carrying new task
-    // statements grows a single batch without bound.
-    let projectedRows = existingRows.length;
-
-    for (let i = 0; i < args.tasks.length; i++) {
-      const task = args.tasks[i];
-      const trimmed = task.statement.trim();
-      const ref = trimmed || `task ${i}`;
-      const skip = (why: string) => result.skipped.push({ ref, why });
-      if (i >= MAX_GRAPH_TASKS) {
-        skip(`a graph holds at most ${MAX_GRAPH_TASKS} tasks`);
-        continue;
-      }
-      if (trimmed === "") {
-        skip("a task needs a statement");
-        continue;
-      }
-      let existing: Doc<"dtsTodos"> | null = null;
-      if (task.id !== undefined) {
-        const normalized = ctx.db.normalizeId("dtsTodos", task.id);
-        existing = normalized ? await ctx.db.get(normalized) : null;
-        if (!existing) {
-          skip(`unknown todo id: ${task.id}`);
-          continue;
-        }
-        if (!addressable(existing)) {
-          skip(`${task.id} belongs to another batch`);
-          continue;
-        }
-      } else {
-        // The same identity rule as the batch row above, one level down:
-        // inside a batch a task's STATEMENT names it. A planner that re-posts
-        // a graph without echoing task ids rewrites its own rows instead of
-        // minting a duplicate set every run. Matched BEFORE the checks below,
-        // so an unwritable row is skipped rather than silently duplicated.
-        existing =
-          existingRows.find((row) => row.statement === trimmed) ?? null;
-      }
-      if (existing) {
-        if (existing.kind === "goal") {
-          skip(`${existing._id} is a goal, not a task`);
-          continue;
-        }
-        if (claimedIds.has(existing._id)) {
-          skip(`duplicate task: ${existing._id}`);
-          continue;
-        }
-        const frozen = notWritable(existing);
-        if (frozen) {
-          skip(frozen);
-          continue;
-        }
-      }
-      if (!existing && projectedRows >= MAX_GRAPH_TASKS) {
-        skip(`a batch holds at most ${MAX_GRAPH_TASKS} todos`);
-        continue;
-      }
-      const refs = task.needs ?? [];
-      if (refs.length > MAX_NEEDS) {
-        skip(`a todo needs at most ${MAX_NEEDS} others — got ${refs.length}`);
-        continue;
-      }
-      // Resolve each need to a node key. A number addresses an EARLIER task in
-      // this payload (backward-only, so in-payload edges cannot cycle); a
-      // string addresses an existing todo, which must be addressable too.
-      const deps: string[] = [];
-      let bad: string | null = null;
-      for (const need of refs) {
-        if (typeof need === "number") {
-          if (!Number.isInteger(need) || need < 0 || need >= i) {
-            bad = `needs ${need}: an index must name an EARLIER task in this payload`;
-            break;
-          }
-          // A skipped task takes its dependents with it — landing a task whose
-          // need was dropped would silently write a graph that is missing an
-          // edge the planner asked for.
-          const target = keyByIndex.get(need);
-          if (target === undefined) {
-            bad = `needs task ${need}, which was skipped`;
-            break;
-          }
-          // The NODE KEY of that task, which is its todo id when the payload
-          // addressed an existing row: "#<index>" is only the key of a task
-          // being CREATED, and pushing it blindly wrote the literal string
-          // "#0" into `needs` whenever an index ref named a rewritten task.
-          deps.push(target);
-        } else {
-          const normalized = ctx.db.normalizeId("dtsTodos", need);
-          const target = normalized ? await ctx.db.get(normalized) : null;
-          if (!target) {
-            bad = `needs an unknown todo id: ${need}`;
-            break;
-          }
-          if (!addressable(target)) {
-            bad = `needs ${need}, which belongs to another batch`;
-            break;
-          }
-          deps.push(target._id);
-        }
-      }
-      if (bad) {
-        skip(bad);
-        continue;
-      }
-      if (existing) claimedIds.add(existing._id);
-      else projectedRows++;
-      const key = existing ? (existing._id as string) : `#${i}`;
-      keyByIndex.set(i, key);
-      accepted.push({
-        key,
-        existing,
-        task,
-        // An ABSENT `needs` PRESERVES the stored edges (the preserve-on-absent
-        // rule the write below applies to every field), so the acyclicity
-        // check has to see the preserved edges, not an empty set — checking []
-        // and then storing the old edges would validate a graph nobody wrote.
-        deps:
-          task.needs === undefined && existing
-            ? (existing.needs ?? []).map((id) => id as string)
-            : [...new Set(deps)],
-      });
-    }
-
-    // Acyclicity across the WHOLE batch: the payload's projected edges plus
-    // the stored edges of every row the payload does not rewrite. Anything
-    // still unorderable is dropped (cycle-bound or downstream of one); the
-    // stored rows were validated on their own write, so a cycle always
-    // involves this payload.
-    const edges = new Map<string, string[]>();
-    for (const row of existingRows) {
-      if (claimedIds.has(row._id)) continue;
-      edges.set(
-        row._id,
-        (row.needs ?? []).map((id) => id as string),
-      );
-    }
-    for (const a of accepted) edges.set(a.key, a.deps);
-    // Close the map over needs that point OUTSIDE this batch. A batch-less
-    // todo carries needs of its own, and a node that is not a KEY in the map
-    // reads to cycleBoundNodes as already resolved — so A(batch-less) needs B
-    // while B needs A would be stored as orderable, and neither would ever be
-    // ready with nothing anywhere saying why. Walking the closure (each id
-    // fetched once; a dangling id resolves as a leaf) is what makes the
-    // acyclicity claim true of the whole graph rather than of one batch.
-    const pendingRefs = [...edges.values()].flat();
-    const walked = new Set(edges.keys());
-    while (pendingRefs.length > 0) {
-      const id = pendingRefs.pop()!;
-      if (walked.has(id)) continue;
-      walked.add(id);
-      const normalized = ctx.db.normalizeId("dtsTodos", id);
-      const outside = normalized ? await ctx.db.get(normalized) : null;
-      const outsideNeeds = (outside?.needs ?? []).map((need) => need as string);
-      edges.set(id, outsideNeeds);
-      pendingRefs.push(...outsideNeeds);
-    }
-    const cyclic = cycleBoundNodes(edges);
-    const landing = accepted.filter((a) => {
-      if (!cyclic.has(a.key)) return true;
-      result.skipped.push({
-        ref: a.task.statement.trim(),
-        why: "needs form a cycle",
-      });
-      return false;
-    });
-
-    // ── The batch's needs: ids of OTHER batches, bounded, known, acyclic ────
-    // A name that is not a batch id, or the batch itself, is dropped with a
-    // named skip rather than stored: an edge to nothing would block the batch
-    // forever, and an edge to itself would too. So would a cycle through
-    // other batches — A needs B and B needs A passes a self-need check, and
-    // then the scheduler's batchNeedsMet holds both back forever with nothing
-    // saying why. Each candidate need is walked transitively through the
-    // stored needs of every batch (ONE collect of a human-scale table), and
-    // one that reaches this batch is skipped naming the batch it names.
-    // Absent preserves.
-    let batchNeeds: Id<"batches">[] | undefined;
-    if (args.needs !== undefined) {
-      const allBatches = await ctx.db.query("batches").collect();
-      const batchByIdForNeeds = new Map(allBatches.map((b) => [b._id as string, b]));
-      /** Whether `from` reaches `target` along stored needs edges. */
-      const reaches = (from: string, target: string): boolean => {
-        const seen = new Set<string>();
-        const stack = [from];
-        while (stack.length > 0) {
-          const id = stack.pop()!;
-          if (id === target) return true;
-          if (seen.has(id)) continue;
-          seen.add(id);
-          stack.push(...(batchByIdForNeeds.get(id)?.needs ?? []));
-        }
-        return false;
-      };
-      batchNeeds = [];
-      const seen = new Set<string>();
-      for (const raw of args.needs) {
-        const id = ctx.db.normalizeId("batches", raw);
-        const target = id ? batchByIdForNeeds.get(id) : undefined;
-        if (!id || !target) {
-          result.skipped.push({ ref: raw, why: "needs names no batch" });
-          continue;
-        }
-        if (batch && id === batch._id) {
-          result.skipped.push({ ref: raw, why: "a batch cannot need itself" });
-          continue;
-        }
-        if (batch && reaches(id, batch._id)) {
-          result.skipped.push({
-            ref: raw,
-            why: `needs form a cycle: "${target.statement}" already needs this batch`,
-          });
-          continue;
-        }
-        if (seen.has(id)) continue;
-        seen.add(id);
-        batchNeeds.push(id);
-      }
-      if (batchNeeds.length > MAX_NEEDS) {
-        result.skipped.push({
-          ref: statement,
-          why: `needs holds at most ${MAX_NEEDS} batches — the rest are dropped`,
-        });
-        batchNeeds = batchNeeds.slice(0, MAX_NEEDS);
-      }
-    }
-
-    // ── Write: the batch row, then its tasks in payload order ────────────────
-    if (batch) {
-      // An ABSENT field PRESERVES the stored value (internalStoreBriefs
-      // semantics: an LLM omission must not delete state), and an unchanged
-      // re-post writes nothing — a repeated run must not bump updatedAt and
-      // re-push every open client.
-      const projected = {
-        statement,
-        groundUpExplanation:
-          args.groundUpExplanation ?? batch.groundUpExplanation,
-        needs: batchNeeds ?? batch.needs,
-        repos:
-          args.repos === undefined
-            ? batch.repos
-            : normalizeSessionRepos(args.repos),
-      };
-      const stored = {
-        statement: batch.statement,
-        groundUpExplanation: batch.groundUpExplanation,
-        needs: batch.needs,
-        repos: batch.repos,
-      };
-      // THE TOKEN IS DELIBERATELY OUT OF THE COMPARISON above and rides the
-      // patch instead: the run that REWROTE the graph owns the text Tom will
-      // read next, but an unchanged re-post must still write nothing. Compared
-      // as a field, every run of the planner would differ from the stored row
-      // by its token alone, bump updatedAt, and re-push every open client for
-      // a graph nobody changed.
-      if (JSON.stringify(projected) !== JSON.stringify(stored)) {
-        await ctx.db.patch(batch._id, {
-          ...projected,
-          ...(args.runToken === undefined ? {} : { producedByRunToken: args.runToken }),
-          updatedAt: now,
-        });
-      }
-    } else {
-      result.batchId = await ctx.db.insert("batches", {
-        statement,
-        ...(args.runToken === undefined ? {} : { producedByRunToken: args.runToken }),
-        groundUpExplanation: args.groundUpExplanation,
-        needs: batchNeeds,
-        repos:
-          args.repos === undefined
-            ? undefined
-            : normalizeSessionRepos(args.repos),
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-      });
-      await logEvent(ctx, "graph-batch-formed", undefined, {
-        batchId: result.batchId,
-        statement,
-      });
-    }
-    const batchId = result.batchId!;
-    result.batchStored = true;
-
-    // Payload order + backward-only index refs mean every dep already has its
-    // id by the time it is read.
-    const idByKey = new Map<string, Id<"dtsTodos">>();
-    for (const a of landing) {
-      const needs = a.deps.map(
-        (dep) => idByKey.get(dep) ?? (dep as Id<"dtsTodos">),
-      );
-      const prior = a.existing;
-      // An ABSENT field PRESERVES the stored value — the same rule the batch
-      // row above follows (internalStoreBriefs semantics: an LLM omission must
-      // not delete state). ctx.db.patch DELETES a field written as undefined,
-      // so writing the payload straight through would erase the evidence a
-      // session recorded, the "more" layer, and a claimed row's trigger
-      // condition on the planner's very next re-post. `needs` rides the same
-      // rule via a.deps: an explicit EMPTY array is how a payload clears edges.
-      const fields = {
-        statement: a.task.statement.trim(),
-        kind: "task" as const,
-        actor: a.task.actor,
-        batchId,
-        needs: needs.length > 0 ? needs : undefined,
-        condition: a.task.condition ?? prior?.condition,
-        groundUpExplanation:
-          a.task.groundUpExplanation ?? prior?.groundUpExplanation,
-        evidence: a.task.evidence ?? prior?.evidence,
-        // Preserve-on-absent like every field above: a re-post that omits the
-        // tier must not silently demote a task the planner already marked as
-        // needing the stronger model.
-        model: a.task.model ?? prior?.model,
-      };
-      const desired = a.task.status ?? prior?.status ?? ("active" as const);
-      if (prior) {
-        const stored = {
-          statement: prior.statement,
-          kind: prior.kind,
-          actor: prior.actor,
-          batchId: prior.batchId,
-          needs: prior.needs,
-          condition: prior.condition,
-          groundUpExplanation: prior.groundUpExplanation,
-          evidence: prior.evidence,
-          model: prior.model,
-        };
-        const fieldsChanged = JSON.stringify(fields) !== JSON.stringify(stored);
-        const statusChanged = desired !== prior.status;
-        if (!fieldsChanged && !statusChanged) {
-          result.unchanged++;
-        } else {
-          if (fieldsChanged) {
-            await ctx.db.patch(prior._id, { ...fields, updatedAt: now });
-          }
-          // A status change goes through the ONE transition implementation.
-          // A raw patch would leave an archived row's archivedAt and unarchive
-          // condition standing on a live todo, skip the kept-dates resolution
-          // on a completion (the silent slide updateTodo refuses), and emit no
-          // status-changed event for the transition.
-          if (statusChanged) {
-            await applyStatusChange(ctx, prior, {
-              status: desired,
-              note: "planner: graph",
-            });
-          }
-          result.updated++;
-        }
-        idByKey.set(a.key, prior._id);
-      } else {
-        const id = await ctx.db.insert("dtsTodos", {
-          ...fields,
-          status: desired,
-          doneAt: desired === "done" ? now : undefined,
-          // A task is work inside a batch, not a gate: the BATCH is what Tom
-          // rules on, so a fresh task is "unprepared" rather than
-          // "prepared" (which would flood the needs-me feed).
-          readiness: "unprepared",
-          timingClass: "whenever",
-          source: "planner",
-          createdAt: now,
-          updatedAt: now,
-        });
-        idByKey.set(a.key, id);
-        result.created++;
-      }
-    }
-
-    // ── Goals: existing todos bound to this batch ────────────────────────────
-    // No updatedAt bump — binding is a structural annotation, and bumping it
-    // would resurface already-ruled gates (the needs-me ruledAt<updatedAt
-    // predicate).
-    const goalIds = args.goalIds ?? [];
-    for (let g = 0; g < goalIds.length; g++) {
-      const raw = goalIds[g];
-      // Bounded like every other array here (Convex unbounded-array-field
-      // guideline): a batch is FOR at most MAX_BATCH_GOALS subjects.
-      if (g >= MAX_BATCH_GOALS) {
-        result.skipped.push({
-          ref: raw,
-          why: `a batch holds at most ${MAX_BATCH_GOALS} goals`,
-        });
-        continue;
-      }
-      const normalized = ctx.db.normalizeId("dtsTodos", raw);
-      const todo = normalized ? await ctx.db.get(normalized) : null;
-      if (!todo) {
-        result.skipped.push({ ref: raw, why: `unknown todo id: ${raw}` });
-        continue;
-      }
-      // (The two v1-batch bars that used to sit here — a v1 batch row bound as
-      // a goal, and a row a live v1 batch already claimed — went with the v1
-      // batch itself: the graph migration turned every one of them into a
-      // `batches` row and archived the old row, and nothing writes `members`
-      // any more. The lifeos update, phase 7.)
-      if (claimedIds.has(todo._id)) {
-        result.skipped.push({
-          ref: raw,
-          why: "already addressed as a task in this graph",
-        });
-        continue;
-      }
-      if (!addressable(todo)) {
-        result.skipped.push({ ref: raw, why: `${raw} belongs to another batch` });
-        continue;
-      }
-      if (todo.batchId === batchId && todo.kind === "goal") continue; // already bound
-      await ctx.db.patch(todo._id, { batchId, kind: "goal" });
-      result.goalsBound++;
-    }
-
-    // ── Retire what the payload dropped ──────────────────────────────────────
-    // THE TASKS ARRAY IS THE BATCH'S TASK LIST. Identity without an id is exact
-    // statement match, and the planner is an LLM re-emitting the whole graph
-    // every run: a task it REWORDS while omitting its id mints a second row,
-    // and both are then ready, both agent-workable, and both get sessions doing
-    // the same work on the same branch namespace. Nothing else retires the
-    // first, so this does.
-    //
-    // WHAT IT WILL NOT TOUCH, because a dropped row must never be lost work: a
-    // goal (Tom's own todo), a row Tom has touched, a row from any other
-    // source, a terminal row, and — the load-bearing one — any row a session
-    // has already written to (evidence recorded, or readiness moved off
-    // "unprepared"). Those stay in the batch and are reported, not archived.
-    // The rule is also skipped entirely when nothing landed, so a payload the
-    // server dropped whole cannot empty a graph.
-    if (landing.length > 0) {
-      for (const row of existingRows) {
-        // claimedIds, not the landing set: a task the payload DID address and
-        // the server then dropped (a cycle, a fan-in cap) was listed by the
-        // planner, and dropping an edge is not the same statement as dropping
-        // the task.
-        if (claimedIds.has(row._id)) continue;
-        if (row.kind === "goal") continue;
-        if (row.status !== "active") continue;
-        if (row.source !== "planner") continue;
-        if (row.tomTouchedAt !== undefined) continue;
-        if (row.evidence !== undefined || isPrepared(row.readiness)) {
-          result.skipped.push({
-            ref: row.statement,
-            why: "left in the batch: the planner did not re-emit it, and a session has already worked it",
-          });
-          continue;
-        }
-        await applyStatusChange(ctx, row, {
-          status: "archived",
-          unarchiveCondition: "the planner puts it back in the graph",
-          note: "planner: no longer in the graph",
-        });
-        result.retired++;
-      }
-    }
-
-    if (args.archive) {
-      await ctx.db.patch(batchId, { status: "archived", updatedAt: now });
-      result.archived = 1;
-      await archiveBatchContents(ctx, batchId, "planner: batch archived");
-    }
-
-    await logEvent(ctx, "graph-stored", undefined, {
-      batchId,
-      created: result.created,
-      updated: result.updated,
-      unchanged: result.unchanged,
-      goalsBound: result.goalsBound,
-      retired: result.retired,
-      archived: result.archived,
-      skipped: result.skipped.length > 0 ? result.skipped : undefined,
-    });
-    return result;
-  },
-});
-
-// ── The v1 → v2 migration (built, tested, NOT wired to any cron) ─────────────
-// Turns every ACTIVE v1 batch (a dtsTodos row carrying `members`) into the new
-// world: a batches row, its plan steps as task todos chained by `needs`, its
-// members bound as goals. NOTHING IS EVER DELETED — the old row is archived
-// with a pointer to its successor, which is also the idempotence key.
-/** The unarchiveCondition a v1 batch row carries once the graph migration
- * has replaced it — its idempotence key, and what the weekly gather must
- * skip when it lists archived rows whose sentence names a return condition
- * (this one is a pointer, not a condition). */
-export const GRAPH_SUPERSEDED = "superseded by graph batch ";
-
-/** The v1 batch pair, as a stored row still holds it. THIS MIGRATION IS THE
- * LAST READER of either field, and it reads them through a loose view of the
- * row rather than the generated Doc type: the narrow drops both declarations
- * from convex/schema.ts, and Convex still returns them off any row the
- * clearing walk has not reached — which is what keeps a re-run possible. */
-type RetiredV1Batch = {
-  members?: { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string }[];
-  plan?: {
-    text: string;
-    actor: "tom" | "agent";
-    status: "open" | "done";
-    doneAt?: number;
-    evidence?: string;
-  }[];
-};
-const v1Batch = (row: Doc<"dtsTodos">): RetiredV1Batch =>
-  row as unknown as RetiredV1Batch;
-
-export const internalMigrateToGraph = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const now = Date.now();
-    const all = await ctx.db.query("dtsTodos").collect();
-    const oldBatches = all.filter(
-      (t) =>
-        v1Batch(t).members !== undefined &&
-        t.status === "active" &&
-        !(t.unarchiveCondition ?? "").startsWith(GRAPH_SUPERSEDED),
-    );
-    const counts = {
-      batches: 0,
-      tasks: 0,
-      goals: 0,
-      codeGoals: 0,
-      missingMembers: 0,
-      alreadyBound: 0,
-    };
-    for (const row of oldBatches) {
-      const batchId = await ctx.db.insert("batches", {
-        statement: row.statement,
-        // The v1 grouping brief IS the ground-up explanation — same text, same
-        // job (why these belong together), now under its ratified name.
-        groundUpExplanation: row.brief,
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-      });
-      counts.batches++;
-
-      // Plan steps become tasks in a LINEAR CHAIN (each needs the one before
-      // it): the v1 plan was an ordered list, so the chain is the only reading
-      // that is certainly true. The planner parallelizes it later by dropping
-      // edges — inventing that parallelism here would be a guess.
-      let previous: Id<"dtsTodos"> | undefined;
-      for (const step of v1Batch(row).plan ?? []) {
-        const done = step.status === "done";
-        const id = await ctx.db.insert("dtsTodos", {
-          statement: step.text,
-          kind: "task",
-          actor: step.actor,
-          status: done ? "done" : "active",
-          doneAt: done ? (step.doneAt ?? now) : undefined,
-          evidence: step.evidence,
-          batchId,
-          needs: previous ? [previous] : undefined,
-          readiness: "unprepared",
-          timingClass: "whenever",
-          source: "migration",
-          createdAt: now,
-          updatedAt: now,
-        });
-        previous = id;
-        counts.tasks++;
-      }
-
-      for (const member of v1Batch(row).members ?? []) {
-        if (member.todoId !== undefined) {
-          const todo = await ctx.db.get(member.todoId);
-          if (!todo) {
-            counts.missingMembers++;
-            continue;
-          }
-          // The planner's pen is live before this ever runs, so a member may
-          // ALREADY be a goal of a v2 batch. Overwriting batchId here would
-          // move it out of that batch silently, with nothing recording the
-          // loss — the addressable() rule the pen enforces, enforced here too.
-          if (todo.batchId !== undefined && todo.batchId !== batchId) {
-            counts.alreadyBound++;
-            continue;
-          }
-          // The accumulated todos ARE the batch's goals (Tom): the statement
-          // is untouched, and updatedAt is NOT bumped — a migration must not
-          // resurface gates Tom already ruled on.
-          await ctx.db.patch(member.todoId, { batchId, kind: "goal" });
-          counts.goals++;
-        } else {
-          // A code member becomes a goal ABOUT the upstream todo: the repo
-          // stays the system of record, so the goal is "it is closed there",
-          // checkable by (codeRepo, codeExternalId) — the same addressing the
-          // member used.
-          const sentence = `${member.repo} ${member.externalId} closed upstream`;
-          await ctx.db.insert("dtsTodos", {
-            statement: sentence,
-            kind: "goal",
-            condition: sentence,
-            codeRepo: member.repo,
-            codeExternalId: member.externalId,
-            batchId,
-            readiness: "unprepared",
-            status: "active",
-            timingClass: "whenever",
-            source: "migration",
-            createdAt: now,
-            updatedAt: now,
-          });
-          counts.codeGoals++;
-        }
-      }
-
-      await applyStatusChange(ctx, row, {
-        status: "archived",
-        unarchiveCondition: `${GRAPH_SUPERSEDED}${batchId}`,
-        note: "schema v2 migration",
-      });
-    }
-    await logEvent(ctx, "graph-migrated", undefined, counts);
-    return counts;
   },
 });
 
@@ -2492,72 +1610,14 @@ export const internalListMirror = internalQuery({
   },
 });
 
-// Every batches row (schema v2), for the planner's context. A full collect,
-// like internalListTodos: this is a single-user table holding a few dozen rows
-// for years, and the planner needs the archived statements too (it must not
-// recreate a grouping Tom retired).
+// Every batches row, for GET /tts/batch-context alone. That door is served for
+// one rollout after batches were removed (Tom's ruling of 2026-09-24), because
+// the box runs its own installed copy of the planner until it is rolled; the
+// follow-up that deletes the door deletes this query with it.
 export const internalListBatches = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("batches").collect();
-  },
-});
-
-// PLAN REPAIRS — a worker that reached a task and found the graph wrong (a
-// `needs` edge that is not a real prerequisite, a missing one that blocked it)
-// records the finding as a dtsEvents row of kind "plan-repair"; that is the
-// only channel by which the doing of the work corrects the planning of it.
-// The planner reads these each run and fixes the structure.
-//
-// THE SCAN IS BOUNDED ON PURPOSE. dtsEvents is append-only instrumentation and
-// grows without limit, so this walks the by_at index BACKWARD from `sinceMs`
-// (a week by default) rather than filtering the whole table — a run in a week
-// with no repairs at all must not read every event ever written.
-const PLAN_REPAIR_KIND = "plan-repair";
-const PLAN_REPAIR_WINDOW_MS = 7 * DAY_MS;
-
-export const internalRecentPlanRepairs = internalQuery({
-  args: { limit: v.optional(v.number()), sinceMs: v.optional(v.number()) },
-  handler: async (ctx, { limit, sinceMs }) => {
-    const since = sinceMs ?? Date.now() - PLAN_REPAIR_WINDOW_MS;
-    const rows = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_at", (q) => q.gte("at", since))
-      .order("desc")
-      .filter((q) =>
-        q.and(
-          q.eq(q.field("kind"), PLAN_REPAIR_KIND),
-          // UNCONSUMED ONLY. A repair is an INSTRUCTION ("this edge is wrong"),
-          // not a record, and the planner runs every two hours over the same
-          // seven-day window: without this the planner is told to fix an edge
-          // it already dropped, ~84 times per repair. The window is still the
-          // outer bound — a repair nothing ever consumes ages out as before.
-          q.eq(q.field("consumedAt"), undefined),
-        ),
-      )
-      .take(Math.min(limit ?? 20, 100));
-    return rows;
-  },
-});
-
-// The planner's consume pen for the above: the repairs it has now acted on.
-// Stamped, never deleted — dtsEvents is append-only instrumentation, and what
-// the planner consumed and when is part of the record.
-export const internalMarkPlanRepairsConsumed = internalMutation({
-  args: { ids: v.array(v.string()) },
-  handler: async (ctx, { ids }) => {
-    const now = Date.now();
-    let consumed = 0;
-    for (const raw of ids.slice(0, 100)) {
-      const id = ctx.db.normalizeId("dtsEvents", raw);
-      if (!id) continue;
-      const row = await ctx.db.get(id);
-      if (!row || row.kind !== PLAN_REPAIR_KIND) continue;
-      if (row.consumedAt !== undefined) continue;
-      await ctx.db.patch(id, { consumedAt: now });
-      consumed++;
-    }
-    return { consumed };
   },
 });
 

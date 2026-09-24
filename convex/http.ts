@@ -1131,9 +1131,9 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (b.dueAt !== undefined && typeof b.dueAt !== "number") {
     return jsonResponse(400, { error: "dueAt must be a number (epoch ms)" });
   }
-  // The graph worker's completion value (schema v2): "done" is the only status
-  // this pen accepts, and only on a todo inside a batch — the mutation is the
-  // real gate and refuses a standalone one by name.
+  // The worker's completion value: "done" is the only status this pen
+  // accepts, and only with the todo's evidence recorded and on a row Tom has
+  // not ruled on — the mutation is the real gate and refuses by name.
   if (b.status !== undefined && b.status !== "done") {
     return jsonResponse(400, { error: 'status must be "done"' });
   }
@@ -1216,7 +1216,7 @@ const ttsState = httpAction(async (ctx, request) => {
     // The one home reaching the one caller that cannot import it: the delegate
     // is worker/jobs/delegate.mjs and Node does not load .ts, so the narrow
     // list and the delegate's budgets ride this payload the way
-    // writingStandard and sessionRepos ride /tts/batch-context.
+    // writingStandard and sessionRepos ride /tts/planner-context.
     narrowList: NARROW_LIST,
     delegate: {
       maxPerSession: DELEGATE_MAX_PER_SESSION,
@@ -1472,10 +1472,10 @@ http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs })
 
 // GET /tts/rulings — the rulings a box job should act on (unapplied and not
 // superseded by a newer ruling on the same subject), from the unified
-// ttsRulings table. ALL THREE subject types ride the one feed: rows carry
+// ttsRulings table. Both subject types ride the one feed: rows carry
 // subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
 // own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
-// pass, a "batch" revise → its plan pass — consuming only what it served. A
+// pass — consuming only what it served. A
 // "code" approve or archive rides the feed too but is consumed by the
 // auto-session scheduler in Convex. Each row carries its _id, which the
 // planner echoes back to /tts/ruling-applied.
@@ -1541,8 +1541,8 @@ http.route({
 
 // POST /tts/ruling — a ruling from Tom's own words (ruling 15, 2026-09-05).
 // Body: { inboundId, verdict, subjectType, subjectId, quote, sentence? }: the
-// claudeInbound row Tom typed, one of the four verdicts, "life" | "code" |
-// "batch", the subject's id (a code subject is "<repo> <externalId>"), one
+// claudeInbound row Tom typed, one of the four verdicts, "life" | "code", the
+// subject's id (a code subject is "<repo> <externalId>"), one
 // whole sentence of Tom's turn verbatim (provenance only), and — on revise
 // alone — the ruling's own sentence, the redirect, which is another (or the
 // same) whole sentence of that turn. Same key as every worker pen; the
@@ -1570,9 +1570,9 @@ const ttsRuling = httpAction(async (ctx, request) => {
       error: "verdict must be one of approve, revise, session, archive",
     });
   }
-  if (b.subjectType !== "life" && b.subjectType !== "code" && b.subjectType !== "batch") {
+  if (b.subjectType !== "life" && b.subjectType !== "code") {
     return jsonResponse(400, {
-      error: "subjectType must be one of life, code, batch",
+      error: "subjectType must be one of life, code",
     });
   }
   if (typeof b.subjectId !== "string" || b.subjectId === "") {
@@ -1956,72 +1956,90 @@ const ttsMerge = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 
-// GET /tts/batch-context — everything the planner works from: all life todos
-// (schema-v2 graph fields included), the code-todo mirror, the code briefs,
-// and Tom's recent rulings (grouping signal). The v1 batcher that shared this
-// payload, and the POST /tts/batches door it wrote back through, are gone with
-// the `members`/`plan` pair (the lifeos update, phase 7); the name stays
-// because worker/jobs/plan-graphs.mjs asks for it by it.
-//
-// SCHEMA V2 ADDITIONS, for worker/jobs/plan-graphs.mjs: the `batches` rows
-// (the planner maintains the graph inside them, and needs the archived
-// statements so it does not recreate a grouping Tom retired), the recent
-// plan-repair events (a worker found an edge wrong; the planner fixes the
-// structure), and `writingStandard`.
+// GET /tts/planner-context — everything the planner's prepare and brief passes
+// and the delegate's fallback work from: all life todos (their graph fields,
+// `needs` among them, included), the code-todo mirror, the code briefs, Tom's
+// recent rulings, the writing standard, the vocabulary, the session repo names
+// and the server's clock.
 //
 // WHY THE WRITING STANDARD RIDES THIS PAYLOAD: the planner is Node ESM on a box
 // that never loads TypeScript — it cannot import the text and it cannot read a
 // git checkout of WikiTom. Serving it here is what keeps the text the planner
 // pastes into its prompt the same text every TypeScript caller reads.
 //
-// ITS SOURCE is the context assembler (convex/ttsContext.ts assembleContext),
-// which since the dynamic-context round sends the STABLE PREFIX plus a
-// FETCHABLE index rather than the write and know layers whole — the planner has
-// no subject of its own, so nothing expands (rule 12) and every page it did not
-// get is one line naming the command that gets it. THE FIELD NAME AND TYPE DO
-// NOT CHANGE: worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as
-// fatal.
-const ttsBatchContext = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  // Eight independent reads — issued in parallel, not awaited one by one.
-  let todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard: string, vocabulary: string;
-  try {
-    [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard, vocabulary] = await Promise.all([
-      ctx.runQuery(internal.tts.internalListTodos, {}),
-      ctx.runQuery(internal.tts.internalListMirror, {}),
-      ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
-      ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
-      ctx.runQuery(internal.tts.internalListBatches, {}),
-      ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "batch-context" }),
-      // The seven prompt words, rendered from the §12.1 entries the night
-      // posted (convex/vocabulary.ts), the constant only when none are posted.
-      ctx.runQuery(internal.vocabulary.internalClosedVocabulary, {}),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, {
+// ITS SOURCE is the context assembler (convex/ttsContext.ts assembleContext):
+// the planner has no subject of its own, so nothing expands and every page it
+// did not get is one line naming the command that gets it. THE FIELD NAME AND
+// TYPE DO NOT CHANGE: worker/jobs/plan-graphs.mjs treats a missing
+// `writingStandard` as fatal.
+async function plannerContext(ctx: ActionCtx) {
+  // Six independent reads — issued in parallel, not awaited one by one.
+  const [todos, mirror, briefs, recentRulings, writingStandard, vocabulary] = await Promise.all([
+    ctx.runQuery(internal.tts.internalListTodos, {}),
+    ctx.runQuery(internal.tts.internalListMirror, {}),
+    ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
+    ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
+    ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "planner-context" }),
+    // The prompt's vocabulary words, rendered from the §12.1 entries the night
+    // posted (convex/vocabulary.ts), the constant only when none are posted.
+    ctx.runQuery(internal.vocabulary.internalClosedVocabulary, {}),
+  ]);
+  return {
     todos,
     mirror,
     briefs,
     recentRulings,
-    batches,
-    planRepairs,
     writingStandard,
     vocabulary,
-    // The repo names a batch may declare. Served for the SAME reason as
-    // writingStandard above: the planner is Node ESM on a box that never loads
-    // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's
-    // value is what stops a fourth hand-written copy of the repo list
-    // appearing in worker/ (VQC C1).
+    // The repo names. Served for the SAME reason as writingStandard above: the
+    // planner is Node ESM on a box that never loads TypeScript, so it cannot
+    // import SESSION_REPOS. Serving the one home's value is what stops a
+    // fourth hand-written copy of the repo list appearing in worker/ (VQC C1).
     sessionRepos: SESSION_REPO_NAMES,
     // The server's clock, the /tts/state convention: the planner's prepare
     // pass resolves "sept 3" in a statement against nyCalendarDay and never
     // computes a New York date of its own.
     ...nowContext(Date.now()),
-  });
+  };
+}
+
+const ttsPlannerContext = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  try {
+    return jsonResponse(200, await plannerContext(ctx));
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
+});
+
+http.route({
+  path: "/tts/planner-context",
+  method: "GET",
+  handler: ttsPlannerContext,
+});
+
+// GET /tts/batch-context — the planner-context payload above plus the two
+// fields the plan pass read: every `batches` row, and `planRepairs`, now
+// always empty (nothing records a plan repair any more). SERVED FOR ONE
+// ROLLOUT ONLY. Tom ruled on 2026-09-24 to have no batches, and the box runs
+// its own installed copies of the planner and the delegate until it is rolled;
+// both read this path by name and refuse to run without its writingStandard.
+// The follow-up pull request that ends the widen step deletes this door and
+// tts.internalListBatches with it, once the rolled box reads
+// /tts/planner-context.
+const ttsBatchContext = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  try {
+    const [context, batches] = await Promise.all([
+      plannerContext(ctx),
+      ctx.runQuery(internal.tts.internalListBatches, {}),
+    ]);
+    return jsonResponse(200, { ...context, batches, planRepairs: [] });
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
 });
 
 http.route({
@@ -3195,201 +3213,10 @@ const ttsEvent = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/event", method: "POST", handler: ttsEvent });
 
-// ── POST /tts/plan-graph — the planner's pen (schema v2) ─────────────────────
-// ONE batch's graph per call, and the ONE batch door since the v1 pen and its
-// route (POST /tts/batches) went with `members` and `plan`. Body:
-// { batchId?, statement, groundUpExplanation?, needs?, repos?, tasks: [...],
-// goalIds?, archive? }. Drop-don't-reject: the body is model-written JSON, so
-// it is PROJECTED to the known shape and the mutation's per-item skip report
-// is the real validator.
-//
-// ONE DIFFERENCE, and it is the whole reason this sanitizer is not a copy of
-// the batch one: a task's `needs` may address an EARLIER TASK BY ITS POSITION
-// IN THIS PAYLOAD. Positions are therefore load-bearing — removing a malformed
-// task from the array would renumber every task after it and silently
-// re-point every index reference at the wrong task. So a malformed task keeps
-// its slot and is emptied instead: the mutation skips an empty statement by
-// name, and anything that needed it comes back as "needs task N, which was
-// skipped" rather than landing with an invented edge. What was dropped and why
-// is reported back in `droppedTasks`.
-const GRAPH_ACTORS = ["tom", "agent"] as const;
-const GRAPH_STATUSES = ["active", "done"] as const;
-
-type DroppedTask = { index: number; statement: string; why: string };
-
-function sanitizeGraphTask(
-  item: unknown,
-  index: number,
-  dropped: DroppedTask[],
-): Record<string, unknown> {
-  const statementOf = (x: unknown) =>
-    typeof x === "object" && x !== null &&
-    typeof (x as Record<string, unknown>).statement === "string"
-      ? ((x as Record<string, unknown>).statement as string)
-      : "";
-  const drop = (why: string): Record<string, unknown> => {
-    dropped.push({ index, statement: statementOf(item), why });
-    return { statement: "", actor: "agent" };
-  };
-  if (typeof item !== "object" || item === null) return drop("not an object");
-  const r = item as Record<string, unknown>;
-  if (typeof r.statement !== "string" || r.statement.trim() === "") {
-    return drop("a task needs a statement");
-  }
-  if (!GRAPH_ACTORS.includes(r.actor as (typeof GRAPH_ACTORS)[number])) {
-    // Never defaulted: the actor is who does the work, and guessing "agent"
-    // for a step that was Tom's would hand his own decision to a worker.
-    return drop('actor must be "tom" or "agent"');
-  }
-  const out: Record<string, unknown> = {
-    statement: r.statement,
-    actor: r.actor,
-  };
-  if (typeof r.id === "string") out.id = r.id;
-  if (r.needs !== undefined) {
-    if (!Array.isArray(r.needs)) return drop("needs must be an array");
-    const needs: (string | number)[] = [];
-    for (const need of r.needs) {
-      // A string is an existing todo id; a whole number is the position of an
-      // earlier task in this payload. Anything else would have to be dropped
-      // from the array, which deletes an edge the planner asked for — so the
-      // task goes instead, and the planner sees it in the report.
-      if (typeof need === "string") needs.push(need);
-      else if (typeof need === "number" && Number.isInteger(need)) {
-        needs.push(need);
-      } else return drop("a need is a todo id or an earlier task's index");
-    }
-    out.needs = needs;
-  }
-  if (typeof r.condition === "string") out.condition = r.condition;
-  if (typeof r.groundUpExplanation === "string") {
-    out.groundUpExplanation = r.groundUpExplanation;
-  }
-  if (typeof r.evidence === "string") out.evidence = r.evidence;
-  if (GRAPH_STATUSES.includes(r.status as (typeof GRAPH_STATUSES)[number])) {
-    out.status = r.status;
-  }
-  // The model. Absent is the norm (the scheduler falls back to the fleet
-  // default); a name from SESSION_MODELS is the planner's tag for a task that
-  // needs a particular one. Any other value is simply NOT CARRIED — an
-  // unrecognized name would reach the mutation's closed union and cost the
-  // whole call, so one hallucinated word would lose a batch's entire graph
-  // instead of one default.
-  if (isSessionModel(r.model)) out.model = r.model;
-  return out;
-}
-
-const ttsPlanGraph = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  // The statement IS the batch's identity when no id is echoed (the mutation
-  // matches an active batch by it), so an absent one is not something to drop
-  // around — there would be no batch to speak of and nothing to name in a
-  // report.
-  if (typeof b.statement !== "string" || b.statement.trim() === "") {
-    return jsonResponse(400, { error: "statement (non-empty string) required" });
-  }
-  if (!Array.isArray(b.tasks)) {
-    return jsonResponse(400, { error: "tasks (array) required" });
-  }
-  // `path` was a batch's sequencing (name, index, must/helps edge) and it is
-  // retired — its edges are `needs` now. Until worker/setup.sh had rolled out
-  // it was IGNORED here, because one retired field would otherwise have cost a
-  // whole plan; the box has since caught up (main 6825608), so a payload still
-  // carrying it comes from code nobody is running and is refused by name. A
-  // stale planner is then visible in the job's error rather than silently
-  // losing the sequencing it thought it wrote.
-  if (b.path !== undefined) {
-    return jsonResponse(400, {
-      error: "path is retired — sequence a batch with needs (batch ids)",
-    });
-  }
-  const droppedTasks: DroppedTask[] = [];
-  const tasks = b.tasks.map((task, i) => sanitizeGraphTask(task, i, droppedTasks));
-  try {
-    const result = await ctx.runMutation(internal.tts.internalStorePlanGraph, {
-      batchId: typeof b.batchId === "string" ? b.batchId : undefined,
-      statement: b.statement,
-      groundUpExplanation:
-        typeof b.groundUpExplanation === "string"
-          ? b.groundUpExplanation
-          : undefined,
-      // The batches this one needs done first. Absent preserves; the
-      // mutation drops a name that is not a batch with a named skip.
-      needs: Array.isArray(b.needs)
-        ? b.needs.filter((x): x is string => typeof x === "string")
-        : undefined,
-      // The batch's declared repos (Tom 2026-08-30). Absent PRESERVES the
-      // stored value, the same rule every other field on this pen follows —
-      // so a planner run that says nothing about repos never erases a
-      // declaration. A non-array is treated as absent rather than rejected:
-      // one malformed field must not cost the whole graph.
-      repos: Array.isArray(b.repos)
-        ? b.repos.filter((x): x is string => typeof x === "string")
-        : undefined,
-      tasks: tasks as never,
-      goalIds: Array.isArray(b.goalIds)
-        ? b.goalIds.filter((x): x is string => typeof x === "string")
-        : undefined,
-      archive: b.archive === true ? true : undefined,
-      // The registration token of the planner run that wrote this graph. It
-      // becomes producedByRunToken on the batch, which is the edge a ruling on
-      // a batch follows back to the run whose explanation Tom judged. Absent
-      // stores nothing and never erases what is there — the same rule every
-      // other field on this pen follows.
-      runToken: typeof b.runToken === "string" && b.runToken !== "" ? b.runToken : undefined,
-    });
-    return jsonResponse(200, {
-      ...result,
-      droppedTasks: droppedTasks.length > 0 ? droppedTasks : undefined,
-    });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/plan-graph", method: "POST", handler: ttsPlanGraph });
-
-// POST /tts/plan-repairs-consumed — the planner reports which plan-repair
-// reports it has now acted on. Body: { ids: [eventId, ...] }. A repair is an
-// INSTRUCTION to fix the graph, not a record to keep re-reading: unconsumed it
-// is re-injected into the prompt every two hours for a week, telling the
-// planner to fix an edge it already dropped. Same drop-don't-reject posture as
-// the pens above — an unknown or already-consumed id is simply not counted.
-const ttsPlanRepairsConsumed = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (!Array.isArray(b.ids)) {
-    return jsonResponse(400, { error: "ids (array) required" });
-  }
-  const result = await ctx.runMutation(
-    internal.tts.internalMarkPlanRepairsConsumed,
-    { ids: b.ids.filter((x): x is string => typeof x === "string") },
-  );
-  return jsonResponse(200, result);
-});
-
-http.route({
-  path: "/tts/plan-repairs-consumed",
-  method: "POST",
-  handler: ttsPlanRepairsConsumed,
-});
+// (POST /tts/plan-graph, the planner's pen that wrote one batch's graph per
+// call, and POST /tts/plan-repairs-consumed, which marked the workers'
+// wrong-edge reports read, went with batches: Tom's ruling of 2026-09-24. A box
+// still running the old plan pass gets a 404 from each, and forms no batch.)
 
 // POST /tts/session — the Friday weekly job's door (worker/jobs/weekly.mjs)
 // to open ITS session on the runs page. Body: { title, kind: "weekly",
@@ -3401,7 +3228,7 @@ http.route({
 // KIND "weekly" ONLY, ONE PER DAY. Every holder of TTS_WORKER_KEY — every
 // session on the box — reaches this route, so it opens nothing but the
 // weekly session and refuses a second one for the same `day`. `agendaSubjects`
-// is the list of todo and batch ids the agenda's forks name; the session's
+// is the list of todo ids the agenda's forks name; the session's
 // turns rule on those and nothing else (ttsRulings). The system's own kinds
 // (gate, focus-item, block) name a subject and are opened by the code that
 // holds it; an adhoc session is Tom's to open from the page.
@@ -3428,7 +3255,7 @@ const ttsSession = httpAction(async (ctx, request) => {
     !Array.isArray(b.agendaSubjects) ||
     !b.agendaSubjects.every((s) => typeof s === "string")
   ) {
-    return jsonResponse(400, { error: "agendaSubjects (array of todo and batch ids) required" });
+    return jsonResponse(400, { error: "agendaSubjects (array of todo ids) required" });
   }
   if (typeof b.initialPrompt !== "string" || b.initialPrompt.trim() === "") {
     return jsonResponse(400, { error: "initialPrompt (non-empty string) required" });
@@ -3503,11 +3330,7 @@ const ttsRunner = httpAction(async (ctx, request) => {
       ...(b.specs !== undefined ? { specs: b.specs as string[] } : {}),
       ...(b.askOverrides !== undefined ? { askOverrides: b.askOverrides as never } : {}),
       ...(subject !== undefined
-        ? {
-            subject: subject.kind === "todo"
-              ? { kind: "todo" as const, todoId: subject.todoId as Id<"dtsTodos"> }
-              : { kind: "batch" as const, batchId: subject.batchId as Id<"batches"> },
-          }
+        ? { subject: { kind: "todo" as const, todoId: subject.todoId as Id<"dtsTodos"> } }
         : {}),
       from: from.kind === "handoff"
         ? { kind: "handoff" as const, runnerId: from.runnerId as Id<"runners"> }
@@ -3551,8 +3374,8 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
   }
   if (b.subject !== undefined) {
     const s = b.subject as Record<string, unknown> | null;
-    const ok = s !== null && typeof s === "object" && ((s.kind === "todo" && typeof s.todoId === "string") || (s.kind === "batch" && typeof s.batchId === "string"));
-    if (!ok) return 'subject must be { kind: "todo", todoId } or { kind: "batch", batchId }.';
+    const ok = s !== null && typeof s === "object" && s.kind === "todo" && typeof s.todoId === "string";
+    if (!ok) return 'subject must be { kind: "todo", todoId }.';
   }
   const from = b.from as Record<string, unknown> | null | undefined;
   if (from === null || typeof from !== "object") return "from is required: a prompt, a handoff or a document.";
@@ -3636,7 +3459,7 @@ const ttsRunnerStep = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/runner-step", method: "POST", handler: ttsRunnerStep });
 
 // POST /tts/session-outcome — a worker's outcome pen. Body:
-// { sessionId, outcome: "completed"|"errored", summary?, planRepair? }. It lives under the
+// { sessionId, outcome: "completed"|"errored", summary? }. It lives under the
 // TTS key ON PURPOSE: a worker's environment carries ONLY
 // CONVEX_SITE_URL + TTS_WORKER_KEY — SESSIONS_WORKER_KEY never enters a
 // model-reachable shell (the auth-clobber lesson: the ingest key would let a
@@ -3660,21 +3483,14 @@ const ttsSessionOutcome = httpAction(async (ctx, request) => {
       error: 'outcome must be "completed" or "errored"',
     });
   }
-  // The wrong-edge channel (schema v2): a worker that reached its task and
-  // found the graph wrong — a `needs` edge that is not a real prerequisite, or
-  // a prerequisite the graph never named — writes what it found here, and the
-  // mutation records it as a "plan-repair" event the planner reads. It rides
-  // the outcome pen because the finding and the ending are the same moment: a
-  // separate route would be a second command to teach for one sentence.
-  if (b.planRepair !== undefined && typeof b.planRepair !== "string") {
-    return jsonResponse(400, { error: "planRepair must be a string" });
-  }
+  // (The wrong-edge channel, `planRepair`, went with the plan pass that read
+  // it. A worker opened before that still sends the field; it is not read, so
+  // the outcome still lands.)
   try {
     await ctx.runMutation(internal.claudeSessions.internalRecordOutcome, {
       id: b.sessionId,
       outcome: b.outcome,
       summary: typeof b.summary === "string" ? b.summary : "",
-      planRepair: typeof b.planRepair === "string" ? b.planRepair : undefined,
     });
     return jsonResponse(200, { ok: true });
   } catch (e) {

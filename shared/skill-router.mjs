@@ -8,7 +8,7 @@
 // loads the body itself, once, only if it needs it.
 //
 // So every matcher below — the area terms, the word-boundary match, the
-// category and batch rankings, the path tokens — is the same code that chose
+// category and repository rankings, the path tokens — is the same code that chose
 // the expanded block, with one correction noted at areaTermsFor.
 //
 // NO MODEL CALL ANYWHERE, and no I/O. Same input, byte-identical output: the
@@ -43,7 +43,9 @@ export const CONTEXT_CALLERS = Object.freeze({
   planner: Object.freeze({ judges: true, captures: false }),
   "capture-context": Object.freeze({ judges: false, captures: true }),
   "time-notes": Object.freeze({ judges: false, captures: false }),
-  "batch-context": Object.freeze({ judges: true, captures: false }),
+  // GET /tts/planner-context (and /tts/batch-context, served for one rollout
+  // with the same payload plus the retired batch rows).
+  "planner-context": Object.freeze({ judges: true, captures: false }),
   "weekly-input": Object.freeze({ judges: true, captures: false }),
   // The weekly simplification pass (worker/jobs/simplify.mjs, through GET
   // /tts/simplify-input). Its OWN row rather than borrowing weekly-input's:
@@ -103,7 +105,7 @@ export const WEEK_CALLERS = Object.freeze(["time-notes", "planner"]);
 // ── Subjects ─────────────────────────────────────────────────────────────────
 
 /**
- * MOVED VERBATIM. One subject SPEC — `todo:<id>`, `batch:<id>`,
+ * MOVED VERBATIM. One subject SPEC — `todo:<id>`,
  * `repo:<name>[:<paths>]`, `area:<name>`, `laptop`, `none` — parsed into the
  * object routeSkills takes. Nothing in this tree calls it today: every launcher
  * here already holds the subject as an object, and prelude.mjs's `--for`, which
@@ -120,12 +122,11 @@ export function parseSubject(spec) {
   if (text === "" || text === "none") return { kind: "none" };
   if (text === "laptop") return { kind: "laptop" };
   const colon = text.indexOf(":");
-  if (colon === -1) throw new ContextError(`${text} is not a subject (todo:, batch:, repo:, area:, laptop)`);
+  if (colon === -1) throw new ContextError(`${text} is not a subject (todo:, repo:, area:, laptop)`);
   const kind = text.slice(0, colon);
   const rest = text.slice(colon + 1);
   if (rest.trim() === "") throw new ContextError(`subject ${kind}: needs a value`);
   if (kind === "todo") return { kind: "todo", todoId: rest.trim() };
-  if (kind === "batch") return { kind: "batch", batchId: rest.trim() };
   if (kind === "area") return { kind: "area", area: rest.trim() };
   if (kind === "repo") {
     const second = rest.indexOf(":");
@@ -133,12 +134,12 @@ export function parseSubject(spec) {
     const paths = rest.slice(second + 1).split(",").map((p) => p.trim()).filter(Boolean);
     return { kind: "repo", repo: rest.slice(0, second).trim(), paths };
   }
-  throw new ContextError(`${kind}: is not a subject kind (todo, batch, repo, area, laptop)`);
+  throw new ContextError(`${kind}: is not a subject kind (todo, repo, area, laptop)`);
 }
 
 /** MOVED VERBATIM. The subjects that cannot be resolved without a record row. */
 export function subjectNeedsRecord(subject) {
-  return subject.kind === "todo" || subject.kind === "batch";
+  return subject.kind === "todo";
 }
 
 // ── Match terms ──────────────────────────────────────────────────────────────
@@ -249,27 +250,6 @@ export function byAreaRank(a, b) {
   return a.name.localeCompare(b.name);
 }
 
-/** MOVED. A batch's areas, ordered by how many of its todos want each, then by
- * the same rank one todo's areas take. */
-export function areasForBatch(areaTerms, categories) {
-  const byName = new Map();
-  for (const category of categories) {
-    for (const hit of areasForCategory(areaTerms, category)) {
-      const seen = byName.get(hit.name);
-      if (seen === undefined) byName.set(hit.name, { ...hit, todoCount: 1 });
-      else {
-        seen.todoCount += 1;
-        seen.exact = seen.exact || hit.exact;
-        seen.hitCount = Math.max(seen.hitCount, hit.hitCount);
-      }
-    }
-  }
-  return [...byName.values()].sort((a, b) => {
-    if (a.todoCount !== b.todoCount) return b.todoCount - a.todoCount;
-    return a.name.localeCompare(b.name);
-  });
-}
-
 /**
  * MOVED. The areas whose terms name this repository.
  *
@@ -278,7 +258,7 @@ export function areasForBatch(areaTerms, categories) {
  * it moved: the table had no row that turned a repository into an area, and the
  * router implements the table and nothing past it. The row exists now because
  * the category door beside it fires on nothing — `category` is set on 3 of
- * 1,332 active todos and on no batch at all — while `repos` and `codeRepo`
+ * 1,332 active todos — while `repos` and `codeRepo`
  * stand on 724 of them, and A REPOSITORY NAME ALREADY IS AN AREA CATEGORY:
  * `tom.quest` and `wikitom` are terms of agent-systems, `complexmultitrigger`
  * of research. No new field, no new vocabulary, no model call.
@@ -294,8 +274,8 @@ export function areasForRepo(areaTerms, repo) {
  * repository names; ties fall to the ordinary area rank, which is itself a
  * total order. So the cap the router applies to this list is deterministic —
  * the same input cannot order it two ways, and the grant block sits inside a
- * cached prefix. The shape is areasForBatch's, counting repositories where that
- * one counts member todos.
+ * cached prefix. (The shape is the retired batch ranking's, which counted a
+ * batch's member todos where this counts repositories.)
  */
 export function areasForRepos(areaTerms, repos) {
   const byName = new Map();
@@ -337,12 +317,6 @@ function todoOf(record, id) {
   const todo = (record?.todos ?? []).find((row) => row.id === id);
   if (todo === undefined) throw new ContextError(`todo ${id} is not in the record`);
   return todo;
-}
-
-function batchOf(record, id) {
-  const batch = (record?.batches ?? []).find((row) => row.id === id);
-  if (batch === undefined) throw new ContextError(`batch ${id} is not in the record`);
-  return batch;
 }
 
 // ── The cwd rule ─────────────────────────────────────────────────────────────
@@ -406,10 +380,9 @@ export const NO_BODY = "no published body at this commit";
 //   every declared caller                       write
 //   area:<name>                                 know-<name>
 //   todo whose category matches an area         know-<area>
-//   batch, by its members' categories           know-<area>  ×≤2
 //   the subject's repos or codeRepo name an
-//     area (batch repos, a goal's codeRepo,
-//     or the `repo:` subject itself)            know-<area>  ×≤1
+//     area (a todo's codeRepo, or the
+//     `repo:` subject itself)                   know-<area>  ×≤1
 //   judges, or an INTENT_CALLERS caller         know-intent
 //   a dated todo, or a WEEK_CALLERS caller       know-week
 //   the subject names paths in repo X and
@@ -431,10 +404,10 @@ export const NO_BODY = "no published body at this commit";
  * `mental-health`, so a todo in mental-health would otherwise carry his food
  * page too, every time.
  *
- * A BATCH TAKES TWO, because a batch aggregates its members' categories and two
- * areas is a real answer for one; the moved code's CAPS.areaPages, at its value.
+ * (A batch took two, as the aggregate of its members' categories. Batches went
+ * with Tom's ruling of 2026-09-24, and with them the batch subject.)
  */
-export const AREA_CAPS = Object.freeze({ todo: 1, batch: 2, area: 1 });
+export const AREA_CAPS = Object.freeze({ todo: 1, area: 1 });
 
 /**
  * How many `know-<area>` skills the REPOSITORY row may take, whatever the
@@ -505,24 +478,13 @@ export function routeSkills(input) {
   } else if (subject.kind === "todo") {
     const todo = todoOf(record, subject.todoId);
     areaHits = areasForCategory(areaTerms, todo.category ?? "").sort(byAreaRank);
-    const batch =
-      todo.batchId === undefined ? null : (record.batches ?? []).find((row) => row.id === todo.batchId) ?? null;
-    repos = batch?.repos ?? todo.repos ?? [];
+    repos = todo.repos ?? [];
     areaRepos = [...repos, todo.codeRepo];
     tokens = pathTokens(`${todo.brief ?? ""}\n${todo.workDescription ?? ""}\n${todo.entryAction ?? ""}`);
     if (todo.timingClass === "dated" && typeof todo.dueDay === "string") dueDays.push(todo.dueDay);
     for (const outcome of todo.dateOutcomes ?? []) {
       if (typeof outcome?.dueDay === "string" && outcome.dueDay >= String(record.today ?? "")) dueDays.push(outcome.dueDay);
     }
-  } else if (subject.kind === "batch") {
-    const batch = batchOf(record, subject.batchId);
-    const members = (record.todos ?? []).filter((row) => row.batchId === batch.id);
-    areaHits = areasForBatch(areaTerms, members.map((row) => row.category ?? ""));
-    repos = batch.repos ?? [];
-    areaRepos = [...repos, ...members.map((row) => row.codeRepo)];
-    tokens = pathTokens(
-      members.map((row) => `${row.brief ?? ""}\n${row.workDescription ?? ""}\n${row.entryAction ?? ""}`).join("\n"),
-    );
   } else if (subject.kind === "repo") {
     repos = [subject.repo];
     areaRepos = [subject.repo];

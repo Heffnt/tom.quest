@@ -40,10 +40,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // The staleness threshold comes through ttsShared (its one home is
 // shared/session-constants.mjs, which the worker daemon imports too), and so do
 // the live-status list this file scans by (LIVE_STATUSES / isLive, formerly
-// declared here AND in app/runs/lib.ts) and
-// the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
-// page, the planner, and the scheduler must all mean the same thing by
-// "ready". The model-of-tom context each opener carries is assembled for that
+// declared here AND in app/runs/lib.ts). The model-of-tom context each opener carries is assembled for that
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
 import { withoutModelOfTomPrelude } from "./ttsSkills";
@@ -69,11 +66,8 @@ import {
   NO_REPO,
   SESSION_MODEL,
   SESSION_REPO_NAMES,
-  buildDoneSet,
-  goalCheckable,
   isLive,
   isPrepared,
-  isReady,
   isSessionRepo,
   modelFamily,
   normalizeSessionRepos,
@@ -471,36 +465,30 @@ const SESSION_KIND = v.union(
  * order of authority — each source consulted only when the one above it says
  * nothing:
  *
- *  1. `explicit` — a human (or a caller who genuinely knows) named the set.
- *  2. `batch.repos` — the batch DECLARED its repos at formation. Tom's ruling
- *     2026-08-30: a batch declares, the scheduler does not guess. An explicit
- *     empty array is an answer ("this batch needs no checkout"), which is why
- *     the test is `!== undefined` and not truthiness.
- *  3. The substring scan over the item's own words. The last resort and the
+ *  1. `explicit` — the caller named the set: the orchestrator's spawn, the
+ *     session form, the weekly job. This is the normal path. An explicit empty
+ *     array is an answer ("no checkout").
+ *  2. The substring scan over the item's own words. The fallback, and the
  *     weakest: it is case-sensitive and matches anywhere, so it reads "the
- *     tom.quest dashboard" and "not tom.quest" identically. Kept only because
- *     dropping it would regress every batch-less legacy todo to no checkout at
- *     all; (2) is what makes it stop mattering.
+ *     tom.quest dashboard" and "not tom.quest" identically, and it never
+ *     finds the Jarvis repository (TEXT_SCAN_SKIPPED below). It is kept for
+ *     the one caller that names no repos: the page's open-a-session button on
+ *     a todo, and the scheduler's groundwork lanes, which open on one todo.
  *
- * (The v1 batch-member vote that used to sit between (2) and (3) — each
- * {repo, externalId} member one tally mark — went with `members` itself: the
- * graph migration turned every v1 batch into a `batches` row, which declares
- * its repos, and that IS rule (2).)
+ * (A batch's declared repos used to sit between (1) and (2). Batches went with
+ * Tom's ruling of 2026-09-24 — "I dont want to have batches at all anymore" —
+ * and no declaration replaced them: whoever opens a session names its repos.)
  *
  * Returns the canonical, normalized list — possibly empty, which means the
  * empty-scratch posture (`repo: "none"`).
  */
 function resolveSessionRepos(input: {
   explicit?: readonly string[] | string;
-  batch?: { repos?: string[] } | null;
   todo?: Doc<"dtsTodos"> | null;
   extraText?: string;
 }): string[] {
   if (input.explicit !== undefined) {
     return normalizeSessionRepos(input.explicit);
-  }
-  if (input.batch?.repos !== undefined) {
-    return normalizeSessionRepos(input.batch.repos);
   }
   const todo = input.todo;
   if (todo) {
@@ -522,8 +510,8 @@ function resolveSessionRepos(input: {
 // The repos the substring scan above never matches. "Jarvis" is also the name
 // of the whole agent system, and "the Jarvis Box" is in prose everywhere, so a
 // match on it would clone Heffnt/Jarvis for every todo that mentions the box.
-// Work in the Jarvis repository reaches a session through its batch's declared
-// repos, which is the normal path.
+// Work in the Jarvis repository reaches a session only when its caller names
+// the repository, which is the normal path.
 const TEXT_SCAN_SKIPPED: readonly string[] = ["Jarvis"];
 
 type SessionSeed = {
@@ -532,8 +520,6 @@ type SessionSeed = {
   /** Already through resolveSessionRepos. Empty = the empty-scratch posture. */
   repos: string[];
   todoId?: Id<"dtsTodos">;
-  /** The batch this session was opened on, when its subject IS a batch. */
-  batchId?: Id<"batches">;
   blockCategory?: string;
   /** The code todo a worker mission was admitted for (schema: codeRepo /
    * codeExternalId) — both or neither. */
@@ -548,7 +534,7 @@ type SessionSeed = {
   /** The run the forked session was recorded as, which this one continues. */
   continuesRunId?: string;
   /** Kind "weekly" only (schema: agendaDay, agendaSubjects): the day the
-   * Friday job ran for, and the todo and batch ids its agenda's forks name. */
+   * Friday job ran for, and the todo ids its agenda's forks name. */
   agendaDay?: string;
   agendaSubjects?: string[];
   /**
@@ -588,7 +574,6 @@ export async function insertSession(
     repos,
     repo: repos[0] ?? NO_REPO,
     todoId: seed.todoId,
-    batchId: seed.batchId,
     blockCategory: seed.kind === "block" ? seed.blockCategory : undefined,
     codeRepo: seed.codeSubject?.repo,
     codeExternalId: seed.codeSubject?.externalId,
@@ -674,8 +659,8 @@ export async function insertSession(
   //            is now the last thing in the prompt: the fetchable index went
   //            when the skill catalog replaced it.
   //
-  // The subject is already in hand: the seed's todo, else its batch, else its
-  // first repo, else nothing. `reachesTom` is TRUE for every opener — the
+  // The subject is already in hand: the seed's todo, else its first repo, else
+  // nothing. `reachesTom` is TRUE for every opener — the
   // outcome, the digest and the transcript all reach him — which is what grants
   // it the `write` skill.
   //
@@ -701,12 +686,10 @@ export async function insertSession(
   const prompt = seed.prompt(sessionId, repos);
   const subject: ContextSubject =
     seed.todoId !== undefined
-      ? { kind: "todo", todoId: seed.todoId }
-      : seed.batchId !== undefined
-        ? { kind: "batch", batchId: seed.batchId }
-        : repos.length > 0 && repos[0] !== NO_REPO
-          ? { kind: "repo", repo: repos[0] }
-          : { kind: "none" };
+      ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
+      : repos.length > 0 && repos[0] !== NO_REPO
+        ? { kind: "repo", repo: repos[0] }
+        : { kind: "none" };
   const context = await assembleContext(ctx, subject, { reachesTom: true, caller: "opener", now });
   const body = withoutModelOfTomPrelude(prompt, context.prefix);
   if (body === null) {
@@ -759,25 +742,13 @@ export async function insertSession(
   // plan repairs crossed over from the session world — so a night of fleet
   // work left no trace there at all. One home for the creation event, now that
   // there is one home for the creation.
-  //
-  // A session opened ON a batch has no todoId, so the row names the batch in
-  // its data and carries it as the key: the weekly gather reads "was this
-  // goal evaluated" off by_todo for the goal's own sessions and off
-  // by_kind_key for the sessions of its batch (convex/ttsWeekly.ts).
-  await logEvent(
-    ctx,
-    "session-created",
-    seed.todoId,
-    {
-      sessionId,
-      title: seed.title,
-      kind: seed.kind,
-      mode: seed.mode ?? "interactive",
-      repos,
-      batchId: seed.batchId,
-    },
-    seed.batchId,
-  );
+  await logEvent(ctx, "session-created", seed.todoId, {
+    sessionId,
+    title: seed.title,
+    kind: seed.kind,
+    mode: seed.mode ?? "interactive",
+    repos,
+  });
   return sessionId;
 }
 
@@ -876,10 +847,6 @@ const CREATE_SESSION_ARGS = {
   repos: v.optional(v.array(v.string())),
   repo: v.optional(v.string()),
   todoId: v.optional(v.id("dtsTodos")),
-  // A session opened ON a batch names the batch itself (ledger graduation
-  // session-repos-need-batch-subject): the resolver reads the batch's
-  // declared repos directly instead of hoping to reach it through a todo.
-  batchId: v.optional(v.id("batches")),
   blockCategory: v.optional(v.string()),
   // Tom picks the model for his own sessions (ratified 2026-09-04). Absent
   // takes DEFAULT_SESSION_MODEL, which insertSession supplies.
@@ -895,7 +862,6 @@ async function createSessionFrom(
     repos,
     repo,
     todoId,
-    batchId,
     blockCategory,
     model,
     initialPrompt,
@@ -907,7 +873,6 @@ async function createSessionFrom(
     repos?: string[];
     repo?: string;
     todoId?: Id<"dtsTodos">;
-    batchId?: Id<"batches">;
     blockCategory?: string;
     model?: SessionModel;
     initialPrompt: string;
@@ -916,33 +881,16 @@ async function createSessionFrom(
   },
 ): Promise<Id<"claudeSessions">> {
   if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
-  // A todo- or batch-scoped session with no repos named inherits the answer
-  // from its subject rather than silently landing on an empty scratch
-  // workspace — the failure this whole unification exists to stop. The
-  // batch is reached directly when the session names one, and through the
-  // todo otherwise.
+  // A todo-scoped session with no repos named falls back to the word guess
+  // over the todo rather than silently landing on an empty scratch workspace.
   const todo = todoId !== undefined ? await ctx.db.get(todoId) : null;
-  const batch =
-    batchId !== undefined
-      ? await ctx.db.get(batchId)
-      : todo?.batchId !== undefined
-        ? await ctx.db.get(todo.batchId)
-        : null;
   return await insertSession(
     ctx,
     {
       title,
       kind,
-      repos: resolveSessionRepos({
-        explicit: repos ?? repo,
-        batch,
-        todo,
-        extraText: batch
-          ? `${batch.statement} ${batch.groundUpExplanation ?? ""}`
-          : "",
-      }),
+      repos: resolveSessionRepos({ explicit: repos ?? repo, todo }),
       todoId,
-      batchId,
       blockCategory,
       model,
       agendaDay,
@@ -975,8 +923,8 @@ export const internalCreateSession = internalMutation({
 
 // The Friday job's pen (POST /tts/session; the lifeos update, phase 8). Kind
 // "weekly" and nothing else, and two facts the row must carry that no other
-// session has: the day the job ran for, and the todo and batch ids the
-// agenda's forks name. A weekly session's turns rule on those ids only
+// session has: the day the job ran for, and the todo ids the agenda's forks
+// name. A weekly session's turns rule on those ids only
 // (ttsRulings refuseUnlessSessionSubject) — the agenda, not the session's
 // kind, is what says what Tom was talking about. Any holder of
 // TTS_WORKER_KEY reaches this door, so it also refuses a second weekly
@@ -1029,18 +977,16 @@ export function sessionOutcomePen({
   leadIn,
   summary,
   after,
-  planRepair = false,
   fenced = false,
 }: {
   sessionId: Id<"claudeSessions">,
   leadIn: string;
   summary: string;
   after?: string;
-  planRepair?: boolean;
   fenced?: boolean;
 }): string {
   const command =
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "${summary}"${planRepair ? ', "planRepair": "optional: the edge that was wrong"' : ""}}'`;
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "${summary}"}'`;
   return fenced
     ? [leadIn, "```", command, "```", after].filter((line): line is string => line !== undefined).join("\n")
     : [leadIn, command, after].filter((line): line is string => line !== undefined).join("\n");
@@ -1278,7 +1224,7 @@ async function forkSessionAsFrom(
   if (text.trim() === "") throw new Error("Message is empty");
   const now = Date.now();
   // The fork inherits the whole SUBJECT of the old session — its repos, the
-  // todo or batch it was opened on, its kind — because it is the same work
+  // todo it was opened on, its kind — because it is the same work
   // being continued; only the model and the transcript-on-disk differ. Mode
   // is interactive: Tom asked for this session by hand, whatever the old
   // one's posture was.
@@ -1289,7 +1235,6 @@ async function forkSessionAsFrom(
       kind: session.kind,
       repos: session.repos ?? (session.repo === NO_REPO ? [] : [session.repo]),
       todoId: session.todoId,
-      batchId: session.batchId,
       blockCategory: session.blockCategory,
       mode: "interactive",
       model,
@@ -1961,19 +1906,12 @@ export const internalIngest = internalMutation({
           args.outcomeSummary ?? outcomeEventText(session.title, args.outcome, args.outcomeSummary),
         );
       }
-      await logEvent(
-        ctx,
-        "session-outcome",
-        session.todoId,
-        {
-          sessionId: args.sessionId,
-          title: session.title,
-          outcome: args.outcome,
-          summary: args.outcomeSummary,
-          batchId: session.batchId,
-        },
-        session.batchId,
-      );
+      await logEvent(ctx, "session-outcome", session.todoId, {
+        sessionId: args.sessionId,
+        title: session.title,
+        outcome: args.outcome,
+        summary: args.outcomeSummary,
+      });
     }
 
     for (const upd of args.inboundUpdates ?? []) {
@@ -2289,19 +2227,10 @@ export const internalRecordOutcome = internalMutation({
     id: v.string(),
     outcome: v.union(v.literal("completed"), v.literal("errored")),
     summary: v.string(),
-    // THE WRONG-EDGE CHANNEL (schema v2, 2026-08-29). A worker claims one
-    // ready todo and finds, in the doing, that the graph was wrong about it: a
-    // `needs` edge that is not a real prerequisite (the task was doable all
-    // along), or a prerequisite the graph never named (the task could not
-    // start). It writes that sentence here, and the mutation records it as a
-    // dtsEvents row of kind "plan-repair". This is the ONLY channel by which
-    // doing the work corrects the planning of it — the planner reads these
-    // each run (tts.internalRecentPlanRepairs) and fixes the structure. The
-    // worker never edits the graph itself: reporting an edge and rewriting one
-    // are different authorities.
-    planRepair: v.optional(v.string()),
+    // (The wrong-edge channel, `planRepair`, went with the plan pass that read
+    // it: with no planner forming graphs, a "plan-repair" event had no reader.)
   },
-  handler: async (ctx, { id, outcome, summary, planRepair }) => {
+  handler: async (ctx, { id, outcome, summary }) => {
     const normalized = ctx.db.normalizeId("claudeSessions", id);
     if (!normalized) throw new Error(`Unknown session id: ${id}`);
     const session = await ctx.db.get(normalized);
@@ -2329,35 +2258,11 @@ export const internalRecordOutcome = internalMutation({
         );
       }
       // Same edge, same reason, into the events table the hourly update reads.
-      await logEvent(
-        ctx,
-        "session-outcome",
-        session.todoId,
-        {
-          sessionId: normalized,
-          title: session.title,
-          outcome,
-          summary: summary.trim(),
-          batchId: session.batchId,
-        },
-        session.batchId,
-      );
-    }
-    // The plan-repair event, written whenever the worker sent one — including
-    // on a re-record, because a second wording of the same ending may be where
-    // the wrong edge was finally named. It carries the batch as well as the
-    // todo: the planner works one batch at a time and needs to know which
-    // graph to look at, and the session row itself names only the todo.
-    const repair = planRepair?.trim();
-    if (repair) {
-      const todo =
-        session.todoId !== undefined
-          ? await ctx.db.get(session.todoId)
-          : null;
-      await logEvent(ctx, "plan-repair", session.todoId, {
+      await logEvent(ctx, "session-outcome", session.todoId, {
         sessionId: normalized,
-        batchId: todo?.batchId,
-        note: repair,
+        title: session.title,
+        outcome,
+        summary: summary.trim(),
       });
     }
   },
@@ -2729,10 +2634,9 @@ function promptFact(label: string, value: string | undefined): string | null {
 
 // Which repos a mission's workspace holds is answered ONCE, by
 // resolveSessionRepos above (the one home). This lane used to answer it here,
-// with pickMissionRepo — a case-sensitive substring search over the todo's and
-// batch's words that could only ever return ONE repo. It is gone: batches
-// declare their repos (Tom, 2026-08-30), and the substring scan survives only
-// as the resolver's last fallback for batch-less legacy rows.
+// with pickMissionRepo — a case-sensitive substring search over the todo's
+// words that could only ever return ONE repo. It is gone; the substring scan
+// survives only as the resolver's fallback when no caller names the repos.
 
 /**
  * The workspace paragraph, one home for every mission prompt. The agent must
@@ -2828,6 +2732,10 @@ function buildAutoMissionPrompt(
     // function, which appends the line saying where the rest is
     // (shared/context-relevance.mjs).
     promptFact("brief", todo.brief === undefined ? undefined : briefForPrompt(todo.brief).text),
+    // Tom's must-not-break line on a goal: it binds every step toward the goal.
+    // The worker prompt that carried it went with batches (2026-09-24); this is
+    // where an agent working the goal now reads it.
+    promptFact("must not break (Tom's line; a change that would break it is not a change to make)", todo.mustNotBreak),
   ];
   const lines: (string | null)[] = [
     WORKER_CONTRACT,
@@ -2890,197 +2798,6 @@ function buildAutoMissionPrompt(
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
     "",
     ...itemContext,
-  );
-  return lines.filter((l): l is string => l !== null).join("\n");
-}
-
-// ── The worker mission (schema v2, ratified 2026-08-29) ──────────────────────
-// The successor to buildAutoMissionPrompt for every todo that lives inside a
-// BATCH. The old builder stays for the rows that have no batch — one prompt
-// cannot honestly serve both (a groundwork mission writes up a whole item; a
-// worker advances ONE node of a graph).
-//
-// THE CONTRACT THIS PROMPT WRITES DOWN: the session claimed exactly one READY
-// todo — every id in its `needs` is done — and advances it by ONE STABLE
-// STATE. A stable state is one another session can pick up from cold: the task
-// recorded done with its evidence, or the task prepared to the point where the
-// only thing left is Tom's judgment. Half a task with nothing written down is
-// not a state; it is work that has to be done again.
-
-/** One neighbour of the claimed todo, resolved by the scheduler. */
-type GraphNeighbor = {
-  statement: string;
-  status: string;
-  kind: "task" | "goal";
-  // Who does it. Carried because a neighbour that is Tom's is waiting on HIM,
-  // which is a different fact from a neighbour another session may be holding.
-  actor?: "tom" | "agent";
-  evidence?: string;
-};
-
-function buildWorkerPrompt(args: {
-  todo: Doc<"dtsTodos">;
-  batch: Doc<"batches">;
-  sessionId: Id<"claudeSessions">;
-  repos: string[];
-  needs: GraphNeighbor[];
-  dependents: GraphNeighbor[];
-  siblings: GraphNeighbor[];
-  /** The statements of the batches this batch needs (all done by the time a
-   * worker is here — the scheduler admits no batch with an open need). */
-  batchNeeds?: string[];
-  /** Tom's must-not-break lines on this batch's goals, each with the goal it
-   * is on. Binding on every step toward those goals — so on this one. */
-  mustNotBreak?: { goal: string; line: string }[];
-}): string {
-  const {
-    todo,
-    batch,
-    sessionId,
-    repos,
-    needs,
-    dependents,
-    siblings,
-    batchNeeds = [],
-    mustNotBreak = [],
-  } = args;
-  const isGoal = todo.kind === "goal";
-  const neighborLine = (n: GraphNeighbor) =>
-    `- [${n.kind}, ${n.status}${
-      n.kind === "task" ? `, ${n.actor ?? "agent"}` : ""
-    }] "${n.statement}"${n.evidence ? ` (evidence: ${n.evidence})` : ""}`;
-  const batchContext: (string | null)[] = [
-    `THE BATCH ("${batch.statement}"):`,
-    promptFact("ground-up explanation", batch.groundUpExplanation),
-    batchNeeds.length > 0
-      ? `this batch needs (every one of them done — that is why its work is open): ${batchNeeds
-          .map((n) => `"${n}"`)
-          .join(", ")}`
-      : null,
-    ...(mustNotBreak.length > 0
-      ? [
-          "",
-          "MUST NOT BREAK — Tom's own lines on this batch's goals. They bind every step toward those goals, so they bind this one; a change that would break one is not a change to make, whatever else the task says:",
-          ...mustNotBreak.map((m) => `- on the goal "${m.goal}": ${m.line}`),
-        ]
-      : []),
-  ];
-  const todoContext: (string | null)[] = [
-    `YOU HAVE CLAIMED ONE TODO IN THIS BATCH, and only this one ("${todo.statement}"):`,
-    `kind: ${isGoal ? "goal" : "task"}`,
-    isGoal ? null : `who does it: ${todo.actor ?? "agent"}`,
-    promptFact("condition", todo.condition),
-    promptFact("must not break (Tom's own line, binding)", todo.mustNotBreak),
-    promptFact("ground-up explanation", todo.groundUpExplanation),
-    promptFact("work description", todo.workDescription),
-    promptFact("entry action", todo.entryAction),
-    promptFact("evidence recorded so far", todo.evidence),
-    promptFact("body", todo.body),
-    promptFact(
-      "code subject",
-      todo.codeRepo !== undefined && todo.codeExternalId !== undefined
-        ? `${todo.codeRepo} ${todo.codeExternalId}`
-        : undefined,
-    ),
-    "",
-    needs.length > 0
-      ? `ITS NEEDS (${needs.length}, every one of them done — that is why this todo is ready):`
-      : "ITS NEEDS: none. It was ready from the moment the batch was formed.",
-    ...needs.map(neighborLine),
-    "",
-    dependents.length > 0
-      ? `WHAT NEEDS IT (${dependents.length} — these become ready the moment yours is done):`
-      : "WHAT NEEDS IT: nothing in this batch waits on it.",
-    ...dependents.map(neighborLine),
-    "",
-    siblings.length > 0
-      ? `ALSO READY IN THIS BATCH RIGHT NOW (${siblings.length}). Do NOT work them: another session may be holding any of them, and the ones marked "tom" are waiting on him. They are here so you know what is moving beside you:`
-      : "NOTHING ELSE IS READY IN THIS BATCH right now.",
-    ...siblings.map(neighborLine),
-  ];
-  const lines: (string | null)[] = [
-    WORKER_CONTRACT,
-    "",
-    "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
-    "",
-    BOX_TOOLS_PARAGRAPH,
-    "",
-  ];
-
-  lines.push(
-    "",
-    "THE CONTRACT: advance your one todo by ONE STABLE STATE, then stop. A stable state is one another session can pick up from cold — the work recorded done with the artifact that shows it, or the question prepared to the point where only Tom's answer is missing. Half a task with nothing written down is not a state; it is work someone has to do again.",
-    "",
-    delegateDoctrine(sessionId, todo._id),
-    "",
-    ...(isGoal
-      ? [
-          "Your todo is a GOAL, so the work is CHECKING, not building. The condition above is a statement about the world that is either true yet or not. Find out which — in the repository, in the system, in whatever the condition is about. If it holds, record the goal done with evidence naming exactly what you checked and what you saw. If it does not hold, change nothing and say in your outcome summary what is still missing; a goal that is not met yet is an honest, complete session, and the fleet asks the same question again a day later.",
-        ]
-      : [
-          'Your todo is a TASK. There are two ways it ends, and which one it is becomes clear as you work:',
-          "",
-          "1. THE WORK IS YOURS TO DO. Do it, then record the task done with its evidence — the branch, the pull request, the file you wrote, the answer you established. Evidence is what makes the completion checkable by someone who was not here.",
-          "",
-          "2. THE WORK TURNS OUT TO NEED TOM'S JUDGMENT. Do not stop at the question. Prepare it, then set readiness to prepared and leave the task open. His input gates what PERSISTS — a merge, a ruling, a real-world action — never what you implement: where you can implement your best-judgment option and name what you passed over, do that instead of asking.",
-        ]),
-    "",
-    // The wrong-edge report. Doing the work is the only thing that can correct
-    // the planning of it, and a worker that silently works around a bad edge
-    // leaves the next worker to discover it again.
-    "IF THE GRAPH WAS WRONG, SAY SO. You may find that a need above was not a real prerequisite (your todo was doable all along), or that something the graph never named actually blocked you. Report it with the planRepair field of the outcome pen, in one sentence naming the edge. Do not edit the graph yourself — the planner owns its structure, and reporting an edge and rewriting one are different authorities.",
-    "",
-    "The pens (shell commands; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment):",
-    "",
-    "1. Record your todo DONE, with the evidence that shows it:",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "status": "done", "evidence": "one line naming the artifact"}'`,
-    "```",
-    "",
-    "2. Or hand it to Tom, when only his judgment is left:",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "readiness": "prepared", "groundUpExplanation": "...", "entryAction": "the smallest next action", "evidence": "what you produced on the way"}'`,
-    "```",
-    "Every field except \"id\" is optional — send only what you produced, and send both commands if you both produced something and finished.",
-    "",
-    sessionOutcomePen({
-      sessionId,
-      leadIn: "3. Record this session's outcome when you stop:",
-      summary: "one line: what moved and where it landed",
-      planRepair: true,
-      fenced: true,
-    }),
-    // Four words, two stored values. The store keeps two ("completed" and
-    // "errored") because the scheduler's backoff reads exactly that
-    // distinction; the four words are what Tom and the planner read, so they
-    // lead the summary.
-    "There are FOUR outcomes, and the word you choose is the first word of your summary:",
-    '- COMPLETED — you advanced the todo one state (recorded it done, or prepared it for Tom). Send outcome "completed".',
-    '- DEFERRED — you could not start because a prerequisite really is missing. NAME it in the summary and report it as a planRepair. Send outcome "errored" with a summary starting "deferred: ".',
-    '- FAILED — the work was yours and it did not land. Send outcome "errored" with a summary starting "failed: ". This todo then waits a day before the fleet tries it again, so say what would have to be different.',
-    '- ABANDONED — the todo should not be done at all any more. Send outcome "errored" with a summary starting "abandoned: " and the reason. You are reporting that judgment, not acting on it: only Tom retires a todo.',
-    "",
-    ...(repos.length === 0
-      ? [
-          // Same reason as the legacy builder's no-repo branch above: no
-          // workspace paragraph here, so the daemon sentence rides along.
-          `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never touch code: this session has an EMPTY scratch directory and no repository, so anything needing code goes to Tom as a prepared task instead. ${DAEMON_RESTART_SENTENCE}`,
-        ]
-      : [
-          workspaceParagraph(
-            repos,
-            sessionId,
-            "Implement the code your todo needs, and name what landed in your evidence.",
-          ),
-          "",
-          `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never push any branch other than session/${sessionId}. ${mergeGate()}`,
-        ]),
-    "",
-    "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
-    "",
-    ...batchContext,
-    "",
-    ...todoContext,
   );
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -3637,7 +3354,7 @@ const AUTO_BACKOFF_MS = 24 * 60 * 60 * 1000;
 const AUTO_CIRCUIT_WINDOW_MS = 3 * 60 * 60 * 1000;
 // How long a GOAL rests between checks. A goal is not work — it is a question
 // put to the world ("is the lease signed yet?"), and the honest answer to it
-// changes only as the batch's tasks land. So a checked-and-unmet goal waits a
+// changes only as the world moves. So a checked-and-unmet goal waits a
 // day and is asked again, rather than being retired by the completed-backoff
 // (which reads "the session finished, and the row did not change" as "settled"
 // — true of a task, and the opposite of true of a goal).
@@ -3649,14 +3366,6 @@ const AUTO_GOAL_RECHECK_MS = 24 * 60 * 60 * 1000;
 // otherwise draw sessions forever. Past it the row still stands, still renders
 // ready on /tts, and is Tom's to move.
 const AUTO_MAX_SESSIONS_PER_TODO = 8;
-// How long a batch rests after Tom rules "session" on it. He asked for a
-// conversation, and the fleet must not consume the request by working the
-// graph out from under it — but a batch `session` verdict can never be marked
-// applied (claudeSessions has no batch subject yet, see ttsRulings), so an
-// applied-forever test would freeze every task in the graph permanently. A day
-// is the pause: long enough to have the conversation, short enough that
-// forgetting to have it costs a day rather than the batch.
-const AUTO_BATCH_SESSION_PAUSE_MS = 24 * 60 * 60 * 1000;
 // Usage-pressure fingerprints in an ending's own words — daemon endedReason
 // or agent outcomeSummary — are USAGE_LIMIT_RE (shared/session-constants.mjs),
 // the same regex the daemon records a cap with; its comment says why it is
@@ -3802,18 +3511,17 @@ export const internalAutoSchedule = internalMutation({
     if (capacity <= 0) return;
 
     // ── The work walk ────────────────────────────────────────────────────────
-    // TWO WORLDS, IN ONE ORDER. The frontier walk comes first: every todo that
-    // lives inside a schema-v2 batch and is READY (each id in its `needs` is
-    // done) is a candidate, ordered by where its batch sits on its path. The
-    // LEGACY lanes follow, unchanged, for the rows that have no batch — before
-    // the migration runs the graph is empty and those lanes are the only thing
-    // feeding the fleet, and after it they thin out on their own as the rows
-    // they serve are migrated. Nothing had to be deleted to add the frontier.
+    // The GROUNDWORK lanes below, over every active todo. The frontier walk
+    // that used to come first — ready todos inside active batches, each handed
+    // to a worker mission — went with batches (Tom's ruling of 2026-09-24: "I
+    // dont want to have batches at all anymore because I want to remove
+    // structure to allow agents to freely move toward completing all todos in
+    // the best way they (or the orchistrator) see fit."). Which todo an agent
+    // completes next is the orchestrator's to choose, not a lane's.
     //
-    // ONE collect feeds everything below: todoById (member/prompt resolution
-    // needs terminal rows too), the batch-ownership set, the done set the
-    // frontier is computed against, and the lanes — which read only ACTIVE
-    // rows, filtered once here instead of once per lane.
+    // ONE collect feeds everything below: todoById (a block's subject may be a
+    // row the active filter drops) and the lanes — which read only ACTIVE rows,
+    // filtered once here instead of once per lane.
     const todos = await ctx.db.query("dtsTodos").collect();
     const todoById = new Map<Id<"dtsTodos">, Doc<"dtsTodos">>(
       todos.map((t) => [t._id, t]),
@@ -3822,21 +3530,9 @@ export const internalAutoSchedule = internalMutation({
     // spelling of "waiting" (ttsShared.wakeAtPassed), and the lanes below
     // never handed a waiting row to a worker.
     const active = todos.filter((t) => t.status === "active" && wakeAtPassed(t, now));
-    // THE DONE SET AND THE FRONTIER come from ttsShared — the ONE
-    // implementation the /tts page also reads, so the fleet and the surface
-    // cannot disagree about which todos are ready.
-    const doneSet = buildDoneSet(todos);
-    // The batches table is human-scale (a few dozen rows for years), like the
-    // todo collect above.
-    const batchRows = await ctx.db.query("batches").collect();
-    const batchById = new Map<Id<"batches">, Doc<"batches">>(
-      batchRows.map((b) => [b._id, b]),
-    );
-    // Tom rules on the BATCH now, so the pending-ruling exclusion has to be
-    // asked at that level too — the per-todo version below cannot see a
-    // verdict recorded against the batch a task lives in. One collect of an
-    // append-only table written at human pace (the /tts page collects it
-    // wholesale on every load).
+    // Tom's live rulings, for the code lane. One collect of an append-only
+    // table written at human pace (the /tts page collects it wholesale on
+    // every load).
     const liveBySubject = liveRulings(await ctx.db.query("dtsRulings").collect());
     // Two readiness values (ruling 18), read through the one home.
     const unprepared = (t: Doc<"dtsTodos">): boolean => !isPrepared(t.readiness);
@@ -3845,14 +3541,6 @@ export const internalAutoSchedule = internalMutation({
     const computeExcluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
       // Code todos live in the mirror; their work happens in the repo.
       if (t.category === "code") return true;
-      // (The v1 batch-member exclusion that used to sit here — a member of a
-      // non-terminal batch is owned by the batch — went with `members`: a
-      // batch's contents point back at it with batchId now, and the lanes
-      // below filter on that.)
-      // (A row carrying batchId used to be excluded outright, because nothing
-      // here read `needs` and scheduling one directly would have worked a
-      // blocked step. The frontier walk below reads `needs`, so the blanket
-      // exclusion is gone and the legacy lanes filter on batchId instead.)
       // An existing live session already references this todo — checked
       // against the liveSessions array the failsafe (d) already collected,
       // not a per-candidate by_todo query.
@@ -3903,11 +3591,10 @@ export const internalAutoSchedule = internalMutation({
           if (t.kind === "goal") {
             // A GOAL is a question, not work. "The session completed and the
             // row did not change" means the answer was NO — which is exactly
-            // the case that has to be asked again once the tasks have moved.
-            // Nothing bumps a goal's updatedAt (binding deliberately does not,
-            // and the planner never rewrites goals), so the row-changed test
-            // below would retire every goal after its first check and the
-            // batch would never reach done.
+            // the case that has to be asked again once the world has moved.
+            // Nothing bumps a goal's updatedAt when the world changes, so the
+            // row-changed test below would retire every goal after its first
+            // check.
             if (now - newest.statusChangedAt < AUTO_GOAL_RECHECK_MS) return true;
           } else if (t.updatedAt <= newest.createdAt) {
             // Last run completed and wrote NOTHING to the row: settled, do not
@@ -3939,135 +3626,10 @@ export const internalAutoSchedule = internalMutation({
     // created session's kind and the scheduler event's counts.
     type Candidate = {
       todo: Doc<"dtsTodos">;
-      lane: "graph" | "block" | "dated" | "whenever";
+      lane: "block" | "dated" | "whenever";
       blockCategory?: string;
-      batch?: Doc<"batches">;
     };
     const candidates: Candidate[] = [];
-
-    // ── (0) THE FRONTIER: ready todos inside active batches ──────────────────
-    // A candidate here is READY (isReady: active, and every id in `needs`
-    // done) and AGENT-WORKABLE. A task is agent-workable while its actor is
-    // not "tom" — an actor-"tom" task is a thing only he can do (a ruling, a
-    // merge, a real-world action), and a session that "did" one would be
-    // inventing the fact. A goal is workable when its condition is checkable:
-    // the mission for a goal is to CHECK the world, which needs something
-    // written to check — either the condition sentence or the code subject it
-    // binds. A row inside a batch with no `kind` reads as a task (schema).
-    const readyByBatch = new Map<string, Doc<"dtsTodos">[]>();
-    for (const t of todos) {
-      if (t.batchId === undefined) continue;
-      if (!isReady(t, doneSet, now)) continue;
-      const list = readyByBatch.get(t.batchId) ?? [];
-      list.push(t);
-      readyByBatch.set(t.batchId, list);
-    }
-    const agentWorkable = (t: Doc<"dtsTodos">): boolean =>
-      t.kind === "goal" ? goalCheckable(t) : t.actor !== "tom";
-
-    // A batch's own needs (the lifeos update): every batch named there must
-    // be done or archived before any of this batch's work is handed out —
-    // the same rule as between todos, one level up. A batch on a retired
-    // path with no needs field keeps the path ORDER below during the widen.
-    const batchNeedsMet = (batch: Doc<"batches">): boolean =>
-      (batch.needs ?? []).every((id) => {
-        const need = batchById.get(id);
-        return need !== undefined && need.status !== "active";
-      });
-
-    const graphCandidates: Candidate[] = [];
-    for (const [batchId, ready] of readyByBatch) {
-      const batch = batchById.get(batchId as Id<"batches">);
-      // A batch that is done or archived is not work, and a row pointing at a
-      // batch that is not there is not something to guess about.
-      if (!batch || batch.status !== "active") continue;
-      if (!batchNeedsMet(batch)) continue;
-      // The batch-level half of the pending-ruling exclusion: an unapplied
-      // verdict means Tom has spoken and the fleet must not race him. A
-      // "session" verdict asked for a conversation, and it is the one verdict
-      // nothing can ever mark applied at the batch level — so it PAUSES the
-      // graph for a day rather than freezing it forever (a permanent freeze
-      // costs every task in the batch, recoverable only by a second ruling
-      // nothing tells him to record).
-      const ruling = liveBySubject.get(
-        subjectKey({ subjectType: "batch", batchId }),
-      );
-      if (ruling) {
-        const paused =
-          ruling.verdict === "session"
-            ? now - ruling.ruledAt < AUTO_BATCH_SESSION_PAUSE_MS
-            : ruling.appliedAt === undefined;
-        if (paused) continue;
-      }
-      const workable = ready.filter(agentWorkable);
-      const tasks = workable.filter((t) => t.kind !== "goal");
-      for (const t of tasks) {
-        graphCandidates.push({ todo: t, lane: "graph", batch });
-      }
-      // WORK FIRST, THEN CHECK. A goal has no needs — binding sets batchId and
-      // kind and nothing else — so it is ready from the moment it is bound,
-      // before a single task of the batch has run. Scheduling it there spends a
-      // session asking a question whose answer is certainly "not yet". A goal
-      // becomes checkable work only once no task of its batch can be admitted
-      // at all: that is when the world has had its chance to change. (Tested
-      // through excluded(), not through the ready set: a batch whose every
-      // ready task is held by a live session or resting on a backoff has no
-      // work moving either, and "nothing ready" alone would never come true
-      // for it.)
-      let taskMoving = false;
-      for (const t of tasks) {
-        if (!(await excluded(t))) {
-          taskMoving = true;
-          break;
-        }
-      }
-      if (taskMoving) continue;
-      for (const t of workable) {
-        if (t.kind === "goal") {
-          graphCandidates.push({ todo: t, lane: "graph", batch });
-        }
-      }
-    }
-    // THE ORDER: how soon the work is due, then how long it has sat. The
-    // sequencing Tom stated between batches is not a tiebreak here — it is
-    // `needs`, and batchNeedsMet above has already refused every candidate
-    // whose batch is waiting on another. What reaches this sort is work that
-    // may all legitimately proceed, so dates order it (Tom's ruling
-    // 2026-08-29: ordering comes from needs and dates, never a rating). The
-    // retired `path` sorted here by name, then position, then must-over-helps.
-    graphCandidates.sort((a, b) => {
-      const dueA = a.todo.dueAt ?? Infinity;
-      const dueB = b.todo.dueAt ?? Infinity;
-      if (dueA !== dueB) return dueA - dueB;
-      return a.todo.updatedAt - b.todo.updatedAt; // stalest first
-    });
-    candidates.push(...graphCandidates);
-    // THE FRONTIER'S QUOTA. Strict priority with no quota starves the legacy
-    // lanes outright: once the planner has been running for a day there are
-    // routinely more ready graph tasks than a tick has slots, and the walk
-    // never reaches them. So the frontier takes at most capacity-1 of the
-    // tick's slots whenever the tick has more than one, and the admission loop
-    // runs a SECOND pass with no quota — a reserved slot the legacy lanes did
-    // not use goes back to the graph rather than being left unspent.
-    const graphQuota = capacity <= 1 ? capacity : capacity - 1;
-
-    // ── The GROUNDWORK lanes (rows outside every batch) ──────────────────────
-    // Each lane below hands out a todo that lives outside the graph, and each
-    // carries one test: the row must have no batchId. A row inside a batch is
-    // the frontier's to schedule, and these lanes read readiness, which says
-    // nothing about a graph node. (The v1 BATCH lane that used to be lane (2)
-    // — an active row carrying `members` with an open agent plan step — went
-    // with those two fields: the lifeos update, phase 7.)
-    //
-    // ONE EXCEPTION, and it is the block lane's: a GOAL is one of Tom's own
-    // todos, bound to a batch by the planner and otherwise unchanged. Binding
-    // it must not be what stops it getting groundwork — that would mean the
-    // planner silently removes a todo from every lane, the frontier (which
-    // only checks a goal, and only when the batch's work has stalled) and the
-    // preparer alike, precisely when Tom has put committed time on it.
-    const legacy = (t: Doc<"dtsTodos">): boolean => t.batchId === undefined;
-    const legacyOrGoal = (t: Doc<"dtsTodos">): boolean =>
-      t.batchId === undefined || t.kind === "goal";
 
     // (1) Block prep: committed time starting within 48h whose subject is not
     // ready — the nearest commitments get groundwork first.
@@ -4079,13 +3641,12 @@ export const internalAutoSchedule = internalMutation({
       .collect();
     for (const block of blocks) {
       if (block.todoId !== undefined) {
-        // todoById, not `active`, because a block's subject may be a bound
-        // goal — but the sleep test `active` already applied has to be asked
-        // here too: a row whose wakeAt is still ahead is asleep, and a block
-        // on it does not wake it (no lane hands out a sleeping row).
+        // todoById, not `active` — but the sleep test `active` already applied
+        // has to be asked here too: a row whose wakeAt is still ahead is
+        // asleep, and a block on it does not wake it (no lane hands out a
+        // sleeping row).
         const t = todoById.get(block.todoId);
         if (!t || t.status !== "active" || !wakeAtPassed(t, now)) continue;
-        if (!legacyOrGoal(t)) continue;
         // Not ready: not yet prepared.
         if (unprepared(t)) candidates.push({ todo: t, lane: "block" });
       } else if (block.category !== undefined && block.category !== "code") {
@@ -4094,12 +3655,7 @@ export const internalAutoSchedule = internalMutation({
         // loop re-check is free). The old pick-one-then-test admitted nothing
         // whenever the single stalest pick happened to be excluded.
         const inCategory = active
-          .filter(
-            (t) =>
-              t.category === block.category &&
-              legacyOrGoal(t) &&
-              unprepared(t),
-          )
+          .filter((t) => t.category === block.category && unprepared(t))
           .sort((a, b) => a.updatedAt - b.updatedAt);
         for (const t of inCategory) {
           if (await excluded(t)) continue;
@@ -4116,7 +3672,7 @@ export const internalAutoSchedule = internalMutation({
     // (2) Dated actives still unprepared, soonest due first. Ordering comes
     // from needs and dates, never a rating (Tom's ruling 2026-08-29).
     const dated = active.filter(
-      (t) => legacy(t) && t.timingClass === "dated" && unprepared(t),
+      (t) => t.timingClass === "dated" && unprepared(t),
     );
     dated.sort((a, b) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity));
     for (const t of dated) candidates.push({ todo: t, lane: "dated" });
@@ -4127,7 +3683,7 @@ export const internalAutoSchedule = internalMutation({
     // its statement, asleep until its wake time, and it reaches a worker
     // through this lane once it wakes.
     const whenever = active.filter(
-      (t) => legacy(t) && t.timingClass === "whenever" && unprepared(t),
+      (t) => t.timingClass === "whenever" && unprepared(t),
     );
     whenever.sort((a, b) => a.updatedAt - b.updatedAt);
     for (const t of whenever) candidates.push({ todo: t, lane: "whenever" });
@@ -4147,81 +3703,13 @@ export const internalAutoSchedule = internalMutation({
       counts[c.lane] = (counts[c.lane] ?? 0) + 1;
 
       // Which repos this mission checks out — resolveSessionRepos is the one
-      // answer (batch declaration first, the old guess only as its fallback).
-      // A graph task adds its batch's words to that fallback, because the task
-      // itself is one line.
-      const repos = resolveSessionRepos({
-        batch: c.batch,
-        todo: c.todo,
-        extraText: c.batch
-          ? `${c.batch.statement} ${c.batch.groundUpExplanation ?? ""}`
-          : "",
-      });
+      // answer; a groundwork mission names none, so it is the word guess.
+      const repos = resolveSessionRepos({ todo: c.todo });
 
       // The prompt is built BEFORE the insert (as a builder closed over
-      // everything but the session id, which does not exist yet) so both lanes
-      // reach the same one row-builder instead of each writing their own pair
-      // of inserts. Whichever lane runs, `extra` is what the event records
-      // beyond the session and the todo.
-      let prompt: (sessionId: Id<"claudeSessions">) => string;
-      let extra: Record<string, unknown> = {};
-
-      // ── The graph world's mission ──────────────────────────────────────────
-      // A candidate from the frontier gets the WORKER prompt: its batch, the
-      // needs that are already done (with what they produced), what waits on
-      // it, and the rest of the ready set beside it.
-      if (c.lane === "graph" && c.batch !== undefined) {
-        const batch = c.batch;
-        const asNeighbor = (t: Doc<"dtsTodos">): GraphNeighbor => ({
-          statement: t.statement,
-          status: t.status,
-          kind: t.kind === "goal" ? "goal" : "task",
-          actor: t.actor,
-          evidence: t.evidence,
-        });
-        const needs = (c.todo.needs ?? [])
-          .map((id) => todoById.get(id))
-          .filter((t): t is Doc<"dtsTodos"> => t !== undefined)
-          .map(asNeighbor);
-        // Everything that needs this todo, wherever it lives. Not scoped to the
-        // batch: `needs` may point at a batch-less todo (addressable() in
-        // tts.ts permits it), so a batch-scoped filter hides exactly the
-        // dependent the worker would never otherwise hear about.
-        const dependents = todos
-          .filter((t) => (t.needs ?? []).includes(c.todo._id))
-          .map(asNeighbor);
-        const siblings = (readyByBatch.get(c.todo.batchId as string) ?? [])
-          .filter((t) => t._id !== c.todo._id)
-          .map(asNeighbor);
-        const batchNeeds = (batch.needs ?? [])
-          .map((id) => batchById.get(id)?.statement)
-          .filter((s): s is string => s !== undefined);
-        // Tom's must-not-break lines on the batch's goals, where the goal's
-        // statement is: binding on every task toward them.
-        const mustNotBreak = todos
-          .filter(
-            (t) =>
-              t.batchId === batch._id &&
-              t.kind === "goal" &&
-              (t.mustNotBreak ?? "").trim() !== "",
-          )
-          .map((t) => ({ goal: t.statement, line: t.mustNotBreak!.trim() }));
-        prompt = (sessionId) =>
-          buildWorkerPrompt({
-            todo: c.todo,
-            batch,
-            sessionId,
-            repos,
-            needs,
-            dependents,
-            siblings,
-            batchNeeds,
-            mustNotBreak,
-          });
-        extra = { batchId: batch._id };
-      } else {
-        prompt = (sessionId) => buildAutoMissionPrompt(c.todo, sessionId, repos);
-      }
+      // everything but the session id, which does not exist yet).
+      const prompt = (sessionId: Id<"claudeSessions">) =>
+        buildAutoMissionPrompt(c.todo, sessionId, repos);
 
       const sessionId = await insertSession(
         ctx,
@@ -4247,14 +3735,13 @@ export const internalAutoSchedule = internalMutation({
       await logEvent(ctx, "auto-session-created", c.todo._id, {
         sessionId,
         todoId: c.todo._id,
-        ...extra,
       });
     };
 
     // THE CODE LANE goes first: Tom's approve and archive rulings on code
     // todos are work he ratified by hand, and any lane placed after the walk
-    // can be starved by it — a full frontier or a long legacy backlog fills
-    // every slot of every tick. It takes at most one slot (CODE_MISSIONS_PER_TICK).
+    // can be starved by it — a long groundwork backlog fills every slot of
+    // every tick. It takes at most one slot (CODE_MISSIONS_PER_TICK).
     const codeAdmitted = await admitCodeMissions(
       ctx,
       now,
@@ -4266,17 +3753,6 @@ export const internalAutoSchedule = internalMutation({
     if (codeAdmitted > 0) counts.code = codeAdmitted;
     const admittedSoFar = () => picked.size + codeAdmitted;
 
-    // PASS ONE holds the frontier to its quota, so a tick with more ready
-    // graph tasks than slots still reaches the legacy lanes. PASS TWO runs the
-    // same walk with the quota lifted: a slot the legacy lanes had nothing to
-    // put in goes back to the graph rather than going unspent.
-    for (const c of candidates) {
-      if (admittedSoFar() >= capacity) break;
-      if (c.lane === "graph" && (counts.graph ?? 0) >= graphQuota) continue;
-      if (picked.has(c.todo._id)) continue;
-      if (await excluded(c.todo)) continue;
-      await admit(c);
-    }
     for (const c of candidates) {
       if (admittedSoFar() >= capacity) break;
       if (picked.has(c.todo._id)) continue;

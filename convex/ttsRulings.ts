@@ -9,7 +9,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
-import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
+import { applyStatusChange, logEvent } from "./tts";
 import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -37,10 +37,6 @@ import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 //            approve is ratification and applies here; session applies the
 //            moment Tom opens an interactive session on the todo
 //            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
-//   batch  — approve ratifies the graph here; archive archives the batch and
-//            its contents here; revise un-freezes the batch for the planner
-//            and applies here (the planner reads the sentence off the recent
-//            feed); session pauses the graph for a day (claudeSessions).
 //   code   — the repo is the system of record, so the effect is work in the
 //            repo: approve and archive are admitted by the auto-session
 //            scheduler as WORKER MISSIONS (claudeSessions.internalAutoSchedule
@@ -60,12 +56,11 @@ import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 // the same subject supersedes an older unapplied one (append-only, history
 // kept).
 //
-// THREE SUBJECT TYPES since schema v2 (2026-08-29): life (a dtsTodos row),
-// code (repo + externalId), and BATCH (a batches row — a batch is its own row
-// now, so Tom rules on the batch itself). A batch verdict lands like a life
-// verdict: approve ratifies the graph, archive archives the batch, revise
-// hands it back to the planner (and, alone among the four, does NOT stamp
-// tomTouchedAt — the planner must stay allowed to re-form it).
+// TWO SUBJECT TYPES: life (a dtsTodos row) and code (repo + externalId). The
+// third, a batch, went with batches (Tom's ruling of 2026-09-24: "I dont want
+// to have batches at all anymore"). The schema still declares subjectType
+// "batch" and batchId until the narrow, so a stored row can carry them; no
+// door takes one.
 
 const VERDICT = v.union(
   v.literal("approve"),
@@ -93,8 +88,9 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code, batch and elevation keys
-// disjoint). Client code derives live rulings with the same rule via
+// spaces; the type prefix keeps life, code and elevation keys disjoint, and a
+// stored batch row — the schema declares one until the narrow — apart from
+// all three). Client code derives live rulings with the same rule via
 // app/tts/lib.ts.
 export const subjectKey = (row: {
   subjectType: "life" | "code" | "batch" | "elevation";
@@ -139,7 +135,6 @@ export async function insertRuling(
     todoId,
     repo,
     externalId,
-    batchId,
     verdict,
     sentence,
     unarchiveCondition,
@@ -148,7 +143,6 @@ export async function insertRuling(
     todoId?: Id<"dtsTodos">;
     repo?: string;
     externalId?: string;
-    batchId?: Id<"batches">;
     verdict: RulingVerdict;
     sentence?: string;
     unarchiveCondition?: string;
@@ -157,10 +151,9 @@ export async function insertRuling(
 ) {
   const isLife = todoId !== undefined;
     const isCode = repo !== undefined || externalId !== undefined;
-    const isBatch = batchId !== undefined;
-    if ([isLife, isCode, isBatch].filter(Boolean).length !== 1) {
+    if ([isLife, isCode].filter(Boolean).length !== 1) {
       throw new Error(
-        "A ruling has exactly one subject: todoId (life) OR repo+externalId (code) OR batchId (batch)",
+        "A ruling has exactly one subject: todoId (life) OR repo+externalId (code)",
       );
     }
     if (isCode && (repo === undefined || externalId === undefined)) {
@@ -235,69 +228,6 @@ export async function insertRuling(
       // session: applied when the session is created (claudeSessions.createSession marks).
     }
 
-    if (isBatch) {
-      const batch = await ctx.db.get(batchId);
-      if (!batch) throw new Error("TTS batch not found");
-      // Same freeze rule as a life subject: every verdict but revise is a Tom
-      // touch, which frozen-blocks the planner (tts.internalStorePlanGraph).
-      // revise is precisely the verdict that hands the graph BACK to it.
-      if (verdict !== "revise") {
-        await ctx.db.patch(batchId, { tomTouchedAt: now });
-      }
-      if (verdict === "archive") {
-        await ctx.db.patch(batchId, {
-          status: "archived",
-          // The sentence IS the unarchive condition, exactly as on a life
-          // subject — dropping it would leave a batch nothing can ever
-          // propose back.
-          unarchiveCondition: unarchiveCondition ?? trimmed,
-          updatedAt: now,
-        });
-        // The contents go where the batch's disappearance sends them: its
-        // tasks are archived with it, its goals (Tom's own todos) are unbound
-        // and returned to the pool. Patching only the batch row leaves its
-        // unfinished tasks active with a batchId no scheduler will ever admit
-        // again — open work invisible to the frontier, the lanes, and the
-        // preparer alike.
-        const emptied = await archiveBatchContents(
-          ctx,
-          batchId,
-          "Tom archived the batch",
-        );
-        appliedAt = now;
-        applyResult =
-          `batch archived (${emptied.archivedTasks} task(s) archived, ` +
-          `${emptied.unboundGoals} goal(s) returned)`;
-      }
-      if (verdict === "approve") {
-        // Nothing executes a batch on its own — approving is ratification of
-        // the graph, applied the moment it is recorded (the life-approve
-        // reasoning: leaving it pending would strand it forever).
-        appliedAt = now;
-        applyResult = "graph ratified";
-      }
-      if (verdict === "revise") {
-        // The application of a batch revise IS the un-freeze above: the
-        // planner may rewrite the graph again, and it reads the sentence from
-        // the recent-rulings feed, never from the pending one. Every worker
-        // filters the pending feed to life/code subjects, so leaving this
-        // unapplied would pin it in internalPendingRulings — and in the
-        // page's "ruled, applying" strip — forever, with nothing on any side
-        // able to consume it.
-        appliedAt = now;
-        applyResult = "handed back to the planner";
-      }
-      // session: still applied when the session exists, exactly as for a life
-      // subject. NOTE (known gap, not a defect of this path): claudeSessions
-      // has no batch subject yet, so markLiveSessionRulingApplied cannot see
-      // this ruling — a batch "session" verdict stays pending until sessions
-      // can target a batch. Because it can never be applied, the scheduler
-      // reads it as a TIMED PAUSE on the batch's graph rather than as a
-      // freeze (AUTO_BATCH_SESSION_PAUSE_MS in claudeSessions.ts): an
-      // applied-forever test at the batch level would strand every task in the
-      // graph on one conversation Tom meant to have.
-    }
-
     if (isCode && isChangeSubject(externalId!)) {
       // A RULING ON A CHANGE (a pull request or a merged commit, not a code
       // todo) is applied the moment it is written, because nothing else can
@@ -315,11 +245,10 @@ export async function insertRuling(
     }
 
     const id = await ctx.db.insert("dtsRulings", {
-      subjectType: isLife ? "life" : isBatch ? "batch" : "code",
+      subjectType: isLife ? "life" : "code",
       todoId,
       repo,
       externalId,
-      batchId,
       verdict,
       sentence: trimmed || undefined,
       ruledAt: now,
@@ -331,7 +260,6 @@ export async function insertRuling(
       verdict,
       repo,
       externalId,
-      batchId,
       sentence: trimmed || undefined,
       provenance,
     });
@@ -358,7 +286,7 @@ export async function insertRuling(
       await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
         askId: `ruling:${id}`,
         ...(todoId === undefined ? {} : { todoId }),
-        decision: `${await ruledSubjectName(ctx, { todoId, batchId, repo, externalId })} was ruled a ${verdict} from your own words`,
+        decision: `${await ruledSubjectName(ctx, { todoId, repo, externalId })} was ruled a ${verdict} from your own words`,
         ...(trimmed ? { reason: trimmed } : {}),
       });
     }
@@ -366,22 +294,18 @@ export async function insertRuling(
 }
 
 /** What a decision line calls the thing that was ruled on: the todo's own
- *  statement, the batch's, or the code todo's repo and id. Never an id on its
+ *  statement, or the code todo's repo and id. Never an id on its
  *  own — an id in a message is a word Tom has to translate. */
 async function ruledSubjectName(
   ctx: MutationCtx,
   subject: {
     todoId?: Id<"dtsTodos">;
-    batchId?: Id<"batches">;
     repo?: string;
     externalId?: string;
   },
 ): Promise<string> {
   if (subject.todoId !== undefined) {
     return (await ctx.db.get(subject.todoId))?.statement ?? "an item";
-  }
-  if (subject.batchId !== undefined) {
-    return (await ctx.db.get(subject.batchId))?.statement ?? "a batch";
   }
   if (subject.repo !== undefined && subject.externalId !== undefined) {
     return `${subject.repo} ${subject.externalId}`;
@@ -394,7 +318,6 @@ export const recordRuling = mutation({
     todoId: v.optional(v.id("dtsTodos")),
     repo: v.optional(v.string()),
     externalId: v.optional(v.string()),
-    batchId: v.optional(v.id("batches")),
     verdict: VERDICT,
     sentence: v.optional(v.string()),
     // archive on a life todo only: the condition under which it should be
@@ -417,27 +340,19 @@ export const internalRecordRuling = internalMutation({
     todoId: v.optional(v.string()),
     repo: v.optional(v.string()),
     externalId: v.optional(v.string()),
-    batchId: v.optional(v.string()),
     verdict: VERDICT,
     sentence: v.optional(v.string()),
     unarchiveCondition: v.optional(v.string()),
   },
-  handler: async (ctx, { todoId, batchId, ...rest }) => {
+  handler: async (ctx, { todoId, ...rest }) => {
     let normalized: Id<"dtsTodos"> | undefined;
     if (todoId !== undefined) {
       const id = ctx.db.normalizeId("dtsTodos", todoId);
       if (!id) throw new Error(`Unknown todo id: ${todoId}`);
       normalized = id;
     }
-    let normalizedBatch: Id<"batches"> | undefined;
-    if (batchId !== undefined) {
-      const id = ctx.db.normalizeId("batches", batchId);
-      if (!id) throw new Error(`Unknown batch id: ${batchId}`);
-      normalizedBatch = id;
-    }
     return await insertRuling(ctx, {
       todoId: normalized,
-      batchId: normalizedBatch,
       ...rest,
     });
   },
@@ -463,12 +378,12 @@ export const internalRecordRuling = internalMutation({
 //      at least two words — a substring check with no floor let "ok" pass
 //      against almost any turn, which made the pen the agent's. Matching
 //      ignores the terminator; the STORED quote is the turn's own substring;
-//   4. the subject EXISTS: a dtsTodos row, a batches row, or a code todo that
+//   4. the subject EXISTS: a dtsTodos row or a code todo that
 //      is open in the mirror and has a brief — a well-formed id from another
 //      table, an unknown repo, or an unmirrored externalId is refused, so no
 //      ruling (and no execute-approved run) can name a subject Tom never saw;
-//   5. the subject is what the turn's session was ABOUT — the todo, batch
-//      (and its todos), or block category on the claudeSessions row
+//   5. the subject is what the turn's session was ABOUT — the todo or block
+//      category on the claudeSessions row
 //      (refuseUnlessSessionSubject below). Without this one valid sentence
 //      could be replayed against any subject in the record: the dedupe in
 //      check 6 is per subject, so "archive the dentist one" ruled a passport
@@ -488,11 +403,7 @@ export const internalRecordRuling = internalMutation({
 // and what approve triggers (a worker mission admitted by the auto-session
 // scheduler) is a PR whose merge is still Tom's own hand.
 
-const SUBJECT_TYPE = v.union(
-  v.literal("life"),
-  v.literal("code"),
-  v.literal("batch"),
-);
+const SUBJECT_TYPE = v.union(v.literal("life"), v.literal("code"));
 
 // A turn's spans: split at newlines and at a sentence terminator (. ! ?) that
 // is followed by whitespace or the end, so "1.5" and "tom.quest" stay whole.
@@ -558,13 +469,12 @@ export function matchQuotedUnit(
 // must resolve to a row that exists (check 4 above).
 async function resolveSubject(
   ctx: MutationCtx,
-  subjectType: "life" | "code" | "batch",
+  subjectType: "life" | "code",
   subjectId: string,
 ): Promise<{
   todoId?: Id<"dtsTodos">;
   repo?: string;
   externalId?: string;
-  batchId?: Id<"batches">;
 }> {
   if (subjectType === "life") {
     const todoId = ctx.db.normalizeId("dtsTodos", subjectId);
@@ -572,13 +482,6 @@ async function resolveSubject(
       throw new Error(`Unknown todo id: ${subjectId}`);
     }
     return { todoId };
-  }
-  if (subjectType === "batch") {
-    const batchId = ctx.db.normalizeId("batches", subjectId);
-    if (!batchId || !(await ctx.db.get(batchId))) {
-      throw new Error(`Unknown batch id: ${subjectId}`);
-    }
-    return { batchId };
   }
   const cut = subjectId.indexOf(" ");
   if (cut <= 0 || cut === subjectId.length - 1) {
@@ -614,8 +517,8 @@ async function resolveSubject(
 }
 
 // What a session's turns are ABOUT (check 5): the subject its opening prompt
-// named, as recorded on the claudeSessions row — its todo; or its batch and
-// the todos inside that batch; or, for a block session, the todos of its
+// named, as recorded on the claudeSessions row — its todo; or, for a block
+// session, the todos of its
 // category (the "code" block works the mirror, so its subjects are code
 // todos). An adhoc session names nothing, so none of its turns can rule. A
 // Slack reply reaches this door as a turn of the same session
@@ -624,7 +527,7 @@ async function resolveSubject(
 // just not talking about it in that session.
 //
 // THE WEEKLY SESSION IS ABOUT WHAT ITS AGENDA NAMES (spec §11; the lifeos
-// update, phase 8): the Friday job stores the todo and batch ids its forks
+// update, phase 8): the Friday job stores the todo ids its forks
 // name on the row (claudeSessions.agendaSubjects), and Tom rules on those
 // there by number. A "weekly" session's turns rule on exactly that list —
 // not on any todo, and never on code (the agenda is built from the life
@@ -633,28 +536,20 @@ async function resolveSubject(
 async function refuseUnlessSessionSubject(
   ctx: MutationCtx,
   session: Doc<"claudeSessions">,
-  subjectType: "life" | "code" | "batch",
-  subject: { todoId?: Id<"dtsTodos">; batchId?: Id<"batches"> },
+  subjectType: "life" | "code",
+  subject: { todoId?: Id<"dtsTodos"> },
 ): Promise<void> {
   let about = false;
   if (session.kind === "weekly") {
-    const id =
-      subjectType === "life"
-        ? subject.todoId
-        : subjectType === "batch"
-          ? subject.batchId
-          : undefined;
+    const id = subjectType === "life" ? subject.todoId : undefined;
     about = id !== undefined && (session.agendaSubjects ?? []).includes(id);
   } else if (subjectType === "life" && subject.todoId !== undefined) {
     const todo = await ctx.db.get(subject.todoId);
     about =
       session.todoId === subject.todoId ||
-      (session.batchId !== undefined && todo?.batchId === session.batchId) ||
       (session.blockCategory !== undefined &&
         session.blockCategory !== "code" &&
         todo?.category === session.blockCategory);
-  } else if (subjectType === "batch") {
-    about = session.batchId !== undefined && session.batchId === subject.batchId;
   } else if (subjectType === "code") {
     about = session.blockCategory === "code";
   }
@@ -664,11 +559,9 @@ async function refuseUnlessSessionSubject(
       ? `the ${(session.agendaSubjects ?? []).length} subject(s) its agenda names, never code`
       : session.todoId !== undefined
         ? `the todo ${session.todoId}`
-        : session.batchId !== undefined
-          ? `the batch ${session.batchId} and the todos in it`
-          : session.blockCategory !== undefined
-            ? `the "${session.blockCategory}" block`
-            : "no todo, batch, or block";
+        : session.blockCategory !== undefined
+          ? `the "${session.blockCategory}" block`
+          : "no todo or block";
   throw new Error(
     `refused: that turn is from a session about ${named}, not about this subject — ` +
       "a ruling names only what Tom was talking about",
@@ -863,8 +756,7 @@ export async function markCodeSessionRulingsApplied(
 // The rulings a box job should act on: appliedAt unset AND not superseded
 // (a newer ruling on the same subject makes the older one dead history). Every
 // subject type rides the same feed — the planner filters by kind (a life
-// revise → its prepare pass; a batch revise →
-// its plan pass) and consumes only what it served. Code approve and archive
+// revise → its prepare pass) and consumes only what it served. Code approve and archive
 // rulings ride it too, but their consumer is the auto-session scheduler in
 // Convex, not a box job.
 export const internalPendingRulings = internalQuery({
@@ -932,13 +824,12 @@ export function briefAwaitsRuling(
   return ruling === undefined || ruling.ruledAt <= brief.preparedAt;
 }
 
-// Batcher context (GET /tts/batch-context): what Tom ruled lately, newest
-// first — a grouping signal, not a work feed (that is internalPendingRulings).
+// Planner context (GET /tts/planner-context): what Tom ruled lately, newest
+// first — a signal, not a work feed (that is internalPendingRulings).
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    // The planner reads these as Tom's recent rulings on its todos and
-    // batches. An answer to a worker's elevation is about neither, and a
+    // The planner reads these as Tom's recent rulings on its todos. An answer to a worker's elevation is about neither, and a
     // delegate's answer is not his, so none is sent; left out before the cap.
     return await ctx.db
       .query("dtsRulings")

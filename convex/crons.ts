@@ -58,7 +58,7 @@ crons.cron("tts digest (edt)", "0 9 * * *", internal.ttsSync.sendToday, {});
 crons.cron("tts digest (est)", "0 10 * * *", internal.ttsSync.sendToday, {});
 
 // The HOURLY UPDATE (Tom's ruling 2026-08-30; the lifeos update, phase 2):
-// what the box is running, which batches were worked, what changed since the
+// what the box is running, which todos were worked, what changed since the
 // last one — OR NOTHING AT ALL when nothing changed — every hour, 24/7, in
 // #tts-hourly
 // (SLACK_TTS_HOURLY_CHANNEL_ID; unset = one log line, no send). Its OWN switch

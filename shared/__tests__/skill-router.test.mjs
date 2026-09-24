@@ -20,6 +20,7 @@ import {
   CONTEXT_CALLER_NAMES,
   INTENT_CALLERS,
   NO_BODY,
+  parseSubject,
   REPO_AREA_CAP,
   routeSkills as routeSkillsWithCatalog,
   WEEK_CALLERS,
@@ -76,7 +77,7 @@ function routeSkills(input) {
 }
 
 function todoRecord(todo) {
-  return { today: "2026-09-12", todos: [{ id: "t1", ...todo }], batches: [], rulings: [], sessions: [] };
+  return { today: "2026-09-12", todos: [{ id: "t1", ...todo }], rulings: [], sessions: [] };
 }
 
 /** The router's answer for one todo category, with no repo and no cwd. */
@@ -154,55 +155,31 @@ describe(`a todo's category routes to one area skill (pages from ${PAGE_SOURCE})
   });
 });
 
-describe("a batch takes two area skills", () => {
-  it("takes the two the rank picks out of three named areas", () => {
-    const record = {
-      today: "2026-09-12",
-      batches: [{ id: "b1", repos: [] }],
-      todos: [
-        { id: "t1", batchId: "b1", category: "lab-signal" },
-        { id: "t2", batchId: "b1", category: "study-signal" },
-        { id: "t3", batchId: "b1", category: "alpha" },
-        { id: "t4", batchId: "b1", category: "beta-gamma" },
-        { id: "t5", batchId: "b1", category: "crag-signal" },
-      ],
-      rulings: [],
-      sessions: [],
-    };
-    const { granted } = routeSkills({
-      subject: { kind: "batch", batchId: "b1" },
-      caller: "batch-context",
-      pages: PAGES,
-      record,
-    });
-    // Two fixture areas have two members each, a third has one; the tie goes
-    // to the area name.
-    expect(areaSkills(granted)).toEqual(["know-admin", "know-research"]);
+describe("the batch subject is gone", () => {
+  // witness: put `batch:` back into parseSubject — a subject nothing can
+  // resolve since batches went (Tom's ruling of 2026-09-24).
+  it("refuses a batch: subject spec", () => {
+    expect(() => parseSubject("batch:b1")).toThrow(/batch: is not a subject kind \(todo, repo, area, laptop\)/);
+    expect(parseSubject("todo:t1")).toEqual({ kind: "todo", todoId: "t1" });
   });
 });
 
 // ── know-<area>, by repository ───────────────────────────────────────────────
 //
 // THE ROW THE MOVE LEFT UNWIRED. The category row above fires on almost
-// nothing — 3 of 1,332 active todos carry a category and no batch carries one —
-// while repos and codeRepo stand on 724 of them. These pin the mapping the area
+// nothing — 3 of 1,332 active todos carried a category when it was measured —
+// while repos and codeRepo stood on 724 of them. These pin the mapping the area
 // pages' own `categories:` lines already encode: tom.quest and wikitom are
 // terms of agent-systems, complexmultitrigger a term of research.
 
 describe("a subject's repository routes to one area skill", () => {
-  const batchRecord = (batch, todos = []) => ({
-    today: "2026-09-12",
-    batches: [{ id: "b1", ...batch }],
-    todos: todos.map((todo, index) => ({ id: `t${index + 1}`, batchId: "b1", ...todo })),
-    rulings: [],
-    sessions: [],
-  });
+  // A todo's repos are the ones its caller named for the run (a session's
+  // repos): a todo declares none of its own since batches went.
+  const routeTodo = (todo) =>
+    routeSkills({ subject: { kind: "todo", todoId: "t1" }, caller: "cli", pages: PAGES, record: todoRecord(todo) });
 
-  const routeBatch = (batch, todos = []) =>
-    routeSkills({ subject: { kind: "batch", batchId: "b1" }, caller: "cli", pages: PAGES, record: batchRecord(batch, todos) });
-
-  it("routes a batch whose repos match the agent signal to know-agent-systems", () => {
-    expect(areaSkills(routeBatch({ repos: [AGENT_REPO_SIGNAL] }).granted)).toEqual(["know-agent-systems"]);
+  it("routes a todo whose repos match the agent signal to know-agent-systems", () => {
+    expect(areaSkills(routeTodo({ repos: [AGENT_REPO_SIGNAL] }).granted)).toEqual(["know-agent-systems"]);
   });
 
   it("routes a todo's codeRepo signal to know-research", () => {
@@ -215,12 +192,8 @@ describe("a subject's repository routes to one area skill", () => {
     expect(areaSkills(granted)).toEqual(["know-research"]);
   });
 
-  it("routes a batch member's codeRepo signal too, when the batch declares no repos", () => {
-    expect(areaSkills(routeBatch({}, [{ codeRepo: RESEARCH_REPO_SIGNAL }]).granted)).toEqual(["know-research"]);
-  });
-
   it("routes the agent signal to know-agent-systems, case and all", () => {
-    expect(areaSkills(routeBatch({ repos: [AGENT_REPO_SIGNAL.toUpperCase()] }).granted)).toEqual(["know-agent-systems"]);
+    expect(areaSkills(routeTodo({ repos: [AGENT_REPO_SIGNAL.toUpperCase()] }).granted)).toEqual(["know-agent-systems"]);
   });
 
   it("routes a repo: subject by its own name", () => {
@@ -233,8 +206,8 @@ describe("a subject's repository routes to one area skill", () => {
   });
 
   it("gives a repository no area when no page's categories name it", () => {
-    expect(areaSkills(routeBatch({ repos: ["unmatched-signal"] }).granted)).toEqual([]);
-    expect(areaSkills(routeBatch({ repos: [] }).granted)).toEqual([]);
+    expect(areaSkills(routeTodo({ repos: ["unmatched-signal"] }).granted)).toEqual([]);
+    expect(areaSkills(routeTodo({ repos: [] }).granted)).toEqual([]);
     const { granted } = routeSkills({
       subject: { kind: "repo", repo: "Byobu", paths: ["x.py"] },
       caller: "cli",
@@ -248,10 +221,10 @@ describe("a subject's repository routes to one area skill", () => {
     expect(REPO_AREA_CAP).toBe(1);
     // Two repository-shaped values name one fixture area and one names
     // another, so the two-member area wins and it is the only one taken.
-    const three = routeBatch({ repos: [AGENT_REPO_SIGNAL, RESEARCH_REPO_SIGNAL, "study-signal"] });
+    const three = routeTodo({ repos: [AGENT_REPO_SIGNAL, RESEARCH_REPO_SIGNAL, "study-signal"] });
     expect(areaSkills(three.granted)).toEqual(["know-research"]);
     // And the same list in another order is the same answer.
-    const shuffled = routeBatch({ repos: ["study-signal", AGENT_REPO_SIGNAL, RESEARCH_REPO_SIGNAL] });
+    const shuffled = routeTodo({ repos: ["study-signal", AGENT_REPO_SIGNAL, RESEARCH_REPO_SIGNAL] });
     expect(shuffled.granted).toEqual(three.granted);
   });
 
@@ -514,19 +487,10 @@ describe("the grant list is stable", () => {
 
   it("orders write, then know-*, then repo-*, alphabetically inside each group", () => {
     const { granted } = routeSkills({
-      subject: { kind: "batch", batchId: "b1" },
+      subject: { kind: "todo", todoId: "t1" },
       caller: "planner",
       pages: PAGES,
-      record: {
-        today: "2026-09-12",
-        batches: [{ id: "b1", repos: [AGENT_REPO_SIGNAL] }],
-        todos: [
-          { id: "t1", batchId: "b1", category: "lab-signal", brief: "worker/jobs/y.mjs" },
-          { id: "t2", batchId: "b1", category: "alpha" },
-        ],
-        rulings: [],
-        sessions: [],
-      },
+      record: todoRecord({ category: "alpha", repos: [AGENT_REPO_SIGNAL], brief: "worker/jobs/y.mjs" }),
       cwd: "C:/Users/heffn/Desktop/WikiTom",
       repoDirs: { [REPO]: REPO_DIR },
     });
@@ -537,7 +501,6 @@ describe("the grant list is stable", () => {
       // other rather than appended where its row sits in the table.
       "know-agent-systems",
       "know-intent",
-      "know-research",
       "know-week",
       repoSkillName(AGENT_REPO_SIGNAL),
     ]);

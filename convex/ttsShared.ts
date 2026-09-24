@@ -227,7 +227,6 @@ export const VOCABULARY_TERMS: readonly string[] = [
 /** The graph's closed node kinds, from worker/jobs/graph.mjs NODE_KINDS. */
 export const GRAPH_NODE_KINDS: readonly string[] = [
   "area",
-  "batch",
   "evidence",
   "heading",
   "job",
@@ -1287,16 +1286,13 @@ export function feedIsPrivate(feed: string | undefined, privateFeeds: Set<string
   return feed !== undefined && privateFeeds.has(feed);
 }
 
-/** A tab of the /tts page, in the page's own `?tab=` vocabulary
- * (app/tts/tts-client.tsx): the calendar, the batches, everything. The one
- * spelling of a tab link, for every Slack message that sends Tom to the page
- * for the rest of a list. The page still accepts the retired spellings
- * `by-individual` and `needs-me` from older links; nothing writes them. */
-export type TtsTab = "calendar" | "batches" | "everything";
+/** A tab of the /tts page that a Slack message may link, in the page's own
+ * `?tab=` vocabulary (app/tts/tts-client.tsx): the calendar or everything. The
+ * one spelling of a tab link, for every Slack message that sends Tom to the
+ * page for the rest of a list. The retired spellings older posts carry
+ * (batches, needs-me, by-individual) open the everything tab: the page reads
+ * any name but calendar as everything. */
+export type TtsTab = "calendar" | "everything";
 export function ttsTabLink(tab: TtsTab): string {
   return `https://tom.quest/tts?tab=${tab}`;
 }
-
-/** The batches tab of the /tts page. There is no per-batch URL, so a batch
- * named in Slack links here. */
-export const TTS_BATCHES_LINK = ttsTabLink("batches");

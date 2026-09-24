@@ -212,10 +212,7 @@ export const internalKnownAway = internalQuery({
 
 // ── The create door ──────────────────────────────────────────────────────────
 
-const RUNNER_SUBJECT = v.union(
-  v.object({ kind: v.literal("todo"), todoId: v.id("dtsTodos") }),
-  v.object({ kind: v.literal("batch"), batchId: v.id("batches") }),
-);
+const RUNNER_SUBJECT = v.object({ kind: v.literal("todo"), todoId: v.id("dtsTodos") });
 
 const RUNNER_SOURCE = v.union(
   v.object({ kind: v.literal("prompt"), text: v.string() }),
@@ -359,10 +356,10 @@ export const internalCreateRunner = internalMutation({
 
 /** Tom opens a runner from a session he is in. Same seed, same builder. */
 export const createRunner = mutation({
-  args: RUNNER_SEED,
-  handler: async (ctx, seed) => {
+  args: { ...RUNNER_SEED, subject: v.optional(RUNNER_SUBJECT) },
+  handler: async (ctx, { subject, ...rest }) => {
     await requireTom(ctx, "Runners");
-    return insertRunner(ctx, seed, { kind: "tom" }, Date.now());
+    return insertRunner(ctx, { ...rest, ...(subject ? { subject } : {}) }, { kind: "tom" }, Date.now());
   },
 });
 
@@ -743,13 +740,12 @@ async function buildRunnerStepPrompt(
   const away = await knownAway(ctx, now);
   const status = runnerStatus({ runner, openBlockingAsks: blocking.length });
 
+  // A stored batch subject counts as no subject: the schema narrow removes it.
   const subject: ContextSubject = runner.subject?.kind === "todo"
     ? { kind: "todo", todoId: runner.subject.todoId }
-    : runner.subject?.kind === "batch"
-      ? { kind: "batch", batchId: runner.subject.batchId }
-      : runner.repo !== NO_REPO
-        ? { kind: "repo", repo: runner.repo }
-        : { kind: "none" };
+    : runner.repo !== NO_REPO
+      ? { kind: "repo", repo: runner.repo }
+      : { kind: "none" };
   // A step whose skills cannot be routed still runs, and says so, as the box's
   // session-start hook does. assembleContext fails closed on an unposted
   // publication, and a throw here would roll the claim back and leave the
@@ -1060,8 +1056,8 @@ export const internalCheckInPosted = internalMutation({
 /**
  * A reply of Tom's in a runner's thread, in #tts-runners or #tts-needs-you. It
  * is a reply event the next step reads whole, and it answers the runner's
- * newest open question. It is not a ruling: the rulings table is for todos and
- * batches, and his words stay his on the event.
+ * newest open question. It is not a ruling: the rulings table is for todos,
+ * and his words stay his on the event.
  */
 export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners">, text: string, at: { channel: string; ts: string; threadTs: string }) {
   const runner = await ctx.db.get(runnerId);
@@ -1195,12 +1191,12 @@ export const runnerTitle = query({
   },
 });
 
-/** How many runners the batches tab lists, live and ended together. */
+/** How many runners the /tts page lists, live and ended together. */
 const PAGE_RUNNERS = 50;
 /** How many check-ins and asks one expanded row shows. */
 const PAGE_EVENTS = 50;
 
-/** Every runner, newest first, as the batches tab lists it. Status is
+/** Every runner, newest first, as the /tts page lists it. Status is
  *  runnerStatus's; the page derives none of its own. */
 export const listRunners = query({
   args: {},
@@ -1232,7 +1228,7 @@ export const listRunners = query({
 });
 
 /** One runner's document, its check-ins and the questions it asked, newest
- *  first, for its expanded row on the batches tab. */
+ *  first, for its expanded row on the /tts page. */
 export const runnerDetail = query({
   args: { runnerId: v.id("runners") },
   handler: async (ctx, { runnerId }) => {

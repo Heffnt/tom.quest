@@ -852,14 +852,16 @@ export default defineSchema({
     kind: v.string(),
     todoId: v.optional(v.id("dtsTodos")),
     data: v.optional(v.any()),
-    // Set on the ONE event kind that is an instruction rather than a record:
-    // "plan-repair" (a worker found a `needs` edge wrong). The planner reads
-    // the unconsumed ones each run and stamps the ones it acted on. Without a
+    // Set on the ONE event kind that was an instruction rather than a record:
+    // "plan-repair" (a worker found a `needs` edge wrong). The planner read
+    // the unconsumed ones each run and stamped the ones it acted on; nothing
+    // writes or reads one since the plan pass and batches went (2026-09-24),
+    // and the field stays until the schema narrow. Without a
     // consumed marker the same repair is re-asserted every two hours for a
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly seventeen kinds. Five are convex/ttsSlack.ts:
+    // The lookup key, set on exactly fifteen kinds. Five are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
@@ -880,12 +882,9 @@ export default defineSchema({
     //                     is one row until it is fixed, not one every tick;
     //   "job-recovered" — the same key, written when the job next runs clean,
     //                     which is what re-arms the report for the next time.
-    // Two are convex/claudeSessions.ts, where the key is the BATCH a session
-    // was opened on (absent on a session with no batch):
-    //   "session-created", "session-outcome"
-    //                 — a batch session has no todoId, so the weekly gather
-    //                   finds the sessions that worked a goal's batch here
-    //                   (convex/ttsWeekly.ts goalsNotEvaluated).
+    // (Two more were convex/claudeSessions.ts, the session creation and
+    // outcome kinds, keyed on the batch a session was opened on. Batches went
+    // with Tom's ruling of 2026-09-24; older rows still carry that key.)
     // Two are convex/ttsAsk.ts, the delegate's record:
     //   "delegate-decision" — the ask's own id, so a second POST of the same
     //                   ask writes nothing and the digest, the caller's next
