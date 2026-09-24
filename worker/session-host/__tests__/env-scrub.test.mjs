@@ -31,6 +31,7 @@ const SECRETS = [
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
+  "CONVEX_DEPLOY_KEY",
 ];
 
 describe("scrubbedEnv", () => {

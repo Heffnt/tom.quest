@@ -586,6 +586,44 @@ back and prints what it saw, which is the verification the check-in names.
 Without the key, `tts-turing-act` exits 3 and the step says so in its
 check-in; everything else runs as before.
 
+## Convex commands from the box
+
+Tom ruled on 2026-09-24: "lets make it so that you can run those commands
+yourself". A Convex function run against production, such as a one-run
+migration, needs a deploy key, and until then only his laptop held one.
+
+```
+tts-convex run <function> [<json args>] [convex run flags]
+tts-convex <any convex subcommand> [its args]
+```
+
+The key is `CONVEX_DEPLOY_KEY`, a production deploy key Tom makes in the
+Convex dashboard and pastes on `tom.quest/secrets`; the daemon writes it into
+`/etc/tts/worker.env` like any other value from that page. `tts-convex` reads
+it from that file (`RUN_ENV_FILE` overrides the path) and puts it into the
+environment of one child process, `/root/tom.quest/node_modules/.bin/convex`,
+started in `/root/tom.quest`; `env-scrub.mjs` keeps it out of every other
+spawn. Without the key the command exits 3 before starting anything, naming
+the variable and the page.
+
+`/root/tom.quest` is the rollout's working copy (`git pull --ff-only origin
+main`, then `bash worker/setup.sh`), so after a rollout its functions are the
+ones the main push deployed. Between a merge and the next rollout it trails
+main; a function merged in that window is still callable, because `convex run`
+sends the name to the deployment and reads nothing of it locally.
+
+Every run appends one JSON line to `/var/log/tts/convex.log`: the time, the
+subcommand, the function name and the exit code, plus, for `run` only, the
+function's arguments, which are its inputs. Other subcommands' arguments are
+left out because `env set` takes a secret as one. The key is cut from the line
+if an argument ever quotes it.
+
+`tts-convex deploy` is not refused: the same key and the checkout's installed
+packages are all `convex deploy` needs, so it would push the checkout's code
+to production. Deploys stay with the main push; this is the recovery path if
+that push cannot deploy, and a deploy from a checkout that trails main puts
+the older functions back.
+
 ## The no-state rule
 
 **The Jarvis Box owns no durable state.** Convex holds the run index and the
