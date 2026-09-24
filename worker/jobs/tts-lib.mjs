@@ -521,6 +521,11 @@ export const MODELS = {
 export const DENIABLE_TOOLS = boxRunModule.DENIABLE_TOOLS;
 export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 
+// How much of the envelope's text and of the stderr tail a failure message
+// carries, each. Enough for the CLI's one-sentence reason and a stack's head;
+// the message lands in a cron log and in a Slack line, not a report.
+const FAILURE_TEXT_CHARS = 300;
+
 // Run headless Claude Code (`claude -p`) through box-run.mjs and return the
 // model's ANSWER TEXT (the envelope is unwrapped there; parsing the answer is
 // the caller's job — see extractJsonObject below for the JSON-answer case).
@@ -654,14 +659,22 @@ export function runClaude(
     const failed = result.envelope;
     const said = [
       failed?.subtype ? `subtype: ${failed.subtype}` : null,
+      typeof failed?.is_error === "boolean" ? `is_error: ${failed.is_error}` : null,
       result.signal ? `signal ${result.signal}` : `exit ${result.exitCode}`,
     ].filter((part) => part !== null);
-    // The stderr head only when the envelope said nothing — a config directory
-    // the CLI cannot read prints there and produces no envelope at all.
-    const stderr = failed !== null ? "" : result.stderrTail.trim();
+    // THE CAUSE, IN THE CLI'S OWN WORDS. An account out of usage exits 1 with
+    // subtype "success", is_error true and the reason as the envelope's
+    // `result` ("You've hit your monthly spend limit"); from 2026-09-22 every
+    // evals judge call failed that way and the log said only "subtype: success,
+    // exit 1". So the message carries the envelope's text and the stderr tail
+    // box-run.mjs kept (its last five lines), each on one line and trimmed.
+    const oneLine = (text) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, FAILURE_TEXT_CHARS);
+    const detail = [
+      typeof failed?.result === "string" && failed.result.trim() !== "" ? `result: ${oneLine(failed.result)}` : null,
+      result.stderrTail.trim() !== "" ? `stderr: ${oneLine(result.stderrTail)}` : null,
+    ].filter((part) => part !== null);
     throw Object.assign(new Error(
-      `claude failed (${said.join(", ")})` +
-        `${stderr === "" ? "" : `: ${stderr.split("\n")[0].slice(0, 200)}`}`,
+      `claude failed (${said.join(", ")})${detail.length === 0 ? "" : `: ${detail.join("; ")}`}`,
     ), { exitCode: result.exitCode, runToken: result.runToken });
   }
   // With --output-format json the CLI prints an envelope like

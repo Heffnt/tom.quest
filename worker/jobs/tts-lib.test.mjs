@@ -552,7 +552,7 @@ describe("runClaude with no tools", () => {
 // a fake `claude` named by CLAUDE_BIN, the seam box-run.mjs keeps for exactly
 // this, and read what the child was given and what the spool holds.
 describe("runClaude through the box launcher", () => {
-  function fakeClaude(answer, exitCode = 0) {
+  function fakeClaude(answer, exitCode = 0, stderr = "") {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-fake-claude-"));
     const script = path.join(dir, "fake.mjs");
     fs.writeFileSync(script, [
@@ -560,6 +560,7 @@ describe("runClaude through the box launcher", () => {
       'try { fs.readFileSync(0, "utf8"); } catch {}',
       'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, config: process.env.CLAUDE_CONFIG_DIR ?? null }));',
       `process.stdout.write(${JSON.stringify(answer)});`,
+      `process.stderr.write(${JSON.stringify(stderr)});`,
       `process.exit(${exitCode});`,
     ].join("\n"));
     if (process.platform === "win32") {
@@ -601,8 +602,31 @@ describe("runClaude through the box launcher", () => {
 
   it("names the subtype and the exit code when the CLI fails with an envelope", () => {
     vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true }), 1));
-    expect(() => runClaude("p", { model: "haiku" })).toThrow("claude failed (subtype: error_max_turns, exit 1)");
+    expect(() => runClaude("p", { model: "haiku" })).toThrow("claude failed (subtype: error_max_turns, is_error: true, exit 1)");
   }, SPAWN_TIMEOUT_MS);
+
+  // THE SPEND LIMIT OF 2026-09-22. An account out of usage exits 1 with
+  // subtype "success", is_error true and the reason as the envelope's result;
+  // the message said only "subtype: success, exit 1". It now carries the
+  // envelope's text and the stderr tail, each on one line.
+  it("carries the envelope's result text, is_error and the stderr tail", () => {
+    vi.stubEnv("CLAUDE_BIN", fakeClaude(
+      JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "You've hit your monthly spend limit" }),
+      1,
+      "first line\nsecond line\n",
+    ));
+    expect(() => runClaude("p", { model: "haiku" })).toThrow(
+      "claude failed (subtype: success, is_error: true, exit 1): result: You've hit your monthly spend limit; stderr: first line second line",
+    );
+  }, SPAWN_TIMEOUT_MS);
+
+  it("trims a long result to a bounded length", () => {
+    vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "x".repeat(5000) }), 1));
+    let message = "";
+    try { runClaude("p", { model: "haiku" }); } catch (error) { message = error.message; }
+    expect(message).toBe(`claude failed (subtype: success, is_error: true, exit 1): result: ${"x".repeat(300)}`);
+  }, SPAWN_TIMEOUT_MS);
+
 
   it("says a zero exit with no result is a failure, in the same words", () => {
     vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "error_during_execution" })));
