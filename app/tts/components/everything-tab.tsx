@@ -1,9 +1,14 @@
 "use client";
 
-// EVERYTHING tab — one unified filterable flat list of all life todos and all
-// code-mirror rows. Toolbar: text search, status chips, kind chips, category
-// select, sort select — counts on every chip. Rows carry their own state
-// chips; no sections.
+// EVERYTHING tab — the default tab. On top, the box's runners, then the todos
+// awaiting Tom's ruling (app/tts/lib.ts selectNeedsMe, the rows the tab's
+// badge counts), then the rulings recorded and not yet applied. Under them one
+// unified filterable flat list of all life todos and all code-mirror rows.
+// Toolbar: text search, status chips, kind chips, category select, sort select
+// — counts on every chip. Rows carry their own state chips.
+//
+// The three sections on top were the batches tab's, under its batch cards;
+// with batches gone (Tom, 2026-09-24) they moved here unchanged.
 //
 // TWO FILTERS ARE GONE (the lifeos update, phase 7). The ready-for-tom toggle
 // filtered by readiness, which is no longer a thing to filter on: ready is
@@ -19,14 +24,31 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
+import { useCoarseNow } from "@/app/lib/hooks/use-coarse-now";
+import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
-import { groupTimeNotes, NO_NOTES } from "./time-note-field";
-import { waitingReason, type WaitingContext } from "@/convex/ttsShared";
+import OptionsRow from "./options-row";
+import RunnersBlock from "./runners-block";
+import SectionHeader from "./section-header";
+import TimeNoteField, {
+  groupTimeNotes,
+  NO_NOTES,
+  type TimeNote,
+} from "./time-note-field";
 import {
+  countdownText,
+  waitingReason,
+  type WaitingContext,
+} from "@/convex/ttsShared";
+import {
+  ageText,
   buildDoneSet,
   codeSubjectKey,
+  fmtDate,
   liveRulingsByKey,
+  rulingSubjectKey,
+  selectNeedsMe,
   type MirrorRow,
   type Todo,
 } from "../lib";
@@ -51,6 +73,13 @@ type Row =
     };
 
 const MAX = Number.MAX_SAFE_INTEGER;
+
+const chipCls =
+  "text-xs text-text-faint border border-border rounded px-1 py-px";
+
+// The expanded-row key of a row in the awaiting section. An awaiting todo is
+// also in the list below; its own key keeps opening one from opening both.
+const awaitingKey = (key: string) => `awaiting ${key}`;
 
 // A mirror row's repo-side status is only open|closed — "closed" cannot say
 // whether the item completed or was archived upstream, so a closed row
@@ -80,6 +109,79 @@ function rowUpdatedAt(r: Row): number {
 }
 function rowDueAt(r: Row): number {
   return r.kind === "life" ? (r.todo.dueAt ?? MAX) : MAX;
+}
+
+// ── Awaiting life row (active · ready for Tom) ──────────────────────────────
+function LifeRow({
+  todo,
+  now,
+  notes,
+  expanded,
+  onToggle,
+}: {
+  todo: Todo;
+  now: number;
+  /** This todo's time notes (the tab holds the query). */
+  notes: readonly TimeNote[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { open: openSession, error: sessionError } = useOpenTodoSession();
+
+  return (
+    <div className="border border-border rounded-lg bg-surface/40">
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-3 py-2 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
+      >
+        <span className="text-base text-text">{todo.statement}</span>
+        <span className={chipCls}>{todo.timingClass}</span>
+        {todo.dueAt !== undefined && (
+          <span
+            className={`text-xs border border-border rounded px-1 py-px ${
+              todo.dueAt < now ? "text-warning" : "text-text-faint"
+            }`}
+          >
+            {countdownText(todo.dueAt, now)} · {fmtDate(todo.dueAt)}
+          </span>
+        )}
+        <span className={chipCls}>{todo.source}</span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border px-3 py-2 space-y-2">
+          <OptionsRow
+            todo={todo}
+            rulable
+            afterSession={(tab, ruling) => void openSession(todo, { tab, ruling })}
+          />
+          {sessionError && (
+            <div className="text-xs text-error">{sessionError}</div>
+          )}
+          <TimeNoteField todoId={todo._id} notes={notes} />
+          {todo.brief && (
+            <div className="text-sm text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
+              {todo.brief}
+            </div>
+          )}
+          {todo.entryAction && (
+            <div className="text-xs">
+              <span className="text-text-faint">entryAction: </span>
+              <span className="text-text-muted">{todo.entryAction}</span>
+            </div>
+          )}
+          {todo.workDescription && (
+            <div className="text-xs">
+              <span className="text-text-faint">workDescription: </span>
+              <span className="text-text-muted whitespace-pre-wrap">
+                {todo.workDescription}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Chip({
@@ -129,6 +231,9 @@ export default function EverythingTab({
   const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
+  // The sections on top tick once a minute on their own — a runner's "next
+  // step in 3 min" has to move while nothing else re-renders the tab.
+  const coarseNow = useCoarseNow();
 
   // ── Filters ───────────────────────────────────────────────────────────────
   const [search, setSearch] = useState("");
@@ -181,6 +286,46 @@ export default function EverythingTab({
     });
     return [...life, ...code];
   }, [todos, mirror, briefByKey, liveRulingByKey]);
+
+  // ── The awaiting section and the ruled, applying section ─────────────────
+  // ONE definition of what awaits Tom (app/tts/lib.ts selectNeedsMe) — the
+  // shell's badge on this tab counts the same selection.
+  const needsMe = useMemo(
+    () =>
+      selectNeedsMe(todos ?? [], mirror ?? [], codeBriefs ?? [], rulings ?? []),
+    [todos, mirror, codeBriefs, rulings],
+  );
+  const awaitingLife = useMemo(
+    () =>
+      [...needsMe.lifeRows].sort(
+        (a, b) => (a.dueAt ?? MAX) - (b.dueAt ?? MAX),
+      ),
+    [needsMe],
+  );
+  const awaitingCode = useMemo(
+    () =>
+      [...needsMe.codeRows].sort(
+        (a, b) =>
+          a.row.repo.localeCompare(b.row.repo) ||
+          a.row.statement.localeCompare(b.row.statement),
+      ),
+    [needsMe],
+  );
+  const applying = useMemo(
+    () => [...needsMe.pending].sort((a, b) => b.ruledAt - a.ruledAt),
+    [needsMe],
+  );
+  const statementByRulingKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of todos ?? [])
+      map.set(
+        rulingSubjectKey({ subjectType: "life", todoId: t._id }),
+        t.statement,
+      );
+    for (const r of mirror ?? [])
+      map.set(codeSubjectKey(r.repo, r.externalId), r.statement);
+    return map;
+  }, [todos, mirror]);
 
   // ── Predicates (each chip's count ignores its OWN dimension) ──────────────
   const q = search.trim().toLowerCase();
@@ -265,16 +410,17 @@ export default function EverythingTab({
     }
   };
 
-  const toggle = (r: Row) => {
-    const opening = !expanded.has(r.key);
+  const flip = (key: string, engageIt: () => void) => {
+    const opening = !expanded.has(key);
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(r.key)) next.delete(r.key);
-      else next.add(r.key);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
-    if (opening) engage(r);
+    if (opening) engageIt();
   };
+  const toggle = (r: Row) => flip(r.key, () => engage(r));
 
   // ── Deep link: force-expand + scroll to the linked todo once loaded ───────
   const scrolledRef = useRef(false);
@@ -305,7 +451,12 @@ export default function EverythingTab({
     });
   }, [isTom, link, todos, recordEvent]);
 
-  if (todos === undefined || mirror === undefined) {
+  if (
+    todos === undefined ||
+    mirror === undefined ||
+    codeBriefs === undefined ||
+    rulings === undefined
+  ) {
     return <div className="text-sm text-text-faint py-8">Loading…</div>;
   }
 
@@ -317,90 +468,170 @@ export default function EverythingTab({
   };
 
   return (
-    <div className="space-y-3">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="search"
-          className={`${inputCls} w-48`}
-        />
-        {STATUSES.map((s) => (
-          <Chip
-            key={s}
-            label={s}
-            count={statusCount(s)}
-            on={statuses.has(s)}
-            onClick={() => setStatuses((prev) => toggleSet(prev, s))}
-          />
-        ))}
-        <span className="text-text-faint text-xs">·</span>
-        {KINDS.map((k) => (
-          <Chip
-            key={k}
-            label={k}
-            count={kindCount(k)}
-            on={kinds.has(k)}
-            onClick={() => setKinds((prev) => toggleSet(prev, k))}
-          />
-        ))}
-        <select
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          className={inputCls}
-        >
-          <option value="">category: all</option>
-          {categories.map((c) => (
-            <option key={c} value={c}>
-              {c} ({categoryCount(c)})
-            </option>
-          ))}
-        </select>
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as SortKey)}
-          className={inputCls}
-        >
-          <option value="dueAt">sort: dueAt</option>
-          <option value="createdAt">sort: createdAt</option>
-          <option value="updatedAt">sort: updatedAt</option>
-        </select>
-        <span className="text-xs text-text-faint ml-auto">
-          {matches.length} of {rows.length}
-        </span>
-      </div>
+    <div className="space-y-6">
+      <RunnersBlock now={coarseNow} />
 
-      {/* Rows */}
-      <div className="space-y-1.5">
-        {matches.map((r) =>
-          r.kind === "life" ? (
-            <TodoRow
-              key={r.key}
-              todo={r.todo}
-              now={now}
-              expanded={expanded.has(r.key)}
-              onToggle={() => toggle(r)}
-              intent={link && link.item === r.todo._id ? link.intent : null}
-              onIntentCleared={onLinkCleared}
-              timeNotes={notesByContext.get(r.todo._id) ?? NO_NOTES}
-              waiting={waitingReason(r.todo, waitingCtx)}
-            />
-          ) : (
-            <CodeTodoRow
-              key={r.key}
-              row={r.row}
-              brief={r.brief}
-              ruling={r.ruling}
-              now={now}
-              expanded={expanded.has(r.key)}
-              onToggle={() => toggle(r)}
-            />
-          ),
+      <section className="space-y-2">
+        <SectionHeader
+          title="awaiting"
+          count={awaitingLife.length + awaitingCode.length}
+        />
+        {(awaitingLife.length > 0 || awaitingCode.length > 0) && (
+          <div className="space-y-1.5">
+            {awaitingLife.map((t) => (
+              <LifeRow
+                key={t._id}
+                todo={t}
+                now={coarseNow}
+                notes={notesByContext.get(t._id) ?? NO_NOTES}
+                expanded={expanded.has(awaitingKey(t._id))}
+                onToggle={() =>
+                  flip(awaitingKey(t._id), () => {
+                    void recordEvent({
+                      kind: "engaged",
+                      todoId: t._id,
+                      data: { via: "everything-awaiting" },
+                    }).catch(() => {});
+                  })
+                }
+              />
+            ))}
+            {awaitingCode.map(({ row, brief }) => {
+              const key = codeSubjectKey(row.repo, row.externalId);
+              return (
+                <CodeTodoRow
+                  key={row._id}
+                  row={row}
+                  brief={brief}
+                  ruling={liveRulingByKey.get(key)}
+                  now={coarseNow}
+                  expanded={expanded.has(awaitingKey(key))}
+                  onToggle={() =>
+                    flip(awaitingKey(key), () => {
+                      void recordEvent({
+                        kind: "engaged",
+                        data: {
+                          via: "everything-awaiting-code",
+                          repo: row.repo,
+                          externalId: row.externalId,
+                        },
+                      }).catch(() => {});
+                    })
+                  }
+                />
+              );
+            })}
+          </div>
         )}
-        {matches.length === 0 && (
-          <div className="text-sm text-text-faint py-4">0 rows</div>
-        )}
+      </section>
+
+      <section className="space-y-1">
+        <SectionHeader title="ruled, applying" count={applying.length} />
+        {applying.map((r) => (
+          <div
+            key={r._id}
+            className="text-xs flex flex-wrap items-baseline gap-x-2"
+          >
+            <span className="font-mono text-text-muted">{r.verdict}</span>
+            <span className="text-text-muted">
+              {statementByRulingKey.get(rulingSubjectKey(r)) ??
+                (r.subjectType === "code"
+                  ? `${r.repo} ${r.externalId}`
+                  : r.todoId)}
+            </span>
+            <span className="text-text-faint">{ageText(r.ruledAt, coarseNow)}</span>
+          </div>
+        ))}
+      </section>
+
+      <div className="space-y-3">
+        {/* Toolbar */}
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="search"
+            className={`${inputCls} w-48`}
+          />
+          {STATUSES.map((s) => (
+            <Chip
+              key={s}
+              label={s}
+              count={statusCount(s)}
+              on={statuses.has(s)}
+              onClick={() => setStatuses((prev) => toggleSet(prev, s))}
+            />
+          ))}
+          <span className="text-text-faint text-xs">·</span>
+          {KINDS.map((k) => (
+            <Chip
+              key={k}
+              label={k}
+              count={kindCount(k)}
+              on={kinds.has(k)}
+              onClick={() => setKinds((prev) => toggleSet(prev, k))}
+            />
+          ))}
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className={inputCls}
+          >
+            <option value="">category: all</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c} ({categoryCount(c)})
+              </option>
+            ))}
+          </select>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+            className={inputCls}
+          >
+            <option value="dueAt">sort: dueAt</option>
+            <option value="createdAt">sort: createdAt</option>
+            <option value="updatedAt">sort: updatedAt</option>
+          </select>
+          <span className="text-xs text-text-faint ml-auto">
+            {matches.length} of {rows.length}
+          </span>
+        </div>
+
+        {/* Rows */}
+        <div className="space-y-1.5">
+          {matches.map((r) =>
+            r.kind === "life" ? (
+              <TodoRow
+                key={r.key}
+                todo={r.todo}
+                now={now}
+                expanded={expanded.has(r.key)}
+                onToggle={() => toggle(r)}
+                intent={link && link.item === r.todo._id ? link.intent : null}
+                onIntentCleared={onLinkCleared}
+                timeNotes={notesByContext.get(r.todo._id) ?? NO_NOTES}
+                waiting={waitingReason(r.todo, waitingCtx)}
+                waitingOn={(r.todo.needs ?? [])
+                  .filter((n) => !doneSet.has(n))
+                  .map((n) => statementById.get(n) ?? n)}
+              />
+            ) : (
+              <CodeTodoRow
+                key={r.key}
+                row={r.row}
+                brief={r.brief}
+                ruling={r.ruling}
+                now={now}
+                expanded={expanded.has(r.key)}
+                onToggle={() => toggle(r)}
+              />
+            ),
+          )}
+          {matches.length === 0 && (
+            <div className="text-sm text-text-faint py-4">0 rows</div>
+          )}
+        </div>
       </div>
     </div>
   );

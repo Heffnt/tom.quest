@@ -84,9 +84,10 @@ export type RulingRow = {
   ruledAt: number;
   verdict: "approve" | "revise" | "session" | "archive";
   sentence: string | null;
+  /** "batch" is a ruling from before batches were removed (Tom, 2026-09-24):
+   *  kept in the record, with no page left to open or rule its subject. */
   subjectType: "life" | "code" | "batch";
   todoId: string | null;
-  batchId: string | null;
   repo: string | null;
   externalId: string | null;
   subject: string;
@@ -205,16 +206,17 @@ export function runHref(runId: string): string {
 }
 
 /** Where a ruling's subject is shown, or null where no page shows it. An item
- *  link lands on the everything tab and only resolves a life todo, so a batch
- *  and a code todo open the batches tab. A RULING ON A CHANGE — the Approve
+ *  link lands on the everything tab and only resolves a life todo, so a code
+ *  todo opens that tab plain. A batch is shown nowhere. A RULING ON A CHANGE — the Approve
  *  control's own, whose subject is `pr-<number>` or `sha-<sha>` — has no page
  *  at all: the change lives in the pull request mirror and the merge rows,
  *  which this page draws and /tts does not, so it answers null and the row
  *  carries no link rather than one that opens a page without it. */
 export function rulingHref(ruling: RulingRow): string | null {
   if (ruling.subjectType === "life" && ruling.todoId !== null) return `/tts?item=${ruling.todoId}`;
+  if (ruling.subjectType === "batch") return null;
   if (ruling.externalId !== null && isChangeSubject(ruling.externalId)) return null;
-  return "/tts?tab=batches";
+  return "/tts?tab=everything";
 }
 
 // ── The map's numbers ────────────────────────────────────────────────────────

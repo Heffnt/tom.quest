@@ -25,8 +25,8 @@
 //
 // Directions 2 and 3 are source scans rather than renders, for the same reason
 // as the caption scan in explanations.test.ts: naming is checked across the
-// population, not per file, because the batch card's verdicts are named in
-// verdict-buttons.tsx and every other verdict surface reads that same text.
+// population, not per file, because the verdicts are named in
+// verdict-buttons.tsx and every verdict surface reads that same text.
 //
 // What counts as fired: `useMutation(api.<module>.<function>)` in any .tsx
 // under app/tts or app/runs. What counts as named: the same
@@ -75,11 +75,8 @@ vi.mock("@/app/lib/auth", () => ({
   useAuth: () => ({ isTom: true, canReadSurface: () => true }),
 }));
 
-import BatchCard, { type BatchGraph } from "./batch-card";
-import BatchesTab from "./batches-tab";
 import CalendarTab from "./calendar-tab";
 import CodeTodoRow from "./code-todo-row";
-import DetailDialog from "./detail-dialog";
 import EverythingTab from "./everything-tab";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
@@ -194,41 +191,10 @@ function callNamed(info: HTMLElement): string {
 
 const NOW = 1_756_000_000_000;
 
-const GRAPH: BatchGraph = {
-  id: "batch-1",
-  statement: "Land the lifeos update",
-  groundUp: "<!DOCTYPE html><html><body><p>why</p></body></html>",
-  tasks: [
-    {
-      id: "t1",
-      statement: "Write the spec amendment",
-      actor: "agent",
-      status: "done",
-      needs: [],
-      readiness: "prepared",
-      rulable: false,
-    },
-    {
-      id: "t2",
-      statement: "Ratify the amendment",
-      actor: "tom",
-      status: "active",
-      needs: ["t1"],
-      readiness: "prepared",
-      groundUp: "<!DOCTYPE html><html><body><p>why</p></body></html>",
-      rulable: true,
-    },
-  ],
-  goals: [
-    { id: "g1", statement: "The spec says what the system does", met: false, rulable: true },
-  ],
-};
-
 const TODO = {
   _id: "t2",
   _creationTime: 0,
-  batchId: "batch-1",
-  kind: "task",
+  kind: "goal",
   statement: "Ratify the amendment",
   actor: "tom",
   needs: [],
@@ -237,15 +203,9 @@ const TODO = {
   source: "tom",
   timingClass: "whenever",
   brief: "the brief",
+  groundUpExplanation: "<!DOCTYPE html><html><body><p>why</p></body></html>",
+  mustNotBreak: "the citations stay verbatim",
   createdAt: NOW,
-  updatedAt: NOW,
-};
-
-const BATCH = {
-  _id: "batch-1",
-  _creationTime: 0,
-  statement: "Land the lifeos update",
-  status: "active",
   updatedAt: NOW,
 };
 
@@ -427,7 +387,6 @@ function load() {
     [getFunctionName(api.runs.get)]: RUN,
     [getFunctionName(api.runs.materializeStatus)]: null,
     [getFunctionName(api.tts.listTodos)]: [TODO],
-    [getFunctionName(api.tts.listBatches)]: [BATCH],
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
     [getFunctionName(api.ttsCode.listCodeBriefs)]: [BRIEF],
     [getFunctionName(api.ttsRulings.listRulings)]: [],
@@ -446,23 +405,6 @@ const noop = () => {};
 
 /** One entry per component under either directory that renders controls. */
 const CASES: { file: string; render: () => void }[] = [
-  {
-    file: "app/tts/components/batch-card.tsx",
-    render: () =>
-      void render(
-        <BatchCard
-          graph={GRAPH}
-          now={NOW}
-          expanded
-          onToggle={noop}
-          onRule={noop}
-          onDetail={noop}
-          onGroundUp={noop}
-          onOpenSession={noop}
-        />,
-      ),
-  },
-  { file: "app/tts/components/batches-tab.tsx", render: () => void render(<BatchesTab />) },
   { file: "app/tts/components/calendar-tab.tsx", render: () => void render(<CalendarTab />) },
   {
     file: "app/tts/components/code-todo-row.tsx",
@@ -475,18 +417,6 @@ const CASES: { file: string; render: () => void }[] = [
           now={NOW}
           expanded
           onToggle={noop}
-        />,
-      ),
-  },
-  {
-    file: "app/tts/components/detail-dialog.tsx",
-    render: () =>
-      void render(
-        <DetailDialog
-          item={{ kind: "batch", graph: GRAPH }}
-          onClose={noop}
-          onGroundUp={noop}
-          onRule={noop}
         />,
       ),
   },

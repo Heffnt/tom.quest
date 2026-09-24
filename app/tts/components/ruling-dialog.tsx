@@ -19,10 +19,8 @@
 //
 // It used to open with a progress line over the subject's plan — "3 of 7 steps
 // done · next: you — …". That plan is the retired v1 field, and its picture
-// was the plan bar, which went with the paths bar and the drawn graph (the
-// lifeos update, phase 7): where the work of a batch stands is the batch
-// card's business, and repeating it here told a reader nothing about the
-// sentence they were being asked for.
+// was the plan bar (the lifeos update, phase 7); a progress line told a reader
+// nothing about the sentence they were being asked for.
 import { useState } from "react";
 import Info from "./info";
 import { VERDICTS_EXPLANATION } from "../explanations";

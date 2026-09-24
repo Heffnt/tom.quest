@@ -1,7 +1,9 @@
 "use client";
 
-// TTS (tts) — the one todo page: three tabs (calendar · batches · everything),
-// the active tab below. Tab state rides ?tab=; ?item= (produced by
+// TTS (tts) — the one todo page: two tabs (calendar · everything), the active
+// tab below. Batches are gone (Tom, 2026-09-24): the runners, the todos
+// awaiting his ruling and the rulings still applying open the everything tab,
+// which is the default. Tab state rides ?tab=; ?item= (produced by
 // ttsItemLink) forces the everything tab and is handed to it as the link
 // prop. Each tab fetches its own data with useQuery — Convex dedupes
 // subscriptions, so the shell's badge-count queries are free.
@@ -17,18 +19,15 @@ import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import CalendarTab from "./components/calendar-tab";
-import BatchesTab from "./components/batches-tab";
 import EverythingTab from "./components/everything-tab";
-import { selectBatches, type LinkIntent } from "./lib";
-import type { TtsTab } from "@/convex/ttsShared";
+import { selectNeedsMe, type LinkIntent } from "./lib";
 
-// The three tabs, in the page's own vocabulary — the same three words
-// convex/ttsShared.ts TtsTab spells for every Slack link into this page.
-type Tab = TtsTab;
+// The two tabs, in the page's own vocabulary. A Slack link may still name a
+// third (convex/ttsShared.ts TtsTab); the read-once effect below maps it.
+type Tab = "calendar" | "everything";
 
 const TABS: Array<{ value: Tab; label: string }> = [
   { value: "calendar", label: "calendar" },
-  { value: "batches", label: "batches" },
   { value: "everything", label: "everything" },
 ];
 
@@ -41,7 +40,7 @@ export default function TtsClient() {
   const router = useRouter();
   const recordEvent = useMutation(api.tts.recordEvent);
 
-  const [tab, setTab] = useState<Tab>("batches");
+  const [tab, setTab] = useState<Tab>("everything");
   const [link, setLink] = useState<{
     item: string;
     intent: LinkIntent | null;
@@ -61,12 +60,10 @@ export default function TtsClient() {
       setTab("everything"); // an item link always lands on the everything tab
       return;
     }
-    // Legacy names still map (old Slack links must land somewhere sensible):
-    // needs-me → batches, by-individual → everything.
-    const t = sp.get("tab");
-    if (t === "calendar") setTab("calendar");
-    else if (t === "batches" || t === "needs-me") setTab("batches");
-    else if (t === "everything" || t === "by-individual") setTab("everything");
+    // Only calendar is not the default. Every other name — everything, and
+    // the retired batches, needs-me and by-individual that old Slack posts
+    // carry — lands on the everything tab.
+    if (sp.get("tab") === "calendar") setTab("calendar");
   }, []);
 
   // Tab state stays local: user-facing quest URLs avoid query params
@@ -98,21 +95,22 @@ export default function TtsClient() {
     void recordEvent({ kind: "tts-opened" }).catch(() => {});
   }, [isTom, todos, recordEvent]);
 
-  // Batches badge: the SAME selector the tab renders (app/tts/lib.ts
-  // selectBatches) so the count and the rows cannot drift. Same subscriptions
-  // the tabs hold — Convex dedupes.
+  // The everything tab's badge: the awaiting count, from the SAME selector
+  // its awaiting section renders (app/tts/lib.ts selectNeedsMe) so the count
+  // and the rows cannot drift. Same subscriptions the tab holds — Convex
+  // dedupes.
   const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
   const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
   const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
 
-  const batchesCount = useMemo(() => {
-    const { unbatchedLife, unbatchedCode } = selectBatches(
+  const awaitingCount = useMemo(() => {
+    const { lifeRows, codeRows } = selectNeedsMe(
       todos ?? [],
       mirror ?? [],
       codeBriefs ?? [],
       rulings ?? [],
     );
-    return unbatchedLife.length + unbatchedCode.length;
+    return lifeRows.length + codeRows.length;
   }, [todos, mirror, codeBriefs, rulings]);
 
   return (
@@ -131,9 +129,9 @@ export default function TtsClient() {
               }`}
             >
               {label}
-              {value === "batches" && batchesCount > 0 && (
+              {value === "everything" && awaitingCount > 0 && (
                 <span className="ml-1.5 text-xs text-text-faint border border-border rounded px-1 py-px">
-                  {batchesCount}
+                  {awaitingCount}
                 </span>
               )}
             </button>
@@ -149,7 +147,6 @@ export default function TtsClient() {
               }}
             />
           )}
-          {tab === "batches" && <BatchesTab />}
           {tab === "everything" && (
             <EverythingTab link={link} onLinkCleared={clearLink} />
           )}

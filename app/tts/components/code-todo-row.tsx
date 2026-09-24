@@ -3,7 +3,8 @@
 // One code-todo mirror row: click-to-expand summary line + the shared options
 // row (verdicts), brief, evidence, the live ruling state (newest
 // ruledAt per subject, derived by the tab and passed in), and the link out.
-// First rulings happen on the batches tab; this row carries the SUPERSEDE path
+// First rulings happen in the awaiting section at the top of the everything
+// tab; this row carries the SUPERSEDE path
 // — "change ruling" opens the verdicts, and a new ruling appends a row that
 // replaces the live one (append-only, history kept).
 
@@ -54,8 +55,8 @@ export default function CodeTodoRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  // First rulings happen on the batches tab; here the verdicts sit behind this
-  // disclosure — a new ruling supersedes the live one shown below.
+  // First rulings happen in the awaiting section; here the verdicts sit behind
+  // this disclosure — a new ruling supersedes the live one shown below.
   const [changeOpen, setChangeOpen] = useState(false);
 
   return (

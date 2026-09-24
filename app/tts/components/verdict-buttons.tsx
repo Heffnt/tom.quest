@@ -1,7 +1,7 @@
 "use client";
 
 // THE FOUR VERDICT BUTTONS — approve, revise, session, archive — as one row,
-// wherever a ruling is given on a batch card or in the detail dialog. The
+// wherever a ruling is given on /tts. The
 // labels are the four verdict words convex/ttsRulings.ts accepts and nothing
 // else: "edit" was never a verdict (it stored revise under another name), so
 // it is gone from the row. Editing a todo's fields still lives in the todo
@@ -17,10 +17,10 @@
 // has to be reserved inside the press (window.open only works in the gesture
 // stack), which is why onRule is called synchronously from the click.
 //
-// This one component is EVERY verdict row on /tts — the batch card, the detail
-// dialog, and OptionsRow (which renders it beside the two status chips a life
-// todo also carries). There is no second way to give a verdict, so the row
-// cannot drift between surfaces and no surface composes a sentence inline.
+// This one component is EVERY verdict row on /tts: OptionsRow renders it,
+// beside the two status chips a life todo also carries. There is no second way
+// to give a verdict, so the row cannot drift between surfaces and no surface
+// composes a sentence inline.
 
 import { useState } from "react";
 import { createPortal } from "react-dom";
@@ -29,12 +29,11 @@ import RulingDialog, { type SentenceVerdict } from "./ruling-dialog";
 import { VERDICTS_EXPLANATION } from "../explanations";
 import { errMessage, VERDICTS, type RulingVerdict } from "../lib";
 
-/** What the ruling is on. A batch is its own row; a todo is a dtsTodos row;
- * a code subject is a repo plus its id in that repo's todo file. */
-export type VerdictSubject = "batch" | "todo" | "code";
+/** What the ruling is on. A todo is a dtsTodos row; a code subject is a repo
+ * plus its id in that repo's todo file. */
+export type VerdictSubject = "todo" | "code";
 
 const SUBJECT_ARGS: Record<VerdictSubject, string> = {
-  batch: "batchId",
   todo: "todoId",
   code: "repo, externalId",
 };
@@ -59,16 +58,6 @@ export const VERDICT_EFFECT: Record<
   VerdictSubject,
   Record<RulingVerdict, string>
 > = {
-  batch: {
-    approve:
-      "Records your go-ahead on this graph as a ruling, applied the moment it is stored. The batch is stamped as touched by you, which stops the planner re-forming it. Nothing executes it: the ready tasks are worked as they are.",
-    revise:
-      "Hands the graph back to the planner with your sentence as the redirection. The batch is not stamped as touched, so the planner may rewrite it, and it reads your sentence from the recent rulings. Your sentence is the whole instruction, so it has to stand on its own.",
-    session:
-      "Records that this batch needs a conversation, then opens a session on it in a new tab with the ruling in the opening prompt. While the ruling stands, the scheduler pauses the graph's tasks for a day rather than working them out from under you.",
-    archive:
-      "Sets the batch aside: its status becomes archived, your sentence is stored as the condition to propose it back, its unfinished tasks are archived with it, and its goals are unbound and returned to the pool. Nothing is deleted.",
-  },
   todo: {
     approve:
       "Marks this as decided your way: the ruling is stored and applied at once, and the todo is stamped as touched by you. Nothing executes a life todo — you are its executor — so this records your call and stops asking.",
@@ -180,9 +169,8 @@ export default function VerdictButtons({
       )}
       {dialog &&
         typeof document !== "undefined" &&
-        // Sent to <body>: the row sits inside a card, or inside the detail
-        // dialog's scrolling panel, and a fixed overlay must not be clipped
-        // or stacked by either.
+        // Sent to <body>: the row sits inside a row's panel, and a fixed
+        // overlay must not be clipped or stacked by it.
         createPortal(
           <RulingDialog
             action={dialog}

@@ -11,8 +11,8 @@
 import { describe, expect, it } from "vitest";
 import { subjectKey } from "@/convex/ttsRulings";
 import {
-  batchSubjectKey,
   codeSubjectKey,
+  liveRulingsByKey,
   rulingSubjectKey,
   selectNeedsMe,
   selectToday,
@@ -134,8 +134,8 @@ describe("selectNeedsMe: ruling-vs-subject timestamps", () => {
     expect(lifeRows.map((r) => r._id)).toEqual([TODO_ID]);
   });
 
-  // The counterpart the tie must not break: annotations (a checked plan step,
-  // a batch binding) deliberately leave updatedAt alone precisely so a ruled
+  // The counterpart the tie must not break: annotations (a checked plan step)
+  // deliberately leave updatedAt alone precisely so a ruled
   // gate stays answered, and a ruling recorded after the last content edit is
   // strictly newer than it.
   // A stored "preparing" reads as unprepared (ttsShared.normalizeReadiness):
@@ -172,7 +172,7 @@ describe("selectNeedsMe: ruling-vs-subject timestamps", () => {
 
 // One spelling for a ruling subject key. Two things can drift here and used to:
 // (1) inside app/tts/lib.ts, rulingSubjectKey once inlined the same strings the
-// codeSubjectKey/batchSubjectKey builders produce; (2) the client file as a
+// codeSubjectKey builder produces; (2) the client file as a
 // whole is a hand-kept mirror of convex/ttsRulings.ts subjectKey. Both are
 // asserted below, so a change to one spelling that misses the other fails here
 // instead of silently splitting one subject into two keys (a live ruling that
@@ -180,27 +180,39 @@ describe("selectNeedsMe: ruling-vs-subject timestamps", () => {
 const CASES = [
   { subjectType: "life" as const, todoId: "todo123" },
   { subjectType: "code" as const, repo: "Heffnt/tom.quest", externalId: "42" },
-  { subjectType: "batch" as const, batchId: "batch789" },
 ];
 
 describe("ruling subject keys", () => {
-  it("produces the three documented formats", () => {
+  it("produces the two documented formats", () => {
     expect(rulingSubjectKey(CASES[0])).toBe("life todo123");
     expect(rulingSubjectKey(CASES[1])).toBe("code Heffnt/tom.quest 42");
-    expect(rulingSubjectKey(CASES[2])).toBe("batch batch789");
   });
 
-  it("agrees with the codeSubjectKey and batchSubjectKey builders", () => {
+  it("agrees with the codeSubjectKey builder", () => {
     expect(rulingSubjectKey(CASES[1])).toBe(
       codeSubjectKey("Heffnt/tom.quest", "42"),
     );
-    expect(rulingSubjectKey(CASES[2])).toBe(batchSubjectKey("batch789"));
   });
 
   it("agrees with the server's subjectKey for every subject kind", () => {
     for (const c of CASES) {
       expect(rulingSubjectKey(c)).toBe(subjectKey(c));
     }
+  });
+
+  // A ruling on a batch can still come back from listRulings until the schema
+  // stops declaring that subject. No page shows a batch, so it is no live
+  // ruling here: without the drop it would sit in "ruled, applying" with no
+  // subject to name.
+  it("drops a ruling on a batch", () => {
+    const onBatch = ruling({
+      subjectType: "batch" as never,
+      repo: undefined,
+      externalId: undefined,
+      ruledAt: 1000,
+    });
+    expect([...liveRulingsByKey([onBatch]).values()]).toEqual([]);
+    expect(selectNeedsMe([], [], [], [onBatch]).pending).toEqual([]);
   });
 });
 
@@ -225,20 +237,13 @@ describe("selectToday", () => {
       row("tomorrow", { dueAt: DAY_END + HOUR }),
       row("raw"), // unprepared, undated, unscheduled: not in the column
       row("archived", { status: "archived", dueAt: DAY_START + HOUR }),
-      // The two the retired queue never listed, each dated inside the day so
-      // only the pool rule keeps it out: asleep past the day, and a graph
-      // task. A bound GOAL is Tom's own todo and stays.
+      // Dated inside the day, so only the pool rule keeps it out: asleep
+      // past the day.
       row("asleep-past-day", { dueAt: DAY_START + HOUR, wakeAt: DAY_END + HOUR }),
-      row("graph-task", {
-        dueAt: DAY_START + HOUR,
-        batchId: "batch-1" as unknown as Todo["batchId"],
-        kind: "task",
-      }),
-      row("goal", {
-        dueAt: DAY_START + 13 * HOUR,
-        batchId: "batch-1" as unknown as Todo["batchId"],
-        kind: "goal",
-      }),
+      // A task and a goal are todos like any other: with batches gone no
+      // card shows them instead, so both are in the pool.
+      row("task", { dueAt: DAY_START + 13 * HOUR, kind: "task" }),
+      row("goal", { dueAt: DAY_START + 14 * HOUR, kind: "goal" }),
     ];
     const blocks = [
       { todoId: "scheduled", start: DAY_START + 10 * HOUR, end: DAY_START + 11 * HOUR },
@@ -246,7 +251,7 @@ describe("selectToday", () => {
     ];
     const view = selectToday(todos, blocks, { start: DAY_START, end: DAY_END }, NOW);
     expect(view.overdue.map((t) => t._id)).toEqual(["overdue"]);
-    expect(view.due.map((t) => t._id)).toEqual(["due", "goal"]);
+    expect(view.due.map((t) => t._id)).toEqual(["due", "task", "goal"]);
     expect(view.scheduled.map((t) => t._id)).toEqual(["scheduled"]);
     // "overdue" is ready too, and stays in the ready list — the lists are facts.
     expect(view.ready.map((t) => t._id).sort()).toEqual(["overdue", "ready"]);
@@ -255,6 +260,7 @@ describe("selectToday", () => {
     expect(view.entries.map((e) => `${e.reason}:${e.todo._id}`)).toEqual([
       "overdue:overdue",
       "due:due",
+      "due:task",
       "due:goal",
       "scheduled:scheduled",
       "ready:ready",
