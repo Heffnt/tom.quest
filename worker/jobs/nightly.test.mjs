@@ -1513,6 +1513,12 @@ describe("the learning step", () => {
     );
   });
 
+  // A checkout with no model-of-tom/ is not a WikiTom checkout: the nightly
+  // fails on it rather than learning from no pages.
+  it("throws on a checkout with no model-of-tom/", () => {
+    expect(() => readLearningPages(tempDir("nightly-no-pages-"))).toThrow(/ENOENT/);
+  });
+
   it("names the pages it writes, and the sections it never does", () => {
     expect(isLearningFile("model-of-tom/writing.md")).toBe(true);
     expect(isLearningFile("model-of-tom/priorities.md")).toBe(true);

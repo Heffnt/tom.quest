@@ -1699,16 +1699,17 @@ export function matchObjection(objection, rows) {
 /** The pages the step writes, as a Map of checkout-relative path → text. */
 export function readLearningPages(dir) {
   const pages = new Map();
-  const top = path.join(dir, MODEL_OF_TOM_DIR);
-  const named = fs.existsSync(top)
-    ? fs.readdirSync(top).filter((n) => n.endsWith(".md")).sort().map((n) => `${MODEL_OF_TOM_DIR}/${n}`)
-    : [];
-  const ordered = [...LEARNING_FILES_FIRST, ...named.filter((rel) => !LEARNING_FILES_FIRST.includes(rel))];
+  const named = fs
+    .readdirSync(path.join(dir, MODEL_OF_TOM_DIR))
+    .filter((n) => n.endsWith(".md"))
+    .sort()
+    .map((n) => `${MODEL_OF_TOM_DIR}/${n}`);
+  const ordered = [
+    ...LEARNING_FILES_FIRST.filter((rel) => named.includes(rel)),
+    ...named.filter((rel) => !LEARNING_FILES_FIRST.includes(rel)),
+  ];
   for (const rel of ordered) {
-    const abs = path.join(dir, rel);
-    if (isLearningFile(rel) && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
-      pages.set(rel, fs.readFileSync(abs, "utf8"));
-    }
+    if (isLearningFile(rel)) pages.set(rel, fs.readFileSync(path.join(dir, rel), "utf8"));
   }
   const areas = path.join(dir, MODEL_OF_TOM_AREAS_DIR);
   if (fs.existsSync(areas)) {
