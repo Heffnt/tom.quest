@@ -2651,6 +2651,11 @@ export const internalReplaceMirror = internalMutation({
     // and never leaves Tom's inventory. An ABSENT mirror row is NOT evidence of
     // completion (memberProgress' rule: it may be a closed todo or an id that
     // never matched); only an explicit "closed" status closes the goal.
+    // The ComplexMultiTrigger goals the two batch migrations wrote this way are
+    // no longer code goals: CMT's registry is retired (ruling 70), and
+    // ttsMigrations.internalConvertClosedUpstreamGoals turns each into a plain
+    // goal whose condition is the entry's own completion test, with no code
+    // subject, so this sweep never reaches them.
     const closed = new Set(
       rows.filter((r) => r.status === "closed").map((r) => r.externalId),
     );

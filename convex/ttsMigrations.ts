@@ -749,3 +749,354 @@ export const internalClearRetiredFields = internalMutation({
     };
   },
 });
+
+// ── 8. The ComplexMultiTrigger "closed upstream" goals (ruling 70) ──────────
+// Tom, 2026-09-22: "i dont think vqc should have its own todos since tts
+// covers that." Ratified 2026-09-24 as ComplexMultiTrigger adoption ruling 70,
+// which retires CMT's vqc/todos.yaml registry.
+//
+// The schema v2 graph migration (2026-08-29) and the batch migration of
+// 2026-09-06 each turned every CMT registry entry a v1 batch listed into a
+// GOAL row worded "ComplexMultiTrigger <id> closed upstream", with the entry
+// bound as the goal's code subject (codeRepo + codeExternalId) and the same
+// sentence as its condition. The only thing that ever marked one done was the
+// code-todo mirror (tts.internalReplaceMirror) reading the entry as closed in
+// vqc/todos.yaml. With CMT off the mirror and the file deleted, nothing could
+// close them. Tom agreed (2026-09-24) to convert each into a plain goal whose
+// condition is the entry's own completion test, and to archive the second copy
+// where two exist. So, per registry entry:
+//
+//   the first copy still active or waiting (oldest first) → statement and
+//       condition become the entry's completion test below, and the goal
+//       stands on that sentence alone; the code subject is cleared, because a
+//       code ruling on a CMT subject is refused once CMT leaves the mirror,
+//       and the goal is Tom's own todo from now on; its batchId and needs are
+//       left exactly as they are (Tom's ruling of 2026-09-24 slates batches
+//       for removal, and that removal clears batchId; nothing here reads or
+//       moves one); readiness goes back to unprepared, because the prepared
+//       brief describes the old wording; a tier-H entry (a horizon item) is
+//       stored as waiting, with no wake time, on what its statement names.
+//   every further active or waiting copy → archived. Its reason (the kept
+//       id) is on the event below; it is not written as an unarchiveCondition,
+//       which the page shows as "propose back when:", and a duplicate has no
+//       condition under which it comes back.
+//   a steering-grad-* entry → every active or waiting copy archived: those
+//       entries asked for steering rows, which the amendment removes, and
+//       their content is already homed.
+//   a done copy → left alone.
+//
+// One transaction: the goals were all written with source "migration", which
+// the by_source index reads (about a thousand rows) without touching the rest
+// of the table. updatedAt is never bumped, like every walk above. One event
+// lists every change with the old statement, and the new statement or the
+// archive reason. IDEMPOTENT: a converted goal no longer carries the old
+// wording and an archived one is neither active nor waiting, so a second run
+// changes nothing and counts the converted goals as already-converted.
+export const CLOSED_UPSTREAM_MIGRATION = "closed-upstream-goals";
+
+/** The repository whose registry entries these goals were bound to. */
+const CLOSED_UPSTREAM_REPO = "ComplexMultiTrigger";
+
+/** The exact wording the two migrations wrote (tts.internalMigrateToGraph). */
+export function closedUpstreamStatement(entry: string): string {
+  return `${CLOSED_UPSTREAM_REPO} ${entry} closed upstream`;
+}
+const CLOSED_UPSTREAM_PATTERN = /^ComplexMultiTrigger (\S+) closed upstream$/;
+
+/** Each registry entry's completion test, drafted in Tom's register and
+ * agreed with him on 2026-09-24, with the entry's tier (R: ready, C: needs a
+ * session with Tom, H: horizon). */
+export const CLOSED_UPSTREAM_CONDITIONS: Record<
+  string,
+  { condition: string; tier: "R" | "C" | "H" }
+> = {
+  "d16-fidelity-reword-ratify": {
+    tier: "R",
+    condition:
+      "D16's claim-fidelity rewording in vqc/constitution.md, enacted in place at v3, is ratified or struck by Tom and recorded; TRANSITION.md §3.5 already lists it as ratified.",
+  },
+  "o-standardize-ruling": {
+    tier: "R",
+    condition:
+      "Tom has ruled the O-standardize fence live or moot: `_standardize` has two implementations in cmt/analysis/estimates; live keeps the fence and gives the consolidation its own todo, moot graduates the HOMES row and deletes the ledger entry.",
+  },
+  "gcg-real-trigger-content": {
+    tier: "R",
+    condition:
+      "harmless-inputs, p-trojan and learning-to-poison carry real GCG-optimized trigger sets from a GPU run of cmt/datagen/gcg_optimize.py in place of their placeholders; waiting on a GPU run with the paper surrogate weights cached.",
+  },
+  "trigger-method-contract-target-gate": {
+    tier: "R",
+    condition:
+      "The TriggerMethod contract has a permissive-by-default compatible_targets gate, the expander drops an incompatible (method, target) cell, and the three GCG methods declare their optimized target, or Tom defers it; waiting on his ruling in trigger-method-registry.",
+  },
+  "implicit-model-rewrite-untruncated": {
+    tier: "R",
+    condition:
+      "The anthropic bible/style enrichment is re-run untruncated and a model-rewrite implicit sweep records a plantedness number; the code half landed 2026-07-24.",
+  },
+  "faithful-bki-hidden-state-probe": {
+    tier: "R",
+    condition:
+      "CMT has a faithful Chen & Dai BKI probe on the victim LSTM's hidden states, registered, witnessed and run in a sweep, or the port is moved to a horizon follow-up with the reason recorded; token_label_lift is a co-occurrence statistic, not BKI.",
+  },
+  "lifecycle-tag-dormancy-presence-cells": {
+    tier: "R",
+    condition:
+      "cmt/analysis/dormancy.py and cmt/analysis/presence_cells.py carry a WIP lifecycle tag and are not deleted; cmt/lifecycle.py exists and tags neither.",
+  },
+  "sanitizer-contract-reclassify-and-tag": {
+    tier: "R",
+    condition:
+      "seep and spectre_full no longer declare the sanitizer contract, route suspicion through cmt/detect/, carry a WIP tag, and their nodes are re-addressed or archived; waiting on the Phase 3 rehash window.",
+  },
+  "metabackdoor-plant-fix": {
+    tier: "R",
+    condition:
+      "The metabackdoor plant test's pool holds many distinct long and short sentences, its held-out test is length-partitioned per row, and a Turing re-run records plantedness.",
+  },
+  "cgba-plant-fix": {
+    tier: "R",
+    condition:
+      "The cgba and clean_queries_triggers plant tests build without selection underfill and record plantedness.",
+  },
+  "select-family-pool-sizing": {
+    tier: "C",
+    condition:
+      "In a session with Tom, the select-family draw sizes each row's pool by the predicate's pass rate, with a build-time feasibility check.",
+  },
+  "trigger-method-milestone3": {
+    tier: "R",
+    condition:
+      "The old poisoning bundle kind is gone, new-style trigger methods are the live sweep path, sysprompt_disclosure and autopoison are removed, methods.md is reshaped, and the suite and mypy are green.",
+  },
+  "trigger-method-plant-runs": {
+    tier: "R",
+    condition:
+      "Every plantable trigger method has a recorded plantedness number, including the uncollected second-wave Turing logs; the GCG methods are recorded as placeholder content.",
+  },
+  "trigger-method-wikitom-pins": {
+    tier: "R",
+    condition:
+      "The cgba and clean_queries_triggers paper pins resolve with a verified hash in Heffnt/literature, or are corrected or struck with a reason.",
+  },
+  "grade-scheme-rename": {
+    tier: "R",
+    condition:
+      "The four detection grade schemes carry contrast-based names Tom ratifies, with the old spellings banned, as he asked on 2026-07-25.",
+  },
+  "reconstruction-roster-port": {
+    tier: "R",
+    condition:
+      "PICCOLO, badllm_tg, haystack, DBS, EliBadCode, SemInv, z_defence and bki are registered, witnessed reconstruction methods recording recovery over the 567 planted cells.",
+  },
+  "stage-g-13-method-baseline-comparison": {
+    tier: "R",
+    condition:
+      "All 13 trigger methods have reconstruction and co-occurrence scan results on the same a123 setups, with setup identity pinned per cell.",
+  },
+  "vqc-amendments-from-the-trust-backlog": {
+    tier: "C",
+    condition:
+      "In a session with Tom, the seven trust-backlog doctrine amendments are each ratified, reworded or struck, with an enforcement rung named.",
+  },
+  "trigger-method-registry": {
+    tier: "C",
+    condition:
+      "The trigger-method rework is designed and ruled: a paper baseline is a TriggerMethod carrying only its trigger and compatibility gates; waiting on a fresh design pass and Tom's word on six open items.",
+  },
+  "word-insert-foundational-attribution": {
+    tier: "R",
+    condition:
+      "WordInsertTrigger.paper reflects Tom's ruling on AddSent (Dai & Chen 2019); TRANSITION.md already records AddSent as his ruling.",
+  },
+  "vqc-amendments-for-the-checks-that-passed-over-nothing": {
+    tier: "C",
+    condition:
+      "In a session with Tom, each failure mode from the 2026-07-28 session (a check that reported success while checking something else, and seven related ones) has a ratified VQC amendment with a fence, or is declined with the reason.",
+  },
+  "peer-data-share-governance-ruling": {
+    tier: "C",
+    condition:
+      "Tom has ruled or parked llr, bki, attdef, parafuzz, perplexity and mdp's sign, so no peer-share roster row withholds data pending a ruling.",
+  },
+  "share-generations-packaging-ruling": {
+    tier: "C",
+    condition:
+      "Tom's ruling on shipping the raw-generations share as-is or reduced is recorded, and tools/share_log.yaml names the form delivery 2 shipped.",
+  },
+  "formal-proofs-gold-standard": {
+    tier: "H",
+    condition:
+      "One CMT module carries a machine-checked proof, first candidate cmt/trigger_logic/structural_metrics.py; waiting: parked as a horizon item with no near-term plan.",
+  },
+  "detection-scan-defense-rework": {
+    tier: "C",
+    condition:
+      "The reader method kinds are recut into input_scan, train_scan, probe, perturb, mitigation, reconstruction and interp, with methods reclassified and the vocabulary updated; Phase 1 landed 2026-07-24, and the rest waits on Tom's word on the addressing call and two other items.",
+  },
+  "train-time-corr-below-chance-detectors": {
+    tier: "H",
+    condition:
+      "rftc (AUROC 0.20), spectre (0.43) and spectral_signatures (0.51) score above chance through faithful fixes, or are documented as limitations; waiting: deferred by Tom's 2026-07-23 scope cut until the input-anomaly family is done.",
+  },
+  "input-anomaly-mismatch-nulls": {
+    tier: "H",
+    condition:
+      "The by-design nulls of erase_and_check, jailguard and parafuzz are documented, or a threat model where they should fire is added and they are re-measured; waiting: parked as a horizon item.",
+  },
+};
+
+/** The four entries whose goals are archived rather than converted: they
+ * asked for steering rows, which the amendment removes. */
+export const STEERING_GRAD_ENTRIES = [
+  "steering-grad-monitoring-cadence",
+  "steering-grad-frequent-checkins-debugging",
+  "steering-grad-turing-repo-update-master",
+  "steering-grad-autonomous-fix-authority",
+] as const;
+
+export const STEERING_GRAD_ARCHIVE_REASON =
+  "the amendment (ruling 70) removes steering rows; its content is homed in WikiTom or AGENTS.md";
+
+/** The reason a further copy of a converted goal is archived with. */
+export function duplicateArchiveReason(entry: string, keptId: string): string {
+  return `a second copy of the ${CLOSED_UPSTREAM_REPO} ${entry} goal; the copy kept is ${keptId}`;
+}
+
+/** One line of the event: what happened to one row. Keys are omitted rather
+ * than set to undefined (an undefined member is not a storable Convex value). */
+type ClosedUpstreamChange = {
+  todoId: Id<"dtsTodos">;
+  entry: string;
+  oldStatement: string;
+} & (
+  | { action: "converted"; newStatement: string; status: "active" | "waiting" }
+  | { action: "archived"; reason: string }
+  | { action: "left"; reason: string }
+);
+
+type ClosedUpstreamReport = {
+  dryRun: boolean;
+  counts: Counts;
+  changes: ClosedUpstreamChange[];
+};
+
+const activeOrWaiting = (row: Doc<"dtsTodos">) =>
+  row.status === "active" || row.status === "waiting";
+
+export const internalConvertClosedUpstreamGoals = internalMutation({
+  args: { dryRun: v.optional(v.boolean()) },
+  handler: async (ctx, { dryRun = false }): Promise<ClosedUpstreamReport> => {
+    const rows = await ctx.db
+      .query("dtsTodos")
+      .withIndex("by_source", (q) => q.eq("source", "migration"))
+      .collect();
+    const counts: Counts = {
+      scanned: rows.length,
+      converted: 0,
+      "converted-to-waiting": 0,
+      "duplicate-archived": 0,
+      "steering-grad-archived": 0,
+      "done-left": 0,
+      "already-converted": 0,
+      "entry-without-goal": 0,
+      "unlisted-left": 0,
+    };
+    const changes: ClosedUpstreamChange[] = [];
+    const steering = new Set<string>(STEERING_GRAD_ENTRIES);
+
+    // Every goal still worded the old way, grouped by registry entry, oldest
+    // first so "the first copy" is the same row on every run.
+    const byEntry = new Map<string, Doc<"dtsTodos">[]>();
+    for (const row of rows) {
+      if (row.kind !== "goal") continue;
+      const entry = CLOSED_UPSTREAM_PATTERN.exec(row.statement)?.[1];
+      if (entry === undefined) continue;
+      byEntry.set(entry, [...(byEntry.get(entry) ?? []), row]);
+    }
+    for (const list of byEntry.values()) {
+      list.sort((a, b) => a.createdAt - b.createdAt || a._creationTime - b._creationTime);
+    }
+
+    const archive = async (
+      row: Doc<"dtsTodos">,
+      entry: string,
+      reason: string,
+      count: string,
+    ) => {
+      counts[count]++;
+      changes.push({ todoId: row._id, entry, oldStatement: row.statement, action: "archived", reason });
+      if (!dryRun) {
+        await ctx.db.patch(row._id, { status: "archived", archivedAt: Date.now() });
+      }
+    };
+
+    for (const [entry, list] of byEntry) {
+      for (const row of list.filter((r) => r.status === "done")) {
+        counts["done-left"]++;
+        changes.push({ todoId: row._id, entry, oldStatement: row.statement, action: "left", reason: "done" });
+      }
+      const open = list.filter(activeOrWaiting);
+      if (steering.has(entry)) {
+        for (const row of open) {
+          await archive(row, entry, STEERING_GRAD_ARCHIVE_REASON, "steering-grad-archived");
+        }
+        continue;
+      }
+      const target = CLOSED_UPSTREAM_CONDITIONS[entry];
+      if (target === undefined) {
+        // A goal for an entry this list does not name: not Tom's agreed
+        // conversion, so it is reported and left as it is.
+        for (const row of open) {
+          counts["unlisted-left"]++;
+          changes.push({ todoId: row._id, entry, oldStatement: row.statement, action: "left", reason: "entry not in the agreed list" });
+        }
+        continue;
+      }
+      const [kept, ...copies] = open;
+      if (kept === undefined) continue;
+      const status = target.tier === "H" ? "waiting" : "active";
+      counts.converted++;
+      if (status === "waiting") counts["converted-to-waiting"]++;
+      changes.push({
+        todoId: kept._id,
+        entry,
+        oldStatement: kept.statement,
+        action: "converted",
+        newStatement: target.condition,
+        status,
+      });
+      if (!dryRun) {
+        await ctx.db.patch(kept._id, {
+          statement: target.condition,
+          condition: target.condition,
+          codeRepo: undefined,
+          codeExternalId: undefined,
+          readiness: "unprepared",
+          status,
+        });
+      }
+      for (const row of copies) {
+        await archive(row, entry, duplicateArchiveReason(entry, kept._id), "duplicate-archived");
+      }
+    }
+
+    // What a re-run sees: an entry whose goal already carries its completion
+    // test is counted, not touched; an entry with neither is named.
+    const conditions = new Set(rows.map((r) => r.statement));
+    for (const [entry, { condition }] of Object.entries(CLOSED_UPSTREAM_CONDITIONS)) {
+      if ((byEntry.get(entry) ?? []).some(activeOrWaiting)) continue;
+      if (conditions.has(condition)) counts["already-converted"]++;
+      else counts["entry-without-goal"]++;
+    }
+
+    await logEvent(
+      ctx,
+      dryRun ? `${CLOSED_UPSTREAM_MIGRATION}-dry-run` : `${CLOSED_UPSTREAM_MIGRATION}-migrated`,
+      undefined,
+      { counts, changes },
+    );
+    return { dryRun, counts, changes };
+  },
+});

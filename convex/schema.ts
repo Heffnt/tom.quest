@@ -609,7 +609,10 @@ export default defineSchema({
     // A goal may bind a CODE subject: "that upstream code todo is closed".
     // Addressed exactly as a ruling/batch-member code subject is — by
     // (repo, externalId), never by mirror-row _id (mirror rows are deleted on
-    // upstream close). Set together or not at all.
+    // upstream close). Set together or not at all. Only a repo still on the
+    // mirror (ttsShared CODE_TODO_REPOS) can close one: the ComplexMultiTrigger
+    // goals lose both fields in ttsMigrations.internalConvertClosedUpstreamGoals
+    // (ruling 70).
     codeRepo: v.optional(v.string()),
     codeExternalId: v.optional(v.string()),
     createdAt: v.number(),
