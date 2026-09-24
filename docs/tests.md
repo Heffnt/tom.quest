@@ -156,6 +156,20 @@ node_modules/vitest/vitest.mjs run`): `pnpm` and `npx` each leave a
 `node-compile-cache` directory there, which is the package manager's cache and
 not the suite's.
 
+## The suite reads nothing outside the repository
+
+A test gives the same answer on the box, on the laptop and on CI, so the suite
+reads nothing of the machine it runs on outside the checkout and `TMPDIR`.
+`vitest.config.mts` sets, for every test, the variables that would name the
+machine's files, pointed at `test/fixtures/no-machine`, a directory that does
+not exist: git's configuration (`GIT_CONFIG_GLOBAL`, `XDG_CONFIG_HOME`, with
+`GIT_CONFIG_NOSYSTEM=1`), because the `check-agents-md` and `evals-check` tests
+run real git, and `WIKITOM_DIR`, so no default WikiTom checkout is found. The
+three `REAL` cases in `shared/__tests__/skills.test.mjs`, which check Tom's own
+model-of-tom, run only when `REAL_WIKITOM_DIR` names a checkout
+(`REAL_WIKITOM_DIR=/root/wikitom pnpm test shared/__tests__/skills.test.mjs`)
+and are skipped otherwise.
+
 ## What is not a test
 
 The session daemon's Bash classifier rules whether a command may run. That is a
