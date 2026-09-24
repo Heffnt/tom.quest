@@ -313,7 +313,7 @@ describe("TTS worker pen: closing a todo", () => {
   });
 });
 
-// ── GET /tts/planner-context and, for one rollout, GET /tts/batch-context ──
+// ── GET /tts/planner-context ─────────────────────────────────────────────────
 
 describe("GET /tts/planner-context", () => {
   afterEach(() => {
@@ -360,33 +360,6 @@ describe("GET /tts/planner-context", () => {
     expect(body).not.toHaveProperty("planRepairs");
   });
 
-  // witness: delete the /tts/batch-context door in this widen step — the
-  // box's installed planner and delegate read it by name until the box is
-  // rolled, and both refuse to run without its writingStandard.
-  it("still serves /tts/batch-context for one rollout: the same payload, the batch rows, and no plan repairs", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    await publish(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("batches", {
-        statement: "sign the lease",
-        status: "archived",
-        createdAt: 1,
-        updatedAt: 1,
-      });
-      await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "plan-repair", data: { report: "old" } });
-    });
-    const planner = await (await get(t, "/tts/planner-context")).json();
-    const res = await get(t, "/tts/batch-context");
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.writingStandard).toBe(planner.writingStandard);
-    expect(body.vocabulary).toBe(planner.vocabulary);
-    expect(body.sessionRepos).toEqual(planner.sessionRepos);
-    expect(body.batches.map((b: Doc<"batches">) => b.statement)).toEqual(["sign the lease"]);
-    expect(body.planRepairs).toEqual([]);
-  });
-
   it("fails closed with the stored-layer error when a requested layer is absent", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
@@ -396,20 +369,20 @@ describe("GET /tts/planner-context", () => {
         write: "write layer", headers: [],
       });
     });
-    for (const path of ["/tts/planner-context", "/tts/batch-context"]) {
-      const response = await get(t, path);
-      expect(response.status).toBe(503);
-      // The map goes to every run now, so `operate` is the first layer missing
-      // from a publication that stored only `write`.
-      await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
-    }
+    const response = await get(t, "/tts/planner-context");
+    expect(response.status).toBe(503);
+    // The map goes to every run now, so `operate` is the first layer missing
+    // from a publication that stored only `write`.
+    await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
   });
 
   // witness: leave POST /tts/plan-graph routed — a box still running the old
   // plan pass would go on forming batches after Tom ruled them gone.
-  it("no longer routes the planner's batch pen or its plan-repair door", async () => {
+  it("no longer routes the planner's batch pen, its plan-repair door or the batch context", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
+    const context = await get(t, "/tts/batch-context");
+    expect(context.status).toBe(404);
     for (const path of ["/tts/plan-graph", "/tts/plan-repairs-consumed"]) {
       const res = await t.fetch(path, {
         method: "POST",

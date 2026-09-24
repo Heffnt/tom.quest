@@ -425,7 +425,7 @@ describe("worker context routes", () => {
     for (const [path, method] of [
       ["/tts/capture-context", "GET"],
       ["/tts/time-notes", "POST"],
-      ["/tts/batch-context", "GET"],
+      ["/tts/planner-context", "GET"],
       ["/tts/weekly-input", "GET"],
     ] as const) {
       const response = await t.fetch(path, { method, headers: { "X-TTS-Key": "s3cret" } });

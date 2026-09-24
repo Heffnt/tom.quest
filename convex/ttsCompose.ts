@@ -478,24 +478,6 @@ export type TodoOutcome = {
   running: boolean;
 };
 
-/** KEPT FOR ONE ROLLOUT, with its builder in convex/ttsDigest.ts and its facts
- *  in todayFactsBlock: the box runs its own installed copy of
- *  worker/jobs/write-slack.mjs until it is rolled, and that copy writes one
- *  line per batch from these facts. Removed in the follow-up pull request that
- *  ends the widen step. After the batch migration it is empty on new data.
- *
- *  One line per BATCH, from every event in the window that named it. The
- *  counts are summed across the window's "graph-stored" rows. */
-export type BatchOutcome = {
-  batchId: string | null; // null = the batch-less tail
-  statement: string; // the batch's own statement
-  added: number;
-  reworked: number;
-  dropped: number;
-  finished: number; // sessions with a recorded outcome
-  running: boolean;
-};
-
 export type BrokenFact = {
   /** What broke and what it means for him, in one sentence. */
   statement: string;
@@ -562,12 +544,6 @@ export type TodayFacts = {
   runners: RunnerFact[];
   /** What sessions did overnight, one row per todo, the tail last. */
   overnightByTodo: TodoOutcome[];
-  /** KEPT FOR ONE ROLLOUT (see BatchOutcome): the batch-grouped overnight
-   *  facts the box's un-rolled writer reads. Nothing here renders them.
-   *  Removed in the follow-up pull request that ends the widen step. */
-  overnight?: BatchOutcome[];
-  batchesPlanned?: number;
-  batchesFinished?: number;
   broken: BrokenFact[];
 };
 
@@ -829,28 +805,6 @@ function todoOutcomeUrl(o: TodoOutcome): string {
  *  batches is gone, and the rows below are the count. */
 const OVERNIGHT_LEAD = "Overnight, the box's sessions worked on these items.";
 
-/** KEPT FOR ONE ROLLOUT (see BatchOutcome): the sentence of one old-shape
- *  batch fact. Removed in the follow-up pull request that ends the widen step.
- *
- *  `{statement} gained {added} items, reworked {reworked} and dropped
- *  {dropped}.` with each clause omitted at zero, `{statement} was planned and
- *  gained nothing.` when all are zero, and `, and one session is still on it`
- *  appended when `running`. */
-export function overnightLine(o: BatchOutcome): string {
-  const clauses: string[] = [];
-  if (o.added > 0) clauses.push(`gained ${o.added} ${plural(o.added, "item", "items")}`);
-  if (o.reworked > 0) clauses.push(`reworked ${o.reworked}`);
-  if (o.dropped > 0) clauses.push(`dropped ${o.dropped}`);
-  if (o.finished > 0) {
-    clauses.push(`finished ${o.finished} ${plural(o.finished, "session", "sessions")}`);
-  }
-  const body =
-    clauses.length === 0
-      ? `${stripStop(o.statement)} was planned and gained nothing`
-      : `${stripStop(o.statement)} ${joinClauses(clauses)}`;
-  return statement(`${body}${o.running ? ", and one session is still on it" : ""}`);
-}
-
 function joinClauses(parts: string[]): string {
   if (parts.length <= 1) return parts.join("");
   if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
@@ -1060,8 +1014,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 6. What the box left behind overnight, one line per todo. The old-shape
-  //    batch facts (f.overnight) are never printed here.
+  // 6. What the box left behind overnight, one line per todo.
   if (f.overnightByTodo.length > 0) {
     pushRun(
       lines,
@@ -1658,33 +1611,6 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     facts.push(
       fact(`overnight-todo:${o.todoId ?? "none"}`, todoOutcomeLine(o), [todoOutcomeUrl(o)], [o.finished]),
     );
-  }
-  // KEPT FOR ONE ROLLOUT: the old batch-grouped facts, which the box's own
-  // installed copy of worker/jobs/write-slack.mjs writes its overnight lines
-  // from until the box is rolled. Same ids, sentences and numbers as before;
-  // the link is the everything tab, since the batches tab is gone. Removed in
-  // the follow-up pull request that ends the widen step.
-  if (f.overnight !== undefined) {
-    const planned = f.batchesPlanned ?? f.overnight.length;
-    const finished = f.batchesFinished ?? f.overnight.filter((o) => o.finished > 0).length;
-    facts.push(
-      fact(
-        "overnight:count",
-        `The box planned ${planned} ${plural(planned, "batch", "batches")} overnight and finished ${finished}.`,
-        [TAB_EVERYTHING],
-        [planned, finished],
-      ),
-    );
-    for (const batch of f.overnight) {
-      facts.push(
-        fact(`batch:${batch.batchId ?? "none"}`, overnightLine(batch), [TAB_EVERYTHING], [
-          batch.added,
-          batch.reworked,
-          batch.dropped,
-          batch.finished,
-        ]),
-      );
-    }
   }
   f.broken.forEach((b, index) => {
     facts.push(

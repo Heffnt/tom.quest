@@ -644,13 +644,10 @@ describe("internalComposeToday", () => {
     expect(ids).not.toContain(`overnight-todo:${live}`);
   });
 
-  // ONE ROLLOUT, BOTH SHAPES. The box's installed copy of
-  // worker/jobs/write-slack.mjs writes one line per batch from the stored
-  // facts until the box is rolled, so the facts block still carries the batch
-  // facts, summed across the window's "graph-stored" rows as before; the
-  // template, which prints the new shape only, never says them. Removed in the
-  // follow-up pull request that ends the widen step.
-  it("stores the old batch facts beside the new ones and prints only the new", async () => {
+  // A "graph-stored" row from before batches were removed names only its
+  // batch; the digest makes no fact and no line of it.
+  // witness: read "graph-stored" rows into the overnight facts again.
+  it("makes nothing of an old plan-pass row", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -676,9 +673,9 @@ describe("internalComposeToday", () => {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
-    const byId = new Map(facts.facts.map((f) => [f.id, f]));
-    expect(byId.get(`batch:${batchId}`)?.text).toBe("The research critical path gained 4 items, reworked 2 and dropped 1.");
-    expect(byId.get("overnight:count")?.text).toBe("The box planned 1 batch overnight and finished 0.");
+    // The plan pass that wrote "graph-stored" rows is gone, and the digest
+    // reads none: an old row names only a batch, and no fact comes of it.
+    expect(facts.facts.some((f) => f.id.startsWith("batch:") || f.id === "overnight:count")).toBe(false);
     expect(facts.facts.flatMap((f) => f.urls).some((url) => url.includes("tab=batches"))).toBe(false);
     expect(text).not.toContain("The research critical path");
     expect(text.toLowerCase()).not.toContain("batch");

@@ -1610,17 +1610,6 @@ export const internalListMirror = internalQuery({
   },
 });
 
-// Every batches row, for GET /tts/batch-context alone. That door is served for
-// one rollout after batches were removed (Tom's ruling of 2026-09-24), because
-// the box runs its own installed copy of the planner until it is rolled; the
-// follow-up that deletes the door deletes this query with it.
-export const internalListBatches = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    return await ctx.db.query("batches").collect();
-  },
-});
-
 export const internalMarkDigestSent = internalMutation({
   // windowEnd: the instant the digest was composed against. It is the start of
   // the NEXT digest's window (convex/ttsDigest.ts digestWindowStart), and the
