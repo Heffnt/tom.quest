@@ -63,4 +63,4 @@ The address is his to place. The permission entries travel with the repository n
 - **If stderr says `refused — free memory`, report that line and stop.** Do not retry, and do not run the work on the laptop instead.
 - **If stderr says `queued behind`, that is not an error.** The run is waiting for a slot on the box; keep waiting.
 - An exit code of 255 is never the box's: no run started, because the connection failed or the box's address is not configured. Report the stderr line as it stands.
-- An exit code of 2 with the `JARVIS_DIR is unset` line means no run started. Report that line and stop.
+- An exit code of 2 with the `JARVIS_DIR is unset` line means no run started. Report that line and stop. The guard stays because node alone cannot say this: with `JARVIS_DIR` unset it looks for `/scripts/box-agent.mjs` and fails with exit 1 and a stack trace that never names the variable, so the guard's line is the only thing that tells the reader what to set.

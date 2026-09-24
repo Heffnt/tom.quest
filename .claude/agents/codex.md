@@ -51,5 +51,5 @@ cat /tmp/codex-k7qz.err; echo '=== ANSWER ==='; cat /tmp/codex-k7qz.out; rm -f /
 - If the request contains the text `CODEX_PROMPT_END`, change the delimiter to `CODEX_PROMPT_END_2` on both lines.
 - If stderr says `queued behind`, that is not an error: the run is waiting for a slot on the box. Keep waiting.
 - An exit code of 255 is never Codex's: no run started, because the connection to the box failed or the box's address is not configured. Report the stderr line as it stands.
-- An exit code of 2 with the `JARVIS_DIR is unset` line means no run started. Report that line and stop.
+- An exit code of 2 with the `JARVIS_DIR is unset` line means no run started. Report that line and stop. The guard stays because node alone cannot say this: with `JARVIS_DIR` unset it looks for `/scripts/box-agent.mjs` and fails with exit 1 and a stack trace that never names the variable, so the guard's line is the only thing that tells the reader what to set.
 - A weekly-cap message from Codex is Codex's own answer, not a transport failure. Relay it as the answer.
