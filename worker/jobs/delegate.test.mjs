@@ -400,7 +400,7 @@ describe("askDelegate", () => {
 // evals branch; these checks fence the item format and, above all, the honesty
 // rule, so the items cannot drift into ones that give their own answer away.
 describe("evals/tasks/delegate", () => {
-  // vitest runs from the repository root, as scripts/narrow-list-mirror.test.mjs does.
+  // vitest runs from the repository root.
   const dir = "evals/tasks/delegate";
   const items = readdirSync(dir)
     .filter((name) => name.endsWith(".json"))

@@ -130,9 +130,10 @@ describe("session.mjs env scrub", () => {
 // Routing by model family: the Claude branch passes the SDK a model id only
 // when the name maps to one, the Codex branch hands the runner id + effort.
 describe("session.mjs model routing", () => {
-  it("mirrors SESSION_MODELS and defaults an absent model to opus", () => {
-    expect(sessionSource).toMatch(/const SESSION_MODELS = \{/);
-    expect(sessionSource).toMatch(/SESSION_MODELS\[name \?\? "opus"\]\.family/);
+  it("imports SESSION_MODELS from its one home and defaults an absent model to the legacy word", () => {
+    expect(sessionSource).toMatch(/import \{[^}]*\bSESSION_MODELS\b[^}]*\} from "\.\/session-constants\.mjs";/);
+    expect(sessionSource).not.toMatch(/const SESSION_MODELS = \{/);
+    expect(sessionSource).toMatch(/SESSION_MODELS\[name \?\? LEGACY_SESSION_MODEL\]\.family/);
   });
 
   it("branches on family codex to the Codex runner with id + effort", () => {

@@ -4,8 +4,8 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
-import { redactSecrets } from "../worker/session-host/redact.mjs";
-import { CHECKIN_RULES, checkInFailures } from "../scripts/checkin-rules.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
+import { CHECKIN_RULES, checkInFailures } from "../shared/checkin-rules.mjs";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import type { RunnerFact } from "./ttsCompose";
 import {

@@ -8,7 +8,7 @@
 // tsconfig.json) knows no path alias — the same reason convex/brews.ts reaches
 // app/perfume by a relative path.
 import type { Doc } from "../../convex/_generated/dataModel";
-import { briefForPrompt } from "../../worker/jobs/context-relevance.mjs";
+import { briefForPrompt } from "../../shared/context-relevance.mjs";
 
 // The FRAMING says what this session is and how wide it is; it is only true
 // here, so it lives only here. insertSession prepends the model-of-tom files
@@ -22,7 +22,7 @@ function fact(label: string, value: string | undefined): string | null {
 /**
  * The brief as the prompt carries it: whole, or cut at the last heading before
  * SUPPLEMENTAL_CAPS.brief with a line saying where the rest is. ONE HOME for
- * the cut (worker/jobs/context-relevance.mjs), which the autonomous twin in
+ * the cut (shared/context-relevance.mjs), which the autonomous twin in
  * convex/claudeSessions.ts calls too — so the two prompts cannot disagree about
  * where a brief stops or where the rest of it is.
  */

@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { GRAPH_MAX_BYTES } from "../worker/jobs/graph.mjs";
+import { GRAPH_MAX_BYTES } from "../shared/graph.mjs";
 import {
   GRAPH_PATH,
   RECORD_NODES,
@@ -404,7 +404,7 @@ describe("the disagreement classes", () => {
   // source page is missing is `continue`d, `addEvidence` writes an edge only
   // `if (b.nodes.has(target))`, `addDefines` and `addMentions` draw from the
   // node map itself, and a record-kind end is excluded from G3 by switch 2. The
-  // ONE unguarded end in worker/jobs/graph.mjs is the `to` of a `supersedes`
+  // ONE unguarded end in shared/graph.mjs is the `to` of a `supersedes`
   // edge — `if (!b.nodes.has(from)) continue` checks the `from` only — and
   // `generateGraph` never passes `changes`, so no command line reaches it.
   // Driving G3 would mean either adding a `--changes` input or reaching past the
@@ -687,7 +687,7 @@ function code(source) {
 describe("no model, no network, no vector", () => {
   const FORBIDDEN = ["fetch(", "anthropic", "openai", "embedding", "vector"];
 
-  for (const relative of ["scripts/graph.mjs", "worker/jobs/graph.mjs"]) {
+  for (const relative of ["scripts/graph.mjs", "shared/graph.mjs"]) {
     it(`${relative} names none of ${FORBIDDEN.join(", ")} in its code`, () => {
       // An edge whose provenance is a named regex is auditable; one a model
       // wrote is indistinguishable from one nobody read. The comments are

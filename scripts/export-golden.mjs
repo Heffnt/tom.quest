@@ -53,7 +53,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 import { assemblePrelude } from "./prelude.mjs";
 
 /** Where the nightly job writes the snapshot inside the WikiTom checkout. */

@@ -1,201 +1,30 @@
-// Guardrail: the worker daemon cannot import convex/ttsShared.ts (only
-// worker/ is deployed to the Jarvis Box; Node does not load .ts), so it carries the
-// session-surface constants itself — REPO_GITHUB as a literal mirror, and the
-// daemon staleness window as the poll cadence it is derived from. This check
-// fails when either side drifts from the one home (ledger graduation
-// session-constants-two-homes: "a byte-equality check ties the mirrors").
+// Guardrail: the session vocabulary that the record, the site and the box all
+// read has ONE home each, and this check fails on a second one. The repo map,
+// the model table, the narrow list, the legacy model word, the staleness window
+// and the usage-cap regex live in shared/session-constants.mjs, which every
+// side imports (ledger graduation session-constants-two-homes); what remains
+// here are the facts with no importable home: the model families' runners, the
+// schema union, the symlinks that reach shared/ from worker/, the repo list
+// pasted into code, and the simplify job's inventory.
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { join, sep } from "node:path";
-import { narrowListFailures } from "./narrow-list-mirror.mjs";
+import { SESSION_MODELS, SESSION_REPOS } from "../shared/session-constants.mjs";
 
-// Guardrail 2: some session vocabulary has no worker half at all — the
-// live-status list's other half is convex/schema.ts, and its failure mode is a
-// SECOND home in TypeScript rather than a stale literal in .mjs. Check 4 below
-// fences that pair the same way.
 const shared = readFileSync("convex/ttsShared.ts", "utf8");
-const sessionMjs = readFileSync("worker/session-host/session.mjs", "utf8");
-const hostMjs = readFileSync("worker/session-host/session-host.mjs", "utf8");
-// The THIRD copy of the repo map. worker/runs/box-run.mjs is the box transport's
-// body: it validates --repo and clones the mirror, and it restates the map for
-// the same reason session.mjs does — it must stay a zero-dependency script that
-// runs from /opt/tts/runs, and importing session.mjs would pull the whole
-// daemon. A run offered a repo the daemon does not know, or refused one it
-// does, is the drift this third side of check 2 fences.
-const boxRunMjs = readFileSync("worker/runs/box-run.mjs", "utf8");
 
 const failures = [];
 
-// 1. DAEMON_STALE_MS: the one home's literal must equal 3 missed idle polls
-//    (the CONTRACT comment above POLL_IDLE_MS in session-host.mjs). The worker
-//    carries no DAEMON_STALE_MS of its own — the cadence IS its half.
-const staleMatch = shared.match(/DAEMON_STALE_MS = ([\d_]+)/);
-const idleMatch = hostMjs.match(/POLL_IDLE_MS = ([\d_]+)/);
-if (!staleMatch) failures.push("ttsShared.ts: DAEMON_STALE_MS literal not found");
-if (!idleMatch) failures.push("session-host.mjs: POLL_IDLE_MS literal not found");
-if (staleMatch && idleMatch) {
-  const stale = Number(staleMatch[1].replace(/_/g, ""));
-  const idle = Number(idleMatch[1].replace(/_/g, ""));
-  if (stale !== 3 * idle) {
-    failures.push(
-      `staleness contract drifted: DAEMON_STALE_MS=${stale} but 3 x POLL_IDLE_MS=${3 * idle}`,
-    );
+// 1. Every model family must have a runner branch in session.mjs startQuery:
+// "claude" is the SDK query and "codex" the codexQuery import. A third family
+// with no branch would silently run as Claude.
+// witness: add a model with family "gemini" to SESSION_MODELS.
+for (const family of new Set(Object.values(SESSION_MODELS).map((model) => model.family))) {
+  if (family !== "claude" && family !== "codex") {
+    failures.push(`SESSION_MODELS names family "${family}" but session.mjs has no runner for it`);
   }
 }
 
-// 2. Repo map: every repo in the one home must appear in the daemon's
-// REPO_GITHUB with the same GitHub path, and vice versa. Both sides are
-// extracted block-scoped with the same regex, and each block's entry count is
-// asserted against the match count so an entry whose shape the regex cannot
-// read fails loudly instead of vanishing from both sides.
-const entryRe = /"?([\w.-]+)"?: "([\w.-]+\/[\w.-]+)",/g;
-const readRepos = (block, where) => {
-  const entries = [...block.matchAll(entryRe)].map((m) => `${m[1]}=${m[2]}`);
-  const lines = block
-    .split("\n")
-    .filter((l) => l.includes(":") && !l.trim().startsWith("//")).length;
-  if (lines !== entries.length) {
-    failures.push(
-      `${where}: ${lines} repo entr${lines === 1 ? "y" : "ies"} but only ${entries.length} parsed — unreadable entry shape`,
-    );
-  }
-  return entries;
-};
-
-const sharedBlock = shared.match(/SESSION_REPOS = \{([^}]+)\}/);
-const daemonBlock = sessionMjs.match(/const REPO_GITHUB = \{([^}]+)\}/);
-const boxRunBlock = boxRunMjs.match(/const REPO_GITHUB = \{([^}]+)\}/);
-if (!sharedBlock) failures.push("ttsShared.ts: SESSION_REPOS not found");
-if (!daemonBlock) failures.push("session.mjs: REPO_GITHUB not found");
-if (!boxRunBlock) failures.push("box-run.mjs: REPO_GITHUB not found");
-if (sharedBlock && daemonBlock && boxRunBlock) {
-  const a = readRepos(sharedBlock[1], "ttsShared.ts SESSION_REPOS")
-    .sort()
-    .join("|");
-  const b = readRepos(daemonBlock[1], "session.mjs REPO_GITHUB").sort().join("|");
-  const c = readRepos(boxRunBlock[1], "box-run.mjs REPO_GITHUB").sort().join("|");
-  if (a !== b || a !== c) {
-    failures.push(
-      `repo maps drifted:\n  ttsShared.ts: ${a}\n  session.mjs:  ${b}\n  box-run.mjs:  ${c}`,
-    );
-  }
-}
-
-// 2b. Model table: SESSION_MODELS (ttsShared.ts, the one home) and the
-// daemon's mirror of the same name in session.mjs must agree entry for entry
-// — name, family, id and effort — because the family picks the RUNNER on the
-// box and the id/effort are what that runner puts on the command line. Same
-// block-scoped extraction and count-vs-parsed assertion as the repo map, so
-// an entry the regex cannot read fails loudly rather than vanishing from both
-// sides. `as const` on the one home is stripped by the block regex's `}`.
-// witness: change gpt-5.6-terra's effort on one side only, or add a model to
-// ttsShared without mirroring it.
-const modelEntryRe =
-  /"?([\w.-]+)"?: \{ family: "(\w+)", id: (null|"[^"]+"), effort: (null|"[^"]+") \}/g;
-const readModels = (block, where) => {
-  const entries = [...block.matchAll(modelEntryRe)].map(
-    (m) => `${m[1]}={${m[2]},${m[3]},${m[4]}}`,
-  );
-  const lines = block
-    .split("\n")
-    .filter((l) => l.includes(":") && !l.trim().startsWith("//")).length;
-  if (lines !== entries.length) {
-    failures.push(
-      `${where}: ${lines} model entr${lines === 1 ? "y" : "ies"} but only ${entries.length} parsed — unreadable entry shape`,
-    );
-  }
-  return entries;
-};
-// The block is the run of indented lines between `SESSION_MODELS = {` and the
-// column-0 `}` — one entry per line is the shape both homes use.
-const modelBlockRe = /SESSION_MODELS = \{\r?\n((?:[ \t]+.*\r?\n)+)\}/;
-const sharedModels = shared.match(modelBlockRe);
-const daemonModels = sessionMjs.match(modelBlockRe);
-if (!sharedModels) failures.push("ttsShared.ts: SESSION_MODELS not found");
-if (!daemonModels) failures.push("session.mjs: SESSION_MODELS not found");
-if (sharedModels && daemonModels) {
-  const a = readModels(sharedModels[1], "ttsShared.ts SESSION_MODELS").sort().join("|");
-  const b = readModels(daemonModels[1], "session.mjs SESSION_MODELS").sort().join("|");
-  if (a !== b) {
-    failures.push(`model tables drifted:\n  ttsShared.ts: ${a}\n  session.mjs:  ${b}`);
-  }
-  // Every family named must have a runner branch in startQuery: "claude" is
-  // the SDK query and "codex" the codexQuery import. A third family with no
-  // branch would silently run as Claude.
-  const families = new Set([...a.matchAll(/=\{(\w+),/g)].map((m) => m[1]));
-  for (const family of families) {
-    if (family !== "claude" && family !== "codex") {
-      failures.push(`SESSION_MODELS names family "${family}" but session.mjs has no runner for it`);
-    }
-  }
-}
-// The absent-model default must be the same word on both sides. The one home
-// keeps it as the named constant LEGACY_SESSION_MODEL (modelFamily reads that
-// name, and the browser imports it rather than spelling "opus" again); the
-// daemon, which cannot import .ts, still carries the literal in `name ??
-// "opus"`. Both halves are read here and compared.
-const sharedDefault = shared.match(
-  /LEGACY_SESSION_MODEL[^=\n]*= "([\w.-]+)"/,
-);
-const daemonDefault = sessionMjs.match(/SESSION_MODELS\[\w+ \?\? "([\w.-]+)"\]\.family/);
-if (!sharedDefault) failures.push("ttsShared.ts: LEGACY_SESSION_MODEL literal not found");
-if (!/SESSION_MODELS\[\w+ \?\? LEGACY_SESSION_MODEL\]\.family/.test(shared)) {
-  failures.push(
-    "ttsShared.ts: modelFamily does not read LEGACY_SESSION_MODEL — the legacy word has one home",
-  );
-}
-if (!daemonDefault) failures.push("session.mjs: modelFamily's absent-model default not found");
-if (sharedDefault && daemonDefault && sharedDefault[1] !== daemonDefault[1]) {
-  failures.push(
-    `absent-model default drifted: ttsShared.ts reads absent as "${sharedDefault[1]}", session.mjs as "${daemonDefault[1]}"`,
-  );
-}
-
-// 3. The usage-limit fingerprint: the daemon's usage-limit record
-// (USAGE_LIMIT_RE in session.mjs) and the scheduler's circuit breaker
-// (AUTO_USAGE_RE in claudeSessions.ts) must mean the same thing by "the
-// account is capped" — on 2026-08-30 the CLI's live text ("You've hit your
-// session limit · resets 8:10am (UTC)") matched neither, and the scheduler
-// burned a dozen launches against a wall. The two
-// sources must byte-match, and both must match the observed cap texts while
-// staying quiet on transient API weather.
-// witness: change one regex's source, or drop the `session limit`
-// alternative from both.
-const convexTs = readFileSync("convex/claudeSessions.ts", "utf8");
-const usageA = sessionMjs.match(/USAGE_LIMIT_RE = \/(.+)\/i;/);
-const usageB = convexTs.match(/AUTO_USAGE_RE = \/(.+)\/i;/);
-if (!usageA) failures.push("session.mjs: USAGE_LIMIT_RE literal not found");
-if (!usageB) failures.push("claudeSessions.ts: AUTO_USAGE_RE literal not found");
-if (usageA && usageB) {
-  if (usageA[1] !== usageB[1]) {
-    failures.push(
-      `usage-limit regexes drifted:\n  session.mjs:       /${usageA[1]}/i\n  claudeSessions.ts: /${usageB[1]}/i`,
-    );
-  }
-  const re = new RegExp(usageA[1], "i");
-  for (const observed of [
-    "You've hit your session limit · resets 8:10am (UTC)",
-    "Claude AI usage limit reached",
-    "5-hour limit reached",
-    // Codex's cap vocabulary (2026-09-04): the app-server protocol's
-    // RateLimitReachedType literals and the CLI's prose.
-    "usage_limit_reached",
-    "rate_limit_reached",
-    "You've hit your usage limit. Try again later.",
-  ]) {
-    if (!re.test(observed)) {
-      failures.push(`usage-limit regex misses observed cap text: "${observed}"`);
-    }
-  }
-  for (const transient of ["overloaded_error", "API rate limit exceeded (429)"]) {
-    if (re.test(transient)) {
-      failures.push(
-        `usage-limit regex over-matches transient API weather: "${transient}" — a 529/429 must not stand the fleet down for 3h`,
-      );
-    }
-  }
-}
-
-// 4. The live-status list: LIVE_STATUSES has ONE home (ttsShared.ts) and its
+// 2. The live-status list: LIVE_STATUSES has ONE home (ttsShared.ts) and its
 // other half is the schema — "live" is defined as the claudeSessions.status
 // union minus the two terminal statuses, so adding a status to the schema
 // without deciding whether it is live fails here instead of silently being
@@ -270,39 +99,54 @@ for (const file of [...walk("app"), ...walk("convex")]) {
   }
 }
 
-// 5. The worker env loader has ONE body. worker/jobs/worker-env.mjs is it;
-// worker/session-host/worker-env.mjs is a symlink to it, because setup.sh
-// installs jobs/ flat to /opt/tts and session-host/ to /opt/tts/session-host,
-// so a spelled-out ../jobs import resolves in the repo and dangles on the box
-// (that file's header carries the reasoning). Two ways to lose the one home:
-// replace the link with a second real file, or paste the KEY=VALUE parse back
-// into a caller. Both are checked.
+// 3. Every compatibility link has ONE body. setup.sh installs jobs/ flat to
+// /opt/tts and session-host/ to /opt/tts/session-host, so a spelled-out
+// ../jobs or ../../shared import that resolves in the repo dangles on the box.
+// Instead a module that lives elsewhere is reached through a symlink at the
+// path its importers already use, and setup.sh's `cp` follows the link, so the
+// box gets a real file at every home. worker/jobs/worker-env.mjs (the one
+// env-file reader) and the modules shared/ holds are reached this way. Two
+// ways to lose the one body: replace a link with a second real file, or point
+// it somewhere else. Both are checked. The worker-env parse loop pasted back
+// into a caller is the third, checked after the table.
 // witness: `rm worker/session-host/worker-env.mjs && cp worker/jobs/worker-env.mjs
 // worker/session-host/`, or copy the parse loop into lib.mjs.
-const ENV_LINK = "worker/session-host/worker-env.mjs";
-const ENV_LINK_TARGET = "../jobs/worker-env.mjs";
+const COMPAT_LINKS = [
+  ["worker/session-host/worker-env.mjs", "../jobs/worker-env.mjs"],
+  ["worker/session-host/session-archive.mjs", "../jobs/session-archive.mjs"],
+  ["worker/session-host/redact.mjs", "../../shared/redact.mjs"],
+  ["worker/jobs/clip.mjs", "../../shared/clip.mjs"],
+  ["worker/jobs/evals-row.mjs", "../../shared/evals-row.mjs"],
+  ["worker/jobs/graph-hash.mjs", "../../shared/graph-hash.mjs"],
+  ["worker/jobs/graph.mjs", "../../shared/graph.mjs"],
+  ["worker/jobs/learning-change-names.mjs", "../../shared/learning-change-names.mjs"],
+  ["worker/jobs/markdown-sections.mjs", "../../shared/markdown-sections.mjs"],
+  ["worker/session-host/session-constants.mjs", "../../shared/session-constants.mjs"],
+];
 // A checkout without symlink support (Windows without the privilege, or
-// core.symlinks=false) writes the link as a one-line text file holding the
+// core.symlinks=false) writes a link as a one-line text file holding the
 // target. That is git's own representation of the same link and it is what
 // ships, so the target is what is checked, not the inode kind — the rule this
 // enforces is "one body", and a file whose whole content is the target has no
 // second body in it.
-const envLinkTarget = () => {
-  const stat = lstatSync(ENV_LINK);
-  if (stat.isSymbolicLink()) return readlinkSync(ENV_LINK);
-  const text = readFileSync(ENV_LINK, "utf8");
+const linkTarget = (link) => {
+  const stat = lstatSync(link);
+  if (stat.isSymbolicLink()) return readlinkSync(link);
+  const text = readFileSync(link, "utf8");
   const oneLine = text.trim();
   return oneLine === "" || /\s/.test(oneLine) ? null : oneLine;
 };
-try {
-  const target = envLinkTarget();
-  if (target === null) {
-    failures.push(`${ENV_LINK} is a real file — it must stay a symlink to ${ENV_LINK_TARGET}`);
-  } else if (target !== ENV_LINK_TARGET) {
-    failures.push(`${ENV_LINK} points at ${target}, not ${ENV_LINK_TARGET}`);
+for (const [link, expected] of COMPAT_LINKS) {
+  try {
+    const target = linkTarget(link);
+    if (target === null) {
+      failures.push(`${link} is a real file — it must stay a symlink to ${expected}`);
+    } else if (target !== expected) {
+      failures.push(`${link} points at ${target}, not ${expected}`);
+    }
+  } catch {
+    failures.push(`${link} is missing — the box code that imports it by this path cannot load`);
   }
-} catch {
-  failures.push(`${ENV_LINK} is missing — the session-host daemon cannot read /etc/tts/worker.env`);
 }
 // The parse loop's own marker line, which must appear in exactly one file.
 const PARSE_MARKER = 'const eq = line.indexOf("=");';
@@ -315,11 +159,13 @@ for (const [file, text] of [
   }
 }
 
-// 6. No fourth copy of the repo list. SESSION_REPOS is the one home; before
+// 4. No second copy of the repo list. SESSION_REPOS is the one home; before
 // PR #28 the same fact was hand-written three more times (AUTO_REPOS,
 // PROSPECT_REPOS, REPO_OPTIONS), so adding a repo in one place left the others
 // silently disagreeing. Those three are gone — two are now DERIVED from the one
-// home and one was deleted — and this check is what stops a fourth appearing.
+// home and one was deleted — and so are the daemon's and box-run's hand copies,
+// which import shared/session-constants.mjs now. This check is what stops
+// another appearing.
 // Rule: outside the files listed in REPO_LIST_ALLOWED, no source file may name
 // two or more session repos close together in executable code. Two names within
 // REPO_NAME_WINDOW characters of each other is a list, whatever syntax carries
@@ -332,13 +178,7 @@ for (const [file, text] of [
 // witness: paste `const REPOS = ["tom.quest", "WikiTom"]` into any convex/ or
 // app/ file and this check fails.
 const REPO_LIST_ALLOWED = new Set([
-  "convex/ttsShared.ts", // the one home
-  "worker/session-host/session.mjs", // the daemon mirror, fenced by check 2 above
-  // The box transport's mirror, fenced by check 2 above alongside the daemon's.
-  // It cannot import the one home (a .ts) and must not import session.mjs (the
-  // whole daemon, npm deps included) because it runs as a plain script from
-  // /opt/tts/runs — the same constraint that put the map in session.mjs.
-  "worker/runs/box-run.mjs",
+  "shared/session-constants.mjs", // the one home
   "scripts/check-session-mirrors.mjs", // this file
   // Prose, like a comment, but inside template literals the comment strip
   // cannot reach: this file is nothing but the HTML explanation documents
@@ -396,6 +236,10 @@ const walkSources = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
       if (!SKIP_DIR.has(entry.name)) walkSources(join(dir, entry.name));
+    } else if (entry.isSymbolicLink()) {
+      // A compatibility link (check 3) is the file it names, which the walk
+      // reads at its own path; reading it here too would report it twice.
+      continue;
     } else if (
       SCAN_EXT.test(entry.name) &&
       !/\.(test|spec)\.[a-z]+$/.test(entry.name)
@@ -422,8 +266,8 @@ const stripComments = (src) =>
     })
     .join("\n");
 
-if (sharedBlock) {
-  const repoNames = [...sharedBlock[1].matchAll(entryRe)].map((m) => m[1]);
+{
+  const repoNames = Object.keys(SESSION_REPOS);
   if (repoNames.length < 2) {
     failures.push(
       "repo-list fence: fewer than 2 repo names parsed from SESSION_REPOS — the fence cannot run",
@@ -450,7 +294,7 @@ if (sharedBlock) {
         if (next.name === hits[i].name) continue;
         const line = code.slice(0, hits[i].at).split("\n").length;
         failures.push(
-          `repo list copied outside the one home: ${file}:${line} names ${hits[i].name} and ${next.name} together — derive it from SESSION_REPO_NAMES in convex/ttsShared.ts instead`,
+          `repo list copied outside the one home: ${file}:${line} names ${hits[i].name} and ${next.name} together — import SESSION_REPOS from shared/session-constants.mjs, or derive it from SESSION_REPO_NAMES in convex/ttsShared.ts, instead`,
         );
         break;
       }
@@ -458,18 +302,7 @@ if (sharedBlock) {
   }
 }
 
-// 7. The narrow list: NARROW_LIST's `command` strings in ttsShared.ts must
-// equal NARROW_LIST_COMMANDS in session.mjs, in order, byte for byte. The
-// delegate reads the one home over HTTP (GET /tts/state); the classifier,
-// which has no network in its path, reads this mirror. A drift means the two
-// halves of Tom's list disagree about what is his — and the half that is
-// wrong is the half that decides whether a command runs unattended.
-// The comparison itself lives in scripts/narrow-list-mirror.mjs so it can be
-// unit-tested without running this whole script.
-// witness: change one `command` string on one side only.
-failures.push(...narrowListFailures(shared, sessionMjs));
-
-// 8. Simplify runs from /opt/tts without the repository's package.json, so it
+// 5. Simplify runs from /opt/tts without the repository's package.json, so it
 // cannot derive this deployed list. The scripts `pnpm check:guardrails` runs
 // and STATIC_BOUNDARY_SCRIPTS in worker/jobs/simplify.mjs are one
 // fact spelled twice. The simplify job reports the merge bar's contents from

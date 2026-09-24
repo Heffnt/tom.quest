@@ -15,33 +15,20 @@
 
 import { v, type Infer } from "convex/values";
 
-// The narrow list is Tom's boundary for an unattended delegate. Its `decision`
-// text is served to the box and rendered in the delegate prompt; `command` is
-// the literal mirror used by the autonomous shell classifier. A merge is
-// deliberately absent: until its mechanical gate exists it remains blocked by
-// the classifier, and once it exists it is reported for objection instead.
-export const NARROW_LIST = [
-  {
-    id: "money",
-    decision: "spend money, commit to a payment, or enter a payment method anywhere",
-    command: "spend money — a purchase, a subscription, a payment, or entering a payment method",
-  },
-  {
-    id: "message-in-his-name",
-    decision: "send a message to another human being in Tom's name — mail, chat, a form, a comment on someone else's work",
-    command: "send a message to another human in Tom's name (mail, a Slack post outside the system's own channels, a form submission, a comment on someone else's issue or pull request)",
-  },
-  {
-    id: "irreversible-deletion",
-    decision: "delete data irreversibly outside git — anything a checkout, a snapshot or a branch cannot bring back",
-    command: "delete data that git cannot restore — anything outside the working directory, and any history rewrite that is pushed",
-  },
-  {
-    id: "credential",
-    decision: "read, print, move, create, rotate or revoke a credential",
-    command: "read, print, move, or send a credential, key, token or password anywhere",
-  },
-] as const;
+// The session constants the box reads too: the narrow list, the repo map, the
+// model table and the daemon's staleness window. Their one home is
+// shared/session-constants.mjs, plain ESM that the box's Node and this file
+// both import; they are re-exported here so the record and the site keep one
+// import. The narrow list is Tom's boundary for an unattended delegate.
+import {
+  DAEMON_STALE_MS,
+  LEGACY_SESSION_MODEL,
+  NARROW_LIST,
+  NO_REPO,
+  SESSION_MODELS,
+  SESSION_REPOS,
+} from "../shared/session-constants.mjs";
+export { DAEMON_STALE_MS, LEGACY_SESSION_MODEL, NARROW_LIST, NO_REPO, SESSION_MODELS, SESSION_REPOS };
 export type NarrowListItem = (typeof NARROW_LIST)[number];
 export const NARROW_LIST_IDS = NARROW_LIST.map((item) => item.id);
 export function isNarrowListId(value: unknown): value is NarrowListItem["id"] {
@@ -773,28 +760,10 @@ export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
   return { commit, paths };
 }
 
-// ── Session-surface constants (one home; ledger graduation
-// session-constants-two-homes) ───────────────────────────────────────────────
-// app/runs and convex/claudeSessions import these directly. The worker
-// daemon CANNOT (only worker/ is deployed to the Jarvis Box, and Node does not load
-// .ts), so it carries its own halves: session.mjs's REPO_GITHUB is a literal
-// mirror of SESSION_REPOS, while session-host.mjs has no DAEMON_STALE_MS at
-// all — its POLL_IDLE_MS cadence is the other half of a DERIVED contract
-// (staleness = 3 missed idle polls). scripts/check-session-mirrors.mjs fences
-// both — literal equality for the repo map, the 3x relation for staleness —
-// and fails the guardrails run when either drifts.
-
-/**
- * The repos a session may check out, with their GitHub homes. The browser's
- * repo picker is Object.keys(SESSION_REPOS) + "none"; the daemon clones
- * SESSION_REPOS[repo].
- */
-export const SESSION_REPOS = {
-  "tom.quest": "Heffnt/tom.quest",
-  ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
-  WikiTom: "Heffnt/WikiTom",
-  Jarvis: "Heffnt/Jarvis",
-} as const;
+// ── Session-surface constants ─────────────────────────────────────────────────
+// SESSION_REPOS and NO_REPO live in shared/session-constants.mjs with the rest
+// of the session constants the box reads (imported at the top of this file);
+// what is derived from them stays here.
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
  * Written into claudeSessions.repo when a session holds no repos at all. */
@@ -933,7 +902,6 @@ export function parseCeilingReply(text: string, current: RunnerCeiling): { ceili
 const CEILING_REPLY_REFUSED =
   'A ceiling reply is only the word "ceiling" and the new numbers, each named once, such as "ceiling 8 GPUs, 12 hours, 256 GB".';
 
-export const NO_REPO = "none";
 
 /** Every repo name a session may hold, in declaration order. THE list — the
  * auto-scheduler, the prospecting lane and the browser's picker all read it
@@ -943,7 +911,9 @@ export const SESSION_REPO_NAMES = Object.keys(
 ) as (keyof typeof SESSION_REPOS)[];
 
 // ── Session models (ratified by Tom, 2026-09-04) ─────────────────────────────
-// THE ONE HOME for which model a session runs on. A model name implies its
+// SESSION_MODELS, the table of which model a session runs on, lives in
+// shared/session-constants.mjs so the box's daemon reads the same table; the
+// types and helpers derived from it are here. A model name implies its
 // FAMILY, and the family is what picks the runner on the Jarvis Box: "claude"
 // runs through the Agent SDK, "codex" through OpenAI's Codex CLI
 // (worker/session-host/codex-query.mjs). There is no separate "agent" field —
@@ -965,19 +935,6 @@ export const SESSION_REPO_NAMES = Object.keys(
 // account default (today's behaviour for an ordinary Claude session).
 // `effort` is Codex's model_reasoning_effort, sent on every turn.
 //
-// MIRRORED in worker/session-host/session.mjs (the daemon cannot import .ts);
-// scripts/check-session-mirrors.mjs fails guardrails on drift.
-export const SESSION_MODELS = {
-  opus: { family: "claude", id: null, effort: null },
-  sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
-  fable: { family: "claude", id: "claude-fable-5-1", effort: null },
-  "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
-  "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
-  // OpenAI's Astra, the orchestrator's first choice (Tom, 2026-09-21). Listed
-  // by the box's Codex CLI as `gpt-6-astra`; convex/orchestrator.ts takes it
-  // only when the daemon's heartbeat says the CLI lists it.
-  "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
-} as const;
 export type SessionModel = keyof typeof SESSION_MODELS;
 export type ModelFamily = (typeof SESSION_MODELS)[SessionModel]["family"];
 export const SESSION_MODEL_NAMES = Object.keys(
@@ -1036,12 +993,6 @@ export const SESSION_MODEL = v.union(
 export function isSessionModel(name: unknown): name is SessionModel {
   return typeof name === "string" && Object.prototype.hasOwnProperty.call(SESSION_MODELS, name);
 }
-/** A row written before models existed (model absent) ran Claude on the
- * account default — so absent reads as this. ONE HOME for the legacy word: the
- * browser and modelFamily below both read it here rather than spelling "opus"
- * again (the daemon's mirror in worker/session-host/session.mjs carries the
- * literal, and scripts/check-session-mirrors.mjs fences the two together). */
-export const LEGACY_SESSION_MODEL: SessionModel = "opus";
 export function modelFamily(model: SessionModel | undefined): ModelFamily {
   return SESSION_MODELS[model ?? LEGACY_SESSION_MODEL].family;
 }
@@ -1107,11 +1058,10 @@ export function normalizeSessionRepos(
   return SESSION_REPO_NAMES.filter((name) => wanted.has(name));
 }
 
-/**
- * The browser treats the session daemon as unreachable past this heartbeat
- * age; forceClose is allowed only past it. 90s = 3 missed 30s idle polls.
- */
-export const DAEMON_STALE_MS = 90_000;
+// DAEMON_STALE_MS (shared/session-constants.mjs, re-exported above): the
+// browser treats the session daemon as unreachable past this heartbeat age,
+// and forceClose is allowed only past it. It is three of the daemon's idle
+// polls, POLL_IDLE_MS, defined beside it.
 
 /**
  * The session statuses that mean "this session is still a going concern" —

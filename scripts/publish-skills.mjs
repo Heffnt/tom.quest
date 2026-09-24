@@ -1,5 +1,5 @@
 // THE GENERATOR. It reads the bodies out of immutable git objects, hands them
-// to scripts/skills.mjs — which decides what the set is and says nothing about
+// to shared/skills.mjs — which decides what the set is and says nothing about
 // disks — and writes one directory per skill under `--out`.
 //
 //   node scripts/publish-skills.mjs --wikitom DIR [--commit REF]
@@ -31,7 +31,7 @@ import {
   renderSkillMd,
   renderSkillMetadata,
   skillDirName,
-} from "./skills.mjs";
+} from "../shared/skills.mjs";
 
 class PublishError extends Error {}
 

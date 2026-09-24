@@ -25,7 +25,7 @@ import {
   normalizeSessionRepos,
   nyOffsetHours,
 } from "./ttsShared";
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is

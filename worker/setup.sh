@@ -231,67 +231,74 @@ cp "$WORKER_DIR"/jobs/session-archive.mjs /opt/tts/jobs/session-archive.mjs
 mkdir -p /opt/tts/session-host
 cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
   /opt/tts/session-host/
-mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
+mkdir -p /opt/tts/scripts /opt/tts/shared
+# /opt/tts/worker/ held nested copies of worker/jobs/ modules for the scripts
+# to reach by ../worker/jobs/; those modules live in shared/ now, so the tree is
+# stale and goes. The flat files removed with it left worker/jobs/ for shared/,
+# so the flat jobs copy above no longer refreshes them.
+rm -rf /opt/tts/worker
+rm -f /opt/tts/context-relevance.mjs /opt/tts/skill-router.mjs \
+  /opt/tts/checkin-rules.mjs /opt/tts/check-writing-standard.mjs
+# THE SHARED MODULES, as one directory. shared/ holds the plain modules the
+# record, the site and the box all import; the installed scripts below reach
+# them by ../shared/<name>.mjs, which from /opt/tts/scripts/ is this copy.
+# scripts/check-setup-imports.mjs walks each installed script's imports and
+# fails when one lands on a path nothing here fills.
+cp "$WORKER_DIR"/../shared/*.mjs /opt/tts/shared/
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
 cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
-# prelude.mjs's own import graph has to land in the same shape it has in the
-# repo: scripts/skills.mjs beside it — one file holding both the layer table and
-# the skill set — because prelude.mjs reaches for ./skills.mjs by that relative
-# path. Without this copy the assembler cannot load on the box at all.
+# prelude.mjs's own import graph lands in the same shape it has in the repo:
+# it reaches ../shared/skills.mjs (the layer table and the skill set) and
+# ../shared/markdown-sections.mjs, both in the shared/ copy above. Without that
+# copy the assembler cannot load on the box at all. session-start-hook.mjs
+# reaches ../shared/skill-router.mjs the same way to work out what a run is
+# granted; without it the hook throws at module load, exits non-zero with
+# empty stdout, and the session starts with NO context at all.
 #
-# IT NO LONGER REACHES ../worker/jobs/context-relevance.mjs. That import went
-# with the know-layer expansion: prelude.mjs assembles whole layers now, and the
-# caps it used to borrow are only called from Convex and the Next app, neither
-# of which runs here. context-relevance.mjs still lands in /opt/tts flat with
-# every other job above, so a job that wants it can still load it.
-cp "$WORKER_DIR"/../scripts/skills.mjs /opt/tts/scripts/skills.mjs
-# The skill generator goes beside it, not because prelude.mjs wants it, but
-# because the nightly runs it against /root/wikitom to rebuild the box's own
-# skill directories. It imports ./skills.mjs by that relative path, so scripts/
-# is the one place it can live and still load.
+# context-relevance.mjs is in shared/ too, and nothing on the box imports it:
+# its caps are called from Convex and the Next app.
+#
+# The skill generator goes beside prelude.mjs, not because prelude.mjs wants
+# it, but because the nightly runs it against /root/wikitom to rebuild the
+# box's own skill directories. It imports ../shared/skills.mjs, so scripts/
+# beside shared/ is the one place it can live and still load.
 cp "$WORKER_DIR"/../scripts/publish-skills.mjs /opt/tts/scripts/publish-skills.mjs
-# The router, one directory along the same graph:
-# scripts/session-start-hook.mjs imports ../worker/jobs/skill-router.mjs
-# to work out what this run is granted. Without this copy the hook throws at
-# module load on the box, exits non-zero with empty stdout, and the session
-# starts with NO context at all — worse than any failure the hook's own three
-# fallbacks are written to survive.
-cp "$WORKER_DIR"/jobs/skill-router.mjs /opt/tts/worker/jobs/skill-router.mjs
 # The pull-request check's body, beside the jobs rather than under scripts/:
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule
 # the check applies, and there is one body of what a regression is.
 cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
-# The mechanical half of the writing standard, beside it for the same reason.
+# The mechanical half of the writing standard, installed for the same reason.
 # evals.mjs runs failuresFor() as a deterministic check BEFORE calling the
 # judge: a text that broke a rule Tom wrote down is not a matter of reading,
 # and the judge is the expensive half. Without this copy the box silently ran
 # no rules at all and the run still said "pass" — the runner treats an absent
 # file as "no rules ran" so a checkout without it is not a failure, which is
 # exactly why the copy has to be here rather than assumed. Its imports are
-# node builtins and checkin-rules.mjs, copied beside it below.
-cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
-# Its check-in rules, which it re-exports (and which worker/jobs/runner-checkin.mjs
-# reads): a separate file because the Convex record imports it too.
-cp "$WORKER_DIR"/../scripts/checkin-rules.mjs /opt/tts/checkin-rules.mjs
-cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
+# node builtins and ../shared/checkin-rules.mjs, the check-in rules it
+# re-exports (and which worker/jobs/runner-checkin.mjs reads from
+# /opt/tts/shared/), in the shared/ copy above: a separate file because the
+# Convex record imports it too. It sits under scripts/ so that relative path
+# resolves; evals.mjs and plan-graphs.mjs look for it at scripts/ beside them.
+cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/scripts/check-writing-standard.mjs
 # THE GRAPH, in all three homes it is reached from.
 #
-# worker/jobs/graph.mjs imports NOTHING outside its own directory — only
+# shared/graph.mjs imports NOTHING outside its own directory — only
 # ./graph-hash.mjs and ./markdown-sections.mjs — and that is exactly so it can
 # be copied to more than one place. Three callers reach it by three different
 # relative paths and every one of them has to resolve:
 #
-#   /opt/tts/graph.mjs             the flat wildcard copy, for a job beside it
-#   /opt/tts/worker/jobs/graph.mjs scripts/skills.mjs, by ../worker/jobs/
-#   /opt/tts/jobs/graph.mjs        worker/runs/registration.mjs, by ../jobs/
+#   /opt/tts/shared/graph.mjs  the scripts above, by ../shared/, from the
+#                              shared/ copy at the top of this block
+#   /opt/tts/graph.mjs         the flat wildcard copy of worker/jobs/, whose
+#                              graph.mjs is a symlink to shared/graph.mjs
+#   /opt/tts/jobs/graph.mjs    worker/runs/registration.mjs, by ../jobs/
 #
 # The last one is the rule stated at the top of this block: EVERY ../jobs/<file>
 # a runs/ module imports needs a line here, because runs modules land in
 # /opt/tts/runs/ while jobs land flat. registration.mjs imports GRAPH_NODES_CAP,
-# so graph.mjs and the two modules it imports need that home too.
-cp "$WORKER_DIR"/jobs/graph.mjs             /opt/tts/worker/jobs/graph.mjs
-cp "$WORKER_DIR"/jobs/graph-hash.mjs        /opt/tts/worker/jobs/graph-hash.mjs
+# so graph.mjs and the two modules it imports need that home too. The three
+# sources below are symlinks into shared/, and cp copies what they name.
 cp "$WORKER_DIR"/jobs/graph.mjs             /opt/tts/jobs/graph.mjs
 cp "$WORKER_DIR"/jobs/graph-hash.mjs        /opt/tts/jobs/graph-hash.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/jobs/markdown-sections.mjs
@@ -303,17 +310,17 @@ cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/jobs/markdown-sections.mjs
 # forever. Both generators spell the two constants themselves instead, naming
 # search-lib.mjs as the canonical spelling in a comment — the same call
 # worker/jobs/worker-env.mjs makes, for the same install-layout reason.
-# The disk halves, beside prelude.mjs and skills.mjs: the nightly's graph step
-# runs them against /root/wikitom to rebuild tts/vocabulary.json and
-# tts/graph.json, and each reaches ./skills.mjs by that relative path, so
-# scripts/ is the one place they can live and still load.
+# The disk halves, beside prelude.mjs: the nightly's graph step runs them
+# against /root/wikitom to rebuild tts/vocabulary.json and tts/graph.json, and
+# each reaches ../shared/skills.mjs by that relative path, so scripts/ beside
+# shared/ is the one place they can live and still load.
 #
 # THEY ALSO REACH EACH OTHER. scripts/vocabulary.mjs imports `headCommit` from
 # ./graph.mjs — one parser of .git rather than two — so the vocabulary does not
-# load unless graph.mjs is beside it, and graph.mjs in turn needs ./skills.mjs
-# here and ../worker/jobs/graph.mjs above. The vocabulary also imports
+# load unless graph.mjs is beside it, and graph.mjs in turn needs
+# ../shared/skills.mjs and ../shared/graph.mjs. The vocabulary also imports
 # ./closed-vocabulary.mjs, the renderer of the prompt's seven words that
-# convex/vocabulary.ts shares. All four are copied, and dropping any one of
+# convex/vocabulary.ts shares. All of them are copied, and dropping any one of
 # these lines breaks the nightly's graph step at module load.
 cp "$WORKER_DIR"/../scripts/graph.mjs             /opt/tts/scripts/graph.mjs
 cp "$WORKER_DIR"/../scripts/vocabulary.mjs        /opt/tts/scripts/vocabulary.mjs
@@ -820,18 +827,18 @@ echo "== [10/11] desktop workspace =="
 # other checkout on the box, NOTHING RESETS THESE: the session pulls and
 # branches itself, so an existing checkout is skipped, never touched.
 #
-# The repo map is read from box-run.mjs rather than restated here, so
-# scripts/check-session-mirrors.mjs's fence over its three copies covers this
-# step too. Each clone comes from the bare mirror under /var/cache/tts/runs/repos
+# The repo map is imported from shared/session-constants.mjs, its one home,
+# rather than restated here. Each clone comes from the bare mirror under /var/cache/tts/runs/repos
 # when one exists (GitHub otherwise), then takes the clean GitHub URL as its
 # origin, as box-run.mjs's mirrors do: the credential helper above supplies the
 # token at ask time, so no checkout holds it.
 DESKTOP_DIR=/var/cache/tts/desktop
 mkdir -p "$DESKTOP_DIR"
 node -e '
-  const block = require("node:fs").readFileSync(process.argv[1], "utf8").match(/const REPO_GITHUB = \{([^}]+)\}/)[1];
-  for (const m of block.matchAll(/"?([\w.-]+)"?: "([\w.-]+\/[\w.-]+)",/g)) console.log(`${m[1]} ${m[2]}`);
-' "$WORKER_DIR/runs/box-run.mjs" | while read -r DESKTOP_REPO DESKTOP_GITHUB; do
+  import(process.argv[1]).then(({ SESSION_REPOS }) => {
+    for (const [name, github] of Object.entries(SESSION_REPOS)) console.log(`${name} ${github}`);
+  });
+' "$WORKER_DIR/../shared/session-constants.mjs" | while read -r DESKTOP_REPO DESKTOP_GITHUB; do
   CHECKOUT="$DESKTOP_DIR/$DESKTOP_REPO"
   URL="https://github.com/$DESKTOP_GITHUB.git"
   if [ -e "$CHECKOUT" ]; then

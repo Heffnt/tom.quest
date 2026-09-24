@@ -23,7 +23,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
-import { clip } from "../worker/jobs/clip.mjs";
+import { clip } from "../shared/clip.mjs";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { postBroken } from "./tts";
@@ -186,7 +186,7 @@ export const LEARNING_REPO_SESSIONS_MAX = 40;
 export const REPO_PROPOSALS_MAX = 500;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** The agent's reply as the job shows it: clip() from worker/jobs/clip.mjs,
+/** The agent's reply as the job shows it: clip() from shared/clip.mjs,
  * the one clipping rule the jobs use, at LEARNING_REPLY_CHARS. */
 function clipReply(text: unknown): string | null {
   return clip(text, LEARNING_REPLY_CHARS);

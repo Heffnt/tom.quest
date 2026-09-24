@@ -990,7 +990,7 @@ export default defineSchema({
   // name has said all along (the unified agent ecosystem, phase 6). Until this
   // commit it held one row per model-of-tom FILE; those rows moved to
   // modelOfTomFiles below with their shape untouched, and this table now holds
-  // what scripts/skills.mjs builds: `write`, `know-intent`, `know-week`, one
+  // what shared/skills.mjs builds: `write`, `know-intent`, `know-week`, one
   // `know-<area>` per area page, and one `repo-<name>` per repository.
   //
   // A WIDEN-MIGRATE-NARROW TABLE REPLACEMENT. Existing production rows use the

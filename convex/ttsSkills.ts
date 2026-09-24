@@ -24,7 +24,7 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
-import { byteLength, DESCRIPTION_MAX_BYTES } from "../scripts/skills.mjs";
+import { byteLength, DESCRIPTION_MAX_BYTES } from "../shared/skills.mjs";
 
 /** The layer names a POST may still name. `write` and `know` stay in the
  * vocabulary because the nightly publisher spells them until it is narrowed;

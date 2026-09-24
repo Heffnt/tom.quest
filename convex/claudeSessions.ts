@@ -18,8 +18,8 @@ import {
   subjectKey,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
-import { isIsoDay } from "../worker/jobs/markdown-sections.mjs";
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { isIsoDay } from "../shared/markdown-sections.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
@@ -37,8 +37,8 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
   return await requireTom(ctx, "Sessions");
 }
 
-// The staleness threshold lives in ttsShared (one home; the worker daemon's
-// literal mirror is fenced by scripts/check-session-mirrors.mjs), and so do
+// The staleness threshold comes through ttsShared (its one home is
+// shared/session-constants.mjs, which the worker daemon imports too), and so do
 // the live-status list this file scans by (LIVE_STATUSES / isLive, formerly
 // declared here AND in app/runs/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
@@ -52,7 +52,8 @@ import { dueRunnerSteps } from "./ttsRunners";
 import { hostedFacts, onHostedSessionEnded, renewOrchestratorLease } from "./orchestrator";
 import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
 import { EVALS_REQUIRED_FOR_MERGE } from "./ttsMerge";
-import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
+import { briefForPrompt } from "../shared/context-relevance.mjs";
+import { USAGE_LIMIT_RE } from "../shared/session-constants.mjs";
 import {
   WORKER_CONTRACT,
   CODEX_FALLBACK_MODEL,
@@ -2825,7 +2826,7 @@ function buildAutoMissionPrompt(
     promptFact("body", todo.body),
     // Cut at the same cap the interactive twin uses, through the same
     // function, which appends the line saying where the rest is
-    // (worker/jobs/context-relevance.mjs).
+    // (shared/context-relevance.mjs).
     promptFact("brief", todo.brief === undefined ? undefined : briefForPrompt(todo.brief).text),
   ];
   const lines: (string | null)[] = [
@@ -3657,27 +3658,20 @@ const AUTO_MAX_SESSIONS_PER_TODO = 8;
 // forgetting to have it costs a day rather than the batch.
 const AUTO_BATCH_SESSION_PAUSE_MS = 24 * 60 * 60 * 1000;
 // Usage-pressure fingerprints in an ending's own words — daemon endedReason
-// or agent outcomeSummary. LOCKSTEP with worker/session-host/session.mjs
-// USAGE_LIMIT_RE: both sides carry exactly this regex, narrowed on purpose to
-// account usage caps — transient API weather ("rate limit", "overloaded")
-// must not stand the fleet down for 3h. "session limit" is here from
-// observation: the CLI's live cap text on 2026-08-30 was "You've hit your
-// session limit · resets 8:10am (UTC)", which matched neither original
-// alternative, so the breaker never tripped and the scheduler burned a dozen
-// launches against a wall for an hour. The daemon routes SDK error text into
-// outcomeSummary on any abnormal autonomous turn end ("autonomous turn
-// failed: …"), which is what makes this breaker live: the usage-limit
-// wording actually reaches the fields tested below.
+// or agent outcomeSummary — are USAGE_LIMIT_RE (shared/session-constants.mjs),
+// the same regex the daemon records a cap with; its comment says why it is
+// narrow. The daemon routes SDK error text into outcomeSummary on any abnormal
+// autonomous turn end ("autonomous turn failed: …"), which is what makes this
+// breaker live: the usage-limit wording actually reaches the fields tested
+// below.
 //
-// PER FAMILY since 2026-09-04. The alternatives after "session limit" are
-// Codex's wordings — the Codex CLI reports a cap as usage_limit_reached /
-// rate_limit_reached rather than in Claude's prose — and the breaker now asks
+// PER FAMILY since 2026-09-04. The regex's later alternatives are Codex's
+// wordings — the Codex CLI reports a cap as usage_limit_reached /
+// rate_limit_reached rather than in Claude's prose — and the breaker asks
 // WHICH family a tripped ending belonged to (modelFamily of its row's model).
 // Claude tripping still stands the whole tick down (nothing else can run a
 // Claude session); Codex tripping only closes the Codex door, exactly like the
 // weekly gate.
-// scripts/check-session-mirrors.mjs fails the build when the two homes drift.
-const AUTO_USAGE_RE = /usage.?limit|limit reached|session limit|usage_limit_(reached|exceeded)|rate_limit_reached|hit your usage limit/i;
 
 // "This session RAN as an autonomous one" — the question every history read
 // below is actually asking. `mode` alone answers it wrongly for a reopened
@@ -3762,8 +3756,8 @@ export const internalAutoSchedule = internalMutation({
     for (const s of recentTerminal) {
       if (!wasAutonomous(s)) continue;
       if (
-        AUTO_USAGE_RE.test(s.endedReason ?? "") ||
-        AUTO_USAGE_RE.test(s.outcomeSummary ?? "")
+        USAGE_LIMIT_RE.test(s.endedReason ?? "") ||
+        USAGE_LIMIT_RE.test(s.outcomeSummary ?? "")
       ) {
         trippedFamilies.add(modelFamily(s.model));
       }

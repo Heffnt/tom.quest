@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHECKIN_MAX_CHARS, CHECKIN_RULES, checkInFailures } from "./checkin-rules.mjs";
-import { BRIEF_RULES, CHECKIN_RULES as REEXPORTED, failuresFor } from "./check-writing-standard.mjs";
+import { CHECKIN_MAX_CHARS, CHECKIN_RULES, checkInFailures } from "../checkin-rules.mjs";
 
 const ids = (text) => checkInFailures(text).map((f) => f.id);
 
@@ -30,14 +29,5 @@ describe("the check-in form rules", () => {
     expect(ids(`${"A long sentence. ".repeat(100)}`)).toEqual(["checkin-length"]);
     expect(ids("  ")).toEqual(["checkin-empty"]);
     expect(CHECKIN_MAX_CHARS).toBe(1500);
-  });
-
-  it("are the rules check-writing-standard.mjs exports, read through its failuresFor, and not the brief rules", () => {
-    expect(REEXPORTED).toBe(CHECKIN_RULES);
-    expect(failuresFor("## Status\n\nIt ran.", CHECKIN_RULES)).toEqual(["checkin-heading"]);
-    // A ruling request is a heading and a numbered list, which a brief refuses.
-    const ruling = "Two cells are stuck.\n\n## Rulings requested\n\n1. Should I stop them?";
-    expect(failuresFor(ruling, BRIEF_RULES)).toContain("brief-markup");
-    expect(failuresFor(ruling, CHECKIN_RULES)).toEqual([]);
   });
 });

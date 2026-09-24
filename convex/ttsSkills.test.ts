@@ -11,7 +11,7 @@ import {
   modelOfTomText,
   withoutModelOfTomPrelude,
 } from "./ttsSkills";
-import { MODEL_OF_TOM_HEADER } from "./ttsShared";
+import { MODEL_OF_TOM_HEADER, NARROW_LIST } from "./ttsShared";
 import { preparePrompt } from "../worker/jobs/plan-graphs.mjs";
 import { gmailTriagePrompt } from "../worker/jobs/poll-gmail.mjs";
 import { canvasTriagePrompt } from "../worker/jobs/poll-canvas.mjs";
@@ -67,11 +67,13 @@ function classifierPrompt(command: string) {
   expect(start, "classifierPrompt is present").toBeGreaterThan(-1);
   expect(end, "classifierPrompt closes").toBeGreaterThan(start);
   const definition = source.slice(start, end).replace("function classifierPrompt", "function");
-  // The prompt lists the narrow list from the module-level mirror, which is
-  // outside the slice. Take that literal from the same source rather than
-  // restating it here: a test copy would be a third place the four lines live.
-  const narrow = /const NARROW_LIST_COMMANDS = \[[\s\S]*?\n\];/.exec(source)?.[0] ?? "";
-  expect(narrow, "NARROW_LIST_COMMANDS is present").not.toBe("");
+  // The prompt lists NARROW_LIST_COMMANDS, which session.mjs derives outside
+  // the slice from the narrow list's one home. Build it the same way from the
+  // same import rather than restating the four lines here.
+  expect(source, "session.mjs derives NARROW_LIST_COMMANDS from NARROW_LIST").toContain(
+    "const NARROW_LIST_COMMANDS = NARROW_LIST.map((item) => item.command);",
+  );
+  const narrow = `const NARROW_LIST_COMMANDS = ${JSON.stringify(NARROW_LIST.map((item) => item.command))};`;
   const render = new Function(`${narrow}
 return (${definition});`)() as (input: {
     command: string;

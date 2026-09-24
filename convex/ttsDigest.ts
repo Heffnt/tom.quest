@@ -37,7 +37,7 @@ import {
 // through it before it becomes a #tts-broken line or a `broken:<n>` fact:
 // worker/jobs/nightly.mjs reports git stderr verbatim, and git stderr can name
 // a tokenised remote.
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/

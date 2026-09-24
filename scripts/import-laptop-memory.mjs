@@ -45,7 +45,7 @@ import {
   oneLine,
   parseEvidenceEntries,
 } from "../worker/jobs/learning-records.mjs";
-import { sectionSpan } from "../worker/jobs/markdown-sections.mjs";
+import { sectionSpan } from "../shared/markdown-sections.mjs";
 
 export const STATUSES = [
   "IN-WIKITOM",
@@ -266,8 +266,8 @@ export function readTexts(dir, { name = null, ext = ".md" } = {}) {
 // hand-written like them. Two reasons. It is the same kind of fact — a
 // judgment about what a laptop directory holds, made once and reviewed as a
 // commit — and a list of repository names in a source file is a copy of the
-// one home in convex/ttsShared.ts, which scripts/check-session-mirrors.mjs
-// refuses on sight and is right to.
+// one home in shared/session-constants.mjs, which
+// scripts/check-session-mirrors.mjs refuses on sight and is right to.
 export function handoffTarget(dir, projects = []) {
   const name = String(dir ?? "");
   for (const { match, repo } of projects) {

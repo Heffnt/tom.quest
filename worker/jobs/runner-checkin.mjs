@@ -3,7 +3,7 @@
 //
 // A runner step (convex/ttsRunners.ts) posts a check-in every step, into a
 // Slack thread Tom reads. Before it is posted it passes the form rules
-// (scripts/checkin-rules.mjs, pure and cheap) and then one cold judge run that
+// (shared/checkin-rules.mjs, pure and cheap) and then one cold judge run that
 // reads it against his writing standard. This file is the judge half and the
 // one place both halves are run in order; worker/bin/tts-runner-step is its
 // command line, and worker/jobs/evals.mjs scores the judge against the golden
@@ -23,17 +23,17 @@ import { JUDGE_MODEL, JUDGE_RETRIES } from "./evals.mjs";
 
 const CHECKIN_JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
 
-/** The form rules, from wherever this install keeps them: beside the jobs on
- *  the box (/opt/tts), under scripts/ in a checkout. */
+/** The form rules, from wherever this install keeps them: /opt/tts/shared/
+ *  beside the flat jobs on the box, shared/ in a checkout. */
 async function loadCheckInRules() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const candidate of [
-    path.join(here, "checkin-rules.mjs"),
-    path.join(here, "..", "..", "scripts", "checkin-rules.mjs"),
+    path.join(here, "shared", "checkin-rules.mjs"),
+    path.join(here, "..", "..", "shared", "checkin-rules.mjs"),
   ]) {
     if (fs.existsSync(candidate)) return await import(pathToFileURL(candidate).href);
   }
-  throw new Error("checkin-rules.mjs is not installed beside the jobs; run worker/setup.sh");
+  throw new Error("shared/checkin-rules.mjs is not installed beside the jobs; run worker/setup.sh");
 }
 
 /** His writing standard as the judge reads it: the write skill's two pages. */

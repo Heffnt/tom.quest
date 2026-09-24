@@ -25,7 +25,7 @@ import {
   slowConditions,
 } from "./ttsMerge";
 import { COVERAGE_NOT_REQUIRED, EVALS_REQUEST, EVALS_RUN } from "./ttsEvals";
-import { EVALS_PROTOCOL } from "../worker/jobs/evals-row.mjs";
+import { EVALS_PROTOCOL } from "../shared/evals-row.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 

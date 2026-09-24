@@ -51,10 +51,10 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
  *
  * FOUR PATHS WERE ADDED WHEN THE SKILLS LANDED, and each is a context file in
  * exactly the sense this list means — a file whose content reaches a run's
- * prompt. scripts/skills.mjs is the table that decides what the skill set IS
+ * prompt. shared/skills.mjs is the table that decides what the skill set IS
  * and writes every description a run reads before it loads one;
  * scripts/publish-skills.mjs is the generator that turns that table into the
- * directories; worker/jobs/skill-router.mjs is what decides which of them a run
+ * directories; shared/skill-router.mjs is what decides which of them a run
  * is granted. A change to any of the three changes what Tom's jobs are given
  * with nothing else scoring it. evals/triggers/** is watched for the reason
  * evals/golden/** is: it is the set, and a change to the set changes what a
@@ -84,15 +84,18 @@ export const WATCHED_PATHS = [
   // added rather than by being remembered. Phase 6 is why the graph moved:
   // the layers became skills, prelude-layers.mjs is gone, and skills.mjs is
   // what the prelude reads now.
-  "scripts/skills.mjs",
+  "shared/skills.mjs",
   // NOT IN THE PRELUDE GRAPH, AND WATCHED ANYWAY. publish-skills.mjs writes
   // the catalog the prelude reads and context-relevance.mjs is what a brief
   // is cut with; neither is imported by prelude.mjs, and both decide what a
   // run is given. The fence asks only that the graph be a SUBSET of this
   // list, so a file that earns its place by a second route keeps it.
   "scripts/publish-skills.mjs",
-  "worker/jobs/context-relevance.mjs",
-  "worker/jobs/markdown-sections.mjs",
+  "shared/context-relevance.mjs",
+  "shared/markdown-sections.mjs",
+  // The narrow list and the model table the prompts render, moved out of
+  // convex/ttsShared.ts, which is watched below.
+  "shared/session-constants.mjs",
   "convex/ttsShared.ts",
   "convex/claudeSessions.ts",
   "convex/ttsSkills.ts",
@@ -101,7 +104,7 @@ export const WATCHED_PATHS = [
   "worker/jobs/plan-graphs.mjs",
   "worker/jobs/weekly.mjs",
   "worker/jobs/delegate.mjs",
-  "worker/jobs/skill-router.mjs",
+  "shared/skill-router.mjs",
   "worker/bin/tts-ask",
   "evals/golden/**",
   "evals/tasks/**",
@@ -143,11 +146,11 @@ export const SHARED_PROMPT_INPUTS = [
   "**/CLAUDE.md",
   "model-of-tom/**",
   "scripts/prelude.mjs",
-  "scripts/skills.mjs",
+  "shared/skills.mjs",
   "scripts/publish-skills.mjs",
-  "worker/jobs/context-relevance.mjs",
-  "worker/jobs/markdown-sections.mjs",
-  "worker/jobs/skill-router.mjs",
+  "shared/context-relevance.mjs",
+  "shared/markdown-sections.mjs",
+  "shared/skill-router.mjs",
   "evals/golden/**",
   "evals/tasks/**",
   "evals/triggers/**",
@@ -177,9 +180,9 @@ export const SHARED_PROMPT_INPUTS = [
  */
 export const JOB_INPUTS = {
   prepare: ["worker/jobs/plan-graphs.mjs", "convex/ttsCompose.ts", "convex/ttsShared.ts"],
-  "code-brief": ["worker/jobs/plan-graphs.mjs", "worker/jobs/context-relevance.mjs"],
+  "code-brief": ["worker/jobs/plan-graphs.mjs", "shared/context-relevance.mjs"],
   explanation: [],
-  run: ["worker/jobs/skill-router.mjs", "worker/bin/tts-ask", "worker/jobs/delegate.mjs"],
+  run: ["shared/skill-router.mjs", "worker/bin/tts-ask", "worker/jobs/delegate.mjs"],
   learning: ["worker/jobs/nightly.mjs", "worker/jobs/learning-ground.mjs"],
   checkin: ["worker/jobs/runner-checkin.mjs"],
 };
@@ -216,9 +219,9 @@ export function jobsAffectedBy(changed) {
  *  the coverage rule asks for. */
 const ITEM_PREFIXES = ["evals/golden/"];
 const TRIGGER_COVERED_SKILL_PATHS = new Set([
-  "scripts/skills.mjs",
+  "shared/skills.mjs",
   "scripts/publish-skills.mjs",
-  "worker/jobs/skill-router.mjs",
+  "shared/skill-router.mjs",
 ]);
 
 /**
@@ -265,7 +268,7 @@ export const COVERAGE_NOT_REQUIRED = "not-required";
 
 /**
  * The `supersededBy` on a request the queue refused because it was filed
- * before the box's current evals row contract (worker/jobs/evals-row.mjs
+ * before the box's current evals row contract (shared/evals-row.mjs
  * PROTOCOL_SUPERSEDED, the one place it is defined; this file imports nothing,
  * so the word is written out here too and the tests on both sides pin it).
  *
@@ -631,7 +634,7 @@ export function report(head, base, verdict) {
   // asked, and a line about a rule that did not apply is noise in every
   // by-hand and weekly log.
   if (verdict.goldenCoverage === false) {
-    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file satisfies coverage only after its cases ran in this pull-request run and only with scripts/skills.mjs, scripts/publish-skills.mjs, or worker/jobs/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
+    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file satisfies coverage only after its cases ran in this pull-request run and only with shared/skills.mjs, scripts/publish-skills.mjs, or shared/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
   } else if (verdict.goldenExcuse) {
     lines.push(`  golden item excused: ${verdict.goldenExcuse}`);
   }

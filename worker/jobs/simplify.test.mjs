@@ -995,7 +995,7 @@ describe("loaded, counted off the node ids the prompts carried", () => {
   });
 
   // A rules file's lines are `rule:` nodes and a synthesis page's are `line:`
-  // nodes, which is what worker/jobs/graph.mjs mints. A row that looked its
+  // nodes, which is what shared/graph.mjs mints. A row that looked its
   // node up under the other prefix would count zero runs for every rule.
   it("names a repository rule and a synthesis line by their own node kinds", () => {
     expect(nodeIdFor("worker/AGENTS.md", "1a2b3c4d")).toBe("rule:1a2b3c4d");

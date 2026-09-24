@@ -48,7 +48,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { hash8 } from "../worker/jobs/graph-hash.mjs";
+import { hash8 } from "../shared/graph-hash.mjs";
 
 // ── The numbers and the names ────────────────────────────────────────────────
 
@@ -64,7 +64,7 @@ const RULE_IDS = Object.freeze([
  *  config files are fixtures or framework entry points, and tts/ is the
  *  declared scratch root (vqc/classification.yaml). Tests and generated code
  *  are excluded inside each rule's own `ignores`. */
-const SCAN_ROOTS = Object.freeze(["app", "convex", "worker", "scripts", "vqc", "turing-api"]);
+const SCAN_ROOTS = Object.freeze(["app", "convex", "shared", "worker", "scripts", "vqc", "turing-api"]);
 
 /** Where use is looked for: every tracked file except prose, the lockfile and
  *  the baseline itself. Tests are IN — a test is a caller, and a name only a

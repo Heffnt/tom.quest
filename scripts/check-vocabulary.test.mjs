@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
+import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-vocabulary.mjs");
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,7 +58,7 @@ function fixture(files = {}) {
     // generator's regex reads every key the imported SKILL_SHAPES declares, and
     // the import is always this repository's, so a hand-written stand-in here
     // would be a tree that fails the check for being a fixture.
-    "scripts/skills.mjs": readFileSync(join(REPO_ROOT, "scripts/skills.mjs"), "utf8"),
+    "shared/skills.mjs": readFileSync(join(REPO_ROOT, "shared/skills.mjs"), "utf8"),
     "package.json": `${JSON.stringify({ name: "fixture", dependencies: { convex: "^1" } }, null, 2)}\n`,
     "convex/ttsShared.ts": `export const DAY_MS = 86_400_000;\n${sharedBlock()}\n`,
     "convex/ttsEvals.ts": "export const key = commitKey(args.repo, args.sha);\n",
@@ -67,8 +67,8 @@ function fixture(files = {}) {
     "convex/schema.ts":
       'import { defineSchema, defineTable } from "convex/server";\n'
       + `${Array.from({ length: 44 }, (_, i) => `  table${i}: defineTable({}),`).join("\n")}\n`,
-    "worker/jobs/skill-router.mjs": "export const CONTEXT_CALLERS = Object.freeze({ opener: {} });\n",
-    "worker/jobs/graph.mjs": "// no model, no network, no embedding and no vector.\nexport const NODES = [];\n",
+    "shared/skill-router.mjs": "export const CONTEXT_CALLERS = Object.freeze({ opener: {} });\n",
+    "shared/graph.mjs": "// no model, no network, no embedding and no vector.\nexport const NODES = [];\n",
     "scripts/graph.mjs": "// the graph's generator.\nexport function generateGraph() {}\n",
     "app/page.tsx": "export default function Page() { return null; }\n",
     "vqc/todos.ts": "export const TODOS = [];\n",
@@ -177,7 +177,7 @@ describe("check-vocabulary", () => {
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("convex/ttsShared.ts: GRAPH_EDGE_KINDS is [");
-    expect(result.stderr).toContain("worker/jobs/graph.mjs mints [");
+    expect(result.stderr).toContain("shared/graph.mjs mints [");
   });
 
   it("6: names a missing kind list", () => {
@@ -203,16 +203,16 @@ describe("check-vocabulary", () => {
   // two checkouts. Here both sides are one tree, so the only thing a failure
   // can mean is that the regex no longer reads an entry.
   it("8: names a shape the generator's parser can no longer read", () => {
-    const skills = readFileSync(join(REPO_ROOT, "scripts/skills.mjs"), "utf8");
+    const skills = readFileSync(join(REPO_ROOT, "shared/skills.mjs"), "utf8");
     const blinded = skills.replace("  explainer: Object.freeze({", "  explainer: Object.freeze( {");
     expect(blinded).not.toBe(skills);
-    const result = run(fixture({ "scripts/skills.mjs": blinded }));
+    const result = run(fixture({ "shared/skills.mjs": blinded }));
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("it cannot read explainer");
   });
 
   it("8: names a SKILL_SHAPES it cannot find at all", () => {
-    const result = run(fixture({ "scripts/skills.mjs": "export const SHAPES = {};\n" }));
+    const result = run(fixture({ "shared/skills.mjs": "export const SHAPES = {};\n" }));
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("cannot read SKILL_SHAPES at all");
   });
@@ -253,11 +253,11 @@ describe("check-vocabulary", () => {
   });
 
   it("7: reads the prose that names the same words as prose", () => {
-    // The header of worker/jobs/graph.mjs says it holds no embedding and no
+    // The header of shared/graph.mjs says it holds no embedding and no
     // vector. The check strips comments, so that sentence is not a breach.
     const result = run(
       fixture({
-        "worker/jobs/graph.mjs": "// no embedding, no vector, no cosine, no faiss, no openai, no anthropic.\nexport const X = 1;\n",
+        "shared/graph.mjs": "// no embedding, no vector, no cosine, no faiss, no openai, no anthropic.\nexport const X = 1;\n",
       }),
     );
     expect(result.stderr).toBe("");

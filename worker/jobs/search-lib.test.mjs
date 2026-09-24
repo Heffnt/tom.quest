@@ -661,7 +661,7 @@ describe("installed skills", () => {
 
 // ── the graph and the vocabulary ─────────────────────────────────────────────
 // The two GENERATED files in the WikiTom checkout. The fixture graph is built
-// by worker/jobs/graph.mjs's own buildGraph over fixture page text and written
+// by shared/graph.mjs's own buildGraph over fixture page text and written
 // with scripts/graph.mjs's own serializeGraph, so these tests read the shape the
 // nightly actually writes — a hand-written graph would agree with the commands
 // and with nothing else.

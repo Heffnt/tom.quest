@@ -22,14 +22,15 @@ job and is not counted in any row.
 
 | Test or check | What it verifies | Where it runs | Wall time | Verifier |
 |---|---|---|---|---|
-| vitest, `convex/` — 37 files, 1,251 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 38.4 s of CPU inside the suite | checks |
-| vitest, `app/` — 70 files, 1,065 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 16.1 s of CPU | checks |
-| vitest, `scripts/` — 29 files, 509 tests | The guardrail scripts' own logic, the skills catalog, the SessionStart hook, the vocabulary generator, the writing standard | CI `tests`; local | 17.9 s of CPU | checks |
-| vitest, `worker/jobs/` — 30 files, 917 tests | The box's cron jobs: the digest writer, the nightly, the planner, the audit, the evals runner, the graph | CI `tests`; local | 12.1 s of CPU | checks |
-| vitest, `worker/runs/__tests__/` — 22 files, 305 tests | The run record: the launcher, the sweep, transcript parsing, redaction, S3, the semaphore | CI `tests`; local | 13.5 s of CPU | checks |
-| vitest, `worker/session-host/__tests__/` — 14 files, 223 tests | The session daemon: the banned-tools classifier, the cut, redaction, the merge gate client, overflow | CI `tests`; local | 1.2 s of CPU | checks |
+| vitest, `convex/` — 44 files, 1,393 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 38.4 s of CPU inside the suite | checks |
+| vitest, `app/` — 68 files, 1,042 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 16.1 s of CPU | checks |
+| vitest, `scripts/` — 27 files, 496 tests | The guardrail scripts' own logic, the SessionStart hook, the vocabulary generator, the writing standard | CI `tests`; local | 17.9 s of CPU | checks |
+| vitest, `worker/jobs/` — 26 files, 844 tests | The box's cron jobs: the digest writer, the nightly, the planner, the audit, the evals runner | CI `tests`; local | 12.1 s of CPU | checks |
+| vitest, `worker/runs/__tests__/` — 25 files, 337 tests | The run record: the launcher, the sweep, transcript parsing, redaction, S3, the semaphore | CI `tests`; local | 13.5 s of CPU | checks |
+| vitest, `worker/session-host/__tests__/` — 17 files, 186 tests | The session daemon: the banned-tools classifier, the cut, where redaction is wired in, the merge gate client, overflow | CI `tests`; local | 1.2 s of CPU | checks |
+| vitest, `shared/__tests__/` — 10 files, 277 tests | The modules Convex, the site and the box share: the skills catalog and router, the graph, redaction, the session constants, and that each imports only its siblings | CI `tests`; local | 1.1 s of CPU | checks |
 | vitest, `vqc/` — 2 files, 9 tests | The shape of `vqc/todos.yaml` and the registries beside it | CI `tests`; local | 0.1 s of CPU | checks |
-| **the whole vitest suite** — 204 files, 4,279 tests | all of the above, in one run | CI `tests` on main, on the nightly and on a manual run; the diff's related files on a pull request | **102 s** | checks |
+| **the whole vitest suite** — 220 files, 4,588 tests | all of the above, in one run | CI `tests` on main, on the nightly and on a manual run; the diff's related files on a pull request | **102 s** | checks |
 | Playwright, `e2e/` — 52 cases across 7 specs, 2 viewports | The site as a browser sees it: the home page, the public quest routes, the page-visibility registry, the boolback plot, the perfume brew | CI `e2e`; local `pnpm test:e2e` | **52 s** against `next dev`, 18 s against a built server | checks |
 | `npx tsc --noEmit` | Every type in the repository, `convex/_generated` included | CI `tests`; local | **28 s** | checks |
 | `pnpm build` | The production Next.js build, the one Vercel runs on main | CI `tests`; local | **62 s** | checks |
@@ -37,12 +38,12 @@ job and is not counted in any row.
 | ↳ `check-removals.mjs` | A change may not add a complexity smell, and the committed count only goes down; needs `ast-grep` | CI `static-boundaries` | 5.8 s | checks |
 | ↳ `check-private-paths.mjs` | No `model-of-tom` path, area-category line or operate-page window is in this public repository | CI `static-boundaries` | 3.4 s | checks |
 | ↳ `check-vocabulary.mjs` | The closed vocabulary and the graph kinds it is the schema of | CI `static-boundaries` | 0.45 s | checks |
-| ↳ `check-session-mirrors.mjs` | The daemon's copies of the Convex constants still match them | CI `static-boundaries` | 0.18 s | checks |
+| ↳ `check-session-mirrors.mjs` | Every model family has a runner; the live-status list matches the schema; each compatibility symlink has one body; no second repo list; the simplify inventory | CI `static-boundaries` | 0.18 s | checks |
 | ↳ `check-auth-boundary.mjs` | No inline `admin`/`tom` role comparison outside the two files that own it | CI `static-boundaries` | 0.10 s | checks |
 | ↳ `check-agents-md.mjs` | Each `AGENTS.md` is under its byte target and has its `CLAUDE.md` beside it | CI `static-boundaries` | 0.07 s | checks |
 | ↳ `check-heavy-libs.mjs` | The heavy client libraries are imported from one module each | CI `static-boundaries` | 0.06 s | checks |
 | ↳ `check-large-files.mjs` | No untracked-by-LFS blob over 50 MiB | CI `static-boundaries` | 0.05 s | checks |
-| ↳ `check-setup-imports.mjs` | `worker/setup.sh` copies every file the deployed modules import | CI `static-boundaries` | 0.04 s | checks |
+| ↳ `check-setup-imports.mjs` | `worker/setup.sh` copies every file the deployed modules import, and the `/opt/tts/shared` copy the scripts import | CI `static-boundaries` | 0.04 s | checks |
 | gitleaks | No secret in the history or the diff | CI `secret-scan` | 10 s | checks |
 | `check-writing-standard.mjs` | How many stored briefs and explanations fail the writing standard | Not in `check:guardrails`: the prepare door and the production rung run it, and `scripts/check-writing-standard.test.mjs` is in the suite | — | checks |
 | `pnpm lint` (eslint) | Style and unused bindings | Local only, and not a gate | 50 s | not a verifier |

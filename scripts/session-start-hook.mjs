@@ -34,8 +34,8 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assemblePrelude } from "./prelude.mjs";
 import { publishSkills } from "./publish-skills.mjs";
-import { SKILL_PREFIX, renderGrants } from "./skills.mjs";
-import { routeSkills } from "../worker/jobs/skill-router.mjs";
+import { SKILL_PREFIX, renderGrants } from "../shared/skills.mjs";
+import { routeSkills } from "../shared/skill-router.mjs";
 
 function relativeModulePath(relative) {
   try { return fileURLToPath(new URL(relative, import.meta.url)); } catch { return null; }

@@ -19,12 +19,12 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, sep } from "node:path";
-import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
+import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
 import { BOX_WIKITOM_DIR, LAPTOP_WIKITOM_DIR } from "../worker/jobs/search-lib.mjs";
 // Check 8 is ABOUT these two, so it imports them rather than spelling a second
 // reading of them: the fact it states is that this parser reads this code, and
 // a copy of the regex here would only ever check the copy.
-import { SKILL_SHAPES } from "./skills.mjs";
+import { SKILL_SHAPES } from "../shared/skills.mjs";
 import { VocabularyError, parseSkillShapes } from "./vocabulary.mjs";
 
 const failures = [];
@@ -326,9 +326,9 @@ if (block !== null) {
 //    graph's two kind lists, inside the one `<vocabulary generated …>` marker
 //    pair — so there is no second `<graph generated …>` pair to look for and
 //    this check does not invent one. What it checks is that the lists the block
-//    carries are the lists worker/jobs/graph.mjs actually mints, which is the
+//    carries are the lists shared/graph.mjs actually mints, which is the
 //    same fact a separate marker would have carried.
-// witness: add a kind to STATIC_NODE_KINDS in worker/jobs/graph.mjs without
+// witness: add a kind to STATIC_NODE_KINDS in shared/graph.mjs without
 // regenerating, or delete a line from GRAPH_EDGE_KINDS in the block.
 if (block !== null) {
   const listOf = (name) => {
@@ -348,7 +348,7 @@ if (block !== null) {
     const got = found.join(", ");
     if (want !== got) {
       failures.push(
-        `${SHARED_PATH}: ${name} is [${got}] and worker/jobs/graph.mjs mints [${want}] — `
+        `${SHARED_PATH}: ${name} is [${got}] and shared/graph.mjs mints [${want}] — `
           + `regenerate with \`node ${GENERATOR_PATH} --wikitom <dir> --write\``,
       );
     }
@@ -371,7 +371,7 @@ if (block !== null) {
 // "faiss-node" to package.json.
 {
   const TOKENS = [/fetch\(/gi, /anthropic/gi, /openai/gi, /embedding/gi, /vector/gi, /cosine/gi, /faiss/gi];
-  for (const file of ["scripts/graph.mjs", "worker/jobs/graph.mjs"]) {
+  for (const file of ["scripts/graph.mjs", "shared/graph.mjs"]) {
     const text = read(file);
     if (text === null) {
       failures.push(`${file} is not in this checkout — the graph's generator is half of what this checks`);
@@ -415,7 +415,7 @@ if (block !== null) {
 }
 
 // 8. The generator's shape parser still reads the code it parses.
-//    scripts/vocabulary.mjs extracts SKILL_SHAPES from scripts/skills.mjs AS
+//    scripts/vocabulary.mjs extracts SKILL_SHAPES from shared/skills.mjs AS
 //    TEXT, and names one of those shapes per published skill, so a regex that
 //    stopped matching an entry would quietly publish a vocabulary that says the
 //    system has fewer shapes than it has.
@@ -427,19 +427,19 @@ if (block !== null) {
 //    both sides are this repository — the checker reads relative to the current
 //    directory, which `pnpm check:guardrails` runs from the root — so a
 //    mismatch is the parser falling behind the code and nothing else.
-// witness: change `explainer: Object.freeze({` in scripts/skills.mjs to
+// witness: change `explainer: Object.freeze({` in shared/skills.mjs to
 // `explainer: Object.freeze( {`, which the regex no longer reads.
 {
-  const skills = read("scripts/skills.mjs");
+  const skills = read("shared/skills.mjs");
   if (skills === null) {
-    failures.push("scripts/skills.mjs is not in this checkout — the shape parser has nothing to read");
+    failures.push("shared/skills.mjs is not in this checkout — the shape parser has nothing to read");
   } else {
     let parsed = null;
     try {
       parsed = parseSkillShapes(skills);
     } catch (problem) {
       if (!(problem instanceof VocabularyError)) throw problem;
-      failures.push(`scripts/skills.mjs: ${GENERATOR_PATH} cannot read SKILL_SHAPES at all — ${problem.message}`);
+      failures.push(`shared/skills.mjs: ${GENERATOR_PATH} cannot read SKILL_SHAPES at all — ${problem.message}`);
     }
     if (parsed !== null) {
       const declared = Object.keys(SKILL_SHAPES);
@@ -447,7 +447,7 @@ if (block !== null) {
       const invented = parsed.filter((shape) => !declared.includes(shape));
       if (unread.length > 0 || invented.length > 0) {
         failures.push(
-          `scripts/skills.mjs: SKILL_SHAPES declares [${declared.join(", ")}] and ${GENERATOR_PATH} reads `
+          `shared/skills.mjs: SKILL_SHAPES declares [${declared.join(", ")}] and ${GENERATOR_PATH} reads `
             + `[${parsed.join(", ")}]${unread.length === 0 ? "" : ` — it cannot read ${unread.join(", ")}`}`,
         );
       }

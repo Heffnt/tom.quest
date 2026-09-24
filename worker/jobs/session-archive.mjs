@@ -34,9 +34,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 
-// The credential filter is worker/session-host/redact.mjs — THE ONE HOME; the
-// daemon's ingest choke point reads it there and a test fences it there. It is
-// reached from THIS file by its installed path, and this file has three of
+// The credential filter is shared/redact.mjs — THE ONE HOME; the daemon's
+// ingest choke point reads it through worker/session-host/redact.mjs, a symlink
+// to it, and a test fences it there. It is reached from THIS file by its
+// installed path, and this file has three of
 // them: worker/jobs/ in the repo, /opt/tts/ on the box, and
 // /opt/tts/session-host/ on the box too (setup.sh's `cp` dereferences the
 // session-host symlink, so the box holds a real copy at each depth — the

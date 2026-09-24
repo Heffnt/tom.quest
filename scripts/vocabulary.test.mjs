@@ -30,7 +30,7 @@ import { promptDefinition, renderClosedVocabulary } from "./closed-vocabulary.mj
 // fails for reasons that have nothing to do with its parsers.
 //
 // Two files ARE copied from the real repository — worker/jobs/search-lib.mjs and
-// scripts/skills.mjs. The generator imports `SEARCH_COMMANDS` and `SKILL_SHAPES`
+// shared/skills.mjs. The generator imports `SEARCH_COMMANDS` and `SKILL_SHAPES`
 // from them and parses the same files as text, and that pair IS the check; a
 // hand-written stand-in would assert the stand-in against itself.
 
@@ -158,21 +158,11 @@ const OWN_WORDING_VOCABULARY = `The vocabulary, which is closed — each word me
 function sharedTs(vocabularyBody = RENDERED_VOCABULARY) {
   return `import { v } from "convex/values";
 
-export const NARROW_LIST = [] as const;
-
 export function commitKey(repo, sha) { return \`\${repo}@\${sha}\`; }
 export function mergeKey(repo, sha) { return \`\${repo}:\${sha}\`; }
 
 /** The closed TTS vocabulary. */
 export const TTS_CLOSED_VOCABULARY = \`${vocabularyBody}\`;
-
-export const SESSION_REPOS = {
-  "tom.quest": "Heffnt/tom.quest",
-  ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
-  WikiTom: "Heffnt/WikiTom",
-} as const;
-
-export const NO_REPO = "none";
 
 export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken";
 
@@ -183,6 +173,21 @@ const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
   broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
 };
+`;
+}
+
+/** shared/session-constants.mjs, the one home of the repo map and the narrow
+ *  list, in the shape the generator reads it. */
+function sessionConstants() {
+  return `export const NARROW_LIST = /** @type {const} */ ([]);
+
+export const SESSION_REPOS = /** @type {const} */ ({
+  "tom.quest": "Heffnt/tom.quest",
+  ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
+  WikiTom: "Heffnt/WikiTom",
+});
+
+export const NO_REPO = "none";
 `;
 }
 
@@ -295,6 +300,9 @@ function makeCheckouts(overrides = {}) {
   for (const area of AREAS) write(wikitom, `model-of-tom/areas/${area}.md`, `---\ncategories: [${area}]\n---\n\n## Current state\n`);
   write(tomQuest, "convex/schema.ts", overrides.schema ?? schemaTs());
   write(tomQuest, "convex/ttsShared.ts", overrides.shared ?? sharedTs());
+  if (overrides.sessionConstants !== null) {
+    write(tomQuest, "shared/session-constants.mjs", overrides.sessionConstants ?? sessionConstants());
+  }
   write(tomQuest, "convex/crons.ts", overrides.crons ?? CRONS_TS);
   write(tomQuest, "worker/setup.sh", overrides.setup ?? SETUP_SH);
   for (const [rel, body] of Object.entries(FILES)) write(tomQuest, rel, overrides[rel] ?? body);
@@ -302,7 +310,7 @@ function makeCheckouts(overrides = {}) {
   // for a tom.quest checkout that is NOT the one this generator was installed
   // from, which is the case on the box and the case the shapes read below is
   // about.
-  for (const rel of ["worker/jobs/search-lib.mjs", "scripts/skills.mjs"]) {
+  for (const rel of ["worker/jobs/search-lib.mjs", "shared/skills.mjs"]) {
     write(tomQuest, rel, overrides[rel] ?? fs.readFileSync(path.join(REPO_ROOT, rel), "utf8"));
   }
   return { root, wikitom, tomQuest };
@@ -326,12 +334,13 @@ async function withConstant(line, replacement) {
   const source = fs
     .readFileSync(path.join(REPO_ROOT, "scripts/vocabulary.mjs"), "utf8")
     .replace(line, replacement)
-    .replace(/from "\.\.\/(worker\/[^"]+)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, rel)).href}"`)
-    // EVERY scripts/ SIBLING, not skills.mjs alone: the variant is written into
-    // node_modules/, where a relative `./x.mjs` resolves to nothing. graph.mjs
-    // joined skills.mjs here when the HEAD parser moved into it, and
-    // closed-vocabulary.mjs when the prompt's block started rendering from it.
-    .replace(/from "\.\/(skills\.mjs|graph\.mjs|closed-vocabulary\.mjs)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, "scripts", rel)).href}"`);
+    .replace(/from "\.\.\/((?:worker|shared)\/[^"]+)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, rel)).href}"`)
+    // EVERY scripts/ SIBLING: the variant is written into node_modules/, where a
+    // relative `./x.mjs` resolves to nothing. graph.mjs joined here when the
+    // HEAD parser moved into it, and closed-vocabulary.mjs when the prompt's
+    // block started rendering from it; skills.mjs moved to shared/, which the
+    // line above rewrites.
+    .replace(/from "\.\/(graph\.mjs|closed-vocabulary\.mjs)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, "scripts", rel)).href}"`);
   // Inside the project root: the test runner resolves a dynamic import only
   // under the root it was started in.
   const root = path.join(REPO_ROOT, "node_modules", ".vocabulary-variants");
@@ -638,11 +647,23 @@ describe("the disagreement check", () => {
   });
 
   it("D5 — two lists of one set", () => {
-    const result = run(makeCheckouts({ shared: sharedTs().replace('  WikiTom: "Heffnt/WikiTom",\n', "") }));
+    const result = run(makeCheckouts({ sessionConstants: sessionConstants().replace('  WikiTom: "Heffnt/WikiTom",\n', "") }));
     expect(codes(result)).toEqual([]);
     const missing = run(makeCheckouts({ agentRules: AGENT_RULES.replace("- WikiTom: the private notes tree.\n", "") }));
     expect(codes(missing)).toEqual(["D5"]);
     expect(missing.disagreements[0].subject).toBe('repository "WikiTom"');
+  });
+
+  it("reads the repo map from convex/ttsShared.ts in a tom.quest checkout from before shared/ held it", () => {
+    const older = sharedTs().replace(
+      "export type SlackChannelKind",
+      'export const SESSION_REPOS = {\n  "tom.quest": "Heffnt/tom.quest",\n  Extra: "Heffnt/Extra",\n} as const;\n\nexport type SlackChannelKind',
+    );
+    const result = run(makeCheckouts({ sessionConstants: null, shared: older }));
+    expect(codes(result)).toContain("D5");
+    const extra = result.disagreements.find((entry) => entry.subject === 'repository "Extra"');
+    expect(extra.rows[1].where).toBe("tom.quest convex/ttsShared.ts SESSION_REPOS");
+    expect(() => run(makeCheckouts({ sessionConstants: null }))).toThrow("has `SESSION_REPOS`");
   });
 
   it("D5 — a tom.quest older than this generator is a disagreement, not a throw", () => {
@@ -654,10 +675,10 @@ describe("the disagreement check", () => {
     // "the source declares 6 and the parser read 5" and the nightly's graph step
     // wrote no graph, every night.
     const older = fs
-      .readFileSync(path.join(REPO_ROOT, "scripts/skills.mjs"), "utf8")
+      .readFileSync(path.join(REPO_ROOT, "shared/skills.mjs"), "utf8")
       .replace(/ {2}explainer: Object\.freeze\(\{[\s\S]*?\n {2}\}\),\n/, "");
     expect(older).not.toContain("explainer: Object.freeze({");
-    const result = run(makeCheckouts({ "scripts/skills.mjs": older }));
+    const result = run(makeCheckouts({ "shared/skills.mjs": older }));
     expect(codes(result)).toEqual(["D5"]);
     expect(result.disagreements[0].subject).toBe('skill "explainer"');
     expect(result.disagreements[0].rows[1].text).not.toContain("explainer");

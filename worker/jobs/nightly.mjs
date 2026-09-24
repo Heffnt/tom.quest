@@ -207,17 +207,18 @@ async function loadPrelude() {
   throw new Error(`prelude.mjs is not reachable (${errors.join("; ")})`);
 }
 
-// The two other scripts/ modules the post needs, found the same way and for the
-// same reason: publish-skills.mjs writes the box's skill directories, and
-// skills.mjs owns the one spelling of a skill's directory name. setup.sh copies
-// both to /opt/tts/scripts/ beside prelude.mjs, so the same pair of candidates
-// resolves in the checkout and on the box. loadPrelude is left alone rather
+// The two other modules the post needs, found the same way and for the same
+// reason: scripts/publish-skills.mjs writes the box's skill directories, and
+// shared/skills.mjs owns the one spelling of a skill's directory name. setup.sh
+// copies them to /opt/tts/scripts/ and /opt/tts/shared/, the directories they
+// sit in in the repo, so one pair of candidates per directory resolves in the
+// checkout and on the box. loadPrelude is left alone rather
 // than folded into this: it names the assembler in its own failure, and the
 // assembler is the thing being retired.
-async function loadScript(file) {
+async function loadScript(file, dir = "scripts") {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const errors = [];
-  for (const candidate of [`../../scripts/${file}`, `./scripts/${file}`]) {
+  for (const candidate of [`../../${dir}/${file}`, `./${dir}/${file}`]) {
     try {
       return await import(pathToFileURL(path.resolve(here, candidate)).href);
     } catch (err) {
@@ -228,7 +229,7 @@ async function loadScript(file) {
 }
 
 const loadPublishSkills = () => loadScript("publish-skills.mjs");
-const loadSkills = () => loadScript("skills.mjs");
+const loadSkills = () => loadScript("skills.mjs", "shared");
 
 // ── Where things are ─────────────────────────────────────────────────────────
 // The checkout, its lock, the session directories, the split rule and the

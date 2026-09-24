@@ -11,7 +11,7 @@ import {
   evalsRequestFor,
 } from "./ttsEvals";
 import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
 // Merging used to be Tom's gate: the box classifier denied `git merge` and

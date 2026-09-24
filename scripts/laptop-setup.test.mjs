@@ -347,7 +347,7 @@ describe("laptop setup", () => {
     expect(setup).toContain('cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs');
     expect(setup).toContain('cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs');
     expect(setup).toContain('cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs');
-    expect(setup).toContain('cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs');
+    expect(setup).toContain('cp "$WORKER_DIR"/../shared/*.mjs /opt/tts/shared/');
     expect(setup).toContain('cp "$WORKER_DIR"/runs/*.mjs /opt/tts/runs/');
     expect(setup).toContain('/root/.claude-accounts/wpi /root/.codex');
     expect(setup).toContain('const events = ["SessionStart", "SubagentStart", "Stop", "SessionEnd", "SubagentStop"]');

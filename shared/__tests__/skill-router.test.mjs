@@ -1,4 +1,4 @@
-// Tests for the skill router (worker/jobs/skill-router.mjs).
+// Tests for the skill router (shared/skill-router.mjs).
 //
 // What is pinned here is THE ROUTING TABLE — which skills a run is granted for
 // a caller, a subject and a working directory — plus the one correction the
@@ -12,7 +12,7 @@
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
-import { repoSkillName } from "../../scripts/skills.mjs";
+import { repoSkillName } from "../skills.mjs";
 
 import {
   areaTermsFor,
@@ -23,7 +23,7 @@ import {
   REPO_AREA_CAP,
   routeSkills as routeSkillsWithCatalog,
   WEEK_CALLERS,
-} from "./skill-router.mjs";
+} from "../skill-router.mjs";
 
 // ── The area pages ───────────────────────────────────────────────────────────
 

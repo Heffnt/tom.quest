@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hash8 } from "../worker/jobs/graph-hash.mjs";
+import { hash8 } from "../shared/graph-hash.mjs";
 import {
   baselineText,
   collect,

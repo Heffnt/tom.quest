@@ -19,7 +19,7 @@ import {
   renderSkillMetadata,
   skillDirName,
   truncateToBytes,
-} from "./skills.mjs";
+} from "../skills.mjs";
 
 // ── Fixture ──────────────────────────────────────────────────────────────────
 // A whole WikiTom in strings. buildSkills does no I/O, so a fixture is text and

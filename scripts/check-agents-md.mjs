@@ -10,6 +10,7 @@ const BYTE_TARGETS = {
   "app/AGENTS.md": 3500,
   "app/api/turing/AGENTS.md": 400,
   "convex/AGENTS.md": 3500,
+  "shared/AGENTS.md": 1500,
   "turing-api/AGENTS.md": 3500,
   "worker/AGENTS.md": 3500,
 };

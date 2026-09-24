@@ -17,8 +17,8 @@
 // setup.sh's plain `cp` follows the link, so each install dir gets its own
 // flat copy while the repo keeps exactly one file to edit. (The repo already
 // uses this device for CLAUDE.md -> AGENTS.md.)
-// scripts/check-session-mirrors.mjs fails the build if that link is ever
-// replaced by a second real file.
+// scripts/check-session-mirrors.mjs (its table of compatibility links) fails
+// the build if that link is ever replaced by a second real file.
 
 import fs from "node:fs";
 

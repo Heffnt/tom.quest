@@ -31,12 +31,12 @@ import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
 import { INTENT_SOURCES_MAX, isIntentSourcePath } from "./intent";
 import { VOCABULARY_TERMS_MAX } from "./vocabulary";
-import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../scripts/skills.mjs";
+import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../shared/skills.mjs";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 // The door check's complaints are model-written text that lands where Tom
 // reads it, so it goes through the one redaction on the way in — the same
 // import convex/ttsMerge.ts makes for the same reason.
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 
 const http = httpRouter();
 
@@ -2623,7 +2623,7 @@ http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput }
 // The prelude rides along for the same reason it does on /tts/weekly-input:
 // the model's proposal sentences are written FOR TOM, so the run that writes
 // them is granted the `write` skill. It asks as its OWN caller,
-// "simplify-input" (worker/jobs/skill-router.mjs CONTEXT_CALLERS): the row
+// "simplify-input" (shared/skill-router.mjs CONTEXT_CALLERS): the row
 // happens to hold the same three booleans weekly-input holds, and borrowing
 // that row would make this door change silently on the day the weekly job's
 // does.
