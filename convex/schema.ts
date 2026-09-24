@@ -1156,7 +1156,7 @@ export default defineSchema({
   }).index("by_path", ["path"]),
 
   // THE VOCABULARY AS THE GENERATOR LAST RENDERED IT, and the disagreements it
-  // refused to write over. `scripts/vocabulary.mjs` writes WikiTom
+  // refused to write over. Jarvis's `scripts/vocabulary.mjs` writes WikiTom
   // `tts/vocabulary.json` only when the spec and the code say the same thing
   // about every word; while they do not, it renders, reports and writes
   // nothing — so the file the /vocabulary page would read does not exist, and

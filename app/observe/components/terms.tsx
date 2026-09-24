@@ -6,7 +6,7 @@
 // that opens that word's definition in the drawer beside the page.
 //
 // THE LIST OF WORDS IS THE ONE THE REPOSITORY ALREADY HOLDS:
-// convex/ttsShared.ts VOCABULARY_TERMS, which scripts/vocabulary.mjs generates
+// convex/ttsShared.ts VOCABULARY_TERMS, which Jarvis's scripts/vocabulary.mjs generates
 // from the spec. This file keeps no second list, so a word added to the
 // vocabulary becomes clickable here without anyone remembering to add it.
 //

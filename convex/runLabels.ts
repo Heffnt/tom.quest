@@ -14,8 +14,8 @@
 //
 // WHAT A LABEL IS FOR. A judgment label becomes an eval case: the run's
 // assembled prompt is replayed against the tree under test and a judge scores
-// the new output against Tom's own sentence (scripts/export-golden.mjs
-// --source labels, worker/jobs/evals.mjs's `run` job). That is why the rules
+// the new output against Tom's own sentence (Jarvis's scripts/export-golden.mjs
+// --source labels, its worker/jobs/evals.mjs's `run` job). That is why the rules
 // below are strict about what may enter: an unreviewed verdict in this table
 // becomes an unreviewed verdict in the corpus every future merge is scored
 // against, and nothing downstream can tell it apart from one of his.

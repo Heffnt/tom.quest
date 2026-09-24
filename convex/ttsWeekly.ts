@@ -272,16 +272,17 @@ type WeeklyFacts = {
   // ── The two evals facts that live on the run row ───────────────────────────
   // ABSENT IS ABSENT, NEVER ZERO. Both are read off an "evals-run" row, and a
   // row written before phase 7 carries neither — the same posture the runner
-  // takes with `regressions: null` (worker/jobs/evals.mjs stampAgainstBase): a
+  // takes with `regressions: null` (Jarvis's worker/jobs/evals.mjs
+  // stampAgainstBase): a
   // run that was never asked the question has no answer to it, and a zero here
   // would read as "the arm ran and found nothing".
   //
   // The THIRD new evals fact, the golden set itself, is NOT here. Graduation is
-  // a file rewrite in evals/golden/** (scripts/graduate-golden.mjs) that never
-  // reaches Convex, and this gather has no filesystem — so the weekly job reads
-  // it off the tom.quest checkout and puts it on the facts it renders, the way
-  // it already reads last week's agenda out of the WikiTom checkout
-  // (worker/jobs/weekly.mjs readGoldenSet).
+  // a file rewrite in the Jarvis repository's evals/golden/** (its
+  // scripts/graduate-golden.mjs) that never reaches Convex, and this gather has
+  // no filesystem — so the weekly job reads it off a checkout and puts it on the
+  // facts it renders, the way it already reads last week's agenda out of the
+  // WikiTom checkout (Jarvis's worker/jobs/weekly.mjs readGoldenSet).
   /** The names whose ablation the week's run scored, one entry per name with
    * at least MIN_ABLATION_CASES cases behind it; null when no run row in the
    * window carried an ablation arm at all. */

@@ -1,7 +1,7 @@
 // THE VOCABULARY SURFACE'S READ, and the door the nightly's graph step posts
 // the generator's render through.
 //
-// WHY THE RECORD AND NOT THE FILE. `scripts/vocabulary.mjs` renders the whole
+// WHY THE RECORD AND NOT THE FILE. Jarvis's `scripts/vocabulary.mjs` renders the whole
 // vocabulary out of WikiTom `tts/spec.md` §12.1 and tom.quest's own constants,
 // and writes WikiTom `tts/vocabulary.json` only when the two agree about every
 // word. They do not agree today, so it renders, reports its disagreements and
