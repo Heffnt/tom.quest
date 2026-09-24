@@ -464,7 +464,7 @@ fine" to a session that only checked the status.
 **Those two keys hold an account at role `agent`** — tom.quest's fourth role,
 which exists for this and nothing else. It reads `/turing` and `/tts`; it
 writes nothing anywhere; and it sees no other page, including `/runs`,
-`/forge`, `/jarvis` and `/canvas`. On `/turing` it gets the `GET` that lists
+`/forge` and `/canvas`. On `/turing` it gets the `GET` that lists
 GPUs and jobs, but not the `POST` that allocates, the `DELETE` that cancels,
 or the terminal's credential endpoint. The single list that defines the reach
 is `convex/agentSurfaces.ts`; widening it is adding one name there.

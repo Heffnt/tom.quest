@@ -48,7 +48,7 @@ export default defineSchema({
     .index("phone", ["phone"]),
 
   serverHealth: defineTable({
-    serverName: v.union(v.literal("turing"), v.literal("jarvis")),
+    serverName: v.literal("turing"),
     reachable: v.boolean(),
     lastChecked: v.number(),
     lastSuccessAt: v.optional(v.number()),

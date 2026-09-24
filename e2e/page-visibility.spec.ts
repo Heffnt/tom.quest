@@ -32,9 +32,6 @@ test("guest direct navigation documents current gated-route behavior", async ({ 
   await page.goto("/turing");
   await expect(page.getByText("Sign in with an admin account")).toBeVisible();
 
-  await page.goto("/jarvis");
-  await expect(page.getByText("Jarvis access is restricted to Tom.")).toBeVisible();
-
   await page.goto("/logo");
   await expect(page.getByRole("heading", { name: "tom.Quest mark system" })).toBeVisible();
 });

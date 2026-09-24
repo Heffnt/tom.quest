@@ -12,7 +12,7 @@ export type DebugRequestOptions = {
   defer?: boolean;
 };
 
-export type DebugRequestDone = ((summary?: DebugFields) => void) & {
+type DebugRequestDone = ((summary?: DebugFields) => void) & {
   error: (message: string, data?: DebugFields) => void;
 };
 

@@ -39,7 +39,7 @@
 //              /turing and /tts and nothing else, and can write nothing at
 //              all. So a page that renders here for you renders emptier than
 //              it does for Tom in exactly one way — Tom-only surfaces
-//              (/runs, /forge, /jarvis) show the restricted card, which is
+//              (/runs, /forge) show the restricted card, which is
 //              a correct result for this account and not a bug in the page.
 //   --settle   extra idle wait after load, default 1500ms. Convex-backed pages
 //              paint twice: once from cache, once from the live query.
