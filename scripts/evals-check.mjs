@@ -1,9 +1,9 @@
 // evals-check.mjs — the body of the `evals` check on a pull request.
-// NO SHEBANG LINE, for nightly.mjs's reason (worker/jobs/write-slack.mjs says
-// it too): this file is imported by scripts/evals-check.test.mjs and by
-// worker/jobs/evals.mjs's dynamic import, and the test bundler rewrites such a
-// module by prepending an import — which lands in front of a shebang and fails
-// to parse. Every caller already names the interpreter (`node evals-check.mjs`).
+// NO SHEBANG LINE: this file is imported by scripts/evals-check.test.mjs and by
+// the Jarvis repository's worker/jobs/evals.mjs, and the test bundler rewrites
+// such a module by prepending an import — which lands in front of a shebang
+// and fails to parse. Every caller already names the interpreter
+// (`node evals-check.mjs`).
 //
 // It asks the Jarvis Box for a run at this commit and waits for the answer,
 // then compares that run with the base commit's. Merging is the persist gate,
@@ -11,9 +11,8 @@
 // outputs worse.
 //
 // ZERO imports on purpose. WikiTom's Action fetches this one file and runs it,
-// and worker/setup.sh copies it beside the jobs on the box so worker/jobs/
-// evals.mjs can stamp a run with the same gate() the check applies. One body,
-// three homes, no second spelling of what a regression is.
+// and the Jarvis repository carries a copy beside its evals job so a run is
+// stamped with the same gate() the check applies.
 //
 // Environment: CONVEX_SITE_URL, EVALS_KEY, REPO, SHA, BASE_SHA, PR, PR_BODY.
 // EVALS_KEY is a SECOND key, not TTS_WORKER_KEY: the worker key opens every
@@ -34,7 +33,14 @@ export const POLL_INTERVAL_MS = 30_000;
 export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
 
 /**
- * The paths that make an evals run worth asking for, in either repo.
+ * The paths that make an evals run worth asking for, in any repo.
+ *
+ * THE JARVIS REPOSITORY'S PATHS STAY HERE, though its files left this one. The
+ * box reads this list out of tom.quest's main for every request that is not
+ * tom.quest's own (the policy tree in Jarvis's worker/jobs/evals.mjs), so a
+ * Jarvis pull request that changes worker/jobs/nightly.mjs is judged by the
+ * line below that names it. Dropping those lines would call such a branch
+ * unaffected and score nothing.
  *
  * THE ONLY SPELLING OF THAT LIST. It used to be spelled twice — here and in
  * .github/workflows/evals.yml's `paths:` — and the two drifted apart in both
@@ -79,9 +85,9 @@ export const WATCHED_PATHS = [
   // prelude, and skills.mjs and markdown-sections.mjs are its transitive
   // relative imports — change either one alone and the prompt every scored
   // item is built from changes while the file named above does not.
-  // scripts/check-setup-imports.mjs walks the import graph and fails when
-  // this list and that graph disagree, so a new import lands here by being
-  // added rather than by being remembered. Phase 6 is why the graph moved:
+  // The Jarvis repository's scripts/prelude-watched.test.mjs walks the import
+  // graph and fails when its copy of this list and that graph disagree, so a
+  // new import lands there by being added rather than by being remembered. Phase 6 is why the graph moved:
   // the layers became skills, prelude-layers.mjs is gone, and skills.mjs is
   // what the prelude reads now.
   "shared/skills.mjs",
@@ -622,7 +628,7 @@ export function report(head, base, verdict) {
   if (verdict.noBaseline) lines.push(`  no baseline for the base commit; reporting only`);
   if (verdict.mismatch) {
     lines.push(`  GOLDEN SET COMPARISON UNAVAILABLE  ${verdict.mismatchDetail?.reason} — re-run the base and head:`);
-    lines.push(`    node /opt/tts/evals.mjs --repo ${head.repo} --sha ${base.sha} --force`);
+    lines.push(`    node /opt/jarvis/worker/jobs/evals.mjs --repo ${head.repo} --sha ${base.sha} --force`);
   }
   if (verdict.mismatchDetail?.new?.length > 0) {
     lines.push(`  new scored items: ${verdict.mismatchDetail.new.join(", ")}`);
@@ -822,7 +828,7 @@ async function main() {
   if (!answer?.run) {
     console.error(
       `evals: the Jarvis Box did not answer within ${POLL_TIMEOUT_MS / 60_000} minutes. Re-run this check, or run it by hand: ` +
-        `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha} --force`,
+        `node /opt/jarvis/worker/jobs/evals.mjs --repo ${repo} --sha ${sha} --force`,
     );
     process.exit(1);
   }

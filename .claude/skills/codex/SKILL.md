@@ -4,7 +4,7 @@ description: Get a second opinion from OpenAI Codex CLI. With no argument it rev
 argument-hint: "[question, or blank to review the current diff]"
 ---
 
-The one prose home for reaching Codex from a laptop Claude session. Three doors, one program: the `codex` subagent, this skill, and `agent(prompt, { agentType: "codex" })` in a Workflow all run `node scripts/codex-run.mjs`. Codex loads AGENTS.md itself, defaults to `gpt-5.6-sol` at `xhigh`, may edit the workspace and reach the network, and returns only its final answer.
+The one prose home for reaching Codex from a laptop Claude session. Three doors, one program: the `codex` subagent, this skill, and `agent(prompt, { agentType: "codex" })` in a Workflow all run `node "$JARVIS_DIR/scripts/box-agent.mjs" --cli codex`, which runs the Jarvis repository's `scripts/codex-run.mjs` on the box as `tts-codex`. `JARVIS_DIR` names the Jarvis checkout; unset, the subagent stops with one line saying so. Codex loads AGENTS.md itself, defaults to `gpt-5.6-sol` at `xhigh`, may edit the workspace and reach the network, and returns only its final answer.
 
 ## prompt
 

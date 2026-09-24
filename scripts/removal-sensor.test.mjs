@@ -122,6 +122,15 @@ describe("removal sensor", () => {
     expect(dropped).toEqual([keyOf(live[0]), "dead-export\tgone.ts\t00000000"]);
   });
 
+  it("reports no export of shared/ dead, since the Jarvis repository imports the package", () => {
+    const io = {
+      astGrep: () =>
+        `${hit("dead-export", "shared/pkg.mjs", "export const lonely = 1;", 1)}\n${hit("dead-export", "app/a.ts", "export const alone = 1;", 1)}\n`,
+      git: () => ({ ok: false, status: 1, stdout: "", error: "" }),
+    };
+    expect(collect(io).map(keyOf)).toEqual([`dead-export\tapp/a.ts\t${hash8("export alone")}`]);
+  });
+
   it("reads git grep's exit 1 as no match and any other failure as a failure", () => {
     const io = {
       astGrep: () => hit("dead-export", "app/a.ts", "export const lonely = 1;", 1),

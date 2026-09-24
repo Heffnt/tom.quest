@@ -14,13 +14,14 @@ A Codex run has no time limit and can take far longer than a foreground Bash cal
 1. **Start the run.** Pick a short unique tag — four random lowercase letters or digits, `k7qz` say — and use that same tag in every path below. Make this Bash call with `run_in_background: true` and **no `timeout` parameter at all**. Put the request you received, word for word, between the two delimiter lines. Do not rewrite, shorten, or "improve" it.
 
 ```bash
-node scripts/box-agent.mjs --cli codex --repo tom.quest --ref <branch> > /tmp/codex-k7qz.out 2> /tmp/codex-k7qz.err <<'CODEX_PROMPT_END'
+[ -n "$JARVIS_DIR" ] || { echo "codex-run: JARVIS_DIR is unset; it names the Jarvis checkout (/opt/jarvis on the box, the clone's path on the laptop)" > /tmp/codex-k7qz.err; : > /tmp/codex-k7qz.out; exit 2; }
+node "$JARVIS_DIR/scripts/box-agent.mjs" --cli codex --repo tom.quest --ref <branch> > /tmp/codex-k7qz.out 2> /tmp/codex-k7qz.err <<'CODEX_PROMPT_END'
 <the request, verbatim>
 CODEX_PROMPT_END
 echo "codex-run: shell saw exit $?" >> /tmp/codex-k7qz.err
 ```
 
-   **Which command:** run `node scripts/box-agent.mjs --cli codex` from the repo root — on either machine, with no test of your own. From the laptop it sends the run to the Jarvis Box; on the box, where there is nothing to send anywhere, it runs the same program right there. Either way `tts-codex` executes it in a git worktree of the repo and ref you name, with the same flags and the same stdin. **Codex never runs on the laptop.**
+   **Which command:** run `node "$JARVIS_DIR/scripts/box-agent.mjs" --cli codex`, the Jarvis checkout's transport, on either machine, with no test of your own. `JARVIS_DIR` names that checkout: `/opt/jarvis` on the box, the clone's path on the laptop. From the laptop it sends the run to the Jarvis Box; on the box, where there is nothing to send anywhere, it runs the same program right there. Either way `tts-codex` executes it in a git worktree of the repo and ref you name, with the same flags and the same stdin. **Codex never runs on the laptop.**
 
    `--repo` and `--ref` name what Codex reads (the repos are `tom.quest`, `ComplexMultiTrigger`, `WikiTom`, or `none` for no checkout); take them from the request.
 
@@ -50,4 +51,5 @@ cat /tmp/codex-k7qz.err; echo '=== ANSWER ==='; cat /tmp/codex-k7qz.out; rm -f /
 - If the request contains the text `CODEX_PROMPT_END`, change the delimiter to `CODEX_PROMPT_END_2` on both lines.
 - If stderr says `queued behind`, that is not an error: the run is waiting for a slot on the box. Keep waiting.
 - An exit code of 255 is never Codex's: no run started, because the connection to the box failed or the box's address is not configured. Report the stderr line as it stands.
+- An exit code of 2 with the `JARVIS_DIR is unset` line means no run started. Report that line and stop.
 - A weekly-cap message from Codex is Codex's own answer, not a transport failure. Relay it as the answer.

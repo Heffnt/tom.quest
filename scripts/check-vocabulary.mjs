@@ -1,43 +1,38 @@
-// Guardrail: the closed vocabulary and the graph it is the schema of.
+// Guardrail: the closed vocabulary's generated block in convex/ttsShared.ts,
+// the evals commit key, and the refused words over this repository's own code
+// — the checks of the vocabulary and the graph whose subject lives here.
 //
-// ONE SCRIPT, NOT TWO. The vocabulary is the graph's schema — the node and edge
-// kinds are vocabulary terms, and scripts/graph.mjs checks every kind it mints
-// against tts/vocabulary.json — and one schema has one checker. A second script
-// would resolve the same WikiTom checkout, decide the same two modes and print
-// the same two lines, and the day the two disagreed about whether a checkout
-// resolved is the day nobody would know which one CI ran.
+// THE CHECK NUMBERS ARE SHARED WITH THE JARVIS REPOSITORY. The checker was one
+// script of eight in-repo checks while the box's code lived here; the split
+// kept each check where the files it reads live. tom.quest keeps 1, 2, 3, 5 and
+// 6, and check 4 over convex/, app/ and vqc/. Jarvis keeps check 4 over its own
+// worker/ and scripts/, check 7 (the graph's generator holds no model, no
+// network and no vector index) and check 8 (the generator's shape parser still
+// reads shared/skills.mjs), under the same numbers, so a failure named "check
+// 7" means the same thing in both.
 //
-// TWO MODES, DECIDED BY WHETHER A WikiTom CHECKOUT RESOLVES. The eight in-repo
-// checks read only this repository and run everywhere. The two render checks
-// ask the generators whether the files on disk are what the render produces,
-// which needs the vault; with no vault they are skipped, by the one line at the
-// end, and the nightly runs them instead.
+// THE RENDER CHECKS WENT WITH THE GENERATORS. They asked scripts/graph.mjs and
+// scripts/vocabulary.mjs, both Jarvis's now, whether a WikiTom checkout's
+// tts/graph.json and tts/vocabulary.json are what the render produces; the
+// nightly runs them against both checkouts.
 //
 // It reads files relative to the CURRENT DIRECTORY, the way
 // scripts/check-session-mirrors.mjs does, so `pnpm check:guardrails` from the
 // repository root checks the repository root.
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
-import { BOX_WIKITOM_DIR, LAPTOP_WIKITOM_DIR } from "../worker/jobs/search-lib.mjs";
-// Check 8 is ABOUT these two, so it imports them rather than spelling a second
-// reading of them: the fact it states is that this parser reads this code, and
-// a copy of the regex here would only ever check the copy.
-import { SKILL_SHAPES } from "../shared/skills.mjs";
-import { VocabularyError, parseSkillShapes } from "./vocabulary.mjs";
 
 const failures = [];
 const notes = [];
-// What a check FOUND without judging it. Printed verbatim, ahead of the notes
-// and the failures, so a run whose exit status is 0 still carries the finding.
-const reports = [];
 
 // ── What the generator writes, read independently ────────────────────────────
-// scripts/vocabulary.mjs keeps these three shapes as module-private constants,
-// so they are spelled again here rather than imported. That is the point of a
-// guardrail: an independent reading of the bytes on disk, which still fails when
-// the generator and its own marker drift apart.
+// The generator is the Jarvis repository's scripts/vocabulary.mjs, run against
+// a tom.quest checkout (`--tom-quest DIR`). It keeps these three shapes as
+// module-private constants, so they are spelled again here rather than
+// imported. That is the point of a guardrail: an independent reading of the
+// bytes on disk, which still fails when the generator and its own marker drift
+// apart.
 const SHARED_PATH = "convex/ttsShared.ts";
 const GENERATOR_PATH = "scripts/vocabulary.mjs";
 // EVERY PATTERN HERE TOLERATES A CARRIAGE RETURN. convex/ttsShared.ts is CRLF on
@@ -60,45 +55,6 @@ const REFUSED_WORDS = [/ontology/gi, /knowledge graph/gi];
 // vocabulary's opening sentence because a check for a sentence has to spell the
 // sentence. Nothing else may hold a second copy.
 const EXEMPT_FILES = new Set(["scripts/check-vocabulary.mjs", "scripts/check-vocabulary.test.mjs"]);
-
-// Check 4's exemption, a NAMED LIST OF FOUR FILES and no directory, each with
-// the reason it may spell a refused word:
-//  - scripts/check-vocabulary.mjs and scripts/check-vocabulary.test.mjs: a check
-//    for a word has to spell the word, and its test has to spell it to witness
-//    the check.
-//  - worker/jobs/search-lib.test.mjs: three fixtures exist to prove that
-//    `tts search define` prints a refused word AS refused, and a fixture that
-//    could not name the word would be testing nothing.
-//  - scripts/graph.mjs: exempt for a RANGE, not as a file — see
-//    refusedWordRange below. One fenced block there states the rule, and a
-//    statement that cannot name what it refuses says nothing; a refused word
-//    anywhere else in that file still fails.
-const REFUSED_WORD_EXEMPT_FILES = new Set([
-  "scripts/check-vocabulary.mjs",
-  "scripts/check-vocabulary.test.mjs",
-  "worker/jobs/search-lib.test.mjs",
-]);
-const REFUSED_WORD_RANGE_FILE = "scripts/graph.mjs";
-
-/** The character range of the one block in scripts/graph.mjs that may name the
- * refused words, fenced by `// <refused-words>` and `// </refused-words>`.
- *
- * KEYED ON MARKERS, NOT ON A DECLARATION. It used to find the doc comment above
- * `export const NAME =` — but that constant was a label nothing read and it is
- * gone, and a range anchored to a neighbour moves whenever the neighbour does.
- * A marker is what the block is FOR, so it cannot drift from it.
- *
- * `null` when either marker is missing, which leaves the whole file unexempt
- * and the check loud rather than silently wider. */
-const REFUSED_WORDS_OPEN = "// <refused-words>";
-const REFUSED_WORDS_CLOSE = "// </refused-words>";
-function refusedWordRange(text) {
-  const open = text.indexOf(REFUSED_WORDS_OPEN);
-  if (open === -1) return null;
-  const close = text.indexOf(REFUSED_WORDS_CLOSE, open);
-  if (close === -1) return null;
-  return [open, close + REFUSED_WORDS_CLOSE.length];
-}
 
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
 const SKIP_DIR = new Set([
@@ -171,7 +127,7 @@ function matches(re, text) {
   return out;
 }
 
-// ── The eight in-repo checks ─────────────────────────────────────────────────
+// ── The six in-repo checks ───────────────────────────────────────────────────
 
 const shared = read(SHARED_PATH);
 if (shared === null) {
@@ -201,7 +157,7 @@ if (shared !== null) {
   if (loose.length !== 1) {
     failures.push(
       `${SHARED_PATH}: ${loose.length} opening \`<vocabulary generated …>\` marker(s), expected exactly 1 — `
-        + `regenerate with \`node ${GENERATOR_PATH} --wikitom <dir> --write\``,
+        + `regenerate from a Jarvis checkout with \`node ${GENERATOR_PATH} --wikitom <dir> --tom-quest <this checkout> --write\``,
     );
   } else if (opens.length !== 1) {
     failures.push(
@@ -246,13 +202,13 @@ if (block !== null) {
 }
 
 // 3. ONE CLOSED VOCABULARY, ONE COPY. The opening sentence appears inside the
-//    generated block and nowhere else under convex/, worker/ or scripts/ — a
-//    second copy is a second vocabulary, and the one a prompt carries is
-//    whichever file its builder imported.
-// witness: paste the sentence into any convex/ or worker/ source file.
+//    generated block and nowhere else under convex/ or scripts/ — a second
+//    copy is a second vocabulary, and the one a prompt carries is whichever
+//    file its builder imported.
+// witness: paste the sentence into any convex/ source file.
 {
   const outside = [];
-  for (const file of [...sourceFiles("convex"), ...sourceFiles("worker"), ...sourceFiles("scripts")]) {
+  for (const file of [...sourceFiles("convex"), ...sourceFiles("scripts")]) {
     if (EXEMPT_FILES.has(file)) continue;
     const text = read(file);
     if (text === null) continue;
@@ -271,24 +227,21 @@ if (block !== null) {
 
 // 4. Switch (4)/(c): the whole is called the graph. "ontology" and "knowledge
 //    graph" are refused words, in code and in comments alike — the name is what
-//    a reader takes from a file, and a comment is read. Four files may spell
-//    them, each for the reason stated at REFUSED_WORD_EXEMPT_FILES above, and
-//    scripts/graph.mjs only inside its fenced refused-words block.
-// witness: write "the ontology" in any comment under convex/, worker/, scripts/,
-// app/ or vqc/.
+//    a reader takes from a file, and a comment is read. Scanned here over
+//    convex/, app/ and vqc/, none of which has a reason to spell them; this
+//    script and its test, which must, are under scripts/ and outside the scan.
+//    The Jarvis repository runs the same check over its own worker/ and
+//    scripts/, with the graph generator's fenced refused-words block exempt.
+// witness: write "the ontology" in any comment under convex/, app/ or vqc/.
 {
-  const scanned = ["convex", "worker", "scripts", "app", "vqc"].flatMap((dir) => sourceFiles(dir));
+  const scanned = ["convex", "app", "vqc"].flatMap((dir) => sourceFiles(dir));
   for (const file of scanned) {
-    if (REFUSED_WORD_EXEMPT_FILES.has(file)) continue;
     const text = read(file);
     if (text === null) continue;
-    const range = file === REFUSED_WORD_RANGE_FILE ? refusedWordRange(text) : null;
     for (const re of REFUSED_WORDS) {
       for (const { index, match } of matches(re, text)) {
-        if (range !== null && index >= range[0] && index < range[1]) continue;
         failures.push(
-          `${file}:${lineOf(text, index)}: "${match[0]}" is a refused word — the whole is called the graph `
-            + "(scripts/graph.mjs, the fenced refused-words block)",
+          `${file}:${lineOf(text, index)}: "${match[0]}" is a refused word — the whole is called the graph`,
         );
       }
     }
@@ -349,108 +302,8 @@ if (block !== null) {
     if (want !== got) {
       failures.push(
         `${SHARED_PATH}: ${name} is [${got}] and shared/graph.mjs mints [${want}] — `
-          + `regenerate with \`node ${GENERATOR_PATH} --wikitom <dir> --write\``,
+          + `regenerate from a Jarvis checkout with \`node ${GENERATOR_PATH} --wikitom <dir> --tom-quest <this checkout> --write\``,
       );
-    }
-  }
-}
-
-// REMOVAL CHECK for 7: cannot remove; it IS switch 3, which is Tom's and is
-// declared "on". The five rejections are the graph's whole claim to being
-// auditable — an edge whose provenance is a named regex can be checked and one
-// a model wrote cannot — and a rejection enforced only by a comment is a
-// rejection that lasts until the first person who does not read the comment.
-//
-// 7. Switch (3): no model, no network, no vector index. The graph's two halves
-//    read text and compute over it, and an edge whose provenance is a named
-//    regex is auditable where one a model wrote is not. Searched in EXECUTABLE
-//    CODE only (stripComments above): both files say in prose that they hold no
-//    embedding and no vector, and that sentence is the rule rather than a
-//    breach of it.
-// witness: call fetch() in scripts/graph.mjs, or add a dependency named
-// "faiss-node" to package.json.
-{
-  const TOKENS = [/fetch\(/gi, /anthropic/gi, /openai/gi, /embedding/gi, /vector/gi, /cosine/gi, /faiss/gi];
-  for (const file of ["scripts/graph.mjs", "shared/graph.mjs"]) {
-    const text = read(file);
-    if (text === null) {
-      failures.push(`${file} is not in this checkout — the graph's generator is half of what this checks`);
-      continue;
-    }
-    const code = stripComments(text);
-    for (const re of TOKENS) {
-      for (const { index, match } of matches(re, code)) {
-        failures.push(
-          `${file}:${lineOf(code, index)}: "${match[0]}" in code — the graph holds no model, no network and `
-            + "no vector index (the five rejections, scripts/graph.mjs)",
-        );
-      }
-    }
-  }
-  // The same rule one level up: a dependency whose NAME is one of these is an
-  // embedding or vector store however it is used.
-  const EMBEDDING_DEPENDENCY = /embed|vector|faiss|openai|anthropic|cohere|pinecone|chroma|qdrant|weaviate|lancedb|hnsw|langchain/i;
-  const manifest = read("package.json");
-  if (manifest === null) {
-    failures.push("package.json is not in this checkout");
-  } else {
-    let parsed = null;
-    try {
-      parsed = JSON.parse(manifest);
-    } catch {
-      failures.push("package.json is not JSON");
-    }
-    if (parsed !== null) {
-      const named = [
-        ...Object.keys(parsed.dependencies ?? {}),
-        ...Object.keys(parsed.devDependencies ?? {}),
-      ].sort();
-      for (const name of named) {
-        if (EMBEDDING_DEPENDENCY.test(name)) {
-          failures.push(`package.json depends on "${name}" — the graph adds no embedding or vector dependency`);
-        }
-      }
-    }
-  }
-}
-
-// 8. The generator's shape parser still reads the code it parses.
-//    scripts/vocabulary.mjs extracts SKILL_SHAPES from shared/skills.mjs AS
-//    TEXT, and names one of those shapes per published skill, so a regex that
-//    stopped matching an entry would quietly publish a vocabulary that says the
-//    system has fewer shapes than it has.
-//
-//    THIS IS THE ONE PLACE THAT COMPARISON IS HONEST, and it used to live in the
-//    generator, where it was not: there the text is whatever tom.quest checkout
-//    the run was pointed at and the imported object is the installed script's
-//    own sibling, and on the box those are two checkouts that drift apart. Here
-//    both sides are this repository — the checker reads relative to the current
-//    directory, which `pnpm check:guardrails` runs from the root — so a
-//    mismatch is the parser falling behind the code and nothing else.
-// witness: change `explainer: Object.freeze({` in shared/skills.mjs to
-// `explainer: Object.freeze( {`, which the regex no longer reads.
-{
-  const skills = read("shared/skills.mjs");
-  if (skills === null) {
-    failures.push("shared/skills.mjs is not in this checkout — the shape parser has nothing to read");
-  } else {
-    let parsed = null;
-    try {
-      parsed = parseSkillShapes(skills);
-    } catch (problem) {
-      if (!(problem instanceof VocabularyError)) throw problem;
-      failures.push(`shared/skills.mjs: ${GENERATOR_PATH} cannot read SKILL_SHAPES at all — ${problem.message}`);
-    }
-    if (parsed !== null) {
-      const declared = Object.keys(SKILL_SHAPES);
-      const unread = declared.filter((shape) => !parsed.includes(shape));
-      const invented = parsed.filter((shape) => !declared.includes(shape));
-      if (unread.length > 0 || invented.length > 0) {
-        failures.push(
-          `shared/skills.mjs: SKILL_SHAPES declares [${declared.join(", ")}] and ${GENERATOR_PATH} reads `
-            + `[${parsed.join(", ")}]${unread.length === 0 ? "" : ` — it cannot read ${unread.join(", ")}`}`,
-        );
-      }
     }
   }
 }
@@ -470,135 +323,12 @@ if (block !== null) {
 // no second one ever existed. A check with no reader and no history is a check
 // that only ever fires on a false positive.
 
-// ── The two render checks, when a WikiTom checkout resolves ──────────────────
-// `--wikitom`, else WIKITOM_DIR, else the platform default, resolved off the two
-// constants worker/jobs/search-lib.mjs already spells rather than a third copy
-// of those paths. BOX_WIKITOM_DIR reads WIKITOM_DIR itself; the environment is
-// still checked first here, because the laptop constant does not.
-function resolveWikitom(argv, env) {
-  const flag = argv.indexOf("--wikitom");
-  if (flag !== -1 && typeof argv[flag + 1] === "string") return argv[flag + 1];
-  if (typeof env.WIKITOM_DIR === "string" && env.WIKITOM_DIR !== "") return env.WIKITOM_DIR;
-  return process.platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR;
-}
-
-const wikitom = resolveWikitom(process.argv.slice(2), process.env);
-const resolved = existsSync(wikitom) && statSync(wikitom).isDirectory();
-
-/** One generator, run as the command line runs it. Its own stdout and stderr are
- * what the failure carries: the generators print a block per disagreement, and a
- * paraphrase here would be a second account of the same finding. */
-function runGenerator(label, args) {
-  try {
-    execFileSync(process.execPath, args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, WIKITOM_DIR: wikitom },
-    });
-    return true;
-  } catch (err) {
-    const output = `${err?.stdout ?? ""}\n${err?.stderr ?? err?.message ?? err}`.trim();
-    failures.push(`${label} FAILED:\n${output.split("\n").map((line) => `      ${line}`).join("\n")}`);
-    return false;
-  }
-}
-
-/** The same generator run for its REPORT rather than for a verdict: its stdout
- * and stderr come back whole and its exit status is not read. Check 11 is the
- * one caller, for the reason stated there. */
-function reportGenerator(args) {
-  try {
-    return execFileSync(process.execPath, args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, WIKITOM_DIR: wikitom },
-    }).trim();
-  } catch (err) {
-    return `${err?.stdout ?? ""}\n${err?.stderr ?? err?.message ?? err}`.trim();
-  }
-}
-
-if (resolved) {
-  // 10. THE STATIC HALF OF tts/graph.json IS WHAT THE RENDER PRODUCES.
-  //     `--no-record` is what makes this runnable anywhere: the record half is
-  //     built from the night's table copy, which a laptop checkout may not have,
-  //     and the static half is the half a pull request can change.
-  //
-  //     A CHECKOUT WITH NO tts/graph.json AT ALL IS A NOTE, NOT A FAILURE. The
-  //     file arrives in a vault when the nightly first writes it, and a vault
-  //     that has never run one has nothing for a pull request to have changed.
-  //     A vault that HAS the file and disagrees with the render is still a
-  //     failure, which is the case this check exists for; the difference is
-  //     read off the file's existence rather than off the generator's message,
-  //     so a rename cannot turn one into the other.
-  if (!existsSync(join(wikitom, "tts", "graph.json"))) {
-    reports.push(
-      `check-vocabulary: ${wikitom} has no tts/graph.json — nothing to check the render against; `
-        + "the nightly writes it, and `node scripts/graph.mjs --wikitom <dir> --write` writes it now",
-    );
-  } else {
-    runGenerator(
-      `node scripts/graph.mjs --check --wikitom ${wikitom} --no-record`,
-      ["scripts/graph.mjs", "--check", "--wikitom", wikitom, "--no-record"],
-    );
-  }
-  // 11. THE SAME QUESTION OF THE VOCABULARY, PRINTED AND NOT FAILED.
-  //
-  //     The generator's first run against the real repositories found seven
-  //     disagreements about the prompt's seven words, a file over its size
-  //     limit and a map candidate over the 7,000-byte bound. Tom settled the
-  //     seven on 2026-09-24 (one wording, in WikiTom tts/spec.md §12.1, with
-  //     TTS_CLOSED_VOCABULARY rendered from it); the file's size limit and the
-  //     map's 7,000-byte bound are thresholds that warn and never refuse, on
-  //     his ruling of 2026-09-22; and the map candidate is no longer written. The nightly now writes
-  //     tts/vocabulary.json and fails its step on a disagreement
-  //     (worker/jobs/nightly.mjs graphStep).
-  //
-  //     THIS CHECK STILL DOES NOT FAIL, for a reason that is not about
-  //     disagreements: `--check` also exits 2 when tts/vocabulary.json is
-  //     older than the render, and the file is written by the nightly, not
-  //     by the pull request that moved the render. Every pull request that
-  //     changed a term, a job or a repository would fail here until the
-  //     next night — a check nobody can act on inside the pull request. So
-  //     it prints the generator's report whole, the disagreement count
-  //     first, and does not read its exit status; a disagreement fails the
-  //     nightly, which is where the file is written.
-  //
-  //     REMOVAL CHECK: cannot remove because it cannot fail. What it patches
-  //     is a disagreement or a stale convex/ttsShared.ts block going UNSEEN
-  //     on tom.quest's gate, where the block can be landed with `--write`.
-  const vocabulary = read(GENERATOR_PATH);
-  if (vocabulary === null) {
-    notes.push(`${GENERATOR_PATH} is not in this checkout — its render check did not run`);
-  } else if (!vocabulary.includes('"--check"')) {
-    notes.push(`${GENERATOR_PATH} has no --check yet — its render check did not run`);
-  } else {
-    const output = reportGenerator([GENERATOR_PATH, "--check", "--wikitom", wikitom]);
-    // Counted off the report's own block headings rather than off its summary
-    // line, which is absent when the count is zero.
-    const count = matches(/^DISAGREEMENT /gm, output).length;
-    reports.push(
-      `check-vocabulary: the vocabulary reports ${count} disagreement(s); `
-        + "check 11 reports and does not fail — a disagreement fails the nightly (see worker/jobs/nightly.mjs graphStep)",
-    );
-    reports.push(
-      `node ${GENERATOR_PATH} --check --wikitom ${wikitom}:\n`
-        + output.split("\n").map((line) => `      ${line}`).join("\n"),
-    );
-  }
-}
-
 // ── The report ───────────────────────────────────────────────────────────────
 
-for (const report of reports) console.log(report);
 for (const note of notes) console.log(`check-vocabulary: ${note}`);
 if (failures.length > 0) {
-  console.error("Vocabulary and graph check FAILED:");
+  console.error("Vocabulary check FAILED:");
   for (const failure of failures) console.error("  - " + failure);
   process.exit(1);
 }
-if (!resolved) {
-  console.log("check-vocabulary: no WikiTom checkout — ran the 8 in-repo checks; the render checks run in the nightly");
-  process.exit(0);
-}
-console.log(`Vocabulary and graph check passed (WikiTom at ${wikitom}).`);
+console.log("check-vocabulary: the 6 in-repo checks passed; the render checks run in the nightly");

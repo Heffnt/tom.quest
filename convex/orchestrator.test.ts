@@ -26,7 +26,7 @@ import {
   recordElevationReply,
 } from "./orchestrator";
 import { HOSTED_WORKERS_MAX, MODEL_OF_TOM_HEADER, NARROW_LIST } from "./ttsShared";
-import { COMPACT_ENDED_REASON, ORCHESTRATOR_COMPACT_WORD } from "../worker/session-host/hosted.mjs";
+import { COMPACT_ENDED_REASON, ORCHESTRATOR_COMPACT_WORD } from "../shared/session-constants.mjs";
 import { checkMessage, composeElevationAsk, elevationAskBody } from "./ttsCompose";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);

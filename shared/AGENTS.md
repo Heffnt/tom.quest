@@ -10,5 +10,4 @@
 
 ## how the box reaches it
 
-- `worker/setup.sh` copies `shared/*.mjs` to `/opt/tts/shared/`, which the installed `scripts/` import.
-- Box code under `worker/` keeps its old import paths. Each moved module left a symlink at its old path, `cp` follows it, and `scripts/check-session-mirrors.mjs` checks every link's target.
+- The Jarvis repository installs this directory as the package `tom-quest-shared`, pinned to a tom.quest commit in its lockfile. A change here reaches the box when Jarvis bumps the pin.

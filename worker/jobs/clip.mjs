@@ -1,1 +1,0 @@
-../../shared/clip.mjs

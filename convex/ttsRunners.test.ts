@@ -191,12 +191,6 @@ describe("the ceiling", () => {
     expect(prompt).toContain("inside the runner's GPU-hour budget and its ceiling of 2 GPUs, 240 minutes and 128000 MB of memory per request;");
   });
 
-  it("keeps the box's fallback ceiling equal to the record's default", async () => {
-    const { DEFAULT_CEILING } = await import("../worker/runs/runner-sensor.mjs");
-    const { RUNNER_CEILING_DEFAULT } = await import("./ttsShared");
-    expect(DEFAULT_CEILING).toEqual(RUNNER_CEILING_DEFAULT);
-  });
-
   it("reads Tom's ceiling reply", async () => {
     const { parseCeilingReply, RUNNER_CEILING_DEFAULT: d } = await import("./ttsShared");
     expect(parseCeilingReply("Yes, skip pythia.", d)).toBeNull();

@@ -1,27 +1,22 @@
 // The credential filter (shared/redact.mjs): the one thing that stands between
 // a token a model printed and a transcript row that lives forever. This file is
 // its behavior. The wiring, that the daemon applies it at the single ingest
-// choke point after the cut, is worker/session-host/__tests__/redact-wiring.test.mjs.
+// choke point after the cut, is the Jarvis repository's
+// worker/session-host/__tests__/redact-wiring.test.mjs.
 //
 // Every "token" below is a made-up value of a REAL shape, and each one is
 // assembled at runtime from split pieces by `t()`: no committed LINE spells a
 // whole token, so the repo's gitleaks scan has nothing to flag and the test
 // fencing the leak cannot become one.
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { redactSecrets } from "../redact.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const libSource = fs.readFileSync(path.join(here, "..", "..", "worker", "session-host", "lib.mjs"), "utf8");
-
-// The 32KB cut has ONE home (TRUNCATE_LIMIT in lib.mjs); read it from there
-// rather than writing 32768 down a second time.
-const TRUNCATE_LIMIT =
-  Number(/TRUNCATE_LIMIT = (\d+) \* 1024/.exec(libSource)[1]) * 1024;
+// The daemon's cut, TRUNCATE_LIMIT, is 32KB and lives in the Jarvis
+// repository with the daemon. Here it is a fixture: what these cases state is
+// that redaction runs on the bytes after a cut, wherever the cut falls.
+const TRUNCATE_LIMIT = 32 * 1024;
 
 /** Join split pieces into one token-shaped string at runtime. */
 const t = (...parts) => parts.join("");

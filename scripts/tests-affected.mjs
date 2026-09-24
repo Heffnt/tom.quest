@@ -29,7 +29,7 @@ export const RELATED = "related";
 /**
  * The extensions vitest's module graph can follow. A changed file with any
  * other extension is a file a test may READ OFF DISK — vqc/todos.yaml,
- * tts/vocabulary.json, an AGENTS.md, sg/baseline.tsv, worker/setup.sh — and no
+ * tts/vocabulary.json, an AGENTS.md, sg/baseline.tsv, a workflow file — and no
  * import graph has ever seen that edge. Those changes take the whole suite.
  *
  * THIS IS ALSO WHY THE LIST BELOW IS SHORT. package.json, pnpm-lock.yaml,

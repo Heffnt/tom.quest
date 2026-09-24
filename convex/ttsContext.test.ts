@@ -1,7 +1,6 @@
-// The Convex half of the one context fixture. scripts/prelude.test.mjs runs the
-// same pages and the same record against a git WikiTom; both read
-// scripts/context-fixture.mjs, so the CLI's composition and this one cannot
-// drift.
+// The Convex half of the context fixture, scripts/context-fixture.mjs. The
+// Jarvis repository's scripts/prelude.test.mjs runs its own copy of the same
+// pages and record against a git WikiTom.
 //
 // EVERY GRANT BLOCK BELOW IS WRITTEN OUT BY HAND. An expectation rendered by
 // calling renderGrants would assert only that the renderer is itself.

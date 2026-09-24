@@ -13,7 +13,6 @@
 knowledge:
   - "app/**"
   - "convex/**"
-  - "worker/**"
   - "scripts/**"
   - "e2e/**"
   - "vqc/*.ts" # the guard tests and vqc/cites.ts, their shared home

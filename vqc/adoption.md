@@ -48,7 +48,7 @@ conditions are not restated here beyond the phrase needed to identify the row.
 | Rulings log | below, this file, append-only — shape (the five fields, kebab ids never reused, dates running forward) enforced by `vqc/registries.test.ts` |
 | Scratch roots (D26) | `tts/` (declared in classification.yaml) |
 | Witness faults (D8) | none yet — ledger `no-witness-fault-harness`; interim: `witness:` comments in guard tests |
-| Jarvis Box definition | `worker/setup.sh` — the Jarvis Box owns no durable state; a rebuild from this script IS the Jarvis Box |
+| Jarvis Box definition | the Jarvis repository's `worker/setup.sh` — the Jarvis Box owns no durable state; a rebuild from this script IS the Jarvis Box |
 | Secrets flow | `secrets/convex.env` → `npx convex env set` (Vercel half broken: ledger `secrets-sync-vercel-drift`); per-family keys, never shared |
 | Session-surface design | WikiTom `tts/spec.md` §20 — code comments point at it (graduated 2026-08-29) |
 | TTS spec prose (vocabulary, contracts) | WikiTom `tts/spec.md` — agent-facing renderings (e.g. app/lib/tts-session-prompt.ts preamble) summarize it, never redefine it |
@@ -58,8 +58,8 @@ conditions are not restated here beyond the phrase needed to identify the row.
 | Verifier | Cadence | What runs |
 |---|---|---|
 | checks | every commit (CI `report`, which carries `static-boundaries`, `secret-scan`, `tests` and `e2e`); at each write door | `npx tsc --noEmit`, `pnpm test` (the whole suite on main and nightly, the diff's related files on a pull request — `scripts/tests-affected.mjs`), `pnpm check:guardrails`, `pnpm build`, gitleaks, `pnpm test:e2e`; the writing standard at the prepare door and as the prod rung; WikiTom's evidence check in the nightly job; the digest's facts-block verification. `docs/tests.md` is the whole inventory |
-| the audit | before every merge | `worker/jobs/audit.mjs` → the `audit-verdict` head row |
-| the evals | on a pull request touching a watched context file (`scripts/evals-check.mjs`); the whole set weekly | `worker/jobs/evals.mjs` → the `evals-run` head row |
+| the audit | before every merge | the Jarvis repository's `worker/jobs/audit.mjs` → the `audit-verdict` head row |
+| the evals | on a pull request touching a watched context file (`scripts/evals-check.mjs`); the whole set weekly | the Jarvis repository's `worker/jobs/evals.mjs` → the `evals-run` head row |
 
 There are exactly three verifiers and they are these three; `vqc/verifiers.md`
 says what each one verifies, what it costs, and how it fails.

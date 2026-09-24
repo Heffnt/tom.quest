@@ -154,8 +154,8 @@ export const LEARNING_CHECK_FAILED = "learning-check-failed";
 // lines it reported that are not one proposal. Nothing prints them today —
 // they are read off the row when a night is being explained.
 export const REPO_PROPOSAL = "repo-proposal";
-export const REPO_PROPOSAL_APPLIED = "repo-proposal-applied";
-export const REPO_PROPOSAL_DROPPED = "repo-proposal-dropped";
+const REPO_PROPOSAL_APPLIED = "repo-proposal-applied";
+const REPO_PROPOSAL_DROPPED = "repo-proposal-dropped";
 
 // The weekly session's record that Tom confirmed an area page (phase 8;
 // POST /tts/area-reviewed, convex/ttsWeekly.ts): key = the page's path,
@@ -226,7 +226,7 @@ export type WikiTomCommit = {
   url: string;
 };
 export const WIKITOM_UNREADABLE = "WikiTom commits: not readable (no credential)";
-export const WIKITOM_COMMIT = v.object({
+const WIKITOM_COMMIT = v.object({
   sha: v.string(),
   message: v.string(),
   author: v.string(),

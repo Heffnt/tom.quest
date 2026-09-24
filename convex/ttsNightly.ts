@@ -183,7 +183,7 @@ export const LEARNING_CHANGES_MAX = 500;
 // outnumber them.
 export const LEARNING_REPO_SESSIONS_MAX = 40;
 // The proposals dedupe looks back over, and the ones a night reconciles.
-export const REPO_PROPOSALS_MAX = 500;
+const REPO_PROPOSALS_MAX = 500;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The agent's reply as the job shows it: clip() from shared/clip.mjs,

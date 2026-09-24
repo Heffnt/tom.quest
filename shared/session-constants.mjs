@@ -102,3 +102,24 @@ export const DAEMON_STALE_MS = 3 * POLL_IDLE_MS;
  * CLI's own cap vocabulary, added 2026-09-04.
  */
 export const USAGE_LIMIT_RE = /usage.?limit|limit reached|session limit|usage_limit_(reached|exceeded)|rate_limit_reached|hit your usage limit/i;
+
+/** The last line of the orchestrator's final message when it asks to be
+ * restarted from its document. The daemon (worker/session-host/hosted.mjs in
+ * the Jarvis repository) reads it off the run; the record
+ * (convex/orchestrator.ts) restarts the run on it. */
+export const ORCHESTRATOR_COMPACT_WORD = "JARVIS-COMPACT";
+
+/** The endedReason a compaction ends with. The record reads it to tell a
+ * compaction (restart now, crash count cleared) from a crash. */
+export const COMPACT_ENDED_REASON = "orchestrator compacted";
+
+/** The endedReason a restarted daemon ends a live unattended run with. The
+ * record restarts the orchestrator at once on it and does not count it as a
+ * crash. */
+export const DAEMON_RESTART_ENDED_REASON = "daemon restarted mid-mission";
+
+/** What one runner launch may ask for when its row holds no ceiling: the fixed
+ * ceiling every runner had before Tom ruled on 2026-09-21 that a ruling of his
+ * may raise it. The record (convex/ttsShared.ts) stores and serves it, and the
+ * box's sensor falls back to it when its cache holds none. */
+export const RUNNER_CEILING_DEFAULT = { gpus: 2, minutes: 240, memoryMb: 128000 };

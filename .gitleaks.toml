@@ -42,8 +42,10 @@ regexes = [
   # app/runs/components/run.test.tsx — a content-addressed store path, not
   # a key. generic-api-key matched it on the field NAME ending in "Key".
   '''storeKey: "runs/claude/box/x/y"''',
-  # worker/jobs/evals.test.mjs — the shape IS the test: the runner-failure
-  # redaction path must remove a real credential-shaped token before it reaches an item.
+  # worker/jobs/evals.test.mjs, in this repository's history from before the
+  # box's code moved to the Jarvis repository; a scan of the whole history still
+  # reads it. The shape IS the test: the runner-failure redaction path must
+  # remove a real credential-shaped token before it reaches an item.
   '''ghp_abcdefghijklmnopqrstuvwxyz1234567890''',
   # convex/http.test.ts — a SECOND run-registration token fixture, the reaction
   # door suite's. Same reason as the UUID above: GET /tts/run-trace checks the
