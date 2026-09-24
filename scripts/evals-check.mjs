@@ -35,12 +35,14 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
 /**
  * The paths that make an evals run worth asking for, in any repo.
  *
- * THE JARVIS REPOSITORY'S PATHS STAY HERE, though its files left this one. The
- * box reads this list out of tom.quest's main for every request that is not
- * tom.quest's own (the policy tree in Jarvis's worker/jobs/evals.mjs), so a
- * Jarvis pull request that changes worker/jobs/nightly.mjs is judged by the
- * line below that names it. Dropping those lines would call such a branch
- * unaffected and score nothing.
+ * TWO REPOSITORIES READ IT: tom.quest, and WikiTom, whose requests the box
+ * judges by tom.quest's main (OWN_POLICY_REPOS in Jarvis's
+ * worker/jobs/evals.mjs). Jarvis judges its own requests by its own copy, so
+ * the box's paths — worker/jobs/*, worker/bin/tts-ask, scripts/prelude.mjs,
+ * scripts/publish-skills.mjs, evals/golden/**, evals/tasks/** — left this list
+ * with the files: a watched path that cannot change in either repository this
+ * list serves watches nothing. model-of-tom/** and evals/triggers/** stay for
+ * WikiTom, which holds both.
  *
  * THE ONLY SPELLING OF THAT LIST. It used to be spelled twice — here and in
  * .github/workflows/evals.yml's `paths:` — and the two drifted apart in both
@@ -55,24 +57,21 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
  * the context Tom's jobs read changes his outputs with nothing scoring them,
  * which is the exact failure the whole gate exists to prevent.
  *
- * FOUR PATHS WERE ADDED WHEN THE SKILLS LANDED, and each is a context file in
+ * THREE PATHS STAY FROM WHEN THE SKILLS LANDED, and each is a context file in
  * exactly the sense this list means — a file whose content reaches a run's
  * prompt. shared/skills.mjs is the table that decides what the skill set IS
  * and writes every description a run reads before it loads one;
- * scripts/publish-skills.mjs is the generator that turns that table into the
- * directories; shared/skill-router.mjs is what decides which of them a run
- * is granted. A change to any of the three changes what Tom's jobs are given
- * with nothing else scoring it. evals/triggers/** is watched for the reason
- * evals/golden/** is: it is the set, and a change to the set changes what a
+ * shared/skill-router.mjs is what decides which of them a run is granted. A
+ * change to either changes what Tom's jobs are given with nothing else scoring
+ * it. evals/triggers/** — WikiTom's private area trigger cases — is watched
+ * because it is part of the set, and a change to the set changes what a
  * comparison means. It is not ordinarily a pull-request coverage item: only a
  * skill description or router change may pay with a trigger case, because that
  * is the one change a trigger directly scores.
  *
- * THE HARNESS'S OWN FILES ARE STILL NOT WATCHED. This one and
- * worker/jobs/evals.mjs are the machinery that runs the measurement, not the
- * context being measured, and watching them would fire a fifty-minute run on
- * every change to the evals code itself. evals/golden/runs/** needs no entry
- * either: it is already inside evals/golden/**.
+ * THE HARNESS'S OWN FILE IS STILL NOT WATCHED. This one is the machinery that
+ * runs the measurement, not the context being measured, and watching it would
+ * fire a fifty-minute run on every change to the evals code itself.
  */
 export const WATCHED_PATHS = [
   "AGENTS.md",
@@ -80,23 +79,16 @@ export const WATCHED_PATHS = [
   "CLAUDE.md",
   "**/CLAUDE.md",
   "model-of-tom/**",
-  "scripts/prelude.mjs",
-  // WHAT scripts/prelude.mjs READS. The eval runner executes the pinned
-  // prelude, and skills.mjs and markdown-sections.mjs are its transitive
-  // relative imports — change either one alone and the prompt every scored
-  // item is built from changes while the file named above does not.
+  // WHAT THE PRELUDE READS. The prelude itself lives in the Jarvis
+  // repository now, and skills.mjs and markdown-sections.mjs are its
+  // transitive imports through the tom-quest-shared pin — change either one
+  // alone and the prompt every scored item is built from changes.
   // The Jarvis repository's scripts/prelude-watched.test.mjs walks the import
-  // graph and fails when its copy of this list and that graph disagree, so a
-  // new import lands there by being added rather than by being remembered. Phase 6 is why the graph moved:
-  // the layers became skills, prelude-layers.mjs is gone, and skills.mjs is
-  // what the prelude reads now.
+  // graph and fails when its copy of the list and that graph disagree.
   "shared/skills.mjs",
-  // NOT IN THE PRELUDE GRAPH, AND WATCHED ANYWAY. publish-skills.mjs writes
-  // the catalog the prelude reads and context-relevance.mjs is what a brief
-  // is cut with; neither is imported by prelude.mjs, and both decide what a
-  // run is given. The fence asks only that the graph be a SUBSET of this
-  // list, so a file that earns its place by a second route keeps it.
-  "scripts/publish-skills.mjs",
+  // NOT IN THE PRELUDE GRAPH, AND WATCHED ANYWAY. context-relevance.mjs is
+  // what a brief is cut with; the prelude does not import it, and it decides
+  // what a run is given.
   "shared/context-relevance.mjs",
   "shared/markdown-sections.mjs",
   // The narrow list and the model table the prompts render, moved out of
@@ -107,13 +99,7 @@ export const WATCHED_PATHS = [
   "convex/ttsSkills.ts",
   "convex/ttsCompose.ts",
   "convex/ttsDigest.ts",
-  "worker/jobs/plan-graphs.mjs",
-  "worker/jobs/weekly.mjs",
-  "worker/jobs/delegate.mjs",
   "shared/skill-router.mjs",
-  "worker/bin/tts-ask",
-  "evals/golden/**",
-  "evals/tasks/**",
   // THE TRIGGER FILES ARE PART OF THE SET, and this line was missing from the
   // workflow's `paths:` list before it moved here. `loadTriggers` reads
   // evals/triggers/*.json into the run, and ITEM_PREFIXES below already names
@@ -122,19 +108,9 @@ export const WATCHED_PATHS = [
   // omission failed CLOSED: the job did not run, no row was written, and the
   // gate denied for want of one. Inside the check it fails OPEN — the check
   // runs, finds nothing watched, and writes a passing unaffected row for a
-  // change to the set itself.
+  // change to the set itself. WikiTom holds the private area trigger cases,
+  // and its requests are judged by this list.
   "evals/triggers/**",
-  // THE TWO JOBS WHOSE PROMPT NOTHING WATCHED. `checkin` builds its prompt from
-  // worker/jobs/runner-checkin.mjs and `learning` from worker/jobs/nightly.mjs
-  // and worker/jobs/learning-ground.mjs (worker/jobs/evals.mjs JOBS), and none
-  // of the three was on this list — so a change to the check-in judge's own
-  // prompt, or to the learning step's, was `unaffected`, wrote a passing row
-  // with nothing scored, and merged with the nine items that exist to score it
-  // never run. JOB_INPUTS below is where the mapping lives; these entries are
-  // that mapping folded back in, and evals-check.test.mjs pins the two equal.
-  "worker/jobs/runner-checkin.mjs",
-  "worker/jobs/nightly.mjs",
-  "worker/jobs/learning-ground.mjs",
 ];
 
 /**
@@ -151,14 +127,10 @@ export const SHARED_PROMPT_INPUTS = [
   "CLAUDE.md",
   "**/CLAUDE.md",
   "model-of-tom/**",
-  "scripts/prelude.mjs",
   "shared/skills.mjs",
-  "scripts/publish-skills.mjs",
   "shared/context-relevance.mjs",
   "shared/markdown-sections.mjs",
   "shared/skill-router.mjs",
-  "evals/golden/**",
-  "evals/tasks/**",
   "evals/triggers/**",
 ];
 
@@ -167,7 +139,7 @@ export const SHARED_PROMPT_INPUTS = [
  *
  * WHAT THIS BUYS. WATCHED_PATHS answers one question — is this branch worth a
  * run at all — and its answer is all or nothing: a branch touching
- * worker/jobs/plan-graphs.mjs regenerates the nine check-in items and the two
+ * convex/ttsCompose.ts regenerates the nine check-in items and the two
  * learning items too, though neither job reads that file and neither result can
  * differ. Every one of those is a live model call on each side of the
  * comparison. This table is the same policy asked per item, so a run pays for
@@ -180,17 +152,17 @@ export const SHARED_PROMPT_INPUTS = [
  * fails on a path here that is not watched.
  *
  * A JOB WITH NO ROW REGENERATES ON EVERY AFFECTED RUN. That is the safe
- * direction and it is deliberate: a job added to worker/jobs/evals.mjs without
+ * direction and it is deliberate: a job added to Jarvis's worker/jobs/evals.mjs without
  * a row here costs calls, where a row quietly missing a module would carry a
  * stale result over a change that did move it.
  */
 export const JOB_INPUTS = {
-  prepare: ["worker/jobs/plan-graphs.mjs", "convex/ttsCompose.ts", "convex/ttsShared.ts"],
-  "code-brief": ["worker/jobs/plan-graphs.mjs", "shared/context-relevance.mjs"],
+  prepare: ["convex/ttsCompose.ts", "convex/ttsShared.ts"],
+  "code-brief": ["shared/context-relevance.mjs"],
   explanation: [],
-  run: ["shared/skill-router.mjs", "worker/bin/tts-ask", "worker/jobs/delegate.mjs"],
-  learning: ["worker/jobs/nightly.mjs", "worker/jobs/learning-ground.mjs"],
-  checkin: ["worker/jobs/runner-checkin.mjs"],
+  run: ["shared/skill-router.mjs"],
+  learning: [],
+  checkin: [],
 };
 
 /**
@@ -226,7 +198,6 @@ export function jobsAffectedBy(changed) {
 const ITEM_PREFIXES = ["evals/golden/"];
 const TRIGGER_COVERED_SKILL_PATHS = new Set([
   "shared/skills.mjs",
-  "scripts/publish-skills.mjs",
   "shared/skill-router.mjs",
 ]);
 
@@ -344,7 +315,7 @@ function coverageOf(changed, prBody, triggerFilesRun = []) {
   }
   // A trigger case directly scores the published skill description or the
   // router. It does not score an arbitrary watched context file, so only those
-  // three changes may use a trigger file to satisfy pull-request coverage.
+  // two changes may use a trigger file to satisfy pull-request coverage.
   const triggerCoveredOnly = watched.every((path) =>
     path.startsWith("evals/triggers/") || TRIGGER_COVERED_SKILL_PATHS.has(path));
   const changedTriggers = paths
@@ -640,7 +611,7 @@ export function report(head, base, verdict) {
   // asked, and a line about a rule that did not apply is noise in every
   // by-hand and weekly log.
   if (verdict.goldenCoverage === false) {
-    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file satisfies coverage only after its cases ran in this pull-request run and only with shared/skills.mjs, scripts/publish-skills.mjs, or shared/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
+    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file satisfies coverage only after its cases ran in this pull-request run and only with shared/skills.mjs or shared/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
   } else if (verdict.goldenExcuse) {
     lines.push(`  golden item excused: ${verdict.goldenExcuse}`);
   }
