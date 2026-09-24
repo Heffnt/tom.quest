@@ -14,9 +14,16 @@ import {
   codeSubjectKey,
   liveRulingsByKey,
   rulingSubjectKey,
+  activeCells,
   agentFigures,
+  datedRows,
   eventLanes,
   nextForTom,
+  reasonGroup,
+  recentDone,
+  sessionFacts,
+  todoCounts,
+  weekActivity,
   selectNeedsMe,
   selectToday,
   shapeCells,
@@ -357,13 +364,145 @@ describe("shapeCells", () => {
 });
 
 describe("nextForTom", () => {
-  it("picks the soonest-dated todo waiting on Tom, and skips one he has ruled on", () => {
-    const a = todo({ _id: "a" as unknown as Todo["_id"], _creationTime: 1 });
-    const b = todo({ _id: "b" as unknown as Todo["_id"], _creationTime: 2, dueAt: 5_000 });
-    expect(nextForTom([a, b], [], 2_000)?._id).toBe("b");
-    const ruled = { subjectType: "life", todoId: "b", ruledAt: 3_000, _creationTime: 3 } as unknown as Ruling;
-    expect(nextForTom([a, b], [ruled], 2_000)?._id).toBe("a");
+  const id = (s: string) => s as unknown as Todo["_id"];
+
+  it("picks an overdue todo ready for Tom first, the longest overdue of them", () => {
+    const old = todo({ _id: id("old"), _creationTime: 1 });
+    const late = todo({ _id: id("late"), _creationTime: 5, dueAt: 1_500 });
+    const later = todo({ _id: id("later"), _creationTime: 4, dueAt: 1_800 });
+    expect(nextForTom([old, later, late], [], 2_000)?._id).toBe("late");
+  });
+
+  // witness: sort every needs-me row by date, as nextForTom once did — the
+  // todo due next month jumps the capture that has waited on him longest.
+  it("otherwise picks the oldest waiting on Tom, whatever date a newer one carries", () => {
+    const a = todo({ _id: id("a"), _creationTime: 1 });
+    const b = todo({ _id: id("b"), _creationTime: 2, dueAt: 5_000 });
+    expect(nextForTom([b, a], [], 2_000)?._id).toBe("a");
+  });
+
+  it("skips one he has ruled on, and is undefined when none waits", () => {
+    const a = todo({ _id: id("a"), _creationTime: 1 });
+    const b = todo({ _id: id("b"), _creationTime: 2 });
+    const ruled = { subjectType: "life", todoId: "a", ruledAt: 3_000, _creationTime: 3 } as unknown as Ruling;
+    expect(nextForTom([a, b], [ruled], 2_000)?._id).toBe("b");
     expect(nextForTom([], [], 2_000)).toBeUndefined();
+  });
+});
+
+// ── The todos page ──────────────────────────────────────────────────────────
+
+describe("the todos page selectors", () => {
+  const DAY = 86_400_000;
+  const NOW = 100 * DAY;
+  const at = (id: string, over: Partial<Todo>) =>
+    todo({ _id: id as unknown as Todo["_id"], source: "manual", ...over });
+  const need = (id: string) => [id as unknown as Todo["_id"]];
+
+  const TODOS = [
+    at("you", { actor: "tom", source: "email", dueAt: NOW - DAY }),
+    at("you2", { actor: "tom", source: "email", _creationTime: 0 }),
+    at("you3", { actor: "tom" }),
+    at("blocked", { needs: need("you3") }),
+    at("raw", { readiness: "unprepared", dueAt: NOW + DAY }),
+    at("agent", { actor: "agent" }),
+    at("asleep", { wakeAt: NOW + DAY }),
+    at("stored-waiting", { status: "waiting" }),
+    at("done-recent", { status: "done", doneAt: NOW - DAY }),
+    at("done-old", { status: "done", doneAt: NOW - 40 * DAY }),
+    at("archived", { status: "archived", dueAt: NOW - DAY }),
+  ];
+
+  it("puts every active todo under one reason and leaves done and archived out", () => {
+    const cells = activeCells(TODOS, NOW);
+    expect(cells.reduce((n, c) => n + c.count, 0)).toBe(8);
+    expect(cells.map((c) => [c.group, c.label, c.count])).toEqual([
+      ["waiting on you", "email", 2],
+      ["waiting on you", "manual", 1],
+      ["waiting on another todo", "manual", 1],
+      ["not yet prepared", "manual", 1],
+      ["ready for an agent", "manual", 1],
+      ["waiting until a date", "manual", 2],
+    ]);
+    // An overdue todo stays under its reason; the figure is not split by date.
+    expect(cells[0].todos.map((t) => t._id)).toEqual(["you", "you2"]);
+  });
+
+  it("gives one reason as a whole, largest source first", () => {
+    const group = reasonGroup(activeCells(TODOS, NOW), "waiting on you");
+    expect(group.count).toBe(3);
+    expect(group.todos.map((t) => t._id)).toEqual(["you", "you2", "you3"]);
+  });
+
+  it("counts what the page states", () => {
+    expect(todoCounts(TODOS, NOW)).toEqual({
+      active: 8,
+      waitingOnYou: 3,
+      waitingOnTodo: 1,
+      notPrepared: 1,
+      dated: 2,
+      overdue: 1,
+      blocking: 1,
+      done: 2,
+      doneLast30: 1,
+    });
+  });
+
+  // witness: count a need that is already done as blocking — a todo whose
+  // need finished last week is still counted as holding another up.
+  it("counts as blocking only a todo not yet done that an active todo waits on", () => {
+    const todos = [
+      at("a", { needs: need("b") }),
+      at("b", {}),
+      at("c", { needs: need("d") }),
+      at("d", { status: "done" }),
+      at("e", { status: "done", needs: need("f") }),
+      at("f", {}),
+    ];
+    expect(todoCounts(todos, NOW).blocking).toBe(1);
+  });
+
+  it("lists the active dated todos soonest first, overdue or due", () => {
+    expect(datedRows(TODOS, NOW).map((r) => [r.todo._id, r.overdue])).toEqual([
+      ["you", true],
+      ["raw", false],
+    ]);
+  });
+
+  it("lists the done todos most recently done first", () => {
+    expect(recentDone(TODOS).map((r) => r.todo._id)).toEqual(["done-recent", "done-old"]);
+  });
+
+  it("counts the week's agent work, and says the span when the events stop short of it", () => {
+    const ev = (kind: string, t: number) => ({ kind, at: t }) as unknown as EventRow;
+    const events = [
+      ev("captured", NOW - DAY),
+      ev("captured", NOW - 8 * DAY),
+      ev("prepared", NOW - DAY),
+      ev("merge", NOW - 2 * DAY),
+      ev("job-failed", NOW - 3 * DAY),
+      ev("delegate-decision", NOW - 4 * DAY),
+    ];
+    expect(weekActivity(events, NOW, false)).toEqual({
+      since: NOW - 7 * DAY,
+      captured: 1,
+      prepared: 1,
+      merges: 1,
+      jobFailures: 1,
+      delegateDecisions: 1,
+    });
+    const capped = [ev("captured", NOW - DAY), ev("merge", NOW - 2 * DAY)];
+    expect(weekActivity(capped, NOW, true).since).toBe(NOW - 2 * DAY);
+  });
+
+  it("counts the idle agents and names the newest", () => {
+    const facts = sessionFacts([
+      { title: "older", status: "idle", _creationTime: 1 },
+      { title: "newest", status: "running", _creationTime: 3 },
+      { title: "idle too", status: "idle", _creationTime: 2 },
+    ]);
+    expect(facts).toEqual({ idle: 2, latest: { title: "newest", at: 3 } });
+    expect(sessionFacts([]).latest).toBeUndefined();
   });
 });
 

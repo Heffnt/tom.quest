@@ -383,9 +383,12 @@ export function sourceRows(cells: readonly ShapeCell[]): SourceRow[] {
 }
 
 /**
- * The one todo a page puts in front of Tom to rule on: the needs-me life rows
- * (selectNeedsMe, so a todo he has already ruled on stays off until it is
- * prepared again), soonest date first, then oldest. Undefined when none waits.
+ * The one todo a page puts in front of Tom to rule on, from the needs-me life
+ * rows (selectNeedsMe, so a todo he has already ruled on stays off until it is
+ * prepared again): an overdue one if any is ready for him, the longest overdue
+ * first; otherwise the oldest. A date still ahead does not jump the queue: it
+ * is the oldest capture that has waited on him longest. Undefined when none
+ * waits.
  */
 export function nextForTom(
   todos: Todo[],
@@ -393,11 +396,193 @@ export function nextForTom(
   now: number,
 ): Todo | undefined {
   const { lifeRows } = selectNeedsMe(todos, [], [], rulings, now);
-  return [...lifeRows].sort(
+  const overdue = lifeRows
+    .filter((t) => t.dueAt !== undefined && t.dueAt < now)
+    .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0) || a._creationTime - b._creationTime);
+  if (overdue.length > 0) return overdue[0];
+  return [...lifeRows].sort((a, b) => a._creationTime - b._creationTime)[0];
+}
+
+// ── The todos page (the everything tab, vqc/pages.md) ────────────────────────
+// The page's figure holds the ACTIVE todos only, each under its waiting reason
+// (ttsShared.waitingReason, the one home of that rule) in Tom's words. Unlike
+// shapeCells above, no date outranks the reason here: overdue is counted
+// beside the figure, not as a cell of it, so the cells answer one question —
+// what is each active todo waiting on.
+
+type ActiveReason =
+  | "waiting on you"
+  | "waiting on another todo"
+  | "not yet prepared"
+  | "ready for an agent"
+  | "waiting until a date"
+  | "waiting on a credential";
+
+/** The reasons in the order a page lists them: what needs Tom first. */
+export const ACTIVE_REASONS: readonly ActiveReason[] = [
+  "waiting on you",
+  "waiting on another todo",
+  "not yet prepared",
+  "ready for an agent",
+  "waiting until a date",
+  "waiting on a credential",
+];
+
+/** Active is the stored status, or the retired "waiting" that reads as a
+ *  sleep on an active todo (ttsShared.waitingReason). */
+function isActiveTodo(t: Todo): boolean {
+  return t.status === "active" || t.status === "waiting";
+}
+
+function activeReasonOf(todo: Todo, doneSet: ReadonlySet<string>, now: number): ActiveReason {
+  switch (waitingReason(todo, { now, doneSet })?.kind) {
+    case "tom":
+      return "waiting on you";
+    case "need":
+      return "waiting on another todo";
+    case "unprepared":
+      return "not yet prepared";
+    case "wake":
+      return "waiting until a date";
+    case "credential":
+      return "waiting on a credential";
+    default:
+      return "ready for an agent";
+  }
+}
+
+/** One cell of the active figure: the active todos of one reason from one source. */
+type ReasonCell = {
+  key: string;
+  label: string;
+  count: number;
+  group: ActiveReason;
+  todos: Todo[];
+};
+
+/** Soonest date first, then the oldest: the order a drawer lists members in. */
+function soonestThenOldest(a: Todo, b: Todo): number {
+  return (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) || a._creationTime - b._creationTime;
+}
+
+/**
+ * The active todos by reason × source, one cell per pair that holds a todo, in
+ * ACTIVE_REASONS order and then largest source first. Each cell carries its
+ * todos, soonest date first and then oldest.
+ */
+export function activeCells(todos: Todo[], now: number): ReasonCell[] {
+  const doneSet = buildDoneSet(todos);
+  const byKey = new Map<string, ReasonCell>();
+  for (const todo of todos) {
+    if (!isActiveTodo(todo)) continue;
+    const group = activeReasonOf(todo, doneSet, now);
+    const key = `${group}|${todo.source}`;
+    let cell = byKey.get(key);
+    if (!cell) {
+      cell = { key, label: sourceWords(todo.source), count: 0, group, todos: [] };
+      byKey.set(key, cell);
+    }
+    cell.count += 1;
+    cell.todos.push(todo);
+  }
+  const cells = [...byKey.values()];
+  for (const cell of cells) cell.todos.sort(soonestThenOldest);
+  return cells.sort(
     (a, b) =>
-      (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) ||
-      a._creationTime - b._creationTime,
-  )[0];
+      ACTIVE_REASONS.indexOf(a.group) - ACTIVE_REASONS.indexOf(b.group) ||
+      b.count - a.count ||
+      a.label.localeCompare(b.label),
+  );
+}
+
+/** One reason as a whole: its cells' todos, largest source first. */
+export function reasonGroup(cells: readonly ReasonCell[], reason: ActiveReason): { count: number; todos: Todo[] } {
+  const mine = cells.filter((c) => c.group === reason);
+  return { count: mine.reduce((n, c) => n + c.count, 0), todos: mine.flatMap((c) => c.todos) };
+}
+
+/** The ids at least one active todo waits on and that are not yet done. */
+function blockingIds(todos: readonly Todo[]): Set<string> {
+  const doneSet = buildDoneSet(todos);
+  const ids = new Set<string>();
+  for (const t of todos) {
+    if (!isActiveTodo(t)) continue;
+    for (const id of t.needs ?? []) if (!doneSet.has(id)) ids.add(id);
+  }
+  return ids;
+}
+
+const DAY_MS = 86_400_000;
+
+/** Every count the todos page states, from one pass over listTodos. */
+export function todoCounts(todos: Todo[], now: number) {
+  const cells = activeCells(todos, now);
+  const inReason = (r: ActiveReason) => reasonGroup(cells, r).count;
+  const dated = todos.filter((t) => isActiveTodo(t) && t.dueAt !== undefined);
+  const done = todos.filter((t) => t.status === "done");
+  return {
+    active: cells.reduce((n, c) => n + c.count, 0),
+    waitingOnYou: inReason("waiting on you"),
+    waitingOnTodo: inReason("waiting on another todo"),
+    notPrepared: inReason("not yet prepared"),
+    dated: dated.length,
+    overdue: dated.filter((t) => (t.dueAt ?? Infinity) < now).length,
+    blocking: blockingIds(todos).size,
+    done: done.length,
+    doneLast30: done.filter((t) => (t.doneAt ?? t.updatedAt) >= now - 30 * DAY_MS).length,
+  };
+}
+
+/** The active todos that carry a date, soonest first, each overdue or due. */
+export function datedRows(todos: Todo[], now: number): { todo: Todo; overdue: boolean }[] {
+  return todos
+    .filter((t) => isActiveTodo(t) && t.dueAt !== undefined)
+    .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0))
+    .map((todo) => ({ todo, overdue: (todo.dueAt ?? Infinity) < now }));
+}
+
+/** The done todos, most recently done first; `doneAt` or, on a row written
+ *  before it existed, the last update. */
+export function recentDone(todos: Todo[]): { todo: Todo; at: number }[] {
+  return todos
+    .filter((t) => t.status === "done")
+    .map((todo) => ({ todo, at: todo.doneAt ?? todo.updatedAt }))
+    .sort((a, b) => b.at - a.at);
+}
+
+/**
+ * What the agents did in the last seven days, from the newest events. When the
+ * events handed over do not reach back seven days (listRecentEvents caps its
+ * window), `since` is the oldest one's time, so a sentence built from this
+ * says the span it actually counted.
+ */
+export function weekActivity(events: readonly EventRow[], now: number, full: boolean) {
+  const weekAgo = now - 7 * DAY_MS;
+  const oldest = events.reduce((m, e) => Math.min(m, e.at), Infinity);
+  const since = full && oldest > weekAgo ? oldest : weekAgo;
+  const count = (kind: string) => events.filter((e) => e.kind === kind && e.at >= since).length;
+  return {
+    since,
+    captured: count("captured"),
+    prepared: count("prepared"),
+    merges: count("merge"),
+    jobFailures: count("job-failed"),
+    delegateDecisions: count("delegate-decision"),
+  };
+}
+
+/** How many agents are idle, and the newest one (listSessions is newest first). */
+export function sessionFacts(
+  sessions: readonly { title: string; status: Doc<"claudeSessions">["status"]; _creationTime: number }[],
+): { idle: number; latest: { title: string; at: number } | undefined } {
+  const newest = sessions.reduce<(typeof sessions)[number] | undefined>(
+    (m, s) => (m === undefined || s._creationTime > m._creationTime ? s : m),
+    undefined,
+  );
+  return {
+    idle: sessions.filter((s) => s.status === "idle").length,
+    latest: newest && { title: newest.title, at: newest._creationTime },
+  };
 }
 
 export type EventRow = Doc<"dtsEvents">;
