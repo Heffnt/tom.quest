@@ -423,7 +423,6 @@ export function claimKey(day: string, ask: SlackAsk, itemId: string): string {
 
 const ITEM_URL = "https://tom.quest/tts?item=";
 export const TAB_EVERYTHING = "https://tom.quest/tts?tab=everything";
-export const TAB_BATCHES = "https://tom.quest/tts?tab=batches";
 export const TAB_CALENDAR = "https://tom.quest/tts?tab=calendar";
 const SESSION_URL = "https://www.tom.quest/runs?session=";
 
@@ -464,14 +463,29 @@ export type ObjectionFact = {
   merged?: boolean;
 };
 
-/** One line per BATCH, from every event in the window that named it. The
- *  counts are summed across the window's "graph-stored" rows, so a night of
- *  five plan-stored events on one batch is ONE sentence about that batch, not
- *  five lines saying "plan stored".
- *  Sessions contribute the two facts Tom can use — how many finished, and
- *  whether any is still running — never "session opened".
- *  A batch with no counted change is still listed once, saying so: the batch
- *  names are how he recognises what the night was about. */
+/** One line per TODO, from every session event in the window that named it
+ *  (Tom, 2026-09-24: no batches). Sessions contribute the two facts Tom can
+ *  use — how many ended with a recorded outcome, and whether one is still
+ *  running — never "session opened". A night of five sessions on one todo is
+ *  ONE sentence about that todo. Sessions on no todo share one tail row,
+ *  `todoId` null, which links the newest of those sessions. */
+export type TodoOutcome = {
+  todoId: string | null; // null = the tail: sessions on no todo
+  statement: string; // the todo's own statement; the tail's is not printed
+  /** The newest session in the window on it; the tail's link. */
+  sessionId: string | null;
+  finished: number; // sessions with a recorded outcome
+  running: boolean;
+};
+
+/** KEPT FOR ONE ROLLOUT, with its builder in convex/ttsDigest.ts and its facts
+ *  in todayFactsBlock: the box runs its own installed copy of
+ *  worker/jobs/write-slack.mjs until it is rolled, and that copy writes one
+ *  line per batch from these facts. Removed in the follow-up pull request that
+ *  ends the widen step. After the batch migration it is empty on new data.
+ *
+ *  One line per BATCH, from every event in the window that named it. The
+ *  counts are summed across the window's "graph-stored" rows. */
 export type BatchOutcome = {
   batchId: string | null; // null = the batch-less tail
   statement: string; // the batch's own statement
@@ -546,10 +560,14 @@ export type TodayFacts = {
   needsYou: NeedsYouTodayFact[];
   /** Every live runner, the ones waiting on him first. */
   runners: RunnerFact[];
-  overnight: BatchOutcome[];
-  /** Batches planned and finished overnight, for the overnight lead. */
-  batchesPlanned: number;
-  batchesFinished: number;
+  /** What sessions did overnight, one row per todo, the tail last. */
+  overnightByTodo: TodoOutcome[];
+  /** KEPT FOR ONE ROLLOUT (see BatchOutcome): the batch-grouped overnight
+   *  facts the box's un-rolled writer reads. Nothing here renders them.
+   *  Removed in the follow-up pull request that ends the widen step. */
+  overnight?: BatchOutcome[];
+  batchesPlanned?: number;
+  batchesFinished?: number;
   broken: BrokenFact[];
 };
 
@@ -580,16 +598,18 @@ export type RunningSession = {
   kind: string;
   mode: string;
   status: string;
-  statement: string | null; // the todo or batch it is on
-  batchId: string | null;
+  statement: string | null; // the todo it is on
+  /** The todo it is on; null when it is on none. */
+  todoId: string | null;
   elapsedMs: number;
 };
 
-export type BatchWorked = {
-  batchId: string;
+/** One todo worked in the window: the sessions on it that were live or ended
+ *  inside it. */
+export type TodoWorked = {
+  todoId: string;
   statement: string;
   sessions: number;
-  workerEvents: number;
 };
 
 export type ChangeKind =
@@ -617,7 +637,7 @@ export type HourlyFacts = {
   /** "13:00", already spelled; absent when the window is the last hour. */
   sinceLabel?: string;
   running: RunningSession[];
-  batches: BatchWorked[];
+  todosWorked: TodoWorked[];
   changes: Change[];
   /** Every live runner. Named in an hour that already speaks; never what makes
    *  an hour speak (isQuietHour). */
@@ -639,7 +659,7 @@ export function elapsedText(ms: number): string {
  *  hour that speaks for another reason (composeHourly); an hour with nothing
  *  else is still silent. */
 export function isQuietHour(f: HourlyFacts): boolean {
-  return f.running.length === 0 && f.batches.length === 0 && f.changes.length === 0;
+  return f.running.length === 0 && f.todosWorked.length === 0 && f.changes.length === 0;
 }
 
 // ── Sentence builders ────────────────────────────────────────────────────────
@@ -686,7 +706,7 @@ export function todayLine(item: TodayItem): string {
  *  string. The numbering is the PRINTED order and starts at 1, which is what a
  *  reply of "revert 2" names. */
 export function objectionLine(o: ObjectionFact, n: number): { text: string; url: string } {
-  const url = o.todoId ? itemUrl(o.todoId) : TAB_BATCHES;
+  const url = o.todoId ? itemUrl(o.todoId) : TAB_EVERYTHING;
   if (o.refused) {
     const because = o.refusedBecause ? ` — ${stripStop(o.refusedBecause)}` : "";
     return {
@@ -779,7 +799,40 @@ function needsYouTodayLead(n: number): string {
   return `${capitalise(countWord(n))} captured ${plural(n, "item needs", "items need")} you today, as the email triage judged ${n === 1 ? "it" : "them"}.`;
 }
 
-/** `{statement} gained {added} items, reworked {reworked} and dropped
+/** `{statement}: 3 sessions on it ended and one is still running.`, each
+ *  clause omitted when it has nothing to say, and `{statement}: a session on
+ *  it recorded no outcome.` when neither has. The tail row names no todo, so
+ *  its line is `3 sessions on no item ended.` without a statement. */
+export function todoOutcomeLine(o: TodoOutcome): string {
+  const tail = o.todoId === null;
+  const where = tail ? "on no item" : "on it";
+  const ended = `${o.finished} ${plural(o.finished, "session", "sessions")} ${where} ended`;
+  const body =
+    o.finished > 0 && o.running
+      ? `${ended} and one is still running`
+      : o.finished > 0
+        ? ended
+        : o.running
+          ? `a session ${where} is still running`
+          : `a session ${where} recorded no outcome`;
+  return statement(tail ? capitalise(body) : `${capitalise(stripStop(o.statement))}: ${body}`);
+}
+
+/** The link of one overnight row: the todo, else the tail's newest session,
+ *  else the everything tab. */
+function todoOutcomeUrl(o: TodoOutcome): string {
+  if (o.todoId !== null) return itemUrl(o.todoId);
+  return o.sessionId !== null ? sessionUrl(o.sessionId) : TAB_EVERYTHING;
+}
+
+/** The overnight run's lead. It carries no number: the plan pass that counted
+ *  batches is gone, and the rows below are the count. */
+const OVERNIGHT_LEAD = "Overnight, the box's sessions worked on these items.";
+
+/** KEPT FOR ONE ROLLOUT (see BatchOutcome): the sentence of one old-shape
+ *  batch fact. Removed in the follow-up pull request that ends the widen step.
+ *
+ *  `{statement} gained {added} items, reworked {reworked} and dropped
  *  {dropped}.` with each clause omitted at zero, `{statement} was planned and
  *  gained nothing.` when all are zero, and `, and one session is still on it`
  *  appended when `running`. */
@@ -888,8 +941,8 @@ export function objectionsLead(all: number, merges: number): string {
  * done overnight → broken, fits one Slack message, and shrinks the sections
  * furthest from him first.
  *
- * OUTCOMES, NEVER LOGGED EVENTS: the overnight run prints one line per batch
- * saying what the batch now is. "plan stored", "created", "retired", "session
+ * OUTCOMES, NEVER LOGGED EVENTS: the overnight run prints one line per todo
+ * saying what the sessions on it came to. "plan stored", "created", "retired", "session
  * opened" and "worker event" appear in no message.
  *
  * This is the TEMPLATE. Since Tom's 2026-09-09 amendment the morning message
@@ -960,7 +1013,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
       beyond > 0
         ? {
             text: `${beyond} more ${plural(beyond, "decision is", "decisions are")} on the page.`,
-            url: TAB_BATCHES,
+            url: TAB_EVERYTHING,
           }
         : undefined,
     );
@@ -990,7 +1043,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
       lines,
       "runners",
       runnersLead(f.runners.length, waiting),
-      f.runners.map((r) => ({ text: runnerLine(r), url: TAB_BATCHES })),
+      f.runners.map((r) => ({ text: runnerLine(r), url: TAB_EVERYTHING })),
       SECTION_CAPS.runners,
     );
   }
@@ -1007,13 +1060,14 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 6. What the box left behind overnight.
-  if (f.overnight.length > 0) {
+  // 6. What the box left behind overnight, one line per todo. The old-shape
+  //    batch facts (f.overnight) are never printed here.
+  if (f.overnightByTodo.length > 0) {
     pushRun(
       lines,
       "overnight",
-      `The box planned ${countWord(f.batchesPlanned)} ${plural(f.batchesPlanned, "batch", "batches")} overnight and finished ${f.batchesFinished === 0 ? "none of them" : countWord(f.batchesFinished)}.`,
-      f.overnight.map((batch) => ({ text: overnightLine(batch), url: TAB_BATCHES })),
+      OVERNIGHT_LEAD,
+      f.overnightByTodo.map((o) => ({ text: todoOutcomeLine(o), url: todoOutcomeUrl(o) })),
       SECTION_CAPS.overnight,
     );
   }
@@ -1133,15 +1187,16 @@ export function composeHourly(f: HourlyFacts): Message | null {
     );
   } else if (f.running.length > 1) {
     const on = f.running.find((s) => s.statement !== null);
-    const what =
-      on !== undefined
-        ? linked(on.statement as string, on.batchId === null ? sessionUrl(on.sessionId) : TAB_BATCHES)
-        : linked("what is on the batches page", TAB_BATCHES);
-    clauses.push(`${capitalise(countWord(f.running.length))} sessions are working ${what}`);
-  } else if (f.batches.length > 0) {
-    const b = f.batches[0];
+    const count = capitalise(countWord(f.running.length));
     clauses.push(
-      `${capitalise(countWord(f.batches.length))} ${plural(f.batches.length, "batch", "batches")} moved, ${linked(b.statement, TAB_BATCHES)} among them`,
+      on !== undefined
+        ? `${count} sessions are working, one of them on ${linked(stripStop(on.statement as string), on.todoId === null ? sessionUrl(on.sessionId) : itemUrl(on.todoId))}`
+        : `${count} ${linked("sessions", sessionUrl(f.running[0].sessionId))} are working`,
+    );
+  } else if (f.todosWorked.length > 0) {
+    const w = f.todosWorked[0];
+    clauses.push(
+      `${capitalise(countWord(f.todosWorked.length))} ${plural(f.todosWorked.length, "item", "items")} moved, ${linked(w.statement, itemUrl(w.todoId))} among them`,
     );
   }
   if (f.runners.length > 0) {
@@ -1196,7 +1251,7 @@ type CheckInFacts = {
 };
 
 /** A check-in's decision in words: the ONE home of that phrasing, read by the
- *  check-in's first line below and by the runners block on the batches tab. */
+ *  check-in's first line below and by the runners block on the page. */
 export const runnerDecisionWords: Record<CheckInFacts["decision"], string> = {
   continue: "it changed nothing",
   change: "it made one change",
@@ -1286,7 +1341,7 @@ export type RunnerAskFacts = {
 };
 
 /** A question's tier in words: the ONE home of that phrasing, read by the
- *  needs-you message below and by the runners block on the batches tab. */
+ *  needs-you message below and by the runners block on the page. */
 export const runnerTierWords: Record<RunnerAskFacts["tier"], string> = {
   routine: "a question inside its plan",
   plan: "a question about what the experiment is",
@@ -1363,16 +1418,16 @@ function needsYouClauses(changes: Change[]): string[] {
   return [...(why !== "" ? [`${what} needs you today because ${lowerFirst(why)}`] : []), `${what} needs you today`, count];
 }
 
-/** The hourly line's runners clause, linking the batches tab where they are
+/** The hourly line's runners clause, linking the page where they are
  *  listed. */
 function runnersClause(runners: RunnerFact[]): string {
   const waiting = runners.filter((r) => r.status === "waiting-on-tom").length;
   if (runners.length === 1) {
     const doing = waiting === 1 ? "is waiting on your answer" : "is running";
-    return `the runner ${linked(runners[0].title, TAB_BATCHES)} ${doing}`;
+    return `the runner ${linked(runners[0].title, TAB_EVERYTHING)} ${doing}`;
   }
   const on = waiting === 0 ? "" : `, ${countWord(waiting)} of them waiting on you`;
-  return `${countWord(runners.length)} ${linked("runners", TAB_BATCHES)} are live${on}`;
+  return `${countWord(runners.length)} ${linked("runners", TAB_EVERYTHING)} are live${on}`;
 }
 
 function joinWithAnd(parts: string[]): string {
@@ -1400,7 +1455,7 @@ function changeClauses(changes: Change[]): string[] {
 /** A decision the delegate took, the moment it took it. The default is
  *  silence, and silence is consent. */
 export function composeDecision(f: DecisionFact, o: { canReply: boolean }): Message {
-  const url = f.todoId ? itemUrl(f.todoId) : TAB_BATCHES;
+  const url = f.todoId ? itemUrl(f.todoId) : TAB_EVERYTHING;
   if (f.refused) {
     const lines: Line[] = [
       {
@@ -1593,29 +1648,43 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     facts.push({ ...fact(`needs-you-today:${n.todoId}`, needsYouTodayLine(n), [itemUrl(n.todoId)]), required: true });
   }
   for (const r of f.runners) {
-    facts.push(fact(`runner:${r.runnerId}`, runnerLine(r), [TAB_BATCHES]));
+    facts.push(fact(`runner:${r.runnerId}`, runnerLine(r), [TAB_EVERYTHING]));
   }
   if (f.calendarLead) facts.push(fact("calendar:lead", f.calendarLead, [TAB_CALENDAR]));
   f.calendar.forEach((span, index) => {
     facts.push(fact(`calendar:${index}`, calendarLine(span), [TAB_CALENDAR]));
   });
-  facts.push(
-    fact(
-      "overnight:count",
-      `The box planned ${f.batchesPlanned} ${plural(f.batchesPlanned, "batch", "batches")} overnight and finished ${f.batchesFinished}.`,
-      [TAB_BATCHES],
-      [f.batchesPlanned, f.batchesFinished],
-    ),
-  );
-  for (const batch of f.overnight) {
+  for (const o of f.overnightByTodo) {
     facts.push(
-      fact(`batch:${batch.batchId ?? "none"}`, overnightLine(batch), [TAB_BATCHES], [
-        batch.added,
-        batch.reworked,
-        batch.dropped,
-        batch.finished,
-      ]),
+      fact(`overnight-todo:${o.todoId ?? "none"}`, todoOutcomeLine(o), [todoOutcomeUrl(o)], [o.finished]),
     );
+  }
+  // KEPT FOR ONE ROLLOUT: the old batch-grouped facts, which the box's own
+  // installed copy of worker/jobs/write-slack.mjs writes its overnight lines
+  // from until the box is rolled. Same ids, sentences and numbers as before;
+  // the link is the everything tab, since the batches tab is gone. Removed in
+  // the follow-up pull request that ends the widen step.
+  if (f.overnight !== undefined) {
+    const planned = f.batchesPlanned ?? f.overnight.length;
+    const finished = f.batchesFinished ?? f.overnight.filter((o) => o.finished > 0).length;
+    facts.push(
+      fact(
+        "overnight:count",
+        `The box planned ${planned} ${plural(planned, "batch", "batches")} overnight and finished ${finished}.`,
+        [TAB_EVERYTHING],
+        [planned, finished],
+      ),
+    );
+    for (const batch of f.overnight) {
+      facts.push(
+        fact(`batch:${batch.batchId ?? "none"}`, overnightLine(batch), [TAB_EVERYTHING], [
+          batch.added,
+          batch.reworked,
+          batch.dropped,
+          batch.finished,
+        ]),
+      );
+    }
   }
   f.broken.forEach((b, index) => {
     facts.push(

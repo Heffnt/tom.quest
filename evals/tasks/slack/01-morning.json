@@ -28,10 +28,10 @@
       { "at": "18:30", "title": "Climbing" },
       { "at": "20:00", "title": "Dinner" }
     ],
-    "overnight": [
-      { "batchId": "b1", "statement": "the unified agent context round", "added": 4, "reworked": 2, "dropped": 0, "finished": 3, "running": true },
-      { "batchId": "b2", "statement": "the CMT campaign", "added": 0, "reworked": 0, "dropped": 0, "finished": 1, "running": false },
-      { "batchId": null, "statement": "outside any batch", "added": 0, "reworked": 0, "dropped": 0, "finished": 5, "running": false }
+    "overnightByTodo": [
+      { "todoId": "on01", "statement": "Finish the unified agent context round.", "sessionId": "s1", "finished": 3, "running": true },
+      { "todoId": "on02", "statement": "Run the CMT campaign.", "sessionId": "s2", "finished": 1, "running": false },
+      { "todoId": null, "statement": "Work on no item", "sessionId": "s3", "finished": 5, "running": false }
     ],
     "objections": [
       { "id": "a1", "question": "Move the passport appointment to Thursday?", "decision": "Move it to Thursday morning.", "subject": "renew passport" },
@@ -45,7 +45,7 @@
     "mustName": ["is the one to start with", "667"],
     "mustNotName": ["plan stored", "TTS digest", "+667 more", "Ready for you", "created", "retired", "worker event"],
     "sectionOrder": ["today", "objections", "overnight", "broken"],
-    "sentence": "The first line names how many things are late, how late the worst is, and which one to start with; the four sections run today, the objection list, what the box left behind overnight, and what broke; every line is one whole sentence carrying a link, and the overnight lines say what each batch now is rather than what was logged about it."
+    "sentence": "The first line names how many things are late, how late the worst is, and which one to start with; the four sections run today, the objection list, what the box left behind overnight, and what broke; every line is one whole sentence carrying a link, and the overnight lines say, one per todo, what the sessions on it came to rather than what was logged about it."
   },
   "blocks": ["write"],
   "addedOn": "2026-09-09",

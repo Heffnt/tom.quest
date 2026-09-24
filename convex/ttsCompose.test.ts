@@ -4,7 +4,6 @@ import {
   LINE_CHARS,
   MESSAGE_MAX_CHARS,
   SECTION_ORDER,
-  TAB_BATCHES,
   TAB_CALENDAR,
   TAB_EVERYTHING,
   checkMessage,
@@ -32,6 +31,7 @@ import {
   todayFactsBlock,
   fit,
   todayFirstLine,
+  todoOutcomeLine,
   type Draft,
   type HourlyFacts,
   type Line,
@@ -53,7 +53,6 @@ describe("the links the composer spells for itself", () => {
     expect(itemUrl("ph7fqh2j")).toBe(ttsItemLink("ph7fqh2j"));
     expect(sessionUrl("k97a")).toBe(ttsSessionLink("k97a"));
     expect(TAB_EVERYTHING).toBe(ttsTabLink("everything"));
-    expect(TAB_BATCHES).toBe(ttsTabLink("batches"));
     expect(TAB_CALENDAR).toBe(ttsTabLink("calendar"));
   });
 });
@@ -326,28 +325,10 @@ function sept9(overrides: Partial<TodayFacts> = {}): TodayFacts {
     objections: [],
     needsYou: [],
     runners: [],
-    overnight: [
-      {
-        batchId: "b1",
-        statement: "The research critical path",
-        added: 4,
-        reworked: 0,
-        dropped: 1,
-        finished: 0,
-        running: false,
-      },
-      {
-        batchId: "b2",
-        statement: "The Veritasium BackerKit reward survey",
-        added: 0,
-        reworked: 0,
-        dropped: 0,
-        finished: 0,
-        running: false,
-      },
+    overnightByTodo: [
+      { todoId: "ph7crit", statement: "Walk the research critical path", sessionId: "k1", finished: 4, running: false },
+      { todoId: "ph7veri", statement: "Answer the Veritasium BackerKit reward survey", sessionId: "k2", finished: 0, running: true },
     ],
-    batchesPlanned: 9,
-    batchesFinished: 0,
     broken: [],
     ...overrides,
   };
@@ -379,8 +360,8 @@ describe("composeToday", () => {
     for (const word of ["plan stored", "session opened", "worker event", "created", "retired", "TTS digest"]) {
       expect(text.toLowerCase()).not.toContain(word.toLowerCase());
     }
-    expect(text).toContain("The research critical path gained 4 items and dropped 1.");
-    expect(text).toContain("The Veritasium BackerKit reward survey was planned and gained nothing.");
+    expect(text).toContain("<https://tom.quest/tts?item=ph7crit|Walk the research critical path: 4 sessions on it ended.>");
+    expect(text).toContain("<https://tom.quest/tts?item=ph7veri|Answer the Veritasium BackerKit reward survey: a session on it is still running.>");
   });
 
   it("prints the runs in the ruled order and omits the empty ones", () => {
@@ -472,13 +453,11 @@ describe("composeToday", () => {
         when: "16:00 to 17:00",
         allDay: false,
       })),
-      overnight: Array.from({ length: 40 }, (_, i) => ({
-        batchId: `b${i}`,
-        statement: `Batch number ${i}`,
-        added: 2,
-        reworked: 1,
-        dropped: 0,
-        finished: 0,
+      overnightByTodo: Array.from({ length: 40 }, (_, i) => ({
+        todoId: `t${i}`,
+        statement: `Todo number ${i}`,
+        sessionId: `k${i}`,
+        finished: 2,
         running: false,
       })),
       broken: Array.from({ length: 6 }, (_, i) => ({
@@ -511,6 +490,35 @@ describe("composeToday", () => {
   });
 });
 
+describe("todoOutcomeLine", () => {
+  it("turns a night of sessions on one todo into one sentence", () => {
+    expect(
+      todoOutcomeLine({ todoId: "t1", statement: "Walk the research critical path.", sessionId: "k1", finished: 3, running: true }),
+    ).toBe("Walk the research critical path: 3 sessions on it ended and one is still running.");
+    expect(
+      todoOutcomeLine({ todoId: "t1", statement: "Walk the research critical path", sessionId: "k1", finished: 1, running: false }),
+    ).toBe("Walk the research critical path: 1 session on it ended.");
+  });
+
+  it("says so when a session was on it and recorded no outcome", () => {
+    expect(
+      todoOutcomeLine({ todoId: "t2", statement: "Answer the survey", sessionId: "k2", finished: 0, running: false }),
+    ).toBe("Answer the survey: a session on it recorded no outcome.");
+  });
+
+  // The tail names no todo, so its line carries no statement.
+  it("speaks of the tail as sessions on no item", () => {
+    expect(
+      todoOutcomeLine({ todoId: null, statement: "Work on no item", sessionId: "k3", finished: 5, running: false }),
+    ).toBe("5 sessions on no item ended.");
+    expect(
+      todoOutcomeLine({ todoId: null, statement: "Work on no item", sessionId: "k3", finished: 0, running: true }),
+    ).toBe("A session on no item is still running.");
+  });
+});
+
+// KEPT FOR ONE ROLLOUT with the old-shape batch facts it writes; removed in
+// the follow-up pull request that ends the widen step.
 describe("overnightLine", () => {
   it("turns a night of counts on one batch into one sentence", () => {
     expect(
@@ -556,7 +564,7 @@ describe("objectionLine", () => {
       ),
     ).toEqual({
       text: "2. REFUSED and parked: it would have emailed the landlord — a message to another human in your name.",
-      url: TAB_BATCHES,
+      url: TAB_EVERYTHING,
     });
   });
 });
@@ -679,7 +687,7 @@ describe("the runners run", () => {
     expect(runnersLead(3, 1)).toBe("Three runners are live on the box, and one of them waits on you.");
   });
 
-  it("prints the runners after the objection list and before the calendar, each linking the batches tab", () => {
+  it("prints the runners after the objection list and before the calendar, each linking the page", () => {
     const message = composeToday(
       sept9({
         objections: [{ askId: "a1", decision: "moved the passport appointment to Thursday" }],
@@ -692,7 +700,7 @@ describe("the runners run", () => {
     expect(sections.indexOf("calendar")).toBe(sections.indexOf("runners") + 1);
     const items = message.lines.filter((l) => l.section === "runners" && l.role === "item");
     expect(items.map((l) => l.text)).toEqual([runnerLine(WAITING_RUNNER), runnerLine(RUNNING_RUNNER)]);
-    expect(items.every((l) => l.role === "item" && l.url === TAB_BATCHES)).toBe(true);
+    expect(items.every((l) => l.role === "item" && l.url === TAB_EVERYTHING)).toBe(true);
     expect(message.lines.some((l) => l.section === "runners" && l.role === "note")).toBe(false);
   });
 
@@ -710,7 +718,7 @@ describe("the runners run", () => {
     const ids = block.facts.map((f) => f.id);
     expect(ids.indexOf("runner:r1")).toBe(ids.indexOf("ask:a1") + 1);
     const runner = block.facts.find((f) => f.id === "runner:r1");
-    expect(runner?.urls).toEqual([TAB_BATCHES]);
+    expect(runner?.urls).toEqual([TAB_EVERYTHING]);
     expect(runner?.numbers).toEqual(expect.arrayContaining(["14", "20", "212", "400"]));
   });
 
@@ -728,7 +736,7 @@ describe("the runners run", () => {
         role: "item",
         section: "runners",
         text: "The train25 campaign is running: 212 of 400 results are done.",
-        url: TAB_BATCHES,
+        url: TAB_EVERYTHING,
         sources,
       },
     ],
@@ -789,8 +797,8 @@ describe("the needs-you-today run", () => {
 
   it("is never reduced when the message must be fitted, whatever else gives", () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ todoId: `n${i}`, statement: `Answer the registrar about form ${i} before the office closes`, why: "a person is waiting on a reply" }));
-    const overnight = Array.from({ length: 40 }, (_, i) => ({ batchId: `b${i}`, statement: `The research critical path number ${i} with a long name`, added: 4, reworked: 2, dropped: 1, finished: 1, running: false }));
-    const { message, truncated } = fit(composeToday(sept9({ needsYou: many, overnight, batchesPlanned: 40 }), { canReply: false }));
+    const overnightByTodo = Array.from({ length: 40 }, (_, i) => ({ todoId: `t${i}`, statement: `The research critical path number ${i} with a long name that runs past half a line`, sessionId: `k${i}`, finished: 1, running: true }));
+    const { message, truncated } = fit(composeToday(sept9({ needsYou: many, overnightByTodo }), { canReply: false }));
     expect(truncated).toBe(true);
     const text = renderSlack(message);
     for (const n of many) expect(text).toContain(`form ${n.todoId.slice(1)} before`);
@@ -887,7 +895,7 @@ describe("the needs-you-today run", () => {
 
 // ── The hourly line ─────────────────────────────────────────────────────────
 function hourly(overrides: Partial<HourlyFacts> = {}): HourlyFacts {
-  return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], batches: [], changes: [], runners: [], ...overrides };
+  return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], todosWorked: [], changes: [], runners: [], ...overrides };
 }
 
 describe("composeHourly", () => {
@@ -918,7 +926,7 @@ describe("composeHourly", () => {
     const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abcdefghijklmnopqrstuvwxyz012345", text: long, needsYouToday: "the invoice is due tomorrow and the lab manager is waiting on it" };
     const running = [{
       sessionId: "k97a", title: "Planning", kind: "worker", mode: "autonomous",
-      status: "running", statement: "Plan the research path", batchId: null, elapsedMs: 3_600_000,
+      status: "running", statement: "Plan the research path", todoId: null, elapsedMs: 3_600_000,
     }];
     const message = composeHourly(hourly({ running, changes: [capture] }));
     // The whole clause with its reason would not fit here.
@@ -943,7 +951,7 @@ describe("composeHourly", () => {
 
   it("always says a capture needs him today, the hour's other clauses giving way when even the count will not fit", () => {
     const title = "A".repeat(150);
-    const running = [{ sessionId: "k97a", title, kind: "worker", mode: "autonomous", status: "running", statement: "Plan it", batchId: null, elapsedMs: 3_600_000 }];
+    const running = [{ sessionId: "k97a", title, kind: "worker", mode: "autonomous", status: "running", statement: "Plan it", todoId: null, elapsedMs: 3_600_000 }];
     const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abc", text: "Pay the invoice", needsYouToday: "it is due" };
     const line = composeHourly(hourly({ running, changes: [capture] }))!.firstLine;
     expect(line).toBe("1 item was captured, and one of the captures needs you today.");
@@ -961,7 +969,7 @@ describe("composeHourly", () => {
             mode: "autonomous",
             status: "running",
             statement: null,
-            batchId: null,
+            todoId: null,
             elapsedMs: 8_100_000,
           },
         ],
@@ -979,12 +987,42 @@ describe("composeHourly", () => {
     );
   });
 
+  // Grouped by todo (Tom, 2026-09-24: no batches): a moved todo links itself.
+  it("names the todos worked, linking the todo, and never a batch", () => {
+    const message = composeHourly(
+      hourly({
+        todosWorked: [
+          { todoId: "t1", statement: "Retire the superseded CMT code paths", sessions: 1 },
+          { todoId: "t2", statement: "Answer the registrar", sessions: 2 },
+        ],
+      }),
+    );
+    expect(message?.firstLine).toBe(
+      `Two items moved, <${itemUrl("t1")}|Retire the superseded CMT code paths> among them, and nothing else changed.`,
+    );
+    expect(message?.firstLine).not.toContain("batch");
+  });
+
+  it("links the todo one of several running sessions is on, else the first session", () => {
+    const base = { kind: "worker", mode: "autonomous", status: "running", elapsedMs: 60_000 };
+    const on = composeHourly(hourly({ running: [
+      { ...base, sessionId: "k1", title: "One", statement: null, todoId: null },
+      { ...base, sessionId: "k2", title: "Two", statement: "Plan the research path.", todoId: "t9" },
+    ] }));
+    expect(on?.firstLine).toBe(`Two sessions are working, one of them on <${itemUrl("t9")}|Plan the research path>, and nothing else changed.`);
+    const none = composeHourly(hourly({ running: [
+      { ...base, sessionId: "k1", title: "One", statement: null, todoId: null },
+      { ...base, sessionId: "k2", title: "Two", statement: null, todoId: null },
+    ] }));
+    expect(none?.firstLine).toBe(`Two <${sessionUrl("k1")}|sessions> are working, and nothing else changed.`);
+  });
+
   it("never prints a kind or a mode value", () => {
     const message = composeHourly(
       hourly({
         running: [
-          { sessionId: "k1", title: "One", kind: "focus-item", mode: "autonomous", status: "running", statement: "a batch", batchId: "b1", elapsedMs: 60_000 },
-          { sessionId: "k2", title: "Two", kind: "adhoc", mode: "interactive", status: "running", statement: null, batchId: null, elapsedMs: 60_000 },
+          { sessionId: "k1", title: "One", kind: "focus-item", mode: "autonomous", status: "running", statement: "a todo", todoId: "t1", elapsedMs: 60_000 },
+          { sessionId: "k2", title: "Two", kind: "adhoc", mode: "interactive", status: "running", statement: null, todoId: null, elapsedMs: 60_000 },
         ],
       }),
     );
@@ -1115,11 +1153,68 @@ describe("the facts block", () => {
     const ids = block.facts.map((f) => f.id);
     expect(ids).toContain("todo:ph7fqh2j");
     expect(ids).toContain("ready:beyond");
-    expect(ids).toContain("batch:b1");
+    expect(ids).toContain("overnight-todo:ph7crit");
     expect(ids).toContain("calendar:lead");
     const ready = block.facts.find((f) => f.id === "ready:beyond");
     expect(ready?.urls).toContain(TAB_EVERYTHING);
     expect(ready?.numbers).toContain("667");
+  });
+
+  // ONE ROLLOUT, BOTH SHAPES (Tom, 2026-09-24: no batches). The box runs its
+  // own installed copy of worker/jobs/write-slack.mjs until it is rolled, and
+  // that copy writes one line per batch from "overnight:count" and "batch:"
+  // facts; the new writer and the template write one line per todo from
+  // "overnight-todo:" facts. The block carries both until the follow-up pull
+  // request ends the widen step.
+  it("carries the old batch facts beside the new todo facts, and neither links the batches tab", () => {
+    const block = todayFactsBlock(
+      sept9({
+        overnight: [{ batchId: "b1", statement: "The research critical path", added: 4, reworked: 0, dropped: 1, finished: 0, running: false }],
+        batchesPlanned: 9,
+        batchesFinished: 0,
+      }),
+      false,
+    );
+    const byId = new Map(block.facts.map((f) => [f.id, f]));
+    expect(byId.get("overnight:count")?.text).toBe("The box planned 9 batches overnight and finished 0.");
+    expect(byId.get("batch:b1")?.text).toBe("The research critical path gained 4 items and dropped 1.");
+    expect(byId.get("overnight-todo:ph7crit")).toMatchObject({
+      text: "Walk the research critical path: 4 sessions on it ended.",
+      urls: [itemUrl("ph7crit")],
+      numbers: ["4"],
+    });
+    expect(byId.get("overnight-todo:ph7veri")?.urls).toEqual([itemUrl("ph7veri")]);
+    expect(block.facts.flatMap((f) => f.urls).some((url) => url.includes("tab=batches"))).toBe(false);
+  });
+
+  it("offers no batch fact when the facts carry no old shape", () => {
+    const ids = todayFactsBlock(sept9(), false).facts.map((f) => f.id);
+    expect(ids.some((id) => id === "overnight:count" || id.startsWith("batch:"))).toBe(false);
+  });
+
+  // The template prints the new shape only: each overnight line links its
+  // todo, the tail its newest session, and nothing links the batches tab.
+  it("renders the overnight run by todo, never by batch", () => {
+    const text = renderSlack(
+      composeToday(
+        sept9({
+          overnightByTodo: [
+            { todoId: "ph7crit", statement: "Walk the research critical path", sessionId: "k1", finished: 2, running: true },
+            { todoId: null, statement: "Work on no item", sessionId: "k9", finished: 5, running: false },
+          ],
+          overnight: [{ batchId: "b1", statement: "The old batch", added: 4, reworked: 0, dropped: 0, finished: 0, running: false }],
+          batchesPlanned: 1,
+          batchesFinished: 0,
+        }),
+        { canReply: false },
+      ),
+    );
+    expect(text).toContain("Overnight, the box's sessions worked on these items.");
+    expect(text).toContain(`<${itemUrl("ph7crit")}|Walk the research critical path: 2 sessions on it ended and one is still running.>`);
+    expect(text).toContain(`<${sessionUrl("k9")}|5 sessions on no item ended.>`);
+    expect(text).not.toContain("tab=batches");
+    expect(text).not.toContain("The old batch");
+    expect(text.toLowerCase()).not.toContain("batch");
   });
 
   it("never offers a private calendar row — the gatherer dropped it before this", () => {
@@ -1238,15 +1333,15 @@ describe("verifyDraft", () => {
       {
         role: "lead",
         section: "overnight",
-        text: "The box planned 9 batches overnight and finished 0.",
-        sources: ["overnight:count"],
+        text: "Overnight, the box's sessions worked on these items.",
+        sources: [],
       },
       {
         role: "item",
         section: "overnight",
-        text: "The research critical path gained 4 items and dropped 1.",
-        url: TAB_BATCHES,
-        sources: ["batch:b1"],
+        text: "Walk the research critical path: 4 sessions on it ended.",
+        url: itemUrl("ph7crit"),
+        sources: ["overnight-todo:ph7crit"],
       },
     ],
   };

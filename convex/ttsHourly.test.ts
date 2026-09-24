@@ -11,12 +11,12 @@ import {
 } from "./ttsCompose";
 import { HOURLY_UPDATE_ABANDONED, HOURLY_UPDATE_SENT } from "./ttsHourly";
 import {
-  TTS_BATCHES_LINK,
   nyHhmm,
   ttsDayBoundsUtc,
   ttsDayKey,
   ttsItemLink,
   ttsSessionLink,
+  ttsTabLink,
 } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -35,10 +35,10 @@ const HOUR = 3_600_000;
 const SINCE = NOW - HOUR;
 
 function facts(over: Partial<HourlyFacts> = {}): HourlyFacts {
-  return { now: NOW, since: SINCE, running: [], batches: [], changes: [], runners: [], ...over };
+  return { now: NOW, since: SINCE, running: [], todosWorked: [], changes: [], runners: [], ...over };
 }
 
-async function insertTodo(t: ReturnType<typeof convexTest>, statement: string, batchId?: Id<"batches">) {
+async function insertTodo(t: ReturnType<typeof convexTest>, statement: string) {
   return await t.run(async (ctx) =>
     ctx.db.insert("dtsTodos", {
       statement,
@@ -48,7 +48,6 @@ async function insertTodo(t: ReturnType<typeof convexTest>, statement: string, b
       kind: "task",
       actor: "tom",
       source: "manual",
-      batchId,
       createdAt: NOW - 10 * HOUR,
       updatedAt: NOW - 10 * HOUR,
     }),
@@ -108,11 +107,11 @@ describe("the one-line form", () => {
             mode: "autonomous",
             status: "running",
             statement: "poll-outlook",
-            batchId: "b1",
+            todoId: "t1",
             elapsedMs: 95 * 60_000,
           },
         ],
-        batches: [{ batchId: "b1", statement: "Integrations", sessions: 1, workerEvents: 2 }],
+        todosWorked: [{ todoId: "t1", statement: "Integrations", sessions: 1 }],
         changes: [
           { kind: "captured", at: NOW - 1, text: "one", detail: null, link: null },
           { kind: "done", at: NOW - 2, text: "two", detail: null, link: null },
@@ -133,9 +132,9 @@ describe("the one-line form", () => {
     const message = composeHourly(
       facts({
         running: [
-          { sessionId: "s1", title: "One", kind: "focus-item", mode: "autonomous", status: "running", statement: "a batch", batchId: "b1", elapsedMs: 60_000 },
-          { sessionId: "s2", title: "Two", kind: "adhoc", mode: "interactive", status: "running", statement: null, batchId: null, elapsedMs: 60_000 },
-          { sessionId: "s3", title: "Three", kind: "weekly", mode: "interactive", status: "running", statement: null, batchId: null, elapsedMs: 60_000 },
+          { sessionId: "s1", title: "One", kind: "focus-item", mode: "autonomous", status: "running", statement: "a todo", todoId: "t1", elapsedMs: 60_000 },
+          { sessionId: "s2", title: "Two", kind: "adhoc", mode: "interactive", status: "running", statement: null, todoId: null, elapsedMs: 60_000 },
+          { sessionId: "s3", title: "Three", kind: "weekly", mode: "interactive", status: "running", statement: null, todoId: null, elapsedMs: 60_000 },
         ],
       }),
     );
@@ -143,7 +142,7 @@ describe("the one-line form", () => {
     for (const value of ["focus-item", "adhoc", "weekly", "gate", "block", "autonomous", "interactive"]) {
       expect(text).not.toContain(value);
     }
-    expect(text).toBe(`Three sessions are working <${TTS_BATCHES_LINK}|a batch>, and nothing else changed.`);
+    expect(text).toBe(`Three sessions are working, one of them on <${ttsItemLink("t1")}|a todo>, and nothing else changed.`);
   });
 
   it("names the live runners after what ran, and never on their own", () => {
@@ -154,7 +153,7 @@ describe("the one-line form", () => {
     const captured = [{ kind: "captured" as const, at: SINCE + 1, text: "one", detail: null, link: null }];
     expect(
       composeHourly(facts({ changes: captured, runners: [runner("The train25 campaign", "waiting-on-tom")] }))?.firstLine,
-    ).toBe(`The runner <${TTS_BATCHES_LINK}|The train25 campaign> is waiting on your answer, and 1 item was captured.`);
+    ).toBe(`The runner <${ttsTabLink("everything")}|The train25 campaign> is waiting on your answer, and 1 item was captured.`);
     expect(
       composeHourly(
         facts({
@@ -162,7 +161,7 @@ describe("the one-line form", () => {
           runners: [runner("A", "waiting-on-tom"), runner("B", "running"), runner("C", "running")],
         }),
       )?.firstLine,
-    ).toBe(`Three <${TTS_BATCHES_LINK}|runners> are live, one of them waiting on you, and 1 item was captured.`);
+    ).toBe(`Three <${ttsTabLink("everything")}|runners> are live, one of them waiting on you, and 1 item was captured.`);
   });
 
   it("counts the changes rather than listing them, however many there are", () => {
@@ -346,70 +345,27 @@ describe("the changed-since query", () => {
     expect(await t.query(internal.ttsHourly.internalLastHourlyWindowEnd, {})).toBe(NOW);
   });
 
-  it("groups the window's sessions and worker events by batch", async () => {
+  // Grouped by todo (Tom, 2026-09-24: no batches). A session on no todo is not
+  // counted: the hourly line speaks only for work that names a todo.
+  it("groups the window's sessions by todo", async () => {
     const t = convexTest(schema, modules);
-    const batchId = await t.run(async (ctx) =>
-      ctx.db.insert("batches", {
-        statement: "Integrations",
-        status: "active",
-        createdAt: NOW - 10 * HOUR,
-        updatedAt: NOW - 10 * HOUR,
-      }),
-    );
-    const todo = await insertTodo(t, "poll-outlook", batchId);
+    const todo = await insertTodo(t, "poll-outlook");
     await t.run(async (ctx) => {
-      const base = {
-        repo: "none",
-        repos: [],
-        nextSeq: 0,
-        createdAt: NOW - 2 * HOUR,
-      };
-      // Live, on the batch directly.
-      await ctx.db.insert("claudeSessions", {
-        ...base,
-        title: "live one",
-        kind: "adhoc",
-        batchId,
-        status: "running",
-        statusChangedAt: NOW - HOUR / 2,
-      });
-      // Ended inside the window, on a todo of the batch.
-      await ctx.db.insert("claudeSessions", {
-        ...base,
-        title: "ended in window",
-        kind: "gate",
-        todoId: todo,
-        status: "ended",
-        statusChangedAt: SINCE + 1,
-      });
+      const base = { repo: "none", repos: [], nextSeq: 0, createdAt: NOW - 2 * HOUR };
+      // Live, on the todo.
+      await ctx.db.insert("claudeSessions", { ...base, title: "live one", kind: "gate", todoId: todo, status: "running", statusChangedAt: NOW - HOUR / 2 });
+      // Ended inside the window, on the todo.
+      await ctx.db.insert("claudeSessions", { ...base, title: "ended in window", kind: "gate", todoId: todo, status: "ended", statusChangedAt: SINCE + 1 });
       // Ended before the window: not counted.
-      await ctx.db.insert("claudeSessions", {
-        ...base,
-        title: "ended earlier",
-        kind: "gate",
-        todoId: todo,
-        status: "ended",
-        statusChangedAt: SINCE - 1,
-      });
+      await ctx.db.insert("claudeSessions", { ...base, title: "ended earlier", kind: "gate", todoId: todo, status: "ended", statusChangedAt: SINCE - 1 });
+      // Live, on no todo: not counted.
+      await ctx.db.insert("claudeSessions", { ...base, title: "a chat", kind: "adhoc", status: "running", statusChangedAt: NOW - HOUR / 2 });
     });
-    await insertEvent(t, SINCE + 5, "graph-stored", undefined, { batchId, created: 1 });
-    await insertEvent(t, SINCE + 6, "plan-repair", todo, { finding: "edge wrong" });
-
-    const worked = await t.query(internal.ttsHourly.internalBatchesWorked, {
-      since: SINCE,
-      now: NOW,
-    });
-    expect(worked).toEqual([
-      { batchId, statement: "Integrations", sessions: 2, workerEvents: 2 },
-    ]);
+    const worked = await t.query(internal.ttsHourly.internalTodosWorked, { since: SINCE });
+    expect(worked).toEqual([{ todoId: todo, statement: "poll-outlook", sessions: 2 }]);
     const running = await t.query(internal.ttsHourly.internalRunningNow, { now: NOW });
-    expect(running).toHaveLength(1);
-    expect(running[0]).toMatchObject({
-      title: "live one",
-      kind: "adhoc",
-      statement: "Integrations",
-      elapsedMs: 2 * HOUR,
-    });
+    expect(running.find((r) => r.title === "live one")).toMatchObject({ statement: "poll-outlook", todoId: todo });
+    expect(running.find((r) => r.title === "a chat")).toMatchObject({ statement: null, todoId: null });
   });
 });
 
@@ -721,7 +677,25 @@ describe("sendHourlyUpdate", () => {
     await busyHour(busy);
     await busy.action(internal.ttsSync.sendHourlyUpdate, {});
     expect(posts).toHaveLength(1);
-    expect(posts[0].text).toContain(`The runner <${TTS_BATCHES_LINK}|The train25 campaign> is running, and 1 item was captured.`);
+    expect(posts[0].text).toContain(`The runner <${ttsTabLink("everything")}|The train25 campaign> is running, and 1 item was captured.`);
+  });
+
+  // Grouped by todo (Tom, 2026-09-24: no batches): an hour whose only fact is
+  // a session that ended on a todo speaks, and names the todo by its link.
+  it("names a todo worked in the hour by its link, and never the batches tab", async () => {
+    const t = convexTest(schema, modules);
+    const todoId = await insertTodo(t, "Fix the Outlook poller");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("claudeSessions", {
+        repo: "none", repos: [], nextSeq: 0, createdAt: Date.now() - 2 * HOUR,
+        title: "poller fix", kind: "gate", todoId, status: "ended", statusChangedAt: Date.now() - 60_000,
+      });
+    });
+    const posts = stubSlack();
+    await t.action(internal.ttsSync.sendHourlyUpdate, {});
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toBe(`One item moved, <${ttsItemLink(todoId)}|Fix the Outlook poller> among them, and nothing else changed.`);
+    expect(posts[0].text).not.toContain("tab=batches");
   });
 
   /** Make the hour NOT quiet: one capture inside the window is enough, and it

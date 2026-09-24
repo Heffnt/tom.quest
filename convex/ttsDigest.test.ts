@@ -19,8 +19,8 @@ import {
   stripNarrowListId,
   todaySubject,
 } from "./ttsDigest";
-import { MESSAGE_MAX_CHARS, TAB_BATCHES } from "./ttsCompose";
-import { nyCalendarDayBoundsUtc, ttsDayKey, ttsItemLink } from "./ttsShared";
+import { MESSAGE_MAX_CHARS, TAB_EVERYTHING } from "./ttsCompose";
+import { nyCalendarDayBoundsUtc, ttsDayKey, ttsItemLink, ttsSessionLink } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -599,10 +599,58 @@ describe("internalComposeToday", () => {
     expect(text).not.toContain("read the newsletter");
   });
 
-  // OUTCOMES, NEVER LOGGED EVENTS. Four "graph-stored" rows on one batch are
-  // one sentence about that batch, and the words those rows are spelled with
-  // reach no message.
-  it("turns a night of plan-stored rows into one sentence per batch", async () => {
+  // OUTCOMES, NEVER LOGGED EVENTS, ONE LINE PER TODO (Tom, 2026-09-24: no
+  // batches). Two sessions on one todo are one sentence about that todo,
+  // linking it; a session on no todo joins the tail, linking the session.
+  it("turns a night of sessions into one line per todo, linking the todo", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const { todo, ended, live, loose } = await t.run(async (ctx) => {
+      const todo = await ctx.db.insert("dtsTodos", {
+        statement: "walk the research critical path",
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        kind: "task",
+        actor: "tom",
+        source: "manual",
+        createdAt: FIVE_AM - DAY,
+        updatedAt: FIVE_AM - DAY,
+      });
+      const base = { repo: "none", repos: [], nextSeq: 0, createdAt: FIVE_AM - 7200_000 };
+      const ended = await ctx.db.insert("claudeSessions", { ...base, title: "one", kind: "gate", todoId: todo, status: "ended", statusChangedAt: FIVE_AM - 3600_000 });
+      const live = await ctx.db.insert("claudeSessions", { ...base, title: "two", kind: "gate", todoId: todo, status: "running", statusChangedAt: FIVE_AM - 3600_000 });
+      const loose = await ctx.db.insert("claudeSessions", { ...base, title: "three", kind: "adhoc", status: "ended", statusChangedAt: FIVE_AM - 3600_000 });
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3600_000, kind: "session-outcome", todoId: todo, data: { sessionId: ended, outcome: "completed" } });
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3500_000, kind: "session-created", todoId: todo, data: { sessionId: live } });
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3400_000, kind: "session-outcome", data: { sessionId: loose, outcome: "completed" } });
+      return { todo, ended, live, loose };
+    });
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM + 1,
+    });
+    expect(text).toContain(
+      `- <${ttsItemLink(todo)}|Walk the research critical path: 1 session on it ended and one is still running.>`,
+    );
+    expect(text).toContain(`- <${ttsSessionLink(loose)}|1 session on no item ended.>`);
+    expect(text).not.toContain("tab=batches");
+    const ids = facts.facts.map((f) => f.id);
+    expect(ids).toContain(`overnight-todo:${todo}`);
+    expect(ids).toContain("overnight-todo:none");
+    expect(ids).not.toContain(`overnight-todo:${ended}`);
+    expect(ids).not.toContain(`overnight-todo:${live}`);
+  });
+
+  // ONE ROLLOUT, BOTH SHAPES. The box's installed copy of
+  // worker/jobs/write-slack.mjs writes one line per batch from the stored
+  // facts until the box is rolled, so the facts block still carries the batch
+  // facts, summed across the window's "graph-stored" rows as before; the
+  // template, which prints the new shape only, never says them. Removed in the
+  // follow-up pull request that ends the widen step.
+  it("stores the old batch facts beside the new ones and prints only the new", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -624,11 +672,16 @@ describe("internalComposeToday", () => {
         });
       }
     });
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
-    expect(text).toContain("The research critical path gained 4 items, reworked 2 and dropped 1.");
+    const byId = new Map(facts.facts.map((f) => [f.id, f]));
+    expect(byId.get(`batch:${batchId}`)?.text).toBe("The research critical path gained 4 items, reworked 2 and dropped 1.");
+    expect(byId.get("overnight:count")?.text).toBe("The box planned 1 batch overnight and finished 0.");
+    expect(facts.facts.flatMap((f) => f.urls).some((url) => url.includes("tab=batches"))).toBe(false);
+    expect(text).not.toContain("The research critical path");
+    expect(text.toLowerCase()).not.toContain("batch");
     for (const word of ["plan stored", "created", "retired", "session opened", "worker event"]) {
       expect(text.toLowerCase()).not.toContain(word);
     }
@@ -1101,7 +1154,7 @@ describe("internalComposeToday", () => {
     expect(ids).not.toContain(`runner:${ended}`);
     expect(text).toContain("Two runners are live on the box, and one of them waits on you.");
     expect(text).toContain(
-      `- <${TAB_BATCHES}|The train25 campaign is waiting on your answer; its last check-in reads: 14 of 20 jobs are running and 212 of 400 results are done.>`,
+      `- <${TAB_EVERYTHING}|The train25 campaign is waiting on your answer; its last check-in reads: 14 of 20 jobs are running and 212 of 400 results are done.>`,
     );
     // Never checked in: said so, and no number invented for it.
     const silentFact = facts.facts.find((f: { id: string }) => f.id === `runner:${silent}`);
@@ -1893,13 +1946,13 @@ describe("sendDecision", () => {
     expect(posts[0].text).toBe(
       [
         "Object if this is wrong; silence means it stands.",
-        `- <${TAB_BATCHES}|Removed the three roll-out shims from convex/http.ts, because nothing has posted to them in six weeks.>`,
+        `- <${TAB_EVERYTHING}|Removed the three roll-out shims from convex/http.ts, because nothing has posted to them in six weeks.>`,
       ].join("\n"),
     );
     expect(posts[1].text).toBe(
       [
         "Parked for you: needs-his-words — removed the batch members line from tts/spec.md. Nothing was done in your name.",
-        `- <${TAB_BATCHES}|It would have removed the batch members line from tts/spec.md.>`,
+        `- <${TAB_EVERYTHING}|It would have removed the batch members line from tts/spec.md.>`,
       ].join("\n"),
     );
   });
