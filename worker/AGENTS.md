@@ -6,6 +6,7 @@
 - `worker/README.md` says what each job does, how `worker/setup.sh` rolls out new code idempotently, and where the box's secrets live. Connection details and secrets are not in this repository, which is public.
 - A one-time credential helper writes a minted value to an owner-only file through `worker/jobs/credential-file.mjs` and prints only the file's path and the variable names, because a session stores its own standard output.
 - A change that needs `tts-session-host` restarted says so in the outcome; the supervisor restarts it.
+- `tts-convex run <function> [<json args>]` runs a Convex function against production with `CONVEX_DEPLOY_KEY` from the env file, in `/root/tom.quest`, and records it in `/var/log/tts/convex.log`; any other `convex` subcommand passes through the same way (`worker/README.md`).
 - Each account slot's `settings.json`, which `worker/setup.sh` writes, turns off auto-memory, bundled skills, the Workflow tool and claude.ai connectors, and denies WebSearch, WebFetch and every `mcp__` tool; context comes from Jarvis (`worker/README.md`).
 
 ## sessions

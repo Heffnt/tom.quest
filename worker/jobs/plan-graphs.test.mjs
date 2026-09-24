@@ -11,20 +11,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  BRIEF_MAX_PER_RUN,
   PREPARE_MAX,
   PREPARED,
-  briefCodeTodos,
-  briefDoorFaults,
   briefPrompt,
   loadStandardRules,
   prepareDoorFaults,
   preparePrompt,
   prepareLifeTodos,
-  selectBriefTargets,
   selectPrepareTargets,
 } from "./plan-graphs.mjs";
-import { CMT_REPO, sourceHash } from "./tts-code-lib.mjs";
 
 const WRITING_GUIDANCE = "WRITING STANDARD — test copy.";
 const TODAY = "2026-09-06";
@@ -248,165 +243,7 @@ describe("prepareLifeTodos", () => {
   });
 });
 
-// ── The brief pass ──────────────────────────────────────────────────────────
-
-const ENTRY_A = { id: "cmt-001", tier: "R", statement: "do the thing", created: "2026-08-01" };
-const ENTRY_B = { id: "cmt-002", tier: "C", statement: "decide the other thing", created: "2026-08-02" };
-const TODOS_YAML = [
-  "- id: cmt-001",
-  "  tier: R",
-  "  statement: do the thing",
-  "  created: 2026-08-01",
-  "",
-  "- id: cmt-002",
-  "  tier: C",
-  "  statement: decide the other thing",
-  "  created: 2026-08-02",
-  "",
-  "# --- closed todos ---",
-  "",
-].join("\n");
-
-const briefAnswer = (over = {}) =>
-  JSON.stringify({
-    brief: "A ground-up brief.",
-    recommendation: "approve",
-    execClass: "box",
-    ...over,
-  });
-
-function briefIo(answers, hashes = {}) {
-  const queue = Array.isArray(answers) ? [...answers] : [answers];
-  return {
-    runClaude: vi.fn(() => queue.shift() ?? briefAnswer()),
-    post: vi.fn(async () => ({ ok: true })),
-    readHashes: () => hashes,
-    writeHashes: vi.fn(),
-    hashes,
-  };
-}
-
-const repo = (entries = [ENTRY_A, ENTRY_B]) => ({
-  dir: "/var/cache/tts/ComplexMultiTrigger",
-  todosText: TODOS_YAML,
-  entries,
-});
-
-describe("selectBriefTargets", () => {
-  it("briefs an entry whose hash moved and leaves an unchanged one alone", () => {
-    const hashes = { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) };
-    const targets = selectBriefTargets([ENTRY_A, ENTRY_B], hashes, []);
-    expect(targets.map((t) => t.entry.id)).toEqual(["cmt-002"]);
-    expect(targets[0].hash).toBe(sourceHash(ENTRY_B));
-    expect(targets[0].revise).toBeNull();
-  });
-
-  it("re-briefs an unchanged entry Tom ruled revise on, and only for CMT code rulings", () => {
-    const hashes = {
-      [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A),
-      [`${CMT_REPO}:cmt-002`]: sourceHash(ENTRY_B),
-    };
-    const pending = [
-      { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "fresh plan" },
-      { _id: "r2", subjectType: "code", verdict: "approve", repo: CMT_REPO, externalId: "cmt-002" },
-      { _id: "r3", subjectType: "code", verdict: "revise", repo: "tom.quest", externalId: "cmt-002", sentence: "x" },
-      { _id: "r4", subjectType: "life", verdict: "revise", todoId: "t1", sentence: "y" },
-    ];
-    const targets = selectBriefTargets([ENTRY_A, ENTRY_B], hashes, pending);
-    expect(targets.map((t) => t.entry.id)).toEqual(["cmt-001"]);
-    expect(targets[0].revise._id).toBe("r1");
-  });
-
-  it("with --force briefs everything", () => {
-    const hashes = { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) };
-    expect(selectBriefTargets([ENTRY_A], hashes, [], { force: true })).toHaveLength(1);
-  });
-});
-
-describe("briefCodeTodos", () => {
-  it("posts the brief in the four-word shape, then advances the cursor", async () => {
-    const io = briefIo(briefAnswer({ evidence: "commit abc" }));
-    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE }, io);
-    expect(result).toEqual({ briefed: 1, failed: 0 });
-    // The model reads the checkout and gets the raw YAML block, not JSON.
-    expect(io.runClaude.mock.calls[0][1].cwd).toBe("/var/cache/tts/ComplexMultiTrigger");
-    expect(io.runClaude.mock.calls[0][0]).toContain("- id: cmt-001\n  tier: R");
-    expect(io.post).toHaveBeenCalledWith("/tts/code-briefs", {
-      briefs: [
-        {
-          repo: CMT_REPO,
-          externalId: "cmt-001",
-          sourceHash: sourceHash(ENTRY_A),
-          brief: "A ground-up brief.",
-          recommendation: "approve",
-          execClass: "box",
-          evidence: "commit abc",
-        },
-      ],
-    });
-    expect(io.writeHashes).toHaveBeenCalledWith({
-      [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A),
-    });
-  });
-
-  it("refuses a recommendation outside the four words and advances no cursor", async () => {
-    // Both attempts: a shape fault gets the same one retry every fault gets,
-    // and only a fault that survives it decides the entry.
-    const bad = briefAnswer({ recommendation: "stale-replan" });
-    const io = briefIo([bad, bad]);
-    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE }, io);
-    expect(result).toEqual({ briefed: 0, failed: 1 });
-    expect(io.post).not.toHaveBeenCalled();
-    expect(io.writeHashes).not.toHaveBeenCalled();
-  });
-
-  it("puts Tom's revise sentence in the prompt and consumes the ruling after the brief posts", async () => {
-    const hashes = { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) };
-    const pending = [
-      { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "drop step 3" },
-    ];
-    const io = briefIo(briefAnswer({ recommendation: "revise" }), hashes);
-    await briefCodeTodos({ repo: repo([ENTRY_A]), pending, writingStandard: WRITING_GUIDANCE }, io);
-    expect(io.runClaude.mock.calls[0][0]).toContain("drop step 3");
-    expect(io.runClaude.mock.calls[0][0]).toContain("Propose a");
-    expect(io.post.mock.calls.map((c) => c[0])).toEqual(["/tts/code-briefs", "/tts/ruling-applied"]);
-    expect(io.post.mock.calls[1][1]).toEqual({
-      id: "r1",
-      result: "revised: brief re-written with a fresh plan",
-    });
-  });
-
-  it("leaves the ruling pending when the re-brief fails", async () => {
-    const pending = [
-      { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "again" },
-    ];
-    const io = briefIo("not json at all");
-    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending, writingStandard: WRITING_GUIDANCE }, io);
-    expect(result).toEqual({ briefed: 0, failed: 1 });
-    expect(io.post).not.toHaveBeenCalled();
-  });
-
-  it("briefs at most BRIEF_MAX_PER_RUN per run, all of them with --force, and nothing when idle", async () => {
-    const many = Array.from({ length: BRIEF_MAX_PER_RUN + 2 }, (_, i) => ({
-      id: `cmt-${i}`,
-      statement: `entry ${i}`,
-    }));
-    const io = briefIo([]);
-    expect((await briefCodeTodos({ repo: repo(many), pending: [], writingStandard: WRITING_GUIDANCE }, io)).briefed).toBe(
-      BRIEF_MAX_PER_RUN,
-    );
-    const forced = briefIo([]);
-    expect(
-      (await briefCodeTodos({ repo: repo(many), pending: [], writingStandard: WRITING_GUIDANCE, force: true }, forced)).briefed,
-    ).toBe(BRIEF_MAX_PER_RUN + 2);
-    const idle = briefIo([], { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) });
-    expect(await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE }, idle)).toEqual({
-      briefed: 0,
-      failed: 0,
-    });
-    expect(idle.runClaude).not.toHaveBeenCalled();
-  });
-
+describe("briefPrompt", () => {
   it("asks for the four verdict words and nothing else", () => {
     const text = briefPrompt("- id: x", null, WRITING_GUIDANCE);
     expect(text.startsWith(WRITING_GUIDANCE)).toBe(true);
@@ -419,8 +256,8 @@ describe("briefCodeTodos", () => {
 });
 
 // ── THE DOOR CHECK ──────────────────────────────────────────────────────────
-// Both writing passes read what the model wrote before posting it, retry once
-// with the complaints, and — Tom's ruling of 2026-09-12 — POST ANYWAY when the
+// The prepare pass reads what the model wrote before posting it, retries once
+// with the complaints, and — Tom's ruling of 2026-09-12 — POSTS ANYWAY when the
 // second attempt fails too, carrying the mark. What is pinned here is the
 // whole of that: the retry happens, the complaints reach the second prompt
 // under the exact heading, a second failure still posts and still marks, a
@@ -506,82 +343,6 @@ describe("the door check — the prepare pass", () => {
       expect(result).toEqual({ prepared: 0, failed: 1, preparedIds: [] });
       expect(io.post).not.toHaveBeenCalled();
       expect(errors.join("\n")).toContain("prepare t1 FAILED");
-    } finally {
-      spy.mockRestore();
-    }
-  });
-});
-
-describe("the door check — the brief pass", () => {
-  // The code brief is 250-400 WORDS by its own prompt, so the two SIZE rules
-  // (2-5 sentences, at most 400 characters) cannot bind it — only the form
-  // rules do. A twelve-sentence brief is a normal code brief, not a fault.
-  const LONG_BRIEF = Array.from({ length: 12 }, (_, i) => `Sentence ${i} about the tree.`).join(" ");
-
-  it("reads the form rules over a code brief and lets its length alone", () => {
-    expect(briefDoorFaults(JSON.parse(briefAnswer({ brief: LONG_BRIEF })), STANDARD)).toEqual([]);
-    expect(briefDoorFaults(JSON.parse(briefAnswer({ brief: "# Plan\nIt is stale. Rewrite it." })), STANDARD))
-      .toEqual(["brief: brief-markup — a brief is prose — no heading, list, or code fence"]);
-  });
-
-  it("retries once with the complaints under the refusal heading, and a pass on the retry marks nothing", async () => {
-    const io = briefIo([briefAnswer({ brief: "- a bullet is not prose. Nor is this." }), briefAnswer()]);
-    const result = await briefCodeTodos(
-      { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: STANDARD },
-      io,
-    );
-    expect(result).toEqual({ briefed: 1, failed: 0 });
-    expect(io.runClaude).toHaveBeenCalledTimes(2);
-    expect(io.runClaude.mock.calls[0][0]).not.toContain(REFUSAL_HEADING);
-    expect(io.runClaude.mock.calls[1][0]).toContain(REFUSAL_HEADING);
-    expect(io.runClaude.mock.calls[1][0]).toContain("- brief: brief-markup — ");
-    expect(io.post.mock.calls[0][1].briefs[0]).not.toHaveProperty("doorFaults");
-  });
-
-  it("posts the second failure anyway, carrying the mark, and advances the cursor", async () => {
-    const bad = briefAnswer({ brief: "# Plan\nIt is stale. Rewrite it." });
-    const io = briefIo([bad, bad]);
-    const result = await briefCodeTodos(
-      { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: STANDARD },
-      io,
-    );
-    expect(result).toEqual({ briefed: 1, failed: 0 });
-    expect(io.runClaude).toHaveBeenCalledTimes(2);
-    expect(io.post.mock.calls[0][1].briefs[0]).toMatchObject({
-      externalId: "cmt-001",
-      doorFaults: ["brief: brief-markup — a brief is prose — no heading, list, or code fence"],
-    });
-    // The brief that reached Tom is the one the cursor now records: leaving
-    // the entry to be re-briefed next run would re-spend two model calls on
-    // text that is already on the page.
-    expect(io.writeHashes).toHaveBeenCalled();
-  });
-
-  it("checks nothing and fails nothing when the standard is not reachable", async () => {
-    const io = briefIo([briefAnswer({ brief: "# Plan\nIt is stale. Rewrite it." })]);
-    const result = await briefCodeTodos(
-      { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: null },
-      io,
-    );
-    expect(result).toEqual({ briefed: 1, failed: 0 });
-    expect(io.runClaude).toHaveBeenCalledTimes(1);
-    expect(io.post.mock.calls[0][1].briefs[0]).not.toHaveProperty("doorFaults");
-  });
-
-  it("posts nothing when the SHAPE is still wrong on the second attempt, and says so", async () => {
-    const errors = [];
-    const spy = vi.spyOn(console, "error").mockImplementation((m) => errors.push(m));
-    try {
-      const bad = briefAnswer({ recommendation: "stale-replan" });
-      const io = briefIo([bad, bad]);
-      const result = await briefCodeTodos(
-        { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: STANDARD },
-        io,
-      );
-      expect(result).toEqual({ briefed: 0, failed: 1 });
-      expect(io.post).not.toHaveBeenCalled();
-      expect(io.writeHashes).not.toHaveBeenCalled();
-      expect(errors.join("\n")).toContain("brief cmt-001 FAILED");
     } finally {
       spy.mockRestore();
     }

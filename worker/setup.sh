@@ -170,9 +170,8 @@ PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$PW_ARCH" npx playwright install 
 
 echo "== [6/11] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
-# /var/lib/tts        — small local state: the Slack poll cursor, the
-#     brief-hash cursor, and the apply/execute lock dirs (all harmless to
-#     lose; see each job's header)
+# /var/lib/tts        — small local state: the Slack poll cursor and the
+#     apply/execute lock dirs (all harmless to lose; see each job's header)
 # /var/cache/tts      — rebuildable caches: the shallow CMT clone, the brief
 #     markdown copies, and the executor's throwaway full clones
 # /etc/tts            — worker.env (secrets; mode 600)
@@ -455,7 +454,7 @@ chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
   /usr/local/bin/tts-codex /usr/local/bin/tts-run /usr/local/bin/tts-search \
   /usr/local/bin/tts-ask /usr/local/bin/tts-audit /usr/local/bin/tts-runner-step \
-  /usr/local/bin/tts-turing-act
+  /usr/local/bin/tts-turing-act /usr/local/bin/tts-convex
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -701,28 +700,23 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Saturday run and a five-minute tick cannot overlap either.
 0 8,9 * * 6 root /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
 
-# CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
-# worker mission): the BRIEFS are the planner's second pass (below, every 30
-# minutes) — hash cursor in /var/lib/tts/brief-hashes.json, so most ticks
-# brief nothing.
-
-# THE PLANNER. Every 30 minutes at :27 and :57, two passes in one run:
-# PREPARE every unprepared life todo (brief, entry action, work description,
-# ground-up explanation, readiness prepared — this used to be
-# prepare-life-todos.mjs on a 2-minute tick; the threaded Slack reply no
-# longer waits on it, the capture posts that itself), then BRIEF every open
-# CMT code todo whose YAML changed or that Tom ruled revise on (was
-# brief-code-todos.mjs). The planner forms no batches: its third pass, which
-# bound todos into batches and wrote the task graph inside each, was deleted
-# on Tom's ruling of 2026-09-24 to have no batches at all. An idle tick is
-# cheap: both passes return before any Claude call when nothing is owed.
-# flock -n: a backlog of preparations can outlast the tick, and a second run
-# would prepare the same todos twice.
+# THE PLANNER. Every 30 minutes at :27 and :57, one pass: PREPARE every
+# unprepared life todo (brief, entry action, work description, ground-up
+# explanation, readiness prepared — this used to be prepare-life-todos.mjs on
+# a 2-minute tick; the threaded Slack reply no longer waits on it, the
+# capture posts that itself). Two passes are retired: BRIEF, which wrote a
+# brief for every open entry of CMT's vqc/todos.yaml, since CMT adoption
+# ruling 70 moved CMT's todos into TTS; and PLAN, which bound todos into
+# batches and wrote the task graph inside each, deleted on Tom's ruling of
+# 2026-09-24 to have no batches at all, so the planner forms no batches. An
+# idle tick is cheap: the prepare pass returns before any Claude call when
+# nothing is owed. flock -n: a backlog of preparations can outlast the tick,
+# and a second run would prepare the same todos twice.
 27,57 * * * * root /usr/bin/flock -n /var/lock/tts-plan-graphs.lock /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
 
 # Tom's rulings need no apply job: every verdict's effect is applied at write
 # time in Convex (convex/ttsRulings.ts), or at the one moment its effect can
-# exist — a code revise by the planner's brief pass, a code approve or archive
+# exist — a code approve or archive
 # by the auto-session scheduler as a worker mission, a session verdict when
 # Tom opens the session.
 
