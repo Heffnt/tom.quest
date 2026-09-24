@@ -143,20 +143,18 @@ function openrouterKey() {
     try { value = file && workerEnv ? workerEnv.loadEnv({ path: file })[OPENROUTER_KEY] : null; } catch {}
   }
   if (!value) fail(`an openrouter/ model needs ${OPENROUTER_KEY}, which is in neither this environment nor ${file ?? "the worker env file"}`);
-  // REMOVAL CHECK: Codex builds the Authorization header from this value and,
-  // when the value holds a control character, SENDS THE REQUEST WITHOUT ONE
-  // rather than failing. OpenRouter then answers "401 Missing Authentication
-  // header", which reads as a key that never arrived (the 2026-09-24 smoke
-  // test). A key pasted into a terminal can carry the paste's escape sequences
-  // (ESC[200~ ... ESC[201~); nothing earlier on the path can see that, because
-  // the env file is parsed as text and the value is never shown. The rule is
-  // worker-env.mjs's bearerTokenProblem, the one setup.sh's rollout warns with.
+  // REMOVAL CHECK: a malformed key fails only at OpenRouter, after the run
+  // has started, with "401 Missing Authentication header", which reads as a
+  // key that never arrived; the value is never shown, so nothing on the path
+  // can tell the difference by looking. On 2026-09-24 the box's key carried
+  // the tail of a terminal's paste marker before its sk-or- prefix, and two
+  // rounds of diagnosis chased a missing header. The rule is worker-env.mjs's
+  // openrouterKeyProblem, the one setup.sh's rollout warns with.
   if (!workerEnv) fail("worker-env.mjs is not installed, so the OpenRouter key cannot be checked");
-  const problem = workerEnv.bearerTokenProblem(value);
+  const problem = workerEnv.openrouterKeyProblem(value);
   if (problem) {
     fail(`${OPENROUTER_KEY} in ${fromEnv ? "this environment" : file} holds ${problem}; `
-      + "with a control character Codex sends no Authorization header at all. "
-      + "Rewrite the line with printable characters only.");
+      + "OpenRouter would refuse it. Re-run worker/setup.sh for the repair line.");
   }
   return value;
 }

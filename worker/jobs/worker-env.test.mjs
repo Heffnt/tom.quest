@@ -16,10 +16,10 @@ import { spawnSync } from "node:child_process";
 import {
   MAILBOX_BEGIN,
   MAILBOX_END,
-  bearerTokenProblem,
   graphVersion,
   loadEnv,
   mailboxNames,
+  openrouterKeyProblem,
   setEnvLine,
 } from "./worker-env.mjs";
 
@@ -229,13 +229,31 @@ describe("setEnvLine", () => {
 // below verbatim, so it cannot judge a value differently from
 // scripts/codex-run.mjs; the printed repair must fix every line form that
 // warning reads, or it would print a command that changes nothing.
-describe("bearerTokenProblem", () => {
-  it("passes a printable key and names the classes of anything else, never the value", () => {
-    expect(bearerTokenProblem("sk-or-v1-0123abcd")).toBeNull();
-    expect(bearerTokenProblem("\u001b[200~sk-or-v1-x\u001b[201~")).toBe("2 character(s) outside printable ASCII (2 control, 0 space, 0 non-ASCII)");
-    expect(bearerTokenProblem("sk-or v1\tx")).toBe("2 character(s) outside printable ASCII (1 control, 1 space, 0 non-ASCII)");
-    expect(bearerTokenProblem("sk-or-v1-x\u00a0")).toBe("1 character(s) outside printable ASCII (0 control, 0 space, 1 non-ASCII)");
-    expect(bearerTokenProblem("sk-or-v1-secret\u0007")).not.toContain("secret");
+const KEY = `sk-or-v1-${"0123456789abcdef".repeat(4)}`;
+
+describe("openrouterKeyProblem", () => {
+  it("passes a printable key with the sk-or- prefix", () => {
+    expect(openrouterKeyProblem(KEY)).toBeNull();
+  });
+
+  it("names the classes of characters outside printable ASCII", () => {
+    expect(openrouterKeyProblem(`\u001b[200~${KEY}\u001b[201~`)).toBe("2 character(s) outside printable ASCII (2 control, 0 space, 0 non-ASCII) and 6 character(s) before its sk-or- prefix and 2 punctuation character(s) after its sk-or- prefix");
+    expect(openrouterKeyProblem("sk-or-v1 \tx")).toBe("2 character(s) outside printable ASCII (1 control, 1 space, 0 non-ASCII)");
+    expect(openrouterKeyProblem(`${KEY}\u00a0`)).toBe("1 character(s) outside printable ASCII (0 control, 0 space, 1 non-ASCII)");
+  });
+
+  // witness: the 2026-09-24 box key, printable throughout, with the tail of a
+  // paste marker in front of it. OpenRouter answered every run "401 Missing
+  // Authentication header" while Codex sent the header each time.
+  it("refuses printable characters before the prefix, and a value with no prefix", () => {
+    expect(openrouterKeyProblem(`200~${KEY}`)).toBe("4 character(s) before its sk-or- prefix");
+    expect(openrouterKeyProblem("abc")).toBe("no sk-or- prefix");
+    expect(openrouterKeyProblem(`${KEY}201~`)).toBe("1 punctuation character(s) after its sk-or- prefix");
+  });
+
+  it("never names a character of the key", () => {
+    expect(openrouterKeyProblem("secret-value\u0007")).not.toContain("secret");
+    expect(openrouterKeyProblem("zz~sk-or-secret")).not.toContain("secret");
   });
 });
 
@@ -255,21 +273,33 @@ describe.skipIf(process.platform === "win32")("setup.sh's OpenRouter key warning
   ], { encoding: "utf8" }).stdout;
 
   it("warns by the same rule the run applies", () => {
-    for (const value of ["sk-or-v1-abc", "sk-or v1", "\u001b[200~sk-or-v1-abc\u001b[201~", "sk-or-v1\u00a0abc"]) {
+    for (const value of [KEY, "sk-or v1", `\u001b[200~${KEY}\u001b[201~`, `sk-or-v1\u00a0${KEY}`, `200~${KEY}`, "abc"]) {
       const file = envFile(`A=1\nOPENROUTER_API_KEY=${value}\nB=2\n`);
-      expect(warning(file)).toBe(bearerTokenProblem(loadEnv({ path: file }).OPENROUTER_API_KEY) ?? "");
+      expect(warning(file)).toBe(openrouterKeyProblem(loadEnv({ path: file }).OPENROUTER_API_KEY) ?? "");
     }
-    expect(warning(envFile("OPENROUTER_API_KEY=sk-or-v1-abc\r\n"))).toBe("");
+    expect(warning(envFile(`OPENROUTER_API_KEY=${KEY}\r\n`))).toBe("");
   });
 
+  // Every way the paste has been seen or can arrive: whole markers, markers
+  // missing their ESC, markers missing ESC and bracket (the box's own case),
+  // quotes around the value, and a CRLF line end.
+  const pasted = [
+    `\u001b[200~${KEY}\u001b[201~\r`,
+    `[200~${KEY}[201~`,
+    `200~${KEY}`,
+    `"200~${KEY}"`,
+    `'${KEY}201~'`,
+  ];
   for (const prefix of ["", "export ", "  ", "  export  "]) {
-    it(`repairs a pasted key on a ${JSON.stringify(prefix)} line and leaves the others alone`, () => {
-      const file = envFile(`A=1\n${prefix}OPENROUTER_API_KEY=\u001b[200~sk-or-v1-abc\u001b[201~\r\nB=x y\n`);
-      expect(warning(file)).not.toBe("");
-      const fixed = spawnSync("sh", ["-c", `${repair} "$1"`, "sh", file], { encoding: "utf8" });
-      expect(fixed.status).toBe(0);
-      expect(fs.readFileSync(file, "utf8")).toBe("A=1\nOPENROUTER_API_KEY=sk-or-v1-abc\nB=x y\n");
-      expect(warning(file)).toBe("");
-    });
+    for (const value of pasted) {
+      it(`repairs ${JSON.stringify(value.replace(KEY, "<key>"))} on a ${JSON.stringify(prefix)} line and leaves the others alone`, () => {
+        const file = envFile(`A=1\n${prefix}OPENROUTER_API_KEY=${value}\nB="x y"\n`);
+        expect(warning(file)).not.toBe("");
+        const fixed = spawnSync("sh", ["-c", `${repair} "$1"`, "sh", file], { encoding: "utf8" });
+        expect(fixed.status).toBe(0);
+        expect(fs.readFileSync(file, "utf8")).toBe(`A=1\nOPENROUTER_API_KEY=${KEY}\nB="x y"\n`);
+        expect(warning(file)).toBe("");
+      });
+    }
   }
 });
