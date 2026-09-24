@@ -101,8 +101,6 @@ import { NO_REPO as REPO_NONE, SESSION_REPOS } from "../session-host/session-con
 // What a box run may do. `Task` is in it BECAUSE a box run may spawn its own
 // children on the box, which is the point of moving the work here. Reading and
 // writing are in it because a run that cannot edit cannot land work.
-// WebFetch and WebSearch are not: each account slot's settings deny them
-// (worker/setup.sh), and a deny outranks this list anyway.
 //
 // EXPORTED FOR THE SESSION DAEMON'S RUNNER STEPS. A runner step is a box run
 // launched in process (worker/session-host/session-host.mjs launchStep), and

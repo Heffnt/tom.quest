@@ -369,19 +369,6 @@ const without = (entries, command) => Array.isArray(entries) ? entries.flatMap((
   const hooks = entry.hooks.filter((hook) => !legacy(hook) && !managed(hook));
   return hooks.length === 0 ? [] : [{ ...entry, hooks }];
 }) : [];
-if (process.env.INCLUDE_CONTEXT_HOOK === "1") {
-  const sessionStart = without(settings.hooks.SessionStart, contextCommand);
-  sessionStart.push({ matcher: "startup|resume|compact", hooks: [{ type: "command", command: contextCommand }] });
-  settings.hooks.SessionStart = sessionStart;
-}
-for (const event of events) {
-  const entries = without(settings.hooks[event], runCommand);
-  entries.push({
-    ...(event === "SessionStart" ? { matcher: "startup|resume|compact" } : {}),
-    hooks: [{ type: "command", command: runCommand, timeout: 5 }],
-  });
-  settings.hooks[event] = entries;
-}
 // WHAT A BOX AGENT DOES NOT USE, because Jarvis already does it (Tom,
 // 2026-09-22: "I want to handle all context related stuff in jarvis."). The
 // flag that installs the context hook is the one that marks a Claude slot, and
@@ -411,15 +398,27 @@ for (const event of events) {
 // The Agent SDK query in worker/session-host/session.mjs passes no
 // settingSources, so it loads these user settings as the CLI does.
 if (process.env.INCLUDE_CONTEXT_HOOK === "1") {
+  const sessionStart = without(settings.hooks.SessionStart, contextCommand);
+  sessionStart.push({ matcher: "startup|resume|compact", hooks: [{ type: "command", command: contextCommand }] });
+  settings.hooks.SessionStart = sessionStart;
   settings.autoMemoryEnabled = false;
   settings.autoDreamEnabled = false;
   settings.disableBundledSkills = true;
   settings.disableWorkflows = true;
   settings.disableClaudeAiConnectors = true;
   const denied = ["WebSearch", "WebFetch", "mcp__*"];
+  // Kept: a fresh slot has no permissions key, and a non-object one would drop the deny rules without an error (JSON.stringify discards a key set on an array).
   if (!settings.permissions || Array.isArray(settings.permissions) || typeof settings.permissions !== "object") settings.permissions = {};
   const deny = Array.isArray(settings.permissions.deny) ? settings.permissions.deny : [];
   settings.permissions.deny = [...deny, ...denied.filter((rule) => !deny.includes(rule))];
+}
+for (const event of events) {
+  const entries = without(settings.hooks[event], runCommand);
+  entries.push({
+    ...(event === "SessionStart" ? { matcher: "startup|resume|compact" } : {}),
+    hooks: [{ type: "command", command: runCommand, timeout: 5 }],
+  });
+  settings.hooks[event] = entries;
 }
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
