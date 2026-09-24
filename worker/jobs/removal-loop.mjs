@@ -47,8 +47,8 @@
 // THIS JOB IS NOT A SESSION AND MERGES DIRECTLY. The session daemon's merge
 // fence (worker/session-host/merge-gate.mjs) stands between a
 // session's Bash tool and `gh pr merge`; this is a cron job, and the fence it
-// answers to is the same three checks, read through GET /tts/merge-gate before
-// it merges and re-run by POST /tts/merge after. It adds no fourth check and
+// answers to is the same gate, read through GET /tts/merge-gate before it
+// merges and re-run by POST /tts/merge after. It adds no fourth check and
 // bypasses none.
 //
 // WHY A NEW DAILY JOB and not the weekly simplification pass run daily: the

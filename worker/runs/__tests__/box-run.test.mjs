@@ -37,7 +37,7 @@ function fakeCli(tag) {
     // The two registration variables are recorded beside argv because they are
     // the whole of what box-run.mjs hands a child about the record it belongs
     // to, and the child is the only place they can be observed.
-    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, environment: process.env.TTS_RUN_ENVIRONMENT ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, runnerKey: process.env.TURING_RUNNER_KEY ?? null });',
+    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, environment: process.env.TTS_RUN_ENVIRONMENT ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, runnerKey: process.env.TURING_RUNNER_KEY ?? null, openrouterKey: process.env.OPENROUTER_API_KEY ?? null });',
     'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started }));',
     'let stdin = "";',
     'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
@@ -190,6 +190,35 @@ describe("box-run stdout contract", () => {
     expect(argv[argv.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
     const codexRun = fs.readFileSync(path.resolve("scripts/codex-run.mjs"), "utf8");
     expect(codexRun).toContain('const DEFAULT_MODEL = "gpt-5.6-sol"');
+  });
+
+  // An openrouter/<vendor>/<model> name reaches tts-codex whole: codex-run.mjs
+  // is the one reader of the prefix. The key never rides along from here; the
+  // scrub drops it and codex-run.mjs reads it from the env file itself.
+  it("hands an OpenRouter model to Codex whole, without the key", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--repo", "none", "--cli", "codex", "--model", "openrouter/deepseek/deepseek-v4-flash"], {
+      stateDir,
+      env: { TTS_CODEX_BIN: fakeCli("codex-openrouter"), FAKE_RECORD: record, OPENROUTER_API_KEY: "sk-or-test" },
+    });
+    expect(result.status).toBe(0);
+    const { argv, openrouterKey } = JSON.parse(fs.readFileSync(record, "utf8"));
+    expect(argv[argv.indexOf("--model") + 1]).toBe("openrouter/deepseek/deepseek-v4-flash");
+    expect(openrouterKey).toBeNull();
+  });
+
+  it("refuses an OpenRouter model on the Claude CLI and starts nothing", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--repo", "none", "--model", "openrouter/deepseek/deepseek-v4-flash"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("claude-openrouter"), FAKE_RECORD: record },
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("runs through Codex; pass --cli codex");
+    expect(fs.existsSync(record)).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, "work"))).toBe(false);
   });
 
   it("refuses --runner, the flag's old spelling", () => {
@@ -867,6 +896,12 @@ describe("box-run model ceiling", () => {
     const again = await entry.boxRun({ prompt: "p", env, model: "claude-fable-5-1", outputFormat: "json", registration: null, slotWaitMs: 5_000 });
     expect(again.text).toBe("judged");
     expect(argvs(log).map(modelOf)).toEqual(["claude-fable-5-1", "opus"]);
+    // And the entry that takes no slot, which the evals pass awaits.
+    fs.rmSync(log);
+    models.markFableAvailable(env.RUN_SWEEP_STATE_DIR);
+    const noSlot = await entry.boxRunNoSlot({ prompt: "p", env, model: "fable", outputFormat: "json", registration: null });
+    expect(noSlot.text).toBe("judged");
+    expect(argvs(log).map(modelOf)).toEqual(["fable", "opus"]);
   });
 
   it("leaves Fable available after a failure that is not a limit", () => {

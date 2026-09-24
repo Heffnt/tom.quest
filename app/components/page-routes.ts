@@ -27,6 +27,8 @@ export const PAGES: Page[] = [
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "runs", title: "Runs", blurb: "TTS — every agent run, at every depth", priority: 9, visibility: "tom" },
   { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
+  { slug: "intent", title: "Intent", blurb: "Every line of his intent, and what it rests on", priority: 8, visibility: "tom" },
+  { slug: "vocabulary", title: "Vocabulary", blurb: "Every word TTS uses, and where it is defined", priority: 7, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5, visibility: "tom" },
   { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5, visibility: "tom" },

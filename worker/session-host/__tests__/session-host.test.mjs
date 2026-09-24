@@ -156,6 +156,16 @@ describe("codex usage read (finding 3)", () => {
     const readFn = between(hostSource, "async function readCodexUsage() {", "function refreshCodexUsage() {");
     expect(readFn).toMatch(/child\.stdin\.on\("error", \(\) => \{/);
   });
+
+  // The shape is parsed in ONE place, parseCodexRateLimits (codex-bin.mjs,
+  // exercised in codex-bin.test.mjs); the daemon adds readAt and nothing
+  // else. A positional read of .primary/.secondary here is the bug that
+  // blinded the weekly cap under codex-cli 0.153.
+  it("readCodexUsage hands the answer to parseCodexRateLimits", () => {
+    const readFn = between(hostSource, "async function readCodexUsage() {", "function refreshCodexUsage() {");
+    expect(readFn).toMatch(/\.\.\.parseCodexRateLimits\(result\?\.rateLimits\),\s*\n\s*readAt: Date\.now\(\),/);
+    expect(readFn).not.toMatch(/\.primary|\.secondary|usedPercent/);
+  });
 });
 
 // Finding 4: the warm-up runs in the background, once per CODEX_HOME, only
@@ -194,7 +204,9 @@ describe("codex warm-up (finding 4)", () => {
 // Finding 5: the binary/spawn shim has one home.
 describe("codex binary has one home (finding 5)", () => {
   it("session-host.mjs and codex-query.mjs import from codex-bin.mjs", () => {
-    expect(hostSource).toMatch(/import \{ CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex \} from "\.\/codex-bin\.mjs";/);
+    expect(hostSource).toMatch(
+      /import \{\s*CODEX_BIN,\s*codexArgs,\s*parseCodexRateLimits,\s*resolveCodexBin,\s*spawnCodex,?\s*\} from "\.\/codex-bin\.mjs";/,
+    );
     expect(hostSource).not.toMatch(/process\.env\.CODEX_BIN/);
     expect(hostSource).not.toMatch(/function spawnCodex/);
     const query = read("codex-query.mjs");

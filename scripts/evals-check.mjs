@@ -115,7 +115,103 @@ export const WATCHED_PATHS = [
   // runs, finds nothing watched, and writes a passing unaffected row for a
   // change to the set itself.
   "evals/triggers/**",
+  // THE TWO JOBS WHOSE PROMPT NOTHING WATCHED. `checkin` builds its prompt from
+  // worker/jobs/runner-checkin.mjs and `learning` from worker/jobs/nightly.mjs
+  // and worker/jobs/learning-ground.mjs (worker/jobs/evals.mjs JOBS), and none
+  // of the three was on this list — so a change to the check-in judge's own
+  // prompt, or to the learning step's, was `unaffected`, wrote a passing row
+  // with nothing scored, and merged with the nine items that exist to score it
+  // never run. JOB_INPUTS below is where the mapping lives; these entries are
+  // that mapping folded back in, and evals-check.test.mjs pins the two equal.
+  "worker/jobs/runner-checkin.mjs",
+  "worker/jobs/nightly.mjs",
+  "worker/jobs/learning-ground.mjs",
 ];
+
+/**
+ * What every job's prompt reads, whatever the job is: the prelude assembler and
+ * what it assembles, the rules files a run is given, and the set itself.
+ *
+ * A change to one of these moves every item, so a run that sees one regenerates
+ * everything. They are the reason the per-job cut below is a saving on ORDINARY
+ * pull requests rather than on all of them.
+ */
+export const SHARED_PROMPT_INPUTS = [
+  "AGENTS.md",
+  "**/AGENTS.md",
+  "CLAUDE.md",
+  "**/CLAUDE.md",
+  "model-of-tom/**",
+  "scripts/prelude.mjs",
+  "scripts/skills.mjs",
+  "scripts/publish-skills.mjs",
+  "worker/jobs/context-relevance.mjs",
+  "worker/jobs/markdown-sections.mjs",
+  "worker/jobs/skill-router.mjs",
+  "evals/golden/**",
+  "evals/tasks/**",
+  "evals/triggers/**",
+];
+
+/**
+ * The files ONE JOB'S PROMPT READS, beyond the shared ones.
+ *
+ * WHAT THIS BUYS. WATCHED_PATHS answers one question — is this branch worth a
+ * run at all — and its answer is all or nothing: a branch touching
+ * worker/jobs/plan-graphs.mjs regenerates the nine check-in items and the two
+ * learning items too, though neither job reads that file and neither result can
+ * differ. Every one of those is a live model call on each side of the
+ * comparison. This table is the same policy asked per item, so a run pays for
+ * the items its diff can actually move and carries the rest over from the base
+ * row unchanged.
+ *
+ * IT IS A SUBSET OF WATCHED_PATHS AND MUST STAY ONE. WATCHED_PATHS decides
+ * whether anything runs; if a path were here and not there, the branch would be
+ * called unaffected and this table would never be consulted. evals-check.test.mjs
+ * fails on a path here that is not watched.
+ *
+ * A JOB WITH NO ROW REGENERATES ON EVERY AFFECTED RUN. That is the safe
+ * direction and it is deliberate: a job added to worker/jobs/evals.mjs without
+ * a row here costs calls, where a row quietly missing a module would carry a
+ * stale result over a change that did move it.
+ */
+export const JOB_INPUTS = {
+  prepare: ["worker/jobs/plan-graphs.mjs", "convex/ttsCompose.ts", "convex/ttsShared.ts"],
+  "code-brief": ["worker/jobs/plan-graphs.mjs", "worker/jobs/context-relevance.mjs"],
+  "batch-plan": ["worker/jobs/plan-graphs.mjs", "worker/jobs/weekly.mjs"],
+  explanation: [],
+  run: ["worker/jobs/skill-router.mjs", "worker/bin/tts-ask", "worker/jobs/delegate.mjs"],
+  learning: ["worker/jobs/nightly.mjs", "worker/jobs/learning-ground.mjs"],
+  checkin: ["worker/jobs/runner-checkin.mjs"],
+};
+
+/**
+ * The job names a diff can move, or null when it moves all of them.
+ *
+ * `null` is the answer to a shared input changing and to a changed list nobody
+ * supplied — a weekly run, a run by hand — and it means "regenerate
+ * everything". A caller that read it as "nothing" would carry every base result
+ * over a change that moved them all, which is the one way this shortcut could
+ * open the gate on an unmeasured tree, so the three-valued answer is never
+ * collapsed here.
+ */
+export function jobsAffectedBy(changed) {
+  if (!Array.isArray(changed)) return null;
+  const paths = changed
+    .filter((path) => typeof path === "string")
+    .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""));
+  if (paths.some((path) => SHARED_PROMPT_INPUTS.some((pattern) => matchesPattern(path, pattern)))) return null;
+  // A watched path that names no job is a file some job may read through a
+  // route this table does not describe. It is not a shared input and it is not
+  // one job's, so the honest answer is the unnarrowed one.
+  const named = new Set(Object.values(JOB_INPUTS).flat());
+  const watched = paths.filter((path) => matchesWatched(path));
+  if (watched.some((path) => !named.has(path))) return null;
+  return Object.entries(JOB_INPUTS)
+    .filter(([, inputs]) => inputs.some((input) => watched.includes(input)))
+    .map(([job]) => job)
+    .sort();
+}
 
 /** Where a golden item lives. A change that ships one of these is the thing
  *  the coverage rule asks for. */
@@ -409,6 +505,42 @@ export function gate(head, base, { changed, prBody } = {}) {
   };
 }
 
+/**
+ * How long a run took and what it spent that on, when the row says.
+ *
+ * WHY THE CHECK PRINTS IT AT ALL. The pull-request wait is 75 minutes
+ * (POLL_TIMEOUT_MS) and runs measured at 20 to 31 minutes were the reason it is
+ * that long. A duration with no breakdown beside it cannot be acted on — a slow
+ * run because thirty items were regenerated and a slow run because one call
+ * hung are the same number — so the four counts travel with it. They are a
+ * partition of the items the run was handed.
+ *
+ * REPORTED, NEVER GATED, and deliberately not a threshold yet. A check that
+ * failed a merge on a slow box would fail it on a busy afternoon; what a
+ * threshold needs first is a few weeks of this line on real rows, which is what
+ * it is here to produce.
+ */
+export const SLOW_RUN_MS = 45 * 60 * 1000;
+
+export function costLine(head) {
+  const timing = head?.timing;
+  if (timing === null || typeof timing !== "object" || typeof timing.durationMs !== "number") return [];
+  const minutes = Math.round(timing.durationMs / 60_000);
+  const spent = [
+    `${timing.regenerated ?? 0} regenerated`,
+    `${timing.cached ?? 0} carried over from the base`,
+    `${timing.unreplayable ?? 0} unreplayable`,
+    `${timing.skipped ?? 0} skipped`,
+  ].join(", ");
+  const slow = timing.durationMs > SLOW_RUN_MS
+    ? `  SLOW: over ${Math.round(SLOW_RUN_MS / 60_000)} minutes, against a ${Math.round(POLL_TIMEOUT_MS / 60_000)}-minute wait.`
+    : null;
+  return [
+    `  ${minutes} min at ${timing.concurrency ?? 1} at a time, ${head.calls ?? 0} calls: ${spent}.`,
+    ...(slow === null ? [] : [slow]),
+  ];
+}
+
 /** What Tom sees in the check's log. A clean check is one line. */
 export function report(head, base, verdict) {
   if (head.superseded !== true && (head.error === true || (typeof head.error === "string" && head.error !== ""))) {
@@ -478,10 +610,12 @@ export function report(head, base, verdict) {
     verdict.unconfirmed.length === 0 && verdict.fixed.length === 0 &&
     !verdict.goldenExcuse && (verdict.mismatchDetail?.new?.length ?? 0) === 0 &&
     (verdict.mismatchDetail?.removed?.length ?? 0) === 0;
+  const cost = costLine(head);
   if (verdict.ok && quiet) {
-    return [`${setLine}: ${head.pass} pass, ${head.fail} fail, ${notes.join(", ")}.`];
+    return [`${setLine}: ${head.pass} pass, ${head.fail} fail, ${notes.join(", ")}.`, ...cost];
   }
   lines.push(setLine);
+  lines.push(...cost);
   lines.push(`  head: ${head.pass} pass, ${head.fail} fail, ${flaky} flaky` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
   if (verdict.noBaseline) lines.push(`  no baseline for the base commit; reporting only`);
   if (verdict.mismatch) {

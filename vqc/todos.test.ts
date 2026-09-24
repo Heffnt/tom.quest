@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest";
 import { ARTICLE_OR_SPEC } from "./cites";
 
 // Shape guard for vqc/todos.yaml (the contract is documented in the file's
-// header). Runs in CI via test:turing — a malformed entry breaks the build,
-// exactly as in the CMT repo this convention comes from.
+// header). Runs in CI with every other test — a malformed entry breaks the
+// build, exactly as in the CMT repo this convention comes from.
 
 type Entry = {
   id: string;

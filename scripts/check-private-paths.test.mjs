@@ -52,9 +52,15 @@ describe("private path guardrail", () => {
   // single real term into this repository, which is the point of the check.
   const CATEGORY_LINES = ["categories: [alpha, beta-gamma, delta]", "categories: [epsilon, zeta, eta]"];
 
+  // The stub is keyed on the BASENAME, not on the fixture root. `cwd` reaches
+  // the check as `path.resolve(cwd, file)`, and "C:/public" is an absolute path
+  // only on Windows: on Linux it resolves under the repository instead, the
+  // slice cut the wrong prefix off, every read threw ENOENT and the check
+  // answered "no findings" for fixtures that all carry one. The test passed on
+  // Tom's laptop and failed everywhere else.
   const findingsFor = (bodies) => categoryContentFindings(Object.keys(bodies), CATEGORY_LINES, {
     readFile: (file) => {
-      const body = bodies[file.replaceAll("\\", "/").slice("C:/public/".length)];
+      const body = bodies[file.replaceAll("\\", "/").split("/").pop()];
       if (body === undefined) throw new Error("ENOENT");
       return body;
     },
@@ -130,7 +136,8 @@ describe("private path guardrail", () => {
 
   const operateFor = (bodies) => operateContentFindings(Object.keys(bodies), OPERATE_AS_WINDOWS, {
     readFile: (file) => {
-      const body = bodies[file.replaceAll(String.fromCharCode(92), "/").slice("C:/public/".length)];
+      // Keyed on the basename, for the reason findingsFor above is.
+      const body = bodies[file.replaceAll(String.fromCharCode(92), "/").split("/").pop()];
       if (body === undefined) throw new Error("ENOENT");
       return body;
     },

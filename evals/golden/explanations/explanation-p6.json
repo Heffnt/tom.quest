@@ -6,6 +6,7 @@
   "label": "landed",
   "sentence": "Group 1 and 2 make sense to me, but I want more information on how Exactly The trigger function changes AUROC for the other five methods. Don't assume that what is written in the file I gave you is true and verify things for yourself.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 2 tool calls the agent made after Tom's request (Read), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-08-09",
   "input": {
     "topic": "How trigger logic changes AUROC",

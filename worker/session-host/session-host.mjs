@@ -35,7 +35,13 @@ import {
 } from "./lib.mjs";
 import { Session, gitErrorText } from "./session.mjs";
 import { FABLE_PROBE_INTERVAL_MS, fableProbeDue, readFableState } from "../runs/models.mjs";
-import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
+import {
+  CODEX_BIN,
+  codexArgs,
+  parseCodexRateLimits,
+  resolveCodexBin,
+  spawnCodex,
+} from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
 import { reapUnlisted, removeOrphanWorkdirs, removeWorkdir } from "./workdir.mjs";
@@ -171,12 +177,12 @@ async function warmUpCodex() {
 
 // Codex account usage for the heartbeat, read TOKEN-FREE: `codex app-server`
 // is a JSON-RPC server over stdio, and account/rateLimits/read answers from
-// the account's cached limits without spending a model call. Verified against
-// codex-cli 0.130 on 2026-09-04: result.rateLimits.primary is the 5-hour
-// window (windowDurationMins 300) and .secondary the weekly one (10080), each
-// { usedPercent, windowDurationMins, resetsAt } with resetsAt in EPOCH
-// SECONDS. The scheduler gates new Codex sessions on the weekly figure
-// (CODEX_WEEKLY_CAP_PERCENT in ttsShared); the 5-hour one is recorded only.
+// the account's cached limits without spending a model call. The answer's
+// result.rateLimits is parsed by parseCodexRateLimits (codex-bin.mjs, which
+// says which window is which and why NOT by position). The scheduler gates
+// new Codex sessions on the weekly figure (CODEX_WEEKLY_CAP_PERCENT in
+// ttsShared); the 5-hour one is recorded only, and absent when the account
+// reports no such window.
 //
 // At most once per 5 minutes, in the BACKGROUND: refreshCodexUsage starts a
 // read and returns at once, so a hung app-server never holds the poll loop
@@ -192,16 +198,11 @@ async function warmUpCodex() {
 const CODEX_USAGE_INTERVAL_MS = 5 * 60 * 1000;
 const CODEX_USAGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
 const CODEX_USAGE_TIMEOUT_MS = 15_000;
-let codexUsage; // { weeklyUsedPercent, fiveHourUsedPercent, weeklyResetsAt?, readAt }
+let codexUsage; // { weeklyUsedPercent, fiveHourUsedPercent?, weeklyResetsAt?, readAt }
 let codexUsageNextAt = 0; // earliest start of the next read
 let codexUsageFailures = 0; // consecutive failures — the backoff exponent
 let codexUsageInFlight = false; // two reads never overlap
 let codexUsageWarned = false; // log the failure ONCE, not on every retry
-
-function toEpochMs(value) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return value < 1e12 ? value * 1000 : value; // seconds → ms
-}
 
 async function readCodexUsage() {
   const child = spawnCodex(["app-server"], {
@@ -262,17 +263,8 @@ async function readCodexUsage() {
   });
   try {
     const result = await done;
-    const limits = result?.rateLimits;
-    const weekly = limits?.secondary;
-    const fiveHour = limits?.primary;
-    if (typeof weekly?.usedPercent !== "number" || typeof fiveHour?.usedPercent !== "number") {
-      throw new Error(`unexpected rateLimits shape: ${JSON.stringify(limits).slice(0, 200)}`);
-    }
-    const weeklyResetsAt = toEpochMs(weekly.resetsAt);
     return {
-      weeklyUsedPercent: weekly.usedPercent,
-      fiveHourUsedPercent: fiveHour.usedPercent,
-      ...(weeklyResetsAt !== undefined ? { weeklyResetsAt } : {}),
+      ...parseCodexRateLimits(result?.rateLimits),
       readAt: Date.now(),
     };
   } finally {

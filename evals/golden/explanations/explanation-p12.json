@@ -6,6 +6,7 @@
   "label": "landed",
   "sentence": "In tom.quest/boolback, I have a C-J-R x model view, which specifies exactly which experiments I want to use for this analysis. There are five models and three experimental setups, and for each of those 15 combinations, I trained a model with my entire canonical function enumeration for arity 1, 2, and 3. They all use the same experimental setup outside of that. Please rerun the analysis that you have done so far with this updated set of experiments.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 5 tool calls the agent made after Tom's request (Bash, Edit), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-07-17",
   "input": {
     "topic": "Arity does not hurt detection",

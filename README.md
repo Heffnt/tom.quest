@@ -88,7 +88,7 @@ All env vars live in `secrets/next.env` (Vercel-side) and `secrets/convex.env` (
 | `NEXT_PUBLIC_CONVEX_SITE_URL` | Convex prod HTTP actions URL |
 | `CONVEX_DEPLOY_KEY` | Convex deploy key |
 | `SENTRY_AUTH_TOKEN` | Sentry source-maps auth |
-| `OPENCLAW_GATEWAY_URL`, `JARVIS_GATEWAY_PASSWORD` | Jarvis socket config |
+| `OPENCLAW_GATEWAY_URL`, `JARVIS_GATEWAY_PASSWORD` | OpenClaw gateway socket config, for the retired `/jarvis` page |
 | `TURING_API_URL`, `TURING_API_KEY` | Turing API discovery + auth |
 | Optional: `JARVIS_DEVICE_{ID,PUBLIC_KEY,PRIVATE_KEY}` | Shared Jarvis device identity |
 | Optional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `CODEX_AUTH_JSON` | Canvas page LLM credentials |
