@@ -8,6 +8,7 @@ import {
   AUDIT_REMOVAL_NOTE_MAX_CHARS,
   AUDIT_TEXT_MAX_BYTES,
   AUDIT_VERDICT,
+  EVALS_REQUIRED_FOR_MERGE,
   MERGE,
   TESTS_RUN,
   auditChunkNote,
@@ -41,6 +42,15 @@ const post = (t: TestConvex<typeof schema>, path: string, payload: unknown, key 
 
 const get = (t: TestConvex<typeof schema>, path: string) =>
   t.fetch(path, { method: "GET", headers: { "X-TTS-Key": KEY } });
+
+/** What `missing` gains from an evals check that did not pass: "evals" while
+ *  EVALS_REQUIRED_FOR_MERGE is true, nothing while it is false (Tom,
+ *  2026-09-24). The evals arm's own tests read the check's `passed` and `why`,
+ *  which are the same either way, so flipping the constant needs no test edit. */
+const EVALS_IF_REQUIRED: string[] = EVALS_REQUIRED_FOR_MERGE ? ["evals"] : [];
+
+const evalsCheckOf = (gate: { checks: { name: string; passed: boolean; why: string }[] }) =>
+  gate.checks.find((c) => c.name === "evals")!;
 
 /** A row of one kind against one commit, written straight in: these three are
  *  the gate's whole input, and a test that seeds them says exactly what the
@@ -255,8 +265,9 @@ describe("the merge gate's three checks", () => {
     expect(response.status).toBe(409);
     const answer = await response.json();
     expect(answer.ok).toBe(false);
-    expect(answer.gate.missing).toEqual(["tests", "audit", "evals"]);
-    expect(answer.error).toContain("tests, audit, evals");
+    expect(answer.gate.missing).toEqual(["tests", "audit", ...EVALS_IF_REQUIRED]);
+    expect(answer.error).toContain(["tests", "audit", ...EVALS_IF_REQUIRED].join(", "));
+    expect(answer.gate.checks.map((c: { name: string }) => c.name)).toEqual(["tests", "audit", "evals"]);
     expect(await mergeRows(t)).toHaveLength(0);
   });
 
@@ -305,7 +316,7 @@ describe("the merge gate's three checks", () => {
     );
   });
 
-  it("refuses when only the EVALS are missing, and when they found a regression", async () => {
+  it.runIf(EVALS_REQUIRED_FOR_MERGE)("refuses when only the EVALS are missing, and when they found a regression", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const missing = convex();
     await greenTests(missing);
@@ -323,6 +334,49 @@ describe("the merge gate's three checks", () => {
     );
   });
 
+  // Tom, 2026-09-24: "evals seem to be broken rn so lets remove that
+  // requirement for merging for now until I have the time to personally look
+  // into it." The evals check is still answered and still reported; it no
+  // longer shuts the gate.
+  it.runIf(!EVALS_REQUIRED_FOR_MERGE)("records a merge on the tests and the audit alone, and still reports the evals", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const missing = convex();
+    await greenTests(missing);
+    await approvedAudit(missing);
+    const unscored = await mergeReport(missing);
+    expect(unscored.status).toBe(200);
+    const answer = await unscored.json();
+    expect(answer.gate).toMatchObject({ allowed: true, missing: [] });
+    expect(evalsCheckOf(answer.gate)).toEqual({
+      name: "evals",
+      passed: false,
+      why: `no evals run scored ${SHA.slice(0, 7)}`,
+    });
+
+    const regressed = convex();
+    await greenTests(regressed);
+    await approvedAudit(regressed);
+    await seedFact(regressed, EVALS_RUN, { regressions: 2, pass: 38, items: 40 });
+    expect((await mergeReport(regressed)).status).toBe(200);
+    const scheduled = await regressed.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendDecision"),
+      ),
+    );
+    // The #tts-decisions merge line carries the evals answer it merged past.
+    expect((scheduled[0].args[0] as { reason: string }).reason).toContain("2 regressions");
+  });
+
+  it.runIf(!EVALS_REQUIRED_FOR_MERGE)("still refuses when the tests or the audit are missing, whatever the evals say", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await cleanEvals(t);
+    const response = await mergeReport(t);
+    expect(response.status).toBe(409);
+    expect((await response.json()).gate).toMatchObject({ allowed: false, missing: ["audit"] });
+  });
+
   // NULL IS NOT ZERO, and this is the pin. worker/jobs/evals.mjs failedRun and
   // its uncompared-head path both stamp `regressions: null`: a head compared
   // to nothing has no number of regressions. A gate that read that as "no
@@ -334,7 +388,8 @@ describe("the merge gate's three checks", () => {
     await approvedAudit(t);
     await seedFact(t, EVALS_RUN, { regressions: null, goldenCoverage: true, pass: 40, items: 40 });
     const answer = await (await mergeReport(t)).json();
-    expect(answer.gate.missing).toEqual(["evals"]);
+    expect(evalsCheckOf(answer.gate).passed).toBe(false);
+    expect(answer.gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(answer.gate.checks.find((c: { name: string }) => c.name === "evals").why).toContain(
       "an unreadable number of regressions",
     );
@@ -347,7 +402,8 @@ describe("the merge gate's three checks", () => {
     await approvedAudit(t);
     await seedFact(t, EVALS_RUN, { regressions: null, errored: 3, goldenCoverage: true, pass: 26, items: 29 });
     const answer = await (await mergeReport(t)).json();
-    expect(answer.gate.missing).toEqual(["evals"]);
+    expect(evalsCheckOf(answer.gate).passed).toBe(false);
+    expect(answer.gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(answer.gate.checks.find((c: { name: string }) => c.name === "evals").why)
       .toBe(`the evals run at ${SHA.slice(0, 7)} had 3 runner errors`);
   });
@@ -362,7 +418,7 @@ describe("the merge gate's three checks", () => {
     expect((await (await mergeReport(t)).json()).gate.missing).toEqual([
       "tests",
       "audit",
-      "evals",
+      ...EVALS_IF_REQUIRED,
     ]);
     expect((await mergeReport(t, { sha: other })).status).toBe(200);
   });
@@ -381,22 +437,25 @@ describe("the evals arm's golden-coverage clause", () => {
     await approvedAudit(t);
     await seedFact(t, EVALS_RUN, { regressions: 0, pass: 40, items: 40, ...coverage });
     const answer = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    const evals = evalsCheckOf(answer);
     return {
       allowed: answer.allowed as boolean,
       missing: answer.missing as string[],
-      why: (answer.checks as { name: string; why: string }[]).find((c) => c.name === "evals")!.why,
+      passed: evals.passed,
+      why: evals.why,
     };
   }
 
   it("opens on no regression AND coverage true", async () => {
     const gate = await gateWith({ goldenCoverage: true });
+    expect(gate.passed).toBe(true);
     expect(gate.allowed).toBe(true);
     expect(gate.why).toContain("no regression");
   });
 
   it("denies a catastrophic eval before regressions, coverage, or unaffected can open it", async () => {
     const gate = await gateWith({ error: true, reason: "runner failed: Not logged in", regressions: 0, goldenCoverage: "not-required", unaffected: true });
-    expect(gate).toMatchObject({ allowed: false, missing: ["evals"] });
+    expect(gate).toMatchObject({ passed: false, allowed: !EVALS_REQUIRED_FOR_MERGE, missing: EVALS_IF_REQUIRED });
     expect(gate.why).toBe(`the evals could not run at ${SHA.slice(0, 7)}: runner failed: Not logged in`);
   });
 
@@ -407,6 +466,7 @@ describe("the evals arm's golden-coverage clause", () => {
   // written, and a pure-code pull request could never merge.
   it("opens on coverage not-required, and says the evals are unaffected", async () => {
     const gate = await gateWith({ goldenCoverage: "not-required", unaffected: true });
+    expect(gate.passed).toBe(true);
     expect(gate.allowed).toBe(true);
     expect(gate.missing).toEqual([]);
     expect(gate.why).toBe(`the evals are unaffected at ${SHA.slice(0, 7)}: no watched path changed`);
@@ -432,7 +492,8 @@ describe("the evals arm's golden-coverage clause", () => {
       });
     });
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(gate.allowed).toBe(false);
+    expect(evalsCheckOf(gate).passed).toBe(false);
+    expect(gate.allowed).toBe(!EVALS_REQUIRED_FOR_MERGE);
     expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
       .toBe(`the evals found 1 regression at ${SHA.slice(0, 7)}`);
   });
@@ -444,6 +505,7 @@ describe("the evals arm's golden-coverage clause", () => {
     await approvedAudit(t);
     await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(evalsCheckOf(gate).passed).toBe(true);
     expect(gate.allowed).toBe(true);
   });
 
@@ -467,8 +529,9 @@ describe("the evals arm's golden-coverage clause", () => {
     await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });
     await observeEvalsProtocol(t);
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(gate.allowed).toBe(false);
-    expect(gate.missing).toEqual(["evals"]);
+    expect(evalsCheckOf(gate).passed).toBe(false);
+    expect(gate.allowed).toBe(!EVALS_REQUIRED_FOR_MERGE);
+    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
       .toBe(`the evals are being scored again at ${SHA.slice(0, 7)}`);
   });
@@ -492,7 +555,8 @@ describe("the evals arm's golden-coverage clause", () => {
     });
     await observeEvalsProtocol(t, EVALS_PROTOCOL - 1);
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(gate.allowed).toBe(false);
+    expect(evalsCheckOf(gate).passed).toBe(false);
+    expect(gate.allowed).toBe(!EVALS_REQUIRED_FOR_MERGE);
     expect(gate.checks.find((c: { name: string }) => c.name === "evals").why).toBe(
       `the box's evals runner is at protocol ${EVALS_PROTOCOL - 1}; ` +
         `this door needs ${EVALS_PROTOCOL} — run worker/setup.sh on the box`,
@@ -503,13 +567,15 @@ describe("the evals arm's golden-coverage clause", () => {
   // field is a run that did not answer, and the gate denies it.
   it("denies any other string on the field", async () => {
     const gate = await gateWith({ goldenCoverage: "not required" });
-    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.passed).toBe(false);
+    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.why).toContain("did not check golden coverage");
   });
 
   it("denies on coverage false, and says a watched file changed with no item", async () => {
     const gate = await gateWith({ goldenCoverage: false });
-    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.passed).toBe(false);
+    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.why).toBe(
       `the evals run at ${SHA.slice(0, 7)} changed a watched context file and shipped no golden item`,
     );
@@ -521,7 +587,8 @@ describe("the evals arm's golden-coverage clause", () => {
   // command that fixes either.
   it("denies on coverage null — the run was never asked about a diff", async () => {
     const gate = await gateWith({ goldenCoverage: null });
-    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.passed).toBe(false);
+    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.why).toBe(
       `the evals run did not check golden coverage — re-run it: ` +
         `node /opt/tts/evals.mjs --repo ${REPO} --sha ${SHA} --force`,
@@ -530,7 +597,8 @@ describe("the evals arm's golden-coverage clause", () => {
 
   it("denies a run that predates the field, with the same message", async () => {
     const gate = await gateWith({});
-    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.passed).toBe(false);
+    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.why).toContain("did not check golden coverage");
     expect(gate.why).toContain("--force");
   });
@@ -563,8 +631,9 @@ describe("the evals arm's golden-coverage clause", () => {
     await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED, answersRequestAt: 49 });
     await observeEvalsProtocol(t, EVALS_PROTOCOL + 1);
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(gate.allowed).toBe(false);
-    expect(gate.missing).toEqual(["evals"]);
+    expect(evalsCheckOf(gate).passed).toBe(false);
+    expect(gate.allowed).toBe(!EVALS_REQUIRED_FOR_MERGE);
+    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
       .toBe(`the evals are being scored again at ${SHA.slice(0, 7)}`);
   });
@@ -590,12 +659,14 @@ describe("the evals arm's golden-coverage clause", () => {
     });
     await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED, answersRequestAt: 50 });
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(evalsCheckOf(gate).passed).toBe(true);
     expect(gate.allowed).toBe(true);
   });
 
   it("names the regression first when a run both regressed and shipped no item", async () => {
     const gate = await gateWith({ regressions: 3, goldenCoverage: false });
-    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.passed).toBe(false);
+    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.why).toContain("3 regressions");
   });
 });
@@ -717,7 +788,7 @@ describe("GET /tts/merge-gate — what the box asks before it merges", () => {
     await greenTests(t);
     const shut = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(shut.allowed).toBe(false);
-    expect(shut.missing).toEqual(["audit", "evals"]);
+    expect(shut.missing).toEqual(["audit", ...EVALS_IF_REQUIRED]);
     expect(shut.checks).toHaveLength(3);
     // A read is a read: no merge row appeared.
     expect(await mergeRows(t)).toHaveLength(0);
@@ -879,7 +950,7 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect((await auditRow(t))?.data).toMatchObject({ removalNotes: [] });
     // The gate is unmoved by either answer: the three head rows are still three.
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(gate.missing).toEqual(["tests", "evals"]);
+    expect(gate.missing).toEqual(["tests", ...EVALS_IF_REQUIRED]);
   });
 
   it("refuses an answer with no verdict line — an audit that did not say did not finish", async () => {
