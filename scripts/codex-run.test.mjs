@@ -521,15 +521,25 @@ describe("codex-run work directory", () => {
 
   it("leaves nothing behind when the binary will not start", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-tmp-"));
+    // A file that exists but cannot be executed: codex-run.mjs accepts it as
+    // CODEX_BIN and makes its work directory, and the spawn then fails.
+    const unstartable = path.join(tmp, "unstartable-codex");
+    fs.writeFileSync(unstartable, "not a program\n", { mode: 0o644 });
     const result = run(["--cwd", process.cwd()], {
       TMPDIR: tmp,
-      TTS_CODEX_BIN: path.join(tmp, "no-such-codex"),
+      CODEX_BIN: unstartable,
       FAKE_CODEX_ARGS: path.join(tmp, "args.json"),
     });
     expect(result.status).not.toBe(0);
     expect(codexRunDirs(tmp)).toEqual([]);
   });
 
+  // witness: both cases named TTS_CODEX_BIN, which is box-run.mjs's variable;
+  // codex-run.mjs reads CODEX_BIN. On the box they ran the real `codex` from
+  // PATH, and on CI, where no codex is installed, this one waited for a work
+  // directory that codex-run never made (it stops at "codex binary not
+  // found") until vitest's 5-second default ended it. The 30-second limit
+  // covers the loop's own 20-second deadline.
   it("leaves nothing behind when the run is hung up on", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-tmp-"));
     const slow = path.join(tmp, "slow-codex.mjs");
@@ -537,7 +547,7 @@ describe("codex-run work directory", () => {
     fs.chmodSync(slow, 0o755);
     const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-state-"));
     const child = spawn(process.execPath, [RUNNER, "--cwd", process.cwd()], {
-      env: { ...process.env, TMPDIR: tmp, TTS_CODEX_BIN: slow, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration") },
+      env: { ...process.env, TMPDIR: tmp, CODEX_BIN: slow, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration") },
       stdio: ["pipe", "pipe", "pipe"],
     });
     child.stdin.end("answer this\n");
@@ -549,5 +559,5 @@ describe("codex-run work directory", () => {
     child.kill("SIGHUP");
     await new Promise((resolve) => child.on("close", resolve));
     expect(codexRunDirs(tmp)).toEqual([]);
-  });
+  }, 30_000);
 });
