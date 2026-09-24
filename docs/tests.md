@@ -22,15 +22,17 @@ job and is not counted in any row.
 
 | Test or check | What it verifies | Where it runs | Wall time | Verifier |
 |---|---|---|---|---|
-| vitest, `convex/` — 44 files, 1,393 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 38.4 s of CPU inside the suite | checks |
+| vitest, `convex/` — 44 files, 1,342 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 38.4 s of CPU inside the suite | checks |
 | vitest, `app/` — 68 files, 1,042 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 16.1 s of CPU | checks |
-| vitest, `scripts/` — 27 files, 496 tests | The guardrail scripts' own logic, the SessionStart hook, the vocabulary generator, the writing standard | CI `tests`; local | 17.9 s of CPU | checks |
-| vitest, `worker/jobs/` — 26 files, 844 tests | The box's cron jobs: the digest writer, the nightly, the planner, the audit, the evals runner | CI `tests`; local | 12.1 s of CPU | checks |
-| vitest, `worker/runs/__tests__/` — 25 files, 337 tests | The run record: the launcher, the sweep, transcript parsing, redaction, S3, the semaphore | CI `tests`; local | 13.5 s of CPU | checks |
+| vitest, `scripts/` — 28 files, 503 tests | The guardrail scripts' own logic, the SessionStart hook, the vocabulary generator, the writing standard | CI `tests`; local | 17.9 s of CPU | checks |
+| vitest, `worker/jobs/` — 26 files, 850 tests | The box's cron jobs: the digest writer, the nightly, the planner, the audit, the evals runner | CI `tests`; local | 12.1 s of CPU | checks |
+| vitest, `worker/runs/__tests__/` — 25 files, 346 tests | The run record: the launcher, the sweep, transcript parsing, redaction, S3, the semaphore | CI `tests`; local | 13.5 s of CPU | checks |
 | vitest, `worker/session-host/__tests__/` — 17 files, 186 tests | The session daemon: the banned-tools classifier, the cut, where redaction is wired in, the merge gate client, overflow | CI `tests`; local | 1.2 s of CPU | checks |
 | vitest, `shared/__tests__/` — 10 files, 277 tests | The modules Convex, the site and the box share: the skills catalog and router, the graph, redaction, the session constants, and that each imports only its siblings | CI `tests`; local | 1.1 s of CPU | checks |
 | vitest, `vqc/` — 2 files, 9 tests | The shape of `vqc/todos.yaml` and the registries beside it | CI `tests`; local | 0.1 s of CPU | checks |
-| **the whole vitest suite** — 220 files, 4,588 tests | all of the above, in one run | CI `tests` on main, on the nightly and on a manual run; the diff's related files on a pull request | **102 s** | checks |
+| vitest, `worker/setup-settings.test.mjs` — 1 file, 4 tests | The settings `worker/setup.sh` writes into each account slot, by running the script's own Node block against a scratch directory | CI `tests`; local | 0.4 s of CPU, measured 2026-09-24 | checks |
+| vitest, `test/` — 1 file, 3 tests | `test/temp.mjs`, the `tempDir` helper every test's scratch directory comes from; `test/box-state.mjs` beside it is a helper, not a test file | CI `tests`; local | under 0.01 s of CPU, measured 2026-09-24 | checks |
+| **the whole vitest suite** — 222 files, 4,562 tests | all of the above, in one run | CI `tests` on main, on the nightly and on a manual run; the diff's related files on a pull request | **102 s** | checks |
 | Playwright, `e2e/` — 52 cases across 7 specs, 2 viewports | The site as a browser sees it: the home page, the public quest routes, the page-visibility registry, the boolback plot, the perfume brew | CI `e2e`; local `pnpm test:e2e` | **52 s** against `next dev`, 18 s against a built server | checks |
 | `npx tsc --noEmit` | Every type in the repository, `convex/_generated` included | CI `tests`; local | **28 s** | checks |
 | `pnpm build` | The production Next.js build, the one Vercel runs on main | CI `tests`; local | **62 s** | checks |
@@ -180,5 +182,5 @@ permission gate on an action before the fact, not an answer about an output
 after it, and `vqc/verifiers.md` is where that line is drawn.
 
 `worker/session-host/package.json` declares one dependency and no scripts: the
-daemon has no `npm test` of its own, and its 14 test files run in the root
+daemon has no `npm test` of its own, and its 17 test files run in the root
 vitest suite with everything else.
