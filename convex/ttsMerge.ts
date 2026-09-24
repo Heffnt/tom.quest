@@ -171,10 +171,11 @@ function auditReason(text: unknown): string | null {
  * — "(audit by claude-opus-5, Codex at its cap)" — and the empty string when
  * Codex itself answered, which is the ordinary case and needs no note.
  *
- * `fallback` is the worker's one word for WHY the stand-in ran
- * (worker/jobs/audit.mjs AUDIT_FALLBACK_REASON); "codex-cap" is the only one
- * so far and gets the sentence Tom reads. An unknown reason is still declared
- * rather than hidden.
+ * `fallback` is the worker's word for WHY the stand-in ran
+ * (worker/jobs/audit.mjs AUDIT_FALLBACK_REASON); "codex-cap" gets the sentence
+ * Tom reads. Any other reason is declared as the worker wrote it, which is how
+ * the third rung reads: "(audit by openrouter/<vendor>/<model>, fallback:
+ * codex-cap, claude-limit)" (AUDIT_OPENROUTER_REASON).
  */
 export function auditFallbackNote(data: { model?: unknown; fallback?: unknown }): string {
   const fallback = typeof data.fallback === "string" ? data.fallback.trim() : "";

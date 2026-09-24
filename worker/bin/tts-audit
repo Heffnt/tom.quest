@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // tts-audit — the merge gate's audit check, run over one commit.
 const jobsDir = process.env.TTS_JOBS_DIR ?? "/opt/tts";
-const { auditCommit } = await import(jobsDir + "/audit.mjs");
+const { auditCommit, auditorLine } = await import(jobsDir + "/audit.mjs");
 
 function usage(message) {
   if (message) process.stderr.write("tts-audit: " + message + "\n");
@@ -50,9 +50,7 @@ try {
     });
     process.stdout.write("AUDIT " + args.repo + "@" + args.sha.slice(0, 7) + "\n");
     process.stdout.write("verdict: " + (result.verdict ?? "unrecorded") + "\n");
-    process.stdout.write(
-      "auditor: " + result.model + (result.fallback ? " (" + result.fallback + ")" : "") + "\n",
-    );
+    process.stdout.write(auditorLine(result) + "\n");
     // WHERE THE CLAIM CAME FROM. "Wider than it claims to do" is a refusal the
     // auditor may write, so whoever reads a refusal has to be able to see what
     // it was reading as the claim.

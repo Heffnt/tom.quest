@@ -298,3 +298,28 @@ export function openrouterKeyProblem(value) {
   }
   return problems.length > 0 ? problems.join(" and ") : null;
 }
+
+/** The variable an OpenRouter run's key is read from. */
+export const OPENROUTER_KEY = "OPENROUTER_API_KEY";
+
+/**
+ * Where an OpenRouter run's key is found: `{ value, from }`, with `value` null
+ * when neither place holds one. The caller's own environment first (a laptop
+ * carries it there), else the env file, whose path RUN_ENV_FILE overrides
+ * (worker/runs/config.mjs's override of the same path).
+ *
+ * THE ONE LOOKUP. scripts/codex-run.mjs reads the key a run hands to Codex
+ * with it, and worker/jobs/audit.mjs asks it before it offers an audit to its
+ * OpenRouter rung, so the audit never offers a run the launcher would refuse.
+ * `from` names a place, never the value.
+ */
+export function openrouterKeyOf({ env = process.env, path = env.RUN_ENV_FILE || ENV_PATH } = {}) {
+  if (env[OPENROUTER_KEY]) return { value: env[OPENROUTER_KEY], from: "this environment" };
+  let value = null;
+  try {
+    value = loadEnv({ path })[OPENROUTER_KEY] || null;
+  } catch {
+    // an absent or unreadable file holds no key
+  }
+  return { value, from: path };
+}

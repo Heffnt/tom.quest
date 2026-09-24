@@ -134,15 +134,12 @@ function openrouterModelOf(model) {
 // holds it; this launcher reads it from the one env file only for a run that
 // names an OpenRouter model, and hands it to that Codex process alone. A
 // caller whose own environment already carries it (a laptop) is used as is.
-// RUN_ENV_FILE is worker/runs/config.mjs's override of the file's path.
+// Where it is looked for is worker-env.mjs's openrouterKeyOf, the lookup the
+// audit's OpenRouter rung asks too.
 function openrouterKey() {
-  const file = process.env.RUN_ENV_FILE || workerEnv?.ENV_PATH;
-  const fromEnv = Boolean(process.env[OPENROUTER_KEY]);
-  let value = fromEnv ? process.env[OPENROUTER_KEY] : null;
-  if (!fromEnv) {
-    try { value = file && workerEnv ? workerEnv.loadEnv({ path: file })[OPENROUTER_KEY] : null; } catch {}
-  }
-  if (!value) fail(`an openrouter/ model needs ${OPENROUTER_KEY}, which is in neither this environment nor ${file ?? "the worker env file"}`);
+  if (!workerEnv) fail("worker-env.mjs is not installed, so the OpenRouter key cannot be read or checked");
+  const { value, from } = workerEnv.openrouterKeyOf();
+  if (!value) fail(`an openrouter/ model needs ${OPENROUTER_KEY}, which is in neither this environment nor ${from}`);
   // REMOVAL CHECK: a malformed key fails only at OpenRouter, after the run
   // has started, with "401 Missing Authentication header", which reads as a
   // key that never arrived; the value is never shown, so nothing on the path
@@ -150,10 +147,9 @@ function openrouterKey() {
   // the tail of a terminal's paste marker before its sk-or- prefix, and two
   // rounds of diagnosis chased a missing header. The rule is worker-env.mjs's
   // openrouterKeyProblem, the one setup.sh's rollout warns with.
-  if (!workerEnv) fail("worker-env.mjs is not installed, so the OpenRouter key cannot be checked");
   const problem = workerEnv.openrouterKeyProblem(value);
   if (problem) {
-    fail(`${OPENROUTER_KEY} in ${fromEnv ? "this environment" : file} holds ${problem}; `
+    fail(`${OPENROUTER_KEY} in ${from} holds ${problem}; `
       + "OpenRouter would refuse it. Re-run worker/setup.sh for the repair line.");
   }
   return value;

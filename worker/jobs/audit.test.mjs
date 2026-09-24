@@ -15,6 +15,8 @@ import {
   AUDIT_FALLBACK_REASON,
   AUDIT_MAX_CHUNKS,
   AUDIT_MODEL,
+  AUDIT_OPENROUTER_MODEL,
+  AUDIT_OPENROUTER_REASON,
   AUDIT_REMOVAL_HEADING,
   AUDIT_SANDBOX,
   AUDIT_VERDICT_LINE,
@@ -27,8 +29,11 @@ import {
   composeChunkedAudit,
   diffOf,
   filesOf,
+  auditorLine,
+  isClaudeLimit,
   isCodexCap,
   mergeChunkVerdicts,
+  openrouterReason,
   rewriteChunkAnswer,
   traceFindingsOf,
 } from "./audit.mjs";
@@ -1108,6 +1113,224 @@ describe("the Codex cap's same-family fallback", () => {
     expect(posted[0].model).toBe(AUDIT_MODEL);
     expect(posted[0].fallback).toBeUndefined();
   });
+});
+
+// THE THIRD RUNG. Codex at its cap and Opus refused for the account's limit:
+// the same prompt goes to an OpenRouter model through tts-codex, and the row
+// names it with both refusals. The CLI's text below is the box's own on
+// 2026-09-24, and the key check is stubbed except where it is the subject.
+describe("the third rung on OpenRouter", () => {
+  const CODEX_CAP = "You've hit your usage limit. Try again later.";
+  const CLAUDE_LIMIT =
+    "claude failed (subtype: success, is_error: true, exit 1): result: You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Sep 28, 7am (UTC)";
+  const throws = (message) => () => {
+    throw new Error(message);
+  };
+  const ladder = (over = {}) => {
+    const seen = [];
+    const { io: fake, posted } = io({
+      audit: (prompt) => {
+        seen.push(["codex", prompt]);
+        throw new Error(CODEX_CAP);
+      },
+      auditFallback: (prompt) => {
+        seen.push(["opus", prompt]);
+        throw new Error(CLAUDE_LIMIT);
+      },
+      auditOpenrouter: (prompt) => {
+        seen.push(["openrouter", prompt]);
+        return `${AUDIT_VERDICT_LINE}\n\nIt does what it says.`;
+      },
+      openrouterReason: () => null,
+      ...over,
+    });
+    return { fake, posted, seen };
+  };
+
+  it("names an OpenRouter model from the model table", () => {
+    expect(AUDIT_OPENROUTER_MODEL).toMatch(/^openrouter\/[^/]+\/[^/]+$/);
+    expect(AUDIT_OPENROUTER_REASON).toBe("codex-cap, claude-limit");
+  });
+
+  it("reads the Claude CLI's limit refusal with the Fable ceiling's detector, and nothing else as one", () => {
+    expect(isClaudeLimit(new Error(CLAUDE_LIMIT))).toBe(true);
+    expect(isClaudeLimit(new Error("claude failed: You've hit your usage limit"))).toBe(true);
+    expect(isClaudeLimit(new Error("claude: not logged in"))).toBe(false);
+    expect(isClaudeLimit(new Error("claude failed (subtype: error_max_turns, exit 1)"))).toBe(false);
+    // The diff echoed back is content, not a diagnosis.
+    expect(isClaudeLimit(Object.assign(new Error("claude failed (exit 1)"), { stderr: "+ // You've hit your monthly spend limit\n" }))).toBe(false);
+  });
+
+  it("takes the SAME prompt to OpenRouter after Codex's cap and Claude's limit, and the row says so", async () => {
+    const { fake, posted, seen } = ladder();
+    const result = await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(seen.map((one) => one[0])).toEqual(["codex", "opus", "openrouter"]);
+    expect(seen[2][1]).toBe(seen[0][1]);
+    expect(result.verdict).toBe("APPROVED");
+    expect(result.model).toBe(AUDIT_OPENROUTER_MODEL);
+    expect(result.fallback).toBe(AUDIT_OPENROUTER_REASON);
+    expect(posted[0].model).toBe(AUDIT_OPENROUTER_MODEL);
+    expect(posted[0].fallback).toBe(AUDIT_OPENROUTER_REASON);
+    expect(auditorLine(result)).toBe(`auditor: ${AUDIT_OPENROUTER_MODEL} (codex-cap, claude-limit)`);
+  });
+
+  it("stops at each rung that answers", async () => {
+    const codex = ladder({ audit: () => `${AUDIT_VERDICT_LINE}\n\nfine` });
+    const byCodex = await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, codex.fake);
+    expect(codex.seen).toEqual([]);
+    expect(auditorLine(byCodex)).toBe(`auditor: ${AUDIT_MODEL}`);
+
+    const opus = ladder({ auditFallback: () => `${AUDIT_VERDICT_LINE}\n\nfine` });
+    const byOpus = await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, opus.fake);
+    expect(opus.seen.map((one) => one[0])).toEqual(["codex"]);
+    expect(auditorLine(byOpus)).toBe(`auditor: ${AUDIT_FALLBACK_MODEL} (${AUDIT_FALLBACK_REASON})`);
+  });
+
+  it("does not go below Opus on any Opus failure but the limit", async () => {
+    const { fake, posted, seen } = ladder({ auditFallback: throws("claude: not logged in") });
+    await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(seen.map((one) => one[0])).toEqual(["codex"]);
+    expect(posted[0].text).toContain("VERDICT: UNAVAILABLE");
+    expect(posted[0].model).toBe(AUDIT_MODEL);
+    expect(posted[0].fallback).toBeUndefined();
+  });
+
+  it("does not reach OpenRouter when Codex failed for anything but its cap", async () => {
+    const { fake, posted, seen } = ladder({ audit: throws("spawn tts-codex ENOENT") });
+    await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(seen).toEqual([]);
+    expect(posted[0].text).toContain("VERDICT: UNAVAILABLE");
+  });
+
+  it("is skipped without the key, with today's UNAVAILABLE row word for word", async () => {
+    const { fake, posted, seen } = ladder({ openrouterReason: () => "absent" });
+    await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(seen.map((one) => one[0])).toEqual(["codex", "opus"]);
+    expect(posted[0].text).toContain("VERDICT: UNAVAILABLE");
+    expect(posted[0].text).toContain(`the ${AUDIT_FALLBACK_MODEL} fallback also failed: ${CLAUDE_LIMIT.slice(0, 200)}`);
+    expect(posted[0].text).not.toContain(AUDIT_OPENROUTER_MODEL);
+    expect(posted[0].model).toBe(AUDIT_MODEL);
+    expect(posted[0].fallback).toBeUndefined();
+  });
+
+  it("is skipped when the key fails its check, and says why without the key", async () => {
+    const why = "OPENROUTER_API_KEY in /etc/tts/worker.env holds 4 character(s) before its sk-or- prefix";
+    const { fake, posted, seen } = ladder({ openrouterReason: () => why });
+    await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(seen.map((one) => one[0])).toEqual(["codex", "opus"]);
+    expect(posted[0].text).toContain("VERDICT: UNAVAILABLE");
+    expect(posted[0].text).toContain(`the ${AUDIT_OPENROUTER_MODEL} rung was skipped: ${why}`);
+    expect(posted[0].fallback).toBeUndefined();
+  });
+
+  it("is UNAVAILABLE when OpenRouter refuses too, and names all three failures", async () => {
+    const { fake, posted, seen } = ladder({ auditOpenrouter: throws("OpenRouter: 402 insufficient credits") });
+    await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(seen.map((one) => one[0])).toEqual(["codex", "opus"]);
+    expect(posted[0].text).toContain("VERDICT: UNAVAILABLE");
+    expect(posted[0].text).toContain("usage limit");
+    expect(posted[0].text).toContain("monthly spend limit");
+    expect(posted[0].text).toContain("402 insufficient credits");
+    expect(posted[0].model).toBe(AUDIT_MODEL);
+    expect(posted[0].fallback).toBeUndefined();
+  });
+
+  it("asks the key check once per audit, and names the furthest rung any chunk reached", async () => {
+    const big = Math.round(AUDIT_CHUNK_MAX_CHARS * 0.6);
+    const diff = fileBlock("a/one.ts", big) + fileBlock("m/two.ts", big) + fileBlock("z/three.ts", big);
+    let asked = 0;
+    let opusCalls = 0;
+    const { fake, posted } = ladder({
+      run: () => diff,
+      // chunk 1: Opus reads it; chunks 2 and 3: Opus is out, OpenRouter reads.
+      auditFallback: () => {
+        opusCalls += 1;
+        if (opusCalls === 1) return `${AUDIT_VERDICT_LINE}\n\nfine, read by Opus`;
+        throw new Error(CLAUDE_LIMIT);
+      },
+      openrouterReason: () => {
+        asked += 1;
+        return null;
+      },
+    });
+    const result = await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(result.chunks.count).toBe(3);
+    expect(result.verdict).toBe("APPROVED");
+    expect(asked).toBe(1);
+    expect(posted[0].model).toBe(AUDIT_OPENROUTER_MODEL);
+    expect(posted[0].fallback).toBe(AUDIT_OPENROUTER_REASON);
+  });
+});
+
+// The key check the rung asks, through the one lookup (worker-env.mjs
+// openrouterKeyOf) on a temporary env file. No value reaches the answer.
+describe("openrouterReason", () => {
+  const KEY = `sk-or-v1-${"0123456789abcdef".repeat(4)}`;
+  const envFile = (body) => {
+    const file = path.join(tempDir("audit-openrouter-env-"), "worker.env");
+    fs.writeFileSync(file, body);
+    return file;
+  };
+
+  it("is null for a clean key, from the environment or the env file", () => {
+    expect(openrouterReason({ OPENROUTER_API_KEY: KEY })).toBeNull();
+    expect(openrouterReason({ RUN_ENV_FILE: envFile(`OPENROUTER_API_KEY=${KEY}\n`) })).toBeNull();
+  });
+
+  it("is `absent` with no key anywhere", () => {
+    expect(openrouterReason({ RUN_ENV_FILE: envFile("A=1\n") })).toBe("absent");
+    expect(openrouterReason({ RUN_ENV_FILE: path.join(tempDir("audit-openrouter-env-"), "none") })).toBe("absent");
+  });
+
+  it("names a malformed key's problem and the place, never the key", () => {
+    const file = envFile(`OPENROUTER_API_KEY=200~${KEY}\n`);
+    const why = openrouterReason({ RUN_ENV_FILE: file });
+    expect(why).toBe(`OPENROUTER_API_KEY in ${file} holds 4 character(s) before its sk-or- prefix`);
+    expect(why).not.toContain("0123456789abcdef");
+  });
+});
+
+// THE THIRD RUNG RUNS THROUGH THE SAME CODEX DOOR, read-only, with the model
+// named. A fake tts-codex refuses on the cap unless it is handed --model, and
+// records what it was handed when it is.
+describe.skipIf(process.platform === "win32")("the OpenRouter auditor through tts-codex", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("passes --model openrouter/<vendor>/<model> and the read-only sandbox, and the prompt on stdin", async () => {
+    const tmp = tempDir("audit-openrouter-door-");
+    const record = path.join(tmp, "record.json");
+    const runner = path.join(tmp, "fake-codex.mjs");
+    fs.writeFileSync(runner, [
+      "#!/usr/bin/env node",
+      'import fs from "node:fs";',
+      "const argv = process.argv.slice(2);",
+      'if (!argv.includes("--model")) { process.stderr.write("You\'ve hit your usage limit.\\n"); process.exit(1); }',
+      'const stdin = fs.readFileSync(0, "utf8");',
+      `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, stdin }));`,
+      `process.stdout.write(${JSON.stringify(`${AUDIT_VERDICT_LINE}\n\nIt does what it says.`)});`,
+    ].join("\n"));
+    fs.chmodSync(runner, 0o755);
+    vi.resetModules();
+    vi.stubEnv("TTS_CODEX_BIN", runner);
+    vi.stubEnv("TMPDIR", tmp);
+    const fresh = await import("../jobs/audit.mjs");
+    const { io: fakeIo, posted } = io({
+      auditFallback: () => {
+        throw new Error("claude failed: result: You've hit your monthly spend limit");
+      },
+      openrouterReason: () => null,
+      runTrace: async () => ({ runId: "run_1", turns: 1, tokens: 10, toolCalls: [] }),
+      mergeGate: async () => ({ checks: [] }),
+    });
+    delete fakeIo.audit; // the real Codex door for both rungs
+    const result = await fresh.auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: tmp }, fakeIo);
+    expect(result.verdict).toBe("APPROVED");
+    expect(posted[0].model).toBe(fresh.AUDIT_OPENROUTER_MODEL);
+    const { argv, stdin } = JSON.parse(fs.readFileSync(record, "utf8"));
+    expect(argv[argv.indexOf("--model") + 1]).toBe(fresh.AUDIT_OPENROUTER_MODEL);
+    expect(argv[argv.indexOf("--sandbox") + 1]).toBe(AUDIT_SANDBOX);
+    expect(stdin).toContain("x.ts");
+  }, 30_000);
 });
 
 // THE FALLBACK RUNS THROUGH THE BOX'S ONE LAUNCHER. Every other case here

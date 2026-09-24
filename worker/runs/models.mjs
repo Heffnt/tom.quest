@@ -1,5 +1,5 @@
-// models.mjs — which Claude model each box job runs on, and the model ceiling
-// that stands in for Fable while Tom's account has no Fable usage left.
+// models.mjs — which model each box job runs on, and the model ceiling that
+// stands in for Fable while Tom's account has no Fable usage left.
 //
 // ONE HOME. Every job, the delegate, the digest writer, the evals pass and the
 // session daemon's classifier take their model from MODELS below. Every path
@@ -62,6 +62,20 @@ export const MODEL_CEILING = "opus";
 //   removalActuator  the removal loop's box run (worker/jobs/removal-loop.mjs).
 //   classifier       the session daemon's Bash danger classifier
 //                    (worker/session-host/session.mjs).
+//   auditOpenrouter  the merge gate's audit when Codex is at its cap and
+//                    Claude at its limit (worker/jobs/audit.mjs, the third
+//                    rung). NOT A CLAUDE MODEL: it runs through tts-codex on
+//                    OpenRouter, spelled openrouter/<vendor>/<model>
+//                    (scripts/codex-run.mjs), and names no Claude tier, so the
+//                    ceiling never touches it. Tom's ruling, 2026-09-22,
+//                    verbatim: "we should also setup agents via openrouter
+//                    and/or lambda because I am constantly hitting my
+//                    subscription limits so I want to build things with the
+//                    cheapest agent that can do the job." DeepSeek V4 Pro,
+//                    the 0813 release: a reasoning model built for code, from
+//                    a family that wrote none of this repository, at $0.46 in
+//                    and $1.39 out per million tokens on OpenRouter
+//                    (2026-09-24).
 //
 // Three of these read an environment override first (TTS_EVALS_*_MODEL and
 // TTS_LEARNING_MODEL, at their use); the ceiling applies to an override too.
@@ -79,6 +93,7 @@ export const MODELS = Object.freeze({
   weekly: "opus",
   removalActuator: "opus",
   classifier: "claude-sonnet-5",
+  auditOpenrouter: "openrouter/deepseek/deepseek-v4-pro-0813",
 });
 
 // The Claude tiers from the lowest to the highest. A model name is read by the
@@ -122,7 +137,10 @@ export const FABLE_PROBE_INTERVAL_MS = 60 * 60 * 1000;
 
 /** The CLI's refusal for an account out of Fable usage. The text on the box
  *  since 2026-09-22 is "You've hit your monthly spend limit"; the usage-limit
- *  wording is the CLI's other cap message. */
+ *  wording is the CLI's other cap message. worker/jobs/audit.mjs reads an
+ *  Opus refusal with it too: on 2026-09-24 every Claude model on the box
+ *  answered "You've hit your monthly spend limit · … · your weekly limit
+ *  resets Sep 28, 7am (UTC)". */
 export const FABLE_LIMIT_RE = /spend limit|usage.?limit/i;
 
 function fableStatePath(stateDir) {

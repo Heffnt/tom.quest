@@ -484,8 +484,9 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 // file holds the table of roles (MODELS) and the model ceiling that stands in
 // for Fable while Fable is unavailable, which box-run.mjs applies to every run.
 // These are forwards, never copies, so a job imports them from the library as
-// it always has.
-export const { MODELS, MODEL_CEILING } = modelsModule;
+// it always has. FABLE_LIMIT_RE is the CLI's limit refusal, which the audit
+// reads on its Opus rung.
+export const { MODELS, MODEL_CEILING, FABLE_LIMIT_RE } = modelsModule;
 
 // The model a job's record names for a call it made: the requested model, or
 // "opus (fable requested, at the ceiling)" while Fable is unavailable. Read
