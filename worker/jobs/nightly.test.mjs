@@ -2865,8 +2865,24 @@ describe("the git half", { timeout: 60_000 }, () => {
     write(dir, "model-of-tom/priorities.md", "# Priorities\n\nResearch.\n");
     write(dir, "model-of-tom/schedule.md", "# Schedule\n\nTuesday.\n");
     for (const area of REQUIRED_AREA_PATHS) write(dir, area, AREA_BODY);
+    // The WikiTom half of the intent sources, committed with the rest: the
+    // evidence behind each page and the spec whose dated notes quote a ruling.
+    write(dir, "model-of-tom/evidence/intent.md", "# Evidence\n\n- line: Keep moving.\n  said: 2026-09-01 · a session · \"keep moving\"\n");
+    write(dir, "model-of-tom/evidence/priorities.md", "# Evidence\n\n- line: Research.\n  said: 2026-09-01 · a session · \"research first\"\n");
+    write(dir, "model-of-tom/evidence/agent-rules.md", "# Evidence\n\n- line: Operate safely.\n  read: 2026-09-01 · a branch · the code says so.\n");
+    write(dir, "tts/spec.md", "# Spec\n\n**Revision (2026-09-01, a round):** his rulings applied.\n");
     run(dir, "add", "-A");
     run(dir, "commit", "-q", "-m", "prelude");
+    return dir;
+  }
+  /** The other checkout the intent sources are read from. */
+  function questRepo() {
+    const dir = tmp();
+    execFileSync("git", ["init", "-q", "-b", "main", dir], { stdio: "ignore" });
+    write(dir, "vqc/steering.yaml", "- id: say-it-once\n  kind: preference\n  owner: tom\n  created: 2026-08-25\n  correction: Say it once.\n");
+    write(dir, "vqc/adoption.md", "# adoption\n\n## Rulings log\n\n- id: one-home\n  date: 2026-08-27\n  ruling: One home for it.\n");
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "sources");
     return dir;
   }
   /** Somewhere other than /root for the skills half to write. */
@@ -2895,7 +2911,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     write(dir, "model-of-tom/writing.md", "# Writing\n\nUncommitted.\n");
 
     const posts = [];
-    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs });
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs, tomQuest: questRepo() });
 
     const layers = {
       operate: "── model-of-tom/agent-rules.md ──\n# Rules\n\nOperate safely.\n",
@@ -2930,7 +2946,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     })));
     // The base first, the skills second — and the base's body is unchanged by
     // the half that follows it.
-    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills"]);
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/intent-sources"]);
     expect(posts[0]).toEqual({
       route: "/tts/model-of-tom",
       body: {
@@ -2968,9 +2984,9 @@ describe("the git half", { timeout: 60_000 }, () => {
     const dir = preludeRepo();
     const outs = skillsDirs();
     const posts = [];
-    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs });
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs, tomQuest: questRepo() });
 
-    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills"]);
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/intent-sources"]);
     const catalog = posts[1].body;
     expect(catalog.commit).toBe(result.commit);
     expect(catalog.pushed).toBe(false);
@@ -3014,13 +3030,14 @@ describe("the git half", { timeout: 60_000 }, () => {
       fetch: recording(posts),
       checkouts: [],
       skillsDirs: outs,
+      tomQuest: questRepo(),
       publishSkills: () => {
         throw new Error("the skill generator fell over");
       },
     });
 
     // The base went out; the catalog did not; the failure row says which half.
-    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event"]);
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event", "/tts/intent-sources"]);
     expect(posts[1].body.kind).toBe("nightly-failure");
     expect(posts[1].body.data.step).toBe("skills");
     expect(r.failures).toEqual([{ step: "skills", error: "the skill generator fell over" }]);
@@ -3045,9 +3062,10 @@ describe("the git half", { timeout: 60_000 }, () => {
       fetch: recording(posts),
       checkouts: [{ repo: "tom.quest", dir: checkoutDir() }],
       skillsDirs: [out],
+      tomQuest: questRepo(),
     });
 
-    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event"]);
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event", "/tts/intent-sources"]);
     expect(posts[1].body.data.step).toBe("skills");
     expect(r.failures).toEqual([expect.objectContaining({ step: "skills", error: expect.stringContaining("tom.quest") })]);
     expect(result.skills).toBeNull();
@@ -3064,6 +3082,7 @@ describe("the git half", { timeout: 60_000 }, () => {
       fetch: recording([]),
       checkouts: [],
       skillsDirs: outs,
+      tomQuest: questRepo(),
       publishSkills: () => {
         calls += 1;
         return { commit: `commit-${calls}`, catalog: [{ name: "write" }], refused: [] };
@@ -3084,9 +3103,10 @@ describe("the git half", { timeout: 60_000 }, () => {
       fetch: recording(posts, { "/tts/model-of-tom": "Convex refused the base (503)" }),
       checkouts: [],
       skillsDirs: outs,
+      tomQuest: questRepo(),
     });
 
-    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event", "/tts/skills"]);
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event", "/tts/skills", "/tts/intent-sources"]);
     expect(r.failures.map((failure) => failure.step)).toEqual(["post"]);
     // Convex does not hold this commit, so the summary must not say it does.
     expect(result.commit).toBeNull();
@@ -3110,9 +3130,10 @@ describe("the git half", { timeout: 60_000 }, () => {
       fetch: recording(posts, { "/tts/skills": "Convex refused the catalog (503)" }),
       checkouts: [],
       skillsDirs: outs,
+      tomQuest: questRepo(),
     });
 
-    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event"]);
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event", "/tts/intent-sources"]);
     expect(r.failures.map((failure) => failure.step)).toEqual(["skills"]);
     expect(r.failures[0].error).toContain("503");
     expect(result.commit).not.toBeNull();
@@ -3133,13 +3154,86 @@ describe("the git half", { timeout: 60_000 }, () => {
       fetch: recording(posts),
       checkouts: [],
       skillsDirs: outs,
+      tomQuest: questRepo(),
       promoteSkills: () => { throw new Error("disk promotion failed"); },
     });
 
-    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event"]);
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event", "/tts/intent-sources"]);
     expect(result.skills).toBeNull();
     expect(r.failures).toEqual([expect.objectContaining({ step: "skills", error: "disk promotion failed" })]);
     expect(fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8")).toBe("old skill bytes\n");
+  });
+
+  // ── the third half: the files his intent is written in ───────────────────
+  it("posts every intent source, each out of its own repository's commit", async () => {
+    const dir = preludeRepo();
+    const quest = questRepo();
+    const posts = [];
+    const result = await postStep(learningRun(dir), {
+      fetch: recording(posts), checkouts: [], skillsDirs: skillsDirs(1), tomQuest: quest,
+    });
+
+    const post = posts.find((entry) => entry.route === "/tts/intent-sources");
+    expect(post.body.files.map((file) => file.path)).toEqual([
+      "model-of-tom/evidence/intent.md",
+      "model-of-tom/evidence/priorities.md",
+      "model-of-tom/evidence/agent-rules.md",
+      "tts/spec.md",
+      "vqc/steering.yaml",
+      "vqc/adoption.md",
+    ]);
+    // Each file names the commit it was read at, and `syncedAt` is that
+    // commit's time — the WikiTom half at the commit the base post used.
+    const wikitom = run(dir, "rev-parse", "HEAD").trim();
+    const questCommit = run(quest, "rev-parse", "HEAD").trim();
+    expect(post.body.files[0]).toMatchObject({
+      path: "model-of-tom/evidence/intent.md",
+      commit: wikitom,
+      syncedAt: Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000,
+    });
+    expect(post.body.files[5]).toMatchObject({
+      path: "vqc/adoption.md",
+      commit: questCommit,
+      syncedAt: Number(run(quest, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000,
+    });
+    expect(result.intentSources.files).toHaveLength(6);
+  });
+
+  // Five sources posted is better than none, and the page then shows the kinds
+  // it can read rather than nothing at all.
+  it("records an absent intent source and posts the rest", async () => {
+    const dir = preludeRepo();
+    run(dir, "rm", "-q", "tts/spec.md");
+    run(dir, "commit", "-q", "-m", "no spec");
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts), checkouts: [], skillsDirs: skillsDirs(1), tomQuest: questRepo(),
+    });
+
+    expect(r.failures).toEqual([expect.objectContaining({
+      step: "intent-sources",
+      error: expect.stringContaining("tts/spec.md"),
+    })]);
+    const post = posts.find((entry) => entry.route === "/tts/intent-sources");
+    expect(post.body.files.map((file) => file.path)).not.toContain("tts/spec.md");
+    expect(result.intentSources.files).toHaveLength(5);
+  });
+
+  // The half never throws: the base and the skills have already landed.
+  it("records a refused intent-sources post and leaves the other two halves alone", async () => {
+    const dir = preludeRepo();
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts, { "/tts/intent-sources": "Convex refused the sources (503)" }),
+      checkouts: [], skillsDirs: skillsDirs(1), tomQuest: questRepo(),
+    });
+
+    expect(r.failures.map((failure) => failure.step)).toEqual(["intent-sources"]);
+    expect(result.commit).toBe(run(dir, "rev-parse", "HEAD").trim());
+    expect(result.skills.count).toBeGreaterThan(0);
+    expect(result.intentSources).toBeNull();
   });
 
   it("rolls earlier live directories back when a later staged promotion cannot finish", () => {
@@ -3167,6 +3261,7 @@ describe("the git half", { timeout: 60_000 }, () => {
       fetch: recording(posts, { "/tts/skills": "the post's commit is older than the stored catalog — store left as it was" }),
       checkouts: [],
       skillsDirs: skillsDirs(1),
+      tomQuest: questRepo(),
     });
     expect(posts.find((post) => post.route === "/tts/skills").body.syncedAt)
       .toBe(Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000);

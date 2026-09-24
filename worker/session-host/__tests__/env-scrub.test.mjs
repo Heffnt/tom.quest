@@ -30,6 +30,7 @@ const SECRETS = [
   "TURING_RUNNER_KEY",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
 ];
 
 describe("scrubbedEnv", () => {
@@ -102,7 +103,7 @@ describe("wiring: every spawn goes through scrubbedEnv", () => {
 
   it("the daemon registration records only context it actually receives", () => {
     const start = sessionSource.indexOf("this.runRegistration = writeRegistration({");
-    const registration = sessionSource.slice(start, sessionSource.indexOf("if (!knownModel", start));
+    const registration = sessionSource.slice(start, sessionSource.indexOf("const fallbackNote = modelFallbackNote(this.model, fable);", start));
     expect(registration).toContain("...runEnvelope(this.mode, this.environment),");
     expect(registration).toContain("layersKnown: false");
     expect(registration).not.toMatch(/\b(?:todoId|batchId|mergeKey|parentRunId|spawnedByToolUseId|continuesRunId)\s*:/);

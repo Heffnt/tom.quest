@@ -6,6 +6,7 @@
   "label": "did not",
   "sentence": "These descriptions are difficult to understand. When explaining things to me, please explain them from the ground up as if I don't understand the concepts or implementations.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 7 tool calls the agent made after Tom's request (Agent, Bash, Read), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-08-15",
   "input": {
     "topic": "Chronological order and deferral fixes",

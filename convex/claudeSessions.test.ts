@@ -3415,11 +3415,12 @@ describe("autonomous session scheduler", () => {
     });
     expect(inbound[0].text).toContain(WORKER_CONTRACT);
     // The repo variant names the checkout, its branch, the delegate, and the
-    // three checks that make a merge mechanical and reportable.
+    // checks that make a merge mechanical and reportable.
     expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
     expect(inbound[0].text).toContain(`session/${sessions[0]._id}`);
     expect(inbound[0].text).toContain("tts-ask --session");
-    expect(inbound[0].text).toContain("the tests are green, an audit approved it");
+    expect(inbound[0].text).toContain("the tests are green");
+    expect(inbound[0].text).toContain("an audit approved it");
     expect(inbound[0].text).toContain("/tts/merge");
     expect(inbound[0].text).not.toContain("EMPTY scratch directory");
   });
@@ -3626,7 +3627,8 @@ describe("the code lane", () => {
     expect(text).toContain(WORKER_CONTRACT);
     expect(text).not.toContain("define every term on first use");
     expect(text).toContain("/tts/session-outcome");
-    expect(text).toContain("the tests are green, an audit approved it");
+    expect(text).toContain("the tests are green");
+    expect(text).toContain("an audit approved it");
     expect(text).toContain("/tts/merge");
     expect(text).toContain(DAEMON_SENTENCE);
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
@@ -5391,7 +5393,8 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("fresh checkout of tom.quest");
     expect(text).toContain(`session/${sessions[0]._id}`);
-    expect(text).toContain("the tests are green, an audit approved it");
+    expect(text).toContain("the tests are green");
+    expect(text).toContain("an audit approved it");
     expect(text).toContain("/tts/merge");
   });
 
@@ -5450,5 +5453,30 @@ describe("frontier scheduler", () => {
       ),
     );
     expect(after).toHaveLength(1);
+  });
+});
+
+// THE MODEL CEILING (worker/runs/models.mjs; Tom's rulings of 2026-09-24). The
+// daemon reports the box's Fable availability file on its heartbeat, and the
+// health row keeps it for the pages that say "Fable unavailable since <time>,
+// last checked <time>". A heartbeat without it keeps the last report.
+describe("fable availability and usage limits on the daemon heartbeat", () => {
+  it("stores the daemon's reports and keeps them through a heartbeat that carries none", async () => {
+    const t = convexTest({ schema, modules });
+    const report = { available: false, since: 1_000, checkedAt: 2_000, reason: "You've hit your monthly spend limit" };
+    const limit = { at: 3_000, text: "You've hit your session limit", sessionId: "s1" };
+    await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+      load: HEALTHY_LOAD,
+      fableAvailability: report,
+      usageLimit: limit,
+    });
+    const stored = async () => await t.run(async (ctx) => await ctx.db.query("claudeDaemonHealth").first());
+    expect((await stored())?.fableAvailability).toEqual(report);
+    expect((await stored())?.usageLimit).toEqual(limit);
+    await heartbeat(t);
+    expect((await stored())?.fableAvailability).toEqual(report);
+    expect((await stored())?.usageLimit).toEqual(limit);
   });
 });

@@ -110,6 +110,7 @@ function makeCheckout(name, overrides = {}) {
   q(".git/HEAD", `${TOM_QUEST_COMMIT}\n`);
   w("model-of-tom/agent-rules.md", overrides.agentRules ?? AGENT_RULES);
   w("model-of-tom/writing.md", overrides.writing ?? "# Writing\n\n## Registers\n\nPlain sentences, no flourish.\n");
+  w("model-of-tom/explainers.md", overrides.explainers ?? "# Explainers\n\n## Form\n\nOne page, one mechanism.\n");
   w("model-of-tom/ground.md", overrides.ground ?? "# Ground\n\nWhat he already knows.\n");
   w("model-of-tom/intent.md", overrides.intent ?? "# Intent\n\n## Directions\n\n- Ship the graph this week.\n");
   w("model-of-tom/priorities.md", overrides.priorities ?? PRIORITIES);
@@ -441,6 +442,19 @@ describe("the disagreement classes", () => {
     expect(block).toContain("  page  which is not one of the synthesis files");
   });
 
+  it("G4 — explainers.md is a synthesis page, so its evidence file has a counterpart", () => {
+    // THE PAGE WikiTom'S OWN CHECKER ALREADY COUNTS. scripts/check-evidence.mjs
+    // there lists seven files; this generator listed six, so a vault that
+    // passed its own check failed the nightly's graph step on
+    // model-of-tom/evidence/explainers.md the night the explainer skill landed.
+    const fixture = makeCheckout("g4c", {
+      evidence: { "explainers.md": "- line: One page, one mechanism.\n  said: 2026-09-21\n" },
+    });
+    const result = fixture.run([]);
+    expect(codesOf(result.out)).toEqual([]);
+    expect(result.code).toBe(0);
+  });
+
   it("G5 — two different lines whose hash8 is the same eight characters", () => {
     // A REAL 32-bit collision, found by search over `ruleId` and pinned here:
     // `ruleId("collision probe 14565") === ruleId("collision probe 24048") ===
@@ -695,6 +709,7 @@ describe("every skill's subgraph renders what buildSkills publishes", () => {
     const bodies = skillBodies(result);
     expect(bodies.map((row) => row.name)).toEqual([
       "write",
+      "explainer",
       "know-intent",
       "know-week",
       "know-garden",

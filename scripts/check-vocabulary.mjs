@@ -7,7 +7,7 @@
 // the same two lines, and the day the two disagreed about whether a checkout
 // resolved is the day nobody would know which one CI ran.
 //
-// TWO MODES, DECIDED BY WHETHER A WikiTom CHECKOUT RESOLVES. The nine in-repo
+// TWO MODES, DECIDED BY WHETHER A WikiTom CHECKOUT RESOLVES. The eight in-repo
 // checks read only this repository and run everywhere. The two render checks
 // ask the generators whether the files on disk are what the render produces,
 // which needs the vault; with no vault they are skipped, by the one line at the
@@ -21,6 +21,11 @@ import { execFileSync } from "node:child_process";
 import { join, sep } from "node:path";
 import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
 import { BOX_WIKITOM_DIR, LAPTOP_WIKITOM_DIR } from "../worker/jobs/search-lib.mjs";
+// Check 8 is ABOUT these two, so it imports them rather than spelling a second
+// reading of them: the fact it states is that this parser reads this code, and
+// a copy of the regex here would only ever check the copy.
+import { SKILL_SHAPES } from "./skills.mjs";
+import { VocabularyError, parseSkillShapes } from "./vocabulary.mjs";
 
 const failures = [];
 const notes = [];
@@ -166,7 +171,7 @@ function matches(re, text) {
   return out;
 }
 
-// ── The nine in-repo checks ──────────────────────────────────────────────────
+// ── The eight in-repo checks ─────────────────────────────────────────────────
 
 const shared = read(SHARED_PATH);
 if (shared === null) {
@@ -409,6 +414,47 @@ if (block !== null) {
   }
 }
 
+// 8. The generator's shape parser still reads the code it parses.
+//    scripts/vocabulary.mjs extracts SKILL_SHAPES from scripts/skills.mjs AS
+//    TEXT, and names one of those shapes per published skill, so a regex that
+//    stopped matching an entry would quietly publish a vocabulary that says the
+//    system has fewer shapes than it has.
+//
+//    THIS IS THE ONE PLACE THAT COMPARISON IS HONEST, and it used to live in the
+//    generator, where it was not: there the text is whatever tom.quest checkout
+//    the run was pointed at and the imported object is the installed script's
+//    own sibling, and on the box those are two checkouts that drift apart. Here
+//    both sides are this repository — the checker reads relative to the current
+//    directory, which `pnpm check:guardrails` runs from the root — so a
+//    mismatch is the parser falling behind the code and nothing else.
+// witness: change `explainer: Object.freeze({` in scripts/skills.mjs to
+// `explainer: Object.freeze( {`, which the regex no longer reads.
+{
+  const skills = read("scripts/skills.mjs");
+  if (skills === null) {
+    failures.push("scripts/skills.mjs is not in this checkout — the shape parser has nothing to read");
+  } else {
+    let parsed = null;
+    try {
+      parsed = parseSkillShapes(skills);
+    } catch (problem) {
+      if (!(problem instanceof VocabularyError)) throw problem;
+      failures.push(`scripts/skills.mjs: ${GENERATOR_PATH} cannot read SKILL_SHAPES at all — ${problem.message}`);
+    }
+    if (parsed !== null) {
+      const declared = Object.keys(SKILL_SHAPES);
+      const unread = declared.filter((shape) => !parsed.includes(shape));
+      const invented = parsed.filter((shape) => !declared.includes(shape));
+      if (unread.length > 0 || invented.length > 0) {
+        failures.push(
+          `scripts/skills.mjs: SKILL_SHAPES declares [${declared.join(", ")}] and ${GENERATOR_PATH} reads `
+            + `[${parsed.join(", ")}]${unread.length === 0 ? "" : ` — it cannot read ${unread.join(", ")}`}`,
+        );
+      }
+    }
+  }
+}
+
 // THERE IS NO TABLE-COUNT CHECK AND NO CONTEXT_CALLERS CHECK, and there were.
 //
 // The first pinned convex/schema.ts at 44 `defineTable` calls to assert that
@@ -558,7 +604,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 if (!resolved) {
-  console.log("check-vocabulary: no WikiTom checkout — ran the 7 in-repo checks; the render checks run in the nightly");
+  console.log("check-vocabulary: no WikiTom checkout — ran the 8 in-repo checks; the render checks run in the nightly");
   process.exit(0);
 }
 console.log(`Vocabulary and graph check passed (WikiTom at ${wikitom}).`);

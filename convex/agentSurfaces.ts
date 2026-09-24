@@ -20,7 +20,7 @@
 //   - worker/bin/tts-browse's own header: "every /turing and /tts page is
 //     role-gated", naming exactly these two.
 //   - worker/README.md's two worked browse examples are both /turing.
-// DELIBERATELY ABSENT: "Sessions", "Forge", "Jarvis" and /logo (a session
+// DELIBERATELY ABSENT: "Sessions", "Forge" and /logo (a session
 // reading its own transcripts, or Tom's build surfaces, is not looking at a
 // change it made), and /canvas (its agent route spends LLM credits).
 //

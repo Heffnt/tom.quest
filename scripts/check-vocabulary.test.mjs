@@ -21,8 +21,9 @@ import { fileURLToPath } from "node:url";
 import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-vocabulary.mjs");
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const NO_CHECKOUT_LINE =
-  "check-vocabulary: no WikiTom checkout — ran the 7 in-repo checks; the render checks run in the nightly";
+  "check-vocabulary: no WikiTom checkout — ran the 8 in-repo checks; the render checks run in the nightly";
 const VERSION = "0123456789abcdef";
 
 const list = (values) => values.map((value) => `  ${JSON.stringify(value)},`).join("\n");
@@ -49,10 +50,15 @@ function sharedBlock({ version = VERSION, nodeKinds = NODE_KINDS, edgeKinds = ED
   ].join("\n");
 }
 
-/** A tree that passes all nine. `files` replaces or adds paths on top of it. */
+/** A tree that passes all eight. `files` replaces or adds paths on top of it. */
 function fixture(files = {}) {
   const dir = mkdtempSync(join(tmpdir(), "check-vocabulary-"));
   const base = {
+    // COPIED FROM THE REPOSITORY, not written by hand: check 8 asserts that the
+    // generator's regex reads every key the imported SKILL_SHAPES declares, and
+    // the import is always this repository's, so a hand-written stand-in here
+    // would be a tree that fails the check for being a fixture.
+    "scripts/skills.mjs": readFileSync(join(REPO_ROOT, "scripts/skills.mjs"), "utf8"),
     "package.json": `${JSON.stringify({ name: "fixture", dependencies: { convex: "^1" } }, null, 2)}\n`,
     "convex/ttsShared.ts": `export const DAY_MS = 86_400_000;\n${sharedBlock()}\n`,
     "convex/ttsEvals.ts": "export const key = commitKey(args.repo, args.sha);\n",
@@ -189,6 +195,26 @@ describe("check-vocabulary", () => {
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('scripts/graph.mjs:1: "fetch(" in code');
+  });
+
+  // CHECK 8 IS THE HOME OF A COMPARISON THAT USED TO LIVE IN THE GENERATOR,
+  // where it read the tom.quest checkout the run was pointed at against the
+  // installed script's own sibling and failed the nightly on the skew between
+  // two checkouts. Here both sides are one tree, so the only thing a failure
+  // can mean is that the regex no longer reads an entry.
+  it("8: names a shape the generator's parser can no longer read", () => {
+    const skills = readFileSync(join(REPO_ROOT, "scripts/skills.mjs"), "utf8");
+    const blinded = skills.replace("  explainer: Object.freeze({", "  explainer: Object.freeze( {");
+    expect(blinded).not.toBe(skills);
+    const result = run(fixture({ "scripts/skills.mjs": blinded }));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("it cannot read explainer");
+  });
+
+  it("8: names a SKILL_SHAPES it cannot find at all", () => {
+    const result = run(fixture({ "scripts/skills.mjs": "export const SHAPES = {};\n" }));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("cannot read SKILL_SHAPES at all");
   });
 
   // THE CARVE-OUT, BOTH WAYS. scripts/graph.mjs is exempt for a RANGE and not

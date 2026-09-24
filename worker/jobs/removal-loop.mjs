@@ -47,8 +47,8 @@
 // THIS JOB IS NOT A SESSION AND MERGES DIRECTLY. The session daemon's merge
 // fence (worker/session-host/merge-gate.mjs) stands between a
 // session's Bash tool and `gh pr merge`; this is a cron job, and the fence it
-// answers to is the same three checks, read through GET /tts/merge-gate before
-// it merges and re-run by POST /tts/merge after. It adds no fourth check and
+// answers to is the same gate, read through GET /tts/merge-gate before it
+// merges and re-run by POST /tts/merge after. It adds no fourth check and
 // bypasses none.
 //
 // WHY A NEW DAILY JOB and not the weekly simplification pass run daily: the
@@ -84,7 +84,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { convexFetch, loadEnv, nyHour, reportJobFailed, reportJobOk } from "./tts-lib.mjs";
+import { MODELS, convexFetch, loadEnv, nyHour, reportJobFailed, reportJobOk } from "./tts-lib.mjs";
 import { yamlToJson } from "./tts-code-lib.mjs";
 import { utcDay } from "./session-archive.mjs";
 
@@ -105,7 +105,7 @@ const LOOP_HOUR = 5;
  *  explanation that becomes the pull request's body. Codex was capped when
  *  the loop landed; worker/README.md records what switching would take. */
 const ACTUATOR_RUNNER = "claude";
-const ACTUATOR_MODEL = "opus";
+const ACTUATOR_MODEL = MODELS.removalActuator;
 
 /** The trailer every loop commit carries, the one the loop's own brief named. */
 const COMMIT_TRAILER = "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>";

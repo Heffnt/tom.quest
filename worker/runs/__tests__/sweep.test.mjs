@@ -7,16 +7,20 @@ import { describe, expect, it, vi } from "vitest";
 import { claudeAssistant, claudeLine, claudeToolUseBlock, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
+  DISK_SCAN_TTL_MS,
   MAX_ATTEMPTS,
   acquireSweepLock,
   deletable,
+  diskScanRoots,
   drainQueue,
+  lowDiskError,
   prefixSha256,
   refreshClaudeHeaders,
   stateFileFor,
   storeText,
   sweepRunFile,
   sweepRuns,
+  topDirectories,
 } from "../sweep.mjs";
 
 const NOW = Date.parse("2026-01-01T00:00:00.000Z");
@@ -783,5 +787,106 @@ describe("run sweep", () => {
     expect(broken.acquired).toBe(true);
     broken.release();
     expect(fs.existsSync(file)).toBe(false);
+  });
+});
+
+// witness: this check fired at 20:53, 20:56 and 20:57 UTC on 2026-09-22 and
+// said "The run-file volume has less than 10 GB free" — true, unactionable,
+// and read as a sweep complaint. At 20:59 the box filled and a run died with
+// ENOSPC. The failure now names where the room went, which is the whole point
+// of saying it before a run dies.
+describe("the low-disk report", () => {
+  function smallDiskFs() {
+    const value = Object.create(fs);
+    value.statfsSync = () => ({ bavail: 4 * 1024 ** 3, bsize: 1 });
+    return value;
+  }
+
+  /** `du -x --max-depth=1 <root>`: one line per child, the root's total last. */
+  function fakeDu(sizes) {
+    return (_bin, args) => {
+      const root = args.at(-1);
+      const children = Object.entries(sizes).map(([name, bytes]) => `${bytes}\t${path.join(root, name)}`);
+      const total = Object.values(sizes).reduce((sum, bytes) => sum + bytes, 0);
+      return { stdout: [...children, `${total}\t${root}`].join("\n") };
+    };
+  }
+
+  it("names the three biggest directories in the failure the digest carries", async () => {
+    const dir = temp();
+    const item = runFile(dir);
+    const cfg = config(dir, item);
+    cfg.ttsKey = "key";
+    // The measurement the hour already took: the live call reads it back
+    // rather than walking the machine the suite happens to be running on.
+    const stateDir = cfg.stateDir;
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "disk-top.json"), `${JSON.stringify({
+      at: NOW,
+      dirs: [
+        { path: "/var/cache/tts/sessions", bytes: 11_609_493_504 },
+        { path: "/var/cache/tts/desktop", bytes: 7_838_007_296 },
+        { path: "/root/wikitom", bytes: 7_408_579_379 },
+      ],
+    })}\n`);
+    const posted = [];
+    await sweepRuns({
+      config: cfg,
+      store: store(),
+      post: async (route, body) => { posted.push([route, body]); return { ok: true, committedLine: body?.run?.file?.committedLine ?? 0 }; },
+      fs: smallDiskFs(),
+      now: () => NOW,
+      log: () => {},
+    });
+    const failure = posted.find(([route, body]) => route === "/tts/job-failed" && body.key === "runs-sweep:disk");
+    expect(failure).toBeDefined();
+    expect(failure[1].error).toContain("4.0 GB free");
+    expect(failure[1].error).toContain("/var/cache/tts/sessions (10.8 GB)");
+    expect(failure[1].error).toContain("/var/cache/tts/desktop (7.3 GB)");
+    expect(failure[1].error).toContain("/root/wikitom (6.9 GB)");
+  });
+
+  it("weighs the trees on the filling disk, derived and not named", () => {
+    // Not the temp directory: it is a tmpfs on the box, so what it holds is
+    // RAM, and naming it as where a filling disk went is a wrong answer.
+    const roots = diskScanRoots("/var/cache/tts/runs", { homedir: () => "/root" });
+    expect(roots).toEqual(["/var/cache/tts", "/root"]);
+  });
+
+  it("orders the directories by size, drops the root's own total, and keeps three", () => {
+    const dir = temp();
+    const root = path.join(dir, "cache");
+    const dirs = topDirectories({
+      stateDir: path.join(dir, "state"),
+      roots: [root],
+      now: () => NOW,
+      run: fakeDu({ small: 10, middling: 2_000, huge: 30_000, vast: 400_000 }),
+    });
+    expect(dirs.map((entry) => path.basename(entry.path))).toEqual(["vast", "huge", "middling"]);
+    expect(dirs[0].bytes).toBe(400_000);
+    expect(dirs.some((entry) => path.resolve(entry.path) === path.resolve(root))).toBe(false);
+  });
+
+  it("measures once an hour, however often the threshold is crossed", () => {
+    // The threshold stays crossed for hours — it was crossed 740 times on
+    // 2026-09-22 — and a walk of the whole volume every two minutes would be
+    // the job's own contribution to the problem.
+    const dir = temp();
+    const root = path.join(dir, "cache");
+    let walks = 0;
+    const du = fakeDu({ one: 7 });
+    const measure = (...args) => { walks += 1; return du(...args); };
+    const call = (at) => topDirectories({ stateDir: path.join(dir, "state"), roots: [root], now: () => at, run: measure });
+    call(NOW);
+    call(NOW + DISK_SCAN_TTL_MS - 1);
+    expect(walks).toBe(1);
+    call(NOW + DISK_SCAN_TTL_MS + 1);
+    expect(walks).toBe(2);
+  });
+
+  it("still says the free space when nothing could be measured", () => {
+    expect(lowDiskError(3 * 1024 ** 3, [])).toBe(
+      "The box volume has 3.0 GB free, under the 10.0 GB a run needs. A full sweep is running.",
+    );
   });
 });

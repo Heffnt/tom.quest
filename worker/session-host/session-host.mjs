@@ -23,8 +23,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { execFile as execFileCb } from "node:child_process";
-import { promisify } from "node:util";
 import {
   loadEnv,
   log,
@@ -36,10 +34,18 @@ import {
   scrubbedEnv,
 } from "./lib.mjs";
 import { Session, gitErrorText } from "./session.mjs";
-import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
+import { FABLE_PROBE_INTERVAL_MS, fableProbeDue, readFableState } from "../runs/models.mjs";
+import {
+  CODEX_BIN,
+  codexArgs,
+  parseCodexRateLimits,
+  resolveCodexBin,
+  spawnCodex,
+} from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
 import { DAEMON_RESTART_ENDED_REASON, listedCodexModels } from "./hosted.mjs";
+import { reapUnlisted, removeOrphanWorkdirs, removeWorkdir } from "./workdir.mjs";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -72,8 +78,6 @@ function readActiveAccount() {
     return undefined; // not a symlink / not set up — simply don't report
   }
 }
-
-const execFile = promisify(execFileCb);
 
 // ── Codex on the box (ratified 2026-09-04) ───────────────────────────────────
 // The binary, the spawn shim and the per-turn flags come from codex-bin.mjs
@@ -174,12 +178,12 @@ async function warmUpCodex() {
 
 // Codex account usage for the heartbeat, read TOKEN-FREE: `codex app-server`
 // is a JSON-RPC server over stdio, and account/rateLimits/read answers from
-// the account's cached limits without spending a model call. Verified against
-// codex-cli 0.130 on 2026-09-04: result.rateLimits.primary is the 5-hour
-// window (windowDurationMins 300) and .secondary the weekly one (10080), each
-// { usedPercent, windowDurationMins, resetsAt } with resetsAt in EPOCH
-// SECONDS. The scheduler gates new Codex sessions on the weekly figure
-// (CODEX_WEEKLY_CAP_PERCENT in ttsShared); the 5-hour one is recorded only.
+// the account's cached limits without spending a model call. The answer's
+// result.rateLimits is parsed by parseCodexRateLimits (codex-bin.mjs, which
+// says which window is which and why NOT by position). The scheduler gates
+// new Codex sessions on the weekly figure (CODEX_WEEKLY_CAP_PERCENT in
+// ttsShared); the 5-hour one is recorded only, and absent when the account
+// reports no such window.
 //
 // At most once per 5 minutes, in the BACKGROUND: refreshCodexUsage starts a
 // read and returns at once, so a hung app-server never holds the poll loop
@@ -195,16 +199,11 @@ async function warmUpCodex() {
 const CODEX_USAGE_INTERVAL_MS = 5 * 60 * 1000;
 const CODEX_USAGE_BACKOFF_CAP_MS = 30 * 60 * 1000;
 const CODEX_USAGE_TIMEOUT_MS = 15_000;
-let codexUsage; // { weeklyUsedPercent, fiveHourUsedPercent, weeklyResetsAt?, readAt }
+let codexUsage; // { weeklyUsedPercent, fiveHourUsedPercent?, weeklyResetsAt?, readAt }
 let codexUsageNextAt = 0; // earliest start of the next read
 let codexUsageFailures = 0; // consecutive failures — the backoff exponent
 let codexUsageInFlight = false; // two reads never overlap
 let codexUsageWarned = false; // log the failure ONCE, not on every retry
-
-function toEpochMs(value) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return value < 1e12 ? value * 1000 : value; // seconds → ms
-}
 
 async function readCodexUsage() {
   const child = spawnCodex(["app-server"], {
@@ -265,17 +264,8 @@ async function readCodexUsage() {
   });
   try {
     const result = await done;
-    const limits = result?.rateLimits;
-    const weekly = limits?.secondary;
-    const fiveHour = limits?.primary;
-    if (typeof weekly?.usedPercent !== "number" || typeof fiveHour?.usedPercent !== "number") {
-      throw new Error(`unexpected rateLimits shape: ${JSON.stringify(limits).slice(0, 200)}`);
-    }
-    const weeklyResetsAt = toEpochMs(weekly.resetsAt);
     return {
-      weeklyUsedPercent: weekly.usedPercent,
-      fiveHourUsedPercent: fiveHour.usedPercent,
-      ...(weeklyResetsAt !== undefined ? { weeklyResetsAt } : {}),
+      ...parseCodexRateLimits(result?.rateLimits),
       readAt: Date.now(),
     };
   } finally {
@@ -365,38 +355,80 @@ async function readCodexModels() {
   return listedCodexModels(out);
 }
 
-// ── usage-limit account auto-switch (ratified 2026-08-28) ────────────────────
-// A session that hits a usage/rate limit signals here; the daemon flips the
-// active symlink to the OTHER Max account via tts-account so the fleet (and
-// Tom) keep working, at most once per 3h (in-memory throttle — a restart
-// resets it, harmlessly). Tradeoff, stated: NEW queries run under the new
-// account; existing sdkSessionIds live in the old account's config dir, so a
-// resume after a switch starts fresh context — the restart-adoption rules
-// already record that honestly in the transcript.
-const SWITCH_THROTTLE_MS = 3 * 60 * 60 * 1000;
-let lastAccountSwitchAt = 0;
+// ── the Fable probe (Tom's ruling, 2026-09-24) ───────────────────────────────
+// "make sure that the opus ceiling is temporary and we switch back to fable
+// when my weekly limit resets." While the Fable availability file
+// (worker/runs/models.mjs) says Fable is unavailable, a request for Fable runs
+// Opus. This is what lifts it: at most once an hour, in the BACKGROUND beside
+// the Codex usage read, one Fable call of one turn and one word through the
+// launcher (box-run.mjs probeFable), recorded like any run. An account out of
+// usage refuses without a model call; an answer sets Fable available, and the
+// next Fable request runs Fable. The reset date never has to be known: the
+// CLI's refusal names a monthly spend limit, Tom's ruling a weekly limit, and
+// the probe finds out either way.
+//
+// The file's own checkedAt is the hourly clock, so a daemon restart does not
+// probe early; fableProbeNextAt is the same hour kept in memory, so a probe
+// that fails before it can write the file is not retried on every poll.
+let fableProbeInFlight = false;
+let fableProbeNextAt = 0;
 
-async function maybeSwitchAccount(signalText, session) {
+function fableStateDir() {
+  return process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+}
+
+// Start a probe when one is due and none is running; returns at once. Never
+// throws.
+function refreshFableProbe() {
   const now = Date.now();
-  if (now - lastAccountSwitchAt < SWITCH_THROTTLE_MS) return;
-  const active = readActiveAccount();
-  if (active !== "gmail" && active !== "wpi") {
-    log(`usage limit signaled but active account unknown (${active}) — not switching`);
-    return;
-  }
-  lastAccountSwitchAt = now;
-  const other = active === "gmail" ? "wpi" : "gmail";
-  try {
-    await execFile("/usr/local/bin/tts-account", ["use", other]);
-    log(`usage limit detected — switched account ${active} -> ${other} (${signalText})`);
-    session?.finalizeRow("system", {
-      text: `usage limit detected — switched account ${active} -> ${other}`,
-    });
-    session?.requestFlush(true);
-  } catch (err) {
-    lastAccountSwitchAt = 0; // the switch didn't happen; don't throttle a retry
-    log(`account switch ${active} -> ${other} FAILED:`, String(err?.message ?? err));
-  }
+  if (fableProbeInFlight || now < fableProbeNextAt) return;
+  if (!fableProbeDue(readFableState(fableStateDir()), now)) return;
+  fableProbeInFlight = true;
+  fableProbeNextAt = now + FABLE_PROBE_INTERVAL_MS;
+  void (async () => {
+    try {
+      const { probeFable } = await boxRunner();
+      const state = await probeFable({ env: { ...process.env, RUN_SWEEP_STATE_DIR: fableStateDir() } });
+      log(state.available
+        ? "fable probe: Fable answered; a request for Fable runs Fable again"
+        : `fable probe: Fable is still unavailable (${state.reason ?? "no reason given"})`);
+    } catch (err) {
+      log("fable probe failed:", String(err?.message ?? err));
+    } finally {
+      fableProbeInFlight = false;
+    }
+  })();
+}
+
+/** The Fable availability state for the heartbeat, or undefined while none
+ *  is recorded (an absent file reads as available, and says nothing new). */
+function fableAvailabilityReport() {
+  const state = readFableState(fableStateDir());
+  if (!Number.isFinite(state.since) || !Number.isFinite(state.checkedAt)) return undefined;
+  return {
+    available: state.available,
+    since: state.since,
+    checkedAt: state.checkedAt,
+    ...(typeof state.reason === "string" && state.reason !== "" ? { reason: state.reason } : {}),
+  };
+}
+
+// ── usage limits, recorded ───────────────────────────────────────────────────
+// A Claude session that hits a usage limit other than a Fable refusal (which
+// session.mjs turns into the model ceiling) is recorded here and nothing
+// else: the latest one rides every heartbeat as `usageLimit`, and the session
+// itself waits (interactive) or ends errored (autonomous) through its own
+// turn-failure path. The box stays on the active account. Tom's ruling,
+// 2026-09-24, verbatim: "lets keep the box on my wpi claude account even
+// though it is out of fable usage and have it max out at opus for now. even
+// for delegate. I want to save my usage for my heffnt account for personal
+// use." The account switch that stood here spent the other account on any
+// limit, so it is gone; `tts-account use` is Tom's to run by hand.
+let lastUsageLimit; // { at, text, sessionId } — the latest, kept until replaced
+
+function recordUsageLimit(text, session) {
+  lastUsageLimit = { at: Date.now(), text: String(text).slice(0, 200), sessionId: session.id };
+  log(`session ${session.id}: usage limit (${lastUsageLimit.text}); recorded on the heartbeat, account unchanged`);
 }
 
 // Fail a session outright — the one class of ending with nothing to resume
@@ -435,7 +467,7 @@ function claimSession(env, sessions, row) {
     // The reopen generation this Session speaks for: stamped into every ingest
     // so the server can tell a live flush from a pre-reopen replay.
     reopenEpoch: row.reopenEpoch ?? 0,
-    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
+    onUsageSignal: recordUsageLimit,
   });
   sessions.set(row.id, s);
   void (async () => {
@@ -502,7 +534,7 @@ function adoptSession(env, sessions, row) {
     forkedFrom: row.forkedFrom,
     environment: row.environment,
     reopenEpoch: row.reopenEpoch ?? 0,
-    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
+    onUsageSignal: recordUsageLimit,
   });
   sessions.set(row.id, s);
   s.sdkSessionId = row.sdkSessionId;
@@ -592,9 +624,12 @@ async function main() {
   // still live; a row this daemon cannot construct a Session for) — cleared
   // when the row leaves the poll, so a later change is reported again.
   const notedRows = new Set();
+  let orphansRemoved = false;
 
   for (;;) {
     refreshCodexUsage(); // starts a read when due; never waits on it
+    refreshFableProbe(); // the same, for the Fable probe
+    const fableAvailability = fableAvailabilityReport();
     // Surface the most recent permanent ingest rejection (review fix:
     // permanent-400 wedge) — a dropped flush must be visible server-side, not
     // only in journald. One report is enough: cleared after the poll that
@@ -632,6 +667,13 @@ async function main() {
         // succeeded, which the server reads as unknown, like a stale readAt.
         ...(codexUsage !== undefined ? { codexUsage } : {}),
         ...(codexModels !== undefined ? { codexModels } : {}),
+        // The Fable availability file (worker/runs/models.mjs), for the pages
+        // that show whether the ceiling is in force; absent while none is
+        // recorded.
+        ...(fableAvailability !== undefined ? { fableAvailability } : {}),
+        // The latest usage limit a Claude session hit that was not a Fable
+        // refusal (recordUsageLimit); absent until one happens.
+        ...(lastUsageLimit !== undefined ? { usageLimit: lastUsageLimit } : {}),
         ...(lastIngestError !== undefined ? { lastIngestError } : {}),
         // This daemon hosts orchestrator and worker rows (hosted.mjs). A
         // daemon that does not say so is never shown one, so an old copy on
@@ -749,22 +791,17 @@ async function main() {
       }
     }
 
-    // Locals the server no longer lists are terminal server-side: either our
-    // own ended/failed report landed (reap once the outbox drains) or the
-    // browser force-closed a session it thought orphaned (kill the process —
-    // the server's word is final).
-    for (const [id, s] of sessions) {
-      if (listed.has(id)) continue;
-      if (s.dead) {
-        // Review fix: force-killed sessions were never drained (their outbox
-        // is dropped, not flushed), so waiting on isDrained() leaked the map
-        // entry forever. Dead means gone — delete unconditionally.
-        sessions.delete(id);
-      } else if (s.status === "ended" || s.status === "failed") {
-        if (s.isDrained()) sessions.delete(id);
-      } else {
-        s.forceKill("server no longer lists this session");
-        sessions.delete(id);
+    // Locals the server no longer lists are terminal server-side; the reap
+    // drops each and deletes its workdir (workdir.mjs says why here).
+    reapUnlisted(sessions, listed, { remove: (id) => removeWorkdir(id, { log }) });
+
+    // The endings no process observed: once, on this daemon's first poll.
+    if (!orphansRemoved) {
+      orphansRemoved = true;
+      const known = new Set([...listed, ...sessions.keys()].map(String));
+      const removed = removeOrphanWorkdirs({ known, remove: (id) => removeWorkdir(id, { log }) });
+      if (removed.length > 0) {
+        log(`removed ${removed.length} workdirs of sessions that ended while no daemon ran`);
       }
     }
 

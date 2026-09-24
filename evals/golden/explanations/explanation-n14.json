@@ -6,6 +6,7 @@
   "label": "did not",
   "sentence": "What have we done so far and what needs to still get done? Explain it from the ground up as if I don't understand anything that's going on.",
   "confirmedByTom": false,
+  "unreplayable": "the explanation rests on 25 tool calls the agent made after Tom's request (Bash, Edit, Grep, Read, Workflow, Write), which the replay cannot be handed: they are not in the session before the request and the explanation job has no tools",
   "ruledOn": "2026-08-13",
   "input": {
     "topic": "Where the trajectory work stands",

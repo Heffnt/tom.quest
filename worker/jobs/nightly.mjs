@@ -135,7 +135,7 @@ import {
   withWikiTomLock,
   writeArchived,
 } from "./session-archive.mjs";
-import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
+import { MODELS, loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
 import {
   enclosingHeadings,
@@ -384,6 +384,23 @@ export const REPO_CHECKOUTS = [
   { repo: "tom.quest", dir: TOM_QUEST_DIR },
   { repo: "WikiTom", dir: WIKITOM_DIR },
   { repo: "ComplexMultiTrigger", dir: CMT_DIR },
+];
+
+// THE FILES HIS INTENT IS WRITTEN IN that no other post carries, one home each
+// (convex/schema.ts intentSources says which four kinds of place there are and
+// which three already had a home). The evidence files are posted as source
+// bodies and are NOT in PRELUDE_LAYERS: "never load; search it" is the rule
+// about them, and nothing here puts a byte of them in a prompt.
+//
+// The list lives beside the checkouts because it is a list of repository names,
+// which this file already carries for the same reason.
+const INTENT_SOURCES = [
+  { repo: "WikiTom", path: "model-of-tom/evidence/intent.md" },
+  { repo: "WikiTom", path: "model-of-tom/evidence/priorities.md" },
+  { repo: "WikiTom", path: "model-of-tom/evidence/agent-rules.md" },
+  { repo: "WikiTom", path: "tts/spec.md" },
+  { repo: "tom.quest", path: "vqc/steering.yaml" },
+  { repo: "tom.quest", path: "vqc/adoption.md" },
 ];
 
 // THE THREE SKILL DIRECTORIES ON THIS BOX, and the only three. The two Claude
@@ -720,13 +737,29 @@ async function graphStep(run) {
   // digest, and it writes nothing. When those three are settled this becomes
   // `write: true` and a throw, in one edit, and the graph's own half already
   // works that way.
-  const vocabulary = generateVocabulary({ wikitom: run.dir, tomQuest: TOM_QUEST_DIR, write: false });
+  // The one place the "yet" above is written down, read twice: by the call
+  // that renders and by the post that says whether tts/vocabulary.json exists
+  // at this commit. Two spellings of it could disagree, and the page's whole
+  // question is whether the file is written.
+  const VOCABULARY_WRITES = false;
+  const vocabulary = generateVocabulary({ wikitom: run.dir, tomQuest: TOM_QUEST_DIR, write: VOCABULARY_WRITES });
   if (vocabulary.disagreements.length > 0) {
     console.log(
       `[nightly] graph: the vocabulary reports ${vocabulary.disagreements.length} disagreement(s) `
         + "and writes nothing; they are Tom's to settle, see graphStep",
     );
   }
+  // THE RENDER GOES TO THE RECORD WHETHER OR NOT IT WAS WRITTEN, which is what
+  // makes the /vocabulary page possible at all: while the disagreements stand,
+  // `tts/vocabulary.json` does not exist, and this render is the only current
+  // statement of what every word means. It carries the disagreements with it,
+  // because each of them is one ruling of his and settling them is what makes
+  // the file exist (convex/vocabulary.ts).
+  //
+  // Recorded and not thrown, like the tom.quest half below: the graph's own
+  // files are written and committed by the end of this step, and losing that
+  // to a refused post would be a worse night than a stale page.
+  await postVocabulary(run, vocabulary, { wrote: VOCABULARY_WRITES });
   const graph = generateGraph({
     wikitom: run.dir,
     tomQuest: TOM_QUEST_DIR,
@@ -768,9 +801,11 @@ async function graphStep(run) {
       // between the render and disk. The old name said the generator had
       // changed them, which was never true while `write` is false.
       differsOnDisk: vocabulary.changed,
-      // The row says what the vocabulary found and that it wrote nothing, so
-      // the digest can carry the count and the morning reader can act on it.
-      wrote: false,
+      // The row says what the vocabulary found and whether it wrote, so the
+      // digest can carry the count and the morning reader can act on it. It
+      // reads the same flag the render and the post read, so the three cannot
+      // disagree about a file that either exists at this commit or does not.
+      wrote: VOCABULARY_WRITES,
       disagreements: vocabulary.disagreements.length,
       report: String(vocabulary.report ?? "").slice(0, 2_000),
     },
@@ -802,6 +837,37 @@ async function graphStep(run) {
   // reaching for is convex/ttsShared.ts's, and `check:vocabulary` reports that
   // on tom.quest's own gate, where the file lives and can actually be landed.
   return result;
+}
+
+/**
+ * The night's vocabulary render to POST /tts/vocabulary: every word with its
+ * definition and where it is defined, plus the disagreements the generator
+ * reports, so the /vocabulary page shows the words as they are AND what is
+ * holding `tts/vocabulary.json` back.
+ *
+ * `wrote` is the fact the page turns on: false means the file does not exist
+ * at this commit and these disagreements are why.
+ */
+async function postVocabulary(run, vocabulary, { wrote, fetch = convexFetch } = {}) {
+  try {
+    const commit = git(run.dir, "rev-parse", "HEAD").trim();
+    await fetch(run.env, "/tts/vocabulary", {
+      version: vocabulary.version,
+      commit,
+      committedAt: commitSyncedAt(run.dir, commit),
+      generatedAt: Date.now(),
+      wrote,
+      terms: vocabulary.vocabulary.terms,
+      disagreements: vocabulary.disagreements,
+    });
+    console.log(
+      `[nightly] graph: posted the vocabulary — ${vocabulary.vocabulary.terms.length} term(s), `
+        + `${vocabulary.disagreements.length} disagreement(s), `
+        + `${wrote ? "written" : "not written"}`,
+    );
+  } catch (error) {
+    await recordFailure(run, "vocabulary", error, { fetch });
+  }
 }
 
 // ── 2. learning ──────────────────────────────────────────────────────────────
@@ -874,7 +940,7 @@ export const FORBIDDEN_SECTIONS = ["Directions", "Ideal state", "Must not break"
 export const LEARNING_OPS = ["add", "replace", "remove"];
 // runClaude's --model. The Opus tier: this is judgment over Tom's words, not
 // a mechanical parse. Overridable per box without a deploy.
-export const LEARNING_MODEL = process.env.TTS_LEARNING_MODEL || "opus";
+const LEARNING_MODEL = process.env.TTS_LEARNING_MODEL || MODELS.learning;
 export const LEARNING_TIMEOUT_MS = 20 * 60 * 1000;
 // A turn of Tom's is shown to the model up to this many characters.
 export const LEARNING_TURN_CHARS = 4000;
@@ -2527,12 +2593,16 @@ function gitError(err) {
 // one on GitHub. Convex refuses a post older than the one it holds, so a
 // rerun of an old checkout cannot roll the prelude back (ttsSkills.ts).
 //
-// THE STEP HAS TWO HALVES AND THEY FAIL SEPARATELY.
+// THE STEP HAS THREE HALVES AND THEY FAIL SEPARATELY.
 //
 //   1. the base — the model-of-tom files and POST /tts/model-of-tom, below.
 //   2. the skills — generated into private staging directories from the same
 //      HEAD, then the catalog to POST /tts/skills, then atomically promoted
 //      into the box's three live directories (skillsHalf).
+//   3. the intent sources — the files his intent is written in that neither of
+//      the two above carries, to POST /tts/intent-sources
+//      (intentSourcesHalf). Last, because it is the one whose failure costs a
+//      page some rows rather than a prompt its base.
 //
 // In that order, under the one lock this step already holds, off the one HEAD
 // the rebase guard below cleared. Two doors and not one widened door, because a
@@ -2622,8 +2692,69 @@ export async function postStep(run, deps = {}) {
     checkouts: deps.checkouts ?? REPO_CHECKOUTS,
     dirs: deps.skillsDirs ?? boxSkillsDirs(),
   });
-  if (!delivered) return { commit: null, pushed: false, files: null, skills };
-  return { commit: prelude.commit, pushed: prelude.pushed, files: files.map((f) => f.path), skills };
+  const intentSources = await intentSourcesHalf(run, {
+    fetch,
+    commit: prelude.commit,
+    tomQuest: deps.tomQuest ?? TOM_QUEST_DIR,
+    commitTime: deps.commitTime ?? commitSyncedAt,
+  });
+  if (!delivered) return { commit: null, pushed: false, files: null, skills, intentSources };
+  return { commit: prelude.commit, pushed: prelude.pushed, files: files.map((f) => f.path), skills, intentSources };
+}
+
+/**
+ * The third half of the post: the files his intent is written in that neither
+ * of the two halves above carries (scripts/prelude.mjs collectIntentSources
+ * lists them and says why). It is a half and not a step for the same reason
+ * `skillsHalf` is — it reads the one HEAD the rebase guard cleared, under the
+ * one lock this step holds — and it NEVER THROWS, because the base and the
+ * skills have already landed by the time it runs and losing either of them to
+ * a missing evidence file is the outcome this shape exists to prevent.
+ *
+ * Returns `{ commit, files }`, or NULL when it could not run.
+ */
+async function intentSourcesHalf(run, { fetch, commit, tomQuest, commitTime }) {
+  const dirs = { WikiTom: run.dir, "tom.quest": tomQuest };
+  let collected;
+  try {
+    const { collectIntentSources } = await loadPrelude();
+    collected = collectIntentSources({
+      dirs,
+      sources: INTENT_SOURCES,
+      // WikiTom at the commit the base post used; tom.quest at its own HEAD.
+      commits: { WikiTom: commit },
+    });
+  } catch (error) {
+    await recordFailure(run, "intent-sources", error, { fetch });
+    return null;
+  }
+  // A MISSING SOURCE IS RECORDED AND THE REST GO. The page then shows the
+  // kinds it can read and says which source it has nothing for, which is a
+  // truer picture than a night that posted nothing at all.
+  if (collected.missing.length > 0) {
+    await recordFailure(
+      run,
+      "intent-sources",
+      new Error(`absent at their commits, so the page has no rows for them: ${collected.missing.join(", ")}`),
+      { fetch },
+    );
+  }
+  if (collected.files.length === 0) return null;
+  let res;
+  try {
+    const files = collected.files.map((file) => ({
+      ...file,
+      syncedAt: commitTime(dirs[file.repo], file.commit),
+    }));
+    res = await fetch(run.env, "/tts/intent-sources", { files });
+  } catch (error) {
+    await recordFailure(run, "intent-sources", error, { fetch });
+    return null;
+  }
+  console.log(
+    `[nightly] intent-sources: ${res.files} file(s) — ${collected.files.map((f) => `${f.repo} ${f.path}`).join(", ")}`,
+  );
+  return { commit, files: collected.files.map((f) => f.path) };
 }
 
 /**

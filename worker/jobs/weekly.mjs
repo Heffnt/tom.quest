@@ -71,6 +71,7 @@ import {
   nyHour,
   runClaude,
   JSON_ONLY_ANSWER,
+  MODELS,
 } from "./tts-lib.mjs";
 import {
   MODEL_OF_TOM_AREAS_DIR,
@@ -87,8 +88,8 @@ import { extractSections, isIsoDay, setFrontmatterField, withoutHeading } from "
 // ── Names ────────────────────────────────────────────────────────────────────
 export const WEEKLY_DIR = "tts/weekly";
 export const SESSION_KIND = "weekly";
-/** The Opus tier, by the name the claude CLI and the session model list use. */
-export const WEEKLY_MODEL = "opus";
+/** The Opus tier (worker/runs/models.mjs MODELS.weekly). */
+const WEEKLY_MODEL = MODELS.weekly;
 export const MODEL_TIMEOUT_MS = 15 * 60 * 1000;
 /** The failure row's kind (convex/ttsWeekly.ts WEEKLY_FAILURE). */
 export const WEEKLY_FAILURE = "weekly-failure";

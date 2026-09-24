@@ -909,7 +909,7 @@ export const SESSION_REPO_NAMES = Object.keys(
 export const SESSION_MODELS = {
   opus: { family: "claude", id: null, effort: null },
   sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
-  fable: { family: "claude", id: "claude-fable-5", effort: null },
+  fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
   // OpenAI's Astra, the orchestrator's first choice (Tom, 2026-09-21). Listed
@@ -939,6 +939,32 @@ export const CODEX_WEEKLY_CAP_PERCENT = 90;
  * Codex door shut forever.
  */
 export const CODEX_USAGE_STALE_MS = 15 * 60_000;
+/**
+ * Whether Fable answers on the box, as the session daemon reports it on its
+ * heartbeat from worker/runs/models.mjs's availability file. While
+ * `available` is false a request for Fable runs Opus (the model ceiling, Tom's
+ * rulings of 2026-09-24); the daemon's hourly probe sets it true again.
+ * `since` is when the value last changed, `checkedAt` the last run or probe
+ * that found it out, `reason` the CLI's refusal. One validator for the
+ * heartbeat's argument and the stored field.
+ */
+/**
+ * The latest usage limit a Claude session on the box hit that was not a Fable
+ * refusal, as the daemon reports it on its heartbeat: when, the CLI's words,
+ * and which session. A fact for the pages; the daemon never switches the
+ * account on it (Tom's ruling of 2026-09-24 keeps the box on the wpi account).
+ */
+export const USAGE_LIMIT_REPORT = v.object({
+  at: v.number(),
+  text: v.string(),
+  sessionId: v.string(),
+});
+export const FABLE_AVAILABILITY = v.object({
+  available: v.boolean(),
+  since: v.number(),
+  checkedAt: v.number(),
+  reason: v.optional(v.string()),
+});
 /** The stored form. One union of literals, DERIVED from the table above so a
  * model added there is accepted by the validator in the same edit — a
  * hand-copied union rejected a model the table already knew. An unknown model
