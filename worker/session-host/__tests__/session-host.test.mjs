@@ -13,6 +13,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { LEGACY_SESSION_MODEL } from "../session-constants.mjs";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (name) => fs.readFileSync(path.join(here, "..", name), "utf8");
 const hostSource = read("session-host.mjs");
@@ -30,15 +32,17 @@ const between = (text, start, end) => {
 // and the poll walk must survive any row it cannot handle.
 describe("unknown model name degrades to opus (finding 1)", () => {
   it("modelFamily/modelSpec fall back to the opus spec for an unknown name", () => {
-    expect(sessionSource).toMatch(/export function knownModel\(name\) \{\s*\n\s*return Object\.hasOwn\(SESSION_MODELS, name \?\? "opus"\);/);
+    expect(sessionSource).toMatch(/export function knownModel\(name\) \{\s*\n\s*return Object\.hasOwn\(SESSION_MODELS, name \?\? LEGACY_SESSION_MODEL\);/);
     const spec = between(sessionSource, "export function modelSpec(name, fable = { available: true }) {", "\n}\n");
-    expect(spec).toMatch(/return SESSION_MODELS\[knownModel\(name\) \? \(name \?\? "opus"\) : "opus"\];/);
+    expect(spec).toMatch(/return SESSION_MODELS\[knownModel\(name\) \? \(name \?\? LEGACY_SESSION_MODEL\) : LEGACY_SESSION_MODEL\];/);
     // The model ceiling is the second rung of the same fallback.
-    expect(spec).toMatch(/const resolved = underCeiling\(name \?\? "opus", fable\);\s*\n\s*if \(resolved\.atCeiling\) return SESSION_MODELS\[resolved\.model\];/);
+    expect(spec).toMatch(/const resolved = underCeiling\(name \?\? LEGACY_SESSION_MODEL, fable\);\s*\n\s*if \(resolved\.atCeiling\) return SESSION_MODELS\[resolved\.model\];/);
     const family = between(sessionSource, "export function modelFamily(name) {", "\n}\n");
-    expect(family).toMatch(/if \(!knownModel\(name\)\) name = "opus";/);
-    // The mirror check's fenced expression stays (scripts/check-session-mirrors.mjs).
-    expect(family).toMatch(/SESSION_MODELS\[name \?\? "opus"\]\.family/);
+    expect(family).toMatch(/if \(!knownModel\(name\)\) name = LEGACY_SESSION_MODEL;/);
+    expect(family).toMatch(/SESSION_MODELS\[name \?\? LEGACY_SESSION_MODEL\]\.family/);
+    // The legacy word is the shared constant's, "opus".
+    expect(sessionSource).toMatch(/import \{[^}]*\bLEGACY_SESSION_MODEL\b[^}]*\} from "\.\/session-constants\.mjs";/);
+    expect(LEGACY_SESSION_MODEL).toBe("opus");
   });
 
   it("the constructor logs the fallback once per session, and startQuery writes the row", () => {

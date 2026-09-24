@@ -58,8 +58,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sha256Hex } from "../worker/jobs/graph-hash.mjs";
-import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
+import { sha256Hex } from "../shared/graph-hash.mjs";
+import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
 // The platform defaults for a WikiTom checkout are spelled ONCE, in the search
 // library; re-spelling them here would be the second copy this whole file
 // exists to remove.
@@ -75,7 +75,7 @@ import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
 // same reason, for worker/jobs/worker-env.mjs on this branch.
 const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 const BOX_WIKITOM_DIR = "/root/wikitom";
-import { AREAS_DIR, parseRepoBullets } from "./skills.mjs";
+import { AREAS_DIR, parseRepoBullets } from "../shared/skills.mjs";
 // The one renderer of the prompt's vocabulary block, shared with
 // convex/vocabulary.ts so the fallback this file writes and the block the
 // prompt reads are one function of one set of entries.
@@ -444,15 +444,15 @@ const TERM_CODE_SYMBOLS = Object.freeze({
   ruling: "convex/schema.ts:dtsRulings",
   run: "convex/schema.ts:runs",
   session: "convex/schema.ts:claudeSessions",
-  "narrow list": "convex/ttsShared.ts:NARROW_LIST",
+  "narrow list": "shared/session-constants.mjs:NARROW_LIST",
   repeat: "convex/schema.ts:ttsRepeats",
   "calendar mirror": "convex/schema.ts:ttsCalendarEvents",
   // Evals are events, not a table of their own: `evals-run` is the row the merge
   // gate reads, and its kind is the named constant.
   evals: "convex/ttsEvals.ts:EVALS_RUN",
   search: "worker/jobs/search-lib.mjs:SEARCH_COMMANDS",
-  skill: "scripts/skills.mjs:SKILL_SHAPES",
-  "the base and the skills": "scripts/skills.mjs:SKILL_SHAPES",
+  skill: "shared/skills.mjs:SKILL_SHAPES",
+  "the base and the skills": "shared/skills.mjs:SKILL_SHAPES",
   transcript: "convex/schema.ts:runFileVersions",
   block: "convex/schema.ts:dtsBlocks",
   "time note": "convex/schema.ts:dtsTimeNotes",
@@ -576,9 +576,9 @@ const ENTITY_SPECS = Object.freeze([
     id: "skillId",
     shape: "tom-<name>",
     regex: null,
-    mintedIn: "scripts/skills.mjs",
+    mintedIn: "shared/skills.mjs",
     mintedPattern: /export function skillDirName\(/,
-    validatedIn: "scripts/skills.mjs:skillDirName",
+    validatedIn: "shared/skills.mjs:skillDirName",
     example: "tom-know-research",
     term: "skill",
   },
@@ -828,7 +828,7 @@ export function parseSearchQuestions(searchLibText, helpText) {
  *
  * NO COUNT AGAINST THE IMPORTED `SKILL_SHAPES`, and there was one. The text
  * comes from the `tomQuest` checkout this run was pointed at; the imported
- * object comes from the copy of scripts/skills.mjs sitting beside this file. On
+ * object comes from the copy of shared/skills.mjs installed beside scripts/. On
  * the box those are two different checkouts — worker/setup.sh installs these
  * scripts from the branch it is rolled from and nothing pulls /root/tom.quest —
  * so the count asserted a fact about one file and read two, and every night
@@ -844,12 +844,12 @@ export function parseSearchQuestions(searchLibText, helpText) {
 export function parseSkillShapes(skillsText) {
   const text = normalize(skillsText);
   const start = text.indexOf("export const SKILL_SHAPES = Object.freeze({");
-  if (start === -1) fail("scripts/skills.mjs has no `SKILL_SHAPES`");
+  if (start === -1) fail("shared/skills.mjs has no `SKILL_SHAPES`");
   const end = text.indexOf("\n});", start);
-  if (end === -1) fail("scripts/skills.mjs's `SKILL_SHAPES` is not closed");
+  if (end === -1) fail("shared/skills.mjs's `SKILL_SHAPES` is not closed");
   const block = text.slice(start, end);
   const shapes = [...block.matchAll(/^ {2}(\w+): Object\.freeze\(\{/gm)].map((hit) => hit[1]);
-  if (shapes.length === 0) fail("scripts/skills.mjs's `SKILL_SHAPES` names no shape");
+  if (shapes.length === 0) fail("shared/skills.mjs's `SKILL_SHAPES` names no shape");
   return shapes;
 }
 
@@ -862,9 +862,9 @@ export function parseSkillShapes(skillsText) {
 function buildSkillRows(wikitom, repos) {
   const skills = [
     { name: "write", group: "write", shape: "write", descriptionSource: "model-of-tom/writing.md headings", sourcePaths: ["model-of-tom/writing.md"] },
-    { name: "explainer", group: "write", shape: "explainer", descriptionSource: "scripts/skills.mjs:SKILL_SHAPES.explainer.base", sourcePaths: ["model-of-tom/explainers.md"] },
+    { name: "explainer", group: "write", shape: "explainer", descriptionSource: "shared/skills.mjs:SKILL_SHAPES.explainer.base", sourcePaths: ["model-of-tom/explainers.md"] },
     { name: "know-intent", group: "know", shape: "intent", descriptionSource: "model-of-tom/intent.md headings", sourcePaths: ["model-of-tom/intent.md", "model-of-tom/priorities.md"] },
-    { name: "know-week", group: "know", shape: "week", descriptionSource: "scripts/skills.mjs:SKILL_SHAPES.week.base", sourcePaths: ["model-of-tom/schedule.md"] },
+    { name: "know-week", group: "know", shape: "week", descriptionSource: "shared/skills.mjs:SKILL_SHAPES.week.base", sourcePaths: ["model-of-tom/schedule.md"] },
   ];
   let areas = [];
   try {
@@ -898,22 +898,34 @@ function buildSkillRows(wikitom, repos) {
 
 // ── The repositories and the channels ────────────────────────────────────────
 
-function parseSessionRepos(sharedText) {
-  const text = normalize(sharedText);
-  const start = text.indexOf("export const SESSION_REPOS = {");
-  if (start === -1) fail("convex/ttsShared.ts has no `SESSION_REPOS`");
-  const end = text.indexOf("\n} as const;", start);
-  if (end === -1) fail("convex/ttsShared.ts's `SESSION_REPOS` is not closed");
+/** Where the session repo map is read from: its one home since phase 2, and
+ *  convex/ttsShared.ts in a tom.quest checkout older than that, which the box's
+ *  /root/tom.quest can be (nothing pulls it). Each with the text that opens the
+ *  literal and the text that closes it. */
+const SESSION_CONSTANTS_PATH = "shared/session-constants.mjs";
+const SESSION_REPO_HOMES = [
+  { rel: SESSION_CONSTANTS_PATH, open: "export const SESSION_REPOS = /** @type {const} */ ({", close: "\n});" },
+  { rel: SHARED_PATH, open: "export const SESSION_REPOS = {", close: "\n} as const;" },
+];
+
+function parseSessionRepos(tomQuest) {
+  const home = SESSION_REPO_HOMES.map((candidate) => ({ ...candidate, text: readOptional(tomQuest, candidate.rel) }))
+    .find((candidate) => candidate.text !== null && candidate.text.includes(candidate.open));
+  if (home === undefined) fail(`neither ${SESSION_REPO_HOMES.map((h) => h.rel).join(" nor ")} has \`SESSION_REPOS\``);
+  const { rel, open, close, text } = home;
+  const start = text.indexOf(open);
+  const end = text.indexOf(close, start);
+  if (end === -1) fail(`${rel}'s \`SESSION_REPOS\` is not closed`);
   const block = text.slice(start, end);
   const rows = block.split("\n").slice(1).filter((line) => line.trim() !== "");
   const repos = new Map();
   for (const line of rows) {
     const match = /^\s*"?([\w.-]+)"?:\s*"([^"]+)",?\s*$/.exec(line);
-    if (match === null) fail(`convex/ttsShared.ts \`SESSION_REPOS\` row reads as neither a name nor a home: "${line.trim()}"`);
+    if (match === null) fail(`${rel} \`SESSION_REPOS\` row reads as neither a name nor a home: "${line.trim()}"`);
     repos.set(match[1], match[2]);
   }
-  assertCount("convex/ttsShared.ts SESSION_REPOS", rows.length, repos.size);
-  return repos;
+  assertCount(`${rel} SESSION_REPOS`, rows.length, repos.size);
+  return { repos, rel };
 }
 
 function parseChannelEnv(sharedText) {
@@ -1315,11 +1327,11 @@ export function renderSharedBlock({ version, statement, terms }) {
     "export const VOCABULARY_TERMS: readonly string[] = [",
     list(names),
     "];",
-    "/** The graph's closed node kinds, from worker/jobs/graph.mjs NODE_KINDS. */",
+    "/** The graph's closed node kinds, from shared/graph.mjs NODE_KINDS. */",
     "export const GRAPH_NODE_KINDS: readonly string[] = [",
     list([...NODE_KINDS]),
     "];",
-    "/** The graph's closed edge kinds, from worker/jobs/graph.mjs EDGE_KINDS. */",
+    "/** The graph's closed edge kinds, from shared/graph.mjs EDGE_KINDS. */",
     "export const GRAPH_EDGE_KINDS: readonly string[] = [",
     list([...EDGE_KINDS]),
     "];",
@@ -1395,7 +1407,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   const cronsText = readRequired(tomQuest, "convex/crons.ts", "the Convex jobs");
   const setupText = readRequired(tomQuest, "worker/setup.sh", "the box jobs");
   const searchLibText = readRequired(tomQuest, "worker/jobs/search-lib.mjs", "the search questions");
-  const skillsText = readRequired(tomQuest, "scripts/skills.mjs", "the skill shapes");
+  const skillsText = readRequired(tomQuest, "shared/skills.mjs", "the skill shapes");
 
   const disagreements = [];
 
@@ -1616,7 +1628,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   }
 
   // ── Repos ─────────────────────────────────────────────────────────────────
-  const sessionRepos = parseSessionRepos(sharedText);
+  const { repos: sessionRepos, rel: sessionReposPath } = parseSessionRepos(tomQuest);
   const bullets = parseRepoBullets(agentRulesText);
   const repos = [];
   const named = new Set();
@@ -1646,7 +1658,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
         subject: `repository "${name}"`,
         rows: [
           { label: "spec", where: `WikiTom ${AGENT_RULES_PATH} § Repos`, text: "the block names no such repository" },
-          { label: "code", where: `tom.quest ${SHARED_PATH} SESSION_REPOS`, text: `${name} → ${github}` },
+          { label: "code", where: `tom.quest ${sessionReposPath} SESSION_REPOS`, text: `${name} → ${github}` },
         ],
         fix: "a repository a session may check out needs a line in the map, because the line is the only description of it",
       }),
@@ -1667,7 +1679,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
 
   // ── Skills ────────────────────────────────────────────────────────────────
   // REMOVAL CHECK on the shape comparison: the two sides are this generator's
-  // `buildSkillRows`, which names a shape per skill, and scripts/skills.mjs's
+  // `buildSkillRows`, which names a shape per skill, and shared/skills.mjs's
   // SKILL_SHAPES, which declares the set and is what the publisher and the
   // router read. Nothing joins them — this is the join. A shape renamed there
   // and not here publishes a skill no router can place, and the vocabulary goes
@@ -1682,7 +1694,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
         subject: `skill "${skill.name}"`,
         rows: [
           { label: "spec", where: `${GENERATOR_PATH} buildSkillRows`, text: `shape ${skill.shape}` },
-          { label: "code", where: "tom.quest scripts/skills.mjs SKILL_SHAPES", text: shapes.join(", ") },
+          { label: "code", where: "tom.quest shared/skills.mjs SKILL_SHAPES", text: shapes.join(", ") },
         ],
         fix: "every published skill takes one of the declared shapes",
       }),

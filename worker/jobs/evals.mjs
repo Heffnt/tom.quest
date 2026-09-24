@@ -307,11 +307,22 @@ export function layersFor(tomquestTree, wikitomTree, names, run = execFileSync) 
 }
 
 /**
- * The inline module the PINNED tree's own scripts/skills.mjs is asked through.
+ * A module of the PINNED tree that phase 2 moved into shared/, at whichever
+ * path that tree has it. A pin from before the move holds it at `oldRel`, and
+ * a baseline run still checks such pins out, so both are tried: shared/ first,
+ * then the old home.
+ */
+export function pinnedModule(tree, file, oldRel) {
+  const moved = path.join(tree, "shared", file);
+  return fs.existsSync(moved) ? moved : path.join(tree, oldRel);
+}
+
+/**
+ * The inline module the PINNED tree's own skills.mjs is asked through.
  *
  * A CHILD PROCESS RATHER THAN AN IMPORT, for two reasons. worker/setup.sh
  * copies evals.mjs to /opt/tts/evals.mjs and skills.mjs to
- * /opt/tts/scripts/skills.mjs — a different relative path from the one the two
+ * /opt/tts/shared/skills.mjs — a different relative path from the one the two
  * have in the repo — so no static import of it resolves in both homes. And the
  * copy beside this file is not the one to ask anyway: what a case was given is
  * what the TREE UNDER TEST names and renders, not what this checkout would.
@@ -456,7 +467,7 @@ export function skillsFor(tomquestTree, wikitomTree, names, run = execFileSync, 
   const layers = layerNames.length === 0 ? null : layersFor(tomquestTree, wikitomTree, layerNames, run);
   const asked = JSON.parse(run(process.execPath, [
     "-e", SKILLS_ASK,
-    pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href,
+    pathToFileURL(pinnedModule(tomquestTree, "skills.mjs", "scripts/skills.mjs")).href,
     JSON.stringify({ names: skillNames, out: publication.out, commit: publication.commit, why: publication.why }),
   ], RUN_OPTIONS));
   const loaded = asked.files.map((file) => ({
@@ -1043,16 +1054,15 @@ export function standardRulesFor(field, standard, job = null) {
 /**
  * The writing standard's rule bodies, loaded the way loadGate loads the gate.
  *
- * THE FILE HAS THREE HOMES — /opt/tts beside the jobs, scripts/ in a checkout,
- * and CI — and check-writing-standard.mjs sits beside evals-check.mjs in only
- * some of them. An absent file is "no rules ran", never a failure: a box whose
+ * THE FILE HAS THREE HOMES — /opt/tts/scripts/ below the flat jobs, scripts/
+ * in a checkout, and CI — so both paths are tried. An absent file is "no rules ran", never a failure: a box whose
  * setup.sh has not copied it yet must not start failing every case on a check
  * it cannot perform.
  */
 export async function loadWritingStandard() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const candidate of [
-    path.join(here, "check-writing-standard.mjs"),
+    path.join(here, "scripts", "check-writing-standard.mjs"),
     path.join(here, "..", "..", "scripts", "check-writing-standard.mjs"),
   ]) {
     if (fs.existsSync(candidate)) return await import(pathToFileURL(candidate).href);
@@ -1369,7 +1379,7 @@ export const AREA_TRIGGER_FILES = Object.freeze([
  *
  * A FROZEN LIST, not a read of the WikiTom tree, and not an import. loadTriggers
  * is handed a tom.quest tree and no WikiTom tree at all, so there is nothing
- * here to derive an area list from; and scripts/skills.mjs — which holds the
+ * here to derive an area list from; and shared/skills.mjs — which holds the
  * same eight in PRELUDE_LAYERS.know.areas.required — cannot be imported from
  * this file, because worker/setup.sh puts the two at relative paths that differ
  * between the repo and /opt/tts.
@@ -1396,7 +1406,7 @@ export const KNOW_AREAS = Object.freeze([
  * The trigger files predate the skills and name layers; this is the one table
  * that maps them. The layer triggers deliberately exercise a whole layer;
  * replacing one with a single skill trigger would no longer test its complete
- * grant set. The deployed worker cannot import scripts/skills.mjs because
+ * grant set. The deployed worker cannot import shared/skills.mjs because
  * setup installs those files at different relative paths, so this checked and
  * tested mapping remains the one compatible representation. `operate` maps to
  * nothing because the base is not a skill: it is the one file every prompt
@@ -1411,14 +1421,14 @@ export const LAYER_SKILL_ALIASES = Object.freeze({
 /**
  * The mapping, REQUIRED and never defaulted. The identity default this replaces
  * was the one path on which a trigger's skill name was spelled without
- * scripts/skills.mjs: a caller that forgot `repoSkillName` scored
+ * shared/skills.mjs: a caller that forgot `repoSkillName` scored
  * `repo-tom.quest`, a name no publisher can produce, and the miss looked like a
  * clean run. There is nothing here to fall back TO — a name spelled by anything
  * but the central function is wrong — so the absent mapping is an error.
  */
 function skillNameMapping({ bareSkillName, repoSkillName } = {}) {
   if (typeof bareSkillName !== "function" || typeof repoSkillName !== "function") {
-    throw new Error("trigger skill names need the scripts/skills.mjs mapping (bareSkillName and repoSkillName)");
+    throw new Error("trigger skill names need the shared/skills.mjs mapping (bareSkillName and repoSkillName)");
   }
   return { bareSkillName, repoSkillName };
 }
@@ -2673,7 +2683,7 @@ export function carriedResultFor(item, carryOver, affectedJobs) {
  * while the evaluated catalog uses the one canonical bare spelling. */
 async function triggerNameMappingFor(tomquestTree, io) {
   if (io.triggerNameMapping !== undefined) return io.triggerNameMapping;
-  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  const skillsModule = await import(pathToFileURL(pinnedModule(tomquestTree, "skills.mjs", "scripts/skills.mjs")).href);
   return {
     bareSkillName: skillsModule.bareSkillName,
     repoSkillName: skillsModule.repoSkillName,
@@ -2686,8 +2696,8 @@ async function triggerNameMappingFor(tomquestTree, io) {
  * complete bound router to keep their trees intentionally small. */
 async function triggerRouterFor(tomquestTree, wikitomTree, io) {
   if (typeof io.triggerRouter === "function") return io.triggerRouter;
-  const routerModule = await import(pathToFileURL(path.join(tomquestTree, "worker", "jobs", "skill-router.mjs")).href);
-  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  const routerModule = await import(pathToFileURL(pinnedModule(tomquestTree, "skill-router.mjs", "worker/jobs/skill-router.mjs")).href);
+  const skillsModule = await import(pathToFileURL(pinnedModule(tomquestTree, "skills.mjs", "scripts/skills.mjs")).href);
   const areas = path.join(wikitomTree, skillsModule.AREAS_DIR);
   const pages = fs.existsSync(areas)
     ? fs.readdirSync(areas).filter((name) => name.endsWith(".md")).sort().map((name) => ({

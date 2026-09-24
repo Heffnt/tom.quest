@@ -64,6 +64,41 @@ const REMEDY = Object.freeze({
 const MAIN_REFS = ["origin/main", "main"];
 
 /**
+ * The lines of `keys` that main's baseline lacks, less the ones a file move
+ * explains. A move rewrites a line's path and nothing else: the rule and the
+ * fingerprint (a hash of the matched text) stay, and so does the file's name.
+ * So a new line is paired with a line main has and this baseline dropped, of
+ * the same rule, fingerprint and basename; each old line pairs once. A paired
+ * line is reported as moved; an unpaired one is still a new violation.
+ */
+export function movedAgainst(keys, onMain) {
+  const mainSet = new Set(onMain);
+  const keySet = new Set(keys);
+  const left = onMain.filter((key) => !keySet.has(key));
+  const grown = [];
+  const moved = [];
+  const partsOf = (key) => {
+    const [rule, file, fingerprint] = key.split("\t");
+    return { rule, fingerprint, base: path.posix.basename(file ?? "") };
+  };
+  for (const key of keys) {
+    if (mainSet.has(key)) continue;
+    const now = partsOf(key);
+    const at = left.findIndex((old) => {
+      const was = partsOf(old);
+      return was.rule === now.rule && was.fingerprint === now.fingerprint && was.base === now.base;
+    });
+    if (at === -1) {
+      grown.push(key);
+    } else {
+      moved.push([left[at], key]);
+      left.splice(at, 1);
+    }
+  }
+  return { grown, moved };
+}
+
+/**
  * The whole check, against an injected io. Returns the exit code and the
  * lines it printed, so the test reads both.
  */
@@ -109,8 +144,8 @@ export function checkRemovals(io) {
   if (main === null) {
     out.push(`note: no main branch is readable here, so ${BASELINE_PATH} was not compared with main's`);
   } else {
-    const onMain = new Set(parseBaseline(main));
-    const grown = keys.filter((key) => !onMain.has(key));
+    const { grown, moved } = movedAgainst(keys, parseBaseline(main));
+    for (const [from, to] of moved) out.push(`moved: ${from} -> ${to.split("\t")[1]}`);
     for (const key of grown) {
       err.push(`FAILED: ${BASELINE_PATH} carries a line main's does not — the list was regenerated to admit a new violation: ${key}`);
     }

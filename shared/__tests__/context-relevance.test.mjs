@@ -1,4 +1,4 @@
-// Tests for the supplemental caps (worker/jobs/context-relevance.mjs).
+// Tests for the supplemental caps (shared/context-relevance.mjs).
 //
 // What is pinned here is THE CUT ITSELF: a brief past the cap keeps its head,
 // stops at a HEADING rather than mid-thought, and ends with the one sentence
@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { BRIEF_SOURCE, briefForPrompt, byteLength, SUPPLEMENTAL_CAPS, truncateSupplemental } from "./context-relevance.mjs";
+import { BRIEF_SOURCE, briefForPrompt, byteLength, SUPPLEMENTAL_CAPS, truncateSupplemental } from "../context-relevance.mjs";
 
 const NOTE = `… (fetch the rest: ${BRIEF_SOURCE})`;
 

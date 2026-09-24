@@ -184,7 +184,7 @@ export const SPEC_PATH = "tts/spec.md";
 export const INTENT_PATH = "model-of-tom/intent.md";
 
 /** The trees `git grep` searches for a schema field's name. */
-export const GREP_DIRS = ["app", "convex", "worker", "scripts", "vqc", "turing-api"];
+export const GREP_DIRS = ["app", "convex", "shared", "worker", "scripts", "vqc", "turing-api"];
 /** What a field's own definition and its generated mirrors do not count as. */
 export const GREP_EXCLUDES = [
   ":(exclude)convex/schema.ts",
@@ -200,7 +200,7 @@ export const GUARDRAILS_JOBS = ["static-boundaries", "secret-scan", "tests"];
  *  Their pass/fail history is inside that job's log, and this job does not
  *  parse logs — so each row says `failuresKnown: false` and is forced to
  *  keep. ADD A SCRIPT TO package.json's check:guardrails AND IT NEEDS A LINE
- *  HERE; check 8 of scripts/check-session-mirrors.mjs is what says so. */
+ *  HERE; check 5 of scripts/check-session-mirrors.mjs is what says so. */
 export const STATIC_BOUNDARY_SCRIPTS = [
   "check-auth-boundary",
   "check-agents-md",
@@ -216,12 +216,12 @@ export const STATIC_BOUNDARY_SCRIPTS = [
   // Phase 10's eighth: the vocabulary is the graph's schema, and this checks
   // that the generated block in convex/ttsShared.ts still matches what
   // scripts/vocabulary.mjs renders. It joined check:guardrails with the graph
-  // and had no line here until check 8 of scripts/check-session-mirrors.mjs
+  // and had no line here until check 5 of scripts/check-session-mirrors.mjs
   // asked for one, which is the whole point of that check.
   "check-vocabulary",
   // The removal loop's ratchet: a change that adds one of the four structural
   // smells fails, and sg/baseline.tsv only moves down. Listed here for the
-  // reason every line above is — check 8 of scripts/check-session-mirrors.mjs.
+  // reason every line above is — check 5 of scripts/check-session-mirrors.mjs.
   "check-removals",
 ];
 
@@ -272,7 +272,7 @@ export const PROXY_CAVEAT =
 
 /**
  * `hash8` — eight hex characters of SHA-256 — and `ruleId` — the hash of a
- * line's normalized text — MOVED TO worker/jobs/graph-hash.mjs AND IMPORTED
+ * line's normalized text — MOVED TO shared/graph-hash.mjs AND IMPORTED
  * BACK, so that every caller here reads exactly as it did.
  *
  * WHY THEY MOVED. The graph names a rule line by exactly this hash:
@@ -490,7 +490,7 @@ export function loadedForAgentsFile(relDir, cwds, { repoName }) {
 /**
  * THE NODE ID of a rule row, which is what a run's `context.graphNodes` names.
  *
- * worker/jobs/graph.mjs mints a repository rules file's lines as `rule:` nodes
+ * shared/graph.mjs mints a repository rules file's lines as `rule:` nodes
  * and a synthesis page's lines as `line:` nodes (its `addPage`, `lineKind`), and
  * the eight characters after the colon are `ruleId(text)` in both — the same
  * function this file's rows are keyed by, which is why it moved to
@@ -665,7 +665,7 @@ export function checkRows(gate, io, { dir }) {
       where: "scripts/, inside the static-boundaries job",
       // THE COUNT IS READ, NEVER SPELLED. It said "five" while the list held
       // six, so the weekly pass was handed facts that contradicted themselves
-      // — the same drift check 8 of scripts/check-session-mirrors.mjs fences
+      // — the same drift check 5 of scripts/check-session-mirrors.mjs fences
       // the list itself against, one line further on.
       text: `scripts/${name}.mjs, one of the ${STATIC_BOUNDARY_SCRIPTS.length} pnpm check:guardrails runs`,
       failed: 0,

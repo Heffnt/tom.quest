@@ -73,7 +73,7 @@ describe("the golden check-ins", () => {
       "checkin-ruling-requested-pass", "checkin-self-grading-fail", "checkin-undefined-tier-fail",
     ]);
     expect(JOBS.checkin.module).toBe("worker/jobs/runner-checkin.mjs");
-    const { checkInFailures } = await import("../../scripts/checkin-rules.mjs");
+    const { checkInFailures } = await import("../../shared/checkin-rules.mjs");
     for (const item of items) expect(checkInFailures(item.input.checkIn), item.id).toEqual([]);
     expect(fs.existsSync(path.join(here, "..", "..", "evals", "golden", "checkins", "README.md"))).toBe(true);
   });

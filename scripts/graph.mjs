@@ -7,7 +7,7 @@
 // sitting beside it. A decorative shebang is not worth a test file that will
 // not load.
 //
-// `worker/jobs/graph.mjs` decides what the graph IS, from already-read text, and
+// `shared/graph.mjs` decides what the graph IS, from already-read text, and
 // is pure so that the box, the laptop and the Convex runtime all compute the
 // same bytes. This file reads the two checkouts and the night's table copy,
 // calls `buildGraph`, serializes it, checks the cap, finds every disagreement,
@@ -47,8 +47,8 @@ import {
   ruleNodeId,
   renderSkillBody,
   splitHalves,
-} from "../worker/jobs/graph.mjs";
-import { buildSkills, isAreaPath } from "./skills.mjs";
+} from "../shared/graph.mjs";
+import { buildSkills, isAreaPath } from "../shared/skills.mjs";
 
 // THE TWO WIKITOM DEFAULTS, SPELLED HERE, and this is a deviation with a reason.
 //
@@ -76,7 +76,7 @@ const BOX_WIKITOM_DIR = "/root/wikitom";
 /** Tom's, pending (graph switch 1). "vocabulary": the node and edge kinds are
  *  spec §12.1 terms, they appear in vocabulary.json, and a node or edge of an
  *  undeclared kind fails the build. "loose": the kinds live in
- *  worker/jobs/graph.mjs's constants only, the vocabulary does not carry them,
+ *  shared/graph.mjs's constants only, the vocabulary does not carry them,
  *  and the check compares against that file rather than against the spec. */
 export const KIND_AUTHORITY = "vocabulary";
 
@@ -562,7 +562,7 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
     // it rather than as a generator that failed to load.
     notes.push(
       `KIND_AUTHORITY is "${KIND_AUTHORITY}" but ${VOCABULARY_PATH} declares no node or edge kinds — `
-        + "G1 and G2 checked against worker/jobs/graph.mjs's own lists instead"
+        + "G1 and G2 checked against shared/graph.mjs's own lists instead"
         + (vocabularySource ? ` (schema from: ${vocabularySource})` : ""),
     );
   }
@@ -573,7 +573,7 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
     found.push(
       block("G1", `node kind "${kind}"`, [
         ["graph", `${graph.counts.byNodeKind[kind]} node(s) of this kind`],
-        ["schema", KIND_AUTHORITY === "vocabulary" ? `${VOCABULARY_PATH} declares no such node kind` : "worker/jobs/graph.mjs NODE_KINDS does not list it"],
+        ["schema", KIND_AUTHORITY === "vocabulary" ? `${VOCABULARY_PATH} declares no such node kind` : "shared/graph.mjs NODE_KINDS does not list it"],
       ], "add the kind to spec §12.1 and regenerate the vocabulary, or stop minting it"),
     );
   }
@@ -582,7 +582,7 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
     found.push(
       block("G2", `edge kind "${kind}"`, [
         ["graph", `${graph.counts.byEdgeKind[kind]} edge(s) of this kind`],
-        ["schema", KIND_AUTHORITY === "vocabulary" ? `${VOCABULARY_PATH} declares no such edge kind` : "worker/jobs/graph.mjs EDGE_KINDS does not list it"],
+        ["schema", KIND_AUTHORITY === "vocabulary" ? `${VOCABULARY_PATH} declares no such edge kind` : "shared/graph.mjs EDGE_KINDS does not list it"],
       ], "add the kind to spec §12.1 and regenerate the vocabulary, or stop minting it"),
     );
   }
@@ -645,7 +645,7 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
 
   // THERE IS NO G7, and there was. It looked for a `defines` edge whose term
   // the vocabulary does not declare. Every `defines` edge is minted FROM a
-  // `vocabulary.terms` row (worker/jobs/graph.mjs addDefines), so the two sets
+  // `vocabulary.terms` row (shared/graph.mjs addDefines), so the two sets
   // agree by construction and no input could separate them — its own comment
   // and its own test both said so, and the test asserted its silence. A check
   // that cannot fire is a check nobody can act on and nobody can trust; the day
@@ -664,7 +664,7 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
  * entries at this commit — the vocabulary generator writes nothing while a
  * disagreement or its byte cap stands — so there is nothing
  * to check against, and a check with nothing to check against is a check that
- * passes for the wrong reason. It falls back to `worker/jobs/graph.mjs`'s own
+ * passes for the wrong reason. It falls back to `shared/graph.mjs`'s own
  * lists, which is what `"loose"` means, and the build's notes say so, so a
  * reader of the report knows which authority actually ran.
  */

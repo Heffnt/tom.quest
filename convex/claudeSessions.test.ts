@@ -3319,7 +3319,7 @@ describe("autonomous session scheduler", () => {
     ).toHaveLength(0);
   });
 
-  // witness: widen AUTO_USAGE_RE back to /rate.?limit|overloaded/ and this test
+  // witness: widen USAGE_LIMIT_RE (shared/session-constants.mjs) back to /rate.?limit|overloaded/ and this test
   // goes red — transient API weather would stand the whole fleet down for the
   // full three-hour window, which is what the narrowing was for.
   it("does not stand down on transient API weather", async () => {
@@ -3426,7 +3426,7 @@ describe("autonomous session scheduler", () => {
   });
 
   // witness: drop the SESSION_REPO_NAMES filter from resolveSessionRepos — the
-  // daemon's REPO_GITHUB map throws on a repo it cannot clone, so the session
+  // daemon's SESSION_REPOS lookup throws on a repo it cannot clone, so the session
   // would die on its first turn instead of doing groundwork.
   it("a repo name the daemon cannot clone falls back to empty scratch", async () => {
     const t = convexTest({ schema, modules });

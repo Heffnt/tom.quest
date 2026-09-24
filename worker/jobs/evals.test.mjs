@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { bareSkillName, repoSkillName } from "../../scripts/skills.mjs";
-import { NO_BODY, routeSkills } from "./skill-router.mjs";
+import { bareSkillName, repoSkillName } from "../../shared/skills.mjs";
+import { NO_BODY, routeSkills } from "../../shared/skill-router.mjs";
 import {
   ablationFindings,
   ablationFor,
@@ -57,6 +57,7 @@ import {
   runnerFailure,
   runTask,
   runTriggerCase,
+  pinnedModule,
   realIo,
   runTrials,
   carriedResultFor,
@@ -332,7 +333,7 @@ describe("aggregate", () => {
  *
  * The code under test IMPORTS OUT OF THIS TREE — basePolicyOf loads the base
  * worktree's scripts/evals-check.mjs, and triggerNameMappingFor loads its
- * scripts/skills.mjs — and under vitest a dynamic import resolves through
+ * its skills.mjs — and under vitest a dynamic import resolves through
  * Vite, which serves nothing outside the project root. A tree in os.tmpdir()
  * therefore fails those imports with "Cannot find module" while fs.existsSync
  * on the same path answers true, which is as confusing a failure as this file
@@ -652,7 +653,7 @@ describe("runEvals carries the trial rule end to end", () => {
     taskRepos: () => [],
     // A weekly run takes the whole trigger set, and the mapping is imported
     // from the pinned tree unless the io supplies it. These fixtures pin no
-    // scripts/skills.mjs, and what they are about is what a broken RUNNER does
+    // shared/skills.mjs, and what they are about is what a broken RUNNER does
     // to a run's numbers — not what the trigger arm reads.
     triggerNameMapping: NAMES,
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
@@ -944,9 +945,23 @@ describe("an io with no skill assembler", () => {
 // The assembler realIo wires. The two scripts it shells out to are faked here —
 // publish-skills.mjs writes the catalogue this test decides on, prelude.mjs
 // yields the layer text — but the one-line module that asks the PINNED
-// scripts/skills.mjs for its directory names and its grant block is spawned for
+// skills.mjs for its directory names and its grant block is spawned for
 // real, because that is the half worth proving: the grant block a case carried
 // is rendered by the tree under test's own renderGrants and by nothing else.
+// Phase 2 moved skills.mjs and skill-router.mjs into shared/, and a pin from
+// before the move is still a tree a baseline run checks out.
+describe("pinnedModule", () => {
+  it("reads a moved module from shared/ when the pinned tree has it there, else from its old home", () => {
+    const moved = tree();
+    fs.mkdirSync(path.join(moved, "shared"), { recursive: true });
+    fs.writeFileSync(path.join(moved, "shared", "skills.mjs"), "export {};\n");
+    expect(pinnedModule(moved, "skills.mjs", "scripts/skills.mjs")).toBe(path.join(moved, "shared", "skills.mjs"));
+    const older = tree();
+    expect(pinnedModule(older, "skill-router.mjs", "worker/jobs/skill-router.mjs"))
+      .toBe(path.join(older, "worker/jobs/skill-router.mjs"));
+  });
+});
+
 describe("skillsFor", () => {
   const HERE = path.resolve(".");
   let fixtureSerial = 0;
@@ -1186,7 +1201,7 @@ describe("skillsFor", () => {
 
 // The trigger files name layers; the skills are what those layers became. This
 // is the one table that maps them, and the eight areas in it are written down
-// twice — here and in scripts/skills.mjs, which evals.mjs cannot import at run
+// twice — here and in shared/skills.mjs, which evals.mjs cannot import at run
 // time because worker/setup.sh puts the two at relative paths that differ
 // between the repo and /opt/tts. The second test is the pin on that copy.
 describe("the layer names as skill names", () => {
@@ -1208,7 +1223,7 @@ describe("the layer names as skill names", () => {
   });
 
   it("holds the same eight areas the know layer requires", async () => {
-    const { PRELUDE_LAYERS } = await import("../../scripts/skills.mjs");
+    const { PRELUDE_LAYERS } = await import("../../shared/skills.mjs");
     expect(KNOW_AREAS.map((area) => `model-of-tom/areas/${area}.md`))
       .toEqual([...PRELUDE_LAYERS.know.areas.required]);
   });
@@ -1232,7 +1247,7 @@ describe("the layer names as skill names", () => {
     // THE MAPPING IS NOT OPTIONAL: the identity default this replaces let a
     // caller that forgot it score `repo-tom.quest`, a name no publisher makes.
     expect(() => triggerSkills({ name: "know-research", kind: "skill" }))
-      .toThrow("trigger skill names need the scripts/skills.mjs mapping");
+      .toThrow("trigger skill names need the shared/skills.mjs mapping");
     expect(() => triggerSkills({ name: "repo-tom.quest", kind: "skill", repo: "tom.quest" }, NAMES))
       .toThrow("skill trigger for tom.quest is named repo-tom.quest; the published skill is repo-tom-quest");
   });
@@ -2073,7 +2088,7 @@ describe("trigger case methods", () => {
   });
 
   it("scores the checked-in tom.quest native-repository case without a runner", async () => {
-    const skills = await import("../../scripts/skills.mjs");
+    const skills = await import("../../shared/skills.mjs");
     const wikitom = tree();
     for (const file of AREA_TRIGGER_FILES) {
       writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });

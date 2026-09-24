@@ -30,7 +30,7 @@ import {
 } from "./ttsCompose";
 import { recordRunnerReply, runLink } from "./ttsRunners";
 import { onElevationThreadFailed, recordElevationReply } from "./orchestrator";
-import { changeIdTokens, namedChange, withoutChangeId } from "../worker/jobs/learning-change-names.mjs";
+import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -772,7 +772,7 @@ export const LEARNING_CHANGE_LOOKBACK = 500;
 /**
  * The full id of the model-of-Tom line, or of the repository-rule proposal, a
  * reply names — if any. What a name is — the digest's `[<id>]`, or a bare
- * prefix of it — is one rule in worker/jobs/learning-change-names.mjs, the
+ * prefix of it — is one rule in shared/learning-change-names.mjs, the
  * nightly job's too; the token is checked against the recent rows, so a commit
  * hash printed in the same digest, or a word spelled in hex letters, names
  * nothing.

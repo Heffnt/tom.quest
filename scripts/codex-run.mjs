@@ -80,25 +80,27 @@ if (!registrationUrl) throw new Error("run registration module is not installed"
 const { writeRegistration } = await import(registrationUrl.href);
 
 // The grant renderer, resolved the same way and for the same reason. In a
-// checkout this file IS scripts/codex-run.mjs, so skills.mjs sits beside it;
-// setup.sh installs this file flat at /opt/tts/codex-run.mjs while skills.mjs
-// lands at /opt/tts/scripts/skills.mjs, one directory down. Neither candidate
-// can resolve in the other layout, so the pair is unambiguous.
+// checkout this file IS scripts/codex-run.mjs, so skills.mjs is
+// ../shared/skills.mjs; setup.sh installs this file flat at
+// /opt/tts/codex-run.mjs while skills.mjs lands at /opt/tts/shared/skills.mjs,
+// one directory down. Neither candidate can resolve in the other layout, so the
+// pair is unambiguous.
 //
 // The URL is resolved here but IMPORTED ONLY WHEN A SKILL IS NAMED. tts-codex
 // runs from any repo, including checkouts that predate skills.mjs, and a run
 // that asked for no skill must not be broken by a module it never needed.
 const skillsUrl = [
-  new URL("./skills.mjs", import.meta.url),
-  new URL("./scripts/skills.mjs", import.meta.url),
+  new URL("../shared/skills.mjs", import.meta.url),
+  new URL("./shared/skills.mjs", import.meta.url),
 ].find((candidate) => existsSync(fileURLToPath(candidate)));
 
 // The graph, resolved the same way again: in a checkout this file is
-// scripts/codex-run.mjs and the module is ../worker/jobs/graph.mjs; installed
-// flat at /opt/tts/codex-run.mjs it sits beside the other jobs.
+// scripts/codex-run.mjs and the module is ../shared/graph.mjs; installed flat
+// at /opt/tts/codex-run.mjs it is ./shared/graph.mjs, the copy setup.sh makes
+// of shared/.
 const graphUrl = [
-  new URL("../worker/jobs/graph.mjs", import.meta.url),
-  new URL("./graph.mjs", import.meta.url),
+  new URL("../shared/graph.mjs", import.meta.url),
+  new URL("./shared/graph.mjs", import.meta.url),
 ].find((candidate) => existsSync(fileURLToPath(candidate)));
 
 // The published graph's version, from the one module that reads it. Resolved
@@ -387,7 +389,7 @@ let refused = opts.refused;
 let skillCatalogCommit = null;
 if (granted.length > 0 || refused.length > 0) {
   if (!skillsUrl) {
-    process.stderr.write("codex-run: skills named but scripts/skills.mjs is not installed; grant block omitted\n");
+    process.stderr.write("codex-run: skills named but shared/skills.mjs is not installed; grant block omitted\n");
     granted = []; refused = [];
   } else {
     const { PUBLISHED_SKILL_METADATA, renderGrants, skillDirName } = await import(skillsUrl.href);

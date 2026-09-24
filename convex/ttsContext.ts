@@ -22,8 +22,8 @@
 //
 // Nothing that exists becomes invisible; the prompt stops carrying it.
 //
-// WHAT DECIDES vs WHAT RENDERS: worker/jobs/skill-router.mjs holds the routing
-// table (which skills a subject and a caller are granted) and scripts/skills.mjs
+// WHAT DECIDES vs WHAT RENDERS: shared/skill-router.mjs holds the routing
+// table (which skills a subject and a caller are granted) and shared/skills.mjs
 // renders the grant block — both plain ESM, so this file, scripts/prelude.mjs
 // and the publisher share ONE implementation, the same arrangement
 // markdown-sections.mjs uses and for the same reason. This file only reads the
@@ -41,15 +41,15 @@ import {
   modelOfTomText,
 } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
-import { renderGrants } from "../scripts/skills.mjs";
+import { renderGrants } from "../shared/skills.mjs";
 import {
   callerRules,
   CONTEXT_CALLER_NAMES,
   routeSkills,
-} from "../worker/jobs/skill-router.mjs";
-import { givenNodes } from "../worker/jobs/graph.mjs";
+} from "../shared/skill-router.mjs";
+import { givenNodes } from "../shared/graph.mjs";
 
-/** scripts/skills.mjs is plain ESM: `renderGrants`s `granted = []` and
+/** shared/skills.mjs is plain ESM: `renderGrants`s `granted = []` and
  * `refused = []` defaults infer as `never[]`, so the shape it actually takes
  * is stated here rather than cast at the one call site. */
 const renderGrantBlock = renderGrants as (input: {
@@ -58,7 +58,7 @@ const renderGrantBlock = renderGrants as (input: {
   refused: { name: string; why: string }[];
 }) => string;
 
-/** worker/jobs/graph.mjs is plain ESM for the same reason, and its defaults
+/** shared/graph.mjs is plain ESM for the same reason, and its defaults
  * infer the same way: `pages = []`, `prefixPaths = []` and `granted = []` are
  * all `never[]` from here, so the shape is stated once rather than cast at the
  * call site. */
@@ -164,7 +164,7 @@ function recordFacts(record: ContextRecord): string {
 }
 
 // ── The record ───────────────────────────────────────────────────────────────
-// Exactly the fields worker/jobs/skill-router.mjs reads, and no more. The
+// Exactly the fields shared/skill-router.mjs reads, and no more. The
 // `--record FILE` a CLI run passes holds this same shape, which is what lets
 // scripts/prelude.mjs assemble a run's prompt with no deployment at all.
 

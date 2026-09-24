@@ -65,9 +65,9 @@ const relativeImportsOf = (file) => {
 };
 
 /** Every file reachable from `roots` by static relative imports, roots
- *  included. One walker, because this file now holds two fences over the same
- *  import graph: what worker/setup.sh must copy, and what the evals gate must
- *  watch. */
+ *  included, as repo paths. The installed-script fence below walks the same
+ *  imports with a box path beside each repo path, so it keeps its own queue;
+ *  both read a file's imports through relativeImportsOf. */
 const reachableFrom = (roots, onMissing) => {
   const seen = new Set(roots);
   const queue = [...roots];
@@ -149,6 +149,92 @@ for (const file of [...preludeFiles].sort()) {
   }
 }
 
+// ── Fence 3: every installed script's imports land on a filled path ─────────
+//
+// Step 7 installs scripts/*.mjs files by name, mostly to /opt/tts/scripts/,
+// and those import shared/ and each other by relative path. On the box a
+// specifier resolves against the directory the file was COPIED to, so
+// `../shared/skills.mjs` from /opt/tts/scripts/ needs /opt/tts/shared/skills.mjs
+// to exist before the first cron tick. Deleting the one line that copies
+// shared/ would leave the SessionStart hook and the delegate prelude throwing
+// ERR_MODULE_NOT_FOUND at load, and nothing else would notice.
+//
+// So every installed script is walked with the pair it has: its repo path and
+// its box path. Each relative import moves both by the same specifier, and the
+// box path must be written by a cp line before the cron, from that same repo
+// file, into a directory a mkdir -p before the cron created. A symlink in the
+// repo is walked as the file it names, as `cp` copies it.
+//
+// witness: delete the `cp "$WORKER_DIR"/../shared/*.mjs /opt/tts/shared/` line.
+const BOX_ROOT = "/opt/tts";
+const cpLines = (text) => {
+  const out = [];
+  for (const line of text.replace(/\\\r?\n[ \t]*/g, " ").split(/\r?\n/)) {
+    const match = /^[ \t]*cp[ \t]+([^;&|>#]+)/.exec(line);
+    if (!match) continue;
+    const words = match[1].trim().split(/\s+/).filter((word) => !word.startsWith("-"));
+    if (words.length < 2) continue;
+    const dest = words.pop();
+    const sources = words
+      .filter((word) => word.startsWith('"$WORKER_DIR"/'))
+      .map((word) => posix.normalize(posix.join("worker", word.slice('"$WORKER_DIR"/'.length))));
+    if (sources.length > 0) out.push({ sources, dest, intoDir: dest.endsWith("/") || words.length > 1 });
+  }
+  return out;
+};
+const globMatches = (pattern, file) =>
+  posix.dirname(pattern) === posix.dirname(file) &&
+  new RegExp(`^${posix.basename(pattern).split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`)
+    .test(posix.basename(file));
+const copiesBeforeCron = cpLines(beforeCron);
+const boxPathsOf = (repoFile) =>
+  copiesBeforeCron.flatMap(({ sources, dest, intoDir }) =>
+    sources.some((source) => globMatches(source, repoFile))
+      ? [intoDir ? posix.join(dest, posix.basename(repoFile)) : dest]
+      : [],
+  );
+const madeDirs = [...beforeCron.replace(/\\\r?\n[ \t]*/g, " ").matchAll(/mkdir -p([^\n]*)/g)]
+  .flatMap((m) => m[1].trim().split(/\s+/))
+  .map((dir) => dir.replace(/\/+$/, ""));
+const scriptRoots = copiesBeforeCron.flatMap(({ sources }) =>
+  sources.filter((source) => /^scripts\/[\w.-]+\.mjs$/.test(source)),
+);
+if (scriptRoots.length === 0) {
+  failures.push(`${SETUP}: no cp line installs a scripts/*.mjs before '${CRON_HEADING}' — the installed-script fence cannot run`);
+}
+const walked = new Set();
+const scriptQueue = [...new Set(scriptRoots)].flatMap((repo) => boxPathsOf(repo).map((box) => ({ repo, box, from: null })));
+while (scriptQueue.length > 0) {
+  const { repo, box, from } = scriptQueue.shift();
+  if (walked.has(`${repo}\t${box}`)) continue;
+  walked.add(`${repo}\t${box}`);
+  if (from !== null) {
+    if (!boxPathsOf(repo).includes(box)) {
+      failures.push(
+        `${SETUP}: ${from.repo}, installed as ${from.box}, imports ${repo}, which it finds at ${box} — ` +
+          `no cp line before '${CRON_HEADING}' puts ${repo} there, so it fails with ERR_MODULE_NOT_FOUND at load`,
+      );
+      continue;
+    }
+    const dir = posix.dirname(box);
+    if (dir !== BOX_ROOT && !madeDirs.includes(dir)) {
+      failures.push(`${SETUP}: nothing creates ${dir} before '${CRON_HEADING}', so the cp of ${repo} has nowhere to land`);
+    }
+  }
+  let imports;
+  try {
+    imports = relativeImportsOf(repo);
+  } catch {
+    failures.push(`${repo} is imported by an installed script but does not exist`);
+    continue;
+  }
+  const repoDir = posix.dirname(repo);
+  for (const target of imports) {
+    const specifier = posix.relative(repoDir, target);
+    scriptQueue.push({ repo: target, box: posix.normalize(posix.join(posix.dirname(box), specifier)), from: { repo, box } });
+  }
+}
+
 for (const [target, importer] of [...needed].sort()) {
   const rest = target.replace(/^worker\//, ""); // e.g. session-host/redact.mjs
   const dir = posix.dirname(rest);
@@ -180,5 +266,6 @@ if (failures.length > 0) {
 }
 console.log(
   `setup.sh import check passed (${needed.size} cross-directory imports, all copied before the cron; ` +
+    `${walked.size} installed script files, every import landing on a copied path; ` +
     `${preludeFiles.size} files in the prelude graph, all watched).`,
 );

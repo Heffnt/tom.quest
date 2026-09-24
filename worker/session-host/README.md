@@ -224,12 +224,12 @@ surfaces the decision in the PR, rather than stopping to wait.
 ## Codex sessions (ratified by Tom, 2026-09-04)
 
 **Routing.** Every session row carries a `model` name from the one table in
-`convex/ttsShared.ts` (`SESSION_MODELS`: opus, sonnet, fable, gpt-5.6-sol,
-gpt-5.6-terra; absent = opus). The name implies a FAMILY, and the family
-picks the runner: `claude` goes through the Agent SDK's `query()`, `codex`
-through `codex-query.mjs`. `session.mjs` mirrors the table (the daemon cannot
-import .ts) and `scripts/check-session-mirrors.mjs` fails guardrails when
-the two drift. For Claude the table's `id` is passed as the SDK `model` only
+`shared/session-constants.mjs` (`SESSION_MODELS`: opus, sonnet, fable,
+gpt-5.6-sol, gpt-5.6-terra, gpt-6-astra; absent = opus). The name implies a
+FAMILY, and the family picks the runner: `claude` goes through the Agent SDK's
+`query()`, `codex` through `codex-query.mjs`. `session.mjs` imports the table
+through the `session-constants.mjs` symlink beside it, and the record imports
+the same file. For Claude the table's `id` is passed as the SDK `model` only
 when non-null — opus is the account default, exactly what every session ran
 before the field existed. For Codex the `id` and `effort`
 (`model_reasoning_effort`) go on the command line of EVERY turn, because a

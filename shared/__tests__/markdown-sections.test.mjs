@@ -1,5 +1,5 @@
 // Tests for the one home that reads a WikiTom markdown page by heading
-// (worker/jobs/markdown-sections.mjs). Two callers in two languages depend on
+// (shared/markdown-sections.mjs). Two callers in two languages depend on
 // the same answer — the nightly job's area-page reduction and Convex's
 // capture-triage section — so what is pinned here is where a section starts
 // and stops, not what either caller asks for.
@@ -16,7 +16,7 @@ import {
   sectionSpan,
   setFrontmatterField,
   withoutHeading,
-} from "./markdown-sections.mjs";
+} from "../markdown-sections.mjs";
 
 const AREA = ["Current state", "Must not break"];
 

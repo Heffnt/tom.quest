@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-import { renderGrants, skillDirName } from "./skills.mjs";
+import { renderGrants, skillDirName } from "../shared/skills.mjs";
 
 const RUNNER = path.resolve("scripts/codex-run.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];

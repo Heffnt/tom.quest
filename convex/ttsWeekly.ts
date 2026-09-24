@@ -39,17 +39,17 @@ import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
 import { isModelOfTomPath, modelOfTomFilesWithLegacyFallback, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
-import { scoredNothing } from "../worker/jobs/evals-row.mjs";
+import { scoredNothing } from "../shared/evals-row.mjs";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
-import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
+import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
 // NEW IN THIS FILE THIS PHASE. Nothing here was redacted before the verifiers
 // block, because every string this gather carried came off a row a worker had
 // already put through the filter. The scorecard's strings are prose out of a
 // model run and an objection's sentence is Slack text Tom typed, so both go
 // through the one choke point the rest of Convex uses (convex/ttsMerge.ts,
 // convex/ttsSearch.ts).
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 
 export const WEEK_MS = 7 * DAY_MS;
 

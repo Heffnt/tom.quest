@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { noItemTrailer as rowTrailer } from "../worker/jobs/evals-row.mjs";
+import { noItemTrailer as rowTrailer } from "../shared/evals-row.mjs";
 import {
   COVERAGE_NOT_REQUIRED,
   changedPathsFromGit,
@@ -240,13 +240,13 @@ describe("gate, continued", () => {
   // stay out, because watching them fires a fifty-minute run on every change to
   // the evals code itself.
   it("watches the skill table and its generator, and still not the harness", () => {
-    expect(WATCHED_PATHS).toContain("scripts/skills.mjs");
+    expect(WATCHED_PATHS).toContain("shared/skills.mjs");
     expect(WATCHED_PATHS).toContain("scripts/publish-skills.mjs");
-    expect(WATCHED_PATHS).toContain("worker/jobs/skill-router.mjs");
+    expect(WATCHED_PATHS).toContain("shared/skill-router.mjs");
     expect(WATCHED_PATHS).toContain("evals/triggers/**");
     expect(WATCHED_PATHS).not.toContain("worker/jobs/evals.mjs");
     expect(WATCHED_PATHS).not.toContain("scripts/evals-check.mjs");
-    expect(matchesWatched("scripts/skills.mjs")).toBe(true);
+    expect(matchesWatched("shared/skills.mjs")).toBe(true);
     expect(matchesWatched("evals/triggers/skill-know-research.json")).toBe(true);
     expect(matchesWatched("worker/jobs/evals.mjs")).toBe(false);
   });
@@ -526,7 +526,7 @@ describe("a superseded row", () => {
   });
 
   // A REQUEST OLDER THAN THE PROTOCOL carries the protocol's name in that
-  // field rather than a sha (worker/jobs/evals-row.mjs PROTOCOL_SUPERSEDED).
+  // field rather than a sha (shared/evals-row.mjs PROTOCOL_SUPERSEDED).
   // It fails the same way and asks for the same thing — a re-run at the head —
   // and the name is printed whole, because seven characters of it would say
   // "protoco".
@@ -565,7 +565,7 @@ describe("noItemTrailer", () => {
     expect(noItemTrailer(undefined)).toBe(null);
   });
 
-  // THE SECOND SPELLING, KEPT HONEST. worker/jobs/evals-row.mjs carries this
+  // THE SECOND SPELLING, KEPT HONEST. shared/evals-row.mjs carries this
   // reader too, because the Convex door needs it to decide whether a re-filed
   // request is the same question (evalsRequestIdentity) and cannot import this
   // file: it has zero imports on purpose — WikiTom's Action fetches the single
@@ -622,15 +622,15 @@ describe("the golden-item rule", () => {
   // watched files cannot: a trigger is not evidence about an arbitrary prompt
   // context change.
   it("lets a trigger cover only a skill description or router change", () => {
-    const changed = ["scripts/skills.mjs"];
+    const changed = ["shared/skills.mjs"];
     expect(goldenItemRule(changed, "Split one description shape in two.")).toBe(false);
     expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "")).toBe(false);
     expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "", ["skill-know-research.json"])).toBe(true);
     expect(goldenItemRule(["model-of-tom/intent.md", "evals/triggers/skill-know-research.json"], "")).toBe(false);
     expect(goldenItemRule(["scripts/publish-skills.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
-    expect(goldenItemRule(["worker/jobs/skill-router.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
+    expect(goldenItemRule(["shared/skill-router.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
     expect(goldenItemRule([
-      "scripts/skills.mjs",
+      "shared/skills.mjs",
       "evals/triggers/skill-know-research.json",
       "model-of-tom/intent.md",
     ], "", ["skill-know-research.json"])).toBe(false);
@@ -717,7 +717,7 @@ describe("what one job's prompt reads", () => {
   it("refuses to narrow when a shared input moved, or when nobody supplied a diff", () => {
     // Every prompt carries the layers, so every item moves.
     expect(jobsAffectedBy(["model-of-tom/intent.md"])).toBeNull();
-    expect(jobsAffectedBy(["scripts/skills.mjs"])).toBeNull();
+    expect(jobsAffectedBy(["shared/skills.mjs"])).toBeNull();
     expect(jobsAffectedBy(["evals/golden/explanations/explanation-p1.json"])).toBeNull();
     // A weekly run and a run by hand supply no list: null regenerates all.
     expect(jobsAffectedBy(undefined)).toBeNull();

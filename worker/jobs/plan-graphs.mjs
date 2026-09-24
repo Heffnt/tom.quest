@@ -133,8 +133,8 @@ export const PREPARED = "prepared";
  * what a rule means — the door never reimplements a rule, and never
  * reimplements the split between them either.
  *
- * THE FILE HAS TWO HOMES — /opt/tts beside the jobs (worker/setup.sh copies it
- * flat) and scripts/ in a checkout — so both are tried, in that order, exactly
+ * THE FILE HAS TWO HOMES — /opt/tts/scripts/ below the flat jobs (worker/setup.sh
+ * copies it there) and scripts/ in a checkout — so both are tried, in that order, exactly
  * as worker/jobs/evals.mjs loadWritingStandard() does. AN ABSENT FILE IS "NO
  * RULES RAN", NEVER A FAILURE, for that function's stated reason: a box whose
  * setup.sh has not copied it must not start refusing every item on a check it
@@ -143,7 +143,7 @@ export const PREPARED = "prepared";
 export async function loadStandardRules() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const candidate of [
-    path.join(here, "check-writing-standard.mjs"),
+    path.join(here, "scripts", "check-writing-standard.mjs"),
     path.join(here, "..", "..", "scripts", "check-writing-standard.mjs"),
   ]) {
     if (fs.existsSync(candidate)) return await import(pathToFileURL(candidate).href);

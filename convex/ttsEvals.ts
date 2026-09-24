@@ -18,7 +18,7 @@ import {
   reopensOnReask,
   scoredNothing,
   supersededFields,
-} from "../worker/jobs/evals-row.mjs";
+} from "../shared/evals-row.mjs";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
@@ -845,7 +845,7 @@ export const internalRequestEvals = internalMutation({
     // standing. This decides whether it is DIFFERENT, which is a separate
     // fact and the one the cost turns on: a run is fifty minutes and eighty
     // model calls, and re-dating the request is what throws the last one away.
-    // evalsRequestIdentity (worker/jobs/evals-row.mjs) names the three things
+    // evalsRequestIdentity (shared/evals-row.mjs) names the three things
     // a run's answer depends on — the base sha, the changed paths, and the
     // `evals: no-item` trailer — and the pull-request body around that trailer
     // is deliberately not one of them. `.github/workflows/evals.yml` fires on
@@ -1235,7 +1235,7 @@ export type LegacyDrainReport = {
  * and schedules itself with the continue cursor, so an interrupted chain is
  * restarted by calling it again from the start.
  *
- * It writes the SAME DENYING ROW the box writes (worker/jobs/evals-row.mjs
+ * It writes the SAME DENYING ROW the box writes (shared/evals-row.mjs
  * supersededFields), so nothing downstream can tell the two apart and no gate
  * opens on a row this wrote. It carries no `boxEvalsVersion`: the box did not
  * write it, and that field is the door's record of what the box is running.

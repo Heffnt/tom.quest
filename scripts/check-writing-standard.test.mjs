@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   BRIEF_RULES,
   BRIEF_SIZE_RULE_IDS,
+  CHECKIN_RULES as REEXPORTED,
   MAX_BRIEF_CHARS,
   RULES,
   briefFormRules,
   countSentences,
   failuresFor,
 } from "./check-writing-standard.mjs";
+import { CHECKIN_RULES } from "../shared/checkin-rules.mjs";
 
 /** A minimal document that satisfies every mechanical rule, so a test can add
  *  exactly one thing and see exactly one rule react. */
@@ -290,5 +292,19 @@ describe("every rule declares which view it reads", () => {
     for (const rule of RULES) {
       expect(["document", "prose", "style"]).toContain(rule.on);
     }
+  });
+});
+
+// The check-in rules live in shared/checkin-rules.mjs, because the Convex
+// record runs them too; this file re-exports them so failuresFor reads them
+// like every other rule set.
+describe("the check-in form rules, re-exported", () => {
+  it("are the rules check-writing-standard.mjs exports, read through its failuresFor, and not the brief rules", () => {
+    expect(REEXPORTED).toBe(CHECKIN_RULES);
+    expect(failuresFor("## Status\n\nIt ran.", CHECKIN_RULES)).toEqual(["checkin-heading"]);
+    // A ruling request is a heading and a numbered list, which a brief refuses.
+    const ruling = "Two cells are stuck.\n\n## Rulings requested\n\n1. Should I stop them?";
+    expect(failuresFor(ruling, BRIEF_RULES)).toContain("brief-markup");
+    expect(failuresFor(ruling, CHECKIN_RULES)).toEqual([]);
   });
 });

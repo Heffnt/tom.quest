@@ -50,6 +50,7 @@ import { launchRunnerStep } from "./runner-step.mjs";
 import { DAEMON_RESTART_ENDED_REASON, listedCodexModels } from "./hosted.mjs";
 import { reapUnlisted, removeOrphanWorkdirs, removeWorkdir } from "./workdir.mjs";
 import { SECRETS_CHECK_MS, deliverSecrets, dropNames } from "./secret-mailbox.mjs";
+import { POLL_IDLE_MS } from "./session-constants.mjs";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -65,11 +66,9 @@ const DAEMON_STARTED_AT = Date.now();
 //   30s — nothing live: pure heartbeat.
 const POLL_HOT_MS = 1_000;
 const POLL_WARM_MS = 5_000;
-// CONTRACT: idle poll 30s; the server/client staleness threshold is 90s =
-// 3 missed idle polls — if you change this cadence, change DAEMON_STALE_MS in
-// convex/ttsShared.ts (its one home; claudeSessions.ts and app/runs/lib.ts
-// re-export from there) with it.
-const POLL_IDLE_MS = 30_000;
+// The idle cadence, POLL_IDLE_MS, is imported: shared/session-constants.mjs
+// defines it beside DAEMON_STALE_MS, the record's staleness threshold, which
+// is three of these polls and derived from it there.
 const HOT_WINDOW_MS = 30_000;
 
 // Which Claude Max account the SDK runs under — the Jarvis Box's "active" symlink

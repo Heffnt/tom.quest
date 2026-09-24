@@ -1,5 +1,5 @@
-// Tests for the pure graph (worker/jobs/graph.mjs) and its hash
-// (worker/jobs/graph-hash.mjs).
+// Tests for the pure graph (shared/graph.mjs) and its hash
+// (shared/graph-hash.mjs).
 //
 // EVERYTHING HERE RUNS ON FIXTURE TEXT. The builder is a function of already-read
 // pages, so a fixture is a string and nothing else — no vault, no snapshot, no
@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { hash8, ruleId, sha256Hex } from "./graph-hash.mjs";
+import { hash8, ruleId, sha256Hex } from "../graph-hash.mjs";
 import {
   CITATION_KINDS,
   DEFINES_CAP,
@@ -44,7 +44,7 @@ import {
   subgraphOf,
   termId,
   walk,
-} from "./graph.mjs";
+} from "../graph.mjs";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

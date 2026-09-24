@@ -28,11 +28,11 @@ export type TranscriptMessage = Message & {
 
 type SessionStatus = Session["status"];
 
-// One home for the session constants: convex/ttsShared.ts (client-safe, no
-// server imports) — the staleness window, and the live-status list this page
-// and convex/claudeSessions.ts must agree on. The worker daemon's literal
-// mirrors are fenced by scripts/check-session-mirrors.mjs, which also fails if
-// a second LIVE_STATUSES reappears here.
+// The session constants come through convex/ttsShared.ts (client-safe, no
+// server imports): the staleness window, whose one home is
+// shared/session-constants.mjs, and the live-status list this page and
+// convex/claudeSessions.ts must agree on. scripts/check-session-mirrors.mjs
+// fails if a second LIVE_STATUSES reappears here.
 export { DAEMON_STALE_MS, LIVE_STATUSES, isLive } from "@/convex/ttsShared";
 import {
   LEGACY_SESSION_MODEL,

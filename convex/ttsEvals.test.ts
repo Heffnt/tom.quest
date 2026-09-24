@@ -9,13 +9,13 @@ import {
   GOLDEN_PER_VERDICT_MAX,
   partitionOf,
 } from "./ttsEvals";
-import { EVALS_PROTOCOL, EVALS_PROTOCOL_SINCE, PROTOCOL_SUPERSEDED } from "../worker/jobs/evals-row.mjs";
+import { EVALS_PROTOCOL, EVALS_PROTOCOL_SINCE, PROTOCOL_SUPERSEDED } from "../shared/evals-row.mjs";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const DAY = 86_400_000;
 // EVERY REQUEST THESE TESTS FILE IS FILED UNDER THE PROTOCOL, because one
-// filed before it is never served (worker/jobs/evals-row.mjs
+// filed before it is never served (shared/evals-row.mjs
 // EVALS_PROTOCOL_SINCE): the queue answers it superseded without a run, which
 // is a different question from the ones below. The rows' `at` stays small — it
 // is the order, not the date — and `requestedAt` is the date.

@@ -13,7 +13,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { assembleContext, joinContext, OUTCOMES_BYTES, RULINGS_BYTES, SESSION_SCAN_MAX } from "./ttsContext";
 import { MODEL_OF_TOM_HEADER, SESSION_REPO_NAMES } from "./ttsShared";
-import { CLAUDE_SKILL_NAME, repoSkillName } from "../scripts/skills.mjs";
+import { CLAUDE_SKILL_NAME, repoSkillName } from "../shared/skills.mjs";
 import {
   AREA_NAMES,
   CONTEXT_REPO_RULES,
@@ -246,8 +246,8 @@ describe("assembleContext", () => {
    * the catalog is seeded with the publisher's spelling and every repo subject
    * must come back GRANTED, never refused for want of a body.
    *
-   * It is one function on both sides — scripts/skills.mjs repoSkillName, which
-   * worker/jobs/skill-router.mjs and scripts/skills.mjs buildSkills each call —
+   * It is one function on both sides — shared/skills.mjs repoSkillName, which
+   * shared/skill-router.mjs and shared/skills.mjs buildSkills each call —
    * and this fails the day a second spelling appears on either path.
    */
   it("grants every session repository the exact skill name the publisher produces", async () => {

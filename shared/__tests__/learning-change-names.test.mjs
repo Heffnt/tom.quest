@@ -8,7 +8,7 @@ import {
   changeIdTokens,
   namedChange,
   withoutChangeId,
-} from "./learning-change-names.mjs";
+} from "../learning-change-names.mjs";
 
 describe("learning-change-names", () => {
   const changes = [{ id: "0123456789ab" }, { id: "fedcba987654" }];

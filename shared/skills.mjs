@@ -18,7 +18,7 @@
 // bundler takes no node builtins, so byte lengths are counted with TextEncoder.
 // Everything that touches a disk or a git object lives in publish-skills.mjs.
 
-import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
+import { parseFrontmatter } from "./markdown-sections.mjs";
 
 export class SkillsError extends Error {}
 

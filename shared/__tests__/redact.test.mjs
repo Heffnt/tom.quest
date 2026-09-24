@@ -1,11 +1,7 @@
-// The credential filter (worker/session-host/redact.mjs): the one thing that
-// stands between a token a model printed and a transcript row that lives
-// forever. The behavior half imports the module; the wiring half reads lib.mjs
-// as TEXT (it imports the worker-env symlink and cannot be loaded here) to pin
-// that the filter is applied at the single ingest choke point, after the cut.
-//
-// This directory is deliberately NOT flat: setup.sh installs the daemon with
-// `cp worker/session-host/*.mjs`, so this file never ships.
+// The credential filter (shared/redact.mjs): the one thing that stands between
+// a token a model printed and a transcript row that lives forever. This file is
+// its behavior. The wiring, that the daemon applies it at the single ingest
+// choke point after the cut, is worker/session-host/__tests__/redact-wiring.test.mjs.
 //
 // Every "token" below is a made-up value of a REAL shape, and each one is
 // assembled at runtime from split pieces by `t()`: no committed LINE spells a
@@ -20,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { redactSecrets } from "../redact.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const libSource = fs.readFileSync(path.join(here, "..", "lib.mjs"), "utf8");
+const libSource = fs.readFileSync(path.join(here, "..", "..", "worker", "session-host", "lib.mjs"), "utf8");
 
 // The 32KB cut has ONE home (TRUNCATE_LIMIT in lib.mjs); read it from there
 // rather than writing 32768 down a second time.
@@ -281,27 +277,5 @@ describe("the marker and the 32KB cut", () => {
     const head = "y".repeat(TRUNCATE_LIMIT - 20) + token;
     const out = redactSecrets(head.slice(0, TRUNCATE_LIMIT));
     expect(out).not.toContain(token);
-  });
-});
-
-describe("wiring: the filter is applied at the ingest choke point", () => {
-  it("lib.mjs re-exports it from redact.mjs", () => {
-    expect(libSource).toMatch(
-      /export \{ redactSecrets \} from "\.\/redact\.mjs"/,
-    );
-  });
-
-  it("sessionsFetch redacts the serialized body", () => {
-    expect(libSource).toMatch(/body: redactSecrets\(JSON\.stringify\(body\)\),/);
-  });
-
-  it("no unredacted JSON.stringify body survives in lib.mjs", () => {
-    expect(libSource).not.toMatch(/body: JSON\.stringify\(body\)/);
-  });
-
-  it("the daemon has no second door to Convex to leak through", () => {
-    // Every write goes through sessionsFetch; sessionsGet is a read with no
-    // body. If a third `fetch(` appears here, it needs the filter too.
-    expect(libSource.match(/await fetch\(/g)).toHaveLength(2);
   });
 });

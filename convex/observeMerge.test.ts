@@ -9,7 +9,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { EVALS_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, MERGE, TESTS_RUN, commitKey } from "./ttsMerge";
-import { EVALS_PROTOCOL } from "../worker/jobs/evals-row.mjs";
+import { EVALS_PROTOCOL } from "../shared/evals-row.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 

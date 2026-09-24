@@ -1,6 +1,6 @@
 // THE ONE HOME for deciding WHICH SKILLS a run is granted.
 //
-// This is the routing half of worker/jobs/context-relevance.mjs, MOVED rather
+// This is the routing half of shared/context-relevance.mjs, MOVED rather
 // than rewritten. The rules that decide what bears on a run's subject did not
 // change when the know layer became a skill catalog; only the OUTPUT changed.
 // context-relevance answered "which bytes of which page ride the prompt"; this
@@ -22,7 +22,7 @@
 // is deliberate rather than lazy.
 
 import { headings, parseFrontmatter } from "./markdown-sections.mjs";
-import { AREAS_DIR, areaCategories, areaName, bareSkillName, isAreaPath, repoSkillName } from "../../scripts/skills.mjs";
+import { AREAS_DIR, areaCategories, areaName, bareSkillName, isAreaPath, repoSkillName } from "./skills.mjs";
 
 /** Kept under the name context-relevance.mjs threw, because this class moved
  * out of that file along with the functions that throw it. */
@@ -152,7 +152,7 @@ export function subjectNeedsRecord(subject) {
  *
  * Routing and skill descriptions share the parser-normalized category arrays:
  * `parseFrontmatter` converts each area page's bracket-list form, and
- * scripts/skills.mjs's `areaCategories` consumes that same array.
+ * shared/skills.mjs's `areaCategories` consumes that same array.
  *
  * THE FALLBACK IS THE MOVED CODE'S, unchanged: a page with no `categories:`
  * line matches on its own name plus its `# ` title, and says so through
@@ -395,7 +395,7 @@ function publishedSet(published) {
 }
 
 /** The refusal a wanted name gets when the publication does not carry it. The
- * same sentence scripts/skills.mjs refuses a bodyless repository with, because
+ * same sentence shared/skills.mjs refuses a bodyless repository with, because
  * the two mean the same thing to the run that reads the line. */
 export const NO_BODY = "no published body at this commit";
 
@@ -590,5 +590,5 @@ export function routeSkills(input) {
 }
 
 /** Re-exported so a caller holding only this module can spell an area path.
- * One definition, in scripts/skills.mjs; these are names, not copies. */
+ * One definition, in shared/skills.mjs; these are names, not copies. */
 export { AREAS_DIR, areaName, isAreaPath };

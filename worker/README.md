@@ -124,7 +124,7 @@ allow agents to freely move toward completing all todos in the best way they
 
 The five-minute `evals.mjs --serve` cron takes pull-request requests from
 Convex and writes every answer back as an `evals-run` event. The shared
-`EVALS_PROTOCOL` in `jobs/evals-row.mjs` names that row contract; queue reads
+`EVALS_PROTOCOL` in `shared/evals-row.mjs` names that row contract; queue reads
 and written rows carry the installed box version so the door can distinguish
 an expected rollout window from a runner that has stopped.
 
@@ -134,7 +134,7 @@ Then drain the pre-protocol queue once:
 
     npx convex run ttsEvals:internalSupersedeLegacyEvalsRequests '{}'
 
-`EVALS_PROTOCOL_SINCE` in `jobs/evals-row.mjs` is the cutoff, and it is updated
+`EVALS_PROTOCOL_SINCE` in `shared/evals-row.mjs` is the cutoff, and it is updated
 at the merge that deploys a bump. A request filed before it was answered, if at
 all, by a row carrying no `answersRequestAt`, so the queue can no longer see
 that answer and would hand the sha out for a full run — every such sha, ahead of
@@ -299,7 +299,7 @@ the `HEAD` the four left:
    its own query, so a row updated between two pages is exported in its
    later state, a row deleted between them is in neither, and two tables
    read minutes apart can disagree. Every string value of every row goes
-   through the daemon's credential filter (`worker/session-host/redact.mjs`,
+   through the daemon's credential filter (`shared/redact.mjs`,
    the same one every transcript row passes on ingest) before it is
    written, so a key pasted into a session turn or a setting reaches WikiTom
    as `[redacted:<kind>]`.

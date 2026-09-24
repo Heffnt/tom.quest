@@ -315,9 +315,9 @@ export function failuresFor(html, rules = RULES) {
 // A runner's check-in has its own form rules, a second array beside
 // BRIEF_RULES rather than a widening of it: a check-in that requests a ruling
 // carries a heading and a numbered list, which brief-markup refuses. They live
-// in checkin-rules.mjs because the Convex record runs them too and cannot
-// import this file; setup.sh copies that file beside this one on the box.
-export { CHECKIN_RULES, CHECKIN_MAX_CHARS } from "./checkin-rules.mjs";
+// in shared/checkin-rules.mjs because the Convex record runs them too and
+// cannot import this file; setup.sh copies shared/ beside scripts/ on the box.
+export { CHECKIN_RULES, CHECKIN_MAX_CHARS } from "../shared/checkin-rules.mjs";
 
 export { RULES, BRIEF_RULES, proseView, styleView };
 export { MAX_BRIEF_CHARS };

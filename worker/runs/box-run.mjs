@@ -92,21 +92,11 @@ import {
   FABLE_LIMIT_RE, aboveCeiling, ceilingNote, markFableAvailable, markFableUnavailable, noteFableProbe, readFableState, underCeiling,
 } from "./models.mjs";
 import { claimRegistration, writeRegistration } from "./registration.mjs";
+import { NO_REPO as REPO_NONE, SESSION_REPOS } from "../session-host/session-constants.mjs";
 
-// MIRROR of REPO_GITHUB in worker/session-host/session.mjs and SESSION_REPOS
-// in convex/ttsShared.ts. Restated rather than imported: session.mjs pulls the
-// whole daemon (npm deps, the Convex client) and this file must stay a plain
-// zero-dependency script that runs from /opt/tts/runs. scripts/check-session-
-// mirrors.mjs fences the three copies against each other.
-const REPO_GITHUB = {
-  "tom.quest": "Heffnt/tom.quest",
-  ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
-  WikiTom: "Heffnt/WikiTom",
-  Jarvis: "Heffnt/Jarvis",
-};
-
-/** The sentinel repo value meaning "no checkout, an empty scratch workspace". */
-const REPO_NONE = "none";
+// The repos a run may check out, and the sentinel for none: their one home is
+// shared/session-constants.mjs, reached through the session-host symlink,
+// which setup.sh's cp installs as a real file in /opt/tts/session-host/.
 
 // What a box run may do. `Task` is in it BECAUSE a box run may spawn its own
 // children on the box, which is the point of moving the work here. Reading and
@@ -308,8 +298,8 @@ function normalize(input) {
   opts.depth = opts.depth ?? null;
   if (typeof opts.prompt !== "string" || !opts.prompt.trim()) fail("no prompt on stdin");
   if (opts.cli !== "claude" && opts.cli !== "codex") fail("--cli must be claude or codex");
-  if (opts.repo !== REPO_NONE && !REPO_GITHUB[opts.repo]) {
-    fail(`unknown repo "${opts.repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`);
+  if (opts.repo !== REPO_NONE && !SESSION_REPOS[opts.repo]) {
+    fail(`unknown repo "${opts.repo}" — expected one of ${Object.keys(SESSION_REPOS).join(", ")}, or "none"`);
   }
   // REMOVAL CHECK: ignoring the `--ref` instead is the one thing this must not
   // do. `--repo none` gives the run no checkout at all — it works in an empty
@@ -663,7 +653,7 @@ function gitOrFail(args, what, { cwd, env } = {}) {
  */
 function ensureMirror(repo, reposDir, env) {
   const mirror = path.join(reposDir, `${repo}.git`);
-  const url = `https://github.com/${REPO_GITHUB[repo]}.git`;
+  const url = `https://github.com/${SESSION_REPOS[repo]}.git`;
   // GIT_LFS_SKIP_SMUDGE: an LFS pointer must not pull its blob here — the box
   // has no LFS credentials and the payload is never what a run needs.
   const gitEnv = { ...env, GIT_LFS_SKIP_SMUDGE: "1" };

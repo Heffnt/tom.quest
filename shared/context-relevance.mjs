@@ -10,11 +10,11 @@
 // and nothing to index — a run is granted skill names and loads a body itself,
 // once, if it needs it.
 //
-//   the routing half   worker/jobs/skill-router.mjs — the same area terms, the
+//   the routing half   shared/skill-router.mjs — the same area terms, the
 //                      same word-boundary match, the same category and batch
 //                      rankings and path tokens, answering "which skills is
 //                      this run granted" instead of "which bytes ride"
-//   the bodies         scripts/skills.mjs, which builds the catalog, and
+//   the bodies         shared/skills.mjs, which builds the catalog, and
 //                      scripts/publish-skills.mjs, which writes it out
 //   the search index   worker/jobs/search-lib.mjs `usage()`, which already
 //                      names every corpus and flag the index used to list

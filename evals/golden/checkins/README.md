@@ -12,7 +12,7 @@ his ruling of 2026-09-21) and three it must fail (coined names and an unexplaine
 check-in that grades itself and states no fact; the contract check-in with one
 undefined tier name added, the fault the first proof run's check-ins carried).
 
-Every item passes the form rules in `scripts/checkin-rules.mjs`, so what is
+Every item passes the form rules in `shared/checkin-rules.mjs`, so what is
 scored is the judge's reading and nothing a script decides.
 
 None is confirmed by Tom (`confirmedByTom: false`), so each is run and reported

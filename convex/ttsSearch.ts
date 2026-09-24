@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalQuery } from "./_generated/server";
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 
 // Search reads historical prose that may have been stored before ingest grew
 // its redaction choke point. This is deliberately the exact same pure helper

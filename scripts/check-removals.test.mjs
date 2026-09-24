@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { AST_GREP_VERSION, checkRemovals } from "./check-removals.mjs";
+import { AST_GREP_VERSION, checkRemovals, movedAgainst } from "./check-removals.mjs";
 import { baselineText } from "./removal-sensor.mjs";
-import { hash8 } from "../worker/jobs/graph-hash.mjs";
+import { hash8 } from "../shared/graph-hash.mjs";
 
 /** The fingerprint the sensor gives an exported name. */
 function hashOf(name = "lonely") {
@@ -52,6 +52,32 @@ describe("check-removals", () => {
     const result = checkRemovals(io({ matches: [LONELY, NEWCOMER], baseline: grown, main: onMain }));
     expect(result.code).toBe(1);
     expect(result.err.join("\n")).toContain("the list was regenerated to admit a new violation");
+  });
+
+  it("reports a violation whose file moved as moved, not as new", () => {
+    const moved = hit("dead-export", "shared/a.ts", "export const lonely = 1;", 3);
+    const onMain = baselineText([LONELY_KEY + hashOf()]);
+    const after = baselineText(["dead-export\tshared/a.ts\t" + hashOf()]);
+    const result = checkRemovals(io({ matches: [moved], baseline: after, main: onMain }));
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("moved: dead-export\tapp/a.ts\t" + hashOf() + " -> shared/a.ts");
+  });
+
+  it("still fails a new line that only looks like a move", () => {
+    const keys = ["dead-export\tshared/a.ts\t" + hashOf(), "dead-export\tshared/b.ts\t" + hashOf()];
+    const onMain = [LONELY_KEY + hashOf()];
+    // Each line on main pairs once, and a different basename never pairs.
+    expect(movedAgainst(keys, onMain)).toEqual({
+      grown: ["dead-export\tshared/b.ts\t" + hashOf()],
+      moved: [[LONELY_KEY + hashOf(), "dead-export\tshared/a.ts\t" + hashOf()]],
+    });
+    // A line main still carries is no move: the old path has not gone.
+    expect(movedAgainst([LONELY_KEY + hashOf(), "dead-export\tshared/a.ts\t" + hashOf()], onMain).grown).toEqual([
+      "dead-export\tshared/a.ts\t" + hashOf(),
+    ]);
+    // Another rule or fingerprint never pairs.
+    expect(movedAgainst(["flag-not-deletion\tshared/a.ts\t" + hashOf()], onMain).grown).toHaveLength(1);
+    expect(movedAgainst(["dead-export\tshared/a.ts\t" + hashOf("other")], onMain).grown).toHaveLength(1);
   });
 
   it("says so, and still checks the tree, when no main is readable", () => {

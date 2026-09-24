@@ -52,6 +52,7 @@ import {
 } from "./hosted.mjs";
 import { FABLE_LIMIT_RE, MODELS, aboveCeiling, ceilingNote, markFableUnavailable, readFableState, underCeiling } from "../runs/models.mjs";
 import { claimRegistration, writeRegistration } from "../runs/registration.mjs";
+import { LEGACY_SESSION_MODEL, NARROW_LIST, SESSION_MODELS, SESSION_REPOS, USAGE_LIMIT_RE } from "./session-constants.mjs";
 
 const execFile = promisify(execFileCb);
 
@@ -63,48 +64,24 @@ const execFile = promisify(execFileCb);
 // re-exported so the poll loop keeps its one import.
 export { SESSIONS_ROOT };
 
-// The repos a session may check out (claudeSessions.repo). Everything is
-// under github.com/Heffnt — same owner the code-todo jobs use.
-// MIRROR of SESSION_REPOS in convex/ttsShared.ts (the one home) — this file
-// cannot import .ts and only worker/ is deployed to the Jarvis Box. Fenced:
-// scripts/check-session-mirrors.mjs fails guardrails on drift.
-const REPO_GITHUB = {
-  "tom.quest": "Heffnt/tom.quest",
-  ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
-  WikiTom: "Heffnt/WikiTom",
-  Jarvis: "Heffnt/Jarvis",
-};
+// The session constants the record reads too — the repo map, the narrow
+// list, the model table, the legacy model word and the usage-cap regex — come
+// from shared/session-constants.mjs, their one home. This directory reaches it
+// through the symlink ./session-constants.mjs, which setup.sh's cp turns into
+// a real file in /opt/tts/session-host/.
+//
+// The classifier judges shell lines, so it carries only the narrow list's
+// command rendering.
+const NARROW_LIST_COMMANDS = NARROW_LIST.map((item) => item.command);
 
-// MIRROR of NARROW_LIST in convex/ttsShared.ts (the daemon cannot import .ts).
-// scripts/check-session-mirrors.mjs fences this byte-for-byte. The classifier
-// judges shell lines, so it carries only the command rendering.
-const NARROW_LIST_COMMANDS = [
-  "spend money — a purchase, a subscription, a payment, or entering a payment method",
-  "send a message to another human in Tom's name (mail, a Slack post outside the system's own channels, a form submission, a comment on someone else's issue or pull request)",
-  "delete data that git cannot restore — anything outside the working directory, and any history rewrite that is pushed",
-  "read, print, move, or send a credential, key, token or password anywhere",
-];
-
-// Which model a session runs on, and therefore which RUNNER: family "claude"
-// goes through the Agent SDK (startQuery's query()), family "codex" through
-// OpenAI's Codex CLI (codex-query.mjs). `id` is what the runner is handed —
-// null means the account default, which is how an ordinary Claude session
-// has always run; `effort` is Codex's model_reasoning_effort, repeated on
-// every turn (a resume without it falls back to config.toml).
-// MIRROR of SESSION_MODELS in convex/ttsShared.ts (the one home; ratified by
-// Tom 2026-09-04) — same reason as REPO_GITHUB above: this file cannot import
-// .ts. Fenced: scripts/check-session-mirrors.mjs fails guardrails on drift.
-const SESSION_MODELS = {
-  opus: { family: "claude", id: null, effort: null },
-  sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
-  fable: { family: "claude", id: "claude-fable-5-1", effort: null },
-  "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
-  "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
-  "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
-};
-// The default is the SAME on both sides of the mirror: a row written before
-// the model field existed ran Claude on the account default, so absent reads
-// as "opus" (ttsShared's modelFamily says the same).
+// Which model a session runs on picks the RUNNER: family "claude" goes through
+// the Agent SDK (startQuery's query()), family "codex" through OpenAI's Codex
+// CLI (codex-query.mjs). `id` is what the runner is handed — null means the
+// account default, which is how an ordinary Claude session has always run;
+// `effort` is Codex's model_reasoning_effort, repeated on every turn (a resume
+// without it falls back to config.toml). A row written before the model field
+// existed ran Claude on the account default, so absent reads as
+// LEGACY_SESSION_MODEL (ttsShared's modelFamily says the same).
 //
 // A name this daemon does NOT know is not an error: the one home gains a
 // model before the box is redeployed, and the row is already written. It
@@ -114,7 +91,7 @@ const SESSION_MODELS = {
 // daemon crash-looped under systemd on every poll that listed the row (the
 // same guard #applyModel already had for a mid-session change).
 export function knownModel(name) {
-  return Object.hasOwn(SESSION_MODELS, name ?? "opus");
+  return Object.hasOwn(SESSION_MODELS, name ?? LEGACY_SESSION_MODEL);
 }
 // THE MODEL CEILING is the second rung of the same fallback: while the Fable
 // availability state (worker/runs/models.mjs, Tom's rulings of 2026-09-24)
@@ -123,20 +100,20 @@ export function knownModel(name) {
 // modelFallbackNote says which rung applied. `fable` is that state, which a
 // Session reads from its run state directory.
 export function modelSpec(name, fable = { available: true }) {
-  const resolved = underCeiling(name ?? "opus", fable);
+  const resolved = underCeiling(name ?? LEGACY_SESSION_MODEL, fable);
   if (resolved.atCeiling) return SESSION_MODELS[resolved.model];
-  return SESSION_MODELS[knownModel(name) ? (name ?? "opus") : "opus"];
+  return SESSION_MODELS[knownModel(name) ? (name ?? LEGACY_SESSION_MODEL) : LEGACY_SESSION_MODEL];
 }
 /** The line the log and the transcript carry when modelSpec did not run the
  *  model asked for, or null when it did. */
 export function modelFallbackNote(name, fable = { available: true }) {
   if (!knownModel(name)) return `model ${name} unknown to this daemon — running as opus`;
-  const resolved = underCeiling(name ?? "opus", fable);
+  const resolved = underCeiling(name ?? LEGACY_SESSION_MODEL, fable);
   return resolved.atCeiling ? ceilingNote(resolved) : null;
 }
 export function modelFamily(name) {
-  if (!knownModel(name)) name = "opus";
-  return SESSION_MODELS[name ?? "opus"].family;
+  if (!knownModel(name)) name = LEGACY_SESSION_MODEL;
+  return SESSION_MODELS[name ?? LEGACY_SESSION_MODEL].family;
 }
 
 // The live-tail buffer segment-finalizes past this size so the hot
@@ -337,23 +314,11 @@ const PRESERVE_PUSH_TIMEOUT_MS = 60_000;
 const AUTO_MAX_TURNS = 200;
 const AUTO_TURN_CAP_MS = 90 * 60 * 1000;
 
-// Usage-limit signals in SDK errors / error results — the session-host
-// records the latest on its heartbeat (see recordUsageLimit), for family
-// "claude" only; a Codex cap is handled server-side by the scheduler's
-// breaker keyed on family. Deliberately NARROW: "overloaded" (a transient API
-// 529) is not a usage limit and resolves by itself. "session limit" is here
-// from observation, not caution: on 2026-08-30 the CLI's actual text was
-// "You've hit your session limit · resets 8:10am (UTC)", which matched
-// NEITHER alternative, and the scheduler burned a dozen launches against a
-// wall for an hour. The Codex alternatives
-// (usage_limit_reached / usage_limit_exceeded / rate_limit_reached, and the
-// prose "hit your usage limit") are the CLI's own cap vocabulary, added
-// 2026-09-04 so a capped Codex turn's error text reads as a cap to the
-// breaker. LOCKSTEP: the scheduler's circuit breaker in
-// convex/claudeSessions.ts (AUTO_USAGE_RE) carries the same pattern — change
-// both together (scripts/check-session-mirrors.mjs fails the build when they
-// drift).
-export const USAGE_LIMIT_RE = /usage.?limit|limit reached|session limit|usage_limit_(reached|exceeded)|rate_limit_reached|hit your usage limit/i;
+// Usage-limit signals in SDK errors / error results are USAGE_LIMIT_RE
+// (shared/session-constants.mjs, which says why it is narrow): the
+// session-host records the latest on its heartbeat (see recordUsageLimit), for
+// family "claude" only; a Codex cap is handled server-side by the scheduler's
+// breaker, which reads the same regex, keyed on family.
 
 // ── Small utilities ──────────────────────────────────────────────────────────
 
@@ -503,7 +468,7 @@ export class Session {
     // effort are looked up there, never stored here, so a mid-session model
     // change (processServerState) is one field. Cross-family changes never
     // reach a live Session — the server forks a new row instead.
-    this.model = model ?? "opus";
+    this.model = model ?? LEGACY_SESSION_MODEL;
     this.family = modelFamily(this.model);
     // The row keeps its name (so processServerState's compare stays quiet);
     // the spec it resolves to is opus, for an unknown name or one above the
@@ -772,9 +737,9 @@ export class Session {
     // name fails the session outright either way, and failing after three
     // clones have landed just wastes the minutes they took.
     for (const repo of this.repos) {
-      if (!REPO_GITHUB[repo]) {
+      if (!SESSION_REPOS[repo]) {
         throw new Error(
-          `unknown repo "${repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`,
+          `unknown repo "${repo}" — expected one of ${Object.keys(SESSION_REPOS).join(", ")}, or "none"`,
         );
       }
     }
@@ -792,7 +757,7 @@ export class Session {
 
   // One repo's checkout under `base`. Returns its directory.
   async #ensureCheckout(base, repo, forResume) {
-    const gh = REPO_GITHUB[repo];
+    const gh = SESSION_REPOS[repo];
     const dir = path.join(base, repo);
     if (fs.existsSync(path.join(dir, ".git"))) {
       // Still here from before (normal between-turns case) — reuse as-is.

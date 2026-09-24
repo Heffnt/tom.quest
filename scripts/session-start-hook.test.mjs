@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { assemblePrelude } from "./prelude.mjs";
-import { renderGrants } from "./skills.mjs";
+import { renderGrants } from "../shared/skills.mjs";
 import { PULL_TIMEOUT_MS, pullWikiTom } from "./session-start-hook.mjs";
 import { registrationSidecarPath } from "../worker/runs/registration.mjs";
 

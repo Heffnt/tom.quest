@@ -6,7 +6,7 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
-import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { redactSecrets } from "../shared/redact.mjs";
 
 const RUN_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),

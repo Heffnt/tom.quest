@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
-export { PRELUDE_LAYERS } from "./skills.mjs";
-import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES as LAYER_NAMES } from "./skills.mjs";
+import { parseFrontmatter } from "../shared/markdown-sections.mjs";
+export { PRELUDE_LAYERS } from "../shared/skills.mjs";
+import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES as LAYER_NAMES } from "../shared/skills.mjs";
 
 class PreludeError extends Error {}
 
@@ -151,7 +151,7 @@ function preludeResult(wikitom, commit, collected) {
  * to answer a second — `--for <subject>`, which cut the know layer down to the
  * bytes that bore on one run — and that is gone with the expansion itself: the
  * know layer is a published skill catalog, a run is granted skill NAMES by
- * worker/jobs/skill-router.mjs, and it loads a body itself, once, if it needs
+ * shared/skill-router.mjs, and it loads a body itself, once, if it needs
  * one. `--layers operate` is how the base is assembled on both hosts, and
  * worker/jobs/evals.mjs layersFor runs `--layers` against a pinned tree.
  */

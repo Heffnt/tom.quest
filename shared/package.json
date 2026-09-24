@@ -1,0 +1,23 @@
+{
+  "name": "tom-quest-shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Plain ESM modules the tom.quest record, the site and the Jarvis box all import. No dependencies.",
+  "exports": {
+    "./checkin-rules.mjs": "./checkin-rules.mjs",
+    "./clip.mjs": "./clip.mjs",
+    "./context-relevance.mjs": "./context-relevance.mjs",
+    "./evals-row.mjs": "./evals-row.mjs",
+    "./graph-hash.mjs": "./graph-hash.mjs",
+    "./graph.mjs": "./graph.mjs",
+    "./learning-change-names.mjs": "./learning-change-names.mjs",
+    "./markdown-sections.mjs": "./markdown-sections.mjs",
+    "./redact.mjs": "./redact.mjs",
+    "./session-constants.mjs": "./session-constants.mjs",
+    "./skill-router.mjs": "./skill-router.mjs",
+    "./skills.mjs": "./skills.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": ["*.mjs"]
+}

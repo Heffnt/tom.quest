@@ -703,13 +703,13 @@ export function skillRoots(env = process.env) {
   return [path.join(claude, "skills")];
 }
 
-// scripts/skills.mjs is THE definition of the prefix and the groups, and it
-// has two homes: scripts/ beside worker/ in a checkout, and /opt/tts/scripts/
+// shared/skills.mjs is THE definition of the prefix and the groups, and it
+// has two homes: shared/ beside worker/ in a checkout, and /opt/tts/shared/
 // beside the flat jobs on the box (worker/setup.sh copies it there). Both
 // specifiers are named rather than guessed, exactly as worker/jobs/tts-lib.mjs
 // names both homes of the registration body. The import is LAZY so a search
 // for a ruling never depends on the skill machinery being installed.
-const SKILLS_MODULE_SPECIFIERS = ["../../scripts/skills.mjs", "./scripts/skills.mjs"];
+const SKILLS_MODULE_SPECIFIERS = ["../../shared/skills.mjs", "./shared/skills.mjs"];
 const REGISTRATION_MODULE_SPECIFIERS = ["../runs/registration.mjs", "./runs/registration.mjs"];
 
 async function installedModule(specifiers) {
@@ -728,7 +728,7 @@ let skillsModule = null;
 async function loadSkillsModule() {
   if (skillsModule === null) {
     skillsModule = await installedModule(SKILLS_MODULE_SPECIFIERS);
-    if (skillsModule === null) fail("the skill definitions (scripts/skills.mjs) are not installed");
+    if (skillsModule === null) fail("the skill definitions (shared/skills.mjs) are not installed");
   }
   return skillsModule;
 }
@@ -764,7 +764,7 @@ async function noteSkillAsk(env, ask) {
 }
 
 /** THE GROUP IS DERIVED, NOT READ. A SKILL.md's frontmatter carries `name` and
- * `description` and nothing else, by design (scripts/skills.mjs renderSkillMd
+ * `description` and nothing else, by design (shared/skills.mjs renderSkillMd
  * says why), so the group comes off the name: `write` is write, `know-*` is
  * know, `repo-*` is repo. */
 function skillGroup(name, groups) {
@@ -994,19 +994,19 @@ export const MAX_WALK_BYTES = 1_048_576;
 /** The most `did you mean` rows a refusal prints. */
 const NEAR_MISSES = 5;
 
-// worker/jobs/graph.mjs is the pure half — the kinds, the index and the walk.
+// shared/graph.mjs is the pure half — the kinds, the index and the walk.
 // The import is LAZY for the same reason the skills module's is: a search for a
-// ruling must not depend on the graph machinery being installed beside it, and
-// graph.mjs reaches scripts/skills.mjs, which on the box is a separate copy.
-// Both homes, named the way SKILLS_MODULE_SPECIFIERS names its two: worker/
-// jobs/ beside this file in a checkout, and the flat /opt/tts/ on the box.
+// ruling must not depend on the graph machinery being installed beside it.
+// One specifier serves both homes: worker/jobs/graph.mjs beside this file in a
+// checkout is a symlink to shared/graph.mjs, and setup.sh's cp of it puts a
+// real copy beside this file in the flat /opt/tts/ on the box.
 const GRAPH_MODULE_SPECIFIERS = ["./graph.mjs"];
 
 let graphModule = null;
 async function loadGraphModule() {
   if (graphModule === null) {
     graphModule = await installedModule(GRAPH_MODULE_SPECIFIERS);
-    if (graphModule === null) fail("the graph module (worker/jobs/graph.mjs) is not installed");
+    if (graphModule === null) fail("the graph module (shared/graph.mjs, installed as ./graph.mjs) is not installed");
   }
   return graphModule;
 }
