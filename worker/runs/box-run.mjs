@@ -88,6 +88,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runConfig } from "./config.mjs";
+import {
+  FABLE_LIMIT_RE, aboveCeiling, ceilingNote, markFableAvailable, markFableUnavailable, noteFableProbe, readFableState, underCeiling,
+} from "./models.mjs";
 import { claimRegistration, writeRegistration } from "./registration.mjs";
 
 // MIRROR of REPO_GITHUB in worker/session-host/session.mjs and SESSION_REPOS
@@ -875,6 +878,20 @@ function prepareRun(options, slot = noSlot) {
 
   const config = runConfig({ env });
   const stateDir = config.stateDir;
+
+  // THE MODEL CEILING (worker/runs/models.mjs, Tom's rulings of 2026-09-24).
+  // While the Fable availability file says Fable is unavailable, a Claude run
+  // asked for Fable runs the ceiling model, and the log says so. The
+  // registration keeps the model that was asked for as its modelRequested and
+  // the transcript records the model that ran, so the run's row shows both.
+  // The Fable probe is the one run that asks Fable whatever the file says.
+  if (opts.cli === "claude" && !opts.fableProbe) {
+    const resolved = underCeiling(opts.model, readFableState(stateDir));
+    if (resolved.atCeiling) {
+      note(ceilingNote(resolved));
+      opts.model = resolved.model;
+    }
+  }
   const pnpmStore = path.join(path.dirname(stateDir), "pnpm-store");
 
   const id = crypto.randomUUID().slice(0, 8);
@@ -1115,6 +1132,8 @@ function finishedResult(run, { stdout, code, signal, timedOut, survivors }) {
     id: run.id,
     seconds: Math.round((Date.now() - run.startedAt) / 1000),
     text,
+    // The model this run was started on, after the ceiling.
+    model: opts.model,
     // Work killed at the time limit is a timeout, whether the CLI or a process
     // it left running was still going.
     exitCode: timedOut || survivors.length > 0 ? 124 : (code ?? 1),
@@ -1227,7 +1246,8 @@ function waitForSurvivorsSync(run, timedOut) {
  * for everything that happens before the child exits.
  */
 export async function boxRun(options) {
-  return await spawnAndWait(prepareRun(options, queueForSlot), options);
+  const result = await spawnAndWait(prepareRun(options, queueForSlot), options);
+  return fableRefused(options, result) ? spawnAndWait(prepareRun(options, queueForSlot), options) : result;
 }
 
 /**
@@ -1247,7 +1267,8 @@ export async function boxRun(options) {
  * use their answer as a string on the next line.
  */
 export async function boxRunNoSlot(options) {
-  return await spawnAndWait(prepareRun(options, noSlot), options);
+  const result = await spawnAndWait(prepareRun(options, noSlot), options);
+  return fableRefused(options, result) ? spawnAndWait(prepareRun(options, noSlot), options) : result;
 }
 
 /** Spawn a prepared run and resolve with its report. The body boxRun has
@@ -1358,6 +1379,11 @@ async function spawnAndWait(run, options) {
  * It takes no slot: noSlot above says why.
  */
 export function boxRunSync(options) {
+  const result = boxRunSyncOnce(options);
+  return fableRefused(options, result) ? boxRunSyncOnce(options) : result;
+}
+
+function boxRunSyncOnce(options) {
   const run = prepareRun(options);
   run.startedAt = Date.now();
   const result = spawnSync(run.command, run.args, {
@@ -1375,6 +1401,86 @@ export function boxRunSync(options) {
   }
   const survivors = waitForSurvivorsSync(run, timedOut);
   return finishRun(run, { stdout: result.stdout ?? "", code: result.status, signal: result.signal, timedOut, survivors });
+}
+
+/**
+ * Whether a finished run asked Fable and was refused for a spend or usage
+ * limit. When it was, the Fable availability file is set unavailable, so the
+ * same options run again at the ceiling model: prepareRun reads the file and
+ * the log says "fable requested, opus at the ceiling". Both runs are recorded;
+ * the caller gets the second one's answer and token. The probe is excluded: its
+ * refusal is its answer.
+ */
+function fableRefused(options, result) {
+  if (options?.fableProbe || (options?.cli ?? "claude") !== "claude") return false;
+  if (!aboveCeiling(result.model)) return false;
+  if (result.exitCode === 0 && result.envelope?.is_error !== true) return false;
+  const said = [result.envelope?.result, result.text, result.stderrTail].filter((text) => typeof text === "string").join("\n");
+  const line = said.split("\n").find((text) => FABLE_LIMIT_RE.test(text));
+  if (line === undefined) return false;
+  const { stateDir } = runConfig({ env: options?.env ?? process.env });
+  markFableUnavailable(stateDir, { reason: line });
+  note(`${result.model} was refused (${line.trim().slice(0, 200)}); Fable is marked unavailable and the run starts again at the ceiling`);
+  return true;
+}
+
+/** The Fable availability state this host's launcher reads (models.mjs). */
+export function fableState(env = process.env) {
+  return readFableState(runConfig({ env }).stateDir);
+}
+
+/** The one-word question the Fable probe asks. The refusal of an account out
+ *  of usage is the CLI's own answer, spent on no model call. */
+const FABLE_PROBE_PROMPT = "Answer with the one word: ready";
+
+/**
+ * Ask Fable once whether it answers, and record what it said in the Fable
+ * availability file: an answer lifts the ceiling, anything else moves only
+ * the check time. The session daemon calls this at most once an hour while
+ * Fable is unavailable (worker/session-host/session-host.mjs). One turn, no
+ * tools, through this launcher, so the probe is recorded like any run.
+ */
+export async function probeFable({ env = process.env, now = Date.now } = {}) {
+  const { stateDir } = runConfig({ env });
+  const at = now();
+  let result;
+  try {
+    result = await boxRun({
+      prompt: FABLE_PROBE_PROMPT,
+      cli: "claude",
+      model: "fable",
+      maxTurns: 1,
+      outputFormat: "json",
+      allowedTools: [],
+      fableProbe: true,
+      env,
+      registration: {
+        host: "box",
+        cli: "claude",
+        origin: "daemon",
+        kind: "job",
+        environment: "worker",
+        modelRequested: "fable",
+        effortRequested: null,
+        spawnedByToolUseId: null,
+        continuesRunId: null,
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+        skillsGranted: [],
+        skillsRefused: [],
+        tools: { allowed: [], denied: null },
+        hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
+        promptSha256: crypto.createHash("sha256").update(FABLE_PROBE_PROMPT).digest("hex"),
+      },
+    });
+  } catch (error) {
+    return noteFableProbe(stateDir, { at, reason: error?.message ?? String(error) });
+  }
+  if (result.exitCode === 0 && result.envelope?.is_error !== true && typeof result.envelope?.result === "string") {
+    return markFableAvailable(stateDir, { at });
+  }
+  return noteFableProbe(stateDir, { at, reason: result.envelope?.result || result.stderrTail || `exit ${result.exitCode}` });
 }
 
 /**

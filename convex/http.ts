@@ -3723,6 +3723,17 @@ const sessionsPoll = httpAction(async (ctx, request) => {
       typeof b.codexUsage === "object" && b.codexUsage !== null
         ? (b.codexUsage as never)
         : undefined,
+    // Fable availability (worker/runs/models.mjs), the same loose-shape
+    // posture: the mutation's arg validator is the final gate.
+    fableAvailability:
+      typeof b.fableAvailability === "object" && b.fableAvailability !== null
+        ? (b.fableAvailability as never)
+        : undefined,
+    // The latest usage limit the daemon recorded, the same posture.
+    usageLimit:
+      typeof b.usageLimit === "object" && b.usageLimit !== null
+        ? (b.usageLimit as never)
+        : undefined,
   });
   return jsonResponse(200, result);
 });

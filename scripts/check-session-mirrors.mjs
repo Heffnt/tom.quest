@@ -194,12 +194,12 @@ if (promptBody && sharedModels) {
   }
 }
 
-// 3. The usage-limit fingerprint: the daemon's account auto-switch
+// 3. The usage-limit fingerprint: the daemon's usage-limit record
 // (USAGE_LIMIT_RE in session.mjs) and the scheduler's circuit breaker
 // (AUTO_USAGE_RE in claudeSessions.ts) must mean the same thing by "the
 // account is capped" — on 2026-08-30 the CLI's live text ("You've hit your
-// session limit · resets 8:10am (UTC)") matched neither, the account never
-// switched, and the scheduler burned a dozen launches against a wall. The two
+// session limit · resets 8:10am (UTC)") matched neither, and the scheduler
+// burned a dozen launches against a wall. The two
 // sources must byte-match, and both must match the observed cap texts while
 // staying quiet on transient API weather.
 // witness: change one regex's source, or drop the `session limit`

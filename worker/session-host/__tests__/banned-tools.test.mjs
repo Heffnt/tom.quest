@@ -145,7 +145,7 @@ describe("session.mjs model routing", () => {
     expect(sessionSource).toMatch(/\.\.\.\(spec\.id \? \{ model: spec\.id \} : \{\}\)/);
   });
 
-  it("fires the Claude account auto-switch for family claude only", () => {
+  it("records a usage limit for family claude only", () => {
     const fn = sessionSource.slice(sessionSource.indexOf("#maybeUsageSignal(text) {"));
     expect(fn.slice(0, 200)).toMatch(/if \(this\.family !== "claude"\) return;/);
   });
