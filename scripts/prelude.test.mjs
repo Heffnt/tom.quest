@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { assemblePrelude, assemblePreludePublication, collectRepoRules, PRELUDE_LAYERS } from "./prelude.mjs";
+import { assemblePrelude, assemblePreludePublication, collectIntentSources, collectRepoRules, PRELUDE_LAYERS } from "./prelude.mjs";
 import { CONTEXT_REPO_RULES } from "./context-fixture.mjs";
 
 const SCRIPT = path.resolve("scripts/prelude.mjs");
@@ -225,5 +225,84 @@ describe("collectRepoRules", () => {
       body: CONTEXT_REPO_RULES[0].body,
       bytes: Buffer.byteLength(CONTEXT_REPO_RULES[0].body),
     });
+  });
+});
+
+describe("collectIntentSources", () => {
+  function repo(files) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "intent-sources-"));
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    for (const [name, body] of Object.entries(files)) write(dir, name, body);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "sources");
+    return dir;
+  }
+
+  // Two invented repository names, so this file carries no second copy of the
+  // real list (scripts/check-session-mirrors.mjs fences that).
+  const ONE = "alpha";
+  const TWO = "beta";
+  const SOURCES = [
+    { repo: ONE, path: "model-of-tom/evidence/intent.md" },
+    { repo: ONE, path: "tts/spec.md" },
+    { repo: TWO, path: "vqc/steering.yaml" },
+  ];
+
+  it("reads each file out of its own repository's commit, with its bytes", () => {
+    const wikitom = repo({
+      "model-of-tom/evidence/intent.md": "# Evidence\n\n- line: a line\n",
+      "tts/spec.md": "# Spec\n",
+    });
+    const tomQuest = repo({ "vqc/steering.yaml": "- id: one\n  correction: say it once\n" });
+    const collected = collectIntentSources({ dirs: { [ONE]: wikitom, [TWO]: tomQuest }, sources: SOURCES });
+    expect(collected.missing).toEqual([]);
+    expect(collected.commits[ONE]).toBe(git(wikitom, "rev-parse", "HEAD").trim());
+    expect(collected.commits[TWO]).toBe(git(tomQuest, "rev-parse", "HEAD").trim());
+    expect(collected.files.map((file) => file.path)).toEqual(SOURCES.map((source) => source.path));
+    expect(collected.files[0]).toEqual({
+      repo: ONE,
+      path: "model-of-tom/evidence/intent.md",
+      body: "# Evidence\n\n- line: a line\n",
+      bytes: Buffer.byteLength("# Evidence\n\n- line: a line\n"),
+      commit: collected.commits[ONE],
+    });
+  });
+
+  // Five sources posted is better than none, and the caller says out loud
+  // which one the page will have no rows for.
+  it("reports an absent or blank file instead of throwing", () => {
+    const wikitom = repo({ "tts/spec.md": "   \n" });
+    const tomQuest = repo({ "vqc/steering.yaml": "- id: one\n  correction: say it once\n" });
+    const collected = collectIntentSources({ dirs: { [ONE]: wikitom, [TWO]: tomQuest }, sources: SOURCES });
+    expect(collected.missing).toEqual([
+      `${ONE} model-of-tom/evidence/intent.md`,
+      `${ONE} tts/spec.md`,
+    ]);
+    expect(collected.files.map((file) => file.path)).toEqual(["vqc/steering.yaml"]);
+  });
+
+  // The WikiTom half is pinned to the commit the base post used, so a page and
+  // the evidence behind it are one reading rather than two.
+  it("reads WikiTom at the commit it is given", () => {
+    const wikitom = repo({ "tts/spec.md": "# Spec\n" });
+    const first = git(wikitom, "rev-parse", "HEAD").trim();
+    write(wikitom, "tts/spec.md", "# Spec, later\n");
+    git(wikitom, "add", "-A");
+    git(wikitom, "commit", "-q", "-m", "later");
+    const tomQuest = repo({ "vqc/steering.yaml": "- id: one\n  correction: say it once\n" });
+    const collected = collectIntentSources({
+      dirs: { [ONE]: wikitom, [TWO]: tomQuest },
+      commits: { [ONE]: first },
+      sources: [{ repo: ONE, path: "tts/spec.md" }],
+    });
+    expect(collected.files[0].body).toBe("# Spec\n");
+    expect(collected.files[0].commit).toBe(first);
+  });
+
+  it("refuses a source naming a checkout it was not given", () => {
+    const wikitom = repo({ "tts/spec.md": "# Spec\n" });
+    expect(() => collectIntentSources({
+      dirs: { [ONE]: wikitom }, sources: [{ repo: "gamma", path: "tts/spec.md" }],
+    })).toThrow(/no checkout named gamma/);
   });
 });
