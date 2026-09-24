@@ -331,7 +331,7 @@ describe("internalComposeToday", () => {
     );
     expect(text).toContain(`- <${ttsItemLink(late)}|Pay rent: open the bank app. One day late.>`);
     // The ready count is a whole sentence, not a section and not a "+N more".
-    expect(text).toContain("1 other item is ready, and not one of them is dated.");
+    expect(text).toContain("1 other todo is ready, and not one of them is dated.");
     expect(text).not.toContain("missed: reply done");
     expect(text).not.toContain("+1 more");
     // What broke says what it MEANS for him, not the event kind.
@@ -367,7 +367,7 @@ describe("internalComposeToday", () => {
       day: DAY_KEY,
       now: Date.now() + 1,
     });
-    expect(first.text).toContain("1 other item is ready");
+    expect(first.text).toContain("1 other todo is ready");
     // The need closes and the sleep passes: both count.
     await t.run(async (ctx) => {
       await ctx.db.patch(need, { status: "done", doneAt: Date.now() });
@@ -377,7 +377,7 @@ describe("internalComposeToday", () => {
       day: DAY_KEY,
       now: Date.now() + 1,
     });
-    expect(later.text).toContain("3 other items are ready");
+    expect(later.text).toContain("3 other todos are ready");
   });
 
   // A CAPTURE FROM EMAIL IS NOT ITS OWN SECTION any more (§4.3): one that is
@@ -407,7 +407,7 @@ describe("internalComposeToday", () => {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
-    expect(text).toContain("One captured item needs you today");
+    expect(text).toContain("One captured todo needs you today");
     expect(text).toContain("Pay the lab deposit invoice, which needs you today because the invoice is due tomorrow.");
     expect(text).toContain(ttsItemLink(urgent));
     expect(text).not.toContain("Answer the registrar");
@@ -635,7 +635,7 @@ describe("internalComposeToday", () => {
     expect(text).toContain(
       `- <${ttsItemLink(todo)}|Walk the research critical path: 1 session on it ended and one is still running.>`,
     );
-    expect(text).toContain(`- <${ttsSessionLink(loose)}|1 session on no item ended.>`);
+    expect(text).toContain(`- <${ttsSessionLink(loose)}|1 session on no todo ended.>`);
     expect(text).not.toContain("tab=batches");
     const ids = facts.facts.map((f) => f.id);
     expect(ids).toContain(`overnight-todo:${todo}`);

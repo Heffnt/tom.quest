@@ -16,7 +16,7 @@
   "expect": {
     "mustName": ["Only you can settle this", "Show original"],
     "mustNotName": ["Usage Policy Violation & Deactivation Warning", "Needs you today", "reply here", "OpenAI <"],
-    "sentence": "The first line says why only Tom can settle it and names the first move; the item is TTS's own statement, not the vendor's subject line; and it does not invite a reply, because the reply route is not live."
+    "sentence": "The first line says why only Tom can settle it and names the first move; the todo is TTS's own statement, not the vendor's subject line; and it does not invite a reply, because the reply route is not live."
   },
   "blocks": ["write"],
   "addedOn": "2026-09-09",

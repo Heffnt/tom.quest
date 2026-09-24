@@ -10,7 +10,7 @@
     "busy": {
       "running": [{ "id": "s1", "title": "the unified agent context round", "startedAt": 1757404800000 }],
       "todosWorked": [{ "todoId": "t1", "statement": "Finish the unified agent context round.", "sessions": 1 }],
-      "changes": [{ "kind": "ruling", "id": "r1", "text": "the passport item was approved" }]
+      "changes": [{ "kind": "ruling", "id": "r1", "text": "the passport todo was approved" }]
     },
     "quiet": { "running": [], "todosWorked": [], "changes": [] }
   },

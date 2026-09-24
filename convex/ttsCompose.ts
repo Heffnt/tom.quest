@@ -761,27 +761,27 @@ function needsYouTodayLine(n: NeedsYouTodayFact): string {
   return statement(build(head, reason));
 }
 
-/** The today run's line counting the dated items it leaves to the needs-you
+/** The today run's line counting the dated todos it leaves to the needs-you
  *  run, or null when it leaves none. The template prints it and the facts
  *  block carries it, so a written message can say it too. */
 function leftBelowLine(f: TodayFacts): string | null {
   const n = f.today.filter((item) => f.needsYou.some((needs) => needs.todoId === item.id)).length;
   if (n === 0) return null;
-  return `${capitalise(countWord(n))} dated ${plural(n, "item is", "items are")} named below, with why ${n === 1 ? "it needs" : "they need"} you today.`;
+  return `${capitalise(countWord(n))} dated ${plural(n, "todo is", "todos are")} named below, with why ${n === 1 ? "it needs" : "they need"} you today.`;
 }
 
 /** The needs-you-today run's lead. */
 function needsYouTodayLead(n: number): string {
-  return `${capitalise(countWord(n))} captured ${plural(n, "item needs", "items need")} you today, as the email triage judged ${n === 1 ? "it" : "them"}.`;
+  return `${capitalise(countWord(n))} captured ${plural(n, "todo needs", "todos need")} you today, as the email triage judged ${n === 1 ? "it" : "them"}.`;
 }
 
 /** `{statement}: 3 sessions on it ended and one is still running.`, each
  *  clause omitted when it has nothing to say, and `{statement}: a session on
  *  it recorded no outcome.` when neither has. The tail row names no todo, so
- *  its line is `3 sessions on no item ended.` without a statement. */
+ *  its line is `3 sessions on no todo ended.` without a statement. */
 export function todoOutcomeLine(o: TodoOutcome): string {
   const tail = o.todoId === null;
-  const where = tail ? "on no item" : "on it";
+  const where = tail ? "on no todo" : "on it";
   const ended = `${o.finished} ${plural(o.finished, "session", "sessions")} ${where} ended`;
   const body =
     o.finished > 0 && o.running
@@ -803,7 +803,7 @@ function todoOutcomeUrl(o: TodoOutcome): string {
 
 /** The overnight run's lead. It carries no number: the plan pass that counted
  *  batches is gone, and the rows below are the count. */
-const OVERNIGHT_LEAD = "Overnight, the box's sessions worked on these items.";
+const OVERNIGHT_LEAD = "Overnight, the box's sessions worked on these todos.";
 
 function joinClauses(parts: string[]): string {
   if (parts.length <= 1) return parts.join("");
@@ -918,7 +918,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     seen.add(item.id);
     todayItems.push({ text: todayLine(item), url: itemUrl(item.id) });
   }
-  // The dated items left to the needs-you run: the today run says how many,
+  // The dated todos left to the needs-you run: the today run says how many,
   // so none goes missing from it silently and it never falls to "nothing is
   // dated" while one waits below.
   const below = leftBelowLine(f);
@@ -926,7 +926,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   const readyMore =
     f.readyBeyond > 0
       ? {
-          text: `${f.readyBeyond} other ${plural(f.readyBeyond, "item is", "items are")} ready, and not one of them is dated.`,
+          text: `${f.readyBeyond} other ${plural(f.readyBeyond, "todo is", "todos are")} ready, and not one of them is dated.`,
           url: TAB_EVERYTHING,
         }
       : undefined;
@@ -1061,7 +1061,7 @@ export function todayFirstLine(f: TodayFacts): string {
       : "";
   const needs =
     f.needsYou.length > 0
-      ? ` ${capitalise(countWord(f.needsYou.length))} captured ${plural(f.needsYou.length, "item needs", "items need")} you today.`
+      ? ` ${capitalise(countWord(f.needsYou.length))} captured ${plural(f.needsYou.length, "todo needs", "todos need")} you today.`
       : "";
   let head: string;
   // The all-clear predates the needs-you run: the first line has always said
@@ -1149,7 +1149,7 @@ export function composeHourly(f: HourlyFacts): Message | null {
   } else if (f.todosWorked.length > 0) {
     const w = f.todosWorked[0];
     clauses.push(
-      `${capitalise(countWord(f.todosWorked.length))} ${plural(f.todosWorked.length, "item", "items")} moved, ${linked(w.statement, itemUrl(w.todoId))} among them`,
+      `${capitalise(countWord(f.todosWorked.length))} ${plural(f.todosWorked.length, "todo", "todos")} moved, ${linked(w.statement, itemUrl(w.todoId))} among them`,
     );
   }
   if (f.runners.length > 0) {
@@ -1398,7 +1398,7 @@ function changeClauses(changes: Change[]): string[] {
   const done = count("done");
   const dates = count("date-outcome");
   const failures = count("failure");
-  if (captured > 0) out.push(`${captured} ${plural(captured, "item was", "items were")} captured`);
+  if (captured > 0) out.push(`${captured} ${plural(captured, "todo was", "todos were")} captured`);
   if (done > 0) out.push(`${done} finished`);
   if (dates > 0) out.push(`${dates} ${plural(dates, "date", "dates")} moved`);
   if (failures > 0) out.push(`${failures} ${plural(failures, "job", "jobs")} failed`);
@@ -1584,7 +1584,7 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     facts.push(
       fact(
         "ready:beyond",
-        `${f.readyBeyond} other ${plural(f.readyBeyond, "item is", "items are")} ready, and not one of them is dated.`,
+        `${f.readyBeyond} other ${plural(f.readyBeyond, "todo is", "todos are")} ready, and not one of them is dated.`,
         [TAB_EVERYTHING],
         [f.readyBeyond],
       ),

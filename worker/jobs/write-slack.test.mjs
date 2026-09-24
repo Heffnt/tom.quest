@@ -29,6 +29,16 @@ const FACTS = {
 };
 
 describe("the form the writer is given", () => {
+  // tts/spec.md §12.1: "item" is not a TTS word for a todo. The prompt names
+  // the "item" line role, the code's word for a line with a link, so the
+  // check is on the plural, which only a todo count would carry.
+  it("calls the todos it shows todos, never items", () => {
+    for (const kind of ["today", "needs-you"]) {
+      expect(formRules(kind, true)).not.toMatch(/\bitems\b/i);
+    }
+    expect(formRules("today", true)).toContain("667 other todos are ready");
+  });
+
   it("states every rule the verifier will mechanically enforce", () => {
     const rules = formRules("today", true);
     for (const rule of [
