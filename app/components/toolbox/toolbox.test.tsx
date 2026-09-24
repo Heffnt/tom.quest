@@ -16,6 +16,7 @@ import AreaFigure from "./area-figure";
 import FactTable from "./fact-table";
 import FigureStrip from "./figure-strip";
 import GroupDrawer from "./group-drawer";
+import NoteField from "./note-field";
 import PageHead from "./page-head";
 import Prose from "./prose";
 import TimeFigure from "./time-figure";
@@ -93,6 +94,43 @@ describe("the caps hold", () => {
     });
     expect(onClick).toHaveBeenCalledWith("do it again");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+describe("NoteField", () => {
+  it("is one line of fixed height whose button names its call, and names the call under it", () => {
+    const { container } = render(
+      <NoteField label="note" placeholder="when" call="tts.createTimeNote({ text, todoId })" effect="files it" onSubmit={() => {}} />,
+    );
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelectorAll("input")).toHaveLength(1);
+    expect(container.querySelector(".tb-note-line")?.textContent).toBe("tts.createTimeNote({ text, todoId })");
+    const button = screen.getByRole("button", { name: "note" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(within(button.parentElement!).getByLabelText("what this does"));
+    expect(document.querySelector('[role="note"] [class*="font-mono"]')?.textContent).toBe(
+      "tts.createTimeNote({ text, todoId })",
+    );
+  });
+
+  it("fires with the trimmed sentence and empties, and holds a refusal on the call's line", async () => {
+    const onSubmit = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("refused"));
+    const { container } = render(
+      <NoteField label="note" placeholder="when" call="tts.createTimeNote()" effect="files it" onSubmit={onSubmit} />,
+    );
+    const input = screen.getByRole("textbox", { name: "note" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "  before friday  " } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "note" }));
+    });
+    expect(onSubmit).toHaveBeenCalledWith("before friday");
+    expect(input.value).toBe("");
+    fireEvent.change(input, { target: { value: "after lunch" } });
+    await act(async () => {
+      fireEvent.submit(input.closest("form")!);
+    });
+    expect(input.value).toBe("after lunch");
+    expect(container.querySelector(".tb-note-line")?.textContent).toBe("refused");
   });
 });
 
@@ -184,7 +222,7 @@ describe("squarify", () => {
 });
 
 describe("the pages check", () => {
-  it("passes app/toolbox and the toolbox in this checkout", () => {
+  it("passes every listed page and the toolbox in this checkout", () => {
     expect(checkToolboxPages(ROOT)).toEqual({ code: 0, errors: [] });
   });
 

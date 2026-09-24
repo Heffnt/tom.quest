@@ -354,6 +354,51 @@
   color: var(--color-error);
 }
 
+/* One sentence and its call: a fixed-height line, and the call's mono line
+   under it, which a refused call's message replaces in the same space. */
+.tb-note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-1);
+}
+.tb-note-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tb-space-2);
+  margin: 0;
+}
+.tb-note-input {
+  flex: 1;
+  min-width: 0;
+  height: calc(var(--tb-text-2) * 1.5 + 2 * var(--tb-space-1) + 2px);
+  padding: var(--tb-space-1) var(--tb-space-2);
+  font: inherit;
+  font-size: var(--tb-text-2);
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--tb-radius);
+}
+.tb-note-input::placeholder {
+  color: var(--color-text-faint);
+}
+.tb-note-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+.tb-note-line {
+  min-height: calc(var(--tb-text-1) * 1.5);
+  font-family: var(--font-ibm-plex-mono), "IBM Plex Mono", monospace;
+  font-size: var(--tb-text-1);
+  color: var(--color-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tb-note-line.is-error {
+  color: var(--color-error);
+}
+
 /* ── fixed layers: the sentence dialog and the definition drawer ─────────── */
 
 .tb-overlay {

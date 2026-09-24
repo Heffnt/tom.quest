@@ -17,6 +17,7 @@ import {
   FigureStrip,
   GroupDrawer,
   ItemPanel,
+  NoteField,
   Num,
   Page,
   PageHead,
@@ -70,6 +71,7 @@ export default function ToolboxClient() {
   const events = useSurfaceQuery("TTS", api.tts.listRecentEvents, { limit: 1000 });
   const sessions = useSurfaceQuery("Runs", api.claudeSessions.listSessions, {});
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
+  const createTimeNote = useMutation(api.tts.createTimeNote);
   const [selectedKey, setSelectedKey] = useState<string>();
   const [pickedId, setPickedId] = useState<string>();
 
@@ -136,6 +138,13 @@ export default function ToolboxClient() {
                       }))}
                     />
                   )}
+                  <NoteField
+                    label="note"
+                    placeholder="when"
+                    call="tts.createTimeNote({ text, todoId })"
+                    effect="Files one sentence about timing against this todo. A job reads pending notes every couple of minutes, works out the date you meant and applies it."
+                    onSubmit={(text) => createTimeNote({ text, todoId: item._id })}
+                  />
                 </ItemPanel>
               )}
               <TimeFigure

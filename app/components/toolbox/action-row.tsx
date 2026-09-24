@@ -34,7 +34,15 @@ type Action = {
   ask?: { placeholder: string; required?: boolean };
 };
 
-export default function ActionRow({ actions }: { actions: readonly Action[] }) {
+export default function ActionRow({
+  actions,
+  error: held,
+}: {
+  actions: readonly Action[];
+  /** A failure the caller holds rather than throws (a session that did not
+   *  open after its verdict was recorded), shown on the same kept line. */
+  error?: string | null;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState<Action | null>(null);
@@ -82,7 +90,7 @@ export default function ActionRow({ actions }: { actions: readonly Action[] }) {
         ))}
       </div>
       <p className="tb-actions-error" role="status">
-        {asking ? "" : error}
+        {asking ? "" : (error ?? held)}
       </p>
       {asking &&
         typeof document !== "undefined" &&

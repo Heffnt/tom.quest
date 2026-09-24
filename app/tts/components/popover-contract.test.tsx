@@ -18,7 +18,8 @@
 //      holding them to the rule the TTS screens have been held to.
 //      The page toolbox (app/components/toolbox, vqc/pages.md) joined the
 //      closure with it (2026-09-24): every Jarvis page built from it presses
-//      its controls, so its ActionRow is held to the same popover.
+//      its controls, so its ActionRow and NoteField are held to the same
+//      popover.
 //   2. FIRED → NAMED. Every mutation the screens fire is named, verbatim, by a
 //      popover somewhere on them, so a control wired to a mutation nobody
 //      explains fails CI even if it renders somewhere this file cannot reach.
@@ -100,6 +101,7 @@ import RunRow from "@/app/runs/components/run-row";
 import RunRows from "@/app/runs/components/run-rows";
 import ActionRow from "@/app/components/toolbox/action-row";
 import GroupDrawer from "@/app/components/toolbox/group-drawer";
+import NoteField from "@/app/components/toolbox/note-field";
 import Term from "@/app/components/toolbox/term";
 
 const APP = join(__dirname, "..", "..");
@@ -434,6 +436,19 @@ const CASES: { file: string; render: () => void }[] = [
           members={Array.from({ length: 25 }, (_, i) => ({ id: `m${i}`, primary: `member ${i}` }))}
           onPick={noop}
           caption="tts.listTodos → the todos of one group"
+        />,
+      ),
+  },
+  {
+    file: "app/components/toolbox/note-field.tsx",
+    render: () =>
+      void render(
+        <NoteField
+          label="note"
+          placeholder="when"
+          call="tts.createTimeNote({ text, todoId })"
+          effect="files the sentence"
+          onSubmit={noop}
         />,
       ),
   },

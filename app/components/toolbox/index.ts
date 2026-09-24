@@ -15,6 +15,7 @@ export { default as FigureStrip } from "./figure-strip";
 export { default as GroupDrawer } from "./group-drawer";
 export { default as ItemPanel } from "./item-panel";
 export { default as ActionRow } from "./action-row";
+export { default as NoteField } from "./note-field";
 export { default as FactTable } from "./fact-table";
 export { default as Fold } from "./fold";
 export { default as Prose } from "./prose";

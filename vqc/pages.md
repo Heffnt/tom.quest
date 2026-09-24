@@ -38,6 +38,7 @@ held in the components' code and types, and tested beside them.
 | `GroupDrawer` | one group's members, ten at a time, ending "and N more" | 2, 4, 8 |
 | `ItemPanel` | one thing to rule on: statement, where it came from, brief, first step, verdicts | 3, 6 |
 | `ActionRow` | at most five actions, each naming its call in the one info popover | 3 |
+| `NoteField` | one sentence Tom types, one line of fixed height, its button naming its call in the info popover and a mono line under it naming the call | 3 |
 | `FactTable` | at most ten rows, the next ten folded, then "and N more" | 2, 4, 7 |
 | `Fold` | a closed disclosure holding what does not fit in ten | 2 |
 | `Prose` | sentences of fact with numbers in them, with a caption | 4, 5 |

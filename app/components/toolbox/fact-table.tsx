@@ -60,11 +60,14 @@ function Table({
 }
 
 export default function FactTable({
+  title,
   columns,
   rows,
   total,
   caption,
 }: {
+  /** The table's name, when it stands as a section of its own. */
+  title?: string;
   columns: readonly Column[];
   rows: readonly Row[];
   total?: Row;
@@ -75,6 +78,7 @@ export default function FactTable({
   const rest = rows.length - first.length - next.length;
   return (
     <section className="tb-block">
+      {title && <h2 className="tb-title">{title}</h2>}
       <div className="tb-table-box">
         <Table columns={columns} rows={first} total={total} />
       </div>
