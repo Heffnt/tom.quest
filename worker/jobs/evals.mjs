@@ -47,6 +47,8 @@ import {
   nyUtcOffsetHours,
   reportJobFailed,
   reportJobOk,
+  MODELS,
+  modelLabel,
   runClaude,
   runClaudeAsync,
   serverErrorMessage,
@@ -74,8 +76,8 @@ export const EVALS_REQUEST = "evals-request";
 export const EVALS_PROTOCOL_FAILURE_KEY = "runs-evals:protocol";
 export const EVALS_JOB = "runs-evals";
 
-export const REGEN_MODEL = process.env.TTS_EVALS_REGEN_MODEL || "haiku";
-export const JUDGE_MODEL = process.env.TTS_EVALS_JUDGE_MODEL || "fable";
+const REGEN_MODEL = process.env.TTS_EVALS_REGEN_MODEL || MODELS.evalsRegen;
+export const JUDGE_MODEL = process.env.TTS_EVALS_JUDGE_MODEL || MODELS.evalsJudge;
 export const REGEN_TIMEOUT_MS = 5 * 60 * 1000;
 export const JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -2501,7 +2503,7 @@ export const FAULT_REFUSED = "REFUSED";
  *  fixture diff is small, but a read-only auditor that runs out of turns is
  *  recorded as unavailable, which reads as a broken arm rather than a short
  *  budget (worker/jobs/audit.mjs learned this on its first fallback run). */
-export const FAULT_AUDIT_MODEL = process.env.TTS_EVALS_FAULT_AUDIT_MODEL || "opus";
+export const FAULT_AUDIT_MODEL = process.env.TTS_EVALS_FAULT_AUDIT_MODEL || MODELS.evalsFaultAudit;
 export const FAULT_AUDIT_TIMEOUT_MS = 10 * 60 * 1000;
 export const FAULT_AUDIT_MAX_TURNS = 8;
 
@@ -2930,8 +2932,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       wikitom: wikitom.commit,
       catalogHash,
       goldenHash: goldenHash([...all, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file }))]),
-      regenModel: REGEN_MODEL,
-      judgeModel: JUDGE_MODEL,
+      // The model that ran, marked when the box's model ceiling changed it
+      // (worker/runs/models.mjs modelLabel).
+      regenModel: modelLabel(REGEN_MODEL),
+      judgeModel: modelLabel(JUDGE_MODEL),
       startedAt,
       finishedAt,
       // Trials, not items: a retried item costs its calls again and the row
@@ -3235,8 +3239,8 @@ function unscoredRun({ repo, sha, at, answersRequestAt = null }) {
     tomquest: null,
     wikitom: null,
     goldenHash: null,
-    regenModel: REGEN_MODEL,
-    judgeModel: JUDGE_MODEL,
+    regenModel: modelLabel(REGEN_MODEL),
+    judgeModel: modelLabel(JUDGE_MODEL),
     startedAt: at,
     finishedAt: at,
     calls: 0,

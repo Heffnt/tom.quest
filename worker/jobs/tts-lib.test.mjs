@@ -407,7 +407,7 @@ describe("runClaude receipt", () => {
       // The token is already written by the time the child is reached, which is
       // why a caller can report WHICH run timed out rather than only that one
       // did.
-      runClaude("p", { model: "haiku", timeoutMs: 1, registration: { layersKnown: false }, receipt });
+      runClaude("p", { model: "sonnet", timeoutMs: 1, registration: { layersKnown: false }, receipt });
     } catch {
       // Expected: no `claude` on the test machine's PATH, or the 1 ms budget.
     } finally {
@@ -425,7 +425,7 @@ describe("runClaude receipt", () => {
       const previous = process.env.TTS_RUN_REG_SPOOL;
       process.env.TTS_RUN_REG_SPOOL = spool;
       try {
-        runClaude("p", { model: "haiku", timeoutMs: 1, registration });
+        runClaude("p", { model: "sonnet", timeoutMs: 1, registration });
       } catch {
         // The spawn fails; the envelope is written before it.
       } finally {
@@ -444,7 +444,7 @@ describe("runClaude receipt", () => {
   it("writes nothing into a receipt when no registration was asked for", () => {
     const receipt = {};
     try {
-      runClaude("p", { model: "haiku", timeoutMs: 1, receipt });
+      runClaude("p", { model: "sonnet", timeoutMs: 1, receipt });
     } catch {
       // Same spawn failure; the assertion is about the receipt.
     }
@@ -484,7 +484,7 @@ describe("runClaude on a failing child", () => {
     process.env.PATH = path.join(os.tmpdir(), "tts-lib-no-claude-here");
     let thrown = null;
     try {
-      runClaude("p", { model: "haiku", timeoutMs: 1000 });
+      runClaude("p", { model: "sonnet", timeoutMs: 1000 });
     } catch (error) {
       thrown = error;
     } finally {
@@ -518,7 +518,7 @@ describe("runClaude with no tools", () => {
   it("accepts an empty allow-list", () => {
     let thrown = null;
     try {
-      runClaude("p", { model: "haiku", timeoutMs: 1, allowedTools: [] });
+      runClaude("p", { model: "sonnet", timeoutMs: 1, allowedTools: [] });
     } catch (error) {
       thrown = error;
     }
@@ -552,7 +552,7 @@ describe("runClaude with no tools", () => {
 // a fake `claude` named by CLAUDE_BIN, the seam box-run.mjs keeps for exactly
 // this, and read what the child was given and what the spool holds.
 describe("runClaude through the box launcher", () => {
-  function fakeClaude(answer, exitCode = 0) {
+  function fakeClaude(answer, exitCode = 0, stderr = "") {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-fake-claude-"));
     const script = path.join(dir, "fake.mjs");
     fs.writeFileSync(script, [
@@ -560,6 +560,7 @@ describe("runClaude through the box launcher", () => {
       'try { fs.readFileSync(0, "utf8"); } catch {}',
       'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, config: process.env.CLAUDE_CONFIG_DIR ?? null }));',
       `process.stdout.write(${JSON.stringify(answer)});`,
+      `process.stderr.write(${JSON.stringify(stderr)});`,
       `process.exit(${exitCode});`,
     ].join("\n"));
     if (process.platform === "win32") {
@@ -583,16 +584,16 @@ describe("runClaude through the box launcher", () => {
     vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "success", result: "triaged" })));
     vi.stubEnv("RUN_HOST", "");
     const receipt = {};
-    const answer = runClaude("p", { model: "haiku", registration: { origin: "cron:poll-gmail", layersKnown: false }, receipt });
+    const answer = runClaude("p", { model: "sonnet", registration: { origin: "cron:poll-gmail", layersKnown: false }, receipt });
     expect(answer).toBe("triaged");
     const [envelope] = spooled(spool);
     expect(envelope.token).toBe(receipt.runToken);
     expect(envelope.writer.file).toBe("worker/runs/box-run.mjs");
-    expect(envelope.registration).toMatchObject({ origin: "cron:poll-gmail", kind: "job", environment: "worker", host: null, cli: "claude", modelRequested: "haiku" });
+    expect(envelope.registration).toMatchObject({ origin: "cron:poll-gmail", kind: "job", environment: "worker", host: null, cli: "claude", modelRequested: "sonnet" });
     const seen = JSON.parse(fs.readFileSync(record, "utf8"));
     // The same flags runClaude always handed the CLI: JSON out, eight turns
     // by default, the model, and nothing else.
-    expect(seen.argv).toEqual(["-p", "--output-format", "json", "--max-turns", "8", "--model", "haiku"]);
+    expect(seen.argv).toEqual(["-p", "--output-format", "json", "--max-turns", "8", "--model", "sonnet"]);
     // Every job call runs under the active account, and its child never
     // queues for a slot of its own.
     expect(seen.config).toBe("/root/.claude-accounts/active");
@@ -601,12 +602,34 @@ describe("runClaude through the box launcher", () => {
 
   it("names the subtype and the exit code when the CLI fails with an envelope", () => {
     vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true }), 1));
-    expect(() => runClaude("p", { model: "haiku" })).toThrow("claude failed (subtype: error_max_turns, exit 1)");
+    expect(() => runClaude("p", { model: "sonnet" })).toThrow("claude failed (subtype: error_max_turns, is_error: true, exit 1)");
+  }, SPAWN_TIMEOUT_MS);
+
+  // THE SPEND LIMIT OF 2026-09-22. An account out of usage exits 1 with
+  // subtype "success", is_error true and the reason as the envelope's result;
+  // the message said only "subtype: success, exit 1". It now carries the
+  // envelope's text and the stderr tail, each on one line.
+  it("carries the envelope's result text, is_error and the stderr tail", () => {
+    vi.stubEnv("CLAUDE_BIN", fakeClaude(
+      JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "You've hit your monthly spend limit" }),
+      1,
+      "first line\nsecond line\n",
+    ));
+    expect(() => runClaude("p", { model: "sonnet" })).toThrow(
+      "claude failed (subtype: success, is_error: true, exit 1): result: You've hit your monthly spend limit; stderr: first line second line",
+    );
+  }, SPAWN_TIMEOUT_MS);
+
+  it("trims a long result to a bounded length", () => {
+    vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "x".repeat(5000) }), 1));
+    let message = "";
+    try { runClaude("p", { model: "sonnet" }); } catch (error) { message = error.message; }
+    expect(message).toBe(`claude failed (subtype: success, is_error: true, exit 1): result: ${"x".repeat(300)}`);
   }, SPAWN_TIMEOUT_MS);
 
   it("says a zero exit with no result is a failure, in the same words", () => {
     vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "error_during_execution" })));
-    expect(() => runClaude("p", { model: "haiku" })).toThrow("claude failed (subtype: error_during_execution): the envelope carried no result");
+    expect(() => runClaude("p", { model: "sonnet" })).toThrow("claude failed (subtype: error_during_execution): the envelope carried no result");
   }, SPAWN_TIMEOUT_MS);
 
   // THE EVALS DEADLOCK OF 2026-09-19. Two box runs held both slots while they
@@ -627,7 +650,7 @@ describe("runClaude through the box launcher", () => {
     const call = spawnSync(process.execPath, [
       "--input-type=module",
       "-e",
-      `const { runClaude } = await import(${JSON.stringify(lib)}); process.stdout.write(runClaude("p", { model: "haiku" }));`,
+      `const { runClaude } = await import(${JSON.stringify(lib)}); process.stdout.write(runClaude("p", { model: "sonnet" }));`,
     ], {
       encoding: "utf8",
       timeout: 15_000,

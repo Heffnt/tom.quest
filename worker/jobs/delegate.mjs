@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { convexFetch, extractJsonObject, loadEnv, runClaude } from "./tts-lib.mjs";
+import { MODELS, convexFetch, extractJsonObject, loadEnv, modelLabel, runClaude } from "./tts-lib.mjs";
 
 /** The delegate's worktree: a throwaway checkout of the WikiTom cache clone at
  *  origin/main, so the delegate can read and search the vault and any write it
@@ -35,7 +35,7 @@ export const EVIDENCE_DIR = "model-of-tom/evidence/";
  *  file. */
 export const DELEGATE_TIMEOUT_MS = 120_000;
 export const DELEGATE_MAX_TURNS = 6;
-export const DELEGATE_MODEL = "claude-fable-5"; // ttsShared SESSION_MODELS.fable.id
+const DELEGATE_MODEL = MODELS.delegate;
 export const DELEGATE_MAX_PER_SESSION = 5;
 export const DELEGATE_MAX_PER_JOB = 3;
 export const DELEGATE_MAX_PER_RUNNER = 5;
@@ -399,7 +399,8 @@ export async function askDelegate(ask, suppliedIo = {}) {
   const recorded = await io.convexFetch(env, "/tts/ask", {
     ...ask,
     ...answer,
-    model: "fable",
+    // The model that ran, marked when the box's model ceiling changed it.
+    model: modelLabel(DELEGATE_MODEL),
     ms,
     promptSha,
   });

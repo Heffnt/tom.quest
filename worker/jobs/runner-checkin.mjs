@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { extractJsonObject, runClaude } from "./tts-lib.mjs";
+import { extractJsonObject, modelLabel, runClaude } from "./tts-lib.mjs";
 import { JUDGE_MODEL, JUDGE_RETRIES } from "./evals.mjs";
 
 const CHECKIN_JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
@@ -104,7 +104,7 @@ export async function checkCheckIn(checkIn, { run = runClaude, standard = null, 
   const { checkInFailures } = rules ?? (await loadCheckInRules());
   const form = checkInFailures(checkIn);
   if (form.length > 0) {
-    return { verdict: "fail", complaints: form.map((f) => `${f.id}: ${f.why}.`), attempts: 0, judgeModel: JUDGE_MODEL, stage: "form" };
+    return { verdict: "fail", complaints: form.map((f) => `${f.id}: ${f.why}.`), attempts: 0, judgeModel: modelLabel(JUDGE_MODEL), stage: "form" };
   }
   const prompt = checkInJudgePrompt(checkIn, standard ?? readWritingStandard());
   let attempts = 0;
@@ -121,10 +121,10 @@ export async function checkCheckIn(checkIn, { run = runClaude, standard = null, 
         registration: { origin: "cron:runner-checkin", kind: "job", environment: "runner", layersKnown: false, layersGiven: [], layersDenied: [] },
       });
     } catch (error) {
-      return { verdict: "fail", complaints: [`The judge could not be run: ${String(error?.message ?? error).slice(0, 200)}.`], attempts, judgeModel: JUDGE_MODEL, stage: "judge" };
+      return { verdict: "fail", complaints: [`The judge could not be run: ${String(error?.message ?? error).slice(0, 200)}.`], attempts, judgeModel: modelLabel(JUDGE_MODEL), stage: "judge" };
     }
     last = parseCheckInVerdict(answer);
-    if (!last.unreadable) return { ...last, attempts, judgeModel: JUDGE_MODEL, stage: "judge" };
+    if (!last.unreadable) return { ...last, attempts, judgeModel: modelLabel(JUDGE_MODEL), stage: "judge" };
   }
-  return { verdict: "fail", complaints: [`The judge's answer could not be read twice (${last.head}).`], attempts, judgeModel: JUDGE_MODEL, stage: "judge" };
+  return { verdict: "fail", complaints: [`The judge's answer could not be read twice (${last.head}).`], attempts, judgeModel: modelLabel(JUDGE_MODEL), stage: "judge" };
 }
