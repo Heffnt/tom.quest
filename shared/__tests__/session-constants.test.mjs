@@ -10,6 +10,7 @@ import {
   LEGACY_SESSION_MODEL,
   NARROW_LIST,
   POLL_IDLE_MS,
+  RUNNER_CEILING_DEFAULT,
   SESSION_MODELS,
   SESSION_REPOS,
   USAGE_LIMIT_RE,
@@ -58,5 +59,11 @@ describe("USAGE_LIMIT_RE", () => {
   // A 529 or a 429 resolves by itself and must not stand the fleet down for 3h.
   it.each(["overloaded_error", "API rate limit exceeded (429)"])("does not read the transient %j as a cap", (text) => {
     expect(USAGE_LIMIT_RE.test(text)).toBe(false);
+  });
+
+  // The box's sensor and the record each read this default. When they were
+  // two copies, convex/ttsRunners.test.ts held them equal.
+  it("give a runner with no ceiling of its own two GPUs, four hours and 128000 MB", () => {
+    expect(RUNNER_CEILING_DEFAULT).toEqual({ gpus: 2, minutes: 240, memoryMb: 128000 });
   });
 });

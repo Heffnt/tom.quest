@@ -206,7 +206,7 @@ export function isTomTouch(e: Pick<Doc<"dtsEvents">, "kind" | "data">): boolean 
 
 // ── The facts ────────────────────────────────────────────────────────────────
 // Structural types, not Docs: the job's renderer and the tests read literals.
-export type WeeklyFacts = {
+type WeeklyFacts = {
   since: number;
   until: number;
   completions: { id: string; statement: string; kind: string | null; doneAt: number }[];
@@ -377,7 +377,7 @@ function rowsOf(value: unknown): Record<string, unknown>[] {
 
 /** The judge half of a run's `verifierScorecard`, or null when the row has
  * nothing readable there. */
-export function readJudgeScorecard(raw: unknown): WeeklyFacts["verifiers"]["judge"] {
+function readJudgeScorecard(raw: unknown): WeeklyFacts["verifiers"]["judge"] {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const j = raw as Record<string, unknown>;
   const disagreements: NonNullable<WeeklyFacts["verifiers"]["judge"]>["disagreements"] = [];

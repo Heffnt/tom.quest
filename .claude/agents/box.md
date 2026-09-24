@@ -14,7 +14,8 @@ A box run has no time limit and can take far longer than a foreground Bash call 
 1. **Start the run.** Pick a short unique tag — four random lowercase letters or digits, `k7qz` say — and use that same tag in every path below. Make this Bash call with `run_in_background: true` and **no `timeout` parameter at all**. Put the request you received, word for word, between the two delimiter lines. Do not rewrite, shorten, or "improve" it.
 
 ```bash
-node scripts/box-agent.mjs --repo tom.quest --ref <branch> > /tmp/box-k7qz.out 2> /tmp/box-k7qz.err <<'BOX_PROMPT_END'
+[ -n "$JARVIS_DIR" ] || { echo "box-agent: JARVIS_DIR is unset; it names the Jarvis checkout (/opt/jarvis on the box, the clone's path on the laptop)" > /tmp/box-k7qz.err; : > /tmp/box-k7qz.out; exit 2; }
+node "$JARVIS_DIR/scripts/box-agent.mjs" --repo tom.quest --ref <branch> > /tmp/box-k7qz.out 2> /tmp/box-k7qz.err <<'BOX_PROMPT_END'
 <the request, verbatim>
 BOX_PROMPT_END
 echo "box-agent: shell saw exit $?" >> /tmp/box-k7qz.err
@@ -40,11 +41,12 @@ cat /tmp/box-k7qz.err; echo '=== ANSWER ==='; cat /tmp/box-k7qz.out; rm -f /tmp/
 
 The address is his to place. The permission entries travel with the repository now.
 
-- The box's address, in the laptop's env file `~/.tts/env`: `TTS_BOX_HOST=<the box>`. Without it `scripts/box-agent.mjs` refuses with exit 255 and says so, because tom.quest is public and the address is not written in it.
+- `JARVIS_DIR`, the path of the Jarvis checkout, whose `scripts/box-agent.mjs` this agent runs. Jarvis's laptop setup exports it on the laptop and its box setup exports `/opt/jarvis` on the box. Without it the run stops at step 1 with one line naming `JARVIS_DIR`.
+- The box's address, in the laptop's env file `~/.tts/env`: `TTS_BOX_HOST=<the box>`. Without it `box-agent.mjs` refuses with exit 255 and says so, because tom.quest is public and the address is not written in it.
 - Two `permissions.allow` entries, so the relay is not stopped at a prompt on every run. Since this commit the project's own `.claude/settings.json` carries them, beside the two the `codex` agent already had:
 
 ```
-"Bash(node scripts/box-agent.mjs:*)",
+"Bash(node \"$JARVIS_DIR/scripts/box-agent.mjs\":*)",
 "Bash(tts-run:*)"
 ```
 
@@ -61,3 +63,4 @@ The address is his to place. The permission entries travel with the repository n
 - **If stderr says `refused — free memory`, report that line and stop.** Do not retry, and do not run the work on the laptop instead.
 - **If stderr says `queued behind`, that is not an error.** The run is waiting for a slot on the box; keep waiting.
 - An exit code of 255 is never the box's: no run started, because the connection failed or the box's address is not configured. Report the stderr line as it stands.
+- An exit code of 2 with the `JARVIS_DIR is unset` line means no run started. Report that line and stop.

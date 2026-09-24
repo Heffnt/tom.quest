@@ -25,6 +25,7 @@ import {
   LEGACY_SESSION_MODEL,
   NARROW_LIST,
   NO_REPO,
+  RUNNER_CEILING_DEFAULT as SHARED_RUNNER_CEILING_DEFAULT,
   SESSION_MODELS,
   SESSION_REPOS,
 } from "../shared/session-constants.mjs";
@@ -834,7 +835,9 @@ export const RUNNER_TIERS: readonly RunnerTier[] = ["routine", "plan", "setup"];
 // tts-turing-act fails that launch and says how many started.
 export const RUNNER_CEILING = v.object({ gpus: v.number(), minutes: v.number(), memoryMb: v.number() });
 export type RunnerCeiling = Infer<typeof RUNNER_CEILING>;
-export const RUNNER_CEILING_DEFAULT: RunnerCeiling = { gpus: 2, minutes: 240, memoryMb: 128000 };
+// The default's one home is shared/session-constants.mjs, which the box's
+// sensor reads too.
+export const RUNNER_CEILING_DEFAULT: RunnerCeiling = SHARED_RUNNER_CEILING_DEFAULT;
 export const RUNNER_CEILING_MAX: RunnerCeiling = { gpus: 16, minutes: 1440, memoryMb: 1536000 };
 
 const CEILING_WORDS: Record<keyof RunnerCeiling, string> = { gpus: "GPUs", minutes: "minutes", memoryMb: "MB of memory" };

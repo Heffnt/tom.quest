@@ -1,4 +1,0 @@
-# Everything in worker/ ships to the Jarvis Box, a Linux server. Force LF so a
-# Windows checkout (core.autocrlf=true) never injects CRLF into shebang lines
-# or bash scripts.
-* text eol=lf

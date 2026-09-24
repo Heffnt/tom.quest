@@ -1,16 +1,16 @@
 // scripts/check-vocabulary.mjs, run against a fixture repository.
 //
-// Each case writes a small tree that PASSES all nine in-repo checks, breaks one
+// Each case writes a small tree that PASSES all six in-repo checks, breaks one
 // thing in it, and asserts the named failure. The tree is a fixture rather than
 // this repository because a guardrail whose test can only run where the thing it
 // guards is already correct proves nothing on the day it is not.
 //
-// EVERY CASE RESOLVES NO WikiTom CHECKOUT (WIKITOM_DIR points at a path that is
-// not there), so the two render checks never run: they shell out to the two
-// generators, which read a vault this test has no business needing.
+// Checks 7 and 8 and the two render checks went to the Jarvis repository with
+// the graph's and the vocabulary's generators, and their cases with them.
 //
 // The refused words appear in this file, in the case that witnesses check 4;
-// that is why it is one of the two files the script exempts by name.
+// it lies under scripts/, which check 4 does not scan, and check 3 exempts it
+// by name.
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -21,9 +21,7 @@ import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
 import { tempDir } from "../test/temp.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-vocabulary.mjs");
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const NO_CHECKOUT_LINE =
-  "check-vocabulary: no WikiTom checkout — ran the 8 in-repo checks; the render checks run in the nightly";
+const PASS_LINE = "check-vocabulary: the 6 in-repo checks passed; the render checks run in the nightly";
 const VERSION = "0123456789abcdef";
 
 const list = (values) => values.map((value) => `  ${JSON.stringify(value)},`).join("\n");
@@ -50,15 +48,10 @@ function sharedBlock({ version = VERSION, nodeKinds = NODE_KINDS, edgeKinds = ED
   ].join("\n");
 }
 
-/** A tree that passes all eight. `files` replaces or adds paths on top of it. */
+/** A tree that passes all six. `files` replaces or adds paths on top of it. */
 function fixture(files = {}) {
   const dir = tempDir("check-vocabulary-");
   const base = {
-    // COPIED FROM THE REPOSITORY, not written by hand: check 8 asserts that the
-    // generator's regex reads every key the imported SKILL_SHAPES declares, and
-    // the import is always this repository's, so a hand-written stand-in here
-    // would be a tree that fails the check for being a fixture.
-    "shared/skills.mjs": readFileSync(join(REPO_ROOT, "shared/skills.mjs"), "utf8"),
     "package.json": `${JSON.stringify({ name: "fixture", dependencies: { convex: "^1" } }, null, 2)}\n`,
     "convex/ttsShared.ts": `export const DAY_MS = 86_400_000;\n${sharedBlock()}\n`,
     "convex/ttsEvals.ts": "export const key = commitKey(args.repo, args.sha);\n",
@@ -68,8 +61,6 @@ function fixture(files = {}) {
       'import { defineSchema, defineTable } from "convex/server";\n'
       + `${Array.from({ length: 44 }, (_, i) => `  table${i}: defineTable({}),`).join("\n")}\n`,
     "shared/skill-router.mjs": "export const CONTEXT_CALLERS = Object.freeze({ opener: {} });\n",
-    "shared/graph.mjs": "// no model, no network, no embedding and no vector.\nexport const NODES = [];\n",
-    "scripts/graph.mjs": "// the graph's generator.\nexport function generateGraph() {}\n",
     "app/page.tsx": "export default function Page() { return null; }\n",
     "vqc/todos.ts": "export const TODOS = [];\n",
     ...files,
@@ -82,13 +73,11 @@ function fixture(files = {}) {
   return dir;
 }
 
-/** The script, run in `dir` with no WikiTom checkout to resolve. */
+/** The script, run in `dir`. */
 function run(dir) {
-  const env = { ...process.env, WIKITOM_DIR: join(dir, "no-such-wikitom") };
   try {
     const stdout = execFileSync(process.execPath, [SCRIPT], {
       cwd: dir,
-      env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -99,11 +88,11 @@ function run(dir) {
 }
 
 describe("check-vocabulary", () => {
-  it("passes on a clean tree and prints the no-checkout line", () => {
+  it("passes on a clean tree and prints the pass line", () => {
     const result = run(fixture());
     expect(result.stderr).toBe("");
     expect(result.code).toBe(0);
-    expect(result.stdout.trim()).toBe(NO_CHECKOUT_LINE);
+    expect(result.stdout.trim()).toBe(PASS_LINE);
   });
 
   it("1: names a missing closing marker", () => {
@@ -142,12 +131,12 @@ describe("check-vocabulary", () => {
   it("3: names a second copy of the closed vocabulary's sentence", () => {
     const result = run(
       fixture({
-        "worker/jobs/prompt.mjs":
+        "scripts/prompt.mjs":
           'export const PROMPT = "The vocabulary, which is closed — these words mean exactly this and nothing else:";\n',
       }),
     );
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("worker/jobs/prompt.mjs:1:");
+    expect(result.stderr).toContain("scripts/prompt.mjs:1:");
     expect(result.stderr).toContain("outside the generated block in convex/ttsShared.ts");
   });
 
@@ -187,91 +176,6 @@ describe("check-vocabulary", () => {
     expect(result.stderr).toContain(
       "the generated block declares no `export const GRAPH_NODE_KINDS: readonly string[]`",
     );
-  });
-
-  it("7: names a network call in the graph's generator", () => {
-    const result = run(
-      fixture({ "scripts/graph.mjs": "export async function go() { return fetch(url); }\n" }),
-    );
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('scripts/graph.mjs:1: "fetch(" in code');
-  });
-
-  // CHECK 8 IS THE HOME OF A COMPARISON THAT USED TO LIVE IN THE GENERATOR,
-  // where it read the tom.quest checkout the run was pointed at against the
-  // installed script's own sibling and failed the nightly on the skew between
-  // two checkouts. Here both sides are one tree, so the only thing a failure
-  // can mean is that the regex no longer reads an entry.
-  it("8: names a shape the generator's parser can no longer read", () => {
-    const skills = readFileSync(join(REPO_ROOT, "shared/skills.mjs"), "utf8");
-    const blinded = skills.replace("  explainer: Object.freeze({", "  explainer: Object.freeze( {");
-    expect(blinded).not.toBe(skills);
-    const result = run(fixture({ "shared/skills.mjs": blinded }));
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("it cannot read explainer");
-  });
-
-  it("8: names a SKILL_SHAPES it cannot find at all", () => {
-    const result = run(fixture({ "shared/skills.mjs": "export const SHAPES = {};\n" }));
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("cannot read SKILL_SHAPES at all");
-  });
-
-  // THE CARVE-OUT, BOTH WAYS. scripts/graph.mjs is exempt for a RANGE and not
-  // as a file: one fenced block may name the refused words, because the block
-  // that states the rule has to be able to say what it refuses. Everywhere else
-  // in that same file still fails. The range used to be anchored to the doc
-  // comment above `export const NAME =`, a constant nothing read that is now
-  // deleted; these two cases are what say the marker replaced it intact.
-  it("4: lets the fenced block in the graph's generator name the refused words", () => {
-    const fenced = [
-      "// <refused-words>",
-      "// the two words this block exists to refuse, spelled: ontology, knowledge graph.",
-      "// </refused-words>",
-      "export const X = 1;",
-    ].join("\n");
-    const result = run(fixture({ "scripts/graph.mjs": fenced + "\n" }));
-    expect(result.stderr).toBe("");
-    expect(result.code).toBe(0);
-  });
-
-  it("4: still refuses those words elsewhere in that file, and with no fence at all", () => {
-    const outside = [
-      "// <refused-words>",
-      "// nothing to see.",
-      "// </refused-words>",
-      "// the ontology is over here.",
-      "export const X = 1;",
-    ].join("\n");
-    const after = run(fixture({ "scripts/graph.mjs": outside + "\n" }));
-    expect(after.code).toBe(1);
-    expect(after.stderr).toContain("scripts/graph.mjs:4");
-
-    // No fence leaves the WHOLE file unexempt — loud rather than silently wider.
-    const unfenced = "// the ontology.\nexport const X = 1;\n";
-    expect(run(fixture({ "scripts/graph.mjs": unfenced })).code).toBe(1);
-  });
-
-  it("7: reads the prose that names the same words as prose", () => {
-    // The header of shared/graph.mjs says it holds no embedding and no
-    // vector. The check strips comments, so that sentence is not a breach.
-    const result = run(
-      fixture({
-        "shared/graph.mjs": "// no embedding, no vector, no cosine, no faiss, no openai, no anthropic.\nexport const X = 1;\n",
-      }),
-    );
-    expect(result.stderr).toBe("");
-    expect(result.code).toBe(0);
-  });
-
-  it("7: names an embedding dependency", () => {
-    const result = run(
-      fixture({
-        "package.json": `${JSON.stringify({ name: "fixture", dependencies: { "faiss-node": "^1" } }, null, 2)}\n`,
-      }),
-    );
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('package.json depends on "faiss-node"');
   });
 
   // THE TABLE-COUNT AND CONTEXT_CALLERS TESTS WENT WITH THEIR CHECKS. The first

@@ -38,7 +38,7 @@ export const PROMPT_TERMS = Object.freeze([
  * the emphasis, which is also what lets the fallback be written inside a
  * template literal without escaping.
  */
-export function promptDefinition(definition) {
+function promptDefinition(definition) {
   return String(definition ?? "")
     .replace(/\s*\(§[^)]*\)/g, "")
     .replace(/\*\*|`/g, "")

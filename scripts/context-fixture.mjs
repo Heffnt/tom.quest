@@ -1,12 +1,14 @@
-// ONE FIXTURE, TWO TESTS. convex/ttsContext.test.ts assembles a run's context
-// from a seeded publication in convex-test; scripts/prelude.test.mjs reads the
-// same repo rules out of a git checkout. Both take their pages, their record
-// and their AGENTS.md bodies from here, so the two sides cannot drift.
+// THE RECORD'S CONTEXT FIXTURE. convex/ttsContext.test.ts assembles a run's
+// context from a seeded publication in convex-test, and convex/ttsRunners.test.ts
+// seeds a runner's step prompt from the same pages. The Jarvis repository's
+// scripts/prelude.test.mjs reads the same repo rules out of a git checkout from
+// its own copy of this file, which left with the box's code; nothing holds the
+// two copies equal.
 //
 // WHAT IS HERE IS INPUT. The EXPECTED STRINGS this file used to carry — the
 // exact `expanded` and `fetchable` blocks for each of the nine cases — went
 // with the know-layer expansion that rendered them. A run is granted skill
-// NAMES now (worker/jobs/skill-router.mjs) and loads a body itself, and
+// NAMES now (shared/skill-router.mjs) and loads a body itself, and
 // convex/ttsContext.test.ts writes every grant block out by hand, because an
 // expectation rendered by calling the renderer asserts only that the renderer
 // is itself.

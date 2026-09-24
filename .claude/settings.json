@@ -1,9 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node scripts/codex-run.mjs:*)",
+      "Bash(node \"$JARVIS_DIR/scripts/codex-run.mjs\":*)",
       "Bash(tts-codex:*)",
-      "Bash(node scripts/box-agent.mjs:*)",
+      "Bash(node \"$JARVIS_DIR/scripts/box-agent.mjs\":*)",
       "Bash(tts-run:*)"
     ]
   }

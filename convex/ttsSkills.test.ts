@@ -1,7 +1,4 @@
 import { convexTest } from "convex-test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -11,13 +8,7 @@ import {
   modelOfTomText,
   withoutModelOfTomPrelude,
 } from "./ttsSkills";
-import { MODEL_OF_TOM_HEADER, NARROW_LIST } from "./ttsShared";
-import { preparePrompt } from "../worker/jobs/plan-graphs.mjs";
-import { gmailTriagePrompt } from "../worker/jobs/poll-gmail.mjs";
-import { canvasTriagePrompt } from "../worker/jobs/poll-canvas.mjs";
-import { timeNotePrompt } from "../worker/jobs/apply-time-notes.mjs";
-import { buildAgendaPrompt } from "../worker/jobs/weekly.mjs";
-import { learningPrompt } from "../worker/jobs/nightly.mjs";
+import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
@@ -56,32 +47,6 @@ function payload(overrides: Record<string, unknown> = {}) {
 
 const callerPrelude = (names: (keyof typeof SENTINEL_LAYERS)[]) =>
   modelOfTomText({ commit: COMMIT, syncedAt: COMMITTED_AT, pushed: false, ...SENTINEL_LAYERS, headers: HEADERS }, names);
-
-function classifierPrompt(command: string) {
-  // The daemon depends on the Box-only Agent SDK, so execute just this pure
-  // prompt builder from its source rather than importing the daemon in tests.
-  const file = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "worker", "session-host", "session.mjs");
-  const source = fs.readFileSync(file, "utf8");
-  const start = source.indexOf("function classifierPrompt(");
-  const end = source.indexOf("\n}\n", start) + 2;
-  expect(start, "classifierPrompt is present").toBeGreaterThan(-1);
-  expect(end, "classifierPrompt closes").toBeGreaterThan(start);
-  const definition = source.slice(start, end).replace("function classifierPrompt", "function");
-  // The prompt lists NARROW_LIST_COMMANDS, which session.mjs derives outside
-  // the slice from the narrow list's one home. Build it the same way from the
-  // same import rather than restating the four lines here.
-  expect(source, "session.mjs derives NARROW_LIST_COMMANDS from NARROW_LIST").toContain(
-    "const NARROW_LIST_COMMANDS = NARROW_LIST.map((item) => item.command);",
-  );
-  const narrow = `const NARROW_LIST_COMMANDS = ${JSON.stringify(NARROW_LIST.map((item) => item.command))};`;
-  const render = new Function(`${narrow}
-return (${definition});`)() as (input: {
-    command: string;
-    workdir: string;
-    branch: string;
-  }) => string;
-  return render({ command, workdir: "/srv/session", branch: "session/caller-contract" });
-}
 
 async function insertSessionPrompt() {
   const t = convexTest({ schema, modules });
@@ -289,6 +254,11 @@ describe("model-of-tom caller contract", () => {
   // dynamic-context round; the write layer followed it when `write` became a
   // skill. What a run needs beyond the operate rules it LOADS BY NAME from the
   // grant block (convex/ttsContext.ts).
+  //
+  // The record's own caller is checked here. The box's prompt builders (the
+  // daemon's classifier, plan-graphs, the Gmail and Canvas triage, the time
+  // notes, the weekly agenda and the learning step) are the Jarvis
+  // repository's, and the same check of them belongs there.
   it("gives every caller exactly its selected layers", async () => {
     const callers: {
       name: string;
@@ -296,55 +266,9 @@ describe("model-of-tom caller contract", () => {
       prompt: (prelude: string) => string | Promise<string>;
     }[] = [
       {
-        name: "worker/session-host/session.mjs classifierPrompt",
-        layers: [],
-        prompt: () => classifierPrompt("curl https://example.test"),
-      },
-      {
-        name: "worker/jobs/plan-graphs.mjs",
-        layers: ["operate"],
-        prompt: (prelude) => preparePrompt({ statement: "Plan the contract", source: "test", createdAt: 0 }, null, "2026-09-09", prelude),
-      },
-      {
-        name: "worker/jobs/poll-gmail.mjs",
-        layers: ["operate"],
-        prompt: (prelude) => gmailTriagePrompt(prelude, [{ id: "mail-1", from: "test@example.com", subject: "Contract", snippet: "body" }]),
-      },
-      {
-        name: "worker/jobs/poll-canvas.mjs",
-        layers: ["operate"],
-        prompt: (prelude) => canvasTriagePrompt(prelude, [{ id: "canvas-1", courseCode: "CS", title: "Contract", body: "body" }]),
-      },
-      {
-        name: "worker/jobs/apply-time-notes.mjs",
-        layers: ["operate"],
-        prompt: (prelude) => timeNotePrompt(
-          { text: "Move it to Friday", context: { kind: "todo", todo: null } },
-          { nyCalendarDay: "2026-09-09", now: Date.UTC(2026, 8, 9, 12), timezone: "America/New_York" },
-          prelude,
-        ),
-      },
-      {
-        name: "worker/jobs/weekly.mjs",
-        layers: ["operate"],
-        prompt: (prelude) => buildAgendaPrompt({ writingStandard: prelude, factLines: [], priorLines: [] }),
-      },
-      {
         name: "insertSession",
         layers: ["operate"],
         prompt: () => insertSessionPrompt(),
-      },
-      {
-        name: "worker/jobs/nightly.mjs learningPrompt",
-        layers: [],
-        // Learning reads its own source pages, rather than a published prelude.
-        prompt: () => learningPrompt(
-          { since: 0, until: 1, tomTurns: [], slackReplies: [], rulings: [] },
-          new Map([["model-of-tom/writing.md", "the unchanged learning page"]]),
-          new Map([["model-of-tom/evidence/writing.md", "the unchanged evidence file"]]),
-          [],
-          "2026-09-09",
-        ).prompt,
       },
     ];
 

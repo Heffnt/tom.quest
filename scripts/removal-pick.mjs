@@ -9,9 +9,9 @@
 // `violation` is the chosen record (removal-sensor.mjs's shape, with its
 // estimate and matched text) or null when nothing is left to pick.
 //
-// IT RUNS INSIDE THE CHECKOUT IT MEASURES. worker/jobs/removal-loop.mjs runs
-// from /opt/tts and shells out to this file in its own clone of the branch it
-// works against, so the sensor, the rules and the baseline that decide the
+// IT RUNS INSIDE THE CHECKOUT IT MEASURES. The Jarvis repository's
+// worker/jobs/removal-loop.mjs shells out to this file in its own clone of the
+// branch it works against, so the sensor, the rules and the baseline that decide the
 // pick are always the same commit's. A job that imported its own copy of the
 // ranking would pick with yesterday's rules against today's baseline.
 //

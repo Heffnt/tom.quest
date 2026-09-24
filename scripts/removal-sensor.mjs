@@ -60,11 +60,11 @@ const RULE_IDS = Object.freeze([
   "flag-not-deletion",
 ]);
 
-/** The trees the rules scan. Product code only: e2e/, evals/ and the root
- *  config files are fixtures or framework entry points, and tts/ is the
+/** The trees the rules scan. Product code only: e2e/ and the root config
+ *  files are fixtures or framework entry points, and tts/ is the
  *  declared scratch root (vqc/classification.yaml). Tests and generated code
  *  are excluded inside each rule's own `ignores`. */
-const SCAN_ROOTS = Object.freeze(["app", "convex", "shared", "worker", "scripts", "vqc", "turing-api"]);
+const SCAN_ROOTS = Object.freeze(["app", "convex", "shared", "scripts", "vqc", "turing-api"]);
 
 /** Where use is looked for: every tracked file except prose, the lockfile and
  *  the baseline itself. Tests are IN — a test is a caller, and a name only a
@@ -77,7 +77,7 @@ const GREP_PATHSPEC = Object.freeze([
 ]);
 
 /** Names per `git grep` call. Fifty keeps one alternation well under any
- *  argument-length limit, the same batch worker/jobs/simplify.mjs grepCounts
+ *  argument-length limit, the same batch the Jarvis repository's worker/jobs/simplify.mjs grepCounts
  *  uses. */
 const GREP_BATCH = 50;
 
@@ -113,6 +113,15 @@ const CONVEX_REGISTRARS = new Set([
   "internalQuery", "internalMutation", "internalAction", "httpAction",
 ]);
 
+/**
+ * The directory whose exports have a reader no grep here can see. shared/ is
+ * the package `tom-quest-shared`, and the Jarvis repository imports it: an
+ * export only its own file names in this repository may be exactly what the
+ * box's code imports there, so its `export` cannot be deleted on this
+ * repository's evidence alone.
+ */
+const PACKAGE_ROOT = "shared/";
+
 // ── Small pure helpers ───────────────────────────────────────────────────────
 
 /** Plain byte order for ASCII, which every path and rule id here is. Not
@@ -123,8 +132,8 @@ export function byteCompare(a, b) {
 }
 
 /** A path as the output spells it: repository-relative and forward-slashed on
- *  every platform, the form findAgentsFiles in worker/jobs/simplify.mjs
- *  writes. */
+ *  every platform, the form findAgentsFiles in the Jarvis repository's
+ *  worker/jobs/simplify.mjs writes. */
 export function repoPath(file) {
   return String(file).split("\\").join("/").replace(/^\.\//, "");
 }
@@ -245,7 +254,8 @@ export function registrarOf(text) {
 /**
  * Which files mention each name as a whole word, by one `git grep` per batch.
  * `git grep` EXITS 1 WHEN NOTHING MATCHED; that is the answer "no file", not a
- * failure (grepCounts in worker/jobs/simplify.mjs, the same rule). Any other
+ * failure (grepCounts in the Jarvis repository's worker/jobs/simplify.mjs,
+ * the same rule). Any other
  * failure throws: a grep that did not run would otherwise report every export
  * in the repository dead.
  */
@@ -290,6 +300,7 @@ function deadExports(matches, io) {
     if (name === null) continue;
     if (match.path.startsWith("app/") && FRAMEWORK_EXPORTS.has(name)) continue;
     if (match.path.startsWith("convex/") && CONVEX_REGISTRARS.has(registrarOf(match.text))) continue;
+    if (match.path.startsWith(PACKAGE_ROOT)) continue;
     declared.push({ match, name });
   }
   const mentions = filesMentioning(declared.map((d) => d.name), io);

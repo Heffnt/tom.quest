@@ -43,7 +43,7 @@ export const SIMPLIFY_PROPOSAL = "simplify-proposal";
  *  the proposal, so "was this admitted" is a point lookup. */
 export const SIMPLIFY_ADMITTED = "simplify-admitted";
 /** The weekly run's own summary row, the twin of "weekly-run". */
-export const SIMPLIFY_RUN = "simplify-run";
+const SIMPLIFY_RUN = "simplify-run";
 
 // ── Event kinds the removal loop owns ────────────────────────────────────────
 // worker/jobs/removal-loop.mjs, the daily job that turns one structural smell
@@ -68,7 +68,7 @@ export const WINDOW_WEEKS = 4;
  *  every depth is the widest read in this file; past this the counts are
  *  FLOORS, and the facts block says so rather than reporting a smaller number
  *  as if it were the whole. */
-export const RUN_SCAN = 5_000;
+const RUN_SCAN = 5_000;
 /** The runs whose transcripts are opened for the token bag. The bag is the
  *  expensive half — a row read per run — so it is sampled where the counts are
  *  not. */
@@ -76,23 +76,23 @@ export const SAMPLE_RUNS = 150;
 /** Transcript rows read per sampled run. A long run's first four hundred rows
  *  already carry its vocabulary; reading all of a fifty-thousand-row run would
  *  spend the whole budget on one of the hundred and fifty. */
-export const ROW_SCAN_PER_RUN = 400;
+const ROW_SCAN_PER_RUN = 400;
 /** Distinct words kept per run. The bag answers "did this rule's words appear
  *  in this run at all", which a few hundred words settle; past that it is the
  *  same run's vocabulary repeated in a longer list. */
-export const TOKENS_PER_RUN = 500;
+const TOKENS_PER_RUN = 500;
 /** Distinct working directories reported. Past two hundred the list is no
  *  longer a picture of where the work happens, and a repo-rules proposal
  *  cannot be about a directory that appeared once. */
-export const CWD_DISTINCT_MAX = 200;
+const CWD_DISTINCT_MAX = 200;
 /** Gate rows read per check, over all time. A check's failure history is its
  *  whole life, not this window's: a check that has never once failed is the
  *  fact the pass is looking for, and four weeks of silence does not show it. */
-export const GATE_HEAD_SCAN = 2_000;
+const GATE_HEAD_SCAN = 2_000;
 /** How far back the pass looks for what it already proposed. Eight weeks is two
  *  window-lengths: a proposal Tom let stand or objected to is not re-made the
  *  next Saturday, or the fortnight after. */
-export const PROPOSAL_COOLDOWN_WEEKS = 8;
+const PROPOSAL_COOLDOWN_WEEKS = 8;
 /** The floor between a proposal being posted and a digest being allowed to close its window. */
 export const OBJECTION_FLOOR_MS = 24 * 60 * 60 * 1000;
 

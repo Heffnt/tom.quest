@@ -8,7 +8,7 @@ A personal dashboard for cluster management, experiment visibility and TTS. Writ
 - Convex holds every server state: schema, queries, mutations, HTTP actions, Convex Auth (password provider).
 - Zustand holds UI-only state.
 - Sentry (errors, performance, replay); Vitest with convex-test; Playwright end-to-end.
-- Vercel serves the frontend, Convex Cloud the backend, the Jarvis Box runs `worker/`.
+- Vercel serves the frontend, Convex Cloud the backend. The Jarvis Box runs the private Jarvis repository, which installs `shared/` as the package `tom-quest-shared`.
 
 ## roles
 
@@ -34,6 +34,7 @@ A personal dashboard for cluster management, experiment visibility and TTS. Writ
 - `pnpm test`, `pnpm test:e2e`, `pnpm lint`, `pnpm check:guardrails` (the static checks CI runs).
 - The merge bar is the four Guardrails jobs green: `static-boundaries`, `secret-scan`, `tests` (typecheck, the vitest suite, the build) and `e2e`; the fifth job, `report`, records them on the `tests-run` row. No other check is a gate.
 - A pull request runs the tests its diff reaches, main and the nightly run all of them; the row says which mode ran. `docs/tests.md` is the inventory of every test and check, what each verifies, where it runs and what it costs.
+- The box's code (its jobs, the run launcher, the session daemon, the evals set) and its tests are the Jarvis repository's. A `shared/` change lands here first; Jarvis then bumps its pin.
 
 ## worktrees
 
@@ -59,6 +60,6 @@ A personal dashboard for cluster management, experiment visibility and TTS. Writ
 
 ## files
 
-- Nested `AGENTS.md`: `app/`, `app/api/turing/`, `convex/`, `shared/`, `turing-api/`, `worker/`; each applies to its tree.
+- Nested `AGENTS.md`: `app/`, `app/api/turing/`, `convex/`, `shared/`, `turing-api/`; each applies to its tree.
 - Beside each, a regular `CLAUDE.md` holds `@AGENTS.md`; `pnpm check:agents` enforces it.
 - WikiTom `model-of-tom/` holds who Tom is and how agents operate.

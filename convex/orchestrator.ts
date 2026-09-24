@@ -53,7 +53,7 @@ import {
   COMPACT_ENDED_REASON,
   DAEMON_RESTART_ENDED_REASON,
   ORCHESTRATOR_COMPACT_WORD,
-} from "../worker/session-host/hosted.mjs";
+} from "../shared/session-constants.mjs";
 import { composeElevationAsk, elevationAskBody, renderSlack } from "./ttsCompose";
 
 export const ORCHESTRATOR_KEY = "jarvis" as const;

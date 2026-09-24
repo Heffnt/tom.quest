@@ -26,8 +26,9 @@
 //
 // NO ast-grep IS A FAILURE, loudly. The alternative, passing when the tool is
 // absent, is a gate that opens whenever the machine is wrong. CI installs it
-// (.github/workflows/guardrails.yml) and worker/setup.sh installs it on the
-// Jarvis Box, both at the version named below.
+// (.github/workflows/guardrails.yml) and the Jarvis repository's
+// worker/setup.sh installs it on the Jarvis Box, both at the version named
+// below.
 //
 // THE RULES ARE TESTED FIRST. `ast-grep test` holds each rule to its examples
 // in sg/tests. A rule that silently stopped matching would read here as a

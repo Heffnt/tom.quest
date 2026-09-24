@@ -12,7 +12,6 @@ const BYTE_TARGETS = {
   "convex/AGENTS.md": 3500,
   "shared/AGENTS.md": 1500,
   "turing-api/AGENTS.md": 3500,
-  "worker/AGENTS.md": 3500,
 };
 const DEFAULT_BYTE_TARGET = 3500;
 // The size a chain of AGENTS.md files (the root file, then each nested one a

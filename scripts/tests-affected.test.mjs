@@ -52,7 +52,7 @@ describe("tests-affected", () => {
   // reads vqc/todos.yaml and an AGENTS.md off the disk, and no import graph has
   // ever seen that edge.
   it("runs everything when a changed file is read off disk rather than imported", () => {
-    for (const path of ["vqc/todos.yaml", "AGENTS.md", "package.json", "pnpm-lock.yaml", "sg/baseline.tsv", "worker/setup.sh"]) {
+    for (const path of ["vqc/todos.yaml", "AGENTS.md", "package.json", "pnpm-lock.yaml", "sg/baseline.tsv", ".github/workflows/guardrails.yml"]) {
       const decision = decideMode(changed("convex/ttsMerge.ts", path), { base: "abc" });
       expect(decision.mode, path).toBe(FULL);
       expect(decision.why).toContain(path);

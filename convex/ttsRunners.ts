@@ -623,7 +623,7 @@ export const internalRunnerSweep = internalMutation({
 /** Where the daemon writes the sensor's facts block into the prompt. A daemon
  *  that has not been rolled out yet leaves it, and the step reads the line
  *  below it saying the facts were not read. */
-export const FACTS_PLACEHOLDER = "@@RUNNER_FACTS@@";
+const FACTS_PLACEHOLDER = "@@RUNNER_FACTS@@";
 
 /** Everything since this runner's last check-in that the next step must see:
  *  Tom's replies, whole, and every step that failed or was skipped. */

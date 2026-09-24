@@ -68,7 +68,7 @@ export const AUDIT_APPROVED = "APPROVED";
 /** The word the audit step posts when it could not run at all
  *  (worker/jobs/audit.mjs AUDIT_UNAVAILABLE). NOT A VERDICT: it is the
  *  ABSENCE of one, which is why a later real verdict replaces it below. */
-export const AUDIT_UNAVAILABLE = "UNAVAILABLE";
+const AUDIT_UNAVAILABLE = "UNAVAILABLE";
 /** The most audit prose retained on its event, measured after redaction. */
 export const AUDIT_TEXT_MAX_BYTES = 8 * 1024;
 /** The heading the audit files its removal-check findings under

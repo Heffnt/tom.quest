@@ -287,15 +287,10 @@ describe("gate, continued", () => {
     expect(jobTimeout).toBeGreaterThan(POLL_TIMEOUT_MS / 60_000);
   });
 
-  it("gives WikiTom requests their GitHub run identity", () => {
-    const workflow = readFileSync("evals/wikitom/evals.yml", "utf8");
-    expect(workflow).toMatch(/\r?\n\s*RUN_ID:\s*\$\{\{ github\.run_id \}\}/);
-  });
-
   it("prints a forced by-hand recovery command after the box times out", () => {
     const source = readFileSync("scripts/evals-check.mjs", "utf8");
     expect(source).toMatch(
-      /the Jarvis Box did not answer[\s\S]*node \/opt\/tts\/evals\.mjs --repo \$\{repo\} --sha \$\{sha\} --force/,
+      /the Jarvis Box did not answer[\s\S]*node \/opt\/jarvis\/worker\/jobs\/evals\.mjs --repo \$\{repo\} --sha \$\{sha\} --force/,
     );
   });
 
