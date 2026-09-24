@@ -1069,7 +1069,7 @@ function prepareRun(options, slot = noSlot) {
 /** The bytes the child reads on stdin: the registration block, when this run
  *  has one, and then the caller's prompt. */
 function promptToSend(run) {
-  return typeof run.spooled?.block === "string" ? `${run.spooled.block}${run.opts.prompt}` : run.opts.prompt;
+  return `${run.spooled?.block ?? ""}${run.opts.prompt}`;
 }
 
 /** A runner step's own envelope: the one run that holds the runner key. */

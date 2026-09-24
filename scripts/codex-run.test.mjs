@@ -118,9 +118,10 @@ describe("codex-run operate instructions", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).not.toContain("operate instructions unavailable");
     // Nothing to instruct: no operate text, no grants, and never the token.
+    // Codex adds no developer message for an empty developer_instructions.
     const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
       .find((arg) => arg.startsWith("developer_instructions="));
-    expect(developer).toBeUndefined();
+    expect(developer).toBe('developer_instructions=""');
   });
 
   it("continues after one unavailable-instructions warning", () => {
@@ -135,7 +136,7 @@ describe("codex-run operate instructions", () => {
     expect(result.stderr.match(/operate instructions unavailable/g)).toHaveLength(1);
     const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
       .find((arg) => arg.startsWith("developer_instructions="));
-    expect(developer).toBeUndefined();
+    expect(developer).toBe('developer_instructions=""');
     // An unreadable operate file is an absence, not a refusal.
     expect(spooledEnvelope(result.state).envelope.registration.layersDenied).toEqual([]);
   });
