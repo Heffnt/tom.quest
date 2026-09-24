@@ -16,6 +16,9 @@
 //      fire the session doors — send, interrupt, stop, force-close, rename,
 //      model change, fork, the autonomous-fleet switch — and nothing was
 //      holding them to the rule the TTS screens have been held to.
+//      The page toolbox (app/components/toolbox, vqc/pages.md) joined the
+//      closure with it (2026-09-24): every Jarvis page built from it presses
+//      its controls, so its ActionRow is held to the same popover.
 //   2. FIRED → NAMED. Every mutation the screens fire is named, verbatim, by a
 //      popover somewhere on them, so a control wired to a mutation nobody
 //      explains fails CI even if it renders somewhere this file cannot reach.
@@ -95,12 +98,16 @@ import Run from "@/app/runs/components/run";
 import RunList from "@/app/runs/components/run-list";
 import RunRow from "@/app/runs/components/run-row";
 import RunRows from "@/app/runs/components/run-rows";
+import ActionRow from "@/app/components/toolbox/action-row";
+import GroupDrawer from "@/app/components/toolbox/group-drawer";
+import Term from "@/app/components/toolbox/term";
 
 const APP = join(__dirname, "..", "..");
 const TTS = join(APP, "tts");
 const SESSIONS = join(APP, "runs");
-/** The two component directories the table of cases is closed against. */
-const COMPONENT_DIRS = [join(TTS, "components"), join(SESSIONS, "components")];
+const TOOLBOX = join(APP, "components", "toolbox");
+/** The three component directories the table of cases is closed against. */
+const COMPONENT_DIRS = [join(TTS, "components"), join(SESSIONS, "components"), TOOLBOX];
 
 function sources(dir: string): string[] {
   const out: string[] = [];
@@ -405,6 +412,32 @@ const noop = () => {};
 
 /** One entry per component under either directory that renders controls. */
 const CASES: { file: string; render: () => void }[] = [
+  {
+    file: "app/components/toolbox/action-row.tsx",
+    render: () =>
+      void render(
+        <ActionRow
+          actions={[
+            { label: "approve", call: 'ttsRulings.recordRuling({ todoId, verdict: "approve", sentence })', effect: "records it", onClick: noop },
+            { label: "revise", call: 'ttsRulings.recordRuling({ todoId, verdict: "revise", sentence })', effect: "sends it back", onClick: noop, ask: { placeholder: "why", required: true } },
+          ]}
+        />,
+      ),
+  },
+  {
+    file: "app/components/toolbox/group-drawer.tsx",
+    render: () =>
+      void render(
+        <GroupDrawer
+          title="g"
+          count={25}
+          members={Array.from({ length: 25 }, (_, i) => ({ id: `m${i}`, primary: `member ${i}` }))}
+          onPick={noop}
+          caption="tts.listTodos → the todos of one group"
+        />,
+      ),
+  },
+  { file: "app/components/toolbox/term.tsx", render: () => void render(<Term word="ready" />) },
   { file: "app/tts/components/calendar-tab.tsx", render: () => void render(<CalendarTab />) },
   {
     file: "app/tts/components/code-todo-row.tsx",

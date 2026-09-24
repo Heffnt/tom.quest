@@ -1,0 +1,454 @@
+/* THE TOOLBOX STYLESHEET — the one place a Jarvis page's look is written
+   (vqc/pages.md, principle 7). It reads the twelve colour tokens and the
+   --tb-* scale from app/globals.css and writes no colour, font size, gradient
+   or shadow of its own; scripts/check-toolbox-pages.mjs fails a literal here.
+   Plain CSS, outside Tailwind's layers, so it outranks a utility class — which
+   is how the shared info popover is drawn at this scale inside .tb-root. */
+
+/* ── root: one family, one scale ─────────────────────────────────────────── */
+
+.tb-root {
+  font-family: var(--font-ibm-plex-sans), "IBM Plex Sans", sans-serif;
+  font-size: var(--tb-text-2);
+  line-height: 1.5;
+  color: var(--color-text);
+}
+.tb-root h1,
+.tb-root h2,
+.tb-root h3 {
+  font-family: inherit;
+  font-weight: 600;
+  letter-spacing: 0;
+  margin: 0;
+}
+.tb-root p {
+  margin: 0;
+}
+.tb-num,
+.tb-caption,
+.tb-figure-value,
+.tb-root .tb-svg-num,
+.tb-root .is-num {
+  font-family: var(--font-ibm-plex-mono), "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── frame ───────────────────────────────────────────────────────────────── */
+
+.tb-page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--tb-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-5);
+}
+.tb-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--tb-space-5);
+}
+.tb-main,
+.tb-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-5);
+  min-width: 0;
+}
+@media (min-width: 1340px) {
+  .tb-columns {
+    grid-template-columns: minmax(0, 1fr) 380px;
+  }
+  .tb-side .tb-drawer {
+    position: sticky;
+    top: calc(64px + var(--tb-space-4));
+  }
+}
+
+/* ── text ────────────────────────────────────────────────────────────────── */
+
+.tb-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-2);
+}
+.tb-head-name {
+  font-size: var(--tb-text-5);
+  line-height: 1.2;
+}
+.tb-head-sentence {
+  font-size: var(--tb-text-3);
+  max-width: 60ch;
+}
+.tb-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-2);
+  min-width: 0;
+}
+.tb-title {
+  font-size: var(--tb-text-3);
+}
+.tb-prose {
+  max-width: 70ch;
+}
+.tb-caption {
+  font-size: var(--tb-text-1);
+  color: var(--color-text-faint);
+  overflow-wrap: anywhere;
+}
+.tb-more {
+  color: var(--color-text-muted);
+}
+
+/* ── controls: underlined links, bordered buttons, hover never moves ──────── */
+
+.tb-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.tb-link:hover {
+  color: var(--color-accent);
+}
+.tb-btn {
+  font: inherit;
+  font-size: var(--tb-text-2);
+  color: var(--color-text);
+  background: transparent;
+  border: 1px solid var(--color-text-faint);
+  border-radius: var(--tb-radius);
+  padding: var(--tb-space-1) var(--tb-space-3);
+  cursor: pointer;
+}
+.tb-btn:hover {
+  background: var(--color-surface-alt);
+}
+.tb-btn.is-recommended {
+  border-color: var(--color-accent);
+}
+.tb-btn:disabled {
+  color: var(--color-text-faint);
+  cursor: default;
+}
+.tb-btn:disabled:hover {
+  background: transparent;
+}
+
+/* The shared info popover (app/tts/components/info), at the toolbox scale. */
+.tb-root [aria-label="what this does"] {
+  font-size: var(--tb-text-1);
+  padding: 0 var(--tb-space-1);
+}
+.tb-root [role="note"] {
+  box-shadow: none;
+  width: 18rem;
+}
+.tb-root [role="note"] * {
+  font-size: var(--tb-text-1);
+}
+
+/* ── figures ─────────────────────────────────────────────────────────────── */
+
+.tb-figure-box {
+  width: 100%;
+  min-width: 0;
+}
+.tb-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.tb-svg text {
+  font-size: var(--tb-text-1);
+  fill: var(--color-text);
+  pointer-events: none;
+}
+.tb-svg .tb-svg-num {
+  fill: var(--color-text-muted);
+}
+.tb-svg .tb-svg-faint {
+  fill: var(--color-text-faint);
+}
+.tb-svg .tb-svg-group {
+  fill: var(--color-text-muted);
+  font-weight: 600;
+}
+.tb-group rect {
+  fill: var(--color-bg);
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+.tb-cell rect {
+  fill: var(--color-surface-alt);
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+.tb-cell.is-group rect {
+  fill: var(--color-accent-dim);
+}
+.tb-cell.is-clickable {
+  cursor: pointer;
+}
+.tb-cell.is-clickable:hover rect {
+  fill: var(--color-border);
+}
+.tb-cell.is-selected rect {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+.tb-cell:focus {
+  outline: none;
+}
+.tb-cell:focus-visible rect {
+  stroke: var(--color-text);
+}
+.tb-bar {
+  fill: var(--color-text-muted);
+}
+.tb-axis {
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+.tb-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--tb-space-2);
+}
+.tb-figure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-1);
+  padding: var(--tb-space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--tb-radius);
+}
+.tb-figure-value {
+  font-size: var(--tb-text-4);
+  line-height: 1.2;
+}
+.tb-figure-name {
+  font-size: var(--tb-text-1);
+  color: var(--color-text-muted);
+}
+
+/* ── drawer, item, actions ───────────────────────────────────────────────── */
+
+.tb-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-2);
+  padding: var(--tb-space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--tb-radius);
+}
+.tb-drawer-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--tb-space-3);
+}
+.tb-drawer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* A paged list keeps the height of ten rows, so the next ten move nothing. */
+.tb-drawer-list.is-paged {
+  min-height: calc(10 * (var(--tb-text-2) * 1.5 + var(--tb-text-1) * 1.5 + 2 * var(--tb-space-2)));
+}
+.tb-member {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  padding: var(--tb-space-2);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--tb-radius);
+}
+.tb-member.is-clickable {
+  cursor: pointer;
+}
+.tb-member.is-clickable:hover {
+  background: var(--color-surface-alt);
+}
+.tb-member-primary,
+.tb-member-secondary {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tb-member-secondary {
+  font-size: var(--tb-text-1);
+  color: var(--color-text-muted);
+}
+.tb-drawer-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--tb-space-3);
+  min-height: calc(var(--tb-text-2) * 1.5);
+  color: var(--color-text-muted);
+}
+.tb-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-3);
+  padding: var(--tb-space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--tb-radius);
+}
+.tb-item-statement {
+  font-size: var(--tb-text-4);
+  line-height: 1.3;
+}
+.tb-item-provenance {
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+.tb-item-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-1);
+}
+.tb-item-section h3 {
+  font-size: var(--tb-text-1);
+  color: var(--color-text-faint);
+}
+.tb-item-text {
+  max-width: 70ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tb-space-2) var(--tb-space-3);
+}
+.tb-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tb-space-1);
+}
+.tb-actions-error {
+  min-height: calc(var(--tb-text-1) * 1.5);
+  font-size: var(--tb-text-1);
+  color: var(--color-error);
+}
+
+/* ── fixed layers: the sentence dialog and the definition drawer ─────────── */
+
+.tb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.tb-overlay-shade {
+  position: absolute;
+  inset: 0;
+  background: var(--color-bg);
+  opacity: 0.85;
+}
+.tb-dialog {
+  position: absolute;
+  top: 20vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 2 * var(--tb-space-3)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-3);
+  padding: var(--tb-space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--tb-radius);
+}
+.tb-input {
+  width: 100%;
+  min-height: 96px;
+  resize: none;
+  padding: var(--tb-space-2);
+  font: inherit;
+  font-size: var(--tb-text-2);
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--tb-radius);
+}
+.tb-define {
+  position: fixed;
+  top: 64px;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  width: min(380px, 100vw);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tb-space-3);
+  padding: var(--tb-space-4);
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+}
+
+/* ── table and fold ──────────────────────────────────────────────────────── */
+
+.tb-table-box {
+  width: 100%;
+  overflow-x: auto;
+}
+.tb-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.tb-table th,
+.tb-table td {
+  padding: var(--tb-space-2);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+.tb-table th {
+  font-size: var(--tb-text-1);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.tb-table .is-num {
+  text-align: right;
+}
+.tb-table tfoot td {
+  font-weight: 600;
+  border-bottom: 0;
+}
+.tb-fold summary {
+  display: flex;
+  gap: var(--tb-space-2);
+  cursor: pointer;
+  list-style: none;
+  color: var(--color-text-muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.tb-fold summary::-webkit-details-marker {
+  display: none;
+}
+.tb-fold summary:hover {
+  color: var(--color-text);
+}
+.tb-fold-body {
+  padding-top: var(--tb-space-2);
+}

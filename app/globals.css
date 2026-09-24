@@ -34,6 +34,23 @@
   --pf-hypothetical: #111827; /* reuse --color-surface, tom.quest's slate surface */
 }
 
+/* The page toolbox's scale (vqc/pages.md, principle 7): five type sizes, none
+   under 13 px, five spaces and one radius. app/components/toolbox/toolbox.css
+   is the only reader; the twelve colours above stay as they are. */
+:root {
+  --tb-text-1: 13px;
+  --tb-text-2: 15px;
+  --tb-text-3: 18px;
+  --tb-text-4: 24px;
+  --tb-text-5: 32px;
+  --tb-space-1: 4px;
+  --tb-space-2: 8px;
+  --tb-space-3: 16px;
+  --tb-space-4: 24px;
+  --tb-space-5: 32px;
+  --tb-radius: 6px;
+}
+
 body {
   background: var(--color-bg);
   color: var(--color-text);
