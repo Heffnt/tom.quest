@@ -1,7 +1,10 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { TTS_CLOSED_VOCABULARY } from "./ttsShared";
+import { closedVocabularyFrom } from "./vocabulary";
+import { PROMPT_TERMS } from "../scripts/closed-vocabulary.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const KEY = { "X-TTS-Key": "s3cret", "Content-Type": "application/json" };
@@ -134,5 +137,44 @@ describe("vocabulary.current", () => {
   it("is null until a night has posted one", async () => {
     const t = convexTest(schema, modules);
     expect(await (await asTom(t)).query(api.vocabulary.current, {})).toBeNull();
+  });
+});
+
+// THE PROMPT'S SEVEN WORDS READ THE SAME ROW THE PAGE DOES: the §12.1 entries
+// the night posted, rendered at read time; the constant only when no night has
+// posted, or a posted row lacks one of the seven.
+describe("the prompt's vocabulary block", () => {
+  const OPENING = TTS_CLOSED_VOCABULARY.split("\n")[0];
+  const SEVEN = PROMPT_TERMS.map((term: string) => ({
+    ...TERM,
+    term,
+    definition: `The posted ${term} entry (§12).`,
+  }));
+  const RENDERED = [OPENING, ...PROMPT_TERMS.map((term: string) => `- The posted ${term} entry.`)].join("\n");
+
+  it("is the constant when no row exists", () => {
+    expect(closedVocabularyFrom(null)).toBe(TTS_CLOSED_VOCABULARY);
+  });
+
+  it("is the constant when the row lacks one of the seven", () => {
+    expect(closedVocabularyFrom({ terms: SEVEN.slice(1) })).toBe(TTS_CLOSED_VOCABULARY);
+  });
+
+  it("renders from the posted entries once a night has posted them", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    expect(await t.query(internal.vocabulary.internalClosedVocabulary, {})).toBe(TTS_CLOSED_VOCABULARY);
+    expect((await post(t, { terms: [TERM, ...SEVEN.slice(1)] })).status).toBe(200);
+    // TERM is the batch entry the other tests post, so the row carries all seven.
+    const expected = RENDERED.replace("- The posted batch entry.", `- ${TERM.definition}`);
+    expect(await t.query(internal.vocabulary.internalClosedVocabulary, {})).toBe(expected);
+    vi.unstubAllEnvs();
+  });
+
+  it("the constant is the rendering of its own wordings, so the fallback says what the spec says", () => {
+    const lines = TTS_CLOSED_VOCABULARY.split("\n");
+    expect(lines).toHaveLength(1 + PROMPT_TERMS.length);
+    const terms = PROMPT_TERMS.map((term: string, index: number) => ({ term, definition: lines[index + 1].slice(2) }));
+    expect(closedVocabularyFrom({ terms })).toBe(TTS_CLOSED_VOCABULARY);
   });
 });

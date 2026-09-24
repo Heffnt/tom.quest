@@ -313,7 +313,7 @@ export function readRecord(dir) {
  * supplies the `term`, `job`, `question` and `repo` nodes and every `defines`
  * edge; a graph built without it has no terms but the ones the area pages name
  * and no jobs or questions at all, which is a materially different file. The
- * generator writes nothing while its seven wording disagreements stand (see
+ * generator writes nothing while any disagreement stands (see
  * worker/jobs/nightly.mjs graphStep), so a graph that could only read the file
  * would be thin for exactly as long as that takes to settle, for no reason —
  * the two are generated from one pair of commits in one step either way.
@@ -339,7 +339,7 @@ function readVocabulary(wikitom) {
  * supplies the `term`, `job`, `question` and `repo` nodes and every `defines`
  * edge; a graph built without it has only the terms the area pages name and no
  * jobs or questions at all, which is a materially thinner file. The generator
- * writes nothing while its seven wording disagreements stand (see
+ * writes nothing while any disagreement stands (see
  * worker/jobs/nightly.mjs graphStep), and a graph that could only read the file
  * would be thin for exactly as long as that takes to settle, for no reason —
  * the two are generated from one pair of commits in one step either way.
@@ -661,8 +661,8 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
  * THE FALLBACK IS REPORTED, NEVER SILENT. Under `KIND_AUTHORITY = "vocabulary"`
  * the graph's schema is meant to be the vocabulary, so a kind the vocabulary
  * does not declare fails the build. `tts/vocabulary.json` does not carry kind
- * entries at this commit — the vocabulary generator reports seven wording
- * disagreements and writes nothing until they are settled — so there is nothing
+ * entries at this commit — the vocabulary generator writes nothing while a
+ * disagreement or its byte cap stands — so there is nothing
  * to check against, and a check with nothing to check against is a check that
  * passes for the wrong reason. It falls back to `worker/jobs/graph.mjs`'s own
  * lists, which is what `"loose"` means, and the build's notes say so, so a

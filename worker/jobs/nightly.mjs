@@ -721,13 +721,14 @@ async function graphStep(run) {
 
   // THE VOCABULARY REPORTS AND DOES NOT WRITE, YET, and the yet is the point.
   //
-  // Its first run against the real repositories found seven D1 disagreements —
-  // the seven prompt terms are worded one way in spec §12.1 and another way in
-  // convex/ttsShared.ts's TTS_CLOSED_VOCABULARY — plus a terms section over the
-  // 40 KiB cap and a map candidate over the 7,000-byte bound. Every one of
-  // those is a real fact about the system and none of them is this round's to
-  // settle: the first is Tom's wording, and the other two are numbers to
-  // re-argue against what was measured rather than estimated.
+  // Its first run against the real repositories found seven disagreements
+  // about the prompt's seven words, a terms section over the 40 KiB cap and a
+  // map candidate over the 7,000-byte bound. Tom settled the seven on
+  // 2026-09-24 — one wording, in spec §12.1, and the prompt renders from it
+  // (convex/vocabulary.ts) — so that class of disagreement no longer exists.
+  // The cap and the map bound are numbers to re-argue against what was
+  // measured rather than estimated, and any other disagreement the generator
+  // reports is its own finding; while any of them stands nothing is written.
   //
   // A step that failed on them would fail every night from the night it shipped,
   // which is a red job nobody can act on. A step that wrote over them would put
@@ -754,7 +755,10 @@ async function graphStep(run) {
   // `tts/vocabulary.json` does not exist, and this render is the only current
   // statement of what every word means. It carries the disagreements with it,
   // because each of them is one ruling of his and settling them is what makes
-  // the file exist (convex/vocabulary.ts).
+  // the file exist (convex/vocabulary.ts). It is also what every worker's
+  // prompt reads its seven words from: /tts/batch-context renders them from
+  // this post's §12.1 entries, so a night that cannot post leaves the last
+  // posted wording in force, and a record with none falls back to the constant.
   //
   // Recorded and not thrown, like the tom.quest half below: the graph's own
   // files are written and committed by the end of this step, and losing that
@@ -832,7 +836,7 @@ async function graphStep(run) {
   // nothing is written anywhere, and `changed` is a disk COMPARISON that fills
   // in the moment any input moves the vocabulary version. It therefore fired
   // every night, said something false, and asked for something impossible —
-  // `--write` refuses to write past the seven standing disagreements. A check
+  // `--write` refuses to write past a standing disagreement. A check
   // that cannot fire truthfully is deleted, not corrected. The drift it was
   // reaching for is convex/ttsShared.ts's, and `check:vocabulary` reports that
   // on tom.quest's own gate, where the file lives and can actually be landed.

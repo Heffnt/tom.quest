@@ -14,11 +14,20 @@
 // of his, and settling them is what makes `tts/vocabulary.json` exist.
 //
 // The gate is `requireTom`, like every other surface of his.
+//
+// THE PROMPT READS THE SAME ROW. The seven words a worker's prompt carries are
+// defined once, in the spec's §12.1 (Tom, 2026-09-24: one wording, in the spec,
+// with the prompt constant rendered from it). The night posts those entries
+// here with every other word, and `closedVocabularyFrom` below renders the
+// prompt's vocabulary block from them when the prompt is read — so the page
+// Tom reads and the prompt a worker reads are one set of entries.
 
 import { v } from "convex/values";
-import { internalMutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, query } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { requireTom } from "./authRoles";
+import { TTS_CLOSED_VOCABULARY } from "./ttsShared";
+import { closedVocabularyOpening, renderClosedVocabulary } from "../scripts/closed-vocabulary.mjs";
 
 const SURFACE = "Vocabulary";
 
@@ -104,5 +113,39 @@ export const current = query({
     await requireTom(ctx, SURFACE);
     return await ctx.db.query("ttsVocabulary")
       .withIndex("by_key", (q) => q.eq("key", "current")).unique();
+  },
+});
+
+/**
+ * The prompt's vocabulary block, rendered from the posted §12.1 entries through
+ * the one renderer scripts/vocabulary.mjs also uses, with the opening line the
+ * constant carries.
+ *
+ * REMOVAL CHECK on the fallback to TTS_CLOSED_VOCABULARY: it cannot be deleted.
+ * A night that cannot read the spec posts nothing, and a record that has never
+ * held a vocabulary — a fresh deployment, a test — holds none; with no fallback
+ * every run that carries this block would lose it, which is the same reason the
+ * base and the skills catalog reach a prompt by two doors. The fallback is not
+ * a second wording: scripts/vocabulary.mjs renders it from the spec through
+ * this same function and writes it into the generated block.
+ */
+export function closedVocabularyFrom(
+  row: { terms: { term: string; definition: string }[] } | null,
+): string {
+  if (row === null) return TTS_CLOSED_VOCABULARY;
+  // A posted term with kind "refused" is a word §12.1 declines, never one of
+  // the seven, so the rows go to the renderer as they are.
+  return renderClosedVocabulary(closedVocabularyOpening(TTS_CLOSED_VOCABULARY), row.terms)
+    ?? TTS_CLOSED_VOCABULARY;
+}
+
+/** The prompt's vocabulary block as the last posted night defines it. Internal:
+ *  the box reads it through `/tts/batch-context`, never as a public query. */
+export const internalClosedVocabulary = internalQuery({
+  args: {},
+  handler: async (ctx): Promise<string> => {
+    const row = await ctx.db.query("ttsVocabulary")
+      .withIndex("by_key", (q) => q.eq("key", "current")).unique();
+    return closedVocabularyFrom(row);
   },
 });

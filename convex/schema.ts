@@ -1186,7 +1186,7 @@ export default defineSchema({
     // One per thing the spec and the code do not both say. Each is Tom's to
     // settle with one ruling, so the rows carry what each source says verbatim.
     disagreements: v.array(v.object({
-      code: v.string(), // the generator's own class, e.g. "D1"
+      code: v.string(), // the generator's own class, e.g. "D5"
       subject: v.string(),
       fix: v.string(),
       rows: v.array(v.object({ label: v.string(), where: v.string(), text: v.string() })),
