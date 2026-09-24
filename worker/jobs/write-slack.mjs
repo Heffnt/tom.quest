@@ -81,7 +81,7 @@ export function formRules(kind, canReply) {
     `  introduces the item lines beneath it and carries no link; an "item" line`,
     `  is a whole sentence and its own link.`,
     `- NEVER a bare "+N more". Where there is more, write a whole sentence with`,
-    `  a link: "667 other items are ready, and not one of them is dated."`,
+    `  a link: "667 other todos are ready, and not one of them is dated."`,
     `- NEVER an ellipsis. A sentence that stops with "…" is a sentence he has to`,
     `  open the page to finish, which is the point of the message lost.`,
     `- OUTCOMES, NEVER LOGGED EVENTS. Say what a thing now is, not what was`,
@@ -114,7 +114,7 @@ export function formRules(kind, canReply) {
           `     naming the first move`,
           `  2. the objection list — what the delegate decided while he was asleep`,
           `  3. needs you today — what the email triage judged only he can settle`,
-          `     today, one line per item with its reason; no one else has told him`,
+          `     today, one line per todo with its reason; no one else has told him`,
           `  4. runners — the box's live runners, one line each`,
           `  5. the calendar — the shape of his day`,
           `  6. overnight — one line per todo saying what the sessions on it came`,
@@ -125,7 +125,7 @@ export function formRules(kind, canReply) {
       : [
           `THIS IS A NEEDS-YOU THREAD, in #tts-needs-you. It is one thing only Tom`,
           `can settle. The first line says WHY only he can settle it and names the`,
-          `first move; the lines under it are the item and, when there is one, the`,
+          `first move; the lines under it are the todo and, when there is one, the`,
           `message it came from. Never print a vendor's subject line or a From`,
           `header — you have not been given them, and that is deliberate.`,
         ];

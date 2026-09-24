@@ -89,7 +89,7 @@ describe("the one-line form", () => {
     );
     const text = renderSlack(message as NonNullable<typeof message>);
     expect(text.split(String.fromCharCode(10))).toHaveLength(1);
-    expect(text).toBe("1 item was captured.");
+    expect(text).toBe("1 todo was captured.");
     // The raw labels from the old table are gone.
     for (const label of ["captured:", "date outcome:", "ruling:", "failure:", "*Running now*"]) {
       expect(text).not.toContain(label);
@@ -121,7 +121,7 @@ describe("the one-line form", () => {
     const text = renderSlack(message as NonNullable<typeof message>);
     expect(text).toBe(
       `<${ttsSessionLink("s1")}|Fix the poller> has been working poll-outlook on its own for 1h35m, ` +
-        "and 1 item was captured and 1 finished.",
+        "and 1 todo was captured and 1 finished.",
     );
     // "worker events" is instrumentation vocabulary and never reaches him.
     expect(text).not.toContain("worker event");
@@ -153,7 +153,7 @@ describe("the one-line form", () => {
     const captured = [{ kind: "captured" as const, at: SINCE + 1, text: "one", detail: null, link: null }];
     expect(
       composeHourly(facts({ changes: captured, runners: [runner("The train25 campaign", "waiting-on-tom")] }))?.firstLine,
-    ).toBe(`The runner <${ttsTabLink("everything")}|The train25 campaign> is waiting on your answer, and 1 item was captured.`);
+    ).toBe(`The runner <${ttsTabLink("everything")}|The train25 campaign> is waiting on your answer, and 1 todo was captured.`);
     expect(
       composeHourly(
         facts({
@@ -161,7 +161,7 @@ describe("the one-line form", () => {
           runners: [runner("A", "waiting-on-tom"), runner("B", "running"), runner("C", "running")],
         }),
       )?.firstLine,
-    ).toBe(`Three <${ttsTabLink("everything")}|runners> are live, one of them waiting on you, and 1 item was captured.`);
+    ).toBe(`Three <${ttsTabLink("everything")}|runners> are live, one of them waiting on you, and 1 todo was captured.`);
   });
 
   it("counts the changes rather than listing them, however many there are", () => {
@@ -173,7 +173,7 @@ describe("the one-line form", () => {
       link: null,
     }));
     const text = renderSlack(composeHourly(facts({ changes: many })) as never);
-    expect(text).toBe("47 items were captured.");
+    expect(text).toBe("47 todos were captured.");
     expect(text).not.toContain("+7 more");
     expect(text.split(String.fromCharCode(10))).toHaveLength(1);
   });
@@ -677,7 +677,7 @@ describe("sendHourlyUpdate", () => {
     await busyHour(busy);
     await busy.action(internal.ttsSync.sendHourlyUpdate, {});
     expect(posts).toHaveLength(1);
-    expect(posts[0].text).toContain(`The runner <${ttsTabLink("everything")}|The train25 campaign> is running, and 1 item was captured.`);
+    expect(posts[0].text).toContain(`The runner <${ttsTabLink("everything")}|The train25 campaign> is running, and 1 todo was captured.`);
   });
 
   // Grouped by todo (Tom, 2026-09-24: no batches): an hour whose only fact is
@@ -694,7 +694,7 @@ describe("sendHourlyUpdate", () => {
     const posts = stubSlack();
     await t.action(internal.ttsSync.sendHourlyUpdate, {});
     expect(posts).toHaveLength(1);
-    expect(posts[0].text).toBe(`One item moved, <${ttsItemLink(todoId)}|Fix the Outlook poller> among them, and nothing else changed.`);
+    expect(posts[0].text).toBe(`One todo moved, <${ttsItemLink(todoId)}|Fix the Outlook poller> among them, and nothing else changed.`);
     expect(posts[0].text).not.toContain("tab=batches");
   });
 

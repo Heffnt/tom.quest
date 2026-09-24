@@ -348,7 +348,7 @@ describe("composeToday", () => {
     expect(text).toContain(
       "- <https://tom.quest/tts?item=ph7fqh2j|Run the first Friday triage session: open friday-2026-08-28.md and read the agenda. Ten days late.>",
     );
-    expect(text).toContain("667 other items are ready, and not one of them is dated.");
+    expect(text).toContain("667 other todos are ready, and not one of them is dated.");
     expect(text).not.toMatch(/\+\d+ more/);
     expect(text).not.toContain("…");
     expect(text).not.toContain("missed: reply done");
@@ -506,13 +506,13 @@ describe("todoOutcomeLine", () => {
   });
 
   // The tail names no todo, so its line carries no statement.
-  it("speaks of the tail as sessions on no item", () => {
+  it("speaks of the tail as sessions on no todo", () => {
     expect(
-      todoOutcomeLine({ todoId: null, statement: "Work on no item", sessionId: "k3", finished: 5, running: false }),
-    ).toBe("5 sessions on no item ended.");
+      todoOutcomeLine({ todoId: null, statement: "Work on no todo", sessionId: "k3", finished: 5, running: false }),
+    ).toBe("5 sessions on no todo ended.");
     expect(
-      todoOutcomeLine({ todoId: null, statement: "Work on no item", sessionId: "k3", finished: 0, running: true }),
-    ).toBe("A session on no item is still running.");
+      todoOutcomeLine({ todoId: null, statement: "Work on no todo", sessionId: "k3", finished: 0, running: true }),
+    ).toBe("A session on no todo is still running.");
   });
 });
 
@@ -727,8 +727,8 @@ describe("the needs-you-today run", () => {
   it("sits after the objection list, one line per item with its link, and the first line says it", () => {
     const message = composeToday(sept9({ needsYou: ITEMS }), { canReply: false });
     const text = renderSlack(message);
-    expect(message.firstLine).toContain("Two captured items need you today.");
-    expect(text).toContain("Two captured items need you today, as the email triage judged them.");
+    expect(message.firstLine).toContain("Two captured todos need you today.");
+    expect(text).toContain("Two captured todos need you today, as the email triage judged them.");
     expect(text).toContain("<https://tom.quest/tts?item=abc|Pay the lab deposit invoice, which needs you today because the invoice is due tomorrow.>");
     expect(text).toContain("<https://tom.quest/tts?item=def|Answer the registrar.>");
     expect(message.firstLine).not.toContain("Nothing else needs an answer from you today");
@@ -747,10 +747,10 @@ describe("the needs-you-today run", () => {
     });
     const first = todayFirstLine(late);
     expect(first.length).toBeLessThanOrEqual(FIRST_LINE_CHARS);
-    expect(first).not.toContain("captured items need you today"); // it would not have fitted
+    expect(first).not.toContain("captured todos need you today"); // it would not have fitted
     expect(first).not.toContain("Nothing else needs an answer");
     const roomy = todayFirstLine(sept9({ needsYou: ITEMS }));
-    expect(roomy).toContain("Two captured items need you today.");
+    expect(roomy).toContain("Two captured todos need you today.");
     expect(roomy).not.toContain("Nothing else needs an answer");
   });
 
@@ -829,7 +829,7 @@ describe("the needs-you-today run", () => {
   it("says how many dated items it leaves below when only some of them are flagged, and gives the writer that fact", () => {
     const mixed = sept9({ needsYou: [{ todoId: "ph74xqqp", statement: "Test interest-gradient sequencing", why: "the lab meets today" }] });
     const text = renderSlack(composeToday(mixed, { canReply: false }));
-    expect(text).toContain("One dated item is named below, with why it needs you today.");
+    expect(text).toContain("One dated todo is named below, with why it needs you today.");
     expect(text).toContain("Run the first Friday triage session");
     const fact = todayFactsBlock(mixed, false).facts.find((f) => f.id === "today:left-below");
     expect(fact?.numbers).toContain("1");
@@ -845,7 +845,7 @@ describe("the needs-you-today run", () => {
     });
     const text = renderSlack(composeToday(only, { canReply: false }));
     expect(text).not.toContain("Nothing is dated today");
-    expect(text).toContain("One dated item is named below, with why it needs you today.");
+    expect(text).toContain("One dated todo is named below, with why it needs you today.");
     expect(text.split("Pay the lab deposit invoice, which needs you today")).toHaveLength(2);
   });
 
@@ -874,7 +874,7 @@ describe("composeHourly", () => {
     const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abc" };
     const one = composeHourly(hourly({ changes: [{ ...capture, text: "Pay the lab deposit invoice", needsYouToday: "the invoice is due tomorrow" }] }));
     expect(one?.firstLine).toBe(
-      "1 item was captured, and <https://tom.quest/tts?item=abc|Pay the lab deposit invoice> needs you today because the invoice is due tomorrow.",
+      "1 todo was captured, and <https://tom.quest/tts?item=abc|Pay the lab deposit invoice> needs you today because the invoice is due tomorrow.",
     );
     const two = composeHourly(hourly({ changes: [
       { ...capture, text: "Pay the lab deposit invoice", needsYouToday: "" },
@@ -882,7 +882,7 @@ describe("composeHourly", () => {
       { ...capture, text: "Read the newsletter" },
     ] }));
     expect(two?.firstLine).toBe(
-      "3 items were captured, and two of the captures need you today, <https://tom.quest/tts?item=abc|Pay the lab deposit invoice> among them.",
+      "3 todos were captured, and two of the captures need you today, <https://tom.quest/tts?item=abc|Pay the lab deposit invoice> among them.",
     );
   });
 
@@ -919,7 +919,7 @@ describe("composeHourly", () => {
     const running = [{ sessionId: "k97a", title, kind: "worker", mode: "autonomous", status: "running", statement: "Plan it", todoId: null, elapsedMs: 3_600_000 }];
     const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abc", text: "Pay the invoice", needsYouToday: "it is due" };
     const line = composeHourly(hourly({ running, changes: [capture] }))!.firstLine;
-    expect(line).toBe("1 item was captured, and one of the captures needs you today.");
+    expect(line).toBe("1 todo was captured, and one of the captures needs you today.");
     expect(line).not.toContain(title);
   });
 
@@ -948,7 +948,7 @@ describe("composeHourly", () => {
     expect(message).not.toBeNull();
     expect(message?.lines).toEqual([]);
     expect(message?.firstLine).toBe(
-      "<https://www.tom.quest/runs?session=k97a|Retire the superseded CMT code paths> has been working on its own for 2h15m, and 3 items were captured.",
+      "<https://www.tom.quest/runs?session=k97a|Retire the superseded CMT code paths> has been working on its own for 2h15m, and 3 todos were captured.",
     );
   });
 
@@ -963,7 +963,7 @@ describe("composeHourly", () => {
       }),
     );
     expect(message?.firstLine).toBe(
-      `Two items moved, <${itemUrl("t1")}|Retire the superseded CMT code paths> among them, and nothing else changed.`,
+      `Two todos moved, <${itemUrl("t1")}|Retire the superseded CMT code paths> among them, and nothing else changed.`,
     );
     expect(message?.firstLine).not.toContain("batch");
   });
@@ -1005,6 +1005,57 @@ describe("composeHourly", () => {
       }),
     );
     expect(message?.firstLine).toBe("1 finished since 13:00.");
+  });
+});
+
+// ── The word for a todo ─────────────────────────────────────────────────────
+// tts/spec.md §12.1: "'Item' is not a TTS word for this; a todo is a todo."
+// The line role "item" and the link's ?item= parameter are the code's names
+// and are never printed as words, so the check reads the rendered text with
+// every link target removed.
+describe("the word for a todo", () => {
+  const ITEM = /\bitems?\b/i;
+  const words = (text: string) => text.replace(/<[^|>]*\|/g, "<");
+
+  it("is todo, never item, in every sentence of the digest", () => {
+    const facts = sept9({
+      readyBeyond: 12,
+      needsYou: [
+        { todoId: "ph7fqh2j", statement: "Run the first Friday triage session", why: "the agenda is due" },
+        { todoId: "abc", statement: "Pay the lab deposit invoice", why: "the invoice is due tomorrow" },
+      ],
+      overnightByTodo: [
+        { todoId: "ph7crit", statement: "Walk the research critical path", sessionId: "k1", finished: 4, running: false },
+        { todoId: null, statement: "Work on no todo", sessionId: "k3", finished: 5, running: false },
+      ],
+    });
+    const message = composeToday(facts, { canReply: false });
+    const text = words(renderSlack(message));
+    expect(text).toContain("todos need you today");
+    expect(text).toContain("sessions on no todo ended");
+    expect(text).toContain("worked on these todos");
+    expect(text).not.toMatch(ITEM);
+  });
+
+  it("is todo, never item, in every clause of the hourly line", () => {
+    const capture = { kind: "captured" as const, at: 1, detail: null, link: null };
+    const message = composeHourly(
+      hourly({
+        todosWorked: [
+          { todoId: "t1", statement: "Retire the superseded CMT code paths", sessions: 1 },
+          { todoId: "t2", statement: "Answer the registrar", sessions: 2 },
+        ],
+        changes: [
+          { ...capture, text: "one" },
+          { ...capture, text: "two" },
+          { kind: "done", at: 3, text: "three", detail: null, link: null },
+        ],
+      }),
+    );
+    const text = words(renderSlack(message as Message));
+    expect(text).toContain("todos moved");
+    expect(text).toContain("todos were captured");
+    expect(text).not.toMatch(ITEM);
   });
 });
 
@@ -1149,15 +1200,15 @@ describe("the facts block", () => {
         sept9({
           overnightByTodo: [
             { todoId: "ph7crit", statement: "Walk the research critical path", sessionId: "k1", finished: 2, running: true },
-            { todoId: null, statement: "Work on no item", sessionId: "k9", finished: 5, running: false },
+            { todoId: null, statement: "Work on no todo", sessionId: "k9", finished: 5, running: false },
           ],
         }),
         { canReply: false },
       ),
     );
-    expect(text).toContain("Overnight, the box's sessions worked on these items.");
+    expect(text).toContain("Overnight, the box's sessions worked on these todos.");
     expect(text).toContain(`<${itemUrl("ph7crit")}|Walk the research critical path: 2 sessions on it ended and one is still running.>`);
-    expect(text).toContain(`<${sessionUrl("k9")}|5 sessions on no item ended.>`);
+    expect(text).toContain(`<${sessionUrl("k9")}|5 sessions on no todo ended.>`);
     expect(text).not.toContain("tab=batches");
     expect(text).not.toContain("The old batch");
     expect(text.toLowerCase()).not.toContain("batch");
@@ -1185,7 +1236,7 @@ describe("verifyDraft", () => {
       },
       {
         role: "item",
-        text: "667 other items are ready, and not one of them is dated.",
+        text: "667 other todos are ready, and not one of them is dated.",
         url: TAB_EVERYTHING,
         sources: ["ready:beyond"],
       },
@@ -1279,7 +1330,7 @@ describe("verifyDraft", () => {
       {
         role: "lead",
         section: "overnight",
-        text: "Overnight, the box's sessions worked on these items.",
+        text: "Overnight, the box's sessions worked on these todos.",
         sources: [],
       },
       {

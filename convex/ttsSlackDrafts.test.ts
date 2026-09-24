@@ -278,7 +278,7 @@ describe("the morning message's writer", () => {
         lines: [
           {
             role: "item",
-            text: "667 other items are ready, and not one of them is dated.",
+            text: "667 other todos are ready, and not one of them is dated.",
             url: TAB_EVERYTHING,
             sources: ["today:count"],
           },

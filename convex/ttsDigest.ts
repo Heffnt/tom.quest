@@ -56,7 +56,7 @@ import { redactSecrets } from "../shared/redact.mjs";
 //
 // The runs, in this order; each omitted when empty except the first:
 //   1. today — dated or late, oldest date first, each line naming the first
-//      move, and one sentence for how many other items are ready
+//      move, and one sentence for how many other todos are ready
 //   2. the objection list — what the delegate decided while he was asleep,
 //      numbered in printed order; silence means it stands
 //   3. the calendar — his day, WITH EVERY PRIVATE FEED'S ROWS DROPPED
@@ -501,7 +501,7 @@ export async function gatherTodayFacts(
     if (row === undefined) {
       row = {
         todoId: todo === null ? null : (todo._id as string),
-        statement: todo?.statement ?? "Work on no item",
+        statement: todo?.statement ?? "Work on no todo",
         sessionId: null,
         finished: 0,
         running: false,
