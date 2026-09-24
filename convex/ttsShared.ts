@@ -114,16 +114,15 @@ export function isChangeSubject(externalId: string): boolean {
   return /^pr-\d+$/.test(externalId) || /^sha-[0-9a-f]{7,40}$/i.test(externalId);
 }
 
-// <vocabulary generated version=6179aafd4b1d262a — scripts/vocabulary.mjs; do not edit>
+// <vocabulary generated version=41b2adf5de63f8bc — scripts/vocabulary.mjs; do not edit>
 export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
-- batch — A batch is a set of todos that share one purpose and holds how they get completed. It is its own row, not a todo.
 - task — A task is work an agent or Tom performs.
-- goal — A goal is a checkable condition about the world that a batch is for. It is done when its statement is true.
-- needs — Needs are the ids a todo or a batch cannot proceed without. They are the only ordering mechanism in TTS, at both levels.
+- goal — A goal is a checkable condition about the world. It is done when its statement is true.
+- needs — Needs are the ids a todo cannot proceed without. They are the only ordering mechanism in TTS.
 - ready — Ready is computed, never stored. A todo is ready when it is prepared and active, its wake time has passed or is absent, and every id in its needs is done or archived, because a need set aside is not going to happen.
 - display text — Display text is the always-visible register: the short line always on screen, assuming Tom's background.
 - ground-up explanation — A ground-up explanation is the register behind the more on every line of display text: self-contained, every term defined at first use, one complete HTML document shown fullscreen in the form the writing standard specifies.`;
-export const VOCABULARY_VERSION = "6179aafd4b1d262a";
+export const VOCABULARY_VERSION = "41b2adf5de63f8bc";
 /** Every word in the vocabulary, names only — the definitions live in
  *  WikiTom tts/vocabulary.json and `tts search define` answers from them. */
 export const VOCABULARY_TERMS: readonly string[] = [
@@ -135,7 +134,6 @@ export const VOCABULARY_TERMS: readonly string[] = [
   "#tts-today",
   "actor",
   "area page",
-  "batch",
   "blast radius",
   "block",
   "calendar mirror",
@@ -224,7 +222,7 @@ export const VOCABULARY_TERMS: readonly string[] = [
   "WikiTom",
   "worker",
 ];
-/** The graph's closed node kinds, from worker/jobs/graph.mjs NODE_KINDS. */
+/** The graph's closed node kinds, from shared/graph.mjs NODE_KINDS. */
 export const GRAPH_NODE_KINDS: readonly string[] = [
   "area",
   "evidence",
@@ -243,7 +241,7 @@ export const GRAPH_NODE_KINDS: readonly string[] = [
   "term",
   "todo",
 ];
-/** The graph's closed edge kinds, from worker/jobs/graph.mjs EDGE_KINDS. */
+/** The graph's closed edge kinds, from shared/graph.mjs EDGE_KINDS. */
 export const GRAPH_EDGE_KINDS: readonly string[] = [
   "applies-to",
   "continues",

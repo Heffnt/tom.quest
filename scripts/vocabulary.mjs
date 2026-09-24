@@ -10,7 +10,7 @@
 // channels, each with where it is defined and what defines it.
 //
 // It also renders two derived views: the generated block in
-// `convex/ttsShared.ts`, whose `TTS_CLOSED_VOCABULARY` is the seven prompt
+// `convex/ttsShared.ts`, whose `TTS_CLOSED_VOCABULARY` is the six prompt
 // words rendered from their §12.1 entries, and the map with its restating
 // bullets regenerated, returned as a unified diff against Tom's map. Under
 // MAP_BLOCKS = "candidate" that diff is a proposal carried in the result (the
@@ -33,7 +33,7 @@
 //     files the learning step commits.
 //
 // WHAT THIS IS NOT. It is not where a term is defined: §12.1 is (AUTHORITY
-// below), and that includes the seven words a worker's prompt carries — the
+// below), and that includes the six words a worker's prompt carries — the
 // prompt renders them from the §12.1 entries the nightly posts to the record
 // (convex/vocabulary.ts), and `TTS_CLOSED_VOCABULARY` is the same rendering
 // kept as the fallback. It is not loaded into any prompt: this file carries the
@@ -140,7 +140,7 @@ export const AGENT_RULES_PATH = "model-of-tom/agent-rules.md";
  *  line endings. */
 export const AGENT_RULES_THRESHOLD_LF_BYTES = 7_000;
 
-/** The seven words `TTS_CLOSED_VOCABULARY` carries; their one list is in
+/** The six words `TTS_CLOSED_VOCABULARY` carries; their one list is in
  *  scripts/closed-vocabulary.mjs beside the renderer that reads it. */
 export { PROMPT_TERMS };
 
@@ -333,7 +333,7 @@ function parseTermSection(specText, heading, fallbackSection) {
     }
     // A word bolded INSIDE a definition and given its own parenthetical gloss is
     // its own entry: `task` and `goal` are fixed nowhere else in §12.1, and a
-    // parser that read only the bullet's own name would leave two of the seven
+    // parser that read only the bullet's own name would leave two of the six
     // words the prompt constant carries undefined.
     for (const nested of definition.matchAll(/\*\*([^*]+)\*\* \(([^()]*)\)/g)) {
       const name = stripName(nested[1]);
@@ -439,7 +439,6 @@ export function parseTerms(specText) {
 // nothing in either file names the term. D2 asserts every entry still resolves
 // to a real symbol, so a rename breaks the build rather than the mapping.
 const TERM_CODE_SYMBOLS = Object.freeze({
-  batch: "convex/schema.ts:batches",
   todo: "convex/schema.ts:dtsTodos",
   ruling: "convex/schema.ts:dtsRulings",
   run: "convex/schema.ts:runs",
@@ -997,7 +996,7 @@ function closedVocabularyLiteral(sharedText) {
 
 /**
  * The `TTS_CLOSED_VOCABULARY` statement rendered from the spec: the opening
- * line the constant already carries, then the seven §12.1 definitions through
+ * line the constant already carries, then the six §12.1 definitions through
  * the one renderer. A prompt word §12.1 does not define THROWS, naming it —
  * the prompt would otherwise use a word nothing defines.
  */
@@ -1011,7 +1010,7 @@ function renderClosedVocabularyStatement(literalBody, terms) {
     closedVocabularyOpening(literalBody),
     terms.filter((entry) => entry.kind !== "refused"),
   );
-  if (rendered === null) fail("the seven prompt terms did not render from §12.1 — one has an empty definition");
+  if (rendered === null) fail("the six prompt terms did not render from §12.1 — one has an empty definition");
   // A template literal: a backslash or `${` in a definition would be read as
   // an escape or an interpolation. The renderer has already removed backticks.
   const escaped = rendered.replace(/\\/g, "\\\\").replace(/\$\{/g, "\\${");
@@ -1301,7 +1300,7 @@ export function unifiedDiff(beforeText, afterText, beforeName, afterName) {
  * the graph's two closed kind lists.
  *
  * THE CONSTANT IS RENDERED FROM §12.1. `statement` is what
- * renderClosedVocabularyStatement made of the seven entries, so the block the
+ * renderClosedVocabularyStatement made of the six entries, so the block the
  * generator writes says what the spec says. The prompt does not read this
  * constant while the record holds a posted vocabulary: convex/vocabulary.ts
  * renders the same block from the posted entries at read time, and this is the
@@ -1470,7 +1469,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     );
   }
 
-  // ── The prompt's seven words ──────────────────────────────────────────────
+  // ── The prompt's six words ──────────────────────────────────────────────
   // THERE IS NO D1 ANY MORE, and there was: it compared each of the seven
   // prompt words as §12.1 states it with the sentence TTS_CLOSED_VOCABULARY
   // spent on it, and reported the seven that differed every night. Tom ruled

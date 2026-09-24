@@ -1,6 +1,6 @@
 // THE CLOSED VOCABULARY'S ONE RENDERER.
 //
-// The seven words a worker's prompt carries are defined once, in WikiTom
+// The six words a worker's prompt carries are defined once, in WikiTom
 // `tts/spec.md` §12.1 (Tom, 2026-09-24: one wording, in the spec, with the
 // prompt constant rendered from it). This file turns those entries into the
 // vocabulary block a prompt carries, and it is the only thing that does:
@@ -19,11 +19,10 @@
 // convex/ttsShared.ts, the one place scripts/check-vocabulary.mjs check 3
 // allows it, and both callers pass it in as the first line of that constant.
 
-/** The seven words the prompt carries, in the order it carries them. They are
- *  the seven a worker acts on WITHOUT being able to stop and ask; every other
+/** The six words the prompt carries, in the order it carries them. They are
+ *  the six a worker acts on WITHOUT being able to stop and ask; every other
  *  word is answered by `tts search define`, which costs no prompt bytes. */
 export const PROMPT_TERMS = Object.freeze([
-  "batch",
   "task",
   "goal",
   "needs",
@@ -58,9 +57,9 @@ export function closedVocabularyOpening(text) {
  * entry it renders (`- **word** — definition`). The word is named at the start
  * of its bullet because a reader of the prompt looks a word up by its name.
  *
- * NULL, NOT A SHORTER BLOCK, when any of the seven is missing or empty. A
+ * NULL, NOT A SHORTER BLOCK, when any of the six is missing or empty. A
  * block that silently lacks a word is a prompt that uses the word undefined;
- * a null sends the caller to its fallback, which carries all seven.
+ * a null sends the caller to its fallback, which carries all six.
  */
 export function renderClosedVocabulary(opening, terms) {
   const byName = new Map();
