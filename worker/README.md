@@ -9,7 +9,7 @@ each; `setup.sh` writes exactly this list into `/etc/cron.d/tts`:
 3. **poll-canvas** (every 30 min) — syncs dated assignments as todos and captures action-implying announcements; see "The pollers".
 4. **poll-outlook** (no cron line yet) — the Outlook counterpart of poll-gmail, a skeleton until the `OUTLOOK_*` credential exists; see "The pollers".
 5. **apply-time-notes** (every 2 min) — turns each time note Tom wrote into concrete date and block changes.
-6. **plan-graphs** (every 30 min) — the planner: prepares every unprepared life todo, briefs every changed or revise-ruled code todo, then plans the graph inside every batch; see "The planner".
+6. **plan-graphs** (every 30 min) — the planner: prepares every unprepared life todo and briefs every changed or revise-ruled code todo; it forms no batches; see "The planner".
 7. **nightly** (4:00 a.m. New York) — copies the Convex record and the verified run manifest into WikiTom, runs the learning step, pushes, and posts the model-of-tom files back to Convex; see "The nightly job".
 8. **reingest-overflow** (hourly) — the session daemon's helper: finishes storing the transcript payloads the daemon could not (`worker/session-host/`).
 9. **weekly** (4:00 a.m. New York, Fridays) — gathers the week's facts from Convex, makes one model call, commits the agenda file to the WikiTom checkout, and opens the one `weekly` session (`worker/jobs/weekly.mjs`).
@@ -102,7 +102,7 @@ child cannot give (`worker/session-host/README.md`).
 
 ## The planner
 
-`plan-graphs.mjs` runs three passes on one half-hourly tick, under flock:
+`plan-graphs.mjs` runs two passes on one half-hourly tick, under flock:
 
 - **prepare** — every unprepared life todo (a `#dump` capture, an email or
   Canvas capture, a todo Tom ruled `revise` on) gets its brief, the smallest
@@ -112,9 +112,14 @@ child cannot give (`worker/session-host/README.md`).
   and is consumed once the re-prep lands. Nothing here posts to Slack — the
   capture posts its own threaded reply.
 - **brief** — see "The code-todo ruling loop".
-- **plan** — the graph inside every batch (goals, tasks, `needs` edges, the
-  needs between batches), exiting early on an unchanged input hash
-  (`/var/lib/tts/plan-input-hash`).
+
+A task inside a batch is still skipped by the prepare pass; a goal is not.
+The planner forms no batches: a third pass, which bound todos into batches and wrote the task graph
+inside each, was deleted on 2026-09-24 on Tom's ruling "I dont want to have
+batches at all anymore because I want to remove structure to allow agents to
+freely move toward completing all todos in the best way they (or the
+orchistrator) see fit." Its cursor file, `/var/lib/tts/plan-input-hash`, is no
+longer read or written.
 
 ## Evals
 
@@ -895,7 +900,7 @@ node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still missing
 node /opt/tts/apply-time-notes.mjs        # apply pending time notes now
-node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
+node /opt/tts/plan-graphs.mjs             # prepare and brief — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 node /opt/tts/runs/sweep.mjs --full       # recover every changed run file

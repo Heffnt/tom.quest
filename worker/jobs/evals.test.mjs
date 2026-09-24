@@ -1389,11 +1389,11 @@ describe("the deterministic checks", () => {
 
   it("fails a writing-standard breach before any judge sees it", async () => {
     const item = {
-      id: "batch-plan-1", job: "batch-plan", partition: "batch-plan/x", verdict: "approve",
-      input: { statement: "s", memberStatements: [], priorReviseSentence: null },
+      id: "prepare-1", job: "prepare", partition: "prepare/x", verdict: "approve",
+      input: { statement: "s", priorReviseSentence: null },
       output: { groundUpExplanation: "<!DOCTYPE html><html><head><style></style></head><body><h1>x</h1></body></html>" },
     };
-    const context = runContext({ modules: { "batch-plan": { graphPrompt: () => "A PROMPT" } } });
+    const context = runContext({ modules: { prepare: { preparePrompt: () => "A PROMPT" } } });
     const io = runIo(["pass"], [JSON.stringify({ groundUpExplanation: "a wall of markdown text" })]);
     const result = await runCase(item, context, io, { pr: true });
     expect(result.judged).toBe("fail");
@@ -1403,11 +1403,11 @@ describe("the deterministic checks", () => {
 
   it("lets a well-formed explanation through to the judge", async () => {
     const item = {
-      id: "batch-plan-2", job: "batch-plan", partition: "batch-plan/x", verdict: "approve",
-      input: { statement: "s", memberStatements: [], priorReviseSentence: null },
+      id: "prepare-2", job: "prepare", partition: "prepare/x", verdict: "approve",
+      input: { statement: "s", priorReviseSentence: null },
       output: { groundUpExplanation: "<!DOCTYPE html><html><head><style></style></head><body><h1>x</h1></body></html>" },
     };
-    const context = runContext({ modules: { "batch-plan": { graphPrompt: () => "A PROMPT" } } });
+    const context = runContext({ modules: { prepare: { preparePrompt: () => "A PROMPT" } } });
     const good = "<!DOCTYPE html><html><head><style>p{}</style></head><body><h1>The lock</h1><p>It is seized.</p></body></html>";
     const io = runIo(["pass"], [JSON.stringify({ groundUpExplanation: good })]);
     expect((await runCase(item, context, io, { pr: true })).judged).toBe("pass");

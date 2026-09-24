@@ -171,26 +171,9 @@ const RULES = [
   },
 ];
 
-// MAX_BRIEF_CHARS's one home is worker/jobs/tts-lib.mjs (the planner's input
-// bound). It is re-declared here, not imported, and that is a deliberate
-// exception to "one home" rather than a drift: this file is copied FLAT to
-// /opt/tts/check-writing-standard.mjs (worker/setup.sh step 7), and
-// worker/jobs/tts-lib.mjs is never copied anywhere a relative import from
-// that path could reach — only worker/jobs/markdown-sections.mjs and
-// worker/jobs/context-relevance.mjs land under /opt/tts/worker/jobs/, and
-// tts-lib.mjs is not one of them. `import ... from "../worker/jobs/tts-lib.mjs"`
-// would resolve in a checkout and throw ERR_MODULE_NOT_FOUND on the box.
-// Separately, even where it does resolve, tts-lib.mjs is not a clean import:
-// it runs a top-level dynamic `await import()` of a runs/registration.mjs
-// module and THROWS if that file is not found, a real side effect at module
-// load. setup.sh's own comment on this file's copy says its imports are node
-// builtins and the dependency-free checkin-rules.mjs copied beside it — that
-// invariant is why the box can run this rung with nothing installed but the
-// two copies, and a worker
-// import would break it even where the path resolved. If tts-lib.mjs is ever
-// copied whole to a location this file can reach without a side-effecting
-// import graph, re-derive this constant from it instead of maintaining the
-// duplicate; until then, keep this number equal to tts-lib.mjs's by hand.
+// The most characters a stored brief may have. This file is its one home: the
+// copy in worker/jobs/tts-lib.mjs bounded the planner's plan pass, and went
+// with it on 2026-09-24.
 const MAX_BRIEF_CHARS = 400;
 
 /** Approximate count of the sentences in `s`. Counts a `.`/`!`/`?` as a

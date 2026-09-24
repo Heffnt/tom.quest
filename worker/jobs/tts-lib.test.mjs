@@ -24,8 +24,6 @@ import {
   convexFetch,
   declined,
   declinedLine,
-  MAX_BRIEF_CHARS,
-  MAX_LIFE_PER_RUN,
   JSON_ONLY_ANSWER,
   NO_ID,
   reconcileVerdicts,
@@ -55,6 +53,9 @@ afterEach(() => {
 });
 
 describe("clip", () => {
+  // Any limit will do; 400 is the brief limit scripts/check-writing-standard.mjs holds.
+  const MAX_BRIEF_CHARS = 400;
+
   it("returns text shorter than the limit unchanged and unmarked", () => {
     expect(clip("a short brief", MAX_BRIEF_CHARS)).toBe("a short brief");
   });
@@ -82,15 +83,7 @@ describe("clip", () => {
   });
 
   it("honours a caller-supplied limit other than MAX_BRIEF_CHARS", () => {
-    // plan-graphs.mjs calls the same function with its preview limits.
     expect(clip("abcdef", 3)).toBe("abc…");
-  });
-});
-
-describe("planner input bounds", () => {
-  it("holds the values both planners were spelling separately", () => {
-    expect(MAX_LIFE_PER_RUN).toBe(80);
-    expect(MAX_BRIEF_CHARS).toBe(400);
   });
 });
 

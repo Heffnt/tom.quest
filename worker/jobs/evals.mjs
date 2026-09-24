@@ -571,40 +571,6 @@ export const JOBS = {
     // Needs a CMT checkout and read-only tools, like the real brief pass.
     opts: { cwd: "@cmt", maxTurns: 8 },
   },
-  // The planner writes for a whole run, not for one batch, so the context is
-  // the real one with every OTHER list empty: the batch under test is the only
-  // graph, and the run's revise sentence is the prior one, never the label.
-  "batch-plan": {
-    layers: ["write", "know"],
-    module: "worker/jobs/plan-graphs.mjs",
-    build: (item, layers, mod) => mod.graphPrompt({
-      writingStandard: layers.text,
-      vocabulary: "",
-      sessionRepos: [],
-      graphs: [{
-        id: item.subject?.batchId ?? item.id,
-        statement: item.input.statement,
-        tasks: (item.input.memberStatements ?? []).map((statement, index) => ({
-          id: `t${index}`, statement, actor: "agent", status: "active", needs: [],
-        })),
-      }],
-      graphsHeldBack: 0,
-      activeStatements: [item.input.statement],
-      candidates: [],
-      candidatesHeldBack: 0,
-      code: [],
-      archivedStatements: [],
-      repairs: [],
-      revises: item.input.priorReviseSentence === null
-        ? []
-        : [{ batchId: item.subject?.batchId ?? null, sentence: item.input.priorReviseSentence }],
-      notes: [],
-      recentRulings: [],
-    }),
-    parse: (answer) => extractJsonObject(answer),
-    fields: ["groundUpExplanation"],
-    opts: { maxTurns: 6 },
-  },
   // The mined explanations are not a job's output — they are what an agent
   // wrote to Tom in a session. The regeneration is the same act: the session
   // that agent was in, up to and including Tom's request, and the write and
