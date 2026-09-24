@@ -958,16 +958,23 @@ export const MODEL_OF_TOM_DIR = "model-of-tom";
 // Learning discovers the area pages in the work tree. Prelude assembly owns
 // their prompt representation and reads them from a commit instead.
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
-// The pages the step writes. The spec and everything else in the checkout is
-// refused by not being here.
-// agent-rules.md is how agents work — it changes by design round, not by a
-// night's turn — and schedule.md is written by the weekly job; neither is
-// here, on purpose.
+// The pages the step writes are every page directly under model-of-tom/ and
+// every area page, read from the checkout, so a page added to WikiTom is one
+// learning reads without a change here. The spec and everything else outside
+// model-of-tom/ is refused by the path test in isLearningFile.
+// These four are shown first, in this order; the rest follow by name.
 export const LEARNING_FILES_FIRST = [
   "model-of-tom/writing.md",
   "model-of-tom/priorities.md",
   "model-of-tom/ground.md",
   "model-of-tom/intent.md",
+];
+// The pages under model-of-tom/ the step never writes. agent-rules.md is how
+// agents work — it changes by design round, not by a night's turn — and
+// schedule.md is written by the weekly job.
+const LEARNING_FILES_EXCLUDED = [
+  "model-of-tom/agent-rules.md",
+  "model-of-tom/schedule.md",
 ];
 export const INTENT_FILE = "model-of-tom/intent.md";
 // The sections an agent never writes (ruling 13). Matched by heading,
@@ -1062,10 +1069,9 @@ export function withEvidenceCheck(dir, mutate) {
 }
 
 export function isLearningFile(rel) {
-  return (
-    LEARNING_FILES_FIRST.includes(rel) ||
-    /^model-of-tom\/areas\/[a-z0-9-]+\.md$/.test(String(rel))
-  );
+  const file = String(rel);
+  if (LEARNING_FILES_EXCLUDED.includes(file)) return false;
+  return /^model-of-tom\/(?:areas\/)?[a-z0-9-]+\.md$/.test(file);
 }
 
 /** The stable id of one change: the page, the section and the line it put
@@ -1693,9 +1699,16 @@ export function matchObjection(objection, rows) {
 /** The pages the step writes, as a Map of checkout-relative path → text. */
 export function readLearningPages(dir) {
   const pages = new Map();
-  for (const rel of LEARNING_FILES_FIRST) {
+  const top = path.join(dir, MODEL_OF_TOM_DIR);
+  const named = fs.existsSync(top)
+    ? fs.readdirSync(top).filter((n) => n.endsWith(".md")).sort().map((n) => `${MODEL_OF_TOM_DIR}/${n}`)
+    : [];
+  const ordered = [...LEARNING_FILES_FIRST, ...named.filter((rel) => !LEARNING_FILES_FIRST.includes(rel))];
+  for (const rel of ordered) {
     const abs = path.join(dir, rel);
-    if (fs.existsSync(abs)) pages.set(rel, fs.readFileSync(abs, "utf8"));
+    if (isLearningFile(rel) && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      pages.set(rel, fs.readFileSync(abs, "utf8"));
+    }
   }
   const areas = path.join(dir, MODEL_OF_TOM_AREAS_DIR);
   if (fs.existsSync(areas)) {
@@ -1785,7 +1798,7 @@ export function learningPrompt(input, pages, evidencePages, signals, day) {
       "",
       "RULES",
       '- A change is one line for one section of one page. "op" is "add" (a new line; "replaces": null), "replace" ("replaces" is one existing bullet of that section, verbatim — the new line supersedes it, because the pages describe what is, never what was), or "remove" (only on model-of-tom/ground.md under "Does not know", and only when the same night adds the same term to "Knows" or "Follows, without the details").',
-      '- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/ground.md, model-of-tom/intent.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never "Directions", never "Ideal state", never "Must not break" — those are Tom\'s own, and a change naming them is refused. Never the spec, never agent-rules.md, never schedule.md.',
+      `- Only these pages: ${[...pages.keys()].filter((file) => !file.startsWith(`${MODEL_OF_TOM_AREAS_DIR}/`)).join(", ")}, ${MODEL_OF_TOM_AREAS_DIR}/<area>.md.` + ' Only a section that exists on the page, named by its heading. Never "Directions", never "Ideal state", never "Must not break" — those are Tom\'s own, and a change naming them is refused. Never the spec, never agent-rules.md, never schedule.md.',
       '- model-of-tom/ground.md: what he knows and does not know. A change there names a "signal" from the GROUND SIGNALS list below and proposes exactly what that signal supports — a term he asked about goes under "Does not know" or narrows a line already there; a term he confirmed he knows, in his own words, goes under "Knows" or "Follows, without the details". His fluent use of a term is not confirmation, an agent\'s explanation of a term is not confirmation, and no line under "Knows" or "Follows, without the details" may rest on inference: each carries a "said" entry or it is refused.',
       '- model-of-tom/intent.md: what he wants to be true. A statement of his about what he wants goes in the section it belongs to with a "said" entry. Never the Directions section. A line whose evidence predates the file\'s "reviewed" date is his and changes only by his correction: propose a replacement for one only when tonight\'s input holds him correcting it.',
       '- Write to writing.md\'s own rules: present tense, one idea per line, imperative or second person, never "Tom wants" or "agents should", the mechanism plainly, no analogy, no evaluative word, one fixed term per concept, his words and the code\'s words only.',

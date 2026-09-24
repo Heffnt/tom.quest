@@ -46,6 +46,7 @@ import {
   goldenExportStep,
   indexManifests,
   isLearningFile,
+  readLearningPages,
   isTableFile,
   learningChangeId,
   learningEvidence,
@@ -1485,12 +1486,41 @@ describe("the learning step", () => {
     expect(applied).toHaveLength(1);
   });
 
+  // explainers.md was missing from a hand-kept list (2026-09-24): the pages
+  // are read from the directory, so a new page is never missed.
+  it("reads every page under model-of-tom/ but the two it never writes, the four first, then the rest by name", () => {
+    const dir = tempDir("nightly-pages-");
+    for (const rel of [
+      "writing.md", "priorities.md", "ground.md", "intent.md", "explainers.md", "zz-new-page.md",
+      "agent-rules.md", "schedule.md", "notes.txt", "evidence/writing.md", "areas/climbing.md",
+    ]) {
+      fs.mkdirSync(path.dirname(path.join(dir, "model-of-tom", rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, "model-of-tom", rel), `# ${rel}\n`);
+    }
+    const pages = readLearningPages(dir);
+    expect([...pages.keys()]).toEqual([
+      "model-of-tom/writing.md",
+      "model-of-tom/priorities.md",
+      "model-of-tom/ground.md",
+      "model-of-tom/intent.md",
+      "model-of-tom/explainers.md",
+      "model-of-tom/zz-new-page.md",
+      "model-of-tom/areas/climbing.md",
+    ]);
+    const { prompt } = learningPrompt(learningInput(), pages, new Map(), [], "2026-09-06");
+    expect(prompt).toContain(
+      "Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/ground.md, model-of-tom/intent.md, model-of-tom/explainers.md, model-of-tom/zz-new-page.md, model-of-tom/areas/<area>.md.",
+    );
+  });
+
   it("names the pages it writes, and the sections it never does", () => {
     expect(isLearningFile("model-of-tom/writing.md")).toBe(true);
     expect(isLearningFile("model-of-tom/priorities.md")).toBe(true);
     expect(isLearningFile("model-of-tom/ground.md")).toBe(true);
     expect(isLearningFile("model-of-tom/intent.md")).toBe(true);
+    expect(isLearningFile("model-of-tom/explainers.md")).toBe(true);
     expect(isLearningFile("model-of-tom/areas/health-and-food.md")).toBe(true);
+    expect(isLearningFile("model-of-tom/evidence/writing.md")).toBe(false);
     expect(isLearningFile("model-of-tom/schedule.md")).toBe(false);
     expect(isLearningFile("model-of-tom/agent-rules.md")).toBe(false);
     expect(isLearningFile("tts/spec.md")).toBe(false);
