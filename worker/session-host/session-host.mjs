@@ -554,7 +554,7 @@ function checkSecrets(env) {
 async function main() {
   const env = loadEnv();
   // Before anything is spawned: systemd loaded the whole env file into this
-  // process, the names below the /secrets marker included, and every child
+  // process, the names in the /secrets block included, and every child
   // inherits process.env. They leave it here (secret-mailbox.mjs dropNames).
   const delivered = mailboxNames();
   dropNames(process.env, delivered);

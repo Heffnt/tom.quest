@@ -6,7 +6,7 @@
 //
 // What must hold: a waiting value lands in the env file and is reported
 // taken; a failed write reports nothing, so the value stays waiting; no log
-// line ever carries a value; the names below the mailbox marker leave the
+// line ever carries a value; the names in the mailbox block leave the
 // daemon's environment before anything is spawned.
 
 import fs from "node:fs";

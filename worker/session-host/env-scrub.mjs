@@ -33,8 +33,8 @@
 // leaves it in, every other caller drops it too.
 //
 // Values Tom pastes on tom.quest/secrets are NOT on this list, and need not
-// be: the daemon writes each below a marker line in the env file and removes
-// every name below that marker from its own process.env at start
+// be: the daemon writes each into a marked block in the env file and removes
+// every name in that block from its own process.env at start
 // (secret-mailbox.mjs dropNames), so none is in the env this function copies.
 // A pasted name the file already held (a rotated GH_TOKEN) keeps its line
 // and so keeps whatever this list does with it.

@@ -634,10 +634,11 @@ renamed over it) and posts `POST /sessions/secrets/taken`, after which Convex
 deletes the value and keeps the name and the two dates. The page never shows a
 value. The journal line names the variable only.
 
-A name the file did not hold goes below the line
-`# tom.quest/secrets: names below this line are kept out of every agent's environment`.
-The daemon removes every name below it from its own environment when it
-starts, so no session, Codex run or runner step it launches inherits one. A
+A name the file did not hold goes into a block that opens with
+`# tom.quest/secrets: the names from here to the end line are kept out of every agent's environment`
+and closes with `# end of tom.quest/secrets`; a line appended by hand lands
+after the block and is treated as before. The daemon removes every name in
+the block from its own environment when it starts, so no session, Codex run or runner step it launches inherits one. A
 cron job reads the file at each start, so `loadEnv()` returns the value from
 the job's next run. A name the file already held keeps its line and its
 treatment (`env-scrub.mjs`); the daemon holds its old value until

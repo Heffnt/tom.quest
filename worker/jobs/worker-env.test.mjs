@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { MAILBOX_MARKER, graphVersion, loadEnv, mailboxNames, setEnvLine } from "./worker-env.mjs";
+import { MAILBOX_BEGIN, MAILBOX_END, graphVersion, loadEnv, mailboxNames, setEnvLine } from "./worker-env.mjs";
 
 const original = process.env.WIKITOM_DIR;
 const made = [];
@@ -106,7 +106,7 @@ describe("the published graph version", () => {
 // The session-host daemon writes each value Tom pastes on the /secrets page
 // through this. What must hold: the file is replaced whole (a reader never
 // sees half of it), it stays owner-only, a name has exactly one line, a name
-// already in the file keeps its place, and a new name lands below the marker
+// already in the file keeps its place, and a new name lands in the block
 // that keeps it out of every agent's environment.
 describe("setEnvLine", () => {
   const posix = process.platform !== "win32";
@@ -124,11 +124,11 @@ describe("setEnvLine", () => {
     while (made.length) fs.rmSync(made.pop(), { recursive: true, force: true });
   });
 
-  it("adds a new name below the marker, and reads back through loadEnv", () => {
+  it("adds a new name to the mailbox block, and reads back through loadEnv", () => {
     const file = envFile("CONVEX_SITE_URL=https://x.convex.site\nTTS_WORKER_KEY=k\n");
     expect(setEnvLine({ path: file, name: "HF_TOKEN", value: "hf_abc" })).toEqual({ placed: "added" });
     expect(fs.readFileSync(file, "utf8")).toBe(
-      `CONVEX_SITE_URL=https://x.convex.site\nTTS_WORKER_KEY=k\n\n${MAILBOX_MARKER}\nHF_TOKEN=hf_abc\n`,
+      `CONVEX_SITE_URL=https://x.convex.site\nTTS_WORKER_KEY=k\n\n${MAILBOX_BEGIN}\nHF_TOKEN=hf_abc\n${MAILBOX_END}\n`,
     );
     expect(loadEnv({ path: file }).HF_TOKEN).toBe("hf_abc");
     expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN"]);
@@ -140,11 +140,11 @@ describe("setEnvLine", () => {
     setEnvLine({ path: file, name: "HF_TOKEN", value: "new" });
     const text = fs.readFileSync(file, "utf8");
     expect(text.match(/^HF_TOKEN=/gm)).toHaveLength(1);
-    expect(text.split(MAILBOX_MARKER)).toHaveLength(2); // one marker
+    expect(text.split(MAILBOX_BEGIN)).toHaveLength(2); // one block
     expect(loadEnv({ path: file }).HF_TOKEN).toBe("new");
   });
 
-  it("replaces a name already above the marker in place, so its policy stays", () => {
+  it("replaces a name already outside the block in place, so its policy stays", () => {
     const file = envFile("# comment\nexport GH_TOKEN=old\nOTHER=1\nGH_TOKEN=dup\n");
     expect(setEnvLine({ path: file, name: "GH_TOKEN", value: "new" })).toEqual({ placed: "replaced" });
     expect(fs.readFileSync(file, "utf8")).toBe("# comment\nGH_TOKEN=new\nOTHER=1\n");
@@ -187,7 +187,18 @@ describe("setEnvLine", () => {
     expect(fs.readFileSync(file, "utf8")).toBe("A=1\n");
   });
 
-  it("finds no mailbox names in a file without the marker or with no file at all", () => {
+  it("puts a second name inside the block, and a line appended by hand after it stays outside", () => {
+    const file = envFile("A=1\n");
+    setEnvLine({ path: file, name: "HF_TOKEN", value: "v1" });
+    fs.appendFileSync(file, "OPENROUTER_API_KEY=by-hand\n");
+    setEnvLine({ path: file, name: "WANDB_API_KEY", value: "v2" });
+    expect(fs.readFileSync(file, "utf8")).toBe(
+      `A=1\n\n${MAILBOX_BEGIN}\nHF_TOKEN=v1\nWANDB_API_KEY=v2\n${MAILBOX_END}\nOPENROUTER_API_KEY=by-hand\n`,
+    );
+    expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN", "WANDB_API_KEY"]);
+  });
+
+  it("finds no mailbox names in a file without the block or with no file at all", () => {
     expect(mailboxNames({ path: envFile("A=1\n") })).toEqual([]);
     expect(mailboxNames({ path: envFile(null) })).toEqual([]);
   });

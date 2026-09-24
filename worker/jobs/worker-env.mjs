@@ -74,16 +74,19 @@ export function loadEnv({ path = ENV_PATH, require: required = [] } = {}) {
 //
 // WHERE A LINE GOES. A name the file already holds keeps its place and its
 // policy: its line is replaced, and whatever passed or scrubbed it before
-// still does. A name the file does not hold goes below MAILBOX_MARKER, and
-// every name below the marker is kept out of the daemon's own environment
-// (worker/session-host/secret-mailbox.mjs), so no agent it starts inherits
-// one. The process that needs such a variable reads it from this file by
-// name, through loadEnv.
+// still does. A name the file does not hold goes into the mailbox block,
+// between MAILBOX_BEGIN and MAILBOX_END, and every name in that block is kept
+// out of the daemon's own environment (worker/session-host/secret-mailbox.mjs),
+// so no agent it starts inherits one. The process that needs such a variable
+// reads it from this file by name, through loadEnv. The block has an end line
+// so that a line appended to the file by hand (`>> worker.env`) lands after
+// it and keeps the ordinary treatment.
 //
 // ATOMIC. The new file is written beside the old one under a temporary name,
 // mode 0600, flushed, then renamed over it, so a reader (a cron job starting,
 // systemd starting the daemon) sees the old file or the new one, never half.
-export const MAILBOX_MARKER = "# tom.quest/secrets: names below this line are kept out of every agent's environment";
+export const MAILBOX_BEGIN = "# tom.quest/secrets: the names from here to the end line are kept out of every agent's environment";
+export const MAILBOX_END = "# end of tom.quest/secrets";
 
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -97,7 +100,7 @@ function lineKey(rawLine) {
   return key;
 }
 
-/** The names below MAILBOX_MARKER in the env file; empty when there is no file or no marker. */
+/** The names in the env file's mailbox block; empty when there is no file or no block. */
 export function mailboxNames({ path = ENV_PATH } = {}) {
   let text;
   try {
@@ -106,15 +109,19 @@ export function mailboxNames({ path = ENV_PATH } = {}) {
     return [];
   }
   const lines = text.split("\n");
-  const at = lines.indexOf(MAILBOX_MARKER);
-  if (at === -1) return [];
-  return lines.slice(at + 1).map(lineKey).filter((key) => key !== null);
+  const begin = lines.indexOf(MAILBOX_BEGIN);
+  if (begin === -1) return [];
+  const end = lines.indexOf(MAILBOX_END, begin + 1);
+  return lines
+    .slice(begin + 1, end === -1 ? lines.length : end)
+    .map(lineKey)
+    .filter((key) => key !== null);
 }
 
 /**
  * Write NAME=value into the env file, replacing the name's line if it has one
  * (and dropping any later duplicate, since the last line wins on read) or
- * appending it below MAILBOX_MARKER. Throws on a malformed name or a value
+ * adding it to the mailbox block. Throws on a malformed name or a value
  * with a line break; a thrown message names the variable, never the value.
  */
 export function setEnvLine({ path = ENV_PATH, name, value }) {
@@ -139,11 +146,16 @@ export function setEnvLine({ path = ENV_PATH, name, value }) {
     }
   }
   if (!placed) {
-    if (!out.includes(MAILBOX_MARKER)) {
+    const begin = out.indexOf(MAILBOX_BEGIN);
+    const end = begin === -1 ? -1 : out.indexOf(MAILBOX_END, begin + 1);
+    if (begin === -1) {
       if (out.length > 0 && out[out.length - 1].trim() !== "") out.push("");
-      out.push(MAILBOX_MARKER);
+      out.push(MAILBOX_BEGIN, line, MAILBOX_END);
+    } else if (end === -1) {
+      out.push(line, MAILBOX_END);
+    } else {
+      out.splice(end, 0, line);
     }
-    out.push(line);
   }
   const tmp = `${path}.tmp-${process.pid}`;
   fs.rmSync(tmp, { force: true });

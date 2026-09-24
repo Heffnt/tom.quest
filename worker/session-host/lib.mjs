@@ -23,7 +23,7 @@ export { ENV_PATH };
 // session.mjs because the symlink above is the daemon's ONE reach into
 // worker/jobs, and every caller already has this file.
 export { graphVersion } from "./worker-env.mjs";
-// The env file's one writer and the names it put below the mailbox marker,
+// The env file's one writer and the names in its mailbox block,
 // for the /secrets delivery in session-host.mjs (secret-mailbox.mjs).
 export { mailboxNames, setEnvLine } from "./worker-env.mjs";
 // The credential filter every persisted row passes through, applied in
