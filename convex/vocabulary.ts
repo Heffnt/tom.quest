@@ -15,7 +15,7 @@
 //
 // The gate is `requireTom`, like every other surface of his.
 //
-// THE PROMPT READS THE SAME ROW. The seven words a worker's prompt carries are
+// THE PROMPT READS THE SAME ROW. The six words a worker's prompt carries are
 // defined once, in the spec's §12.1 (Tom, 2026-09-24: one wording, in the spec,
 // with the prompt constant rendered from it). The night posts those entries
 // here with every other word, and `closedVocabularyFrom` below renders the
@@ -134,7 +134,7 @@ export function closedVocabularyFrom(
 ): string {
   if (row === null) return TTS_CLOSED_VOCABULARY;
   // A posted term with kind "refused" is a word §12.1 declines, never one of
-  // the seven, so the rows go to the renderer as they are.
+  // the six, so the rows go to the renderer as they are.
   return renderClosedVocabulary(closedVocabularyOpening(TTS_CLOSED_VOCABULARY), row.terms)
     ?? TTS_CLOSED_VOCABULARY;
 }

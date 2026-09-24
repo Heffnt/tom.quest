@@ -11,10 +11,10 @@ const KEY = { "X-TTS-Key": "s3cret", "Content-Type": "application/json" };
 const COMMIT = "b".repeat(40);
 
 const TERM = {
-  term: "batch",
+  term: "task",
   kind: "concept",
-  definition: "a set of todos that share one purpose",
-  specSection: "5.4",
+  definition: "work an agent or Tom performs",
+  specSection: "5.1",
   codeSymbol: null,
   related: ["todo"],
   refusedFor: null,
@@ -22,11 +22,11 @@ const TERM = {
 
 const DISAGREEMENT = {
   code: "D1",
-  subject: 'term "batch"',
+  subject: 'term "task"',
   fix: "one wording",
   rows: [
-    { label: "spec", where: "WikiTom tts/spec.md §5.4 line 216", text: "a set of todos that share one purpose" },
-    { label: "code", where: "tom.quest convex/ttsShared.ts line 84", text: "A BATCH holds how a set of todos gets completed." },
+    { label: "spec", where: "WikiTom tts/spec.md §5.1 line 76", text: "work an agent or Tom performs" },
+    { label: "code", where: "tom.quest convex/ttsShared.ts line 84", text: "A TASK is work someone does." },
   ],
 };
 
@@ -73,10 +73,10 @@ describe("POST /tts/vocabulary", () => {
     const row = await (await asTom(t)).query(api.vocabulary.current, {});
     expect(row).toMatchObject({ version: "db209350fc7df597", wrote: false });
     expect(row!.terms[0]).toEqual({
-      term: "batch",
+      term: "task",
       kind: "concept",
-      definition: "a set of todos that share one purpose",
-      specSection: "5.4",
+      definition: "work an agent or Tom performs",
+      specSection: "5.1",
       related: ["todo"],
     });
     expect(row!.disagreements[0].rows).toHaveLength(2);
@@ -140,12 +140,12 @@ describe("vocabulary.current", () => {
   });
 });
 
-// THE PROMPT'S SEVEN WORDS READ THE SAME ROW THE PAGE DOES: the §12.1 entries
+// THE PROMPT'S SIX WORDS READ THE SAME ROW THE PAGE DOES: the §12.1 entries
 // the night posted, rendered at read time; the constant only when no night has
-// posted, or a posted row lacks one of the seven.
+// posted, or a posted row lacks one of the six.
 describe("the prompt's vocabulary block", () => {
   const OPENING = TTS_CLOSED_VOCABULARY.split("\n")[0];
-  const SEVEN = PROMPT_TERMS.map((term: string) => ({
+  const SIX = PROMPT_TERMS.map((term: string) => ({
     ...TERM,
     term,
     definition: `The posted ${term} entry (§12).`,
@@ -156,17 +156,17 @@ describe("the prompt's vocabulary block", () => {
     expect(closedVocabularyFrom(null)).toBe(TTS_CLOSED_VOCABULARY);
   });
 
-  it("is the constant when the row lacks one of the seven", () => {
-    expect(closedVocabularyFrom({ terms: SEVEN.slice(1) })).toBe(TTS_CLOSED_VOCABULARY);
+  it("is the constant when the row lacks one of the six", () => {
+    expect(closedVocabularyFrom({ terms: SIX.slice(1) })).toBe(TTS_CLOSED_VOCABULARY);
   });
 
   it("renders from the posted entries once a night has posted them", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
     expect(await t.query(internal.vocabulary.internalClosedVocabulary, {})).toBe(TTS_CLOSED_VOCABULARY);
-    expect((await post(t, { terms: [TERM, ...SEVEN.slice(1)] })).status).toBe(200);
-    // TERM is the batch entry the other tests post, so the row carries all seven.
-    const expected = RENDERED.replace("- batch — The posted batch entry.", `- batch — ${TERM.definition}`);
+    expect((await post(t, { terms: [TERM, ...SIX.slice(1)] })).status).toBe(200);
+    // TERM is the task entry the other tests post, so the row carries all six.
+    const expected = RENDERED.replace("- task — The posted task entry.", `- task — ${TERM.definition}`);
     expect(await t.query(internal.vocabulary.internalClosedVocabulary, {})).toBe(expected);
     vi.unstubAllEnvs();
   });
