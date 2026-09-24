@@ -23,8 +23,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { execFile as execFileCb } from "node:child_process";
-import { promisify } from "node:util";
 import {
   loadEnv,
   log,
@@ -73,8 +71,6 @@ function readActiveAccount() {
     return undefined; // not a symlink / not set up — simply don't report
   }
 }
-
-const execFile = promisify(execFileCb);
 
 // ── Codex on the box (ratified 2026-09-04) ───────────────────────────────────
 // The binary, the spawn shim and the per-turn flags come from codex-bin.mjs
@@ -378,38 +374,22 @@ function fableAvailabilityReport() {
   };
 }
 
-// ── usage-limit account auto-switch (ratified 2026-08-28) ────────────────────
-// A session that hits a usage/rate limit signals here; the daemon flips the
-// active symlink to the OTHER Max account via tts-account so the fleet (and
-// Tom) keep working, at most once per 3h (in-memory throttle — a restart
-// resets it, harmlessly). Tradeoff, stated: NEW queries run under the new
-// account; existing sdkSessionIds live in the old account's config dir, so a
-// resume after a switch starts fresh context — the restart-adoption rules
-// already record that honestly in the transcript.
-const SWITCH_THROTTLE_MS = 3 * 60 * 60 * 1000;
-let lastAccountSwitchAt = 0;
+// ── usage limits, recorded ───────────────────────────────────────────────────
+// A Claude session that hits a usage limit other than a Fable refusal (which
+// session.mjs turns into the model ceiling) is recorded here and nothing
+// else: the latest one rides every heartbeat as `usageLimit`, and the session
+// itself waits (interactive) or ends errored (autonomous) through its own
+// turn-failure path. The box stays on the active account. Tom's ruling,
+// 2026-09-24, verbatim: "lets keep the box on my wpi claude account even
+// though it is out of fable usage and have it max out at opus for now. even
+// for delegate. I want to save my usage for my heffnt account for personal
+// use." The account switch that stood here spent the other account on any
+// limit, so it is gone; `tts-account use` is Tom's to run by hand.
+let lastUsageLimit; // { at, text, sessionId } — the latest, kept until replaced
 
-async function maybeSwitchAccount(signalText, session) {
-  const now = Date.now();
-  if (now - lastAccountSwitchAt < SWITCH_THROTTLE_MS) return;
-  const active = readActiveAccount();
-  if (active !== "gmail" && active !== "wpi") {
-    log(`usage limit signaled but active account unknown (${active}) — not switching`);
-    return;
-  }
-  lastAccountSwitchAt = now;
-  const other = active === "gmail" ? "wpi" : "gmail";
-  try {
-    await execFile("/usr/local/bin/tts-account", ["use", other]);
-    log(`usage limit detected — switched account ${active} -> ${other} (${signalText})`);
-    session?.finalizeRow("system", {
-      text: `usage limit detected — switched account ${active} -> ${other}`,
-    });
-    session?.requestFlush(true);
-  } catch (err) {
-    lastAccountSwitchAt = 0; // the switch didn't happen; don't throttle a retry
-    log(`account switch ${active} -> ${other} FAILED:`, String(err?.message ?? err));
-  }
+function recordUsageLimit(text, session) {
+  lastUsageLimit = { at: Date.now(), text: String(text).slice(0, 200), sessionId: session.id };
+  log(`session ${session.id}: usage limit (${lastUsageLimit.text}); recorded on the heartbeat, account unchanged`);
 }
 
 // Fail a session outright — the one class of ending with nothing to resume
@@ -446,7 +426,7 @@ function claimSession(env, sessions, row) {
     // The reopen generation this Session speaks for: stamped into every ingest
     // so the server can tell a live flush from a pre-reopen replay.
     reopenEpoch: row.reopenEpoch ?? 0,
-    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
+    onUsageSignal: recordUsageLimit,
   });
   sessions.set(row.id, s);
   void (async () => {
@@ -512,7 +492,7 @@ function adoptSession(env, sessions, row) {
     model: row.model,
     forkedFrom: row.forkedFrom,
     reopenEpoch: row.reopenEpoch ?? 0,
-    onUsageSignal: (text, session) => void maybeSwitchAccount(text, session),
+    onUsageSignal: recordUsageLimit,
   });
   sessions.set(row.id, s);
   s.sdkSessionId = row.sdkSessionId;
@@ -646,6 +626,9 @@ async function main() {
         // that show whether the ceiling is in force; absent while none is
         // recorded.
         ...(fableAvailability !== undefined ? { fableAvailability } : {}),
+        // The latest usage limit a Claude session hit that was not a Fable
+        // refusal (recordUsageLimit); absent until one happens.
+        ...(lastUsageLimit !== undefined ? { usageLimit: lastUsageLimit } : {}),
         ...(lastIngestError !== undefined ? { lastIngestError } : {}),
       });
       pollAttempt = 0;

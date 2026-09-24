@@ -15,6 +15,7 @@ import {
   RUNNER_CEILING,
   SESSION_MODEL,
   FABLE_AVAILABILITY,
+  USAGE_LIMIT_REPORT,
 } from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
@@ -1812,6 +1813,9 @@ export default defineSchema({
     // (ttsShared FABLE_AVAILABILITY): "Fable unavailable since <since>, last
     // checked <checkedAt>" while the model ceiling is in force.
     fableAvailability: v.optional(FABLE_AVAILABILITY),
+    // The latest usage limit a Claude session hit that was not a Fable
+    // refusal (ttsShared USAGE_LIMIT_REPORT), from the daemon's heartbeat.
+    usageLimit: v.optional(USAGE_LIMIT_REPORT),
   }),
 
   // Autonomous-fleet admission config (P3, ratified 2026-08-28). Singleton via

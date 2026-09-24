@@ -55,8 +55,8 @@ describe("unknown model name degrades to opus (finding 1)", () => {
 
   // THE FABLE RUNG. A fable session refused for a limit marks Fable
   // unavailable and retires its query at the turn boundary, ahead of the
-  // account switch, which it does not reach.
-  it("a fable session refused for a limit marks Fable unavailable instead of switching accounts", () => {
+  // usage-limit record, which it does not reach.
+  it("a fable session refused for a limit marks Fable unavailable instead of recording a usage limit", () => {
     const signal = between(sessionSource, "  #maybeUsageSignal(text) {", "\n  }\n");
     expect(signal).toMatch(/if \(aboveCeiling\(this\.model\) && this\.fableState\(\)\.available !== false\)/);
     expect(signal).toMatch(/markFableUnavailable\(this\.stateDir\(\), \{ reason: line \}\);[\s\S]*?this\.modelSwitchPending = true;[\s\S]*?return;/);
@@ -70,6 +70,15 @@ describe("unknown model name degrades to opus (finding 1)", () => {
     expect(probe).toMatch(/void \(async \(\) => \{[\s\S]*?probeFable\(/);
     expect(hostSource).toMatch(/refreshFableProbe\(\);/);
     expect(hostSource).toMatch(/\.\.\.\(fableAvailability !== undefined \? \{ fableAvailability \} : \{\}\)/);
+  });
+
+  // Tom's ruling of 2026-09-24 keeps the box on the wpi account: a usage limit
+  // is recorded on the heartbeat, and the daemon never switches the account.
+  it("records a usage limit on the heartbeat and never switches the account", () => {
+    expect(hostSource).not.toMatch(/usr\/local\/bin\/tts-account|\["use", /);
+    expect(hostSource).not.toMatch(/maybeSwitchAccount|lastAccountSwitchAt|SWITCH_THROTTLE_MS/);
+    expect(hostSource.match(/onUsageSignal: recordUsageLimit,/g)).toHaveLength(2);
+    expect(hostSource).toMatch(/\.\.\.\(lastUsageLimit !== undefined \? \{ usageLimit: lastUsageLimit \} : \{\}\)/);
   });
 
   it("the poll walk fences every row in try/catch around planRow", () => {
@@ -112,7 +121,7 @@ describe("fork transcript timing (finding 2)", () => {
 // Finding 3: the usage read never holds the poll loop, keeps the last
 // successful reading, and backs off after failures.
 describe("codex usage read (finding 3)", () => {
-  const refresh = between(hostSource, "function refreshCodexUsage() {", "// ── usage-limit account auto-switch");
+  const refresh = between(hostSource, "function refreshCodexUsage() {", "// ── the Fable probe");
 
   it("is fire-and-forget with an in-flight guard", () => {
     expect(hostSource).not.toMatch(/async function refreshCodexUsage/);

@@ -15,10 +15,10 @@ Files:
   loadavg, free RAM, live-session count — the auto-session scheduler's
   admission signal, and the Codex account usage described below), claim new
   sessions, adopt survivors after a restart, reap terminal ones, adaptive
-  cadence (1s hot / 5s warm / 30s idle), the Codex warm-up at start, and the
-  usage-limit account auto-switch (a usage/rate-limit signal from a CLAUDE
-  session flips the tts-account symlink to the other Max account, at most
-  once per 3h).
+  cadence (1s hot / 5s warm / 30s idle), the Codex warm-up at start, the
+  hourly Fable probe while Fable is unavailable (`worker/runs/models.mjs`),
+  and the usage-limit record (the latest usage limit a CLAUDE session hit,
+  sent on the heartbeat; the account is never switched).
 - `codex-query.mjs` — the Codex runner: `codex exec --json` wrapped in the
   Agent SDK's query() surface, so `session.mjs` drives both families with one
   body of code. See "Codex sessions" below.
@@ -313,9 +313,9 @@ judges staleness from `readAt` (`CODEX_USAGE_STALE_MS` in ttsShared, 15
 minutes) and treats stale or absent as unknown, and unknown admits. Absent
 only while no read has ever succeeded (Codex not installed, or every read
 failed — logged once, then retried with doubling backoff capped at 30
-minutes). The Claude account auto-switch fires
-for family `claude` only — a Codex cap has no second account to switch to;
-the scheduler's breaker reads it from the error text keyed on family.
+minutes). The usage-limit record is kept
+for family `claude` only; the scheduler's breaker reads a Codex cap from the
+error text keyed on family.
 
 ## Runner steps
 
@@ -406,7 +406,8 @@ systemctl start tts-session-host
 It reads `/etc/tts/worker.env` (`CONVEX_SITE_URL`, `SESSIONS_WORKER_KEY`;
 `GH_TOKEN` optional but needed for private-repo clones) and expects
 `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active` (baked into the systemd
-unit) so `tts-account use` switches which Max account sessions run under.
+unit), so a `tts-account use` Tom runs by hand switches which Max account
+sessions run under. The daemon never runs it.
 
 ## GitHub credentials (2026-08-31)
 

@@ -944,6 +944,17 @@ export const CODEX_USAGE_STALE_MS = 15 * 60_000;
  * that found it out, `reason` the CLI's refusal. One validator for the
  * heartbeat's argument and the stored field.
  */
+/**
+ * The latest usage limit a Claude session on the box hit that was not a Fable
+ * refusal, as the daemon reports it on its heartbeat: when, the CLI's words,
+ * and which session. A fact for the pages; the daemon never switches the
+ * account on it (Tom's ruling of 2026-09-24 keeps the box on the wpi account).
+ */
+export const USAGE_LIMIT_REPORT = v.object({
+  at: v.number(),
+  text: v.string(),
+  sessionId: v.string(),
+});
 export const FABLE_AVAILABILITY = v.object({
   available: v.boolean(),
   since: v.number(),

@@ -3514,6 +3514,11 @@ const sessionsPoll = httpAction(async (ctx, request) => {
       typeof b.fableAvailability === "object" && b.fableAvailability !== null
         ? (b.fableAvailability as never)
         : undefined,
+    // The latest usage limit the daemon recorded, the same posture.
+    usageLimit:
+      typeof b.usageLimit === "object" && b.usageLimit !== null
+        ? (b.usageLimit as never)
+        : undefined,
   });
   return jsonResponse(200, result);
 });

@@ -330,15 +330,14 @@ const AUTO_MAX_TURNS = 200;
 const AUTO_TURN_CAP_MS = 90 * 60 * 1000;
 
 // Usage-limit signals in SDK errors / error results — the session-host
-// reacts by switching the active Max account (see maybeSwitchAccount), for
-// family "claude" only; a Codex cap has no second account to switch to and
-// is handled server-side by the scheduler's breaker keyed on family.
-// Deliberately NARROW: "overloaded" (a transient API 529) must not burn the
-// 3h switch throttle on a signal that resolves by itself. "session limit" is
-// here from observation, not caution: on 2026-08-30 the CLI's actual text was
+// records the latest on its heartbeat (see recordUsageLimit), for family
+// "claude" only; a Codex cap is handled server-side by the scheduler's
+// breaker keyed on family. Deliberately NARROW: "overloaded" (a transient API
+// 529) is not a usage limit and resolves by itself. "session limit" is here
+// from observation, not caution: on 2026-08-30 the CLI's actual text was
 // "You've hit your session limit · resets 8:10am (UTC)", which matched
-// NEITHER alternative — the account never switched and the scheduler burned a
-// dozen launches against a wall for an hour. The Codex alternatives
+// NEITHER alternative, and the scheduler burned a dozen launches against a
+// wall for an hour. The Codex alternatives
 // (usage_limit_reached / usage_limit_exceeded / rate_limit_reached, and the
 // prose "hit your usage limit") are the CLI's own cap vocabulary, added
 // 2026-09-04 so a capped Codex turn's error text reads as a cap to the
@@ -502,8 +501,8 @@ export class Session {
     // transcript is fetched into the workdir as .tts-transcript.md
     // (#writeForkTranscript) so the new model can read where it left off.
     this.forkedFrom = forkedFrom ?? undefined;
-    // Host-provided callback for usage-limit signals (account auto-switch
-    // lives in session-host.mjs — it is box-level, not per-session).
+    // Host-provided callback for usage-limit signals: session-host.mjs records
+    // the latest on its heartbeat (box-level, not per-session).
     this.onUsageSignal = onUsageSignal;
     this.autoTurnTimer = null; // wall-clock cap timer (autonomous only)
 
@@ -1224,17 +1223,16 @@ export class Session {
     }
   }
 
-  // The Claude-account auto-switch (session-host.mjs maybeSwitchAccount)
-  // fires for family "claude" only: it flips the Max-account symlink, which
-  // means nothing to a Codex session. A Codex cap still reaches the
+  // The usage-limit record (session-host.mjs recordUsageLimit) is for family
+  // "claude" only: a Codex cap is read by the server's breaker instead. A Codex cap still reaches the
   // autonomous outcomeSummary / error rows through lastTurnErrorText, where
   // the server's breaker reads it keyed on the session's family.
   //
   // THE FABLE RUNG COMES FIRST. A fable session refused for a spend or usage
   // limit is Fable being out, not the account: the Fable availability state
   // is set unavailable, the query is retired at the turn boundary, and the
-  // next turn runs at the ceiling (modelSpec). The account is not switched:
-  // Tom's ruling of 2026-09-24 keeps the box on the wpi account.
+  // next turn runs at the ceiling (modelSpec). Any other usage limit is only
+  // recorded; the box stays on its account (Tom's ruling of 2026-09-24).
   #maybeUsageSignal(text) {
     if (this.family !== "claude") return;
     if (aboveCeiling(this.model) && this.fableState().available !== false) {
