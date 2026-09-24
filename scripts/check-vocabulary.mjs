@@ -548,9 +548,9 @@ if (resolved) {
   //     disagreements about the prompt's seven words, a file over its size
   //     limit and a map candidate over the 7,000-byte bound. Tom settled the
   //     seven on 2026-09-24 (one wording, in WikiTom tts/spec.md §12.1, with
-  //     TTS_CLOSED_VOCABULARY rendered from it); the size limit is a threshold
-  //     that warns and never refuses, on his ruling of 2026-09-22; and the map
-  //     candidate is no longer written. The nightly now writes
+  //     TTS_CLOSED_VOCABULARY rendered from it); the file's size limit and the
+  //     map's 7,000-byte bound are thresholds that warn and never refuse, on
+  //     his ruling of 2026-09-22; and the map candidate is no longer written. The nightly now writes
   //     tts/vocabulary.json and fails its step on a disagreement
   //     (worker/jobs/nightly.mjs graphStep).
   //

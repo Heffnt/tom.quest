@@ -729,8 +729,9 @@ async function graphStep(run) {
   // THE VOCABULARY WRITES tts/vocabulary.json, AND A DISAGREEMENT FAILS THE
   // STEP. The seven disagreements about the prompt's seven words are settled
   // (Tom, 2026-09-24: one wording, in spec §12.1, rendered into the prompt by
-  // convex/vocabulary.ts); the size limit is a threshold that warns and never
-  // refuses (Tom, 2026-09-22; VOCABULARY_THRESHOLD_BYTES); and the map
+  // convex/vocabulary.ts); the file's and the map's size limits are
+  // thresholds that warn and never refuse (Tom, 2026-09-22;
+  // VOCABULARY_THRESHOLD_BYTES, AGENT_RULES_THRESHOLD_LF_BYTES); and the map
   // candidate is no longer written anywhere. What is left is the generator's
   // own finding, and a file written over one would state something the spec
   // and the code do not both say, which is the one thing the file exists to
@@ -757,7 +758,7 @@ async function graphStep(run) {
   // Recorded and not thrown: losing the night's files to a refused post would
   // be a worse night than a stale page.
   await postVocabulary(run, vocabulary, { wrote: vocabularyWrote });
-  await reportVocabularySize(run, vocabulary);
+  await reportSizeThresholds(run, vocabulary);
   if (vocabulary.disagreements.length > 0) {
     throw new Error(
       `vocabulary: ${vocabulary.disagreements.length} disagreement(s) — nothing written\n${vocabulary.report}`,
@@ -804,6 +805,7 @@ async function graphStep(run) {
       counts: vocabulary.counts,
       bytes: vocabulary.bytes,
       sizeWarning: vocabulary.sizeWarning,
+      mapSizeWarning: vocabulary.mapSizeWarning,
       // What DIFFERED between the render and disk before this run; it can name
       // convex/ttsShared.ts, which this job never writes.
       differsOnDisk: vocabulary.changed,
@@ -844,14 +846,18 @@ async function graphStep(run) {
   return result;
 }
 
-/** The condition the size warning is filed under. KEYED, so a file that stays
- *  over the threshold for a month is one row rather than one a night, and a
- *  night back under it writes the recovery that re-arms it (convex/ttsJobs.ts). */
+/** The conditions the two size warnings are filed under: the vocabulary file
+ *  (VOCABULARY_THRESHOLD_BYTES) and the map, model-of-tom/agent-rules.md
+ *  (AGENT_RULES_THRESHOLD_LF_BYTES, WikiTom AGENTS.md rule 9). KEYED, so a file
+ *  that stays over its threshold for a month is one row rather than one a
+ *  night, and a night back under it writes the recovery that re-arms it
+ *  (convex/ttsJobs.ts). */
 export const VOCABULARY_SIZE_KEY = "nightly:vocabulary-size";
+export const MAP_SIZE_KEY = "nightly:map-size";
 
 /**
- * The size threshold's warning, as a "job-failed" row: the channel the morning
- * digest and the hourly update already read, and the one the test-time
+ * The size thresholds' warnings, each as a "job-failed" row: the channel the
+ * morning digest and the hourly update already read, and the one the test-time
  * thresholds use (convex/ttsMerge.ts). Tom ruled on 2026-09-22 that a size or
  * time limit never blocks work and that crossing one is the trigger for
  * dedicated effort on speed and cost; a warning printed only in a log he does
@@ -860,11 +866,13 @@ export const VOCABULARY_SIZE_KEY = "nightly:vocabulary-size";
  * Never throws (reportJobFailed and reportJobOk log a refused post), because a
  * warning about size is never worth the night's files.
  */
-export async function reportVocabularySize(run, vocabulary, { failed = reportJobFailed, ok = reportJobOk } = {}) {
-  if (vocabulary.sizeWarning) {
-    await failed(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY, error: vocabulary.sizeWarning });
-  } else {
-    await ok(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY });
+export async function reportSizeThresholds(run, vocabulary, { failed = reportJobFailed, ok = reportJobOk } = {}) {
+  for (const [key, warning] of [
+    [VOCABULARY_SIZE_KEY, vocabulary.sizeWarning],
+    [MAP_SIZE_KEY, vocabulary.mapSizeWarning],
+  ]) {
+    if (warning) await failed(run.env, { job: "nightly", key, error: warning });
+    else await ok(run.env, { job: "nightly", key });
   }
 }
 

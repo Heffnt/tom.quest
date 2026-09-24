@@ -124,10 +124,21 @@ export const VOCABULARY_PATH = "tts/vocabulary.json";
 export const SHARED_PATH = "convex/ttsShared.ts";
 export const AGENT_RULES_PATH = "model-of-tom/agent-rules.md";
 
-/** The map is under 7,000 bytes by WikiTom's own rule, counted with the carriage
- *  returns removed — the file is CRLF on disk and the rule is about what an
- *  agent loads, which is the text and not the line endings. */
-export const AGENT_RULES_MAX_LF_BYTES = 7_000;
+/** 7,000 bytes, THE MAP'S WARNING THRESHOLD AND NOT A CAP — WikiTom AGENTS.md
+ *  rule 9, on the same ruling of Tom's as VOCABULARY_THRESHOLD_BYTES: an
+ *  arbitrary cap must not keep out content that helps, and crossing a
+ *  threshold is the warning sign that triggers dedicated effort on size at
+ *  constant quality. A map over it is written exactly as one under it; the
+ *  crossing sets `mapSizeWarning`, which the nightly files for the digest.
+ *
+ *  WHY KEEP A NUMBER AT ALL: the map goes into every run's prompt, so its size
+ *  is paid on every run, and the warning is the only thing that says when it
+ *  has grown enough to be worth that effort.
+ *
+ *  Counted with the carriage returns removed — the file is CRLF on disk and the
+ *  size that matters is what an agent loads, which is the text and not the
+ *  line endings. */
+export const AGENT_RULES_THRESHOLD_LF_BYTES = 7_000;
 
 /** The seven words `TTS_CLOSED_VOCABULARY` carries; their one list is in
  *  scripts/closed-vocabulary.mjs beside the renderer that reads it. */
@@ -1753,17 +1764,16 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     convexJobs: renderConvexJobsBullet(jobRows),
     tools: renderToolsBullet(boxTools(tomQuest)),
   });
-  // OVER THE MAP'S BYTE RULE WITHHOLDS THE LIVE MAP, and does not stop the
-  // build: WikiTom's own rule keeps the map under the bound, so under "live" a
-  // render past it is not written over the map; under "candidate" nothing is
-  // written to the map anyway and the line is a report. Either way the
-  // vocabulary does not depend on the map, so the drift check and the file are
-  // not taken down with it.
-  const candidateLfBytes = byteLength(candidate.text);
-  const candidateOverBudget =
-    candidateLfBytes < AGENT_RULES_MAX_LF_BYTES
-      ? null
-      : `vocabulary: the map's render is ${candidateLfBytes} LF bytes, at or over the ${AGENT_RULES_MAX_LF_BYTES}-byte rule; the blocks this run regenerated are ${candidate.blocks.join(", ")}${MAP_BLOCKS === "live" ? " — the map is not written" : ""}`;
+  // OVER THE MAP'S THRESHOLD IS A WARNING AND NEVER A REFUSAL (WikiTom
+  // AGENTS.md rule 9; AGENT_RULES_THRESHOLD_LF_BYTES). The size measured is the
+  // map's as it stands after this run: under "live" that is the render, which
+  // `--write` puts in place; under "candidate" it is the hand-written map,
+  // because the render is never written and the map is what every run loads.
+  const mapLfBytes = byteLength(MAP_BLOCKS === "live" ? candidate.text : agentRulesText);
+  const mapSizeWarning =
+    mapLfBytes > AGENT_RULES_THRESHOLD_LF_BYTES
+      ? `vocabulary: warning — the map, ${AGENT_RULES_PATH}, is ${mapLfBytes} LF bytes, over the ${AGENT_RULES_THRESHOLD_LF_BYTES}-byte threshold. The threshold asks for dedicated effort on the map's size; it blocks nothing`
+      : null;
   const candidateDiff = unifiedDiff(agentRulesText, candidate.text, AGENT_RULES_PATH, AGENT_RULES_PATH);
 
   // ── What is out of date ───────────────────────────────────────────────────
@@ -1777,7 +1787,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   const mapDiffersFromRender = candidate.text !== agentRulesText;
 
   const report = buildReport({
-    version, counts, bytes, changed, disagreements, mapDiffersFromRender, candidateLfBytes, sizeWarning, candidateOverBudget,
+    version, counts, bytes, changed, disagreements, mapDiffersFromRender, mapLfBytes, sizeWarning, mapSizeWarning,
   });
 
   // ── Write ─────────────────────────────────────────────────────────────────
@@ -1790,7 +1800,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     if (write === true) {
       fs.writeFileSync(path.join(tomQuest, SHARED_PATH), restoreEndings(sharedRaw, sharedAfter), "utf8");
       written.push(SHARED_PATH);
-      if (MAP_BLOCKS === "live" && candidateOverBudget === null) {
+      if (MAP_BLOCKS === "live") {
         writeLiveMap({ wikitom, agentRulesRaw, candidate });
         written.push(AGENT_RULES_PATH);
       }
@@ -1802,14 +1812,14 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     counts,
     bytes,
     sizeWarning,
-    candidateOverBudget,
+    mapSizeWarning,
     changed,
     written,
     disagreements,
     report,
     mapDiffersFromRender,
     mapCandidateDiff: candidateDiff,
-    candidateLfBytes,
+    mapLfBytes,
     vocabulary,
     serialized,
     sharedBlock: block,
@@ -1855,21 +1865,21 @@ function writeLiveMap({ wikitom, agentRulesRaw, candidate }) {
 }
 
 function buildReport({
-  version, counts, bytes, changed, disagreements, mapDiffersFromRender, candidateLfBytes, sizeWarning, candidateOverBudget,
+  version, counts, bytes, changed, disagreements, mapDiffersFromRender, mapLfBytes, sizeWarning, mapSizeWarning,
 }) {
   const lines = [];
   for (const entry of disagreements) lines.push(formatDisagreement(entry), "");
   if (disagreements.length > 0) {
     lines.push(`vocabulary: ${disagreements.length} disagreement${disagreements.length === 1 ? "" : "s"} — nothing written.`);
     if (sizeWarning !== null) lines.push(sizeWarning);
-    if (candidateOverBudget !== null) lines.push(candidateOverBudget);
+    if (mapSizeWarning !== null) lines.push(mapSizeWarning);
     return lines.join("\n");
   }
   if (sizeWarning !== null) lines.push(sizeWarning);
-  if (candidateOverBudget !== null) lines.push(candidateOverBudget);
+  if (mapSizeWarning !== null) lines.push(mapSizeWarning);
   lines.push(
     `vocabulary/@version ${version} terms=${counts.terms} entities=${counts.entities} relations=${counts.relations} jobs=${counts.jobs} search=${counts.searchQuestions} skills=${counts.skills} repos=${counts.repos} channels=${counts.channels}`,
-    `bytes ${bytes} (threshold ${VOCABULARY_THRESHOLD_BYTES}); map render ${candidateLfBytes} of ${AGENT_RULES_MAX_LF_BYTES} LF bytes`,
+    `bytes ${bytes} (threshold ${VOCABULARY_THRESHOLD_BYTES}); map ${mapLfBytes} LF bytes (threshold ${AGENT_RULES_THRESHOLD_LF_BYTES})`,
     `changed: ${changed.length === 0 ? "nothing" : changed.join(", ")}`,
     `map render: ${mapDiffersFromRender ? "differs from the map" : "matches the map"} (MAP_BLOCKS=${MAP_BLOCKS})`,
   );
@@ -1908,18 +1918,14 @@ export function parseArgs(argv) {
 }
 
 /** Exit codes: 0 clean · 2 a disagreement, or --check found the disk out of
- *  date · 3 THE RUN REFUSED TO STAND BEHIND ITS OUTPUT.
+ *  date · 3 an input is missing or unreadable.
  *
- *  3 is "an input is missing", and under MAP_BLOCKS = "live" also
- *  `candidateOverBudget`, where the vocabulary and convex/ttsShared.ts WERE
- *  written and only the map was withheld. A caller must not read 3 as "nothing
- *  happened"; it means read the report, which names which it was.
- *
- *  THE SIZE THRESHOLD NEVER CHANGES THE EXIT CODE. `sizeWarning` is printed in
- *  the report and exits 0, because a non-zero exit is a refusal to whatever runs
- *  this and Tom ruled the size is not a reason to refuse (VOCABULARY_THRESHOLD_BYTES).
- *  The nightly is where the warning is acted on: it files it as a keyed report
- *  the digest carries. */
+ *  THE SIZE THRESHOLDS NEVER CHANGE THE EXIT CODE. `sizeWarning` (the file,
+ *  VOCABULARY_THRESHOLD_BYTES) and `mapSizeWarning` (the map,
+ *  AGENT_RULES_THRESHOLD_LF_BYTES) are printed in the report and exit 0,
+ *  because a non-zero exit is a refusal to whatever runs this and Tom ruled
+ *  size is not a reason to refuse. The nightly is where the warnings are acted
+ *  on: it files each as a keyed report the digest carries. */
 export async function main(argv, { write = console.log, error = console.error, env = process.env } = {}) {
   let options;
   try {
@@ -1937,12 +1943,11 @@ export async function main(argv, { write = console.log, error = console.error, e
     error(problem instanceof VocabularyError ? problem.message : `vocabulary: ${problem.message}`);
     return 3;
   }
-  if (options.json) write(JSON.stringify({ version: result.version, counts: result.counts, bytes: result.bytes, sizeWarning: result.sizeWarning, changed: result.changed, written: result.written, disagreements: result.disagreements, mapDiffersFromRender: result.mapDiffersFromRender }, null, 2));
+  if (options.json) write(JSON.stringify({ version: result.version, counts: result.counts, bytes: result.bytes, sizeWarning: result.sizeWarning, mapSizeWarning: result.mapSizeWarning, changed: result.changed, written: result.written, disagreements: result.disagreements, mapDiffersFromRender: result.mapDiffersFromRender }, null, 2));
   else write(result.report);
   // Only under "live" is the map a file this program writes, so only then is a
   // withheld map a refusal and a map that differs from its render out of date.
   const live = MAP_BLOCKS === "live";
-  if (live && result.candidateOverBudget !== null) return 3;
   if (result.disagreements.length > 0) return 2;
   const stale = [...result.changed, ...(live && result.mapDiffersFromRender ? [AGENT_RULES_PATH] : [])];
   if (options.check && stale.length > 0) {

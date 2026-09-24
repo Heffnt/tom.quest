@@ -21,8 +21,9 @@ import {
   CMT_DIR,
   FORBIDDEN_SECTIONS,
   REPO_CHECKOUTS,
+  MAP_SIZE_KEY,
   VOCABULARY_SIZE_KEY,
-  reportVocabularySize,
+  reportSizeThresholds,
   SPLIT_BYTES,
   TOM_QUEST_DIR,
   WIKITOM_DIR,
@@ -3411,23 +3412,26 @@ describe("the git half", { timeout: 60_000 }, () => {
   });
 });
 
-describe("the vocabulary size threshold", () => {
-  it("files the warning as a keyed job-failed report and blocks nothing", async () => {
+describe("the size thresholds", () => {
+  it("files each warning as a keyed job-failed report and blocks nothing", async () => {
     const failed = vi.fn(async () => ({ ok: true }));
     const ok = vi.fn(async () => ({ ok: true }));
     const run = { env: { CONVEX_SITE_URL: "https://example.invalid" } };
-    const warning = "vocabulary: warning — the file is 73919 bytes, over the 40960-byte threshold";
-    await reportVocabularySize(run, { sizeWarning: warning }, { failed, ok });
-    expect(failed).toHaveBeenCalledWith(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY, error: warning });
+    const file = "vocabulary: warning — the file is 73919 bytes, over the 40960-byte threshold";
+    const map = "vocabulary: warning — the map, model-of-tom/agent-rules.md, is 7051 LF bytes, over the 7000-byte threshold";
+    await reportSizeThresholds(run, { sizeWarning: file, mapSizeWarning: map }, { failed, ok });
+    expect(failed).toHaveBeenCalledWith(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY, error: file });
+    expect(failed).toHaveBeenCalledWith(run.env, { job: "nightly", key: MAP_SIZE_KEY, error: map });
     expect(ok).not.toHaveBeenCalled();
   });
 
-  it("re-arms the report on a night back under the threshold", async () => {
-    const failed = vi.fn();
+  it("re-arms each report on a night back under its threshold", async () => {
+    const failed = vi.fn(async () => ({ ok: true }));
     const ok = vi.fn(async () => ({ ok: true }));
     const run = { env: {} };
-    await reportVocabularySize(run, { sizeWarning: null }, { failed, ok });
-    expect(ok).toHaveBeenCalledWith(run.env, { job: "nightly", key: VOCABULARY_SIZE_KEY });
-    expect(failed).not.toHaveBeenCalled();
+    const file = "vocabulary: warning — the file is 73919 bytes, over the 40960-byte threshold";
+    await reportSizeThresholds(run, { sizeWarning: file, mapSizeWarning: null }, { failed, ok });
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(ok).toHaveBeenCalledWith(run.env, { job: "nightly", key: MAP_SIZE_KEY });
   });
 });

@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  AGENT_RULES_MAX_LF_BYTES,
+  AGENT_RULES_THRESHOLD_LF_BYTES,
   AUTHORITY,
   MAP_BLOCKS,
   PROMPT_TERMS,
@@ -349,6 +349,7 @@ describe("the switches", () => {
     expect(MAP_BLOCKS).toBe("candidate");
     expect(AUTHORITY).toBe("spec");
     expect(VOCABULARY_THRESHOLD_BYTES).toBe(40_960);
+    expect(AGENT_RULES_THRESHOLD_LF_BYTES).toBe(7_000);
   });
 
   it("refuses an AUTHORITY it has not built, naming the missing work", async () => {
@@ -730,18 +731,29 @@ describe("the map candidate", () => {
     expect(fs.existsSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.candidate.md"))).toBe(false);
   });
 
-  it("counts the render on LF bytes and names the blocks that grew", () => {
+  it("warns on a map over the threshold, naming its LF size and the threshold, and blocks nothing", async () => {
     const fat = AGENT_RULES.replace("You answer to Tom.", `You answer to Tom. ${"padding ".repeat(880)}`);
     const checkouts = makeCheckouts({ agentRules: fat });
     const result = run(checkouts, { write: true });
-    expect(result.candidateOverBudget).toMatch(
-      new RegExp(`LF bytes, at or over the ${AGENT_RULES_MAX_LF_BYTES}-byte rule; the blocks this run regenerated are ### Repos`),
+    expect(result.mapSizeWarning).toBe(
+      `vocabulary: warning — the map, model-of-tom/agent-rules.md, is ${result.mapLfBytes} LF bytes, over the ${AGENT_RULES_THRESHOLD_LF_BYTES}-byte threshold. The threshold asks for dedicated effort on the map's size; it blocks nothing`,
     );
-    // The file itself is not held hostage to the map's bound.
-    expect(fs.existsSync(path.join(checkouts.wikitom, "tts/vocabulary.json"))).toBe(true);
+    expect(result.written).toEqual(["tts/vocabulary.json", "convex/ttsShared.ts"]);
+    const lines = [];
+    const code = await main(["--wikitom", checkouts.wikitom, "--tom-quest", checkouts.tomQuest], {
+      write: (text) => lines.push(text),
+      error: (text) => lines.push(text),
+    });
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("over the 7000-byte threshold");
   });
 
-  it("withholds the live map over the bound under MAP_BLOCKS = live, and exits 3 saying so", async () => {
+  it("counts the map on LF bytes, not on its CRLF line endings", () => {
+    const checkouts = makeCheckouts({ agentRules: AGENT_RULES.replace(/\n/g, "\r\n") });
+    expect(run(checkouts).mapLfBytes).toBe(Buffer.byteLength(AGENT_RULES));
+  });
+
+  it("writes the live map over the threshold under MAP_BLOCKS = live, with the warning", async () => {
     const variant = await withConstant('export const MAP_BLOCKS = "candidate";', 'export const MAP_BLOCKS = "live";');
     const fat = AGENT_RULES.replace("You answer to Tom.", `You answer to Tom. ${"padding ".repeat(880)}`);
     const checkouts = makeCheckouts({ agentRules: fat });
@@ -750,9 +762,9 @@ describe("the map candidate", () => {
       write: (text) => lines.push(text),
       error: (text) => lines.push(text),
     });
-    expect(code).toBe(3);
-    expect(lines.join("\n")).toContain("the map is not written");
-    expect(fs.readFileSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.md"), "utf8")).toBe(fat);
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("over the 7000-byte threshold");
+    expect(fs.readFileSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.md"), "utf8")).not.toBe(fat);
   });
 
   it("writes a unified diff with three lines of context", () => {
