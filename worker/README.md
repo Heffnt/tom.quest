@@ -164,7 +164,7 @@ no prompt can carry what its original agent had.
 
 Items run `ITEM_CONCURRENCY` at a time, four by default, over `runClaudeAsync` —
 the same call and the same envelope as `runClaude`, awaited rather than blocked,
-and taking no semaphore slot. `TTS_EVALS_CONCURRENCY` overrides the number.
+and taking no semaphore slot.
 
 Every row carries a `timing` object saying what the run did with its minutes:
 `durationMs`, and how many items were `regenerated`, `cached`, `unreplayable` and
