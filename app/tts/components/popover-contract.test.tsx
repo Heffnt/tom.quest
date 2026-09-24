@@ -19,7 +19,9 @@
 //      The page toolbox (app/components/toolbox, vqc/pages.md) joined the
 //      closure with it (2026-09-24): every Jarvis page built from it presses
 //      its controls, so its ActionRow and NoteField are held to the same
-//      popover.
+//      popover. A page composed from the toolbox (the everything tab) draws
+//      no control of its own, so it is not in the table; its controls are the
+//      toolbox's, held here, and its calls are in the source scans below.
 //   2. FIRED → NAMED. Every mutation the screens fire is named, verbatim, by a
 //      popover somewhere on them, so a control wired to a mutation nobody
 //      explains fails CI even if it renders somewhere this file cannot reach.
@@ -81,7 +83,6 @@ vi.mock("@/app/lib/auth", () => ({
 
 import CalendarTab from "./calendar-tab";
 import CodeTodoRow from "./code-todo-row";
-import EverythingTab from "./everything-tab";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
 import RepeatDialog from "./repeat-dialog";
@@ -467,10 +468,6 @@ const CASES: { file: string; render: () => void }[] = [
           onToggle={noop}
         />,
       ),
-  },
-  {
-    file: "app/tts/components/everything-tab.tsx",
-    render: () => void render(<EverythingTab link={null} onLinkCleared={noop} />),
   },
   {
     file: "app/tts/components/ground-up-view.tsx",

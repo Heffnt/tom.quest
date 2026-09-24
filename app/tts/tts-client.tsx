@@ -1,9 +1,8 @@
 "use client";
 
 // TTS (tts) — the one todo page: two tabs (calendar · everything), the active
-// tab below. Batches are gone (Tom, 2026-09-24): the runners, the todos
-// awaiting his ruling and the rulings still applying open the everything tab,
-// which is the default. Tab state rides ?tab=; ?item= (produced by
+// tab below. The everything tab, the default, is composed from the toolbox
+// (vqc/pages.md; Tom, 2026-09-24). Tab state rides ?tab=; ?item= (produced by
 // ttsItemLink) forces the everything tab and is handed to it as the link
 // prop. Each tab fetches its own data with useQuery — Convex dedupes
 // subscriptions, so the shell's badge-count queries are free.
@@ -95,10 +94,10 @@ export default function TtsClient() {
     void recordEvent({ kind: "tts-opened" }).catch(() => {});
   }, [isTom, todos, recordEvent]);
 
-  // The everything tab's badge: the awaiting count, from the SAME selector
-  // its awaiting section renders (app/tts/lib.ts selectNeedsMe) so the count
-  // and the rows cannot drift. Same subscriptions the tab holds — Convex
-  // dedupes.
+  // The everything tab's badge: the todos and code todos awaiting his ruling,
+  // from the SAME selector the tab's next item is drawn from (app/tts/lib.ts
+  // selectNeedsMe, through nextForTom) so the count and the panel cannot
+  // drift. Same subscriptions the tab holds — Convex dedupes.
   const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
   const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
   const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
@@ -115,8 +114,11 @@ export default function TtsClient() {
 
   return (
     <TomGate label="TTS">
-      <div className="max-w-5xl mx-auto px-6 pb-16">
-        <div className="flex items-end gap-1 border-b border-border mt-4">
+      {/* The calendar tab keeps its own frame. The everything tab is a toolbox
+          page (vqc/pages.md), whose Page sets its width and gutter, so the
+          tab bar lines up with that page's gutter instead. */}
+      <div className={tab === "calendar" ? "max-w-5xl mx-auto px-6 pb-16" : "max-w-[1280px] mx-auto"}>
+        <div className={`flex items-end gap-1 border-b border-border mt-4 ${tab === "calendar" ? "" : "mx-6"}`}>
           {TABS.map(({ value, label }) => (
             <button
               key={value}
@@ -138,7 +140,7 @@ export default function TtsClient() {
           ))}
         </div>
 
-        <div className="mt-4">
+        <div className={tab === "calendar" ? "mt-4" : ""}>
           {tab === "calendar" && (
             <CalendarTab
               onOpenItem={(id) => {

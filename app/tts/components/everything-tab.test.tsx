@@ -1,23 +1,11 @@
-// The EVERYTHING tab's filters, after the two the lifeos update removed.
-//
-// Both removals are invisible to a type checker and both could hide a row,
-// which is the one thing this tab may never do:
-//   - the ready-for-tom toggle is gone, so no row is filtered by readiness;
-//     what a reader wanted from it — why a row is not ready — is the waiting
-//     line every row prints (ttsShared.waitingReason).
-//   - "waiting" is gone as a status chip, so a row still carrying the stored
-//     status has to read as ACTIVE here or it would match no chip at all and
-//     vanish from the page.
-// The four filters that stay (search, status, kind, category) and the sort are
-// pinned here too, because removing two predicates from a chain of five is
-// exactly where the remaining three get dropped by accident.
-//
-// And the three sections that open the tab since batches went (Tom,
-// 2026-09-24): the todos awaiting his ruling and the rulings still applying,
-// under the runners.
+// The EVERYTHING tab as a composition of the toolbox (vqc/pages.md): the
+// counts it states, the one todo it puts in front of Tom and how a pick
+// replaces it, and the calls its verdicts, status writes and time note fire.
+// The derivations themselves are tested in app/tts/lib.test.ts; this file
+// holds the page to wiring them to the right component and the right call.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import EverythingTab from "./everything-tab";
@@ -34,6 +22,7 @@ vi.mock("convex/react", async () => {
       args === "skip" ? undefined : convex.data[name(ref as never)],
     useMutation: (ref: unknown) => async (args: unknown) => {
       convex.calls.push({ name: name(ref as never), args });
+      return name(ref as never) === "claudeSessions:createSession" ? "s-new" : null;
     },
   };
 });
@@ -43,20 +32,20 @@ vi.mock("@/app/lib/auth", () => ({
   useAuth: () => ({ isTom: true, canReadSurface: () => true }),
 }));
 
-const NOW = 1_756_000_000_000;
+const DAY = 86_400_000;
+const NOW = Date.now();
 
 const todo = (over: Record<string, unknown>) => ({
   _id: "t-active",
-  _creationTime: 1,
+  _creationTime: 10,
   statement: "renew the visa",
   status: "active",
   readiness: "prepared",
   actor: "tom",
-  category: "admin",
-  source: "tom",
+  source: "email",
   needs: [],
-  createdAt: NOW,
-  updatedAt: NOW,
+  createdAt: NOW - 3 * DAY,
+  updatedAt: NOW - 3 * DAY,
   ...over,
 });
 
@@ -72,247 +61,215 @@ const MIRROR = {
   syncedAt: NOW,
 };
 
-function load(
-  todos: unknown[],
-  mirror: unknown[] = [],
-  rulings: unknown[] = [],
-) {
+const BRIEF = {
+  _id: "b1",
+  _creationTime: 1,
+  repo: "tom.quest",
+  externalId: "todo-14",
+  brief: "the code brief",
+  recommendation: "approve",
+  execClass: "box",
+  preparedAt: NOW - DAY,
+};
+
+const TODOS = [
+  todo({ _id: "t-old", statement: "call the dentist", _creationTime: 1, source: "manual" }),
+  todo({ _id: "t-late", statement: "pay the rent", _creationTime: 5, dueAt: NOW - DAY, brief: "the rent brief", entryAction: "open the bank" }),
+  todo({ _id: "t-blocked", statement: "book the flight", needs: ["t-old"] }),
+  todo({ _id: "t-raw", statement: "a raw capture", readiness: "unprepared", dueAt: NOW + 2 * DAY }),
+  todo({ _id: "t-agent", statement: "let an agent do it", actor: "agent" }),
+  todo({ _id: "t-done", statement: "already finished", status: "done", doneAt: NOW - DAY }),
+];
+
+function load(todos: unknown[] = TODOS, mirror: unknown[] = [], briefs: unknown[] = []) {
   convex.data = {
     [getFunctionName(api.tts.listTodos)]: todos,
     [getFunctionName(api.tts.listMirror)]: mirror,
-    [getFunctionName(api.ttsCode.listCodeBriefs)]: [],
-    [getFunctionName(api.ttsRulings.listRulings)]: rulings,
+    [getFunctionName(api.ttsCode.listCodeBriefs)]: briefs,
+    [getFunctionName(api.ttsRulings.listRulings)]: [],
     [getFunctionName(api.tts.listTimeNotes)]: [],
+    [getFunctionName(api.tts.listRecentEvents)]: [
+      { kind: "captured", at: NOW - DAY },
+      { kind: "captured", at: NOW - 2 * DAY },
+      { kind: "merge", at: NOW - DAY },
+    ],
+    [getFunctionName(api.ttsRunners.listRunners)]: [],
+    [getFunctionName(api.claudeSessions.listSessions)]: [
+      { title: "the newest agent", status: "idle", _creationTime: NOW - 3_600_000 },
+    ],
   };
 }
 
-function show(link: { item: string; intent: null } | null = null) {
-  render(<EverythingTab link={link} onLinkCleared={() => {}} />);
+function show(link: { item: string; intent: "done" | "archive" | "engage" | null } | null = null, onLinkCleared = () => {}) {
+  render(<EverythingTab link={link} onLinkCleared={onLinkCleared} />);
 }
 
-/** The toolbar chip with this label, whatever count it carries. */
-function chip(label: string): HTMLElement | undefined {
-  return screen
-    .queryAllByRole("button")
-    .find((b) => (b.textContent ?? "").startsWith(label));
-}
-
-/** The list's text: the toolbar and the rows under it. The sections above
- * the list show some of the same todos, so the filters are read here. */
-const body = () =>
-  screen.getByPlaceholderText("search").parentElement?.parentElement
-    ?.textContent ?? "";
-
-/** The text of the section whose header opens with this title. */
-function section(title: string): string {
-  const header = [...document.querySelectorAll("section > div:first-child")].find(
-    (el) => (el.textContent ?? "").startsWith(`${title} `),
-  );
-  return header?.parentElement?.textContent ?? "";
-}
+const fired = (name: string) => convex.calls.filter((c) => c.name === name).map((c) => c.args);
+const panel = () => document.querySelector("article")!;
 
 beforeEach(() => {
   convex.calls.length = 0;
-  cleanup();
+  vi.stubGlobal("open", () => null);
 });
+afterEach(() => cleanup());
 
-describe("the filters the lifeos update removed", () => {
-  it("offers no readiness filter", () => {
-    load([todo({})]);
+describe("the counts on the page", () => {
+  it("states the whole in one sentence", () => {
+    load();
     show();
-    expect(chip("ready-for-tom")).toBeUndefined();
-    // …and the unprepared row is listed, not filtered out.
-    cleanup();
-    load([todo({ _id: "t-raw", readiness: "unprepared", statement: "a raw capture" })]);
-    show();
-    expect(body()).toContain("a raw capture");
-  });
-
-  it("offers no waiting status chip", () => {
-    load([todo({})]);
-    show();
-    expect(chip("waiting")).toBeUndefined();
-    for (const s of ["active", "done", "archived"]) {
-      expect(chip(s), `the ${s} chip`).toBeTruthy();
-    }
-  });
-
-  // witness: read a stored "waiting" row as its own status in rowStatuses —
-  // it matches no chip, and the row disappears from the page entirely.
-  it("lists a row still carrying the stored waiting status, under active", () => {
-    load([
-      todo({
-        _id: "t-asleep",
-        statement: "chase the landlord",
-        status: "waiting",
-      }),
-    ]);
-    show();
-    expect(body()).toContain("chase the landlord");
-    // The active chip counts it, because that is what it now is.
-    expect(chip("active")?.textContent).toContain("1");
-  });
-
-  it("prints the computed waiting reason on the row", () => {
-    load([
-      todo({
-        _id: "t-blocked",
-        statement: "book the flight",
-        needs: ["t-open"],
-      }),
-      todo({ _id: "t-open", statement: "pick the dates" }),
-    ]);
-    show();
-    expect(body()).toContain("waiting on: pick the dates");
-    // An agent task with nothing in its way waits on nothing and says nothing.
-    cleanup();
-    load([todo({ _id: "t-free", statement: "let an agent run", actor: "agent" })]);
-    show();
-    expect(body()).not.toContain("waiting");
-  });
-});
-
-describe("the filters that stay", () => {
-  it("filters by search text", () => {
-    load([
-      todo({ _id: "a", statement: "renew the visa" }),
-      todo({ _id: "b", statement: "book the flight" }),
-    ]);
-    show();
-    fireEvent.change(screen.getByPlaceholderText("search"), {
-      target: { value: "visa" },
-    });
-    expect(body()).toContain("renew the visa");
-    expect(body()).not.toContain("book the flight");
-  });
-
-  it("filters by status — done is hidden until its chip is on", () => {
-    load([
-      todo({ _id: "a", statement: "renew the visa" }),
-      todo({ _id: "b", statement: "already finished", status: "done", doneAt: NOW }),
-    ]);
-    show();
-    expect(body()).not.toContain("already finished");
-    fireEvent.click(chip("done")!);
-    expect(body()).toContain("already finished");
-  });
-
-  it("filters by kind", () => {
-    load([todo({ statement: "renew the visa" })], [MIRROR]);
-    show();
-    expect(body()).toContain("fence the session repo list");
-    fireEvent.click(chip("code")!);
-    expect(body()).not.toContain("fence the session repo list");
-    expect(body()).toContain("renew the visa");
-  });
-
-  it("filters by category", () => {
-    load([
-      todo({ _id: "a", statement: "renew the visa", category: "admin" }),
-      todo({ _id: "b", statement: "climb on friday", category: "climbing" }),
-    ]);
-    show();
-    fireEvent.change(screen.getByDisplayValue("category: all"), {
-      target: { value: "climbing" },
-    });
-    expect(body()).toContain("climb on friday");
-    expect(body()).not.toContain("renew the visa");
-  });
-
-  it("sorts by the chosen key", () => {
-    // The two keys disagree on purpose: `a` is due later and was captured
-    // later, so dueAt puts it second and createdAt — newest first — puts it
-    // first. An assertion on the count alone would pass with the control
-    // wired to nothing.
-    load([
-      todo({
-        _id: "a",
-        statement: "later",
-        dueAt: NOW + 2 * 86_400_000,
-        createdAt: NOW,
-      }),
-      todo({
-        _id: "b",
-        statement: "sooner",
-        dueAt: NOW + 86_400_000,
-        createdAt: NOW - 86_400_000,
-      }),
-    ]);
-    show();
-    const statements = () =>
-      [...document.querySelectorAll("[id^='todo-']")].map((el) => el.id);
-    expect(statements()).toEqual(["todo-b", "todo-a"]);
-    fireEvent.change(screen.getByDisplayValue("sort: dueAt"), {
-      target: { value: "createdAt" },
-    });
-    expect(statements()).toEqual(["todo-a", "todo-b"]);
-  });
-
-  it("shows a row a link names even when its status chip is off", () => {
-    load([todo({ _id: "t-done", statement: "already finished", status: "done" })]);
-    show({ item: "t-done", intent: null });
-    expect(body()).toContain("already finished");
-  });
-});
-
-describe("the sections above the list", () => {
-  const ruling = (over: Record<string, unknown>) => ({
-    _id: "r1",
-    _creationTime: 1,
-    verdict: "session",
-    ruledAt: NOW,
-    ...over,
-  });
-
-  it("lists a todo awaiting Tom's ruling, and not one that is not ready for him", () => {
-    load([
-      todo({ _id: "t-ready", statement: "renew the visa" }),
-      todo({ _id: "t-raw", statement: "a raw capture", readiness: "unprepared" }),
-    ]);
-    show();
-    expect(section("awaiting")).toContain("renew the visa");
-    expect(section("awaiting")).not.toContain("a raw capture");
-    // Both are in the list below, whatever the section above shows.
-    expect(body()).toContain("renew the visa");
-    expect(body()).toContain("a raw capture");
-  });
-
-  it("opening an awaiting row does not open the same todo in the list", () => {
-    load([todo({ _id: "t-ready", statement: "renew the visa" })]);
-    show();
-    fireEvent.click(screen.getAllByText("renew the visa")[0]);
-    // The awaiting row's panel holds the options row; the list's row stays
-    // shut, so its session button is not on screen.
-    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
-    expect(screen.getAllByRole("button", { name: "approve" })).toHaveLength(1);
-  });
-
-  it("names the subject of a ruling still applying", () => {
-    load(
-      [todo({ _id: "t-ruled", statement: "renew the visa" })],
-      [MIRROR],
-      [
-        ruling({ subjectType: "life", todoId: "t-ruled" }),
-        ruling({
-          _id: "r2",
-          subjectType: "code",
-          repo: MIRROR.repo,
-          externalId: MIRROR.externalId,
-          verdict: "approve",
-        }),
-      ],
+    const head = document.querySelector("header")!.textContent;
+    expect(head).toContain(
+      "5 active todos: 2 waiting on you, 1 waiting on another todo, 1 not yet prepared; 2 with a date, 1 of them overdue.",
     );
-    show();
-    const applying = section("ruled, applying");
-    expect(applying).toContain("renew the visa");
-    expect(applying).toContain("fence the session repo list");
   });
 
-  // witness: drop the subject filter in app/tts/lib.ts liveRulingsByKey — a
-  // ruling on a batch shows here with a blank subject.
-  it("leaves out a ruling on a batch", () => {
-    load([], [], [ruling({ subjectType: "batch", batchId: "b1" })]);
+  it("draws the four figures, the dated table and the done fold", () => {
+    load();
     show();
-    expect(section("ruled, applying")).toBe("ruled, applying 0");
+    const figures = [...document.querySelectorAll(".tb-figure")].map((f) => f.textContent);
+    expect(figures).toEqual(["1overdue", "2with a date", "1blocking others", "1done in the last 30 days", "0runners"]);
+    const table = screen.getByRole("heading", { name: "with a date" }).parentElement!;
+    expect(table.textContent).toContain("pay the rent");
+    expect(table.textContent).toContain("overdue");
+    expect(table.textContent).toContain("a raw capture");
+    const folds = [...document.querySelectorAll("summary")].map((f) => f.textContent);
+    expect(folds).toEqual(["done 1", "runners 0"]);
+  });
+
+  it("states the week's agent work and the idle agents", () => {
+    load();
+    show();
+    const prose = screen.getByRole("heading", { name: "agents this week" }).parentElement!.textContent;
+    expect(prose).toContain("2 todos captured, 0 prepared, 1 merges");
+    expect(prose).toContain("1 agents are idle; the newest, the newest agent, started 1 h ago.");
+  });
+});
+
+describe("the one todo in front of Tom", () => {
+  it("is the overdue todo waiting on him, whole", () => {
+    load();
+    show();
+    const item = panel();
+    expect(within(item).getByRole("heading", { name: "next" })).toBeTruthy();
+    expect(item.textContent).toContain("pay the rent");
+    expect(item.textContent).toContain("the rent brief");
+    expect(item.textContent).toContain("open the bank");
+    expect(item.textContent).toContain("From email.");
+  });
+
+  it("is replaced by a member picked in the drawer, and the pick is recorded as engaged", () => {
+    load();
+    show();
+    const drawer = screen.getByRole("region", { name: "waiting on you" });
+    fireEvent.click(within(drawer).getByText("call the dentist"));
+    expect(within(panel()).getByRole("heading", { name: "picked" })).toBeTruthy();
+    expect(panel().textContent).toContain("call the dentist");
+    expect(fired("tts:recordEvent")).toEqual([
+      { kind: "engaged", todoId: "t-old", data: { via: "everything" } },
+    ]);
+  });
+
+  it("follows the cell picked in the figure", () => {
+    load();
+    show();
+    fireEvent.click(document.querySelector('[aria-label="manual 1"]')!);
+    expect(screen.getByRole("region", { name: "manual, waiting on you" })).toBeTruthy();
+  });
+
+  it("lands a linked todo in the panel with the action its link proposed", () => {
+    load();
+    show({ item: "t-raw", intent: "done" });
+    expect(panel().textContent).toContain("a raw capture");
+    expect(within(panel()).getByRole("button", { name: "done" }).className).toContain("is-recommended");
+    expect(fired("tts:recordEvent")).toEqual([
+      { kind: "engaged", todoId: "t-raw", data: { via: "everything-link", intent: "done" } },
+    ]);
+  });
+
+  it("is the code todo waiting on him when no todo does", () => {
+    load([], [MIRROR], [BRIEF]);
+    show();
+    expect(panel().textContent).toContain("fence the session repo list");
+    expect(panel().textContent).toContain("the code brief");
+  });
+});
+
+describe("the calls the panel fires", () => {
+  it("approve records the ruling on the todo", async () => {
+    load();
+    show();
+    await act(async () => {
+      fireEvent.click(within(panel()).getByRole("button", { name: "approve" }));
+    });
+    expect(fired("ttsRulings:recordRuling")).toEqual([
+      { todoId: "t-late", verdict: "approve", sentence: undefined },
+    ]);
+  });
+
+  it("revise asks for its sentence and records it", async () => {
+    load();
+    show();
+    fireEvent.click(within(panel()).getByRole("button", { name: "revise" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "ask the landlord first" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "revise" }));
+    });
+    expect(fired("ttsRulings:recordRuling")).toEqual([
+      { todoId: "t-late", verdict: "revise", sentence: "ask the landlord first" },
+    ]);
+  });
+
+  it("session records the ruling, then opens the session in the tab reserved by the press", async () => {
+    const tab = { closed: false, location: { href: "" }, close: () => {} };
+    vi.stubGlobal("open", () => tab);
+    load();
+    show();
+    await act(async () => {
+      fireEvent.click(within(panel()).getByRole("button", { name: "session" }));
+    });
+    expect(convex.calls.map((c) => c.name)).toEqual(["ttsRulings:recordRuling", "claudeSessions:createSession"]);
+    expect(fired("claudeSessions:createSession")[0]).toMatchObject({ todoId: "t-late", kind: "gate" });
+    expect(tab.location.href).toBe("/runs?session=s-new");
+  });
+
+  it("done writes the status with its note, and a todo not ready to rule offers done and archive", async () => {
+    load();
+    show({ item: "t-raw", intent: null });
+    const labels = within(panel())
+      .getAllByRole("button")
+      .filter((b) => b.getAttribute("aria-label") !== "what this does")
+      .map((b) => b.textContent);
+    expect(labels).toEqual(["done", "archive", "note"]);
+    fireEvent.click(within(panel()).getByRole("button", { name: "done" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "sent it" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "done" }));
+    });
+    expect(fired("tts:setStatus")).toEqual([{ id: "t-raw", status: "done", note: "sent it" }]);
+  });
+
+  it("a code todo's verdict records the ruling on the repo and its id", async () => {
+    load([], [MIRROR], [BRIEF]);
+    show();
+    await act(async () => {
+      fireEvent.click(within(panel()).getByRole("button", { name: "approve" }));
+    });
+    expect(fired("ttsRulings:recordRuling")).toEqual([
+      { repo: "tom.quest", externalId: "todo-14", verdict: "approve", sentence: undefined },
+    ]);
+  });
+
+  it("the time note files the sentence against the todo", async () => {
+    load();
+    show();
+    fireEvent.change(within(panel()).getByRole("textbox", { name: "note" }), {
+      target: { value: " before friday " },
+    });
+    await act(async () => {
+      fireEvent.click(within(panel()).getByRole("button", { name: "note" }));
+    });
+    expect(fired("tts:createTimeNote")).toEqual([{ text: "before friday", todoId: "t-late" }]);
   });
 });

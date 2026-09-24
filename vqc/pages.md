@@ -7,7 +7,8 @@ don't find visually appealing. this should be built in vqc."
 
 The toolbox is `app/components/toolbox/`; `/toolbox` renders every component
 once with live data. `scripts/check-toolbox-pages.mjs` (in `pnpm
-check:guardrails`) holds each page listed in its `TOOLBOX_PAGES` to principles
+check:guardrails`) holds each page listed in its `TOOLBOX_PAGES` (`/toolbox` and the todos
+page's everything tab) to principles
 6, 7 and 9, and the toolbox itself to principle 7; the caps and the captions are
 held in the components' code and types, and tested beside them.
 

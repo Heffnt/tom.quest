@@ -11,7 +11,8 @@
 //   - a `className` or `style` attribute (principle 9: no style of its own);
 //   - a hex, rgb or hsl colour literal, or a font size (principle 7);
 //   - an import from anywhere but the toolbox, its queries, the TTS selectors,
-//     React, Next, the Tom gate and a sibling file in the same directory;
+//     React, Next, the Tom gate, the viewer's role, the session launch hook
+//     and a sibling file in the same directory;
 //   - a component of its own: a function that returns JSX, other than the
 //     file's default export (principle 9);
 //   - a refused word in a string or JSX text: "environment", or one of the
@@ -32,7 +33,7 @@ import ts from "typescript";
 
 /** The page directories and files the page rules apply to. A page built from
  *  the toolbox joins this list in the commit that builds it. */
-const TOOLBOX_PAGES = ["app/toolbox"];
+const TOOLBOX_PAGES = ["app/toolbox", "app/tts/components/everything-tab.tsx"];
 
 const TOOLBOX_DIR = "app/components/toolbox";
 
@@ -47,6 +48,12 @@ const ALLOWED_IMPORTS = [
   /^@\/app\/components\/tom-gate$/,
   // The TTS selectors: derivations over query results, no component in it.
   /^@\/app\/tts\/lib$/,
+  // The viewer's role, for the todos page: a write that fires without a
+  // press (the engaged event when a Slack link lands) fires for Tom only.
+  /^@\/app\/lib\/auth$/,
+  // The one client launch hook (VQC C1, ratified 2026-08-30): the session
+  // verdict reserves its tab inside the press and opens the session there.
+  /^@\/app\/lib\/use-open-todo-session$/,
 ];
 
 const REFUSED_WORDS = [

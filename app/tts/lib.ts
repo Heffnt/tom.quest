@@ -101,8 +101,8 @@ export function liveRulingsByKey(
   return newest;
 }
 
-// ── The needs-me selector (ONE definition; the everything tab's awaiting
-// section renders it, the tab's badge counts it) ─────────────────────────────
+// ── The needs-me selector (ONE definition; the everything tab's next item
+// and code drawer draw from it, the tab's badge counts it) ───────────────────
 // life: READY FOR TOM (ruling 18, ttsShared.isReadyForTom: prepared, active,
 //   awake, every need done), excluding todos whose live ruling is NEWER than
 //   the todo's last update — a ruled gate is answered until the preparer
@@ -419,7 +419,7 @@ type ActiveReason =
   | "waiting on a credential";
 
 /** The reasons in the order a page lists them: what needs Tom first. */
-export const ACTIVE_REASONS: readonly ActiveReason[] = [
+const ACTIVE_REASONS: readonly ActiveReason[] = [
   "waiting on you",
   "waiting on another todo",
   "not yet prepared",

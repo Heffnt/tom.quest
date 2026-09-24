@@ -220,7 +220,7 @@ ${WHAT_TTS_IS}
 
 <h2>When these chips appear at all</h2>
 
-<p>A todo shows the four verdict chips only when its status is <span class="mono">active</span> and its readiness is <span class="mono">prepared</span>. Readiness is the field saying whether the writing-up of the todo has happened, and <span class="mono">prepared</span> means an agent finished preparing it. A todo in that state is called a <span class="term">gate item</span>, and a gate item can be ruled from wherever it is seen: in the awaiting section at the top of the everything tab, or on its row in the list under it.</p>
+<p>A todo shows the four verdict chips only when its status is <span class="mono">active</span> and its readiness is <span class="mono">prepared</span>. Readiness is the field saying whether the writing-up of the todo has happened, and <span class="mono">prepared</span> means an agent finished preparing it. A todo in that state is called a <span class="term">gate item</span>, and a gate item can be ruled on the everything tab, in the panel that shows one todo at a time: the next todo waiting on Tom, or the one he picked from the drawer beside the figure.</p>
 
 <p>Two further chips sit beside the four and are not verdicts: <span class="mono">done</span>, which marks the todo finished, and <span class="mono">archive</span>, which sets it aside without recording a ruling. The plain archive chip appears only when the four verdict chips do not, so the two ways of archiving are never offered at once.</p>
 
