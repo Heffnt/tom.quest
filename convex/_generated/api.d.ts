@@ -22,6 +22,7 @@ import type * as intent from "../intent.js";
 import type * as intentParse from "../intentParse.js";
 import type * as runLabels from "../runLabels.js";
 import type * as runs from "../runs.js";
+import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as tts from "../tts.js";
@@ -78,6 +79,7 @@ declare const fullApi: ApiFromModules<{
   intentParse: typeof intentParse;
   runLabels: typeof runLabels;
   runs: typeof runs;
+  secrets: typeof secrets;
   serverHealth: typeof serverHealth;
   symbolScores: typeof symbolScores;
   tts: typeof tts;

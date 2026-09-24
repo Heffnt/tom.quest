@@ -30,6 +30,9 @@ import {
   log,
   sleep,
   sessionsFetch,
+  sessionsGet,
+  mailboxNames,
+  setEnvLine,
   backoffMs,
   truncated,
   ERROR_TEXT_LIMIT,
@@ -46,6 +49,7 @@ import {
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
 import { reapUnlisted, removeOrphanWorkdirs, removeWorkdir } from "./workdir.mjs";
+import { SECRETS_CHECK_MS, deliverSecrets, dropNames } from "./secret-mailbox.mjs";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -521,10 +525,40 @@ function launchStep(env, steps, row) {
   });
 }
 
+// ── tom.quest/secrets: values Tom pasted, written into the env file ──────────
+// secret-mailbox.mjs holds the steps. Here: at most one check per
+// SECRETS_CHECK_MS, in the background with one in flight, so a slow Convex
+// never holds the heartbeat. A delivered name never enters this process's
+// environment, so no child started later inherits it; whatever needs it reads
+// the env file by name.
+let secretsNextAt = 0;
+let secretsInFlight = false;
+
+function checkSecrets(env) {
+  const now = Date.now();
+  if (secretsInFlight || now < secretsNextAt) return;
+  secretsInFlight = true;
+  secretsNextAt = now + SECRETS_CHECK_MS;
+  void deliverSecrets({
+    fetchPending: () => sessionsGet(env, "/sessions/secrets"),
+    write: (name, value) => setEnvLine({ name, value }),
+    markTaken: (name, setAt) => sessionsFetch(env, "/sessions/secrets/taken", { name, setAt }),
+    log,
+  }).finally(() => {
+    secretsInFlight = false;
+  });
+}
+
 // ── the main loop ────────────────────────────────────────────────────────────
 
 async function main() {
   const env = loadEnv();
+  // Before anything is spawned: systemd loaded the whole env file into this
+  // process, the names below the /secrets marker included, and every child
+  // inherits process.env. They leave it here (secret-mailbox.mjs dropNames).
+  const delivered = mailboxNames();
+  dropNames(process.env, delivered);
+  dropNames(env, delivered);
   log(`starting session-host v${VERSION} -> ${env.CONVEX_SITE_URL}`);
   // In the background, never ahead of the first poll (the heartbeat must not
   // wait on Codex); Codex claims await codexReady instead — see warmUpCodex.
@@ -540,6 +574,7 @@ async function main() {
 
   for (;;) {
     refreshCodexUsage(); // starts a read when due; never waits on it
+    checkSecrets(env); // same: a mailbox check when due, never awaited
     // Surface the most recent permanent ingest rejection (review fix:
     // permanent-400 wedge) — a dropped flush must be visible server-side, not
     // only in journald. One report is enough: cleared after the poll that

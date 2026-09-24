@@ -624,6 +624,28 @@ harmless to lose:
 
 Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 
+## Values from tom.quest/secrets
+
+Tom pastes a variable on `tom.quest/secrets`. Convex holds the value in the
+`secretMailbox` table until the session-host daemon, at most 30 s later, reads
+it through `GET /sessions/secrets` (its own `SESSIONS_WORKER_KEY` door), writes
+`NAME=value` into `/etc/tts/worker.env` (a temporary file beside it, mode 0600,
+renamed over it) and posts `POST /sessions/secrets/taken`, after which Convex
+deletes the value and keeps the name and the two dates. The page never shows a
+value. The journal line names the variable only.
+
+A name the file did not hold goes below the line
+`# tom.quest/secrets: names below this line are kept out of every agent's environment`.
+The daemon removes every name below it from its own environment when it
+starts, so no session, Codex run or runner step it launches inherits one. A
+cron job reads the file at each start, so `loadEnv()` returns the value from
+the job's next run. A name the file already held keeps its line and its
+treatment (`env-scrub.mjs`); the daemon holds its old value until
+`tts-session-host` restarts, and restarting it is Tom's.
+
+The file on the box is the only copy after delivery. Rebuilding the box from
+scratch loses every value set this way unless Tom keeps a copy elsewhere.
+
 ## Rebuild from scratch
 
 ```

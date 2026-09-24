@@ -32,6 +32,13 @@
 // the cron jobs' agentic runs already expose to a model); `keepTtsKey: true`
 // leaves it in, every other caller drops it too.
 //
+// Values Tom pastes on tom.quest/secrets are NOT on this list, and need not
+// be: the daemon writes each below a marker line in the env file and removes
+// every name below that marker from its own process.env at start
+// (secret-mailbox.mjs dropNames), so none is in the env this function copies.
+// A pasted name the file already held (a rotated GH_TOKEN) keeps its line
+// and so keeps whatever this list does with it.
+//
 // Its own dependency-free file for the same reason banned-tools.mjs is one:
 // lib.mjs (which re-exports this) imports the worker-env symlink, which is a
 // plain text file on a Windows checkout, so the repo's vitest cannot load

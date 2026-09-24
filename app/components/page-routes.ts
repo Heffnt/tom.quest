@@ -33,6 +33,7 @@ export const PAGES: Page[] = [
   { slug: "jarvis", title: "Jarvis", blurb: "Personal AI assistant",        priority: 5, visibility: "tom" },
   { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5, visibility: "tom" },
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
+  { slug: "secrets", title: "Secrets", blurb: "Values for the Jarvis Box", priority: 5, visibility: "tom" },
   { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4, visibility: "public" },
   { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3, visibility: "public" },
   { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2, visibility: "public" },
