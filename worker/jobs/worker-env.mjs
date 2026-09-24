@@ -111,6 +111,10 @@ export function mailboxNames({ path = ENV_PATH } = {}) {
   const lines = text.split("\n");
   const begin = lines.indexOf(MAILBOX_BEGIN);
   if (begin === -1) return [];
+  // A block whose end line is gone (only a hand edit removes it) runs to the
+  // end of the file. That is the reading that fails closed: stopping at the
+  // begin line would hand those names back to every agent the daemon starts,
+  // and throwing would stop the daemon at start.
   const end = lines.indexOf(MAILBOX_END, begin + 1);
   return lines
     .slice(begin + 1, end === -1 ? lines.length : end)
@@ -146,16 +150,18 @@ export function setEnvLine({ path = ENV_PATH, name, value }) {
     }
   }
   if (!placed) {
-    const begin = out.indexOf(MAILBOX_BEGIN);
-    const end = begin === -1 ? -1 : out.indexOf(MAILBOX_END, begin + 1);
+    // Make sure the block exists and is closed, then add the line just above
+    // its end line. A begin line with no end line is closed at the end of the
+    // file, which is where mailboxNames already takes such a block to end, so
+    // the writer never moves a line into or out of the block as read.
+    let begin = out.indexOf(MAILBOX_BEGIN);
     if (begin === -1) {
       if (out.length > 0 && out[out.length - 1].trim() !== "") out.push("");
-      out.push(MAILBOX_BEGIN, line, MAILBOX_END);
-    } else if (end === -1) {
-      out.push(line, MAILBOX_END);
-    } else {
-      out.splice(end, 0, line);
+      out.push(MAILBOX_BEGIN);
+      begin = out.length - 1;
     }
+    if (out.indexOf(MAILBOX_END, begin + 1) === -1) out.push(MAILBOX_END);
+    out.splice(out.indexOf(MAILBOX_END, begin + 1), 0, line);
   }
   const tmp = `${path}.tmp-${process.pid}`;
   fs.rmSync(tmp, { force: true });
@@ -247,4 +253,27 @@ export function graphVersion() {
     // are all "no version", which is a supported value everywhere this lands.
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// A secret's value as an HTTP bearer token
+// ---------------------------------------------------------------------------
+
+/**
+ * What makes `value` unusable as a bearer token, as a sentence of character
+ * counts, or null when every character is printable ASCII other than space
+ * (0x21-0x7e). Never names a character or a position: the value is a secret.
+ *
+ * THE ONE DEFINITION of a clean OPENROUTER_API_KEY. scripts/codex-run.mjs
+ * refuses a run's key with it, and worker/setup.sh's rollout warning calls it
+ * through node on the value loadEnv above reads, so the rollout and the run
+ * judge the same value by the same rule. Codex, given a value holding a
+ * control character, sends its request with no Authorization header at all.
+ */
+export function bearerTokenProblem(value) {
+  const bad = [...String(value)].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
+  if (bad.length === 0) return null;
+  const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
+  const space = bad.filter((ch) => ch === " ").length;
+  return `${bad.length} character(s) outside printable ASCII (${control} control, ${space} space, ${bad.length - control - space} non-ASCII)`;
 }

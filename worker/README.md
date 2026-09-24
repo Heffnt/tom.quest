@@ -811,6 +811,34 @@ tts-account status       # which account is active
 tts-account use wpi      # switch; takes effect on the next job run
 ```
 
+## What a box agent does not use
+
+Tom ruled on 2026-09-22 that context is Jarvis's: *"I want to handle all
+context related stuff in jarvis."* So a box agent works without the CLI
+features that do the same jobs as systems he built. `worker/setup.sh` writes
+them off into both account slots' `settings.json` on every rollout, so a hand
+edit that turns one back on lasts until the next deploy:
+
+| Feature | How it is off |
+|---------|---------------|
+| Auto-memory | `autoMemoryEnabled: false`; `autoDreamEnabled: false` stops the background pass over the same memory directory, which the first key does not |
+| Bundled skills | `disableBundledSkills: true`; the tom-* skills the session-start hook publishes stay |
+| The Workflow tool | `disableWorkflows: true` |
+| MCP servers | `disableClaudeAiConnectors: true`, and the deny rule `mcp__*` |
+| WebSearch, WebFetch | the deny rules `WebSearch` and `WebFetch` |
+
+WebSearch and WebFetch have no settings key of their own, and MCP servers
+reach a run from more than one place (the account's claude.ai connectors,
+plugins, a project's `.mcp.json`, the desktop app), so those three are
+`permissions.deny` rules: a denied tool leaves the model's tool list, and a
+deny outranks `--allowedTools`. The daemon's Agent SDK sessions load the same
+user settings, since they pass no `settingSources`. In a desktop session
+`mcp__*` also matches the desktop app's own MCP tools, which are named the same
+way.
+
+The box keeps the CLI itself, the Agent SDK for the daemon's live sessions,
+hooks and prompt caching.
+
 ## Desktop sessions
 
 A desktop session is Tom's laptop Claude app, Code tab, connected to the box
@@ -831,7 +859,12 @@ first in that file, above its "not running interactively" guard:
 the CLI runs under the active account slot: the slot's login, its `CLAUDE.md`
 importing the agent rules, its hooks, and its `projects/` directory, which the
 run sweep and the nightly archive read. Without it the CLI falls back to
-`/root/.claude`, which no sweep reads. `RUN_HOST=box` rides the same line
+`/root/.claude`, which no sweep reads. The server keeps the environment it
+started with: one the app started before the line existed goes on writing to
+`/root/.claude/projects` until the app reconnects. To check a running session,
+read the CLI process's own `/proc/<pid>/environ`; `echo $CLAUDE_CONFIG_DIR` in
+the Bash tool proves nothing, because that shell sources `/root/.bashrc`
+itself. `RUN_HOST=box` rides the same line
 because the box's hooks and scripts learn where they run from it; without it
 the session-start hook would take its laptop branch, pull `/root/wikitom` and
 republish the skills that only the nightly job publishes. The line reaches
@@ -852,7 +885,7 @@ URL, so pulls and pushes go through the credential helper and no checkout holds
 a token. Point the app's project folder at the parent to see all three, or at
 one checkout. Codex trusts the parent and each checkout, so `tts-codex` runs
 from any of them. Nothing resets these checkouts; the session pulls and
-branches itself.
+branches itself, and puts a review worktree beside them.
 
 ## Testing jobs by hand
 

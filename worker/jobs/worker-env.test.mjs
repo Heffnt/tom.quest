@@ -11,7 +11,17 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { MAILBOX_BEGIN, MAILBOX_END, graphVersion, loadEnv, mailboxNames, setEnvLine } from "./worker-env.mjs";
+import { spawnSync } from "node:child_process";
+
+import {
+  MAILBOX_BEGIN,
+  MAILBOX_END,
+  bearerTokenProblem,
+  graphVersion,
+  loadEnv,
+  mailboxNames,
+  setEnvLine,
+} from "./worker-env.mjs";
 
 const original = process.env.WIKITOM_DIR;
 const made = [];
@@ -198,8 +208,68 @@ describe("setEnvLine", () => {
     expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN", "WANDB_API_KEY"]);
   });
 
+  it("reads a block whose end line was removed by hand to the end of the file, and closes it on the next write", () => {
+    const file = envFile(`A=1\n${MAILBOX_BEGIN}\nHF_TOKEN=v1\nLATER=by-hand\n`);
+    expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN", "LATER"]);
+    setEnvLine({ path: file, name: "WANDB_API_KEY", value: "v2" });
+    expect(fs.readFileSync(file, "utf8")).toBe(
+      `A=1\n${MAILBOX_BEGIN}\nHF_TOKEN=v1\nLATER=by-hand\nWANDB_API_KEY=v2\n${MAILBOX_END}\n`,
+    );
+    expect(mailboxNames({ path: file })).toEqual(["HF_TOKEN", "LATER", "WANDB_API_KEY"]);
+  });
+
   it("finds no mailbox names in a file without the block or with no file at all", () => {
     expect(mailboxNames({ path: envFile("A=1\n") })).toEqual([]);
     expect(mailboxNames({ path: envFile(null) })).toEqual([]);
   });
+});
+
+// The rule a clean OPENROUTER_API_KEY meets, and the two shell pieces of
+// worker/setup.sh that lean on it. The rollout's warning runs the node snippet
+// below verbatim, so it cannot judge a value differently from
+// scripts/codex-run.mjs; the printed repair must fix every line form that
+// warning reads, or it would print a command that changes nothing.
+describe("bearerTokenProblem", () => {
+  it("passes a printable key and names the classes of anything else, never the value", () => {
+    expect(bearerTokenProblem("sk-or-v1-0123abcd")).toBeNull();
+    expect(bearerTokenProblem("\u001b[200~sk-or-v1-x\u001b[201~")).toBe("2 character(s) outside printable ASCII (2 control, 0 space, 0 non-ASCII)");
+    expect(bearerTokenProblem("sk-or v1\tx")).toBe("2 character(s) outside printable ASCII (1 control, 1 space, 0 non-ASCII)");
+    expect(bearerTokenProblem("sk-or-v1-x\u00a0")).toBe("1 character(s) outside printable ASCII (0 control, 0 space, 1 non-ASCII)");
+    expect(bearerTokenProblem("sk-or-v1-secret\u0007")).not.toContain("secret");
+  });
+});
+
+describe.skipIf(process.platform === "win32")("setup.sh's OpenRouter key warning and repair", () => {
+  const setup = fs.readFileSync(path.resolve("worker/setup.sh"), "utf8");
+  const snippet = setup.match(/node --input-type=module -e '([\s\S]*?)' "\$WORKER_DIR\/jobs\/worker-env\.mjs"/)[1];
+  const repair = setup.match(/echo "    (LC_ALL=C sed -i -E '[^']*') \/etc\/tts\/worker\.env"/)[1].replace(/\\\\/g, "\\");
+  const envFile = (body) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-env-key-"));
+    made.push(dir);
+    const file = path.join(dir, "worker.env");
+    fs.writeFileSync(file, body);
+    return file;
+  };
+  const warning = (file) => spawnSync(process.execPath, [
+    "--input-type=module", "-e", snippet, path.resolve("worker/jobs/worker-env.mjs"), file,
+  ], { encoding: "utf8" }).stdout;
+
+  it("warns by the same rule the run applies", () => {
+    for (const value of ["sk-or-v1-abc", "sk-or v1", "\u001b[200~sk-or-v1-abc\u001b[201~", "sk-or-v1\u00a0abc"]) {
+      const file = envFile(`A=1\nOPENROUTER_API_KEY=${value}\nB=2\n`);
+      expect(warning(file)).toBe(bearerTokenProblem(loadEnv({ path: file }).OPENROUTER_API_KEY) ?? "");
+    }
+    expect(warning(envFile("OPENROUTER_API_KEY=sk-or-v1-abc\r\n"))).toBe("");
+  });
+
+  for (const prefix of ["", "export ", "  ", "  export  "]) {
+    it(`repairs a pasted key on a ${JSON.stringify(prefix)} line and leaves the others alone`, () => {
+      const file = envFile(`A=1\n${prefix}OPENROUTER_API_KEY=\u001b[200~sk-or-v1-abc\u001b[201~\r\nB=x y\n`);
+      expect(warning(file)).not.toBe("");
+      const fixed = spawnSync("sh", ["-c", `${repair} "$1"`, "sh", file], { encoding: "utf8" });
+      expect(fixed.status).toBe(0);
+      expect(fs.readFileSync(file, "utf8")).toBe("A=1\nOPENROUTER_API_KEY=sk-or-v1-abc\nB=x y\n");
+      expect(warning(file)).toBe("");
+    });
+  }
 });

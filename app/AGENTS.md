@@ -41,3 +41,7 @@
 
 - `next build` and `next start` in a worktree take the parent checkout as workspace root (two lockfiles) and serve the parent's `public/` and `.next`, so a new asset 404s locally and a stale parent build can be served; check it through a Playwright route intercept or on production. `outputFileTracingRoot` does not fix this.
 - On Windows the PID `netstat` prints is not the node process: the old `next start` keeps the port and the new one silently fails to bind. Free it with `Get-NetTCPConnection -LocalPort <n> -State Listen | Stop-Process -Force`.
+
+## openclaw
+
+- `app/jarvis` and `app/api/jarvis` are the dead dashboard of OpenClaw, a retired gateway (config repo `Heffnt/Jarvis`); Jarvis the agent system is `worker/`.
