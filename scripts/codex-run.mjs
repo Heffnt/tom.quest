@@ -136,11 +136,28 @@ function openrouterModelOf(model) {
 // caller whose own environment already carries it (a laptop) is used as is.
 // RUN_ENV_FILE is worker/runs/config.mjs's override of the file's path.
 function openrouterKey() {
-  if (process.env[OPENROUTER_KEY]) return process.env[OPENROUTER_KEY];
   const file = process.env.RUN_ENV_FILE || workerEnv?.ENV_PATH;
-  let value = null;
-  try { value = file && workerEnv ? workerEnv.loadEnv({ path: file })[OPENROUTER_KEY] : null; } catch {}
+  const fromEnv = Boolean(process.env[OPENROUTER_KEY]);
+  let value = fromEnv ? process.env[OPENROUTER_KEY] : null;
+  if (!fromEnv) {
+    try { value = file && workerEnv ? workerEnv.loadEnv({ path: file })[OPENROUTER_KEY] : null; } catch {}
+  }
   if (!value) fail(`an openrouter/ model needs ${OPENROUTER_KEY}, which is in neither this environment nor ${file ?? "the worker env file"}`);
+  // REMOVAL CHECK: Codex builds the Authorization header from this value and,
+  // when the value holds a control character, SENDS THE REQUEST WITHOUT ONE
+  // rather than failing. OpenRouter then answers "401 Missing Authentication
+  // header", which reads as a key that never arrived (the 2026-09-24 smoke
+  // test). A key pasted into a terminal can carry the paste's escape sequences
+  // (ESC[200~ ... ESC[201~); nothing earlier on the path can see that, because
+  // the env file is parsed as text and the value is never shown. The rule is
+  // worker-env.mjs's bearerTokenProblem, the one setup.sh's rollout warns with.
+  if (!workerEnv) fail("worker-env.mjs is not installed, so the OpenRouter key cannot be checked");
+  const problem = workerEnv.bearerTokenProblem(value);
+  if (problem) {
+    fail(`${OPENROUTER_KEY} in ${fromEnv ? "this environment" : file} holds ${problem}; `
+      + "with a control character Codex sends no Authorization header at all. "
+      + "Rewrite the line with printable characters only.");
+  }
   return value;
 }
 
