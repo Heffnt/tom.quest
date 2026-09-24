@@ -11,7 +11,9 @@ schema or regex. Cheap, exact, narrow.
 
 **the audit** is a model of another family reading a change before it merges —
 Codex, and Claude Opus at the Codex weekly cap, where the row says so
-(`fallback: codex-cap`).
+(`fallback: codex-cap`), and an OpenRouter model (`MODELS.auditOpenrouter` in
+`worker/runs/models.mjs`) when Claude is also refused for the account's limit
+and the box holds a usable OpenRouter key (`fallback: codex-cap, claude-limit`).
 
 **the evals** are a model reading outputs against Tom's labels: the golden set,
 several trials, the ablation arm, efficiency, golden coverage.
@@ -19,7 +21,7 @@ several trials, the ablation arm, efficiency, golden coverage.
 | | checks | the audit | the evals |
 |---|---|---|---|
 | verifies | anything answerable by string, count, schema or regex | a change, before it merges | an output, against Tom's labels |
-| cost | seconds of CI; no model | one Codex run per head (Opus at the cap) | one eval run per watched change; the judge model |
+| cost | seconds of CI; no model | one Codex run per head (Opus at the cap, then OpenRouter at Claude's limit) | one eval run per watched change; the judge model |
 | known failure mode | a producer edits the check instead of the code | it approves what it did not read; it drifts soft | the judge disagrees with Tom; a flaky item |
 | rows | the `tests-run` head row, or the write it refused | the `audit-verdict` head row, with `chunks` and `traceFindings` | the `evals-run` head row, golden coverage inside it |
 

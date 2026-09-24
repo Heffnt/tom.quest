@@ -19,6 +19,7 @@ import {
   graphVersion,
   loadEnv,
   mailboxNames,
+  openrouterKeyOf,
   openrouterKeyProblem,
   setEnvLine,
 } from "./worker-env.mjs";
@@ -247,6 +248,32 @@ describe("openrouterKeyProblem", () => {
   it("never names a character of the key", () => {
     expect(openrouterKeyProblem("secret-value\u0007")).not.toContain("secret");
     expect(openrouterKeyProblem("zz~sk-or-secret")).not.toContain("secret");
+  });
+});
+
+// The one lookup codex-run.mjs and the audit's OpenRouter rung both ask.
+describe("openrouterKeyOf", () => {
+  const envFile = (body) => {
+    const file = path.join(tempDir("worker-env-lookup-"), "worker.env");
+    fs.writeFileSync(file, body);
+    return file;
+  };
+
+  it("takes the caller's own environment first, and names the place, not the value", () => {
+    const file = envFile(`OPENROUTER_API_KEY=${KEY}-file\n`);
+    expect(openrouterKeyOf({ env: { OPENROUTER_API_KEY: KEY }, path: file })).toEqual({ value: KEY, from: "this environment" });
+  });
+
+  it("else reads the env file, whose path RUN_ENV_FILE overrides", () => {
+    const file = envFile(`A=1\nOPENROUTER_API_KEY=${KEY}\n`);
+    expect(openrouterKeyOf({ env: { RUN_ENV_FILE: file } })).toEqual({ value: KEY, from: file });
+  });
+
+  it("finds nothing in an absent file or a file without the line", () => {
+    const missing = path.join(tempDir("worker-env-lookup-"), "none.env");
+    expect(openrouterKeyOf({ env: {}, path: missing })).toEqual({ value: null, from: missing });
+    const file = envFile("A=1\nOPENROUTER_API_KEY=\n");
+    expect(openrouterKeyOf({ env: { OPENROUTER_API_KEY: "" }, path: file })).toEqual({ value: null, from: file });
   });
 });
 

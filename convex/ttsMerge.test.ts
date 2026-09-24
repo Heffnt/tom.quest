@@ -1210,6 +1210,29 @@ describe("POST /tts/audit — the second check's own door", () => {
     );
   });
 
+  // worker/jobs/audit.mjs's third rung: Codex at its cap and Claude at its
+  // limit, so an OpenRouter model read the change. The gate's line and the
+  // merge line name it with both refusals.
+  it("says WHO audited when Codex and Claude were both out", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await cleanEvals(t);
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: "VERDICT: APPROVED\n\nIt lands what it claims and nothing else.",
+      model: "openrouter/deepseek/deepseek-v4-pro-0813",
+      fallback: "codex-cap, claude-limit",
+    });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    const audit = gate.checks.find((c: { name: string }) => c.name === "audit");
+    expect(audit.passed).toBe(true);
+    expect(audit.why).toContain(
+      "(audit by openrouter/deepseek/deepseek-v4-pro-0813, fallback: codex-cap, claude-limit)",
+    );
+  });
+
   it("says nothing extra when Codex itself audited", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();

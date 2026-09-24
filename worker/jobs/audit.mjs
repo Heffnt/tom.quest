@@ -10,7 +10,9 @@
 //
 // At Codex's weekly cap the SAME prompt goes to Claude Opus instead, Tom's
 // standing fallback for a capped box run, and the row says it did: see THE
-// CODEX CAP below.
+// CODEX CAP below. When Opus is refused for the account's limit as well, the
+// same prompt goes to an OpenRouter model through tts-codex, and the row says
+// that too: see THE THIRD RUNG below.
 //
 // THE VERDICT IS ONE LINE, ALONE ON ITS LINE, and everything else in the answer
 // is prose for whoever reads the row later. `VERDICT: APPROVED` opens the gate;
@@ -47,7 +49,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MODELS, convexFetch, loadEnv, runClaude } from "./tts-lib.mjs";
+import { FABLE_LIMIT_RE, MODELS, convexFetch, loadEnv, runClaude } from "./tts-lib.mjs";
+import { OPENROUTER_KEY, openrouterKeyOf, openrouterKeyProblem } from "./worker-env.mjs";
 
 /** The wrapper every Codex door on the box goes through (AGENTS.md: one home
  *  for the flags and the stdout contract). */
@@ -176,6 +179,64 @@ export const AUDIT_FALLBACK_TOOLS = ["Read", "Grep", "Glob"];
  *  damage with more turns; it can only fail to finish with fewer. */
 export const AUDIT_FALLBACK_MAX_TURNS = 40;
 
+// ── THE THIRD RUNG: OPENROUTER, WHEN CODEX AND CLAUDE ARE BOTH OUT ───────────
+//
+// On 2026-09-24 the box's Claude account answered every model with its limit
+// ("your weekly limit resets Sep 28") while Codex was at its cap until the
+// 26th, so both rungs above refused and every audit was UNAVAILABLE: no merge
+// could pass the gate for days. Tom's ruling, 2026-09-22, verbatim: "we should
+// also setup agents via openrouter and/or lambda because I am constantly
+// hitting my subscription limits so I want to build things with the cheapest
+// agent that can do the job."
+//
+// So a chunk Codex refused on its cap AND Opus refused on the account's limit
+// goes, the same prompt again, to MODELS.auditOpenrouter through the same
+// tts-codex door, read-only, with --model openrouter/<vendor>/<model>. Only
+// that pair of refusals reaches it: an Opus run that failed any other way is
+// UNAVAILABLE as before, for the reason the Codex rung gives — a rung that
+// merely broke is not a reason to go further down.
+//
+// THE RUNG IS OFFERED ONLY WHILE THE KEY IS USABLE (openrouterReason). Without
+// that check a box with no key would try the rung, codex-run would refuse it,
+// and every UNAVAILABLE row there would change its words; with it, a box
+// without the key audits exactly as it did before this rung existed. A key
+// that is present and fails its check adds one clause to the UNAVAILABLE row
+// saying why the rung was skipped, in character counts, never the value.
+//
+// THE ROW NAMES THE RUNG FURTHEST FROM CODEX that read any chunk, with the
+// refusals that sent it there, for the reason THE FALLBACK IS PER CHUNK gives
+// above: "audit by openrouter/deepseek/deepseek-v4-pro-0813 (codex-cap,
+// claude-limit)" is what the gate's line and the #tts-decisions merge line
+// carry (convex/ttsMerge.ts auditFallbackNote).
+
+/** The model the third rung runs on, and what the row calls it: the whole
+ *  openrouter/<vendor>/<model> spelling, from the model table's one entry. */
+export const AUDIT_OPENROUTER_MODEL = MODELS.auditOpenrouter;
+
+/** Why the third rung answered: Codex at its cap, then Claude at its limit. */
+export const AUDIT_OPENROUTER_REASON = "codex-cap, claude-limit";
+
+/** The ladder, nearest to Codex first. A chunk's rung is its index here; the
+ *  row takes the highest index any chunk reached. */
+const AUDIT_RUNGS = Object.freeze([
+  Object.freeze({ model: AUDIT_MODEL, fallback: null }),
+  Object.freeze({ model: AUDIT_FALLBACK_MODEL, fallback: AUDIT_FALLBACK_REASON }),
+  Object.freeze({ model: AUDIT_OPENROUTER_MODEL, fallback: AUDIT_OPENROUTER_REASON }),
+]);
+
+/**
+ * Why the OpenRouter rung cannot run, or null when it can: "absent" when no
+ * key is found where scripts/codex-run.mjs would look (worker-env.mjs
+ * openrouterKeyOf, the one lookup), else the key check's own sentence. The
+ * value is read, judged and dropped here; nothing returned holds it.
+ */
+export function openrouterReason(env = process.env) {
+  const { value, from } = openrouterKeyOf({ env });
+  if (!value) return "absent";
+  const problem = openrouterKeyProblem(value);
+  return problem === null ? null : `${OPENROUTER_KEY} in ${from} holds ${problem}`;
+}
+
 /** Lines of an error that are CONTENT, not a diagnosis: codex-run prints the
  *  tail of the CLI's log, and the log echoes the prompt — which is the diff.
  *  A diff that happens to add the words "hit your usage limit" (this file
@@ -187,13 +248,25 @@ const DIFF_LINE_RE = /^([-+ @]|diff --git |index |\\ No newline)/;
  *  child's stderr on the thrown error's `stderr` and folds it into `message`;
  *  read both, plus stdout, rather than trusting one. */
 export function isCodexCap(error) {
-  const text = [error?.message, error?.stderr, error?.stdout]
+  return CODEX_CAP_RE.test(diagnosisOf(error));
+}
+
+/** Whether a failed Opus run failed BECAUSE OF THE ACCOUNT'S LIMIT, read by
+ *  the CLI's own words with the Fable ceiling's detector (models.mjs
+ *  FABLE_LIMIT_RE), over the same diff-free text as the cap above. */
+export function isClaudeLimit(error) {
+  return FABLE_LIMIT_RE.test(diagnosisOf(error));
+}
+
+/** A failed run's own words: the error's message, stderr and stdout, less
+ *  every line that is the diff echoed back (DIFF_LINE_RE). */
+function diagnosisOf(error) {
+  return [error?.message, error?.stderr, error?.stdout]
     .map((part) => (typeof part === "string" ? part : ""))
     .join("\n")
     .split(/\r?\n/)
     .filter((line) => !DIFF_LINE_RE.test(line))
     .join("\n");
-  return CODEX_CAP_RE.test(text);
 }
 
 /** The bounded test evidence block each chunk receives. `row: undefined` is a
@@ -1127,43 +1200,47 @@ export async function auditCommit(
   const envOf = suppliedIo.env ?? (() => loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] }));
   let envCache;
   const envOnce = () => (envCache ??= envOf());
+  // THE PROMPT GOES ON STDIN, never in argv. tts-codex forwards its argv
+  // straight to scripts/codex-run.mjs, whose arg loop refuses anything that
+  // is not one of its flags — a positional prompt was rejected as an unknown
+  // option, readStdin() then found nothing, and every audit was recorded
+  // UNAVAILABLE. codex-run reads the prompt from stdin and nowhere else.
+  //
+  // `receipt` is an OUT-PARAMETER, runClaude's own spelling: the token of the
+  // run this call made comes back as `receipt.runToken`, which is how the
+  // audit later finds its own tool calls. For Codex THE TOKEN IS NOT ON
+  // STDOUT, so it is read out of a private registration spool.
+  //
+  // `modelArgs` is empty for the Codex rung (the wrapper's default model) and
+  // `--model <openrouter/...>` for the third rung: one door, two models.
+  const codexAudit = (prompt, receipt, modelArgs) => {
+    const spool = mkdtempSync(path.join(tmpdir(), "tts-audit-reg-"));
+    try {
+      const out = String(
+        execFileSync(AUDIT_RUNNER, ["--cwd", dir, "--sandbox", AUDIT_SANDBOX, "--no-operate", ...modelArgs], {
+          input: prompt,
+          encoding: "utf8",
+          maxBuffer: 64 * 1024 * 1024,
+          env: {
+            ...process.env,
+            TTS_RUN_ORIGIN: "cron:audit",
+            // WHAT LINKS THE AUDIT'S RUN TO THE COMMIT IT AUDITED. Nothing
+            // set this before, so the run was registered and unfindable.
+            TTS_RUN_MERGE_KEY: mergeKey,
+            TTS_RUN_REG_SPOOL: spool,
+          },
+        }),
+      );
+      if (receipt) receipt.runToken = spoolToken(spool);
+      return out;
+    } finally {
+      rmSync(spool, { recursive: true, force: true });
+    }
+  };
   const io = {
     run: defaultRun,
     env: envOf,
-    // THE PROMPT GOES ON STDIN, never in argv. tts-codex forwards its argv
-    // straight to scripts/codex-run.mjs, whose arg loop refuses anything that
-    // is not one of its flags — a positional prompt was rejected as an unknown
-    // option, readStdin() then found nothing, and every audit was recorded
-    // UNAVAILABLE. codex-run reads the prompt from stdin and nowhere else.
-    //
-    // `receipt` is an OUT-PARAMETER, runClaude's own spelling: the token of the
-    // run this call made comes back as `receipt.runToken`, which is how the
-    // audit later finds its own tool calls. For Codex THE TOKEN IS NOT ON
-    // STDOUT, so it is read out of a private registration spool.
-    audit: (prompt, receipt) => {
-      const spool = mkdtempSync(path.join(tmpdir(), "tts-audit-reg-"));
-      try {
-        const out = String(
-          execFileSync(AUDIT_RUNNER, ["--cwd", dir, "--sandbox", AUDIT_SANDBOX, "--no-operate"], {
-            input: prompt,
-            encoding: "utf8",
-            maxBuffer: 64 * 1024 * 1024,
-            env: {
-              ...process.env,
-              TTS_RUN_ORIGIN: "cron:audit",
-              // WHAT LINKS THE AUDIT'S RUN TO THE COMMIT IT AUDITED. Nothing
-              // set this before, so the run was registered and unfindable.
-              TTS_RUN_MERGE_KEY: mergeKey,
-              TTS_RUN_REG_SPOOL: spool,
-            },
-          }),
-        );
-        if (receipt) receipt.runToken = spoolToken(spool);
-        return out;
-      } finally {
-        rmSync(spool, { recursive: true, force: true });
-      }
-    },
+    audit: (prompt, receipt) => codexAudit(prompt, receipt, []),
     // THE SAME PROMPT, one family over, when Codex is capped. Non-agentic and
     // allow-listed to the three reading tools: the model may open a file the
     // diff touches and can edit nothing and run nothing — an auditor that can
@@ -1183,6 +1260,11 @@ export async function auditCommit(
         registration: { origin: "cron:audit", mergeKey },
         receipt: receipt ?? {},
       }),
+    // THE THIRD RUNG, the Codex door with the model named: codex-run routes an
+    // openrouter/ model to OpenRouter and hands that one Codex process the key.
+    // Read-only by the same AUDIT_SANDBOX, registered by the same spool.
+    auditOpenrouter: (prompt, receipt) => codexAudit(prompt, receipt, ["--model", AUDIT_OPENROUTER_MODEL]),
+    openrouterReason: () => openrouterReason(),
     mergeGate: (env, askRepo, askSha) =>
       convexFetch(
         env,
@@ -1233,8 +1315,19 @@ export async function auditCommit(
   }
 
   let text;
+  // The furthest rung any chunk was read on (AUDIT_RUNGS); `model` and
+  // `fallback` are that rung's, set once the chunks are done.
+  let rung = 0;
   let model = AUDIT_MODEL;
   let fallback = null;
+  // Asked once per audit, and only if a chunk reaches the third rung.
+  let openrouterWhy;
+  const openrouterOnce = () => {
+    if (openrouterWhy === undefined) {
+      openrouterWhy = typeof io.openrouterReason === "function" ? io.openrouterReason() : "absent";
+    }
+    return openrouterWhy;
+  };
   let files = [];
   let chunksRecord = { count: 0, read: 0, charsRead: 0, charsTotal: 0, truncatedChunks: 0, files: 0 };
   let claim = { text: "", source: "none" };
@@ -1283,18 +1376,34 @@ export async function auditCommit(
           } else {
             try {
               answer = String(io.auditFallback(prompt, receipt) ?? "");
-              model = AUDIT_FALLBACK_MODEL;
-              fallback = AUDIT_FALLBACK_REASON;
+              rung = Math.max(rung, 1);
             } catch (fallbackError) {
-              // Both families failed on this chunk: that is UNAVAILABLE, and
-              // the chunk names both failures rather than only the second.
-              answer = `VERDICT: ${AUDIT_UNAVAILABLE}\n\nThe audit could not run: ${String(error?.message ?? error).slice(0, 200)} — and the ${AUDIT_FALLBACK_MODEL} fallback also failed: ${String(fallbackError?.message ?? fallbackError).slice(0, 200)}`;
+              // Both families failed on this chunk: that is UNAVAILABLE unless
+              // the third rung answers, and the chunk names both failures
+              // rather than only the second.
+              const both = `The audit could not run: ${String(error?.message ?? error).slice(0, 200)} — and the ${AUDIT_FALLBACK_MODEL} fallback also failed: ${String(fallbackError?.message ?? fallbackError).slice(0, 200)}`;
+              // THE THIRD RUNG takes only Opus's LIMIT refusal, and only while
+              // the key is usable; a box without the key keeps today's words
+              // exactly. See THE THIRD RUNG above.
+              if (!isClaudeLimit(fallbackError) || openrouterOnce() === "absent") {
+                answer = `VERDICT: ${AUDIT_UNAVAILABLE}\n\n${both}`;
+              } else if (openrouterOnce() !== null) {
+                answer = `VERDICT: ${AUDIT_UNAVAILABLE}\n\n${both} — and the ${AUDIT_OPENROUTER_MODEL} rung was skipped: ${openrouterOnce()}`;
+              } else {
+                try {
+                  answer = String(io.auditOpenrouter(prompt, receipt) ?? "");
+                  rung = Math.max(rung, 2);
+                } catch (openrouterError) {
+                  answer = `VERDICT: ${AUDIT_UNAVAILABLE}\n\n${both} — and the ${AUDIT_OPENROUTER_MODEL} rung also failed: ${String(openrouterError?.message ?? openrouterError).slice(0, 200)}`;
+                }
+              }
             }
           }
         }
         if (typeof receipt.runToken === "string" && receipt.runToken !== "") tokens.push(receipt.runToken);
         parts.push({ chunk, text: answer });
       }
+      ({ model, fallback } = AUDIT_RUNGS[rung]);
       const merged = composeChunkedAudit(parts);
       text = merged.text;
       chunksRecord = {
@@ -1415,6 +1524,14 @@ export async function auditCommit(
   };
 }
 
+/** The line the command prints to say who judged: "auditor: codex", or with
+ *  the refusals that sent it down the ladder, "auditor:
+ *  openrouter/deepseek/deepseek-v4-pro-0813 (codex-cap, claude-limit)". One
+ *  home for worker/bin/tts-audit and main below. */
+export function auditorLine({ model, fallback }) {
+  return `auditor: ${model}${fallback ? ` (${fallback})` : ""}`;
+}
+
 // ── THE COMMAND ──────────────────────────────────────────────────────────────
 //
 // worker/bin/tts-audit is the installed door and ITS contract is followed here
@@ -1471,7 +1588,7 @@ export async function main(argv = process.argv.slice(2)) {
   });
   process.stdout.write(`AUDIT ${args.repo}@${args.sha.slice(0, 7)}\n`);
   process.stdout.write(`verdict: ${result.verdict ?? "unrecorded"}\n`);
-  process.stdout.write(`auditor: ${result.model}${result.fallback ? ` (${result.fallback})` : ""}\n`);
+  process.stdout.write(`${auditorLine(result)}\n`);
   process.stdout.write(`claim: ${result.claim?.source ?? "none"}\n`);
   process.stdout.write(
     `read: ${result.chunks.read} of ${result.chunks.count} chunks, ${result.chunks.charsRead} of ${result.chunks.charsTotal} characters\n`,
