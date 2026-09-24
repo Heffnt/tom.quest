@@ -2019,34 +2019,9 @@ http.route({
   handler: ttsPlannerContext,
 });
 
-// GET /tts/batch-context — the planner-context payload above plus the two
-// fields the plan pass read: every `batches` row, and `planRepairs`, now
-// always empty (nothing records a plan repair any more). SERVED FOR ONE
-// ROLLOUT ONLY. Tom ruled on 2026-09-24 to have no batches, and the box runs
-// its own installed copies of the planner and the delegate until it is rolled;
-// both read this path by name and refuse to run without its writingStandard.
-// The follow-up pull request that ends the widen step deletes this door and
-// tts.internalListBatches with it, once the rolled box reads
-// /tts/planner-context.
-const ttsBatchContext = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  try {
-    const [context, batches] = await Promise.all([
-      plannerContext(ctx),
-      ctx.runQuery(internal.tts.internalListBatches, {}),
-    ]);
-    return jsonResponse(200, { ...context, batches, planRepairs: [] });
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-});
-
-http.route({
-  path: "/tts/batch-context",
-  method: "GET",
-  handler: ttsBatchContext,
-});
+// (GET /tts/batch-context, the planner's door while batches existed, was
+// served for one rollout after Tom's ruling of 2026-09-24 to have no batches,
+// and went once the rolled box read /tts/planner-context.)
 
 // ── POST /tts/model-of-tom — the nightly job's three-layer publication every
 // prompt selects from (the lifeos update, phase 4) ───────────────────────────

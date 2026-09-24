@@ -20,7 +20,6 @@ import {
   itemUrl,
   objectionLine,
   objectionsLead,
-  overnightLine,
   renderSlack,
   runnerLine,
   runnerTierWords,
@@ -514,40 +513,6 @@ describe("todoOutcomeLine", () => {
     expect(
       todoOutcomeLine({ todoId: null, statement: "Work on no item", sessionId: "k3", finished: 0, running: true }),
     ).toBe("A session on no item is still running.");
-  });
-});
-
-// KEPT FOR ONE ROLLOUT with the old-shape batch facts it writes; removed in
-// the follow-up pull request that ends the widen step.
-describe("overnightLine", () => {
-  it("turns a night of counts on one batch into one sentence", () => {
-    expect(
-      overnightLine({
-        batchId: "b1",
-        statement: "The research critical path",
-        added: 4,
-        reworked: 3,
-        dropped: 1,
-        finished: 0,
-        running: true,
-      }),
-    ).toBe(
-      "The research critical path gained 4 items, reworked 3 and dropped 1, and one session is still on it.",
-    );
-  });
-
-  it("says so when a batch was planned and nothing came of it", () => {
-    expect(
-      overnightLine({
-        batchId: "b2",
-        statement: "The Veritasium BackerKit reward survey",
-        added: 0,
-        reworked: 0,
-        dropped: 0,
-        finished: 0,
-        running: false,
-      }),
-    ).toBe("The Veritasium BackerKit reward survey was planned and gained nothing.");
   });
 });
 
@@ -1160,36 +1125,20 @@ describe("the facts block", () => {
     expect(ready?.numbers).toContain("667");
   });
 
-  // ONE ROLLOUT, BOTH SHAPES (Tom, 2026-09-24: no batches). The box runs its
-  // own installed copy of worker/jobs/write-slack.mjs until it is rolled, and
-  // that copy writes one line per batch from "overnight:count" and "batch:"
-  // facts; the new writer and the template write one line per todo from
-  // "overnight-todo:" facts. The block carries both until the follow-up pull
-  // request ends the widen step.
-  it("carries the old batch facts beside the new todo facts, and neither links the batches tab", () => {
-    const block = todayFactsBlock(
-      sept9({
-        overnight: [{ batchId: "b1", statement: "The research critical path", added: 4, reworked: 0, dropped: 1, finished: 0, running: false }],
-        batchesPlanned: 9,
-        batchesFinished: 0,
-      }),
-      false,
-    );
+  // The overnight facts are one per todo, each linking its todo; the
+  // batch-grouped facts the box's older writer read are gone with it.
+  it("offers one overnight fact per todo, and none per batch", () => {
+    const block = todayFactsBlock(sept9(), false);
     const byId = new Map(block.facts.map((f) => [f.id, f]));
-    expect(byId.get("overnight:count")?.text).toBe("The box planned 9 batches overnight and finished 0.");
-    expect(byId.get("batch:b1")?.text).toBe("The research critical path gained 4 items and dropped 1.");
     expect(byId.get("overnight-todo:ph7crit")).toMatchObject({
       text: "Walk the research critical path: 4 sessions on it ended.",
       urls: [itemUrl("ph7crit")],
       numbers: ["4"],
     });
     expect(byId.get("overnight-todo:ph7veri")?.urls).toEqual([itemUrl("ph7veri")]);
-    expect(block.facts.flatMap((f) => f.urls).some((url) => url.includes("tab=batches"))).toBe(false);
-  });
-
-  it("offers no batch fact when the facts carry no old shape", () => {
-    const ids = todayFactsBlock(sept9(), false).facts.map((f) => f.id);
+    const ids = block.facts.map((f) => f.id);
     expect(ids.some((id) => id === "overnight:count" || id.startsWith("batch:"))).toBe(false);
+    expect(block.facts.flatMap((f) => f.urls).some((url) => url.includes("tab=batches"))).toBe(false);
   });
 
   // The template prints the new shape only: each overnight line links its
@@ -1202,9 +1151,6 @@ describe("the facts block", () => {
             { todoId: "ph7crit", statement: "Walk the research critical path", sessionId: "k1", finished: 2, running: true },
             { todoId: null, statement: "Work on no item", sessionId: "k9", finished: 5, running: false },
           ],
-          overnight: [{ batchId: "b1", statement: "The old batch", added: 4, reworked: 0, dropped: 0, finished: 0, running: false }],
-          batchesPlanned: 1,
-          batchesFinished: 0,
         }),
         { canReply: false },
       ),

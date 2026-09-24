@@ -5,7 +5,6 @@ import {
   itemUrl,
   renderSlack,
   todayFactsBlock,
-  type BatchOutcome,
   type BrokenFact,
   type TodayFacts,
   type TodoOutcome,
@@ -346,10 +345,6 @@ function safeStr(value: unknown): string | undefined {
   return text === undefined ? undefined : redactSecrets(text);
 }
 
-function num(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
 /** The failure kinds that are NOT a #tts-broken line. "slack-send-failed" is
  *  the Slack door's own: reporting it in a Slack message is the loop
  *  convex/ttsHourly.ts already warns about. */
@@ -372,8 +367,7 @@ export async function gatherTodayFacts(
   // Names for the ids the sections actually touch, fetched one at a time and
   // remembered. The whole dtsTodos and batches tables were read here before —
   // two full-table scans that grow with the record forever, for a handful of
-  // lookups. The batch lookups below are KEPT FOR ONE ROLLOUT with the
-  // old-shape overnight facts they feed (BatchOutcome).
+  // lookups.
   const todoCache = new Map<string, Doc<"dtsTodos"> | null>();
   const todoOf = async (id: Id<"dtsTodos"> | undefined): Promise<Doc<"dtsTodos"> | null> => {
     if (id === undefined) return null;
@@ -383,17 +377,6 @@ export async function gatherTodayFacts(
     todoCache.set(id, row);
     return row;
   };
-  const batchCache = new Map<string, string | null>();
-  const batchName = async (id: Id<"batches"> | undefined): Promise<string | null> => {
-    if (id === undefined) return null;
-    const hit = batchCache.get(id);
-    if (hit !== undefined) return hit;
-    const name = (await ctx.db.get(id))?.statement ?? null;
-    batchCache.set(id, name);
-    return name;
-  };
-  const batchOfTodo = async (id: Id<"dtsTodos"> | undefined): Promise<string | null> =>
-    await batchName((await todoOf(id))?.batchId);
 
   // 1. Dated and late: every active dated todo due today or earlier, oldest
   //    date first — what the cap drops has to be the newest, because an item
@@ -530,27 +513,6 @@ export async function gatherTodayFacts(
     return row;
   };
 
-  // KEPT FOR ONE ROLLOUT: one row per BATCH, the old shape the box's
-  // un-rolled worker/jobs/write-slack.mjs writes from (BatchOutcome). Removed
-  // in the follow-up pull request that ends the widen step.
-  const outcomes = new Map<string, BatchOutcome>();
-  const outcomeFor = (batchId: string | null, statement: string): BatchOutcome => {
-    const key = batchId ?? "none";
-    let row = outcomes.get(key);
-    if (row === undefined) {
-      row = {
-        batchId,
-        statement: batchId === null ? "Work outside any batch" : statement,
-        added: 0,
-        reworked: 0,
-        dropped: 0,
-        finished: 0,
-        running: false,
-      };
-      outcomes.set(key, row);
-    }
-    return row;
-  };
   const failures = new Map<string, BrokenFact>();
   const failure = (job: string, statement: string, url?: string): BrokenFact => {
     let row = failures.get(job);
@@ -581,32 +543,11 @@ export async function gatherTodayFacts(
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     switch (e.kind) {
-      // "graph-stored" and "graph-batch-formed" feed only the old batch shape,
-      // KEPT FOR ONE ROLLOUT; the plan pass that wrote them is gone.
-      case "graph-stored": {
-        const batchId = str(d.batchId);
-        const named = batchId
-          ? ((await batchName(ctx.db.normalizeId("batches", batchId) ?? undefined)) ?? "A batch")
-          : null;
-        const row = outcomeFor(batchId ?? null, named ?? "A batch");
-        row.added += num(d.created);
-        row.reworked += num(d.updated);
-        row.dropped += num(d.retired) + num(d.archived);
-        break;
-      }
-      case "graph-batch-formed": {
-        const name = str(d.statement);
-        if (name !== undefined) outcomeFor(str(d.batchId) ?? name, name);
-        break;
-      }
       case "session-outcome": {
         const sessionId = str(d.sessionId);
         const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
         const session = rowId ? await ctx.db.get(rowId) : null;
         (await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId)).finished += 1;
-        const named =
-          (await batchName(session?.batchId)) ?? (await batchOfTodo(session?.todoId ?? e.todoId));
-        if (named !== null) outcomeFor(session?.batchId ?? null, named).finished += 1;
         if (d.outcome === "errored") {
           failure(
             "session",
@@ -623,12 +564,6 @@ export async function gatherTodayFacts(
         const live = session !== null && LIVE_STATUSES.includes(session.status as never);
         const todoRow = await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId);
         if (live) todoRow.running = true;
-        const named =
-          (await batchName(session?.batchId)) ?? (await batchOfTodo(session?.todoId ?? e.todoId));
-        if (named !== null) {
-          const row = outcomeFor(session?.batchId ?? null, named);
-          if (session !== null && LIVE_STATUSES.includes(session.status as never)) row.running = true;
-        }
         break;
       }
       case "session-ended": {
@@ -845,7 +780,6 @@ export async function gatherTodayFacts(
   //    runnerStatus, the one home; nothing here counts or guesses a number.
   const runners = await liveRunnerFacts(ctx);
 
-  const overnight = [...outcomes.values()];
   // The tail row, if any, last: it is the one line that names no todo.
   const overnightByTodo = [...byTodo.values()].sort(
     (a, b) => Number(a.todoId === null) - Number(b.todoId === null),
@@ -878,10 +812,6 @@ export async function gatherTodayFacts(
       .map(({ n }) => n),
     runners,
     overnightByTodo,
-    // KEPT FOR ONE ROLLOUT (BatchOutcome): the old batch-grouped fields.
-    overnight,
-    batchesPlanned: overnight.length,
-    batchesFinished: overnight.filter((o) => o.finished > 0).length,
     broken: [...failures.values()],
   };
 }

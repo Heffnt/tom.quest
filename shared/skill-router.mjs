@@ -43,8 +43,7 @@ export const CONTEXT_CALLERS = Object.freeze({
   planner: Object.freeze({ judges: true, captures: false }),
   "capture-context": Object.freeze({ judges: false, captures: true }),
   "time-notes": Object.freeze({ judges: false, captures: false }),
-  // GET /tts/planner-context (and /tts/batch-context, served for one rollout
-  // with the same payload plus the retired batch rows).
+  // GET /tts/planner-context.
   "planner-context": Object.freeze({ judges: true, captures: false }),
   "weekly-input": Object.freeze({ judges: true, captures: false }),
   // The weekly simplification pass (worker/jobs/simplify.mjs, through GET
