@@ -142,23 +142,13 @@ export default function RulingsList({
                             open the subject
                           </Link>
                         )}
-                        {row.ruling.subjectType === "batch" ? (
-                          // A ruling on a batch has no subject left to rule
-                          // on: batches are gone (Tom, 2026-09-24).
-                          <span
-                            aria-disabled="true"
-                            aria-label="a batch is no longer a subject a ruling can be recorded on"
-                            className="block h-[19px] w-[46px] rounded border border-border/60 bg-surface-alt/40"
-                          />
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setObjecting(row.ruling)}
-                            className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text"
-                          >
-                            object
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => setObjecting(row.ruling)}
+                          className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text"
+                        >
+                          object
+                        </button>
                       </div>
                     </>
                   ) : (

@@ -235,16 +235,6 @@ describe("internalGoldenInput", () => {
     expect((await t.query(internal.ttsEvals.internalGoldenInput, {})).items).toEqual([]);
   });
 
-  it("takes no item from a stored ruling on a batch", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      const batchId = await ctx.db.insert("batches", { statement: "a batch", status: "active", createdAt: now, updatedAt: now });
-      await ctx.db.insert("dtsRulings", { subjectType: "batch", batchId, verdict: "approve", ruledAt: now });
-    });
-    expect((await t.query(internal.ttsEvals.internalGoldenInput, {})).items).toEqual([]);
-  });
-
   it("uses uncategorised for a life todo without a category", () => {
     expect(partitionOf({ job: "prepare" })).toBe("prepare/uncategorised");
   });

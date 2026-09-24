@@ -439,7 +439,6 @@ export function parseTerms(specText) {
 // nothing in either file names the term. D2 asserts every entry still resolves
 // to a real symbol, so a rename breaks the build rather than the mapping.
 const TERM_CODE_SYMBOLS = Object.freeze({
-  batch: "convex/schema.ts:batches",
   todo: "convex/schema.ts:dtsTodos",
   ruling: "convex/schema.ts:dtsRulings",
   run: "convex/schema.ts:runs",

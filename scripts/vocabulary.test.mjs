@@ -214,7 +214,6 @@ function schemaTs(kinds = EVENT_KINDS, declaredWord = "fifteen") {
   return `import { defineSchema, defineTable } from "convex/server";
 
 export default defineSchema({
-  batches: defineTable({ purpose: v.string() }),
   dtsTodos: defineTable({ statement: v.string() }),
   dtsRulings: defineTable({ verdict: v.string() }),
   dtsBlocks: defineTable({ at: v.number() }),
@@ -619,14 +618,14 @@ describe("the disagreement check", () => {
   });
 
   it("D2 — a term's code symbol does not exist, in the printed shape", () => {
-    const result = run(makeCheckouts({ schema: schemaTs().replace("batches: defineTable", "dtsBatches: defineTable") }));
+    const result = run(makeCheckouts({ schema: schemaTs().replace("runs: defineTable", "dtsRuns: defineTable") }));
     expect(codes(result)).toEqual(["D2"]);
-    expect(result.disagreements[0].subject).toBe('term "batch"');
-    expect(result.disagreements[0].rows[1].text).toContain("`batches: defineTable`");
+    expect(result.disagreements[0].subject).toBe('term "run"');
+    expect(result.disagreements[0].rows[1].text).toContain("`runs: defineTable`");
     const block = formatDisagreement(result.disagreements[0]).split("\n");
-    expect(block[0]).toBe('DISAGREEMENT D2  term "batch"');
-    expect(block[1]).toBe("  spec  WikiTom tts/spec.md §5.4");
-    expect(block[2]).toBe("        a set of todos that share one purpose (§5.4).");
+    expect(block[0]).toBe('DISAGREEMENT D2  term "run"');
+    expect(block[1]).toBe("  spec  WikiTom tts/spec.md §23.1");
+    expect(block[2]).toBe("        one CLI or SDK thread (§23.1).");
     expect(block[3]).toBe("  code  tom.quest convex/schema.ts");
     expect(block[5]).toMatch(/^ {2}fix {3}point the term at the symbol that exists/);
     expect(block).toHaveLength(6);
@@ -685,7 +684,7 @@ describe("the disagreement check", () => {
   it("collects every disagreement and never stops at the first", () => {
     const result = run(
       makeCheckouts({
-        schema: schemaTs().replace("batches: defineTable", "dtsBatches: defineTable"),
+        schema: schemaTs().replace("runs: defineTable", "dtsRuns: defineTable"),
         "worker/runs/store.mjs": "const somethingElse = () => null;\n",
       }),
     );
@@ -694,7 +693,7 @@ describe("the disagreement check", () => {
   });
 
   it("exits 2 on a disagreement and writes nothing", async () => {
-    const checkouts = makeCheckouts({ schema: schemaTs().replace("batches: defineTable", "dtsBatches: defineTable") });
+    const checkouts = makeCheckouts({ schema: schemaTs().replace("runs: defineTable", "dtsRuns: defineTable") });
     const lines = [];
     const code = await main(["--wikitom", checkouts.wikitom, "--tom-quest", checkouts.tomQuest, "--write"], {
       write: (text) => lines.push(text),

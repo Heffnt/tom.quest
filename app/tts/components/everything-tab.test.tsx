@@ -307,12 +307,4 @@ describe("the sections above the list", () => {
     expect(applying).toContain("renew the visa");
     expect(applying).toContain("fence the session repo list");
   });
-
-  // witness: drop the subject filter in app/tts/lib.ts liveRulingsByKey — a
-  // ruling on a batch shows here with a blank subject.
-  it("leaves out a ruling on a batch", () => {
-    load([], [], [ruling({ subjectType: "batch", batchId: "b1" })]);
-    show();
-    expect(section("ruled, applying")).toBe("ruled, applying 0");
-  });
 });

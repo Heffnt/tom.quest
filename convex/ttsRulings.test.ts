@@ -1245,14 +1245,9 @@ describe("a ruling from Tom's words", () => {
   it("refuses a session opened on a batch, and a ruling on a batch at every door", async () => {
     const t = testDb();
     const { tom, todoId } = await sessionWithTurns(t, "adhoc");
-    const batchId = await t.run(async (ctx) =>
-      ctx.db.insert("batches", {
-        statement: "the dentist visit",
-        status: "archived",
-        createdAt: 1,
-        updatedAt: 1,
-      }),
-    );
+    // Any value: the argument itself is refused, and the batches table is no
+    // longer declared.
+    const batchId = "batch-id-from-before-the-narrow";
     await expect(
       tom.mutation(api.claudeSessions.createSession, {
         title: "the batch",

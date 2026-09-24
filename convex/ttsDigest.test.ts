@@ -652,14 +652,8 @@ describe("internalComposeToday", () => {
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
     await withTom(t);
-    const batchId = await t.run(async (ctx) =>
-      ctx.db.insert("batches", {
-        statement: "The research critical path",
-        status: "active",
-        createdAt: FIVE_AM - DAY,
-        updatedAt: FIVE_AM - DAY,
-      }),
-    );
+    // The id an old row carries; the batches table is no longer declared.
+    const batchId = "batch-id-from-before-the-narrow";
     await t.run(async (ctx) => {
       for (const counts of [{ created: 3, retired: 1 }, {}, { created: 1 }, { updated: 2 }]) {
         await ctx.db.insert("dtsEvents", {
