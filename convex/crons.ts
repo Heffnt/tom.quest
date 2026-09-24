@@ -25,6 +25,17 @@ crons.interval(
   internal.ttsRunners.internalRunnerSweep,
 );
 
+// The orchestrator's backstop (convex/orchestrator.ts): restarts its run from
+// the document when the live run has ended and its crash backoff has passed,
+// or when a claimed run's lease has run out. An ending schedules this itself;
+// the cron is what recovers a scheduled call that was lost. Nothing happens
+// while the orchestrator is stopped or has never been started.
+crons.interval(
+  "orchestrator sweep",
+  { seconds: 60 },
+  internal.orchestrator.internalSweep,
+);
+
 // ── TTS (spec: WikiTom tts/spec.md §7) ──────────────────────────────────────
 // The TTS day anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
 // each job fires at both possible UTC times (EDT/EST) and the handler's
@@ -64,6 +75,16 @@ crons.interval(
 
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});
+
+// The mirror of open pull requests, and the landing of every approved one
+// whose gate has turned green (convex/observeMerge.ts). The observation page's
+// Approve control records the ruling; this is what merges it afterwards.
+crons.interval(
+  "observe pull requests",
+  { minutes: 5 },
+  internal.observeMerge.refreshOpenPulls,
+  {},
+);
 
 // The model-of-tom files are POSTED by the nightly job on the Jarvis Box
 // (POST /tts/model-of-tom), not pulled by a cron — no Convex-side read of

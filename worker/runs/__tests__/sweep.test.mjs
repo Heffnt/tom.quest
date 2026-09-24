@@ -134,6 +134,24 @@ describe("run sweep", () => {
     });
   });
 
+  it("records an Astra run's session model, the orchestrator's first choice", async () => {
+    const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
+    const file = path.join(project, "rollout.jsonl");
+    fs.writeFileSync(file, jsonl([
+      codexMeta({ id: "astra", cwd: "C:/work", cliVersion: "0.153.3", baseInstructions: "instructions" }),
+      codexTurnContext({ model: "gpt-6-astra", effort: "xhigh" }),
+    ]));
+    const stat = fs.statSync(file);
+    const item = { runtime: "codex", host: "box", root: path.dirname(project), project: "project", threadId: "rollout", kind: "root", path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir: path.join(dir, "state"), store: store(), post, now: () => NOW });
+    expect(ingests.at(-1).run).toMatchObject({ model: "gpt-6-astra", sessionModel: "gpt-6-astra" });
+  });
+
   it("carries a Codex run's metadata through a second file part without session_meta", async () => {
     const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
     const file = path.join(project, "rollout.jsonl");

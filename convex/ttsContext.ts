@@ -217,8 +217,11 @@ function todoRow(todo: Doc<"dtsTodos">): ContextRecord["todos"][number] {
     batchId: todo.batchId,
     // The goal's CODE SUBJECT repository, carried for the router's area row
     // alone: a goal bound to an upstream code todo names the repository that
-    // work lives in even when its batch declares no repos, and 60 active rows
-    // carry it. The paired `codeExternalId` is NOT carried — nothing in the
+    // work lives in even when its batch declares no repos. The 60 active
+    // ComplexMultiTrigger goals that carried it lose it once
+    // ttsMigrations.internalConvertClosedUpstreamGoals has run (ruling 70
+    // retires CMT's registry); from then on only a batch's declared repos give
+    // its todos the CMT area row. The paired `codeExternalId` is NOT carried — nothing in the
     // routing table reads it, and this record holds exactly what the router
     // reads.
     codeRepo: todo.codeRepo,

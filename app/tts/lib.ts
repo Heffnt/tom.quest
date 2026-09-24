@@ -8,7 +8,9 @@ export type Todo = Doc<"dtsTodos">;
 export type Batch = Doc<"batches">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
-export type Ruling = Doc<"dtsRulings">;
+// A ruling the page shows: on a todo, a batch or a code entry. Answers to a
+// worker's elevation are rulings too, and listRulings leaves them out.
+export type Ruling = Doc<"dtsRulings"> & { subjectType: "life" | "code" | "batch" };
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.

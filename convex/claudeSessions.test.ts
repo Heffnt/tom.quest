@@ -4044,38 +4044,44 @@ describe("prospecting lane", () => {
   // second half goes red — the Jarvis Box would idle the night out on a repo it read
   // once. The last assertion is the fairness comparator's own: invert
   // `lastAt < repoLastAt` and the newest-read repo would win instead.
-  it("declines while both repos are inside the cooldown, then takes the stalest", async () => {
+  it("declines while every repo is inside the cooldown, then takes the stalest", async () => {
     const t = convexTest({ schema, modules });
     await withTom(t);
     await enableAuto(t);
     await heartbeat(t);
 
+    // Three repos are prospected (tom.quest, ComplexMultiTrigger, Jarvis) and
+    // two may be live at once, so the third is reached after the first two end.
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    const both = await prospectSessions(t);
-    expect(both).toHaveLength(2);
-    // Both out of the live set, so ONLY the cooldown can decline the tick.
-    for (const s of both) await endSession(t, s._id);
+    const firstTwo = await prospectSessions(t);
+    expect(firstTwo).toHaveLength(2);
+    for (const s of firstTwo) await endSession(t, s._id);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const all = await prospectSessions(t);
+    expect(all.map((s) => s.repo).sort()).toEqual(["ComplexMultiTrigger", "Jarvis", "tom.quest"]);
+    // Every one out of the live set, so ONLY the cooldown can decline the tick.
+    for (const s of all) await endSession(t, s._id);
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    expect(await prospectSessions(t)).toHaveLength(2);
+    expect(await prospectSessions(t)).toHaveLength(3);
 
-    // Age the trail past the 30-minute window, tom.quest more recently than
-    // ComplexMultiTrigger: the repo whose last prospecting is OLDEST wins.
+    // Age the trail past the 30-minute window, tom.quest most recently and
+    // ComplexMultiTrigger longest ago: the repo whose last prospecting is
+    // OLDEST wins.
     const now = Date.now();
+    const ago = { "tom.quest": 31, Jarvis: 60, ComplexMultiTrigger: 90 } as Record<string, number>;
     const events = await prospectEvents(t);
     await t.run(async (ctx) => {
       for (const e of events) {
         const repo = (e.data as { repo: string }).repo;
-        await ctx.db.patch(e._id, {
-          at: repo === "tom.quest" ? now - 31 * 60_000 : now - 90 * 60_000,
-        });
+        await ctx.db.patch(e._id, { at: now - ago[repo] * 60_000 });
       }
     });
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const after = await prospectSessions(t);
-    expect(after).toHaveLength(3);
+    expect(after).toHaveLength(4);
     const newest = after.sort((a, b) => b.createdAt - a.createdAt)[0];
     expect(newest.repo).toBe("ComplexMultiTrigger");
   });
@@ -4400,6 +4406,42 @@ describe("frontier scheduler", () => {
     const sessions = await workSessions(t);
     expect(sessions[0].repos).toEqual([]);
     expect(sessions[0].repo).toBe("none");
+  });
+
+  // "Jarvis" names the whole agent system as well as the repository, and "the
+  // Jarvis Box" is in prose everywhere. witness: drop TEXT_SCAN_SKIPPED from
+  // resolveSessionRepos in convex/claudeSessions.ts and the first half goes
+  // red, every todo that mentions the box getting a Heffnt/Jarvis clone.
+  it("never guesses Jarvis from a todo's words", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    await tom.mutation(api.tts.createTodo, { statement: "restart the poller on the Jarvis Box" });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const guessed = await workSessions(t);
+    expect(guessed).toHaveLength(1);
+    expect(guessed[0].repos).toEqual([]);
+    expect(guessed[0].repo).toBe("none");
+  });
+
+  it("gives a mission Jarvis when its batch declares it", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t);
+    await heartbeat(t);
+    await storeGraph(t, {
+      statement: "move the deploy job",
+      repos: ["Jarvis"],
+      tasks: [{ statement: "port the job to the new repository", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].repos).toEqual(["Jarvis"]);
+    expect(sessions[0].repo).toBe("Jarvis");
   });
 
   // witness: drop the isReady filter from the frontier walk in

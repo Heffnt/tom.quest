@@ -10,7 +10,7 @@ import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
-import { tracksCodeTodos } from "./ttsShared";
+import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -49,10 +49,13 @@ import { tracksCodeTodos } from "./ttsShared";
 //            way), and the ruling applies at admission with the session id;
 //            revise was consumed by the planner's brief pass, which is
 //            retired with ComplexMultiTrigger's registry (ruling 70) — a code
-//            ruling needs a brief and nothing writes one now; session applies the moment Tom opens an
-//            interactive session on the code block, whose opener names each
+//            ruling needs a brief and nothing writes one now; session applies
+//            the moment Tom opens an interactive session on the code block, whose opener names each
 //            subject and sentence it consumes (liveCodeSessionRulings +
 //            markCodeSessionRulingsApplied, from claudeSessions.insertSession).
+//            A code subject that names a CHANGE rather than a todo
+//            (ttsShared.isChangeSubject) applies here on every verdict; an
+//            approve is landed by convex/observeMerge.ts once its gate is green.
 // appliedAt/applyResult record the application either way; a newer ruling on
 // the same subject supersedes an older unapplied one (append-only, history
 // kept).
@@ -90,17 +93,20 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code, and batch keys disjoint). Client
-// code derives live rulings with the same rule via app/tts/lib.ts.
+// spaces; the type prefix keeps life, code, batch and elevation keys
+// disjoint). Client code derives live rulings with the same rule via
+// app/tts/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch";
+  subjectType: "life" | "code" | "batch" | "elevation";
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
+  elevationId?: string;
 }) => {
   if (row.subjectType === "life") return `life ${row.todoId}`;
   if (row.subjectType === "batch") return `batch ${row.batchId}`;
+  if (row.subjectType === "elevation") return `elevation ${row.elevationId}`;
   return `code ${row.repo} ${row.externalId}`;
 };
 
@@ -112,15 +118,22 @@ export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    return await ctx.db.query("dtsRulings").collect();
+    // An elevation's answer is about a worker's question, not a todo, batch
+    // or code entry the page shows, so the page is not sent it.
+    return (await ctx.db.query("dtsRulings").collect()).filter(
+      (r): r is typeof r & { subjectType: "life" | "code" | "batch" } => r.subjectType !== "elevation",
+    );
   },
 });
 
 // The ONE implementation of recording a ruling — used by the Tom-gated
-// recordRuling below and by internalRecordRuling (a live session's pen, the
-// tts.internalTriage pattern), so verdict semantics cannot drift between the
-// two doors.
-async function insertRuling(
+// recordRuling below, by internalRecordRuling (a live session's pen, the
+// tts.internalTriage pattern), and by observe.approveChange (the Approve
+// control on the observation page), so verdict semantics cannot drift between
+// the doors. EXPORTED for that third caller and for no other reason: a
+// mutation cannot call another mutation in Convex, so a door that wants these
+// semantics has to call this function.
+export async function insertRuling(
   ctx: MutationCtx,
   {
     todoId,
@@ -159,8 +172,10 @@ async function insertRuling(
     // ever opened. ComplexMultiTrigger is the case: Tom's ruling of 2026-09-22
     // (CMT adoption ruling 70) moved its todos into TTS, where they are ruled
     // as todos. One check for every pen: the page's buttons, the session CLI
-    // pen and the ruling from Tom's words all arrive here.
-    if (isCode && !tracksCodeTodos(repo!)) {
+    // pen and the ruling from Tom's words all arrive here. A ruling on a
+    // CHANGE (a pull request or commit, isChangeSubject below) is not about a
+    // code todo, so it passes in any repository.
+    if (isCode && !isChangeSubject(externalId!) && !tracksCodeTodos(repo!)) {
       throw new Error(
         `refused: ${repo} is off the code-todo list (ttsShared CODE_TODO_REPOS) — its mirror rows are records, and its todos are ruled in TTS`,
       );
@@ -281,6 +296,22 @@ async function insertRuling(
       // freeze (AUTO_BATCH_SESSION_PAUSE_MS in claudeSessions.ts): an
       // applied-forever test at the batch level would strand every task in the
       // graph on one conversation Tom meant to have.
+    }
+
+    if (isCode && isChangeSubject(externalId!)) {
+      // A RULING ON A CHANGE (a pull request or a merged commit, not a code
+      // todo) is applied the moment it is written, because nothing else can
+      // ever apply it: the auto-session scheduler would read an unapplied
+      // approve as a worker mission and refuse it as "not open in the mirror",
+      // and the brief pass would wait forever on a revise. What an approve
+      // sets in motion is read off this row by convex/observeMerge.ts, which
+      // lands the change once its gate is green; a later ruling on the same
+      // subject is newer and so withdraws it.
+      appliedAt = now;
+      applyResult =
+        verdict === "approve"
+          ? "approved: the record merges it once its gate is green"
+          : `${verdict} recorded on the change`;
     }
 
     const id = await ctx.db.insert("dtsRulings", {
@@ -906,10 +937,14 @@ export function briefAwaitsRuling(
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
+    // The planner reads these as Tom's recent rulings on its todos and
+    // batches. An answer to a worker's elevation is about neither, and a
+    // delegate's answer is not his, so none is sent; left out before the cap.
     return await ctx.db
       .query("dtsRulings")
       .withIndex("by_ruled")
       .order("desc")
+      .filter((q) => q.neq(q.field("subjectType"), "elevation"))
       .take(Math.min(limit ?? 200, 1000));
   },
 });

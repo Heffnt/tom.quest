@@ -323,7 +323,7 @@ ${WHAT_TTS_IS}
   <tr><td>3</td><td>A scan of the todo's own text — statement, brief, explanation — for the name of a known repository, returning every match.</td></tr>
 </table>
 
-<p>The known repositories are a fixed list of three: <span class="mono">tom.quest</span>, <span class="mono">ComplexMultiTrigger</span> and <span class="mono">WikiTom</span>. A name outside the list is dropped rather than treated as an error. With no repositories the session gets an empty scratch directory; with one, that checkout is its working directory; with several, its working directory is the folder holding all of them.</p>
+<p>The known repositories are a fixed list of four: <span class="mono">tom.quest</span>, <span class="mono">ComplexMultiTrigger</span>, <span class="mono">WikiTom</span> and <span class="mono">Jarvis</span>. A name outside the list is dropped rather than treated as an error. With no repositories the session gets an empty scratch directory; with one, that checkout is its working directory; with several, its working directory is the folder holding all of them.</p>
 
 <h2>The branch, and the one thing a session may never do</h2>
 

@@ -1,5 +1,6 @@
-// worker-env.mjs — the ONE reader of /etc/tts/worker.env, shared by the cron
-// jobs (worker/jobs/) and the session-host daemon (worker/session-host/).
+// worker-env.mjs — the ONE reader of /etc/tts/worker.env, and its one writer
+// (setEnvLine, for values from tom.quest/secrets), shared by the cron jobs
+// (worker/jobs/) and the session-host daemon (worker/session-host/).
 // Plain Node ESM, zero npm dependencies, node:fs only — same rule as the rest
 // of the Jarvis Box's code.
 //
@@ -61,6 +62,126 @@ export function loadEnv({ path = ENV_PATH, require: required = [] } = {}) {
     }
   }
   return env;
+}
+
+// ---------------------------------------------------------------------------
+// The one writer: a value delivered from tom.quest/secrets
+// ---------------------------------------------------------------------------
+//
+// The session-host daemon takes each value Tom pastes on tom.quest/secrets
+// (the secretMailbox table in convex/secrets.ts) and writes it here, beside
+// the reader, so the file's format has one home.
+//
+// WHERE A LINE GOES. A name the file already holds keeps its place and its
+// policy: its line is replaced, and whatever passed or scrubbed it before
+// still does. A name the file does not hold goes into the mailbox block,
+// between MAILBOX_BEGIN and MAILBOX_END, and every name in that block is kept
+// out of the daemon's own environment (worker/session-host/secret-mailbox.mjs),
+// so no agent it starts inherits one. The process that needs such a variable
+// reads it from this file by name, through loadEnv. The block has an end line
+// so that a line appended to the file by hand (`>> worker.env`) lands after
+// it and keeps the ordinary treatment.
+//
+// ATOMIC. The new file is written beside the old one under a temporary name,
+// mode 0600, flushed, then renamed over it, so a reader (a cron job starting,
+// systemd starting the daemon) sees the old file or the new one, never half.
+export const MAILBOX_BEGIN = "# tom.quest/secrets: the names from here to the end line are kept out of every agent's environment";
+export const MAILBOX_END = "# end of tom.quest/secrets";
+
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+
+function lineKey(rawLine) {
+  const line = rawLine.trim();
+  if (line === "" || line.startsWith("#")) return null;
+  const eq = line.indexOf("=");
+  if (eq === -1) return null;
+  let key = line.slice(0, eq).trim();
+  if (key.startsWith("export ")) key = key.slice("export ".length).trim();
+  return key;
+}
+
+/** The names in the env file's mailbox block; empty when there is no file or no block. */
+export function mailboxNames({ path = ENV_PATH } = {}) {
+  let text;
+  try {
+    text = fs.readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const lines = text.split("\n");
+  const begin = lines.indexOf(MAILBOX_BEGIN);
+  if (begin === -1) return [];
+  // A block whose end line is gone (only a hand edit removes it) runs to the
+  // end of the file. That is the reading that fails closed: stopping at the
+  // begin line would hand those names back to every agent the daemon starts,
+  // and throwing would stop the daemon at start.
+  const end = lines.indexOf(MAILBOX_END, begin + 1);
+  return lines
+    .slice(begin + 1, end === -1 ? lines.length : end)
+    .map(lineKey)
+    .filter((key) => key !== null);
+}
+
+/**
+ * Write NAME=value into the env file, replacing the name's line if it has one
+ * (and dropping any later duplicate, since the last line wins on read) or
+ * adding it to the mailbox block. Throws on a malformed name or a value
+ * with a line break; a thrown message names the variable, never the value.
+ */
+export function setEnvLine({ path = ENV_PATH, name, value }) {
+  if (!ENV_NAME.test(name)) throw new Error(`setEnvLine: ${JSON.stringify(name)} is not a variable name`);
+  if (typeof value !== "string" || value === "") throw new Error(`setEnvLine: ${name} is empty`);
+  if (/[\r\n\0]/.test(value)) throw new Error(`setEnvLine: ${name} contains a line break`);
+  let text = "";
+  try {
+    text = fs.readFileSync(path, "utf8");
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+  const line = `${name}=${value}`;
+  const lines = text === "" ? [] : text.replace(/\n$/, "").split("\n");
+  let placed = false;
+  const out = [];
+  for (const existing of lines) {
+    if (lineKey(existing) !== name) out.push(existing);
+    else if (!placed) {
+      out.push(line);
+      placed = true;
+    }
+  }
+  if (!placed) {
+    // Make sure the block exists and is closed, then add the line just above
+    // its end line. A begin line with no end line is closed at the end of the
+    // file, which is where mailboxNames already takes such a block to end, so
+    // the writer never moves a line into or out of the block as read.
+    let begin = out.indexOf(MAILBOX_BEGIN);
+    if (begin === -1) {
+      if (out.length > 0 && out[out.length - 1].trim() !== "") out.push("");
+      out.push(MAILBOX_BEGIN);
+      begin = out.length - 1;
+    }
+    if (out.indexOf(MAILBOX_END, begin + 1) === -1) out.push(MAILBOX_END);
+    out.splice(out.indexOf(MAILBOX_END, begin + 1), 0, line);
+  }
+  const tmp = `${path}.tmp-${process.pid}`;
+  fs.rmSync(tmp, { force: true });
+  // flag "wx": the mode applies only to a file this call creates, and the rm
+  // above guarantees it creates one (credential-file.mjs says why this matters).
+  const fd = fs.openSync(tmp, "wx", 0o600);
+  try {
+    fs.fchmodSync(fd, 0o600); // the umask cannot widen it, but say it outright
+    fs.writeSync(fd, `${out.join("\n")}\n`);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, path);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  return { placed: placed ? "replaced" : "added" };
 }
 
 // ---------------------------------------------------------------------------
@@ -135,24 +256,45 @@ export function graphVersion() {
 }
 
 // ---------------------------------------------------------------------------
-// A secret's value as an HTTP bearer token
+// The OpenRouter key's shape
 // ---------------------------------------------------------------------------
 
 /**
- * What makes `value` unusable as a bearer token, as a sentence of character
- * counts, or null when every character is printable ASCII other than space
- * (0x21-0x7e). Never names a character or a position: the value is a secret.
+ * What is wrong with `value` as an OpenRouter key, as a sentence of character
+ * counts, or null when it is printable ASCII other than space (0x21-0x7e) and
+ * begins with OpenRouter's `sk-or-` prefix. Never names a character of the
+ * key: the value is a secret, and only counts and the prefix are reported.
  *
  * THE ONE DEFINITION of a clean OPENROUTER_API_KEY. scripts/codex-run.mjs
  * refuses a run's key with it, and worker/setup.sh's rollout warning calls it
  * through node on the value loadEnv above reads, so the rollout and the run
- * judge the same value by the same rule. Codex, given a value holding a
- * control character, sends its request with no Authorization header at all.
+ * judge the same value by the same rule.
+ *
+ * WHY THE PREFIX. OpenRouter answers a bearer token that does not begin with
+ * sk-or- with "401 Missing Authentication header", the same words a reader
+ * takes for a header that never arrived (it answers a request with no header
+ * at all with "No cookie auth credentials found"). On 2026-09-24 the box's key
+ * was stored with four characters before its prefix, the tail of a terminal's
+ * paste marker ESC[200~, and every run failed that way while the header was
+ * sent each time.
  */
-export function bearerTokenProblem(value) {
-  const bad = [...String(value)].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
-  if (bad.length === 0) return null;
-  const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
-  const space = bad.filter((ch) => ch === " ").length;
-  return `${bad.length} character(s) outside printable ASCII (${control} control, ${space} space, ${bad.length - control - space} non-ASCII)`;
+export function openrouterKeyProblem(value) {
+  const text = String(value);
+  const problems = [];
+  const bad = [...text].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
+  if (bad.length > 0) {
+    const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
+    const space = bad.filter((ch) => ch === " ").length;
+    problems.push(`${bad.length} character(s) outside printable ASCII (${control} control, ${space} space, ${bad.length - control - space} non-ASCII)`);
+  }
+  const at = text.indexOf("sk-or-");
+  if (at !== 0) problems.push(at > 0 ? `${[...text.slice(0, at)].length} character(s) before its sk-or- prefix` : "no sk-or- prefix");
+  // After the prefix an OpenRouter key is letters, digits, "-" and "_"
+  // (sk-or-v1-<64 hex> today). The printable class above passes the "~" a
+  // paste marker leaves behind (…201~), which OpenRouter would refuse too.
+  if (at >= 0) {
+    const stray = [...text.slice(at)].filter((ch) => /^[\x21-\x7e]$/.test(ch) && !/^[A-Za-z0-9_-]$/.test(ch)).length;
+    if (stray > 0) problems.push(`${stray} punctuation character(s) after its sk-or- prefix`);
+  }
+  return problems.length > 0 ? problems.join(" and ") : null;
 }

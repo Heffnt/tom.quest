@@ -13,6 +13,12 @@ import schema from "./schema";
 import {
   BATCH_NEEDS_MIGRATION,
   CLEAR_MIGRATION,
+  CLOSED_UPSTREAM_CONDITIONS,
+  CLOSED_UPSTREAM_MIGRATION,
+  STEERING_GRAD_ARCHIVE_REASON,
+  STEERING_GRAD_ENTRIES,
+  closedUpstreamStatement,
+  duplicateArchiveReason,
   READINESS_MIGRATION,
   RECOMMENDATION_MIGRATION,
   RETIRED_FIELD_CLEARED,
@@ -1231,4 +1237,323 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     expect(briefsOnly.totals["recommendation-normalized"]).toBe(1);
     expect(briefsOnly.totals["dtsTodos-scanned"]).toBe(0);
   }
+});
+
+describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
+  // The rows the two batch migrations wrote: a goal worded "ComplexMultiTrigger
+  // <id> closed upstream", the same sentence as its condition, the entry bound
+  // as its code subject, source "migration" — prepared by the preparer since.
+  const OLD = NOW - 8 * DAY_MS; // the 2026-08-29 migration
+  const NEW = NOW - DAY_MS; // the 2026-09-06 migration
+
+  async function seedBatch(t: ReturnType<typeof convexTest>, statement: string) {
+    return await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement,
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+  }
+
+  const goal = (
+    entry: string,
+    batchId: Id<"batches">,
+    createdAt: number,
+    extra: Partial<Doc<"dtsTodos">> = {},
+  ): Seed => ({
+    statement: closedUpstreamStatement(entry),
+    condition: closedUpstreamStatement(entry),
+    kind: "goal",
+    codeRepo: "ComplexMultiTrigger",
+    codeExternalId: entry,
+    batchId,
+    readiness: "prepared",
+    brief: `a brief about ${entry} being closed upstream`,
+    source: "migration",
+    createdAt,
+    ...extra,
+  });
+
+  /** The two-copy case, a tier-H entry, the steering-grad case, the done
+   * case, a single copy, and three rows that are not this migration's. */
+  async function seed(t: ReturnType<typeof convexTest>) {
+    const oldBatch = await seedBatch(t, "the 2026-08-29 batch");
+    const newBatch = await seedBatch(t, "the 2026-09-06 batch");
+    const [task] = await seedTodos(t, [
+      { statement: "a task in the old batch", kind: "task", batchId: oldBatch, source: "migration" },
+    ]);
+    // Inserted newest first, so "the first copy" has to come from createdAt,
+    // not from insertion order.
+    const [
+      twoCopiesNew,
+      twoCopiesOld,
+      horizonOld,
+      horizonNew,
+      steerOld,
+      steerNew,
+      doneOld,
+      doneNewLive,
+      single,
+      otherRepo,
+      aTask,
+      notMigration,
+    ] = await seedTodos(t, [
+      goal("o-standardize-ruling", newBatch, NEW),
+      goal("o-standardize-ruling", oldBatch, OLD, { needs: [task] }),
+      goal("formal-proofs-gold-standard", oldBatch, OLD),
+      goal("formal-proofs-gold-standard", newBatch, NEW),
+      goal("steering-grad-monitoring-cadence", oldBatch, OLD),
+      goal("steering-grad-monitoring-cadence", newBatch, NEW),
+      goal("select-family-pool-sizing", oldBatch, OLD, { status: "done", doneAt: OLD }),
+      goal("select-family-pool-sizing", newBatch, NEW),
+      goal("share-generations-packaging-ruling", newBatch, NEW),
+      {
+        ...goal("some-entry", oldBatch, OLD),
+        statement: "tom.quest some-entry closed upstream",
+        codeRepo: "tom.quest",
+      },
+      { ...goal("cgba-plant-fix", oldBatch, OLD), kind: "task" },
+      { ...goal("cgba-plant-fix", oldBatch, OLD), source: "manual" },
+    ]);
+    return {
+      oldBatch,
+      newBatch,
+      task,
+      twoCopiesNew,
+      twoCopiesOld,
+      horizonOld,
+      horizonNew,
+      steerOld,
+      steerNew,
+      doneOld,
+      doneNewLive,
+      single,
+      otherRepo,
+      aTask,
+      notMigration,
+    };
+  }
+
+  const byId = async (t: ReturnType<typeof convexTest>) =>
+    new Map((await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).map((r) => [r._id, r]));
+
+  const firstRunCounts = {
+    scanned: 12,
+    converted: 4,
+    "converted-to-waiting": 1,
+    "duplicate-archived": 2,
+    "steering-grad-archived": 2,
+    "done-left": 1,
+    "already-converted": 0,
+    // The fixture seeds 4 of the 27 entries.
+    "entry-without-goal": Object.keys(CLOSED_UPSTREAM_CONDITIONS).length - 4,
+    "unlisted-left": 0,
+  };
+
+  it("names 27 entries to convert and 4 to archive, disjoint", () => {
+    expect(Object.keys(CLOSED_UPSTREAM_CONDITIONS)).toHaveLength(27);
+    expect(STEERING_GRAD_ENTRIES).toHaveLength(4);
+    for (const entry of STEERING_GRAD_ENTRIES) {
+      expect(CLOSED_UPSTREAM_CONDITIONS[entry]).toBeUndefined();
+    }
+    const horizon = Object.entries(CLOSED_UPSTREAM_CONDITIONS)
+      .filter(([, c]) => c.tier === "H")
+      .map(([entry]) => entry)
+      .sort();
+    expect(horizon).toEqual([
+      "formal-proofs-gold-standard",
+      "input-anomaly-mismatch-nulls",
+      "train-time-corr-below-chance-detectors",
+    ]);
+  });
+
+  // witness: keep the newest copy instead of the first, or leave the code
+  // subject on the kept goal — the mirror would still own it, and a ruling on
+  // it would be filed as a code ruling that CMT no longer takes.
+  it("converts the first copy in place and archives the second, naming the kept id", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    const report = await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    expect(report.counts).toEqual(firstRunCounts);
+
+    const rows = await byId(t);
+    const kept = rows.get(ids.twoCopiesOld)!;
+    const condition = CLOSED_UPSTREAM_CONDITIONS["o-standardize-ruling"].condition;
+    expect(kept.statement).toBe(condition);
+    expect(kept.condition).toBe(condition);
+    expect(kept.status).toBe("active");
+    expect(kept.kind).toBe("goal");
+    expect(kept.codeRepo).toBeUndefined();
+    expect(kept.codeExternalId).toBeUndefined();
+    expect(kept.batchId).toBe(ids.oldBatch);
+    expect(kept.needs).toEqual([ids.task]);
+    // The prepared brief describes the old wording: preparation is owed again.
+    expect(kept.readiness).toBe("unprepared");
+
+    const copy = rows.get(ids.twoCopiesNew)!;
+    expect(copy.status).toBe("archived");
+    expect(copy.archivedAt).toBeDefined();
+    expect(copy.statement).toBe(closedUpstreamStatement("o-standardize-ruling"));
+    expect(copy.unarchiveCondition).toBeUndefined();
+    expect(copy.batchId).toBe(ids.newBatch);
+
+    // A single copy is converted, and nothing is archived for it.
+    const single = rows.get(ids.single)!;
+    expect(single.statement).toBe(
+      CLOSED_UPSTREAM_CONDITIONS["share-generations-packaging-ruling"].condition,
+    );
+    expect(single.status).toBe("active");
+
+    // Nothing resurfaces: updatedAt is untouched on every row.
+    for (const r of rows.values()) expect(r.updatedAt).toBe(NOW);
+
+    const [event] = await eventsOfKind(t, `${CLOSED_UPSTREAM_MIGRATION}-migrated`);
+    expect(event.data.counts).toEqual(firstRunCounts);
+    expect(event.data.changes).toContainEqual({
+      todoId: ids.twoCopiesOld,
+      entry: "o-standardize-ruling",
+      oldStatement: closedUpstreamStatement("o-standardize-ruling"),
+      action: "converted",
+      newStatement: condition,
+      status: "active",
+    });
+    expect(event.data.changes).toContainEqual({
+      todoId: ids.twoCopiesNew,
+      entry: "o-standardize-ruling",
+      oldStatement: closedUpstreamStatement("o-standardize-ruling"),
+      action: "archived",
+      reason: duplicateArchiveReason("o-standardize-ruling", ids.twoCopiesOld),
+    });
+    expect(duplicateArchiveReason("o-standardize-ruling", ids.twoCopiesOld)).toContain(
+      ids.twoCopiesOld,
+    );
+  });
+
+  // witness: store a horizon entry as active — a worker would pick up a goal
+  // Tom parked.
+  it("stores a tier-H entry as waiting, with no wake time", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    const rows = await byId(t);
+    const kept = rows.get(ids.horizonOld)!;
+    expect(kept.statement).toBe(
+      CLOSED_UPSTREAM_CONDITIONS["formal-proofs-gold-standard"].condition,
+    );
+    expect(kept.status).toBe("waiting");
+    expect(kept.wakeAt).toBeUndefined();
+    expect(isReady(kept, buildDoneSet([...rows.values()]), NOW)).toBe(false);
+    expect(rows.get(ids.horizonNew)!.status).toBe("archived");
+  });
+
+  // witness: convert a steering-grad entry like the rest — it would ask for a
+  // steering row the amendment removed.
+  it("archives every copy of a steering-grad entry with the amendment's reason", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    const report = await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    const rows = await byId(t);
+    for (const id of [ids.steerOld, ids.steerNew]) {
+      expect(rows.get(id)!.status).toBe("archived");
+      expect(rows.get(id)!.statement).toBe(
+        closedUpstreamStatement("steering-grad-monitoring-cadence"),
+      );
+      expect(report.changes).toContainEqual({
+        todoId: id,
+        entry: "steering-grad-monitoring-cadence",
+        oldStatement: closedUpstreamStatement("steering-grad-monitoring-cadence"),
+        action: "archived",
+        reason: STEERING_GRAD_ARCHIVE_REASON,
+      });
+    }
+  });
+
+  // witness: count the done copy as the first copy — the live one would be
+  // archived and the entry's goal would read as met.
+  it("leaves a done copy alone and converts the live one beside it", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    const rows = await byId(t);
+    const done = rows.get(ids.doneOld)!;
+    expect(done.status).toBe("done");
+    expect(done.statement).toBe(closedUpstreamStatement("select-family-pool-sizing"));
+    expect(done.codeExternalId).toBe("select-family-pool-sizing");
+    expect(done.readiness).toBe("prepared");
+    const live = rows.get(ids.doneNewLive)!;
+    expect(live.status).toBe("active");
+    expect(live.statement).toBe(
+      CLOSED_UPSTREAM_CONDITIONS["select-family-pool-sizing"].condition,
+    );
+    expect(live.batchId).toBe(ids.newBatch);
+  });
+
+  it("leaves another repo's goal, a task, and a row it did not write untouched", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    const before = await byId(t);
+    await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    const after = await byId(t);
+    for (const id of [ids.otherRepo, ids.aTask, ids.notMigration]) {
+      expect(after.get(id)).toEqual(before.get(id));
+    }
+  });
+
+  // witness: leave the code subject on the kept goal — the mirror's
+  // goal-closing sweep would still close it from a registry entry.
+  it("a converted goal is no longer closed by the code-todo mirror", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: "ComplexMultiTrigger",
+      rows: [
+        {
+          externalId: "o-standardize-ruling",
+          tier: "R",
+          status: "closed",
+          statement: "o-standardize ruling",
+          url: "https://github.com/Heffnt/ComplexMultiTrigger/blob/master/vqc/todos.yaml",
+        },
+      ],
+    });
+    expect((await byId(t)).get(ids.twoCopiesOld)!.status).toBe("active");
+  });
+
+  it("a dry run reports the same counts and changes and writes nothing but the dry-run event", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t);
+    const before = await byId(t);
+    const report = await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {
+      dryRun: true,
+    });
+    expect(report.dryRun).toBe(true);
+    expect(report.counts).toEqual(firstRunCounts);
+    expect(await byId(t)).toEqual(before);
+    expect(await eventsOfKind(t, `${CLOSED_UPSTREAM_MIGRATION}-migrated`)).toHaveLength(0);
+    const [event] = await eventsOfKind(t, `${CLOSED_UPSTREAM_MIGRATION}-dry-run`);
+    expect(event.data.changes).toEqual(report.changes);
+  });
+
+  // witness: match an entry by its completion test as well as by the old
+  // wording — every run would rewrite the kept goal and log it again.
+  it("is idempotent: a second run changes nothing", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t);
+    await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    const between = await byId(t);
+    const again = await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
+    expect(await byId(t)).toEqual(between);
+    expect(again.changes.filter((c) => c.action !== "left")).toEqual([]);
+    expect(again.counts).toEqual({
+      ...firstRunCounts,
+      converted: 0,
+      "converted-to-waiting": 0,
+      "duplicate-archived": 0,
+      "steering-grad-archived": 0,
+      "already-converted": 4,
+    });
+  });
 });

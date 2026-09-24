@@ -87,7 +87,14 @@ export function parseAnswer(text) {
   }
 }
 
-const callerName = (ask) => (ask.sessionId ? "a worker" : ask.runnerId ? "a runner watching an experiment" : "the " + ask.job + " job");
+const callerName = (ask) =>
+  ask.sessionId
+    ? "a worker"
+    : ask.runnerId
+      ? "a runner watching an experiment"
+      : ask.elevationId
+        ? "the orchestrator, for a worker that raised this decision"
+        : "the " + ask.job + " job";
 const todoStatement = (ask) =>
   typeof ask.subject === "string" && ask.subject.trim()
     ? ask.subject.trim()
@@ -143,10 +150,20 @@ export function delegatePrompt(ask, { layers, narrowList }) {
     "One option from the list, the one reason for it, and nothing else. Not two options, not a",
     'condition, not "it depends", not a plan. The agent is standing still until you answer, and half',
     "an answer is the same as no answer.", "",
-    "The caller states its own recommendation. It has read the item and you have not, so its",
-    "recommendation is the default: take it unless something you have read above says otherwise.",
-    "When you take it, your reason says what in Tom's rules or intent it agrees with. When you do",
-    "not, your reason says the one line it breaks.", "",
+    ...(ask.recommendation === undefined
+      ? [
+          // An elevation's trade-off (Tom, 2026-09-21): the delegate is shown
+          // the two sides and no recommendation, so it weighs them itself.
+          "The caller gives you the two sides and NO recommendation, on purpose: this is a trade-off,",
+          "with a good reason either way, and the choice between them is yours. Weigh each side against",
+          "Tom's rules and intent, and your reason names the line that tipped it.", "",
+        ]
+      : [
+          "The caller states its own recommendation. It has read the item and you have not, so its",
+          "recommendation is the default: take it unless something you have read above says otherwise.",
+          "When you take it, your reason says what in Tom's rules or intent it agrees with. When you do",
+          "not, your reason says the one line it breaks.", "",
+        ]),
     "If neither option is good, still pick the less bad one and say in the reason what is wrong with",
     "both. Refusing because you dislike the choices is refusing to do the job — the narrow list",
     "below is the only reason to refuse.", "",
@@ -184,13 +201,15 @@ export function delegatePrompt(ask, { layers, narrowList }) {
     "working on: " + todoStatement(ask),
     "its question: " + ask.question,
     "the options it gave:", options,
-    "what it recommends: " + ask.recommendation,
-    "what it will do if you do not answer: " + ask.fallback + objections,
+    ...(ask.recommendation === undefined ? [] : ["what it recommends: " + ask.recommendation]),
+    // An elevation's fallback is the orchestrator's own default, which would
+    // tell the delegate the side it leans to; it is not shown.
+    (ask.elevationId ? "" : "what it will do if you do not answer: " + ask.fallback) + objections,
   ].join("\n");
 }
 
 function counterPath(ask, base) {
-  const caller = ask.sessionId ?? (ask.runnerId ? `runner-${ask.runnerId}` : ask.job);
+  const caller = ask.sessionId ?? (ask.runnerId ? `runner-${ask.runnerId}` : ask.elevationId ? `elevation-${ask.elevationId}` : ask.job);
   return path.join(base, "count", String(caller).replace(/[^A-Za-z0-9._-]/g, "_"));
 }
 function localCount(io, ask) {
@@ -265,6 +284,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
     const query = new URLSearchParams();
     if (ask.sessionId) query.set("sessionId", ask.sessionId);
     if (ask.runnerId) query.set("runnerId", ask.runnerId);
+    if (ask.elevationId) query.set("elevationId", ask.elevationId);
     if (ask.job) query.set("job", ask.job);
     if (ask.todoId) query.set("todoId", ask.todoId);
     context = (await io.convexFetch(env, "/tts/ask-context?" + query.toString())) ?? context;

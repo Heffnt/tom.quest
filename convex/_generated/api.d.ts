@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as agentSurfaces from "../agentSurfaces.js";
 import type * as auth from "../auth.js";
 import type * as authRoles from "../authRoles.js";
 import type * as boolbackPresets from "../boolbackPresets.js";
@@ -20,8 +21,12 @@ import type * as gpuPool from "../gpuPool.js";
 import type * as http from "../http.js";
 import type * as intent from "../intent.js";
 import type * as intentParse from "../intentParse.js";
+import type * as observe from "../observe.js";
+import type * as observeMerge from "../observeMerge.js";
+import type * as orchestrator from "../orchestrator.js";
 import type * as runLabels from "../runLabels.js";
 import type * as runs from "../runs.js";
+import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as tts from "../tts.js";
@@ -64,6 +69,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  agentSurfaces: typeof agentSurfaces;
   auth: typeof auth;
   authRoles: typeof authRoles;
   boolbackPresets: typeof boolbackPresets;
@@ -76,8 +82,12 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   intent: typeof intent;
   intentParse: typeof intentParse;
+  observe: typeof observe;
+  observeMerge: typeof observeMerge;
+  orchestrator: typeof orchestrator;
   runLabels: typeof runLabels;
   runs: typeof runs;
+  secrets: typeof secrets;
   serverHealth: typeof serverHealth;
   symbolScores: typeof symbolScores;
   tts: typeof tts;

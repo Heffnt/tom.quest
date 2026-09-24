@@ -44,6 +44,7 @@ describe("EXPORT_TABLES", () => {
 describe("GET /tts/export", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   it("lists the tables when none is named", async () => {
@@ -84,19 +85,39 @@ describe("GET /tts/export", () => {
 
   // witness: without the boundary a row written mid-walk lands in a later
   // page of an earlier instant, and the copy is of no single moment.
+  //
+  // convex-test stamps `_creationTime` from `Date.now()`, and a second insert
+  // in the same millisecond gets the previous stamp + 0.001 ms. With the real
+  // clock both rows could land in one millisecond, putting "new" before any
+  // boundary a whole millisecond or less after "old". Only `Date` is faked, so
+  // the harness's promises and timers run as usual.
   it("leaves out rows created after the boundary", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const OLD_AT = Date.UTC(2026, 8, 24, 4, 0, 0);
+    const NEW_AT = OLD_AT + 1_000;
     const t = convexTest({ schema, modules });
+    vi.setSystemTime(OLD_AT);
     await t.run(async (ctx) => ctx.db.insert("dtsEvents", { at: 1, kind: "old" }));
-    const boundary = (
-      await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())
-    )[0]._creationTime;
+    vi.setSystemTime(NEW_AT);
     await t.run(async (ctx) => ctx.db.insert("dtsEvents", { at: 1, kind: "new" }));
-    // boundary = the old row's own creation time: strictly-before excludes it
-    // too, so "just after" it admits exactly the old row.
-    const res = await get(t, `/tts/export?table=dtsEvents&boundary=${boundary + 0.5}`);
-    const page = await res.json();
-    expect(page.rows.map((r: { kind: string }) => r.kind)).toEqual(["old"]);
+    const stamps = (await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).map(
+      (r) => [r.kind, r._creationTime],
+    );
+    expect(stamps).toEqual([
+      ["old", OLD_AT],
+      ["new", NEW_AT],
+    ]);
+    const kinds = async (boundary: number) =>
+      ((await (await get(t, `/tts/export?table=dtsEvents&boundary=${boundary}`)).json()).rows as {
+        kind: string;
+      }[]).map((r) => r.kind);
+    // Between the two rows: only the old one.
+    expect(await kinds(OLD_AT + 500)).toEqual(["old"]);
+    // Strictly before: a row created at the boundary instant itself is left out.
+    expect(await kinds(OLD_AT)).toEqual([]);
+    expect(await kinds(NEW_AT)).toEqual(["old"]);
+    expect(await kinds(NEW_AT + 1)).toEqual(["old", "new"]);
   });
 
   it("refuses the auth tables, an unknown table, a bad boundary, and a wrong key", async () => {
@@ -226,6 +247,22 @@ describe("POST /tts/event", () => {
     expect(rows[0].kind).toBe("nightly-failure");
     expect(rows[0].data).toEqual({ step: "push", error: "rejected" });
     expect(rows[0].at).toBeGreaterThan(0);
+  });
+
+  it("posts the broken line for a nightly failure, which comes through this door and not logEvent", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    await post(t, "/tts/event", {
+      kind: "nightly-failure",
+      data: { step: "push", error: "rejected" },
+    });
+    const broken = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect())
+        .filter((job) => job.name.includes("sendBroken"))
+        .map((job) => job.args[0] as { job: string; detail?: string }),
+    );
+    expect(broken.map((line) => line.job)).toEqual(["nightly"]);
+    expect(broken[0].detail).toBe("rejected");
   });
 
   // The Slack bookkeeping kinds carry a `key` the events route looks up by;

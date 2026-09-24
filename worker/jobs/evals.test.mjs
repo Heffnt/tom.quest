@@ -18,7 +18,9 @@ import {
   DIFF_HISTORY_DEEPEN,
   efficiencyOf,
   efficiencyVerdict,
+  EVALS_CODE_REPOS,
   EVALS_JOB,
+  evalsRepoDir,
   EVALS_PROTOCOL_FAILURE_KEY,
   evalsRequestRoute,
   failedRun,
@@ -3387,5 +3389,31 @@ describe("inPool", () => {
 
   it("does nothing, and opens no lane, for an empty list", async () => {
     expect(await inPool([], 4, async () => { throw new Error("never"); })).toEqual([]);
+  });
+});
+
+// The box checks Heffnt/Jarvis's pull requests itself and posts their evals
+// requests; before evalsRepoDir, every repository but WikiTom was cut from the
+// tom.quest cache clone, so a Jarvis request was scored against tom.quest.
+describe("evalsRepoDir: which clone a request's worktree is cut from", () => {
+  const env = { GH_TOKEN: "unused" };
+  const cache = vi.fn((_env, spec) => `/var/cache/tts/${spec.name}`);
+
+  it("cuts a Jarvis request from the Heffnt/Jarvis cache clone on main", () => {
+    cache.mockClear();
+    expect(evalsRepoDir(env, "Jarvis", { cache })).toBe("/var/cache/tts/Jarvis");
+    expect(cache).toHaveBeenCalledWith(env, { owner: "Heffnt", name: "Jarvis", branch: "main" });
+  });
+
+  it("keeps tom.quest on its cache clone and WikiTom on the nightly's checkout", () => {
+    cache.mockClear();
+    expect(evalsRepoDir(env, "tom.quest", { cache })).toBe("/var/cache/tts/tom.quest");
+    expect(evalsRepoDir(env, "WikiTom", { cache, wikitomDir: "/tmp/wikitom" })).toBe("/tmp/wikitom");
+    expect(cache).toHaveBeenCalledTimes(1);
+    expect(EVALS_CODE_REPOS.ComplexMultiTrigger.branch).toBe("master");
+  });
+
+  it("refuses a repository it has no clone for instead of handing back tom.quest", () => {
+    expect(() => evalsRepoDir(env, "Overleaf", { cache })).toThrow(/Overleaf is not a repository/);
   });
 });

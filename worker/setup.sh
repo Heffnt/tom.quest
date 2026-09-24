@@ -912,23 +912,24 @@ wire_api = "responses"
 OPENROUTERCFG
     echo "  codex now has the openrouter provider"
   fi
-  # A key pasted into a terminal can carry the paste's escape sequences, and
-  # Codex then sends no Authorization header at all. The value loadEnv reads is
-  # judged by bearerTokenProblem in worker/jobs/worker-env.mjs, the same rule
-  # scripts/codex-run.mjs refuses a run's key with; node prints only the
-  # character counts, never the value. The repair matches every line form
-  # loadEnv reads (leading blanks, an `export ` prefix), rewrites the prefix
-  # to the plain form, and deletes the paste markers and every character
-  # outside printable ASCII from the line.
+  # A key pasted into a terminal can carry the paste's markers (ESC[200~ before
+  # it, ESC[201~ after it) or part of them, and OpenRouter then refuses every
+  # run with "401 Missing Authentication header". The value loadEnv reads is
+  # judged by openrouterKeyProblem in worker/jobs/worker-env.mjs, the same rule
+  # scripts/codex-run.mjs refuses a run's key with; node prints only character
+  # counts, never the value. The repair matches every line form loadEnv reads
+  # (leading blanks, an `export ` prefix), rewrites the prefix to the plain
+  # form, deletes the paste markers whole or in part, every character outside
+  # printable ASCII and every quote, and then anything left before sk-or-.
   OPENROUTER_KEY_PROBLEM="$(node --input-type=module -e '
     const { pathToFileURL } = await import("node:url");
     const env = await import(pathToFileURL(process.argv[1]).href);
-    const problem = env.bearerTokenProblem(env.loadEnv({ path: process.argv[2] }).OPENROUTER_API_KEY ?? "");
+    const problem = env.openrouterKeyProblem(env.loadEnv({ path: process.argv[2] }).OPENROUTER_API_KEY ?? "");
     if (problem) process.stdout.write(problem);
   ' "$WORKER_DIR/jobs/worker-env.mjs" /etc/tts/worker.env 2>/dev/null || true)"
   if [ -n "$OPENROUTER_KEY_PROBLEM" ]; then
     echo "  WARNING: OPENROUTER_API_KEY holds $OPENROUTER_KEY_PROBLEM; repair it with:"
-    echo "    LC_ALL=C sed -i -E '/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/{s/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/OPENROUTER_API_KEY=/;s/\\x1b\\[20[01]~//g;s/[^[:graph:]]//g}' /etc/tts/worker.env"
+    echo "    LC_ALL=C sed -i -E '/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/{s/^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/OPENROUTER_API_KEY=/;s/\\x1b?\\[?20[01]~//g;s/[^[:graph:]]//g;s/[\\x22\\x27]//g;s/^OPENROUTER_API_KEY=.*(sk-or-)/OPENROUTER_API_KEY=\\1/}' /etc/tts/worker.env"
   fi
 else
   echo "  OPENROUTER_API_KEY not set in /etc/tts/worker.env — no openrouter provider"

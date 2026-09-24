@@ -18,6 +18,7 @@ import {
   READINESS,
   SESSION_MODEL,
   goalCheckable,
+  isFailureKind,
   isPrepared,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
@@ -95,19 +96,9 @@ const MAX_BATCH_GOALS = 20;
 const MAX_GRAPH_TASKS = 40;
 
 // ── #tts-broken, from the one place failures are already written ─────────────
-// Every job failure in the system is a "-failed" event kind. Rather than
-// making each producer remember to post, the ONE event writer schedules the
-// broken line — which is why there is no second list of failure kinds to keep
-// in step with this one.
-//
-// Two exclusions, both load-bearing:
-//   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
-//                        convex/ttsHourly.ts already warns about: a refused
-//                        post would write a row that schedules another post.
-//   "learning-revert-failed"  not a job failure at all — it is an objection
-//                        the nightly job could not apply, and it belongs to
-//                        the model-of-Tom line it is about.
-const NOT_A_BROKEN_LINE = new Set(["slack-send-failed", "learning-revert-failed"]);
+// Rather than making each producer remember to post, the ONE event writer
+// schedules the broken line, on the shape convex/ttsShared.ts calls a failure
+// (isFailureKind, with its two load-bearing exclusions).
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
@@ -133,25 +124,39 @@ export async function logEvent(
     data: data === undefined ? undefined : data,
     key,
   });
-  if (kind.endsWith("-failed") && !NOT_A_BROKEN_LINE.has(kind)) {
-    const d = (data ?? {}) as Record<string, unknown>;
-    const job = str(d.job) ?? kind.replace(/-failed$/, "");
-    // Scheduled, not awaited: the post is network I/O and this is a mutation.
-    // It rides the transaction, so a rolled-back failure is never reported.
-    // The action itself dedupes by job for the TTS day.
-    // THE RAW `error` IS A JOB'S OWN STDERR and is never posted as it came:
-    // worker/jobs/nightly.mjs reports git's verbatim, and git names its remote
-    // with the token in it. redactSecrets is the one choke point (the same
-    // helper convex/ttsSearch.ts and worker/session-host use), and it runs
-    // before the string becomes a #tts-broken line.
-    const detail = str(d.error);
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
-      job,
-      statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
-      ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
-    });
-  }
+  await postBroken(ctx, kind, data);
   return id;
+}
+
+/**
+ * THE #tts-broken LINE, from the one place a failure row is recognised. Called
+ * by logEvent above and by convex/ttsNightly.ts internalRecordWorkerEvent, the
+ * two ways a row reaches dtsEvents: the nightly's and the weekly's failures
+ * come the second way, and while this lived inside logEvent they were the
+ * failures Slack never heard about.
+ */
+export async function postBroken(
+  ctx: MutationCtx,
+  kind: string,
+  data?: unknown,
+): Promise<void> {
+  if (!isFailureKind(kind)) return;
+  const d = (data ?? {}) as Record<string, unknown>;
+  const job = str(d.job) ?? kind.replace(/-fail(ed|ure)$/, "");
+  // Scheduled, not awaited: the post is network I/O and this is a mutation.
+  // It rides the transaction, so a rolled-back failure is never reported.
+  // The action itself dedupes by job for the TTS day.
+  // THE RAW `error` IS A JOB'S OWN STDERR and is never posted as it came:
+  // worker/jobs/nightly.mjs reports git's verbatim, and git names its remote
+  // with the token in it. redactSecrets is the one choke point (the same
+  // helper convex/ttsSearch.ts and worker/session-host use), and it runs
+  // before the string becomes a #tts-broken line.
+  const detail = str(d.error);
+  await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+    job,
+    statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
+    ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
+  });
 }
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
@@ -2671,6 +2676,11 @@ export const internalReplaceMirror = internalMutation({
     // and never leaves Tom's inventory. An ABSENT mirror row is NOT evidence of
     // completion (memberProgress' rule: it may be a closed todo or an id that
     // never matched); only an explicit "closed" status closes the goal.
+    // The ComplexMultiTrigger goals the two batch migrations wrote this way are
+    // no longer code goals: CMT's registry is retired (ruling 70), and
+    // ttsMigrations.internalConvertClosedUpstreamGoals turns each into a plain
+    // goal whose condition is the entry's own completion test, with no code
+    // subject, so this sweep never reaches them.
     const closed = new Set(
       rows.filter((r) => r.status === "closed").map((r) => r.externalId),
     );

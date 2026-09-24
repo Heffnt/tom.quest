@@ -79,6 +79,54 @@ export function mergeKey(repo: string, sha: string): string {
   return `${repo}:${sha}`;
 }
 
+/**
+ * A FAILURE IS A SHAPE AND NOT A KIND: a job failure is an event kind ending
+ * in "-failed" or in "-failure" — the nightly and the weekly write the second
+ * spelling ("nightly-failure", "weekly-failure"), and reading only the first
+ * left their failures out of both the failures lane and #tts-broken. Two
+ * exclusions, both load-bearing:
+ *   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
+ *                        convex/ttsHourly.ts already warns about: a refused
+ *                        post would write a row that schedules another post.
+ *   "learning-revert-failed"  not a job failure at all — it is an objection
+ *                        the nightly job could not apply, and it belongs to
+ *                        the model-of-Tom line it is about.
+ *
+ * Spelled here, not in convex/tts.ts where the #tts-broken writer applies it,
+ * because the observation page asks the same question of the same events and a
+ * second list of the exceptions is a second answer waiting to drift.
+ */
+export function isFailureKind(kind: string): boolean {
+  return (
+    (kind.endsWith("-failed") || kind.endsWith("-failure")) &&
+    kind !== "slack-send-failed" &&
+    kind !== "learning-revert-failed"
+  );
+}
+
+/**
+ * THE SUBJECT A CHANGE IS RULED ON: a code subject `(repo, externalId)` whose
+ * externalId names the change rather than a code todo. A pull request the
+ * record has mirrored is `pr-<number>`; a merged commit whose pull request the
+ * mirror never saw is `sha-<sha>`. Spelled here because convex/ttsRulings.ts
+ * (which applies such a ruling at write time), convex/observe.ts (which writes
+ * one) and convex/observeMerge.ts (which reads one) all need the same spelling,
+ * and this module is the one all three already import.
+ */
+export function pullRequestChange(number: number): string {
+  return `pr-${number}`;
+}
+
+export function commitChange(sha: string): string {
+  return `sha-${sha}`;
+}
+
+/** True for an externalId that names a change (above) rather than a code todo.
+ *  Code todo ids are registry ids such as `cmt-archive`, never these shapes. */
+export function isChangeSubject(externalId: string): boolean {
+  return /^pr-\d+$/.test(externalId) || /^sha-[0-9a-f]{7,40}$/i.test(externalId);
+}
+
 // <vocabulary generated version=a41d2676336ccc73 — scripts/vocabulary.mjs; do not edit>
 export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
 - A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.
@@ -733,6 +781,7 @@ export const SESSION_REPOS = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
+  Jarvis: "Heffnt/Jarvis",
 } as const;
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
@@ -912,6 +961,10 @@ export const SESSION_MODELS = {
   fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
+  // OpenAI's Astra, the orchestrator's first choice (Tom, 2026-09-21). Listed
+  // by the box's Codex CLI as `gpt-6-astra`; convex/orchestrator.ts takes it
+  // only when the daemon's heartbeat says the CLI lists it.
+  "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
 } as const;
 export type SessionModel = keyof typeof SESSION_MODELS;
 export type ModelFamily = (typeof SESSION_MODELS)[SessionModel]["family"];
@@ -1128,8 +1181,33 @@ export const SLACK_SUBJECT = v.union(
   // two above do; a reply in either thread is an answer to that runner's
   // newest open question.
   v.object({ kind: v.literal("runner"), id: v.id("runners") }),
+  // AN ELEVATION the orchestrator judged reserved (convex/orchestrator.ts):
+  // its #tts-needs-you thread. Tom's reply there is the answer, delivered into
+  // the worker that asked.
+  v.object({ kind: v.literal("elevation"), id: v.id("elevations") }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
+
+// ── The orchestrator (Tom, 2026-09-21) ───────────────────────────────────────
+// The three kinds of decision an agent meets. Obvious: one side is clearly
+// better, and the agent makes it and says so in one sentence. Trade-off: a
+// good reason either way; the delegate rules on it, shown no recommendation.
+// Reserved: only Tom decides (the four things the Never list keeps his), and
+// he is asked with a recommendation.
+export const DECISION_KIND = v.union(
+  v.literal("obvious"),
+  v.literal("trade-off"),
+  v.literal("reserved"),
+);
+export type DecisionKind = Infer<typeof DECISION_KIND>;
+/**
+ * How many hosted workers may be live at once. Its own number, not the box
+ * launcher's two slots: those bound the command line's runs, which each hold
+ * a CPU-heavy CLI for their whole life, while a hosted worker spends most of
+ * its life idle, waiting on an answer. Four is Tom's default in the brief of
+ * 2026-09-21; the box's Codex usage, not its CPU, is what four spends.
+ */
+export const HOSTED_WORKERS_MAX = 4;
 
 /** The lookup key of a Slack THREAD: the channel and the thread root's ts —
  * a message's own ts when it is a root, its thread_ts when it is a reply.

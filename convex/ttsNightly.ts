@@ -26,6 +26,7 @@ import schema from "./schema";
 import { clip } from "../worker/jobs/clip.mjs";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
+import { postBroken } from "./tts";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 
@@ -290,8 +291,13 @@ export const internalLearningInput = internalQuery({
       await ctx.db
         .query("dtsRulings")
         .withIndex("by_ruled", (q) => q.gte("ruledAt", since).lt("ruledAt", until))
+        // A delegate ruling is the delegate's reading of Tom, not his words:
+        // learning from it would teach the model of Tom its own guesses. Left
+        // out before the cap, so it never takes a place one of his would.
+        .filter((q) => q.neq(q.field("ruledBy"), "delegate"))
         .take(LEARNING_INPUT_MAX)
-    ).map((r) => ({
+    )
+      .map((r) => ({
       id: r._id,
       at: r.ruledAt,
       verdict: r.verdict,
@@ -582,6 +588,13 @@ export const internalRecordWorkerEvent = internalMutation({
       throw new Error(`not a worker event kind: ${kind}`);
     }
     const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    // The same broken line logEvent posts, because this is the other way a
+    // failure row is written: the nightly's and the weekly's failures arrive
+    // here, and #tts-broken is a line per distinct failure whichever door the
+    // row came through. Except where this handler writes the line itself,
+    // below, in the failure's own words — a second, generic line for the same
+    // row is the one thing "a line per distinct failure" forbids.
+    if (kind !== LEARNING_CHECK_FAILED) await postBroken(ctx, kind, data);
     if (kind === LEARNING_CHANGE) {
       const d = (data ?? {}) as Record<string, unknown>;
       const file = typeof d.file === "string" ? d.file : "a model-of-Tom page";

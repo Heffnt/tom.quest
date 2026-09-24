@@ -14,6 +14,7 @@ import {
   RUNNER_TYPE,
   RUNNER_CEILING,
   SESSION_MODEL,
+  DECISION_KIND,
   FABLE_AVAILABILITY,
   USAGE_LIMIT_REPORT,
 } from "./ttsShared";
@@ -608,7 +609,10 @@ export default defineSchema({
     // A goal may bind a CODE subject: "that upstream code todo is closed".
     // Addressed exactly as a ruling/batch-member code subject is — by
     // (repo, externalId), never by mirror-row _id (mirror rows are deleted on
-    // upstream close). Set together or not at all.
+    // upstream close). Set together or not at all. Only a repo still on the
+    // mirror (ttsShared CODE_TODO_REPOS) can close one: the ComplexMultiTrigger
+    // goals lose both fields in ttsMigrations.internalConvertClosedUpstreamGoals
+    // (ruling 70).
     codeRepo: v.optional(v.string()),
     codeExternalId: v.optional(v.string()),
     createdAt: v.number(),
@@ -772,6 +776,9 @@ export default defineSchema({
       v.literal("life"),
       v.literal("code"),
       v.literal("batch"),
+      // An elevation a worker raised and the delegate (or Tom) answered
+      // (convex/orchestrator.ts). Its verdict is always "answer".
+      v.literal("elevation"),
     ),
     todoId: v.optional(v.id("dtsTodos")), // life subjects
     repo: v.optional(v.string()), // code subjects…
@@ -780,12 +787,23 @@ export default defineSchema({
     // the batch itself — exactly one of todoId / repo+externalId / batchId is
     // set (enforced in ttsRulings.ts).
     batchId: v.optional(v.id("batches")),
+    elevationId: v.optional(v.id("elevations")),
     verdict: v.union(
       v.literal("approve"),
       v.literal("revise"),
       v.literal("session"),
       v.literal("archive"),
+      // The answer to an elevation, held in `sentence`.
+      v.literal("answer"),
     ),
+    // Who ruled. Absent is Tom, as on every row written before the delegate
+    // could rule. "delegate" marks a delegate ruling (Tom, 2026-09-21): every
+    // run treats it as his, his objection reverts it, and nothing that learns
+    // about Tom from his rulings reads it as his words.
+    ruledBy: v.optional(v.union(v.literal("tom"), v.literal("delegate"))),
+    // The delegate's ask behind a delegate ruling (a "delegate-decision"
+    // event's key), so an objection to the ask finds the ruling.
+    askId: v.optional(v.string()),
     // One optional written note, accepted on EVERY verdict (2026-08-29): the
     // redirect for revise (required there, enforced in ttsRulings.ts), the
     // unarchive condition for archive, a free steering note for
@@ -820,7 +838,9 @@ export default defineSchema({
     // ever recorded, on the hot path of every session creation.
     .index("by_batch", ["batchId"])
     .index("by_ruled", ["ruledAt"])
-    .index("by_provenance_inboundId", ["provenance.inboundId"]),
+    .index("by_provenance_inboundId", ["provenance.inboundId"])
+    .index("by_elevation", ["elevationId"])
+    .index("by_ask", ["askId"]),
 
   // Append-only instrumentation (spec §10) — every surfacing, engagement,
   // queue cycle, status change, and date outcome, recorded from the first
@@ -839,7 +859,7 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly sixteen kinds. Five are convex/ttsSlack.ts:
+    // The lookup key, set on exactly seventeen kinds. Five are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
@@ -889,6 +909,10 @@ export default defineSchema({
     //                   once for the same reason;
     //   "merge"       — `<repo>:<sha>` (its own older spelling), so a retried
     //                   report of one merge is one event.
+    // One is written by the deploy job in Heffnt/Jarvis through POST /tts/event
+    // (data { repo, from, to, commits, setupNeeded }):
+    //   "deploy"      — `<repo>:<sha>`, the spelling "merge" uses, naming the
+    //                   head the box now runs, so one deploy is one event.
     // `data` is v.any() and cannot be indexed, which is why the key is its
     // own field: the events route must answer inside Slack's 3-second budget,
     // and a thread root can be days old, so a bounded scan is not enough.
@@ -1053,6 +1077,42 @@ export default defineSchema({
     })),
   }).index("by_key", ["key"]),
 
+  // THE CHANGES THAT ARE WAITING — every open pull request, mirrored from
+  // GitHub every five minutes by convex/observeMerge.ts, so the observation
+  // page can show a change before it lands and Tom can approve it there.
+  //
+  // A MIRROR, NOT A RECORD. GitHub owns whether a pull request is open; these
+  // rows are a copy the refresh rewrites. A row GitHub stops listing as open
+  // is marked `closedAt` rather than deleted, and deleted once it is older
+  // than the page's widest window: until then it is how a merged commit on the
+  // page finds the pull request it came from (by its head sha), and so which
+  // ruling of Tom's it carries. Tom's approval itself is a ruling in
+  // `dtsRulings`, which is why deleting a row loses nothing.
+  //
+  // `lastAttempt` is the one fact GitHub cannot be asked for afterwards: what
+  // happened the last time the record tried to merge this. Without it the page
+  // can say a change is approved and cannot say why it has not landed.
+  pullRequests: defineTable({
+    repo: v.string(), // a SESSION_REPOS name
+    number: v.number(),
+    // The pull request's title, which by this repository's commit rule states
+    // the world after the change.
+    title: v.string(),
+    branch: v.string(), // the head branch
+    headSha: v.string(), // what the merge gate's three rows are keyed on
+    baseBranch: v.string(),
+    draft: v.boolean(),
+    updatedAt: v.number(), // GitHub's own updated_at
+    seenAt: v.number(), // when the refresh last saw it open
+    closedAt: v.optional(v.number()), // when the refresh first saw it gone
+    lastAttempt: v.optional(
+      v.object({ at: v.number(), ok: v.boolean(), why: v.string() }),
+    ),
+  })
+    .index("by_repo_number", ["repo", "number"])
+    .index("by_repo_sha", ["repo", "headSha"])
+    .index("by_repo", ["repo"]),
+
   // The repo layer, published the way the model-of-tom files are published.
   //
   // WHY A TABLE AND NOT A PATH: the assembler pre-expands the repo rules for
@@ -1180,7 +1240,7 @@ export default defineSchema({
     // row by buildSessionRow (convex/claudeSessions.ts — the one insert path),
     // with repo = repos[0] ?? "none"; readers prefer `repos ?? [repo]`.
     repos: v.optional(v.array(v.string())),
-    repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "Jarvis" | "none"
     // Mode, status and outcome belong to the run; the session row's copies are
     // aliases. The run row is where a lifecycle fact lives, because every
     // runtime has runs and only some have sessions. These session-shaped copies
@@ -1444,7 +1504,7 @@ export default defineSchema({
     host: v.union(v.literal("laptop"), v.literal("box")),
     // Where the run ran: a session Tom talks to, an unattended worker, or a
     // runner.
-    environment: v.union(v.literal("session"), v.literal("worker"), v.literal("runner")),
+    environment: v.union(v.literal("session"), v.literal("worker"), v.literal("runner"), v.literal("orchestrator")),
     // The CLI family the run ran under.
     cli: v.union(v.literal("claude"), v.literal("codex")),
     model: v.optional(v.string()),
@@ -1708,6 +1768,101 @@ export default defineSchema({
     .index("by_status_due", ["status", "dueAt"])
     .index("by_runner_due", ["runnerId", "dueAt"]),
 
+  // ── THE ORCHESTRATOR (Tom, 2026-09-21; convex/orchestrator.ts is the one
+  // writer of the four tables below) ─────────────────────────────────────────
+  //
+  // ONE ROW, keyed by the constant "jarvis". The orchestrator is a chain of
+  // long-lived hosted runs, each a claudeSessions row the daemon hosts; when
+  // one asks to compact, crashes or loses its lease, the next starts cold from
+  // `document`, naming the last as its continuesRunId. Nothing re-enters a
+  // dead run.
+  orchestrators: defineTable({
+    key: v.literal("jarvis"),
+    // The model of the live run, chosen at each start (orchestratorModel):
+    // Astra if the box's Codex CLI lists it, else gpt-5.6-sol, else Fable.
+    model: SESSION_MODEL,
+    // Why that model, in words, so the choice can be read later.
+    modelReason: v.string(),
+    // Markdown, versioned in orchestratorDocuments; never in a repository.
+    document: v.string(),
+    documentVersion: v.number(),
+    liveSessionId: v.optional(v.id("claudeSessions")),
+    // The live run's lease. The daemon renews it on every poll that says it
+    // holds the session; one past its deadline is a run that died unseen.
+    leaseDeadline: v.optional(v.number()),
+    startedAt: v.number(),
+    runStartedAt: v.number(),
+    // Consecutive crashes: the backoff exponent. A compaction clears it.
+    crashes: v.number(),
+    // When the next run may start after a crash; absent means now.
+    restartAt: v.optional(v.number()),
+    lastRestart: v.optional(v.object({ at: v.number(), reason: v.string(), fromSessionId: v.optional(v.id("claudeSessions")) })),
+    // The instruction Tom started it with, carried into every run of the chain
+    // until the next start replaces it: a run that crashes before writing its
+    // document must not lose what it was asked to do.
+    instruction: v.optional(v.string()),
+    // Messages for the orchestrator that arrived while its latest run was one
+    // Tom had reopened, so no run of its own could hold them; the next run's
+    // opener carries them and clears this.
+    mailbox: v.optional(v.array(v.string())),
+    // How many of the mailbox's messages the live run's opener carried; they
+    // leave the mailbox once that run finishes its opener.
+    carriedCount: v.optional(v.number()),
+    // Set by a stop: nothing restarts it until the next start.
+    stoppedAt: v.optional(v.number()),
+    stoppedReason: v.optional(v.string()),
+  }).index("by_key", ["key"]),
+
+  // Every rewrite of the orchestrator's document, so it is versioned in the
+  // record the way a runner's is.
+  orchestratorDocuments: defineTable({
+    version: v.number(),
+    text: v.string(),
+    sessionId: v.optional(v.id("claudeSessions")),
+    at: v.number(),
+  }).index("by_version", ["version"]),
+
+  // Which claudeSessions rows the daemon HOSTS as long-lived unattended runs,
+  // and as what: the orchestrator's runs and the workers it spawned. Its own
+  // table rather than a field on claudeSessions, whose lifecycle fields are
+  // aliases due for deletion (spec §24.1). The poll reads it to tell the
+  // daemon a row's environment.
+  hostedRuns: defineTable({
+    sessionId: v.id("claudeSessions"),
+    environment: v.union(v.literal("orchestrator"), v.literal("worker")),
+    // For a worker: the orchestrator run that spawned it.
+    spawnedBy: v.optional(v.id("claudeSessions")),
+    todoId: v.optional(v.id("dtsTodos")),
+    createdAt: v.number(),
+  })
+    .index("by_session", ["sessionId"]),
+
+  // A decision a hosted worker raised to the orchestrator: the question and
+  // its two sides, never a recommendation. The orchestrator judges its kind
+  // and answers; the answer is delivered into the worker as a message.
+  elevations: defineTable({
+    workerSessionId: v.id("claudeSessions"),
+    question: v.string(),
+    sides: v.array(v.string()),
+    todoId: v.optional(v.id("dtsTodos")),
+    // A run it concerns, when that is not the worker itself.
+    concernsRunId: v.optional(v.string()),
+    status: v.union(v.literal("open"), v.literal("waiting-on-tom"), v.literal("answered")),
+    kind: v.optional(DECISION_KIND),
+    answer: v.optional(v.string()),
+    answeredBy: v.optional(v.union(v.literal("orchestrator"), v.literal("delegate"), v.literal("tom"))),
+    answeredAt: v.optional(v.number()),
+    askId: v.optional(v.string()),
+    // The orchestrator's recommendation, on a reserved decision only.
+    recommendation: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_worker_status", ["workerSessionId", "status"])
+    .index("by_status", ["status", "createdAt"])
+    // The elevation one delegate ask answered, for his objection to that ask
+    // when it closed on the fallback and wrote no ruling to look it up by.
+    .index("by_ask", ["askId"]),
+
   // Tom presses one control and a box job serves it: Convex holds no S3 reader
   // credential and no second request signer, so opening an old run is a
   // request the box picks up, not an action reading the bucket. THE QUEUE IS
@@ -1870,6 +2025,10 @@ export default defineSchema({
         readAt: v.number(),
       }),
     ),
+    // The model slugs the box's Codex CLI lists (`codex debug models`),
+    // reported by the daemon. convex/orchestrator.ts picks the orchestrator's
+    // model from it; absent means no daemon has reported one.
+    codexModels: v.optional(v.array(v.string())),
     // Whether Fable answers on the box, from the daemon's heartbeat
     // (ttsShared FABLE_AVAILABILITY): "Fable unavailable since <since>, last
     // checked <checkedAt>" while the model ceiling is in force.
@@ -1913,4 +2072,17 @@ export default defineSchema({
     defaultModel: v.optional(SESSION_MODEL),
     updatedAt: v.number(),
   }),
+
+  // The /secrets mailbox (convex/secrets.ts). One row per variable name. Tom
+  // sets `value` on the page; the session-host daemon takes it through
+  // GET /sessions/secrets, writes NAME=value into the box's env file and
+  // answers POST /sessions/secrets/taken, which deletes `value` and stamps
+  // `takenAt`. So `value` is present only while a delivery is waiting, and
+  // the row that stays behind holds the name and the two dates, nothing else.
+  secretMailbox: defineTable({
+    name: v.string(),
+    value: v.optional(v.string()),
+    setAt: v.number(),
+    takenAt: v.optional(v.number()),
+  }).index("by_name", ["name"]),
 });

@@ -1,3 +1,7 @@
+// The observation page's route name lives in app/observe/slug.ts, so renaming
+// that placeholder is an edit of one line and a rename of one directory.
+import { OBSERVE_SLUG } from "@/app/observe/slug";
+
 export type Page = {
   slug: string;       // "turing" -> tom.quest/turing
   title: string;
@@ -26,12 +30,14 @@ export const PAGES: Page[] = [
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "runs", title: "Runs", blurb: "TTS — every agent run, at every depth", priority: 9, visibility: "tom" },
+  { slug: OBSERVE_SLUG, title: "Observe", blurb: "Everything that ran and every ruling, by window", priority: 9, visibility: "tom" },
   { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
   { slug: "intent", title: "Intent", blurb: "Every line of his intent, and what it rests on", priority: 8, visibility: "tom" },
   { slug: "vocabulary", title: "Vocabulary", blurb: "Every word TTS uses, and where it is defined", priority: 7, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5, visibility: "tom" },
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
+  { slug: "secrets", title: "Secrets", blurb: "Values for the Jarvis Box", priority: 5, visibility: "tom" },
   { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4, visibility: "public" },
   { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3, visibility: "public" },
   { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2, visibility: "public" },
