@@ -10,14 +10,17 @@
 // channels, each with where it is defined and what defines it.
 //
 // It also renders two derived views: the generated block in
-// `convex/ttsShared.ts`, and — under MAP_BLOCKS = "candidate" — a candidate
+// `convex/ttsShared.ts`, whose `TTS_CLOSED_VOCABULARY` is the seven prompt
+// words rendered from their §12.1 entries, and — under MAP_BLOCKS = "candidate" — a candidate
 // `model-of-tom/agent-rules.candidate.md` beside Tom's map with a unified diff,
 // which is a proposal and never the map.
 //
 // WHAT THIS IS NOT. It is not where a term is defined: §12.1 is (AUTHORITY
-// below). It is not loaded into any prompt — `TTS_CLOSED_VOCABULARY` carries
-// seven words and this file carries the rest for `tts search define` to answer
-// from. It is not a database, and it has no model call, no network call and no
+// below), and that includes the seven words a worker's prompt carries — the
+// prompt renders them from the §12.1 entries the nightly posts to the record
+// (convex/vocabulary.ts), and `TTS_CLOSED_VOCABULARY` is the same rendering
+// kept as the fallback. It is not loaded into any prompt: this file carries the
+// rest for `tts search define` to answer from. It is not a database, and it has no model call, no network call and no
 // timestamp in it.
 //
 // PARSE, NEVER EVALUATE. `convex/*.ts` is TypeScript and the Jarvis Box runs
@@ -56,6 +59,10 @@ import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
 const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 const BOX_WIKITOM_DIR = "/root/wikitom";
 import { AREAS_DIR, parseRepoBullets } from "./skills.mjs";
+// The one renderer of the prompt's vocabulary block, shared with
+// convex/vocabulary.ts so the fallback this file writes and the block the
+// prompt reads are one function of one set of entries.
+import { closedVocabularyOpening, PROMPT_TERMS, renderClosedVocabulary } from "./closed-vocabulary.mjs";
 // The one HEAD parser (see "Git" below). scripts/graph.mjs imports this file
 // only inside a function, so a static import back to it makes no load cycle.
 import { headCommit } from "./graph.mjs";
@@ -97,19 +104,9 @@ export const CANDIDATE_EVIDENCE_PATH = "model-of-tom/evidence/agent-rules.candid
  *  agent loads, which is the text and not the line endings. */
 export const AGENT_RULES_MAX_LF_BYTES = 7_000;
 
-/** The seven words `TTS_CLOSED_VOCABULARY` carries, in the order its four
- *  bullets carry them. They are the seven a worker acts on WITHOUT being able to
- *  stop and ask; every other word is answered by `tts search define`, which
- *  costs no prompt bytes. */
-export const PROMPT_TERMS = Object.freeze([
-  "batch",
-  "task",
-  "goal",
-  "needs",
-  "ready",
-  "display text",
-  "ground-up explanation",
-]);
+/** The seven words `TTS_CLOSED_VOCABULARY` carries; their one list is in
+ *  scripts/closed-vocabulary.mjs beside the renderer that reads it. */
+export { PROMPT_TERMS };
 
 const MARKER_OPEN = (version) => `// <vocabulary generated version=${version} — ${GENERATOR_PATH}; do not edit>`;
 const MARKER_CLOSE = "// </vocabulary generated>";
@@ -186,18 +183,8 @@ function readOptional(root, rel) {
   }
 }
 
-/** The 1-based line the first occurrence of `needle` sits on, or 0. Used only
- *  for the disagreement report, which names a file and a line so a run pasting
- *  it into a report adds nothing. */
-function lineOf(text, needle) {
-  const at = text.indexOf(needle);
-  if (at === -1) return 0;
-  return text.slice(0, at).split("\n").length;
-}
-
-/** Markdown stripped to the words, for comparing two statements of one term.
- *  Two texts that differ only in emphasis, a section reference or punctuation
- *  are one statement; anything else is two, which is what D1 reports. */
+/** Markdown stripped to the words, for asking whether one term's definition
+ *  uses another term: emphasis, section references and punctuation removed. */
 function normalizeClaim(text) {
   return String(text ?? "")
     .toLowerCase()
@@ -952,33 +939,36 @@ const CHANNEL_NAME = Object.freeze({
   runners: "#tts-runners",
 });
 
-// ── D1: two statements of one term ───────────────────────────────────────────
-
-/**
- * The sentences `TTS_CLOSED_VOCABULARY` spends on one of its seven words.
- *
- * The block spells each in CAPITALS, which is what makes it findable without a
- * second copy of the block's structure. A word the block does not name at all
- * THROWS: `PROMPT_TERMS` says the block carries seven, and a block that carries
- * six has moved under this file.
- */
-function promptWording(literal, term) {
-  const shouted = term.toUpperCase();
-  const sentences = literal
-    .split("\n")
-    .flatMap((line) => line.replace(/^-\s+/, "").split(/(?<=\.)\s+/))
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence !== "");
-  const hit = sentences.filter((sentence) => new RegExp(`\\b${shouted}\\b`).test(sentence));
-  if (hit.length === 0) fail(`convex/ttsShared.ts TTS_CLOSED_VOCABULARY does not name ${shouted}, which PROMPT_TERMS says it carries`);
-  return hit.join(" ");
-}
+// ── The prompt's vocabulary block ─────────────────────────────────────────────
 
 /** The `TTS_CLOSED_VOCABULARY` statement's source text, taken whole. */
 function closedVocabularyLiteral(sharedText) {
   const match = /export const TTS_CLOSED_VOCABULARY = `([\s\S]*?)`;/.exec(normalize(sharedText));
   if (match === null) fail("convex/ttsShared.ts has no `TTS_CLOSED_VOCABULARY` template literal");
   return { body: match[1], statement: match[0] };
+}
+
+/**
+ * The `TTS_CLOSED_VOCABULARY` statement rendered from the spec: the opening
+ * line the constant already carries, then the seven §12.1 definitions through
+ * the one renderer. A prompt word §12.1 does not define THROWS, naming it —
+ * the prompt would otherwise use a word nothing defines.
+ */
+function renderClosedVocabularyStatement(literalBody, terms) {
+  for (const name of PROMPT_TERMS) {
+    if (!terms.some((entry) => entry.kind !== "refused" && entry.term.toLowerCase() === name)) {
+      fail(`PROMPT_TERMS names "${name}", which §12.1 does not define`);
+    }
+  }
+  const rendered = renderClosedVocabulary(
+    closedVocabularyOpening(literalBody),
+    terms.filter((entry) => entry.kind !== "refused"),
+  );
+  if (rendered === null) fail("the seven prompt terms did not render from §12.1 — one has an empty definition");
+  // A template literal: a backslash or `${` in a definition would be read as
+  // an escape or an interpolation. The renderer has already removed backticks.
+  const escaped = rendered.replace(/\\/g, "\\\\").replace(/\$\{/g, "\\${");
+  return `export const TTS_CLOSED_VOCABULARY = \`${escaped}\`;`;
 }
 
 // ── The disagreement report ──────────────────────────────────────────────────
@@ -1278,13 +1268,12 @@ export function renderCandidateEvidence(day, blocks) {
  * The generated block: `TTS_CLOSED_VOCABULARY`, the version, the term NAMES, and
  * the graph's two closed kind lists.
  *
- * THE CONSTANT'S TEXT IS CARRIED THROUGH, NOT RE-RENDERED. `convex/ttsGraph.test.ts`
- * asserts that the `/tts/batch-context` door serves a body equal to this exact
- * string, and §12.1's wording does not reproduce its bytes; re-rendering it
- * would be a prompt change, which is a different round with its own evals. What
- * this round makes true is that the constant now lives inside markers and
- * carries the version its definitions came from — and D1 below reports, every
- * night, each of the seven words whose two statements differ.
+ * THE CONSTANT IS RENDERED FROM §12.1. `statement` is what
+ * renderClosedVocabularyStatement made of the seven entries, so the block the
+ * generator writes says what the spec says. The prompt does not read this
+ * constant while the record holds a posted vocabulary: convex/vocabulary.ts
+ * renders the same block from the posted entries at read time, and this is the
+ * fallback for a record that holds none.
  *
  * `VOCABULARY_TERMS` carries NAMES ONLY. The definitions are in the file and are
  * answered by `tts search define`; putting them in a bundled constant would make
@@ -1388,10 +1377,6 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   );
   specHeadings.add("12.1");
 
-  // The line a term was READ ON, kept beside the register rather than in it: the
-  // disagreement report names a file and a line, and a line number in the file
-  // itself would change its bytes every time the spec gained a paragraph.
-  const specLines = new Map(parsed.map((entry) => [entry.term.toLowerCase(), entry.line]));
   const terms = parsed.map((entry) => ({
     term: entry.term,
     kind: entry.kind,
@@ -1445,40 +1430,18 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     );
   }
 
-  // ── D1 — two statements of one term ───────────────────────────────────────
+  // ── The prompt's seven words ──────────────────────────────────────────────
+  // THERE IS NO D1 ANY MORE, and there was: it compared each of the seven
+  // prompt words as §12.1 states it with the sentence TTS_CLOSED_VOCABULARY
+  // spent on it, and reported the seven that differed every night. Tom ruled
+  // on 2026-09-24 that the one wording lives in the spec and the prompt
+  // renders from it, so the constant is no longer a second statement: it is
+  // `statementAfter` below, rendered from these entries and written with the
+  // block, and a constant that lags the spec is `convex/ttsShared.ts` in
+  // `changed`, which `--write` lands. The prompt itself never reads the lag —
+  // it renders from the record at read time (convex/vocabulary.ts).
   const { body: promptLiteral, statement } = closedVocabularyLiteral(sharedText);
-  const byName = new Map(terms.map((entry) => [entry.term.toLowerCase(), entry]));
-  for (const name of PROMPT_TERMS) {
-    const term = byName.get(name);
-    if (term === undefined) fail(`PROMPT_TERMS names "${name}", which §12.1 does not define`);
-    const code = promptWording(promptLiteral, name);
-    // AGREEMENT IS CONTAINMENT, not equality: the block writes `A BATCH is …`
-    // where the spec writes the definition alone, so the code agrees when it
-    // states the spec's words somewhere inside its own sentence and disagrees
-    // when it says something else. Equality would make every one of the seven a
-    // disagreement forever, which is a check that never passes and so never
-    // means anything.
-    if (normalizeClaim(code).includes(normalizeClaim(term.definition))) continue;
-    disagreements.push(
-      disagreement({
-        code: "D1",
-        subject: `term "${name}"`,
-        rows: [
-          {
-            label: "spec",
-            where: `WikiTom tts/spec.md §${term.specSection} line ${specLines.get(name) ?? 0}`,
-            text: term.definition,
-          },
-          {
-            label: "code",
-            where: `tom.quest ${SHARED_PATH} line ${lineOf(sharedText, code.split(". ")[0])} (TTS_CLOSED_VOCABULARY)`,
-            text: code,
-          },
-        ],
-        fix: "one wording: either the spec entry moves to the code's, or the prompt constant renders from the spec",
-      }),
-    );
-  }
+  const statementAfter = renderClosedVocabularyStatement(promptLiteral, terms);
 
   // ── Entities ──────────────────────────────────────────────────────────────
   const eventKinds = parseEventKinds(schemaText);
@@ -1763,7 +1726,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   }
 
   // ── The derived views ─────────────────────────────────────────────────────
-  const block = renderSharedBlock({ version, statement, terms });
+  const block = renderSharedBlock({ version, statement: statementAfter, terms });
   const sharedAfter = applySharedBlock(sharedText, block, statement);
   const candidate = renderMapCandidate(agentRulesText, {
     repos: renderRepoBullets(repos),

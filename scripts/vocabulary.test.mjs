@@ -22,6 +22,7 @@ import {
   unifiedDiff,
   versionOf,
 } from "./vocabulary.mjs";
+import { promptDefinition, renderClosedVocabulary } from "./closed-vocabulary.mjs";
 
 // ── Fixture ──────────────────────────────────────────────────────────────────
 // Two whole checkouts in strings, written to a temp directory. Never the real
@@ -135,23 +136,26 @@ You answer to Tom.
 - Guess at a fact nobody wrote down.
 `;
 
-/** The prompt constant, written so that every one of the seven words states the
- *  spec's own definition — the shape after the four divergences of §1 are gone.
- *  One word is moved off it per test to make exactly one D1. */
-const AGREEING_VOCABULARY = `The vocabulary, which is closed — each word means this and no more:
-- A BATCH is a set of todos that share one purpose, and is its own row.
-- A TASK is work an agent or Tom performs. A GOAL is a checkable condition about the world.
-- NEEDS are the ids a todo depends on. A todo is READY when every id in \`needs\` done.
-- DISPLAY TEXT is the always-visible register, short. A GROUND-UP EXPLANATION is the register behind a more link.`;
+/** The prompt constant as the fixture's spec renders it: the opening line, then
+ *  the seven §12.1 definitions through scripts/closed-vocabulary.mjs. */
+const RENDERED_VOCABULARY = `The vocabulary, which is closed — each word means this and no more:
+- batch — a set of todos that share one purpose.
+- task — work an agent or Tom performs
+- goal — a checkable condition about the world
+- needs — the ids a todo depends on.
+- ready — every id in needs done.
+- display text — the always-visible register.
+- ground-up explanation — the register behind a more link.`;
 
-/** The same block with `batch` restated in the code's own words — the shape of
- *  the divergence the first run against the real repositories found. */
-const DISAGREEING_VOCABULARY = AGREEING_VOCABULARY.replace(
-  "A BATCH is a set of todos that share one purpose, and is its own row.",
-  "A BATCH holds how a set of todos gets completed.",
-);
+/** The same constant in wording of its own — the shape the real repositories
+ *  had before Tom's ruling of 2026-09-24, when it was a second statement. */
+const OWN_WORDING_VOCABULARY = `The vocabulary, which is closed — each word means this and no more:
+- A BATCH holds how a set of todos gets completed.
+- A TASK is work someone does. A GOAL is a state of the world.
+- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done.
+- DISPLAY TEXT is the short line. A GROUND-UP EXPLANATION is the layer behind it.`;
 
-function sharedTs(vocabularyBody = AGREEING_VOCABULARY) {
+function sharedTs(vocabularyBody = RENDERED_VOCABULARY) {
   return `import { v } from "convex/values";
 
 export const NARROW_LIST = [] as const;
@@ -325,8 +329,9 @@ async function withConstant(line, replacement) {
     .replace(/from "\.\.\/(worker\/[^"]+)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, rel)).href}"`)
     // EVERY scripts/ SIBLING, not skills.mjs alone: the variant is written into
     // node_modules/, where a relative `./x.mjs` resolves to nothing. graph.mjs
-    // joined skills.mjs here when the HEAD parser moved into it.
-    .replace(/from "\.\/(skills\.mjs|graph\.mjs)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, "scripts", rel)).href}"`);
+    // joined skills.mjs here when the HEAD parser moved into it, and
+    // closed-vocabulary.mjs when the prompt's block started rendering from it.
+    .replace(/from "\.\/(skills\.mjs|graph\.mjs|closed-vocabulary\.mjs)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, "scripts", rel)).href}"`);
   // Inside the project root: the test runner resolves a dynamic import only
   // under the root it was started in.
   const root = path.join(REPO_ROOT, "node_modules", ".vocabulary-variants");
@@ -557,28 +562,32 @@ describe("the disagreement check", () => {
     expect(run(makeCheckouts()).disagreements).toEqual([]);
   });
 
-  it("D1 — one term stated twice, in the printed shape", () => {
-    const checkouts = makeCheckouts({ shared: sharedTs(DISAGREEING_VOCABULARY) });
+  it("a constant in its own words is not a disagreement: the block re-renders it from the spec", () => {
+    const checkouts = makeCheckouts({ shared: sharedTs(OWN_WORDING_VOCABULARY) });
     const result = run(checkouts);
-    expect(codes(result)).toEqual(["D1"]);
-    const block = formatDisagreement(result.disagreements[0]).split("\n");
-    expect(block[0]).toBe('DISAGREEMENT D1  term "batch"');
-    expect(block[1]).toMatch(/^ {2}spec {2}WikiTom tts\/spec\.md §5\.4 line \d+$/);
-    expect(block[2]).toBe("        a set of todos that share one purpose (§5.4).");
-    expect(block[3]).toMatch(/^ {2}code {2}tom\.quest convex\/ttsShared\.ts line \d+ \(TTS_CLOSED_VOCABULARY\)$/);
-    expect(block[4]).toBe("        A BATCH holds how a set of todos gets completed.");
-    expect(block[5]).toBe(
-      "  fix   one wording: either the spec entry moves to the code's, or the prompt constant renders from the spec",
-    );
-    expect(block).toHaveLength(6);
-    expect(fs.existsSync(path.join(checkouts.wikitom, "tts/vocabulary.json"))).toBe(false);
+    expect(result.disagreements).toEqual([]);
+    expect(result.changed).toContain("convex/ttsShared.ts");
+    expect(result.sharedBlock).toContain(`export const TTS_CLOSED_VOCABULARY = \`${RENDERED_VOCABULARY}\`;`);
+    expect(result.sharedBlock).not.toContain("A BATCH holds how a set of todos gets completed.");
   });
 
-  it("D2 — a term's code symbol does not exist", () => {
+  it("throws naming a prompt word §12.1 does not define", () => {
+    const spec = SPEC.replace("- **display text** — the always-visible register.\n", "");
+    expect(() => run(makeCheckouts({ spec }))).toThrow('PROMPT_TERMS names "display text", which §12.1 does not define');
+  });
+
+  it("D2 — a term's code symbol does not exist, in the printed shape", () => {
     const result = run(makeCheckouts({ schema: schemaTs().replace("batches: defineTable", "dtsBatches: defineTable") }));
     expect(codes(result)).toEqual(["D2"]);
     expect(result.disagreements[0].subject).toBe('term "batch"');
     expect(result.disagreements[0].rows[1].text).toContain("`batches: defineTable`");
+    const block = formatDisagreement(result.disagreements[0]).split("\n");
+    expect(block[0]).toBe('DISAGREEMENT D2  term "batch"');
+    expect(block[1]).toBe("  spec  WikiTom tts/spec.md §5.4");
+    expect(block[2]).toBe("        a set of todos that share one purpose (§5.4).");
+    expect(block[3]).toBe("  code  tom.quest convex/schema.ts");
+    expect(block[5]).toMatch(/^ {2}fix {3}point the term at the symbol that exists/);
+    expect(block).toHaveLength(6);
   });
 
   it("D3 — a term's spec section does not exist", () => {
@@ -622,17 +631,16 @@ describe("the disagreement check", () => {
   it("collects every disagreement and never stops at the first", () => {
     const result = run(
       makeCheckouts({
-        shared: sharedTs(DISAGREEING_VOCABULARY),
         schema: schemaTs().replace("batches: defineTable", "dtsBatches: defineTable"),
         "worker/runs/store.mjs": "const somethingElse = () => null;\n",
       }),
     );
-    expect(codes(result)).toEqual(["D1", "D2", "D4"]);
-    expect(result.report).toContain("vocabulary: 3 disagreements — nothing written.");
+    expect(codes(result)).toEqual(["D2", "D4"]);
+    expect(result.report).toContain("vocabulary: 2 disagreements — nothing written.");
   });
 
   it("exits 2 on a disagreement and writes nothing", async () => {
-    const checkouts = makeCheckouts({ shared: sharedTs(DISAGREEING_VOCABULARY) });
+    const checkouts = makeCheckouts({ schema: schemaTs().replace("batches: defineTable", "dtsBatches: defineTable") });
     const lines = [];
     const code = await main(["--wikitom", checkouts.wikitom, "--tom-quest", checkouts.tomQuest, "--write"], {
       write: (text) => lines.push(text),
@@ -712,11 +720,11 @@ describe("the map candidate", () => {
 // ── The generated block in convex/ttsShared.ts ───────────────────────────────
 
 describe("the generated block", () => {
-  it("carries the constant's own text, the version and the three lists", () => {
+  it("carries the constant rendered from the spec, the version and the three lists", () => {
     const result = run(makeCheckouts());
     expect(result.sharedBlock).toContain(`// <vocabulary generated version=${result.version} — scripts/vocabulary.mjs; do not edit>`);
     expect(result.sharedBlock).toContain("// </vocabulary generated>");
-    expect(result.sharedBlock).toContain("export const TTS_CLOSED_VOCABULARY = `");
+    expect(result.sharedBlock).toContain(`export const TTS_CLOSED_VOCABULARY = \`${RENDERED_VOCABULARY}\`;`);
     expect(result.sharedBlock).toContain(`export const VOCABULARY_VERSION = "${result.version}";`);
     expect(result.sharedBlock).toContain("export const VOCABULARY_TERMS: readonly string[] = [");
     expect(result.sharedBlock).toContain("export const GRAPH_NODE_KINDS: readonly string[] = [");
@@ -795,5 +803,26 @@ describe("the command line", () => {
     expect(code).toBe(0);
     expect(JSON.parse(lines[0]).version).toMatch(/^[0-9a-f]{16}$/);
     expect(fs.existsSync(path.join(checkouts.wikitom, "tts/vocabulary.json"))).toBe(false);
+  });
+});
+
+// ── The prompt's vocabulary block ────────────────────────────────────────────
+
+describe("the closed vocabulary renderer", () => {
+  const terms = PROMPT_TERMS.map((term) => ({ term, definition: `The ${term} entry (§5.4). Second \`sentence\`.` }));
+
+  it("renders the opening, then each of the seven named, in order, without section references or emphasis", () => {
+    const text = renderClosedVocabulary("Opening:", [...terms].reverse());
+    expect(text.split("\n")).toEqual(["Opening:", ...PROMPT_TERMS.map((term) => `- ${term} — The ${term} entry. Second sentence.`)]);
+  });
+
+  it("is null, not shorter, when one of the seven is missing or empty", () => {
+    expect(renderClosedVocabulary("Opening:", terms.slice(1))).toBeNull();
+    expect(renderClosedVocabulary("Opening:", terms.map((entry, index) => (index === 3 ? { ...entry, definition: "(§5.4)" } : entry)))).toBeNull();
+  });
+
+  it("keeps the agreed wordings verbatim once the section reference is gone", () => {
+    expect(promptDefinition("Needs are the ids a todo or a batch cannot proceed without (§5.4). They are the only ordering mechanism in TTS, at both levels."))
+      .toBe("Needs are the ids a todo or a batch cannot proceed without. They are the only ordering mechanism in TTS, at both levels.");
   });
 });

@@ -545,13 +545,13 @@ if (resolved) {
   // 11. THE SAME QUESTION OF THE VOCABULARY, PRINTED AND NOT FAILED, YET.
   //
   //     The vocabulary generator's first run against the real repositories
-  //     found seven D1 disagreements — the seven prompt terms are worded one
-  //     way in WikiTom tts/spec.md §12.1 and another way in
-  //     convex/ttsShared.ts's TTS_CLOSED_VOCABULARY — plus a terms section over
-  //     the 40 KiB cap and a map candidate over the 7,000-byte bound. Every one
-  //     of those is a real fact about the system and none of them is this
-  //     round's to settle: the first is Tom's wording, and the other two are
-  //     numbers to re-argue against what was measured rather than estimated.
+  //     found seven disagreements about the prompt's seven words, a terms
+  //     section over the 40 KiB cap and a map candidate over the 7,000-byte
+  //     bound. Tom settled the seven on 2026-09-24: one wording, in WikiTom
+  //     tts/spec.md §12.1, with TTS_CLOSED_VOCABULARY rendered from it, so
+  //     that class no longer exists. The cap and the map bound are numbers to
+  //     re-argue against what was measured rather than estimated, and any
+  //     other disagreement is the generator's own finding.
   //
   //     A check that failed on them would fail on every run from the day it
   //     shipped, which is a check nobody can act on. So this one prints the
@@ -560,7 +560,7 @@ if (resolved) {
   //     and for the same reason — it runs with `write: false` and logs the
   //     count — and this matches it rather than holding a second opinion.
   //
-  //     THE DAY THOSE THREE ARE SETTLED THIS BECOMES A FAILING CHECK, in one
+  //     THE DAY THE REST ARE SETTLED THIS BECOMES A FAILING CHECK, in one
   //     edit: call runGenerator here the way check 10 above does, and delete
   //     reportGenerator.
   //
@@ -572,7 +572,7 @@ if (resolved) {
   //     the three findings going UNSEEN — they are Tom's to settle and he
   //     settles what reaches him, so printing them on every gate run is the
   //     whole job. Deleting it would not remove a red check; it would remove
-  //     the only place the seven wordings and the two caps are said out loud.
+  //     the only place the disagreements and the two caps are said out loud.
   const vocabulary = read(GENERATOR_PATH);
   if (vocabulary === null) {
     notes.push(`${GENERATOR_PATH} is not in this checkout — its render check did not run`);

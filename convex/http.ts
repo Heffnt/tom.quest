@@ -18,7 +18,6 @@ import {
   NARROW_LIST,
   RECOMMENDATION_VALUES,
   SESSION_REPO_NAMES,
-  TTS_CLOSED_VOCABULARY,
   channelFor,
   isRecommendation,
   isSessionModel,
@@ -1985,10 +1984,10 @@ http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  // Seven independent reads — issued in parallel, not awaited one by one.
-  let todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard: string;
+  // Eight independent reads — issued in parallel, not awaited one by one.
+  let todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard: string, vocabulary: string;
   try {
-    [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard] = await Promise.all([
+    [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard, vocabulary] = await Promise.all([
       ctx.runQuery(internal.tts.internalListTodos, {}),
       ctx.runQuery(internal.tts.internalListMirror, {}),
       ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
@@ -1996,6 +1995,9 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
       ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "batch-context" }),
+      // The seven prompt words, rendered from the §12.1 entries the night
+      // posted (convex/vocabulary.ts), the constant only when none are posted.
+      ctx.runQuery(internal.vocabulary.internalClosedVocabulary, {}),
     ]);
   } catch (error) {
     return modelOfTomErrorResponse(error);
@@ -2008,7 +2010,7 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     batches,
     planRepairs,
     writingStandard,
-    vocabulary: TTS_CLOSED_VOCABULARY,
+    vocabulary,
     // The repo names a batch may declare. Served for the SAME reason as
     // writingStandard above: the planner is Node ESM on a box that never loads
     // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's

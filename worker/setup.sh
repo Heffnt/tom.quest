@@ -311,10 +311,13 @@ cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/jobs/markdown-sections.mjs
 # THEY ALSO REACH EACH OTHER. scripts/vocabulary.mjs imports `headCommit` from
 # ./graph.mjs — one parser of .git rather than two — so the vocabulary does not
 # load unless graph.mjs is beside it, and graph.mjs in turn needs ./skills.mjs
-# here and ../worker/jobs/graph.mjs above. All three are copied, and dropping
-# any one of these lines breaks the nightly's graph step at module load.
-cp "$WORKER_DIR"/../scripts/graph.mjs      /opt/tts/scripts/graph.mjs
-cp "$WORKER_DIR"/../scripts/vocabulary.mjs /opt/tts/scripts/vocabulary.mjs
+# here and ../worker/jobs/graph.mjs above. The vocabulary also imports
+# ./closed-vocabulary.mjs, the renderer of the prompt's seven words that
+# convex/vocabulary.ts shares. All four are copied, and dropping any one of
+# these lines breaks the nightly's graph step at module load.
+cp "$WORKER_DIR"/../scripts/graph.mjs             /opt/tts/scripts/graph.mjs
+cp "$WORKER_DIR"/../scripts/vocabulary.mjs        /opt/tts/scripts/vocabulary.mjs
+cp "$WORKER_DIR"/../scripts/closed-vocabulary.mjs /opt/tts/scripts/closed-vocabulary.mjs
 # EVERY .diff IN evals/audit-faults/ HAS TO LAND HERE: auditFaultsRoot() looks in
 # /opt/tts/audit-faults (beside evals.mjs) before the repo-relative path, and the
 # box holds no checkout at run time — so with no copy the weekly scorecard's
