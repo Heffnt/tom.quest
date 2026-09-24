@@ -70,7 +70,6 @@ export const DEFAULT_WIKITOM = process.env.WIKITOM_DIR || "C:/Users/heffn/Deskto
 export const JOB_TABLES = Object.freeze({
   prepare: { table: "dtsTodos", fields: ["brief", "entryAction", "workDescription", "groundUpExplanation"] },
   "code-brief": { table: "dtsCodeBriefs", fields: ["brief", "recommendation", "execClass", "evidence"] },
-  "batch-plan": { table: "batches", fields: ["groundUpExplanation"] },
 });
 
 export function git(dir, ...args) {

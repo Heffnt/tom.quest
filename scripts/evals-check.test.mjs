@@ -708,7 +708,7 @@ describe("what one job's prompt reads", () => {
 
   it("narrows an ordinary diff to the jobs that read what it touched", () => {
     expect(jobsAffectedBy(["worker/jobs/runner-checkin.mjs"])).toEqual(["checkin"]);
-    expect(jobsAffectedBy(["worker/jobs/plan-graphs.mjs"])).toEqual(["batch-plan", "code-brief", "prepare"]);
+    expect(jobsAffectedBy(["worker/jobs/plan-graphs.mjs"])).toEqual(["code-brief", "prepare"]);
     // Nothing watched at all: no job reads it, and the whole-run shortcut has
     // already answered this branch anyway.
     expect(jobsAffectedBy(["README.md"])).toEqual([]);

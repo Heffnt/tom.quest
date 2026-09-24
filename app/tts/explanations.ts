@@ -128,7 +128,7 @@ ${body}
 // emitted HTML on purpose: each document is forwarded on its own, and a
 // document that assumed a reader had already opened another one would not be
 // self-contained.
-const WHAT_TTS_IS = `<p><span class="term">TTS</span> is Toms Todo System: the web application that holds Tom's todos, groups them into batches, and asks him for rulings. A <span class="term">todo</span> is one stored row in it — one thing to be done, held as a set of separate fields. TTS stores its data in <span class="term">Convex</span>, a hosted backend service; a <span class="term">mutation</span> is one named function there that changes stored data, and every control on these screens fires exactly one.</p>`;
+const WHAT_TTS_IS = `<p><span class="term">TTS</span> is Toms Todo System: the web application that holds Tom's todos and asks him for rulings. A <span class="term">todo</span> is one stored row in it — one thing to be done, held as a set of separate fields. TTS stores its data in <span class="term">Convex</span>, a hosted backend service; a <span class="term">mutation</span> is one named function there that changes stored data, and every control on these screens fires exactly one.</p>`;
 
 export const STATUS_EXPLANATION = page(
   "Status — the four states a todo can be in",
@@ -193,7 +193,7 @@ ${WHAT_TTS_IS}
 
 <h2>What brings an archived todo back: nothing automatic</h2>
 
-<p>The unarchive condition is stored on the row and displayed, and it is read by nothing. No job, no scheduled task, no query reads it and reactivates anything. The two jobs that group and plan todos are given the archive sentences of retired items for one reason only — so that they do not recreate a grouping already retired — and are told explicitly that such a sentence is not steering about what to plan.</p>
+<p>The unarchive condition is stored on the row and displayed, and it is read by nothing. No job, no scheduled task, no query reads it and reactivates anything.</p>
 
 <p>So archiving is reversible only by hand: someone reads the condition, decides it has come true, and presses Set active, which clears the condition as part of reopening. The sentence is a message to whoever next looks, not an instruction to a machine.</p>
 
@@ -201,7 +201,7 @@ ${WHAT_TTS_IS}
 
 <p>Each of these controls writes the field, writes one entry of kind <span class="mono">status-changed</span> carrying the old and new values, and stops. Nothing else is scheduled and no message is sent.</p>
 
-<p>After that: an active todo is a candidate for the picker that starts agent sessions every five minutes, and appears in today's column on the calendar when it is due, overdue, scheduled, ready or waking today; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom, which freezes its grouping against the job that forms batches automatically.</p>
+<p>After that: an active todo is a candidate for the picker that starts agent sessions every five minutes, and appears in today's column on the calendar when it is due, overdue, scheduled, ready or waking today; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom.</p>
 `,
 );
 
@@ -220,7 +220,7 @@ ${WHAT_TTS_IS}
 
 <h2>When these chips appear at all</h2>
 
-<p>A todo shows the four verdict chips only when its status is <span class="mono">active</span> and its readiness is <span class="mono">prepared</span>. Readiness is the field saying whether the writing-up of the todo has happened, and <span class="mono">prepared</span> means an agent finished preparing it. A todo in that state is called a <span class="term">gate item</span>, and a gate item can be ruled from wherever it is seen, not only on the batches tab.</p>
+<p>A todo shows the four verdict chips only when its status is <span class="mono">active</span> and its readiness is <span class="mono">prepared</span>. Readiness is the field saying whether the writing-up of the todo has happened, and <span class="mono">prepared</span> means an agent finished preparing it. A todo in that state is called a <span class="term">gate item</span>, and a gate item can be ruled from wherever it is seen: in the awaiting section at the top of the everything tab, or on its row in the list under it.</p>
 
 <p>Two further chips sit beside the four and are not verdicts: <span class="mono">done</span>, which marks the todo finished, and <span class="mono">archive</span>, which sets it aside without recording a ruling. The plain archive chip appears only when the four verdict chips do not, so the two ways of archiving are never offered at once.</p>
 
@@ -235,7 +235,7 @@ ${WHAT_TTS_IS}
   <tr>
     <td class="mono">approve</td>
     <td>The ruling row, marked applied on the spot with the result "plan ratified". The todo itself is not changed.</td>
-    <td>Nothing executes it. For todos about Tom's own life, Tom is the executor; approving records the decision and stops TTS asking. The sentence is read afterwards by the two jobs that group todos into batches and plan their order, as standing steering about how he wants such work arranged.</td>
+    <td>Nothing executes it. For todos about Tom's own life, Tom is the executor; approving records the decision and stops TTS asking.</td>
   </tr>
   <tr>
     <td class="mono">revise</td>
@@ -254,7 +254,7 @@ ${WHAT_TTS_IS}
   </tr>
 </table>
 
-<p>Three of the four also stamp the todo as touched by Tom, which freezes its grouping against the job that forms batches automatically. <span class="mono">revise</span> is the exception, and deliberately: a revise hands the item back to an agent rather than settling it, so it must not freeze anything.</p>
+<p>Three of the four also stamp the todo as touched by Tom. <span class="mono">revise</span> is the exception, and deliberately: a revise hands the item back to an agent rather than settling it.</p>
 
 <h2>Why an autonomous run cannot consume a session verdict</h2>
 
@@ -304,7 +304,7 @@ ${WHAT_TTS_IS}
 <table>
   <tr><th>Kind</th><th>Started from</th><th>What its prompt says</th></tr>
   <tr><td class="mono">gate</td><td>A todo whose readiness is <span class="mono">prepared</span>.</td><td>That the item is ready and needs Tom's input integrated: walk him through it from the ground up, take his ruling, and shape the result with him.</td></tr>
-  <tr><td class="mono">focus-item</td><td>Any other todo, and any batch.</td><td>That Tom chose to begin this item now: open with the smallest concrete first step and work it with him.</td></tr>
+  <tr><td class="mono">focus-item</td><td>Any other todo.</td><td>That Tom chose to begin this item now: open with the smallest concrete first step and work it with him.</td></tr>
   <tr><td class="mono">block</td><td>A placed span of calendar time that targets a category rather than one todo.</td><td>That Tom committed this span to the category, followed by a list of every active todo carrying that category, one line each with its timing, date, entry action and work description.</td></tr>
   <tr><td class="mono">weekly</td><td>The session list page only.</td><td>Nothing extra — the prompt is whatever was typed.</td></tr>
   <tr><td class="mono">adhoc</td><td>The session list page, and every automatic exploration run.</td><td>Nothing extra, or the exploration prompt.</td></tr>
@@ -314,13 +314,12 @@ ${WHAT_TTS_IS}
 
 <h2>Which repositories it gets, and how</h2>
 
-<p>A session works in a fresh copy of whatever code it needs. Which repositories those are is decided by three rules, consulted in order, the first that answers winning — and an answer of "none at all" is an answer that stops the search.</p>
+<p>A session works in a fresh copy of whatever code it needs. Which repositories those are is decided by two rules, consulted in order, the first that answers winning — and an answer of "none at all" is an answer that stops the search.</p>
 
 <table>
   <tr><th>Order</th><th>Rule</th></tr>
-  <tr><td>1</td><td>Whatever the caller passed explicitly. The todo buttons deliberately pass nothing, so that the rules below decide.</td></tr>
-  <tr><td>2</td><td>The repositories the item's batch declared when it was formed.</td></tr>
-  <tr><td>3</td><td>A scan of the todo's own text — statement, brief, explanation — for the name of a known repository, returning every match.</td></tr>
+  <tr><td>1</td><td>Whatever the caller passed explicitly. The todo buttons deliberately pass nothing, so that the rule below decides.</td></tr>
+  <tr><td>2</td><td>A scan of the todo's own text — statement, brief, explanation — for the name of a known repository, returning every match.</td></tr>
 </table>
 
 <p>The known repositories are a fixed list of four: <span class="mono">tom.quest</span>, <span class="mono">ComplexMultiTrigger</span>, <span class="mono">WikiTom</span> and <span class="mono">Jarvis</span>. A name outside the list is dropped rather than treated as an error. With no repositories the session gets an empty scratch directory; with one, that checkout is its working directory; with several, its working directory is the folder holding all of them.</p>
@@ -549,13 +548,13 @@ ${WHAT_TTS_IS}
 export const MUST_NOT_BREAK_EXPLANATION = page(
   "Must not break — Tom's line on a goal",
   "Must not break: Tom's own line on what the work toward a goal must not break",
-  "The field behind the line under a goal on the batch card: who writes it, where it is read, and what it binds.",
+  "The field behind the line on a goal's row: who writes it, where it is read, and what it binds.",
   `
 <h2>What this is</h2>
 
 ${WHAT_TTS_IS}
 
-<p>A <span class="term">batch</span> is a stored row holding how a set of todos gets completed. Its contents are todos of two kinds: a <span class="term">task</span> is work someone does, and a <span class="term">goal</span> is a state of the world the batch is for, written as a condition that is either true yet or not. <span class="term">Must not break</span> is one field on a goal: one line, in Tom's own words, naming what the work toward that goal must not break — a constraint on every task planned or done in the goal's name.</p>
+<p>A todo is one of two kinds. A <span class="term">task</span> is work someone does. A <span class="term">goal</span> is a state of the world Tom wants, written as a condition that is either true yet or not. <span class="term">Must not break</span> is one field on a goal: one line, in Tom's own words, naming what the work toward that goal must not break — a constraint on everything done in the goal's name.</p>
 
 <p>It is stored on the goal's row under the name <span class="mono">mustNotBreak</span>, and it exists only on goals: the one function that writes it, <span class="mono">updateTodo</span> in the file <span class="mono">convex/tts.ts</span>, refuses it on a task.</p>
 
@@ -564,18 +563,15 @@ ${WHAT_TTS_IS}
 <table>
   <tr><th>Writer</th><th>Allowed</th><th>Why</th></tr>
   <tr><td>Tom, through <span class="mono">updateTodo</span></td><td>Yes — the only writer.</td><td>The line is his intent about the world. An agent guessing it would be an agent inventing a constraint in his name.</td></tr>
-  <tr><td>The planner (the job that maintains the graph inside each batch)</td><td>No. It reads the line and never writes or rewrites it.</td><td>The planner proposes structure; it does not state what matters.</td></tr>
-  <tr><td>A worker session (an agent doing one task)</td><td>No. Its writing pen does not carry the field.</td><td>Same reason. A worker that finds the line wrong says so in its outcome summary, and Tom changes it.</td></tr>
+  <tr><td>An agent</td><td>No. None of the writing pens an agent holds carries the field.</td><td>Same reason. An agent that finds the line wrong says so, and Tom changes it.</td></tr>
 </table>
 
 <h2>Where it is read</h2>
 
 <table>
   <tr><th>Reader</th><th>What it does with the line</th></tr>
-  <tr><td>The batch card and the goal's detail dialog</td><td>Show it under the goal, exactly as written.</td></tr>
-  <tr><td>The planner's prompt</td><td>Carries it beside the goal's statement. A task that would break the line is not a task to write, and a task's explanation must say how the line is kept.</td></tr>
-  <tr><td>A worker session's opening prompt</td><td>Lists every must-not-break line of the batch's goals before the task, as binding on that task.</td></tr>
-  <tr><td>A batch session or item session Tom opens</td><td>Prints it beside the goal, marked as his own binding line.</td></tr>
+  <tr><td>The goal's row on the everything tab</td><td>Shows it in the row's open panel, exactly as written.</td></tr>
+  <tr><td>A session Tom opens on the goal</td><td>Prints it among the item's facts in the opening prompt, marked as his own binding line.</td></tr>
 </table>
 
 <h2>What it binds</h2>
@@ -583,13 +579,11 @@ ${WHAT_TTS_IS}
 <div class="flow">
   <div class="box">Tom writes the line on a goal <span class="muted">— one sentence, his words</span></div>
   <div class="arrow">↓</div>
-  <div class="box">Every task the planner writes toward that goal is planned under it <span class="muted">— the prompt says a task that would break it is not written</span></div>
-  <div class="arrow">↓</div>
-  <div class="box">Every worker that takes one of those tasks reads it first <span class="muted">— a change that would break it is not made, whatever the task says</span></div>
+  <div class="box">A session opened on the goal reads it first <span class="muted">— a change that would break it is not made, whatever else the item says</span></div>
 </div>
 
 <h2>What happens next, and who does it</h2>
 
-<p>Writing or changing the line writes one field and stops. Nothing is scheduled and no message is sent. The next planner run and the next worker session on the batch read the new line from the row; a session already open keeps the prompt it was opened with.</p>
+<p>Writing or changing the line writes one field and stops. Nothing is scheduled and no message is sent. The next session opened on the goal reads the new line from the row; a session already open keeps the prompt it was opened with.</p>
 `,
 );

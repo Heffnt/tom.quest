@@ -546,7 +546,7 @@ const FAILURE_TEXT_CHARS = 300;
 // and the token this call spooled is written into it as `receipt.runToken`.
 //
 // WHY NOT A RICHER RETURN VALUE. Seven callers pass a registration today and
-// use the answer as a string (apply-time-notes, delegate, plan-graphs in three
+// use the answer as a string (apply-time-notes, delegate, plan-graphs in two
 // places, poll-canvas, poll-gmail, write-slack); returning an object would
 // break every one of them at a line that still type-checks in plain JS.
 //
@@ -720,24 +720,8 @@ export async function runClaudeAsync(prompt, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Planner input bounds and text clipping
+// Text clipping
 // ---------------------------------------------------------------------------
-
-// One planner run offers at most this many unbatched life todos (oldest
-// first), each with its brief clipped to MAX_BRIEF_CHARS. An unbounded offer
-// sank real batcher runs: at 122+ todos with full briefs the single
-// completion blew the 10-min timeout three runs in a row (2026-08-29) and the
-// backlog compounded. The half-hourly cron drains any backlog in slices —
-// todos placed in a batch this run drop out of the next run's offer.
-//
-// ONE HOME. Two planners (the v1 batcher and plan-graphs.mjs) once clipped
-// with two separate copies of this rule and had already drifted — one marked
-// the cut and the other did not, so the same brief reached the model in two
-// forms depending on which job read it. The v1 batcher is gone; the rule
-// stays here so it cannot happen again. Do not re-declare either constant,
-// and do not re-spell clip().
-export const MAX_LIFE_PER_RUN = 80;
-export const MAX_BRIEF_CHARS = 400;
 
 // clip() itself lives in clip.mjs — the one body convex/ttsNightly.ts reads
 // too, which cannot import this file (node:child_process above). Re-exported

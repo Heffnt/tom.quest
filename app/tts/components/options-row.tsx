@@ -1,21 +1,19 @@
 "use client";
 
-// THE options surface for every /tts subject — a life todo, a batch (a batch
-// IS a life todo) or a code item. One compact wrap row at the top of an
+// THE options surface for every /tts subject — a life todo or a code item. One compact wrap row at the top of an
 // expanded panel: the four verdict chips and the status chips a life todo
 // carries (done · archive).
 //
 // The verdicts are NOT re-implemented here. This row renders VerdictButtons
-// (./verdict-buttons), the one verdict row on /tts, so the batch card, the
-// detail dialog and this row cannot offer a different set, a different label
-// or a different popover. What this row adds is the two status chips, which
+// (./verdict-buttons), the one verdict row on /tts, so no surface can offer a
+// different set, a different label or a different popover. What this row adds is the two status chips, which
 // are not rulings: they write tts.setStatus directly.
 //
 // NOTHING IS COMPOSED INLINE (app/AGENTS.md UI rules: interactions never shift
 // layout; anything composed opens in a fixed dialog). A chip that needs a
 // sentence — either status chip, and the revise and archive verdicts inside
 // VerdictButtons — opens RulingDialog, a fixed overlay portalled to <body>, so
-// the row it was pressed in never moves and is never clipped by the card
+// the row it was pressed in never moves and is never clipped by the panel
 // around it.
 //
 // Every control names the exact backend call it fires behind an ⓘ (UI = code).
@@ -81,7 +79,7 @@ const STATUS_INFO: Record<
 };
 
 export type OptionsRowProps = {
-  /** Life todo or batch row (a batch IS a life todo). Omit for code subjects. */
+  /** Life todo. Omit for code subjects. */
   todo?: Todo;
   /** Code subject. */
   code?: { repo: string; externalId: string };

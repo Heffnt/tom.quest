@@ -164,7 +164,6 @@ describe("a ruling's address", () => {
     sentence: null,
     subjectType: "life",
     todoId: "t1",
-    batchId: null,
     repo: null,
     externalId: null,
     subject: "s",
@@ -172,11 +171,12 @@ describe("a ruling's address", () => {
     ...over,
   });
 
-  it("is the item link for a life todo and the batches tab for everything else", () => {
+  it("is the item link for a life todo, the everything tab for a code todo, and nothing for a batch", () => {
     expect(rulingHref(ruling({}))).toBe("/tts?item=t1");
-    expect(rulingHref(ruling({ subjectType: "batch", todoId: null, batchId: "b1" }))).toBe(
-      "/tts?tab=batches",
-    );
+    expect(
+      rulingHref(ruling({ subjectType: "code", todoId: null, repo: "tom.quest", externalId: "todo-14" })),
+    ).toBe("/tts?tab=everything");
+    expect(rulingHref(ruling({ subjectType: "batch", todoId: null }))).toBeNull();
   });
 });
 
@@ -220,7 +220,6 @@ describe("the map's numbers", () => {
         sentence: null,
         subjectType: "life",
         todoId: null,
-        batchId: null,
         repo: null,
         externalId: null,
         subject: "",

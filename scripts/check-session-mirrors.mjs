@@ -150,50 +150,6 @@ if (sharedDefault && daemonDefault && sharedDefault[1] !== daemonDefault[1]) {
   );
 }
 
-// 2c. The PLANNER prompt names the models by hand. worker/jobs/plan-graphs.mjs
-// builds the prompt that tells the batch planner which model words it may put
-// on a task, and that list is prose inside a template literal — nothing types
-// it against SESSION_MODELS. Both directions are checked, the same shape as the
-// repo map: every model in the one home must be named in the prompt (a model
-// added to the table but not the prompt is a model the planner never chooses),
-// and every model-shaped quoted word in the prompt must exist in the table (a
-// word the table lacks is a name the SESSION_MODEL validator rejects, so the
-// planner's output is dropped on write).
-// witness: add a model to SESSION_MODELS without naming it in the prompt, or
-// rename gpt-5.6-terra in the table and leave the prompt saying the old word.
-const planGraphs = readFileSync("worker/jobs/plan-graphs.mjs", "utf8");
-// The prompt is the whole body of `function prompt(ctx) { ... }` — the region
-// bounded by its declaration and the next column-0 `}`.
-const promptBody = planGraphs.match(/\nexport function graphPrompt\(ctx\) \{\n([\s\S]*?)\n\}\n/);
-if (!promptBody) {
-  failures.push("plan-graphs.mjs: the planner prompt body (export function graphPrompt(ctx)) not found");
-}
-if (promptBody && sharedModels) {
-  const tableNames = [...sharedModels[1].matchAll(modelEntryRe)].map((m) => m[1]);
-  // A quoted word that LOOKS like a model name: a gpt-*/claude-* id, or one of
-  // the bare Claude tier words. Anything else in the prompt is ordinary prose.
-  const MODEL_SHAPED = /^(?:gpt-[\w.-]+|claude-[\w.-]+|opus|sonnet|haiku|fable)$/i;
-  const quoted = new Set(
-    [...promptBody[1].matchAll(/"([\w.-]+)"/g)]
-      .map((m) => m[1])
-      .filter((word) => MODEL_SHAPED.test(word)),
-  );
-  for (const name of tableNames) {
-    if (!quoted.has(name)) {
-      failures.push(
-        `plan-graphs.mjs planner prompt never names the model "${name}" — SESSION_MODELS offers it but the planner is never told it exists`,
-      );
-    }
-  }
-  for (const word of quoted) {
-    if (!tableNames.includes(word)) {
-      failures.push(
-        `plan-graphs.mjs planner prompt offers the model "${word}", which SESSION_MODELS does not define — the SESSION_MODEL validator rejects it`,
-      );
-    }
-  }
-}
-
 // 3. The usage-limit fingerprint: the daemon's usage-limit record
 // (USAGE_LIMIT_RE in session.mjs) and the scheduler's circuit breaker
 // (AUTO_USAGE_RE in claudeSessions.ts) must mean the same thing by "the

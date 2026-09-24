@@ -1,5 +1,6 @@
-// The runners block on the batches tab: what a row shows, what it expands to,
-// where its title goes, and the one action, which is Tom's alone.
+// The runners block at the top of the everything tab: what a row shows, what
+// it expands to, where its title goes, and the one action, which is Tom's
+// alone.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";

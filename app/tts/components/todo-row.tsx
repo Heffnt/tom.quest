@@ -25,7 +25,12 @@ import {
 } from "@/convex/ttsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
-import { SESSIONS_EXPLANATION, STATUS_EXPLANATION } from "../explanations";
+import {
+  MUST_NOT_BREAK_EXPLANATION,
+  SESSIONS_EXPLANATION,
+  STATUS_EXPLANATION,
+} from "../explanations";
+import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
 import TimeNoteField, { type TimeNote } from "./time-note-field";
 import {
@@ -206,6 +211,7 @@ export default function TodoRow({
   onIntentCleared,
   timeNotes,
   waiting = null,
+  waitingOn = [],
 }: {
   todo: Todo;
   now: number;
@@ -220,6 +226,9 @@ export default function TodoRow({
    * (ttsShared.waitingReason: the done set and the need names live there).
    * null = waiting on nothing, or not an active todo. */
   waiting?: WaitingReason | null;
+  /** The statement of every todo this one needs that is not yet done. The
+   * waiting line names only the first thing in the way; this is all of them. */
+  waitingOn?: readonly string[];
 }) {
   const updateTodo = useMutation(api.tts.updateTodo);
   const setStatus = useMutation(api.tts.setStatus);
@@ -233,6 +242,7 @@ export default function TodoRow({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [groundUpOpen, setGroundUpOpen] = useState(false);
 
   // The door mark for this row's last preparation (see doorFaultsOf above).
   // Asked for only while the row is open, which is the only state that shows
@@ -389,9 +399,8 @@ export default function TodoRow({
           )}
 
           {/* 2 — session + options (the one options surface: verdicts when
-              this is a gate item, done/archive). A gate item is
-              ruled from wherever it is seen, not only from the batches tab —
-              batched members lose that strip. */}
+              this is a gate item, done/archive). A gate item is ruled from
+              wherever it is seen. */}
           <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
             <div className="space-y-0.5">
               <div className="flex items-center gap-1">
@@ -405,7 +414,7 @@ export default function TodoRow({
                   Open session
                 </button>
                 <Caption
-                  explains="Opens a Claude session on the Jarvis Box with this item, its brief and its plan already in the opening prompt. It checks out whatever repositories its batch declares, and can only push to its own branch — merging stays yours."
+                  explains="Opens a Claude session on the Jarvis Box with this item, its brief and its plan already in the opening prompt. It checks out the repositories the item's text names, and can only push to its own branch — merging stays yours."
                   explanation={SESSIONS_EXPLANATION}
                   explanationTitle="opening a session — what is created and where it runs"
                 >
@@ -431,6 +440,35 @@ export default function TodoRow({
               safe, renegotiations and missed dates are all written by the
               agent that reads this note. */}
           <TimeNoteField todoId={todo._id} notes={timeNotes} />
+
+          {/* Tom's own line on a goal, shown as he wrote it. */}
+          {(todo.mustNotBreak ?? "").trim() !== "" && (
+            <div className="space-y-0.5">
+              <div className="flex items-baseline gap-1">
+                <span className="text-xs text-text-faint">must not break</span>
+                <Info
+                  call="tts.updateTodo({ mustNotBreak })"
+                  explanation={MUST_NOT_BREAK_EXPLANATION}
+                  explanationTitle="must not break — Tom's line on a goal"
+                >
+                  Your own line on what the work toward this goal must not
+                  break. Only you write it, and a session opened on this todo
+                  reads it in its opening prompt.
+                </Info>
+              </div>
+              <div className="text-sm text-text-muted">{todo.mustNotBreak}</div>
+            </div>
+          )}
+
+          {todo.groundUpExplanation !== undefined && (
+            <button
+              type="button"
+              onClick={() => setGroundUpOpen(true)}
+              className="text-xs text-accent underline underline-offset-2 hover:text-text"
+            >
+              ground-up explanation
+            </button>
+          )}
 
           {/* 4 — brief */}
           {todo.brief && (
@@ -582,6 +620,36 @@ export default function TodoRow({
                 <Fact label="readiness">{normalizeReadiness(todo.readiness)}</Fact>
                 <Fact label="status">{todo.status}</Fact>
                 <Fact label="timingClass">{todo.timingClass}</Fact>
+                {todo.actor && (
+                  <Fact label="actor">
+                    {todo.actor === "tom" ? "you" : "agents"}
+                  </Fact>
+                )}
+                {waitingOn.length > 0 && (
+                  <Fact label="waiting on">{waitingOn.join(" · ")}</Fact>
+                )}
+                {todo.evidence && (
+                  <Fact label="evidence">
+                    {todo.evidence.startsWith("http") ? (
+                      <a
+                        href={todo.evidence}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-accent underline underline-offset-2"
+                      >
+                        {todo.evidence}
+                      </a>
+                    ) : (
+                      todo.evidence
+                    )}
+                  </Fact>
+                )}
+                {todo.codeRepo !== undefined &&
+                  todo.codeExternalId !== undefined && (
+                    <Fact label="lives in">
+                      {todo.codeRepo} · {todo.codeExternalId}
+                    </Fact>
+                  )}
                 {todo.category && (
                   <Fact label="category">{todo.category}</Fact>
                 )}
@@ -651,6 +719,13 @@ export default function TodoRow({
 
           {error && <div className="text-xs text-error">{error}</div>}
         </div>
+      )}
+      {groundUpOpen && todo.groundUpExplanation !== undefined && (
+        <GroundUpView
+          title={todo.statement}
+          content={todo.groundUpExplanation}
+          onClose={() => setGroundUpOpen(false)}
+        />
       )}
     </div>
   );
