@@ -72,17 +72,17 @@ function stubIo(answers) {
 }
 
 describe("selectPrepareTargets", () => {
-  it("takes active unprepared todos and leaves prepared, terminal and task rows alone", () => {
+  it("takes active unprepared todos, tasks and goals alike, and leaves prepared and terminal rows alone", () => {
     const todos = [
       todo({ _id: "raw" }),
       todo({ _id: "done", readiness: "prepared" }),
       todo({ _id: "archived", status: "archived" }),
-      // A graph task rests at "unprepared"; a bound GOAL is still Tom's todo.
-      todo({ _id: "task", batchId: "b1", kind: "task" }),
-      todo({ _id: "goal", batchId: "b1", kind: "goal" }),
+      // Every todo stands alone since batches went (Tom, 2026-09-24).
+      todo({ _id: "task", kind: "task" }),
+      todo({ _id: "goal", kind: "goal" }),
     ];
     const { targets } = selectPrepareTargets(todos, []);
-    expect(targets.map((t) => t._id)).toEqual(["raw", "goal"]);
+    expect(targets.map((t) => t._id)).toEqual(["raw", "task", "goal"]);
   });
 
   it("re-prepares a todo with a pending life revise ruling whatever its status", () => {
@@ -93,7 +93,7 @@ describe("selectPrepareTargets", () => {
       { _id: "r1", subjectType: "life", verdict: "revise", todoId: "asleep", sentence: "shorter" },
       // Other verdicts and other subject types are not this pass's.
       { _id: "r3", subjectType: "life", verdict: "approve", todoId: "asleep" },
-      { _id: "r4", subjectType: "batch", verdict: "revise", batchId: "b1", sentence: "y" },
+      { _id: "r4", subjectType: "code", verdict: "revise", repo: "tom.quest", externalId: "t-1", sentence: "y" },
     ];
     const { targets, reviseByTodo } = selectPrepareTargets(todos, pending);
     expect(targets.map((t) => t._id)).toEqual(["asleep"]);

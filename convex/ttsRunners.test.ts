@@ -151,10 +151,12 @@ describe("the create door", () => {
   it("refuses a batch subject on Tom's mutation and writes nothing", async () => {
     const t = convexTest(schema, modules);
     const { api } = await import("./_generated/api");
-    const { userId, batchId } = await t.run(async (ctx) => ({
-      userId: await ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
-      batchId: await ctx.db.insert("batches", { statement: "a batch", status: "active", createdAt: 1, updatedAt: 1 }),
-    }));
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
+    );
+    // Any value: the subject kind itself is refused, and the batches table is
+    // no longer declared.
+    const batchId = "batch-id-from-before-the-narrow";
     const tom = t.withIdentity({ subject: userId });
     await expect(tom.mutation(api.ttsRunners.createRunner, { ...seed(), subject: { kind: "batch", batchId } } as never))
       .rejects.toThrow();
@@ -413,21 +415,6 @@ describe("the step prompt", () => {
     if (!claimed.admitted) throw new Error(claimed.reason);
     return claimed;
   }
-
-  it("reads a stored batch subject as no subject, and grants by the repository", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    await publish(t);
-    const { internal } = await import("./_generated/api");
-    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed() });
-    await t.run(async (ctx) => {
-      const batchId = await ctx.db.insert("batches", { statement: "a batch", status: "active", createdAt: 1, updatedAt: 1 });
-      await ctx.db.patch(runnerId, { subject: { kind: "batch", batchId } });
-    });
-    const claimed = await claimedPrompt(t);
-    const grants = claimed.prompt.slice(0, claimed.prompt.indexOf("You are one step"));
-    expect(grants).toContain("repo-complexmultitrigger");
-  });
 
   it("grants what the design says and carries the document, the rubric, the never list and the pen", async () => {
     vi.useFakeTimers();

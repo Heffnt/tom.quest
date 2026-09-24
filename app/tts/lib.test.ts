@@ -12,7 +12,6 @@ import { describe, expect, it } from "vitest";
 import { subjectKey } from "@/convex/ttsRulings";
 import {
   codeSubjectKey,
-  liveRulingsByKey,
   rulingSubjectKey,
   selectNeedsMe,
   selectToday,
@@ -198,21 +197,6 @@ describe("ruling subject keys", () => {
     for (const c of CASES) {
       expect(rulingSubjectKey(c)).toBe(subjectKey(c));
     }
-  });
-
-  // A ruling on a batch can still come back from listRulings until the schema
-  // stops declaring that subject. No page shows a batch, so it is no live
-  // ruling here: without the drop it would sit in "ruled, applying" with no
-  // subject to name.
-  it("drops a ruling on a batch", () => {
-    const onBatch = ruling({
-      subjectType: "batch" as never,
-      repo: undefined,
-      externalId: undefined,
-      ruledAt: 1000,
-    });
-    expect([...liveRulingsByKey([onBatch]).values()]).toEqual([]);
-    expect(selectNeedsMe([], [], [], [onBatch]).pending).toEqual([]);
   });
 });
 

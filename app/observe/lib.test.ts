@@ -171,12 +171,11 @@ describe("a ruling's address", () => {
     ...over,
   });
 
-  it("is the item link for a life todo, the everything tab for a code todo, and nothing for a batch", () => {
+  it("is the item link for a life todo and the everything tab for a code todo", () => {
     expect(rulingHref(ruling({}))).toBe("/tts?item=t1");
     expect(
       rulingHref(ruling({ subjectType: "code", todoId: null, repo: "tom.quest", externalId: "todo-14" })),
     ).toBe("/tts?tab=everything");
-    expect(rulingHref(ruling({ subjectType: "batch", todoId: null }))).toBeNull();
   });
 });
 

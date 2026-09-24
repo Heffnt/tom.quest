@@ -58,9 +58,7 @@ import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 //
 // TWO SUBJECT TYPES: life (a dtsTodos row) and code (repo + externalId). The
 // third, a batch, went with batches (Tom's ruling of 2026-09-24: "I dont want
-// to have batches at all anymore"). The schema still declares subjectType
-// "batch" and batchId until the narrow, so a stored row can carry them; no
-// door takes one.
+// to have batches at all anymore"), and the schema no longer declares it.
 
 const VERDICT = v.union(
   v.literal("approve"),
@@ -88,20 +86,17 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code and elevation keys disjoint, and a
-// stored batch row — the schema declares one until the narrow — apart from
-// all three). Client code derives live rulings with the same rule via
+// spaces; the type prefix keeps life, code and elevation keys disjoint).
+// Client code derives live rulings with the same rule via
 // app/tts/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch" | "elevation";
+  subjectType: "life" | "code" | "elevation";
   todoId?: string;
   repo?: string;
   externalId?: string;
-  batchId?: string;
   elevationId?: string;
 }) => {
   if (row.subjectType === "life") return `life ${row.todoId}`;
-  if (row.subjectType === "batch") return `batch ${row.batchId}`;
   if (row.subjectType === "elevation") return `elevation ${row.elevationId}`;
   return `code ${row.repo} ${row.externalId}`;
 };
@@ -114,10 +109,10 @@ export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    // An elevation's answer is about a worker's question, not a todo, batch
-    // or code entry the page shows, so the page is not sent it.
+    // An elevation's answer is about a worker's question, not a todo or code
+    // entry the page shows, so the page is not sent it.
     return (await ctx.db.query("dtsRulings").collect()).filter(
-      (r): r is typeof r & { subjectType: "life" | "code" | "batch" } => r.subjectType !== "elevation",
+      (r): r is typeof r & { subjectType: "life" | "code" } => r.subjectType !== "elevation",
     );
   },
 });

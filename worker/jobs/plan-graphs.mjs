@@ -14,8 +14,8 @@
 // brief, the smallest entry action, a work description, a ground-up
 // explanation, and readiness "prepared". One headless-Claude call per todo.
 // This pass used to be its own job (prepare-life-todos.mjs, every 2 minutes)
-// and was absorbed here in the lifeos update, phase 7. A task inside a batch
-// is skipped (isGraphTask below); a goal is not. Nothing here posts to Slack —
+// and was absorbed here in the lifeos update, phase 7. A task and a goal are
+// prepared alike: every todo stands alone. Nothing here posts to Slack —
 // the events route replies at capture.
 //
 // TWO PASSES ARE RETIRED. BRIEF wrote a brief for every open entry of CMT's
@@ -318,22 +318,14 @@ export function prepareDoorFaults(parsed, standard) {
   ];
 }
 
-/** A row inside a batch that is not a goal: a step of a graph, never prepared
- * on its own ("unprepared" is a task's resting state; briefing one would
- * flood the needs-me feed with plan steps). Batches went on 2026-09-24 and
- * ttsMigrations.internalRemoveBatches clears every batchId, after which this
- * matches nothing; it goes with the schema narrow, and until the migration has
- * run it keeps the planner's own steps, about to be archived, from being
- * prepared. */
-const isGraphTask = (t) =>
-  t.batchId !== undefined && t.batchId !== null && t.kind !== "goal";
-
 /**
  * Which todos this run prepares, and the revise ruling each carries, from the
  * pending-rulings feed and the todo list:
- *   - a graph task is never prepared here (see isGraphTask); a GOAL is — it is
- *     one of Tom's own todos the planner bound, and binding must not be what
- *     stops it getting prepared;
+ *   - a task and a goal are prepared alike. (A task inside a batch, a step
+ *     of the planner's graph, used to be skipped; batches went on Tom's
+ *     ruling of 2026-09-24, ttsMigrations.internalRemoveBatches archived the
+ *     planner's open steps and cleared every batchId, and the schema no
+ *     longer declares one.)
  *   - an active unprepared todo is prepared; with `force`, a prepared one too;
  *   - a todo with a pending life "revise" ruling is re-prepared REGARDLESS of
  *     status (the verdict dropped its readiness server-side; the sentence is
@@ -351,9 +343,8 @@ export function selectPrepareTargets(todos, pending, { force = false } = {}) {
   }
   const targets = all.filter(
     (t) =>
-      !isGraphTask(t) &&
-      (reviseByTodo.has(t._id) ||
-        (t.status === "active" && (t.readiness === "unprepared" || force))),
+      reviseByTodo.has(t._id) ||
+      (t.status === "active" && (t.readiness === "unprepared" || force)),
   );
   return { targets, reviseByTodo };
 }

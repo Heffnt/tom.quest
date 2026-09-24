@@ -259,18 +259,14 @@ async function tokenForRulingSubject(
       .first();
     return brief?.producedByRunToken;
   }
-  // A stored ruling on a batch reaches no token: the schema narrow removes
-  // that subject.
   return undefined;
 }
 
 /** The subject's identity, in the one spelling ttsRulings.subjectKey defines.
  *  Duplicated as a local read rather than imported to keep this file free of a
  *  cycle through ttsRulings, which schedules into it. */
-function subjectKeyOf(ruling: Doc<"dtsRulings">): string | null {
+function subjectKeyOf(ruling: Doc<"dtsRulings">): string {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
-  // A stored ruling on a batch has no subject key: the schema narrow removes it.
-  if (ruling.subjectType === "batch") return null;
   return `code ${ruling.repo} ${ruling.externalId}`;
 }
 

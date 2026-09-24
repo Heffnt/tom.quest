@@ -367,8 +367,6 @@ export const internalGoldenInput = internalQuery({
           },
         });
       }
-      // A stored ruling on a batch reaches no item: the schema narrow removes
-      // that subject.
     }
 
     const grouped = new Map<string, GoldenCandidate[]>();
@@ -466,10 +464,8 @@ export type LabelItem = {
  *  defines. Read locally rather than imported for the reason runLabels gives:
  *  ttsRulings schedules into the label writer, and this file is on the other
  *  side of that edge. */
-function rulingSubjectKey(ruling: Doc<"dtsRulings">): string | null {
+function rulingSubjectKey(ruling: Doc<"dtsRulings">): string {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
-  // A stored ruling on a batch has no subject key: the schema narrow removes it.
-  if (ruling.subjectType === "batch") return null;
   return `code ${ruling.repo} ${ruling.externalId}`;
 }
 

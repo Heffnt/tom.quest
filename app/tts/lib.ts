@@ -11,17 +11,6 @@ export type CodeBrief = Doc<"dtsCodeBriefs">;
 // elevation are rulings too, and listRulings leaves them out.
 export type Ruling = Doc<"dtsRulings"> & { subjectType: "life" | "code" };
 
-/** A ruling as listRulings returns it. A ruling on a batch can still come
- * back until the schema stops declaring that subject (Tom, 2026-09-24: no
- * batches); the record keeps it, no page shows its subject, and
- * liveRulingsByKey drops it. Once the schema narrows this is Ruling. */
-type ListedRuling = Doc<"dtsRulings"> & { subjectType: string };
-
-/** Whether a listed ruling is on a subject this page shows. */
-function isPageRuling(r: ListedRuling): r is Ruling {
-  return r.subjectType === "life" || r.subjectType === "code";
-}
-
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
@@ -82,11 +71,10 @@ export {
 } from "@/convex/ttsShared";
 
 export function liveRulingsByKey(
-  rulings: readonly ListedRuling[],
+  rulings: readonly Ruling[],
 ): Map<string, Ruling> {
   const newest = new Map<string, Ruling>();
   for (const row of rulings) {
-    if (!isPageRuling(row)) continue;
     const key = rulingSubjectKey(row);
     const prior = newest.get(key);
     if (
@@ -130,7 +118,7 @@ export function selectNeedsMe(
   todos: Todo[],
   mirror: MirrorRow[],
   briefs: CodeBrief[],
-  rulings: readonly ListedRuling[],
+  rulings: readonly Ruling[],
   now: number = Date.now(),
 ): NeedsMe {
   const live = liveRulingsByKey(rulings);

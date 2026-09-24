@@ -5,13 +5,13 @@ import {
   defineTable,
   type DataModelFromSchemaDefinition,
   type DocumentByName,
+  type GenericDatabaseWriter,
 } from "convex/server";
-import { v } from "convex/values";
+import { v, type GenericId } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
-  BATCH_NEEDS_MIGRATION,
   BATCH_REMOVED_EVENT,
   BATCHES_REMOVED_MIGRATION,
   BATCHES_REMOVED_RULING,
@@ -28,7 +28,6 @@ import {
   RETIRED_STATUS_ENDED_REASON,
   TIMING_MIGRATION,
   carryCondition,
-  previousOnPath,
 } from "./ttsMigrations";
 import {
   CONDITION_WINDOW_MS,
@@ -51,13 +50,12 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // The record prod holds while a migration runs, which is NOT the record the
 // validator declares once the narrow lands: a retired readiness spelling, a
 // condition-bound timing class, a latest-safe instant, a wake condition in
-// words, a v1 batch's members and its plan, a batch's named path, a brief's
-// importance and retired recommendation spelling, and a session left in
-// "awaiting-permission" all stop inserting
-// under convex/schema.ts the day the declarations go. The fixtures here are
-// exactly those rows, so they go in under a copy of the schema with the
-// retired declarations put back — today identical to what the schema itself
-// still declares, and unchanged by the narrow that removes them.
+// words, a v1 batch's members and its plan, a brief's importance and retired
+// recommendation spelling, a session left in "awaiting-permission", and the
+// batches table with every batchId that pointed into it (Tom's ruling of
+// 2026-09-24) all stop inserting under convex/schema.ts the day the
+// declarations go. The fixtures here are exactly those rows, so they go in
+// under a copy of the schema with the retired declarations put back.
 //
 // Every walk reads its retired field through a loose view of the row
 // (convex/ttsMigrations.ts), which is what keeps a verification re-run
@@ -94,11 +92,15 @@ function carryIndexes<T>(rebuilt: T, source: Indexed): T {
 
 const {
   dtsTodos: schemaTodos,
-  batches: schemaBatches,
   claudeSessions: schemaSessions,
   dtsCodeBriefs: schemaBriefs,
+  runs: schemaRuns,
   ...otherTables
 } = schema.tables;
+
+/** The index the narrow removed from dtsTodos, put back on the harness's
+ * dtsTodos after the chain the schema still declares. */
+const BY_BATCH: IndexChain = [{ indexDescriptor: "by_batch", fields: ["batchId"] }];
 
 const wideSchema = defineSchema({
   ...otherTables,
@@ -144,24 +146,39 @@ const wideSchema = defineSchema({
             }),
           ),
         ),
+        // The batch a todo belonged to, until ttsMigrations.
+        // internalRemoveBatches cleared it and the narrow dropped it.
+        batchId: v.optional(v.id("batches")),
       }),
     ),
     schemaTodos,
-  ),
-  batches: carryIndexes(
+  ).index("by_batch", ["batchId"]),
+  // The batches table as the schema declared it before the narrow, which is
+  // the shape its archived rows keep on the deployment.
+  batches: defineTable({
+    statement: v.string(),
+    groundUpExplanation: v.optional(v.string()),
+    needs: v.optional(v.array(v.id("batches"))),
+    status: v.union(
+      v.literal("active"),
+      v.literal("done"),
+      v.literal("archived"),
+    ),
+    unarchiveCondition: v.optional(v.string()),
+    repos: v.optional(v.array(v.string())),
+    tomTouchedAt: v.optional(v.number()),
+    producedByRunToken: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_status", ["status", "updatedAt"]),
+  runs: carryIndexes(
     defineTable(
       v.object({
-        ...schemaBatches.validator.fields,
-        path: v.optional(
-          v.object({
-            name: v.string(),
-            index: v.number(),
-            edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
-          }),
-        ),
+        ...schemaRuns.validator.fields,
+        batchId: v.optional(v.id("batches")),
       }),
     ),
-    schemaBatches,
+    schemaRuns,
   ),
   claudeSessions: carryIndexes(
     defineTable(
@@ -204,7 +221,14 @@ const wideSchema = defineSchema({
 // dropped, and these fixtures and assertions are about exactly those fields.
 type WideModel = DataModelFromSchemaDefinition<typeof wideSchema>;
 type WideTodo = DocumentByName<WideModel, "dtsTodos">;
-type WideBatch = DocumentByName<WideModel, "batches">;
+type BatchId = GenericId<"batches">;
+
+/** The database as the harness declares it: the batches table, the by_batch
+ * index and the batchId fields the narrow dropped are typed here, not in the
+ * generated model. */
+function wideDb(db: unknown): GenericDatabaseWriter<WideModel> {
+  return db as GenericDatabaseWriter<WideModel>;
+}
 type WideBrief = DocumentByName<WideModel, "dtsCodeBriefs">;
 type WideSession = DocumentByName<WideModel, "claudeSessions">;
 
@@ -383,7 +407,7 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
   });
 });
 
-describe("timing migration (waiting, condition-bound, return conditions, v1 batches)", () => {
+describe("timing migration (waiting, condition-bound, return conditions)", () => {
   const LATEST_SAFE = NOW + 30 * DAY_MS;
   const seed = (): Seed[] => [
     // (a) waiting rows
@@ -453,7 +477,8 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
       unarchiveCondition: "superseded by graph batch abc",
       members: [{ repo: "tom.quest", externalId: "t-1" }],
     },
-    // (d) a live v1 batch
+    // (d) a live v1 batch: left alone, and no longer counted (the count went
+    // with the batches table)
     {
       statement: "live v1 batch",
       members: [{ repo: "tom.quest", externalId: "t-2" }],
@@ -473,7 +498,6 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     "condition-wake-kept": 1,
     "archived-with-return-condition": 1,
     "archived-superseded-by-graph": 1,
-    "v1-batches-pending-graph-migration": 1,
   };
 
   /** Rows by the statement they had before any sentence was carried in. */
@@ -596,7 +620,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     expect(finished.wakeAt).toBeUndefined();
   });
 
-  it("leaves archived rows and v1 batches alone, counting them for the gather and the graph migration", async () => {
+  it("leaves archived rows and v1 batch rows alone", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
@@ -654,114 +678,6 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     });
     expect(second.done).toBe(true);
     expect(second.totals).toEqual(expectedTotals);
-  });
-});
-
-describe("batch needs migration (path → needs edges between batches)", () => {
-  type BatchSeed = Partial<WideBatch> & { statement: string };
-  async function seedBatches(t: ReturnType<typeof convexTest>, rows: BatchSeed[]) {
-    return await t.run(async (ctx) => {
-      const ids: Record<string, Id<"batches">> = {};
-      for (const row of rows) {
-        ids[row.statement] = await ctx.db.insert("batches", {
-          status: "active",
-          createdAt: NOW,
-          updatedAt: NOW,
-          ...row,
-        });
-      }
-      return ids;
-    });
-  }
-  const allBatches = async (
-    t: ReturnType<typeof convexTest>,
-  ): Promise<WideBatch[]> =>
-    (await t.run(async (ctx) =>
-      ctx.db.query("batches").collect(),
-    )) as unknown as WideBatch[];
-
-  const seed = (): BatchSeed[] => [
-    { statement: "release 0", path: { name: "release", index: 0 } },
-    { statement: "release 1", path: { name: "release", index: 1, edge: "must" } },
-    // index 2 is missing: the previous of 3 is 1, not "index minus one".
-    { statement: "release 3", path: { name: "release", index: 3, edge: "must" } },
-    { statement: "release 5", path: { name: "release", index: 5, edge: "helps" } },
-    { statement: "paper 4", path: { name: "paper", index: 4, edge: "must" } }, // no previous
-    { statement: "unpathed" },
-    { statement: "done 0", path: { name: "done", index: 0 }, status: "done" },
-    { statement: "done 1", path: { name: "done", index: 1, edge: "must" }, status: "done" },
-  ];
-  const expectedCounts = {
-    scanned: 8,
-    "must-to-need": 3,
-    "must-without-previous": 1,
-    "helps-dropped": 1,
-    unlinked: 2,
-    "already-derived": 0,
-    "no-path": 1,
-  };
-
-  it("finds the previous batch on a path by the greatest lower index", () => {
-    const rows = seed().map((s) => ({ ...s }));
-    const by = Object.fromEntries(rows.map((r) => [r.statement, r]));
-    expect(previousOnPath(by["release 3"], rows)?.statement).toBe("release 1");
-    expect(previousOnPath(by["release 0"], rows)).toBeUndefined();
-    expect(previousOnPath(by["paper 4"], rows)).toBeUndefined();
-    expect(previousOnPath(by.unpathed, rows)).toBeUndefined();
-  });
-
-  // witness: derive a need for a "helps" edge too — "only makes this easier"
-  // would block the batch until the other landed.
-  it("a must edge becomes a need on the previous batch; helps becomes nothing", async () => {
-    const t = convexTest({ schema: wideSchema, modules });
-    const ids = await seedBatches(t, seed());
-    const report = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {});
-    expect(report.totals).toEqual(expectedCounts);
-    const rows = await allBatches(t);
-    const by = Object.fromEntries(rows.map((b) => [b.statement, b]));
-    expect(by["release 1"].needs).toEqual([ids["release 0"]]);
-    expect(by["release 3"].needs).toEqual([ids["release 1"]]);
-    expect(by["release 5"].needs).toBeUndefined();
-    expect(by["release 0"].needs).toBeUndefined();
-    expect(by["paper 4"].needs).toBeUndefined();
-    expect(by.unpathed.needs).toBeUndefined();
-    expect(by["done 1"].needs).toEqual([ids["done 0"]]); // terminal rows mapped too
-    // The path the walk read is left on the row — this migration derives, it
-    // does not delete — and updatedAt is untouched.
-    expect(by["release 1"].path).toEqual({ name: "release", index: 1, edge: "must" });
-    for (const b of rows) expect(b.updatedAt).toBe(NOW);
-    expect(await eventsOfKind(t, "batch-needs-derived")).toHaveLength(3);
-    expect(await eventsOfKind(t, `${BATCH_NEEDS_MIGRATION}-migrated`)).toHaveLength(1);
-  });
-
-  it("a dry run reports the same counts and writes no batch row, only the dry-run event", async () => {
-    const t = convexTest({ schema: wideSchema, modules });
-    await seedBatches(t, seed());
-    const report = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {
-      dryRun: true,
-    });
-    expect(report.totals).toEqual(expectedCounts);
-    expect((await allBatches(t)).every((b) => b.needs === undefined)).toBe(true);
-    expect(await eventsOfKind(t, "batch-needs-derived")).toHaveLength(0);
-    expect(await eventsOfKind(t, `${BATCH_NEEDS_MIGRATION}-dry-run`)).toHaveLength(1);
-  });
-
-  it("is idempotent, and keeps a need the planner already wrote", async () => {
-    const t = convexTest({ schema: wideSchema, modules });
-    const ids = await seedBatches(t, seed());
-    // The planner already sequenced "release 3" on something else.
-    await t.run(async (ctx) => {
-      await ctx.db.patch(ids["release 3"], { needs: [ids.unpathed] });
-    });
-    await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {});
-    const again = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {});
-    expect(again.totals).toEqual({
-      ...expectedCounts,
-      "must-to-need": 0,
-      "already-derived": 3,
-    });
-    const by = Object.fromEntries((await allBatches(t)).map((b) => [b.statement, b]));
-    expect(by["release 3"].needs).toEqual([ids.unpathed, ids["release 1"]]);
   });
 });
 
@@ -852,13 +768,15 @@ describe("the harness schema", () => {
   it("rebuilds each widened table with the index chain the schema declares", () => {
     for (const name of [
       "dtsTodos",
-      "batches",
       "claudeSessions",
       "dtsCodeBriefs",
+      "runs",
     ] as const) {
       const wide = wideSchema.tables[name] as unknown as Indexed;
       const real = schema.tables[name] as unknown as Indexed;
-      expect(wide[" indexes"]()).toEqual(real[" indexes"]());
+      // dtsTodos also gets back the by_batch index the narrow removed.
+      const putBack = name === "dtsTodos" ? BY_BATCH : [];
+      expect(wide[" indexes"]()).toEqual([...real[" indexes"](), ...putBack]);
       expect(real[" indexes"]().length).toBeGreaterThan(0);
     }
   });
@@ -875,9 +793,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     setAt: NOW,
     rationale: "the agent guessed",
   };
-  const MUST_PATH = { name: "release", index: 1, edge: "must" as const };
-  const HELPS_PATH = { name: "release", index: 2, edge: "helps" as const };
-  const UNLINKED_PATH = { name: "paper", index: 0 };
   // The v1 batch pair. `members` is what made a dtsTodos row a batch; `plan`
   // was its ordered completion steps and was legal on any todo, batch or not.
   const V1_MEMBERS = [
@@ -927,35 +842,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
   async function seedRest(t: ReturnType<typeof convexTest>) {
     return await t.run(async (ctx) => {
-      const batches = {
-        must: await ctx.db.insert("batches", {
-          statement: "must edge",
-          status: "active",
-          path: MUST_PATH,
-          createdAt: NOW,
-          updatedAt: NOW,
-        }),
-        helps: await ctx.db.insert("batches", {
-          statement: "helps edge",
-          status: "active",
-          path: HELPS_PATH,
-          createdAt: NOW,
-          updatedAt: NOW,
-        }),
-        unlinked: await ctx.db.insert("batches", {
-          statement: "unlinked",
-          status: "done",
-          path: UNLINKED_PATH,
-          createdAt: NOW,
-          updatedAt: NOW,
-        }),
-        none: await ctx.db.insert("batches", {
-          statement: "no path",
-          status: "active",
-          createdAt: NOW,
-          updatedAt: NOW,
-        }),
-      };
       const session = (
         title: string,
         status: "awaiting-permission" | "running",
@@ -998,13 +884,12 @@ describe("clearing walk (retired fields and the retired session status)", () => 
         }),
         clean: await brief("cmt-101", {}),
       };
-      return { batches, sessions, briefs };
+      return { sessions, briefs };
     });
   }
 
   const expectedTotals = {
     "dtsTodos-scanned": 6,
-    "batches-scanned": 4,
     "claudeSessions-scanned": 3,
     "dtsCodeBriefs-scanned": 2,
     "latestSafeAt-cleared": 2,
@@ -1012,7 +897,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     "importance-cleared": 2,
     "members-cleared": 1,
     "plan-cleared": 2,
-    "path-cleared": 3,
     "awaiting-permission-ended": 2,
     "brief-importance-cleared": 1,
     "recommendation-normalized": 1,
@@ -1024,13 +908,12 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     "importance-cleared": 0,
     "members-cleared": 0,
     "plan-cleared": 0,
-    "path-cleared": 0,
     "awaiting-permission-ended": 0,
     "brief-importance-cleared": 0,
     "recommendation-normalized": 0,
   };
 
-  /** One call, walking all four tables: a pageSize past the biggest table
+  /** One call, walking all three tables: a pageSize past the biggest table
    * finishes each in one page, and the chain runs to the end. */
   async function clearAll(
     t: ReturnType<typeof convexTest>,
@@ -1059,7 +942,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
   const wideRows = async (t: ReturnType<typeof convexTest>) =>
     await t.run(async (ctx) => ({
       todos: await ctx.db.query("dtsTodos").collect(),
-      batches: await ctx.db.query("batches").collect(),
       sessions: await ctx.db.query("claudeSessions").collect(),
       briefs: await ctx.db.query("dtsCodeBriefs").collect(),
     }));
@@ -1083,10 +965,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
       // retired field puts no settled item back on Tom's pile.
       expect(todo.updatedAt).toBe(NOW);
     }
-    for (const batch of rows.batches) {
-      expect(batch.path).toBeUndefined();
-      expect(batch.updatedAt).toBe(NOW);
-    }
     const sessions = Object.fromEntries(rows.sessions.map((s) => [s.title, s]));
     expect(sessions["parked on a permission"].status).toBe("ended");
     expect(sessions["parked on a permission"].endedReason).toBe(
@@ -1109,7 +987,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
     // One event per value, carrying the value itself.
     const cleared = await eventsOfKind(t, RETIRED_FIELD_CLEARED);
-    expect(cleared).toHaveLength(15);
+    expect(cleared).toHaveLength(12);
     const byField = (field: string) =>
       cleared
         .map((e) => e.data as { field: string; value: unknown })
@@ -1122,9 +1000,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
       RETIRED_IMPORTANCE_VALUE,
       RETIRED_IMPORTANCE_VALUE,
     ]);
-    // The WHOLE path object, helps edges and unlinked names included: what
-    // the needs migration derived from is not all a path said.
-    expect(byField("path")).toEqual([MUST_PATH, HELPS_PATH, UNLINKED_PATH]);
     // The WHOLE members array and the WHOLE plan — every step with its actor,
     // its status, its completion instant and its evidence. The graph holds
     // what they MEANT; this is what they SAID.
@@ -1135,11 +1010,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     // row names the table and the row it came out of.
     const todoEvents = cleared.filter((e) => e.todoId !== undefined);
     expect(todoEvents).toHaveLength(8);
-    const pathEvent = cleared.find(
-      (e) => (e.data as { field: string }).field === "path",
-    )!;
-    expect((pathEvent.data as { table: string }).table).toBe("batches");
-    expect((pathEvent.data as { batchId: string }).batchId).toBe(ids.batches.must);
     const statusEvent = cleared.find(
       (e) => (e.data as { field: string }).field === "status",
     )!;
@@ -1163,7 +1033,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     expect(rows.todos.filter((r) => r.importance !== undefined)).toHaveLength(2);
     expect(rows.todos.filter((r) => r.members !== undefined)).toHaveLength(1);
     expect(rows.todos.filter((r) => r.plan !== undefined)).toHaveLength(2);
-    expect(rows.batches.filter((b) => b.path !== undefined)).toHaveLength(3);
     expect(
       rows.sessions.filter((s) => s.status === "awaiting-permission"),
     ).toHaveLength(2);
@@ -1181,11 +1050,11 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     expect(await clearAll(t)).toEqual(nothingLeft);
     // And it wrote no second record of a value: every value left the rows
     // once, on the first run.
-    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(15);
+    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(12);
   });
 
   // witness: drop the cursor from the continuation and a resumed run starts
-  // the table again; drop the table hand-off and three of the four tables are
+  // the table again; drop the table hand-off and two of the three tables are
   // never walked while the call reports done.
   it("resumes within a table by cursor, and hands off table by table", async () => {
     // Fake timers throughout: each call below schedules its own continuation,
@@ -1226,7 +1095,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
       },
     );
     expect(second.done).toBe(false);
-    expect(second.nextTable).toBe("batches");
+    expect(second.nextTable).toBe("claudeSessions");
     expect(second.totals["dtsTodos-scanned"]).toBe(6);
     expect(second.totals["latestSafeAt-cleared"]).toBe(2);
     expect(second.totals["members-cleared"]).toBe(1);
@@ -1251,7 +1120,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
 
   async function seedBatch(t: ReturnType<typeof convexTest>, statement: string) {
     return await t.run(async (ctx) =>
-      ctx.db.insert("batches", {
+      wideDb(ctx.db).insert("batches", {
         statement,
         status: "active",
         createdAt: NOW,
@@ -1262,7 +1131,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
 
   const goal = (
     entry: string,
-    batchId: Id<"batches">,
+    batchId: BatchId,
     createdAt: number,
     extra: Partial<Doc<"dtsTodos">> = {},
   ): Seed => ({
@@ -1376,7 +1245,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   // subject on the kept goal — the mirror would still own it, and a ruling on
   // it would be filed as a code ruling that CMT no longer takes.
   it("converts the first copy in place and archives the second, naming the kept id", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     const report = await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
     expect(report.counts).toEqual(firstRunCounts);
@@ -1437,7 +1306,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   // witness: store a horizon entry as active — a worker would pick up a goal
   // Tom parked.
   it("stores a tier-H entry as waiting, with no wake time", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
     const rows = await byId(t);
@@ -1454,7 +1323,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   // witness: convert a steering-grad entry like the rest — it would ask for a
   // steering row the amendment removed.
   it("archives every copy of a steering-grad entry with the amendment's reason", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     const report = await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
     const rows = await byId(t);
@@ -1476,7 +1345,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   // witness: count the done copy as the first copy — the live one would be
   // archived and the entry's goal would read as met.
   it("leaves a done copy alone and converts the live one beside it", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
     const rows = await byId(t);
@@ -1494,7 +1363,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   });
 
   it("leaves another repo's goal, a task, and a row it did not write untouched", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     const before = await byId(t);
     await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
@@ -1507,7 +1376,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   // witness: leave the code subject on the kept goal — the mirror's
   // goal-closing sweep would still close it from a registry entry.
   it("a converted goal is no longer closed by the code-todo mirror", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
     await t.mutation(internal.tts.internalReplaceMirror, {
@@ -1526,7 +1395,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   });
 
   it("a dry run reports the same counts and changes and writes nothing but the dry-run event", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seed(t);
     const before = await byId(t);
     const report = await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {
@@ -1543,7 +1412,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   // witness: match an entry by its completion test as well as by the old
   // wording — every run would rewrite the kept goal and log it again.
   it("is idempotent: a second run changes nothing", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seed(t);
     await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
     const between = await byId(t);
@@ -1567,9 +1436,9 @@ describe("batches removed (every todo stands alone)", () => {
   type T = ReturnType<typeof convexTest>;
   const NOW = 1_790_000_000_000;
 
-  const insertRun = (t: T, runId: string, batchId?: Id<"batches">) =>
+  const insertRun = (t: T, runId: string, batchId?: BatchId) =>
     t.run((ctx) =>
-      ctx.db.insert("runs", {
+      wideDb(ctx.db).insert("runs", {
         runId,
         rootRunId: runId,
         depth: 0,
@@ -1602,14 +1471,14 @@ describe("batches removed (every todo stands alone)", () => {
   async function seed(t: T) {
     return await t.run(async (ctx) => {
       const batch = (statement: string, status: "active" | "archived" = "active") =>
-        ctx.db.insert("batches", { statement, status, createdAt: 1, updatedAt: 5 });
+        wideDb(ctx.db).insert("batches", { statement, status, createdAt: 1, updatedAt: 5 });
       const lease = await batch("get the apartment");
       const paper = await batch("submit the paper");
       const todo = (
         statement: string,
-        over: Partial<Doc<"dtsTodos">>,
+        over: Partial<WideTodo>,
       ) =>
-        ctx.db.insert("dtsTodos", {
+        wideDb(ctx.db).insert("dtsTodos", {
           statement,
           source: "migration",
           status: "active",
@@ -1657,7 +1526,14 @@ describe("batches removed (every todo stands alone)", () => {
   type Ids = Awaited<ReturnType<typeof seed>>;
 
   const todos = async (t: T) =>
-    new Map((await t.run((ctx) => ctx.db.query("dtsTodos").collect())).map((row) => [row._id, row]));
+    new Map(
+      (await t.run((ctx) => wideDb(ctx.db).query("dtsTodos").collect())).map((row) => [
+        row._id as Id<"dtsTodos">,
+        row,
+      ]),
+    );
+  const batchRows = (t: T) => t.run((ctx) => wideDb(ctx.db).query("batches").collect());
+  const runRows = (t: T) => t.run((ctx) => wideDb(ctx.db).query("runs").collect());
 
   async function runToEnd(t: T, args: { dryRun?: boolean } = {}) {
     vi.useFakeTimers();
@@ -1696,7 +1572,7 @@ describe("batches removed (every todo stands alone)", () => {
   // unarchiveCondition — each case below names where one of Tom's things went.
   it("unbinds goals, makes migration tasks standalone, archives planner tasks, and archives every batch", async () => {
     vi.setSystemTime(NOW);
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     await insertRun(t, "claude:box:on-a-batch", ids.lease);
     await insertRun(t, "claude:box:on-nothing");
@@ -1731,13 +1607,13 @@ describe("batches removed (every todo stands alone)", () => {
     expect(isReady(row(ids.migrationTask), buildDoneSet([...rows.values()]), NOW)).toBe(true);
 
     // Every batch is archived, its updatedAt untouched and no condition set.
-    const batches = await t.run((ctx) => ctx.db.query("batches").collect());
+    const batches = await batchRows(t);
     expect(batches.map((b) => [b.status, b.updatedAt, b.unarchiveCondition])).toEqual([
       ["archived", 5, undefined],
       ["archived", 5, undefined],
     ]);
     // runs.batchId is cleared.
-    const runs = await t.run((ctx) => ctx.db.query("runs").collect());
+    const runs = await runRows(t);
     expect(runs.every((r) => r.batchId === undefined)).toBe(true);
 
     // One event per batch naming the batch, the ruling verbatim, and every id
@@ -1769,14 +1645,14 @@ describe("batches removed (every todo stands alone)", () => {
   // witness: patch in the dry run — the counts must be known before anything
   // moves on prod.
   it("a dry run counts every case and writes nothing but its summary event", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     await insertRun(t, "claude:box:on-a-batch", ids.paper);
     const before = await todos(t);
     await runToEnd(t, { dryRun: true });
     expect(await todos(t)).toEqual(before);
-    expect((await t.run((ctx) => ctx.db.query("batches").collect())).every((b) => b.status === "active")).toBe(true);
-    expect((await t.run((ctx) => ctx.db.query("runs").collect()))[0].batchId).toBe(ids.paper);
+    expect((await batchRows(t)).every((b) => b.status === "active")).toBe(true);
+    expect((await runRows(t))[0].batchId).toBe(ids.paper);
     expect(await eventsOfKind(t, BATCH_REMOVED_EVENT)).toHaveLength(0);
     expect(await summary(t)).toEqual([]);
     expect(await summary(t, true)).toEqual([
@@ -1787,7 +1663,7 @@ describe("batches removed (every todo stands alone)", () => {
   // witness: count an archived batch with no todos as archived again — the
   // verification run would not read zero.
   it("is idempotent: a second run reports zero changes", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids: Ids = await seed(t);
     await insertRun(t, "claude:box:on-a-batch", ids.lease);
     await runToEnd(t);
@@ -1815,7 +1691,7 @@ describe("batches removed (every todo stands alone)", () => {
   // witness: schedule the walk from a batchId call — "one batch" would walk
   // every batch.
   it("walks one named batch and schedules nothing", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seed(t);
     const report = await t.mutation(internal.ttsMigrations.internalRemoveBatches, {
       batchId: ids.paper,
@@ -1825,7 +1701,7 @@ describe("batches removed (every todo stands alone)", () => {
       otherTasksMadeStandalone: [ids.otherTask],
       doneOrArchivedTasksCleared: [ids.donePlannerTask, ids.archivedTask],
     });
-    const batches = await t.run((ctx) => ctx.db.query("batches").collect());
+    const batches = await batchRows(t);
     expect(batches.find((b) => b._id === ids.lease)?.status).toBe("active");
     expect(batches.find((b) => b._id === ids.paper)?.status).toBe("archived");
     expect((await todos(t)).get(ids.goal)?.batchId).toBe(ids.lease);
@@ -1835,16 +1711,80 @@ describe("batches removed (every todo stands alone)", () => {
   it("walks one batch per call", async () => {
     vi.useFakeTimers();
     try {
-      const t = convexTest({ schema, modules });
+      const t = convexTest({ schema: wideSchema, modules });
       const ids = await seed(t);
       const first = await t.mutation(internal.ttsMigrations.internalRemoveBatches, {});
       expect(first).toMatchObject({ done: false, phase: "batches", batchId: ids.lease });
       expect(first.page["batches-scanned"]).toBe(1);
-      const batches = await t.run((ctx) => ctx.db.query("batches").collect());
+      const batches = await batchRows(t);
       expect(batches.map((b) => b.status)).toEqual(["archived", "active"]);
       await t.finishAllScheduledFunctions(vi.runAllTimers);
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// THE NARROW (Tom's ruling, 2026-09-24: "I dont want to have batches at all
+// anymore"). internalRemoveBatches archives every batch and clears every
+// batchId; the schema then stops declaring all of it. A declaration left
+// behind would keep a door open to writing a batch again.
+describe("the schema after batches", () => {
+  type Exported = {
+    tables: {
+      tableName: string;
+      indexes: { indexDescriptor: string }[];
+      documentType: unknown;
+    }[];
+  };
+
+  /** Every place in one table's validator that still names a batch. */
+  function batchDeclarations(tableName: string, node: unknown, path = tableName): string[] {
+    if (Array.isArray(node)) {
+      return node.flatMap((child, i) => batchDeclarations(tableName, child, `${path}[${i}]`));
+    }
+    if (node === null || typeof node !== "object") return [];
+    const o = node as Record<string, unknown>;
+    const found: string[] = [];
+    if (o.type === "id" && o.tableName === "batches") found.push(`${path}: an id into batches`);
+    if (o.type === "literal" && o.value === "batch") found.push(`${path}: the literal "batch"`);
+    if (o.type === "object" && typeof o.value === "object" && o.value !== null && "batchId" in o.value) {
+      found.push(`${path}: a batchId field`);
+    }
+    for (const [key, child] of Object.entries(o)) {
+      found.push(...batchDeclarations(tableName, child, `${path}.${key}`));
+    }
+    return found;
+  }
+
+  // witness: put back any one of the batches table, dtsTodos.batchId or its
+  // by_batch index, claudeSessions.batchId, runs.batchId, the batch subject
+  // of runners, or dtsRulings' "batch" subject type and batchId in
+  // convex/schema.ts, and this names it.
+  /** The JSON Convex deploys: `export()` is convex/server's own (marked
+   * internal, so absent from the published type), the shape a push sends. */
+  const exportOf = (definition: unknown) =>
+    JSON.parse((definition as { export(): string }).export()) as Exported;
+
+  it("declares no batches table, no batchId field, no by_batch index and no batch subject", () => {
+    const exported = exportOf(schema);
+    const found: string[] = [];
+    for (const table of exported.tables) {
+      if (table.tableName === "batches") found.push("the batches table");
+      for (const index of table.indexes) {
+        if (index.indexDescriptor === "by_batch") found.push(`${table.tableName}.by_batch`);
+      }
+      found.push(...batchDeclarations(table.tableName, table.documentType));
+    }
+    expect(found).toEqual([]);
+    // The walk reads the exported shape it expects: the harness, which puts
+    // the declarations back, is found out by it.
+    const harness = exportOf(wideSchema);
+    const wideTodos = harness.tables.find((t) => t.tableName === "dtsTodos")!;
+    expect(batchDeclarations("dtsTodos", wideTodos.documentType)).toEqual([
+      "dtsTodos: a batchId field",
+      "dtsTodos.value.batchId.fieldType: an id into batches",
+    ]);
+    expect(wideTodos.indexes.map((i) => i.indexDescriptor)).toContain("by_batch");
   });
 });

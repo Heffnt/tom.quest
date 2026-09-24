@@ -587,20 +587,12 @@ describe("claude sessions", () => {
   it("refuses a session opened on a batch, at both doors, and writes no row", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const batchId = await t.run(async (ctx) =>
-      ctx.db.insert("batches", {
-        statement: "The Turing pages",
-        repos: ["tom.quest", "WikiTom"],
-        status: "active" as const,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }),
-    );
-    // The argument itself is gone from both doors (the validator refuses it).
+    // The argument itself is gone from both doors (the validator refuses it,
+    // whatever it holds; the batches table is no longer declared).
     const args = {
       title: "work the batch",
       kind: "focus-item" as const,
-      batchId,
+      batchId: "batch-id-from-before-the-narrow",
       initialPrompt: "go",
     } as never;
     await expect(

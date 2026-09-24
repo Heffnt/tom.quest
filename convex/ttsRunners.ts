@@ -740,7 +740,6 @@ async function buildRunnerStepPrompt(
   const away = await knownAway(ctx, now);
   const status = runnerStatus({ runner, openBlockingAsks: blocking.length });
 
-  // A stored batch subject counts as no subject: the schema narrow removes it.
   const subject: ContextSubject = runner.subject?.kind === "todo"
     ? { kind: "todo", todoId: runner.subject.todoId }
     : runner.repo !== NO_REPO
