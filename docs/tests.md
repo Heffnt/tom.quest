@@ -34,7 +34,7 @@ job and is not counted in any row.
 | Playwright, `e2e/` — 52 cases across 7 specs, 2 viewports | The site as a browser sees it: the home page, the public quest routes, the page-visibility registry, the boolback plot, the perfume brew | CI `e2e`; local `pnpm test:e2e` | **52 s** against `next dev`, 18 s against a built server | checks |
 | `npx tsc --noEmit` | Every type in the repository, `convex/_generated` included | CI `tests`; local | **28 s** | checks |
 | `pnpm build` | The production Next.js build, the one Vercel runs on main | CI `tests`; local | **62 s** | checks |
-| `pnpm check:guardrails` — 8 scripts | The eight static boundaries below | CI `static-boundaries`; local | **10.0 s** | checks |
+| `pnpm check:guardrails` — 9 scripts | The nine static boundaries below | CI `static-boundaries`; local | **10.0 s** | checks |
 | ↳ `check-removals.mjs` | A change may not add a complexity smell, and the committed count only goes down; needs `ast-grep` | CI `static-boundaries` | 5.8 s | checks |
 | ↳ `check-private-paths.mjs` | No `model-of-tom` path, area-category line or operate-page window is in this public repository | CI `static-boundaries` | 3.4 s | checks |
 | ↳ `check-vocabulary.mjs` | The closed vocabulary's generated block, the graph kinds it is the schema of, the evals commit key, and no refused word under `convex/`, `app/` or `vqc/` | CI `static-boundaries` | 0.11 s | checks |
@@ -42,6 +42,7 @@ job and is not counted in any row.
 | ↳ `check-auth-boundary.mjs` | No inline `admin`/`tom` role comparison outside the two files that own it | CI `static-boundaries` | 0.10 s | checks |
 | ↳ `check-agents-md.mjs` | Each `AGENTS.md` has its `CLAUDE.md` beside it and no sentence of it is in a second one; a file over its byte target, or a chain over 32,768 bytes, warns and never fails | CI `static-boundaries` | 0.07 s | checks |
 | ↳ `check-heavy-libs.mjs` | The heavy client libraries are imported from one module each | CI `static-boundaries` | 0.06 s | checks |
+| ↳ `check-toolbox-pages.mjs` | A page in its `TOOLBOX_PAGES` composes the toolbox and styles nothing; the toolbox reads only colour and size tokens (`vqc/pages.md`) | CI `static-boundaries` | 0.6 s | checks |
 | ↳ `check-large-files.mjs` | No untracked-by-LFS blob over 50 MiB | CI `static-boundaries` | 0.05 s | checks |
 | gitleaks | No secret in the history or the diff | CI `secret-scan` | 10 s | checks |
 | `pnpm lint` (eslint) | Style and unused bindings | Local only, and not a gate | 50 s | not a verifier |

@@ -69,6 +69,7 @@ import {
   buildDoneSet,
   isPrepared,
   isReadyForTom,
+  waitingReason,
   wakeAtPassed,
 } from "@/convex/ttsShared";
 export {
@@ -100,8 +101,8 @@ export function liveRulingsByKey(
   return newest;
 }
 
-// ── The needs-me selector (ONE definition; the everything tab's awaiting
-// section renders it, the tab's badge counts it) ─────────────────────────────
+// ── The needs-me selector (ONE definition; the everything tab's next item
+// and code drawer draw from it, the tab's badge counts it) ───────────────────
 // life: READY FOR TOM (ruling 18, ttsShared.isReadyForTom: prepared, active,
 //   awake, every need done), excluding todos whose live ruling is NEWER than
 //   the todo's last update — a ruled gate is answered until the preparer
@@ -244,6 +245,418 @@ export function selectToday(
   take(ready, "ready");
   take(waking, "waking");
   return { overdue, due, scheduled, ready, waking, entries };
+}
+
+// ── The whole set at a glance (vqc/pages.md, the toolbox page) ─────────────
+// A page opens with the whole: every todo falls in exactly one SHAPE, so the
+// area figure's cells add up to the set. The shape is the waiting reason
+// (ttsShared.waitingReason, the one home of that rule) in Tom's words, with
+// two facts that outrank it: done and archived are where a todo ended, and
+// overdue — a date already behind it — is the fact that outranks why it waits,
+// the same precedence selectToday gives it.
+
+type TodoShape =
+  | "overdue"
+  | "waiting on you"
+  | "waiting on another todo"
+  | "waiting on a credential"
+  | "not yet prepared"
+  | "with a date"
+  | "with an agent"
+  | "done"
+  | "archived";
+
+/** The shapes in the order a page lists them: what needs Tom first. */
+export const SHAPES: readonly TodoShape[] = [
+  "overdue",
+  "waiting on you",
+  "waiting on another todo",
+  "waiting on a credential",
+  "not yet prepared",
+  "with a date",
+  "with an agent",
+  "done",
+  "archived",
+];
+
+/** Where one todo sits. `doneSet` is buildDoneSet over the whole list. */
+function shapeOf(
+  todo: Todo,
+  doneSet: ReadonlySet<string>,
+  now: number,
+): TodoShape {
+  if (todo.status === "done") return "done";
+  if (todo.status === "archived") return "archived";
+  if (todo.dueAt !== undefined && todo.dueAt < now) return "overdue";
+  const reason = waitingReason(todo, { now, doneSet });
+  switch (reason?.kind) {
+    case "wake":
+      return "with a date";
+    case "need":
+      return "waiting on another todo";
+    case "credential":
+      return "waiting on a credential";
+    case "unprepared":
+      return "not yet prepared";
+    case "tom":
+      return "waiting on you";
+    default:
+      return "with an agent";
+  }
+}
+
+/** A source name as a page shows it: its words, not its hyphens. */
+export function sourceWords(source: string): string {
+  return source.replace(/[-_]+/g, " ");
+}
+
+/** One cell of the shape figure: the todos of one shape from one source. */
+type ShapeCell = {
+  key: string;
+  label: string;
+  count: number;
+  group: TodoShape;
+  todos: Todo[];
+};
+
+/**
+ * Counts by shape × source, one cell per pair that holds a todo, in SHAPES
+ * order and then by count. Each cell carries its todos, soonest date first and
+ * then newest, so the drawer that lists a cell reads them from here.
+ */
+export function shapeCells(todos: Todo[], now: number): ShapeCell[] {
+  const doneSet = buildDoneSet(todos);
+  const byKey = new Map<string, ShapeCell>();
+  for (const todo of todos) {
+    const group = shapeOf(todo, doneSet, now);
+    const key = `${group}|${todo.source}`;
+    let cell = byKey.get(key);
+    if (!cell) {
+      cell = { key, label: sourceWords(todo.source), count: 0, group, todos: [] };
+      byKey.set(key, cell);
+    }
+    cell.count += 1;
+    cell.todos.push(todo);
+  }
+  const soonest = (a: Todo, b: Todo) =>
+    (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) ||
+    b._creationTime - a._creationTime;
+  const cells = [...byKey.values()];
+  for (const cell of cells) cell.todos.sort(soonest);
+  return cells.sort(
+    (a, b) =>
+      SHAPES.indexOf(a.group) - SHAPES.indexOf(b.group) || b.count - a.count,
+  );
+}
+
+/** How many todos are in each shape, every shape present (zero included). */
+export function shapeCounts(cells: readonly ShapeCell[]): Record<TodoShape, number> {
+  const counts = Object.fromEntries(SHAPES.map((s) => [s, 0])) as Record<TodoShape, number>;
+  for (const cell of cells) counts[cell.group] += cell.count;
+  return counts;
+}
+
+/** One row of the by-source table. */
+type SourceRow = {
+  source: string;
+  waitingOnYou: number;
+  notYetPrepared: number;
+  done: number;
+  total: number;
+};
+
+/** The shape cells folded by source, largest source first. */
+export function sourceRows(cells: readonly ShapeCell[]): SourceRow[] {
+  const rows = new Map<string, SourceRow>();
+  for (const cell of cells) {
+    let row = rows.get(cell.label);
+    if (!row) {
+      row = { source: cell.label, waitingOnYou: 0, notYetPrepared: 0, done: 0, total: 0 };
+      rows.set(cell.label, row);
+    }
+    if (cell.group === "waiting on you") row.waitingOnYou += cell.count;
+    if (cell.group === "not yet prepared") row.notYetPrepared += cell.count;
+    if (cell.group === "done") row.done += cell.count;
+    row.total += cell.count;
+  }
+  return [...rows.values()].sort((a, b) => b.total - a.total || a.source.localeCompare(b.source));
+}
+
+/**
+ * The one todo a page puts in front of Tom to rule on, from the needs-me life
+ * rows (selectNeedsMe, so a todo he has already ruled on stays off until it is
+ * prepared again): an overdue one if any is ready for him, the longest overdue
+ * first; otherwise the oldest. A date still ahead does not jump the queue: it
+ * is the oldest capture that has waited on him longest. Undefined when none
+ * waits.
+ */
+export function nextForTom(
+  todos: Todo[],
+  rulings: readonly ListedRuling[],
+  now: number,
+): Todo | undefined {
+  const { lifeRows } = selectNeedsMe(todos, [], [], rulings, now);
+  const overdue = lifeRows
+    .filter((t) => t.dueAt !== undefined && t.dueAt < now)
+    .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0) || a._creationTime - b._creationTime);
+  if (overdue.length > 0) return overdue[0];
+  return [...lifeRows].sort((a, b) => a._creationTime - b._creationTime)[0];
+}
+
+// ── The todos page (the everything tab, vqc/pages.md) ────────────────────────
+// The page's figure holds the ACTIVE todos only, each under its waiting reason
+// (ttsShared.waitingReason, the one home of that rule) in Tom's words. Unlike
+// shapeCells above, no date outranks the reason here: overdue is counted
+// beside the figure, not as a cell of it, so the cells answer one question —
+// what is each active todo waiting on.
+
+type ActiveReason =
+  | "waiting on you"
+  | "waiting on another todo"
+  | "not yet prepared"
+  | "ready for an agent"
+  | "waiting until a date"
+  | "waiting on a credential";
+
+/** The reasons in the order a page lists them: what needs Tom first. */
+const ACTIVE_REASONS: readonly ActiveReason[] = [
+  "waiting on you",
+  "waiting on another todo",
+  "not yet prepared",
+  "ready for an agent",
+  "waiting until a date",
+  "waiting on a credential",
+];
+
+/** Active is the stored status, or the retired "waiting" that reads as a
+ *  sleep on an active todo (ttsShared.waitingReason). */
+function isActiveTodo(t: Todo): boolean {
+  return t.status === "active" || t.status === "waiting";
+}
+
+function activeReasonOf(todo: Todo, doneSet: ReadonlySet<string>, now: number): ActiveReason {
+  switch (waitingReason(todo, { now, doneSet })?.kind) {
+    case "tom":
+      return "waiting on you";
+    case "need":
+      return "waiting on another todo";
+    case "unprepared":
+      return "not yet prepared";
+    case "wake":
+      return "waiting until a date";
+    case "credential":
+      return "waiting on a credential";
+    default:
+      return "ready for an agent";
+  }
+}
+
+/** One cell of the active figure: the active todos of one reason from one source. */
+type ReasonCell = {
+  key: string;
+  label: string;
+  count: number;
+  group: ActiveReason;
+  todos: Todo[];
+};
+
+/** Soonest date first, then the oldest: the order a drawer lists members in. */
+function soonestThenOldest(a: Todo, b: Todo): number {
+  return (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) || a._creationTime - b._creationTime;
+}
+
+/**
+ * The active todos by reason × source, one cell per pair that holds a todo, in
+ * ACTIVE_REASONS order and then largest source first. Each cell carries its
+ * todos, soonest date first and then oldest.
+ */
+export function activeCells(todos: Todo[], now: number): ReasonCell[] {
+  const doneSet = buildDoneSet(todos);
+  const byKey = new Map<string, ReasonCell>();
+  for (const todo of todos) {
+    if (!isActiveTodo(todo)) continue;
+    const group = activeReasonOf(todo, doneSet, now);
+    const key = `${group}|${todo.source}`;
+    let cell = byKey.get(key);
+    if (!cell) {
+      cell = { key, label: sourceWords(todo.source), count: 0, group, todos: [] };
+      byKey.set(key, cell);
+    }
+    cell.count += 1;
+    cell.todos.push(todo);
+  }
+  const cells = [...byKey.values()];
+  for (const cell of cells) cell.todos.sort(soonestThenOldest);
+  return cells.sort(
+    (a, b) =>
+      ACTIVE_REASONS.indexOf(a.group) - ACTIVE_REASONS.indexOf(b.group) ||
+      b.count - a.count ||
+      a.label.localeCompare(b.label),
+  );
+}
+
+/** One reason as a whole: its cells' todos, largest source first. */
+export function reasonGroup(cells: readonly ReasonCell[], reason: ActiveReason): { count: number; todos: Todo[] } {
+  const mine = cells.filter((c) => c.group === reason);
+  return { count: mine.reduce((n, c) => n + c.count, 0), todos: mine.flatMap((c) => c.todos) };
+}
+
+/** The ids at least one active todo waits on and that are not yet done. */
+function blockingIds(todos: readonly Todo[]): Set<string> {
+  const doneSet = buildDoneSet(todos);
+  const ids = new Set<string>();
+  for (const t of todos) {
+    if (!isActiveTodo(t)) continue;
+    for (const id of t.needs ?? []) if (!doneSet.has(id)) ids.add(id);
+  }
+  return ids;
+}
+
+const DAY_MS = 86_400_000;
+
+/** Every count the todos page states, from one pass over listTodos. */
+export function todoCounts(todos: Todo[], now: number) {
+  const cells = activeCells(todos, now);
+  const inReason = (r: ActiveReason) => reasonGroup(cells, r).count;
+  const dated = todos.filter((t) => isActiveTodo(t) && t.dueAt !== undefined);
+  const done = todos.filter((t) => t.status === "done");
+  return {
+    active: cells.reduce((n, c) => n + c.count, 0),
+    waitingOnYou: inReason("waiting on you"),
+    waitingOnTodo: inReason("waiting on another todo"),
+    notPrepared: inReason("not yet prepared"),
+    dated: dated.length,
+    overdue: dated.filter((t) => (t.dueAt ?? Infinity) < now).length,
+    blocking: blockingIds(todos).size,
+    done: done.length,
+    doneLast30: done.filter((t) => (t.doneAt ?? t.updatedAt) >= now - 30 * DAY_MS).length,
+  };
+}
+
+/** The active todos that carry a date, soonest first, each overdue or due. */
+export function datedRows(todos: Todo[], now: number): { todo: Todo; overdue: boolean }[] {
+  return todos
+    .filter((t) => isActiveTodo(t) && t.dueAt !== undefined)
+    .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0))
+    .map((todo) => ({ todo, overdue: (todo.dueAt ?? Infinity) < now }));
+}
+
+/** The done todos, most recently done first; `doneAt` or, on a row written
+ *  before it existed, the last update. */
+export function recentDone(todos: Todo[]): { todo: Todo; at: number }[] {
+  return todos
+    .filter((t) => t.status === "done")
+    .map((todo) => ({ todo, at: todo.doneAt ?? todo.updatedAt }))
+    .sort((a, b) => b.at - a.at);
+}
+
+/**
+ * What the agents did in the last seven days, from the newest events. When the
+ * events handed over do not reach back seven days (listRecentEvents caps its
+ * window), `since` is the oldest one's time, so a sentence built from this
+ * says the span it actually counted.
+ */
+export function weekActivity(events: readonly EventRow[], now: number, full: boolean) {
+  const weekAgo = now - 7 * DAY_MS;
+  const oldest = events.reduce((m, e) => Math.min(m, e.at), Infinity);
+  const since = full && oldest > weekAgo ? oldest : weekAgo;
+  const count = (kind: string) => events.filter((e) => e.kind === kind && e.at >= since).length;
+  return {
+    since,
+    captured: count("captured"),
+    prepared: count("prepared"),
+    merges: count("merge"),
+    jobFailures: count("job-failed"),
+    delegateDecisions: count("delegate-decision"),
+  };
+}
+
+/** How many agents are idle, and the newest one (listSessions is newest first). */
+export function sessionFacts(
+  sessions: readonly { title: string; status: Doc<"claudeSessions">["status"]; _creationTime: number }[],
+): { idle: number; latest: { title: string; at: number } | undefined } {
+  const newest = sessions.reduce<(typeof sessions)[number] | undefined>(
+    (m, s) => (m === undefined || s._creationTime > m._creationTime ? s : m),
+    undefined,
+  );
+  return {
+    idle: sessions.filter((s) => s.status === "idle").length,
+    latest: newest && { title: newest.title, at: newest._creationTime },
+  };
+}
+
+export type EventRow = Doc<"dtsEvents">;
+
+/**
+ * An event kind as a lane name in Tom's words (vqc/pages.md, principle 6), or
+ * null for a kind whose name cannot be said on a page. Kinds are code: "tests-
+ * run" names a finished check and reads as "tests"; a kind about agent runs'
+ * environment ("runs-environment-defaulted") has no page wording, so it is
+ * counted with every other kind rather than renamed into something it is not.
+ */
+function laneName(kind: string): string | null {
+  const words = sourceWords(kind);
+  if (/\benvironment\b/i.test(words) || /^runs?\b/i.test(words)) return null;
+  return words.replace(/ run$/, "");
+}
+
+/**
+ * Events per time bin per kind, for a time figure: the `laneCount` kinds with
+ * the most events in the window, each its own lane, and every other kind —
+ * with any kind laneName cannot name — together in one more. The window is `binCount` bins of `binMs` ending at
+ * `now`; an event outside it is not counted. Labels are each bin's start as a
+ * local hour.
+ */
+export function eventLanes(
+  events: readonly EventRow[],
+  now: number,
+  binCount: number,
+  binMs: number,
+  laneCount: number,
+): { lanes: { name: string; bins: number[] }[]; binLabels: string[] } {
+  const start = now - binCount * binMs;
+  const inWindow = events.filter((e) => e.at >= start && e.at < now);
+  const perKind = new Map<string, number>();
+  for (const e of inWindow) perKind.set(e.kind, (perKind.get(e.kind) ?? 0) + 1);
+  const top = [...perKind.entries()]
+    .filter(([kind]) => laneName(kind) !== null)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, laneCount)
+    .map(([kind]) => kind);
+  const laneOf = (kind: string) => {
+    const i = top.indexOf(kind);
+    return i === -1 ? top.length : i;
+  };
+  const lanes = top.map((kind) => ({ name: laneName(kind) ?? kind, bins: new Array<number>(binCount).fill(0) }));
+  if (perKind.size > top.length) {
+    lanes.push({ name: "every other kind", bins: new Array<number>(binCount).fill(0) });
+  }
+  for (const e of inWindow) {
+    const bin = Math.min(binCount - 1, Math.floor((e.at - start) / binMs));
+    lanes[laneOf(e.kind)].bins[bin] += 1;
+  }
+  const binLabels = Array.from({ length: binCount }, (_, i) => {
+    const d = new Date(start + i * binMs);
+    return `${String(d.getHours()).padStart(2, "0")}:00`;
+  });
+  return { lanes, binLabels };
+}
+
+/** The agents a session list holds, by status, as a figure strip's figures:
+ *  "working" is the stored `running`, "starting" is requested or starting. */
+export function agentFigures(
+  sessions: readonly { status: Doc<"claudeSessions">["status"] }[],
+): { value: number; name: string }[] {
+  const count = (...statuses: Doc<"claudeSessions">["status"][]) =>
+    sessions.filter((s) => statuses.includes(s.status)).length;
+  return [
+    { value: sessions.length, name: "agents" },
+    { value: count("running"), name: "working" },
+    { value: count("idle"), name: "idle" },
+    { value: count("requested", "starting"), name: "starting" },
+    { value: count("ended"), name: "ended" },
+    { value: count("failed"), name: "failed" },
+  ];
 }
 
 /** A runner's status in words, the same on the everything tab and the run view. */

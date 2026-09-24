@@ -10,6 +10,7 @@
 - No explainer text in product UI. A page is data plus actions; explanation happens in conversation.
 - An interaction never shifts layout. No inline form between controls; anything composed (note, ruling, schedule) opens in a fixed dialog.
 - Actions sit near the top of an item's detail; each label names its backend effect.
+- A Jarvis page is composed from `app/components/toolbox/` under `vqc/pages.md`.
 
 ## state
 

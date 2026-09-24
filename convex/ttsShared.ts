@@ -647,7 +647,7 @@ export type WaitingTodo = ReadyTodo & {
   source?: string;
 };
 
-export type WaitingContext = {
+type WaitingContext = {
   now: number;
   doneSet: ReadonlySet<string>;
   /** The display text of a need, by id — so the reason names it. */

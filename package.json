@@ -25,7 +25,8 @@
     "check:large-files": "node scripts/check-large-files.mjs",
     "check:secrets": "gitleaks detect --source . --no-banner --redact",
     "check:vocabulary": "node scripts/check-vocabulary.mjs",
-    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-agents-md.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs && node scripts/check-vocabulary.mjs && node scripts/check-large-files.mjs && node scripts/check-private-paths.mjs && node scripts/check-removals.mjs"
+    "check:toolbox-pages": "node scripts/check-toolbox-pages.mjs",
+    "check:guardrails": "node scripts/check-auth-boundary.mjs && node scripts/check-agents-md.mjs && node scripts/check-heavy-libs.mjs && node scripts/check-session-mirrors.mjs && node scripts/check-vocabulary.mjs && node scripts/check-large-files.mjs && node scripts/check-private-paths.mjs && node scripts/check-removals.mjs && node scripts/check-toolbox-pages.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.92",
