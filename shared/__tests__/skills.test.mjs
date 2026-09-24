@@ -122,12 +122,20 @@ const EXPECTED = Object.freeze([
 ]);
 
 // ── The real vault ───────────────────────────────────────────────────────────
-// Tom's own model-of-tom, when this machine has it. CI has no vault, so every
-// test that reads it skips rather than fails: the fixture above is what pins
-// the shapes, and these pin that HIS text fits the cap the shapes promise.
+// Tom's own model-of-tom. The fixture above is what pins the shapes, and these
+// pin that HIS text fits the cap the shapes promise, so they read a real
+// WikiTom checkout and run only when REAL_WIKITOM_DIR names one:
+//
+//   REAL_WIKITOM_DIR=/root/wikitom pnpm test shared/__tests__/skills.test.mjs
+//
+// AN EXPLICIT VARIABLE, NOT "WHEN THIS MACHINE HAS ONE". They used to run when
+// a checkout was at the laptop's path, so the suite's answer depended on the
+// machine it ran on (docs/tests.md, "The suite reads nothing outside the
+// repository"), and the suite's WIKITOM_DIR names no checkout on any machine
+// (vitest.config.mts).
 
-const WIKITOM_DIR = process.env.WIKITOM_DIR ?? "C:/Users/heffn/Desktop/WikiTom-uae";
-const HAS_VAULT = fs.existsSync(path.join(WIKITOM_DIR, "model-of-tom", "agent-rules.md"));
+const WIKITOM_DIR = process.env.REAL_WIKITOM_DIR ?? "";
+const HAS_VAULT = WIKITOM_DIR !== "";
 
 function vaultPages() {
   const root = path.join(WIKITOM_DIR, "model-of-tom");
