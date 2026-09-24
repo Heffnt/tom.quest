@@ -2820,10 +2820,16 @@ const ttsRunTrace = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/run-trace", method: "GET", handler: ttsRunTrace });
 
-// CI has a distinct, narrow key: it can request and read evals, never use the
-// broader worker key that can write every TTS event.
+// EITHER KEY, the way POST /tts/tests takes either. CI holds the narrow evals
+// key, which can request and read evals and never write another TTS event. The
+// box holds the worker key and requests evals itself for a repository whose
+// pull requests it checks with no GitHub Actions (Heffnt/Jarvis). The worker
+// key is strictly the more privileged of the two, so accepting it widens
+// nothing.
 const evalsRequest = httpAction(async (ctx, request) => {
-  const denied = keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  const denied = request.headers.get("X-TTS-Key")
+    ? ttsAuth(request)
+    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
   if (denied) return denied;
   let body: unknown;
   try {

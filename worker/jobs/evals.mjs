@@ -1780,6 +1780,33 @@ export function ensureRef(repoDir, ref, run = git) {
 }
 
 /**
+ * The code repositories an evals request may name, each with the GitHub home
+ * and the default branch its cache clone follows. The box cannot import
+ * convex/ttsShared.ts and no payload this job reads carries SESSION_REPOS, so
+ * the three are spelled here. A repository missing from this map used to get a
+ * tom.quest tree without a word; it now gets an error, which the request's
+ * failed row reports.
+ */
+export const EVALS_CODE_REPOS = Object.freeze({
+  "tom.quest": Object.freeze({ owner: "Heffnt", name: "tom.quest", branch: "main" }),
+  ComplexMultiTrigger: Object.freeze({ owner: "Heffnt", name: "ComplexMultiTrigger", branch: "master" }),
+  // The box's own code. Its pull requests are checked by a box job, which
+  // posts the evals request itself, since the repository runs no GitHub Actions.
+  Jarvis: Object.freeze({ owner: "Heffnt", name: "Jarvis", branch: "main" }),
+});
+
+/**
+ * The directory a worktree of `repo` is cut from. WikiTom is the nightly job's
+ * own checkout, never a cache clone. Every code repository is its cache clone.
+ */
+export function evalsRepoDir(env, repo, { cache = cacheRepoDir, wikitomDir = process.env.WIKITOM_DIR } = {}) {
+  if (repo === "WikiTom") return wikitomDir || "/root/wikitom";
+  const spec = EVALS_CODE_REPOS[repo];
+  if (!spec) throw new Error(`${repo} is not a repository evals can check out`);
+  return cache(env, spec);
+}
+
+/**
  * A detached worktree of `ref` on a cache clone, and a function that removes
  * it. A worktree is exactly the tool for reading another commit without
  * touching a checkout somebody else owns — the nightly job owns /root/wikitom's
@@ -3172,15 +3199,13 @@ export function realIo(env) {
       },
     }),
     loadModules,
-    cmtDir: () => cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master" }),
+    cmtDir: () => cacheRepoDir(env, EVALS_CODE_REPOS.ComplexMultiTrigger),
     taskRepos: (tomquestTree) => {
       const dir = path.join(tomquestTree, TASKS_DIR);
       return fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [];
     },
     worktree: (repo, ref) => {
-      const repoDir = repo === "WikiTom"
-        ? (process.env.WIKITOM_DIR || "/root/wikitom")
-        : cacheRepoDir(env, { name: "tom.quest", owner: "Heffnt", branch: "main" });
+      const repoDir = evalsRepoDir(env, repo);
       // Never reset --hard the WikiTom checkout: the nightly job owns its
       // working tree. A fetch plus a detached worktree reads the commit
       // without touching it.

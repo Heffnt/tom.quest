@@ -963,3 +963,47 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
     });
   });
 });
+
+// ── POST /tts/evals-request takes either key ─────────────────────────────────
+// CI posts with the narrow evals key. The box checks Heffnt/Jarvis's pull
+// requests itself, with no GitHub Actions, and posts with the worker key it
+// already holds, so the route takes that key the way POST /tts/tests does.
+describe("POST /tts/evals-request: either key", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const REQUEST = { repo: "Jarvis", sha: "abc1234", paths: ["jobs/evals.mjs"] };
+  function fresh() {
+    vi.stubEnv("TTS_WORKER_KEY", "worker-s3cret");
+    vi.stubEnv("EVALS_KEY", "evals-s3cret");
+    return convexTest(schema, modules);
+  }
+  const post = (t: ReturnType<typeof convexTest>, headers: Record<string, string>) =>
+    t.fetch("/tts/evals-request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(REQUEST),
+    });
+
+  it("accepts the worker key and records the request", async () => {
+    const t = fresh();
+    const res = await post(t, { "X-TTS-Key": "worker-s3cret" });
+    expect(res.status).toBe(200);
+    const rows = await events(t, "evals-request");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toMatchObject({ repo: "Jarvis", sha: "abc1234" });
+  });
+
+  it("still accepts the evals key", async () => {
+    const t = fresh();
+    const res = await post(t, { "X-Evals-Key": "evals-s3cret" });
+    expect(res.status).toBe(200);
+    expect(await events(t, "evals-request")).toHaveLength(1);
+  });
+
+  it("refuses a request with neither key, or a wrong worker key, and records nothing", async () => {
+    const t = fresh();
+    expect((await post(t, {})).status).toBe(401);
+    expect((await post(t, { "X-TTS-Key": "evals-s3cret" })).status).toBe(401);
+    expect(await events(t, "evals-request")).toEqual([]);
+  });
+});

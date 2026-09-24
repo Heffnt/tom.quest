@@ -72,6 +72,7 @@ const REPO_GITHUB = {
   "tom.quest": "Heffnt/tom.quest",
   ComplexMultiTrigger: "Heffnt/ComplexMultiTrigger",
   WikiTom: "Heffnt/WikiTom",
+  Jarvis: "Heffnt/Jarvis",
 };
 
 // MIRROR of NARROW_LIST in convex/ttsShared.ts (the daemon cannot import .ts).
