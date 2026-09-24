@@ -42,7 +42,7 @@ describe("page registry", () => {
     // Named individually because each is a specific thing a session must not
     // reach: /canvas spends LLM credits through its agent route, and the other
     // three are Tom's own surfaces.
-    it.each(["canvas", "runs", "forge", "jarvis", "logo", "intent", "vocabulary"])(
+    it.each(["canvas", "runs", "forge", "logo", "intent", "vocabulary"])(
       "does not see /%s",
       (slug) => {
         const entry = PAGES.find((p) => p.slug === slug);

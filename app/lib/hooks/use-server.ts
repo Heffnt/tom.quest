@@ -3,10 +3,9 @@
 import { useCallback, useMemo } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { useOptionalGateway } from "@/app/jarvis/components/useGateway";
 import { useAuth } from "../auth";
 
-export type ServerKind = "turing" | "jarvis";
+export type ServerKind = "turing";
 
 export type ServerStatus = {
   connected: boolean;
@@ -67,7 +66,7 @@ function parseTuringCall(method: string, params?: ServerCallParams) {
 
 const TURING_FRESHNESS_WINDOW_MS = 90_000;
 
-function useTuringServer(): ServerAdapter {
+export function useServer(): ServerAdapter {
   const { token, user, loading } = useAuth();
   const health = useQuery(api.serverHealth.get, user ? { serverName: "turing" } : "skip");
 
@@ -106,35 +105,4 @@ function useTuringServer(): ServerAdapter {
     call,
     subscribe: () => () => {},
   }), [call, status]);
-}
-
-function useJarvisServer(): ServerAdapter {
-  const gateway = useOptionalGateway();
-  const status = useMemo<ServerStatus>(() => ({
-    connected: gateway?.connected ?? false,
-    fresh: gateway?.connected ?? false,
-    error: gateway?.error ?? (gateway ? null : "Jarvis socket unavailable"),
-  }), [gateway]);
-
-  const call = useCallback(async <T = unknown>(method: string, params?: ServerCallParams): Promise<T> => {
-    if (!gateway) throw new Error("Jarvis socket unavailable");
-    return await gateway.call(method, params) as T;
-  }, [gateway]);
-
-  const subscribe = useCallback<ServerAdapter["subscribe"]>((event, cb) => {
-    return gateway?.subscribe(event, cb) ?? (() => {});
-  }, [gateway]);
-
-  return useMemo<ServerAdapter>(() => ({
-    kind: "jarvis",
-    status,
-    call,
-    subscribe,
-  }), [call, status, subscribe]);
-}
-
-export function useServer(kind: ServerKind): ServerAdapter {
-  const turing = useTuringServer();
-  const jarvis = useJarvisServer();
-  return kind === "turing" ? turing : jarvis;
 }

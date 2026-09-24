@@ -39,7 +39,7 @@ export default function DebugPanel() {
   const { user, role, isTom } = useAuth();
   const connectionState = useConvexConnectionState();
   const viewport = useViewport();
-  const turing = useServer("turing");
+  const turing = useServer();
   useDebugVersion();
   const events = debug.getConsoleEvents();
   const debugOpen = useUIStore((state) => state.debugOpen);

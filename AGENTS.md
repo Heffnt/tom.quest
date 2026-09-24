@@ -14,7 +14,7 @@ A personal dashboard for cluster management, experiment visibility and TTS. Writ
 
 - `user`: the sign-up default; sees public quests.
 - `admin`: elevated quests; a trusted friend or colleague may hold it.
-- `tom`: his account; admin plus Jarvis config and the diagnostic panel.
+- `tom`: his account; admin plus the diagnostic panel.
 - `agent`: the account a TTS session's headless browser signs in as; a side branch, not a rank. It reads a named list of surfaces and writes nothing.
 - Gate Tom-only features on `isTom`, elevated ones on `isAdmin` (true for `admin` and `tom`).
 
