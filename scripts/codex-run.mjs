@@ -136,11 +136,32 @@ function openrouterModelOf(model) {
 // caller whose own environment already carries it (a laptop) is used as is.
 // RUN_ENV_FILE is worker/runs/config.mjs's override of the file's path.
 function openrouterKey() {
-  if (process.env[OPENROUTER_KEY]) return process.env[OPENROUTER_KEY];
   const file = process.env.RUN_ENV_FILE || workerEnv?.ENV_PATH;
-  let value = null;
-  try { value = file && workerEnv ? workerEnv.loadEnv({ path: file })[OPENROUTER_KEY] : null; } catch {}
+  const fromEnv = Boolean(process.env[OPENROUTER_KEY]);
+  let value = fromEnv ? process.env[OPENROUTER_KEY] : null;
+  if (!fromEnv) {
+    try { value = file && workerEnv ? workerEnv.loadEnv({ path: file })[OPENROUTER_KEY] : null; } catch {}
+  }
   if (!value) fail(`an openrouter/ model needs ${OPENROUTER_KEY}, which is in neither this environment nor ${file ?? "the worker env file"}`);
+  // REMOVAL CHECK: Codex builds the Authorization header from this value and,
+  // when the value is not a legal header value, SENDS THE REQUEST WITHOUT ONE
+  // rather than failing. OpenRouter then answers "401 Missing Authentication
+  // header", which reads as a key that never arrived. A key pasted into a
+  // terminal can carry the paste's escape sequences (ESC[200~ ... ESC[201~)
+  // or a stray control character; nothing earlier on the path can see that,
+  // because the env file is parsed as text and the key's value is never shown.
+  // An OpenRouter key is printable ASCII with no spaces (sk-or-v1-<hex>), so
+  // anything else is refused here, reported by character class, never by value.
+  const bad = [...value].filter((ch) => !/^[\x21-\x7e]$/.test(ch));
+  if (bad.length > 0) {
+    const control = bad.filter((ch) => ch.codePointAt(0) < 0x20 || ch.codePointAt(0) === 0x7f).length;
+    const space = bad.filter((ch) => ch === " ").length;
+    const other = bad.length - control - space;
+    const where = fromEnv ? "this environment" : file;
+    fail(`${OPENROUTER_KEY} in ${where} holds ${bad.length} character(s) an OpenRouter key never contains `
+      + `(${control} control, ${space} space, ${other} non-ASCII); with a control character Codex sends no `
+      + `Authorization header at all. Rewrite the line with printable characters only.`);
+  }
   return value;
 }
 

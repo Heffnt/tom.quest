@@ -878,6 +878,14 @@ wire_api = "responses"
 OPENROUTERCFG
     echo "  codex now has the openrouter provider"
   fi
+  # A key pasted into a terminal can carry the paste's escape sequences, and
+  # Codex then sends no Authorization header at all (scripts/codex-run.mjs
+  # refuses such a key at run time; this says so at rollout, before a run).
+  # Matched by character class only; the value is never printed.
+  if LC_ALL=C grep -qE "^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=.*[^[:graph:][:blank:]$(printf '\r')]" /etc/tts/worker.env; then
+    echo "  WARNING: OPENROUTER_API_KEY holds a control or non-ASCII character; repair it with:"
+    echo "    LC_ALL=C sed -i -E '/^OPENROUTER_API_KEY=/{s/\\x1b\\[20[01]~//g;s/[^[:graph:]]//g}' /etc/tts/worker.env"
+  fi
 else
   echo "  OPENROUTER_API_KEY not set in /etc/tts/worker.env — no openrouter provider"
 fi

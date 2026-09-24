@@ -437,6 +437,60 @@ describe("codex-run OpenRouter models", () => {
     expect(fs.existsSync(path.join(result.state, "registration"))).toBe(false);
   });
 
+  // witness: the 2026-09-24 smoke test. The key's line was present, the
+  // provider entry was present, and OpenRouter still answered "401 Missing
+  // Authentication header": Codex had the variable but dropped the header,
+  // which it does for a value holding a control character. These pin both
+  // halves — a clean key reaches the Codex child byte for byte, however the
+  // line is quoted or terminated, and a key carrying a paste's escape
+  // sequences is refused before Codex starts, without printing the value.
+  it("hands the caller's own key to the Codex child unchanged", () => {
+    const out = files("callerkey");
+    const result = run(["--model", MODEL, "--no-operate"], {
+      CODEX_BIN: fakeCodex(),
+      FAKE_CODEX_ARGS: out.args,
+      FAKE_CODEX_ENV: out.env,
+      OPENROUTER_API_KEY: "sk-or-v1-fromcaller",
+      RUN_ENV_FILE: envFile("OPENROUTER_API_KEY=sk-or-v1-fromfile\n"),
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(out.env, "utf8")).openrouterKey).toBe("sk-or-v1-fromcaller");
+  });
+
+  for (const [label, line] of [
+    ["a CRLF line", "OPENROUTER_API_KEY=sk-or-v1-abc123\r\n"],
+    ["a quoted value", 'OPENROUTER_API_KEY="sk-or-v1-abc123"\n'],
+    ["an export line", "export OPENROUTER_API_KEY=sk-or-v1-abc123\n"],
+  ]) {
+    it(`reads the key from ${label} into the Codex child exactly`, () => {
+      const out = files(`shape-${label.replace(/\W+/g, "-")}`);
+      const result = run(["--model", MODEL, "--no-operate"], {
+        CODEX_BIN: fakeCodex(),
+        FAKE_CODEX_ARGS: out.args,
+        FAKE_CODEX_ENV: out.env,
+        OPENROUTER_API_KEY: "",
+        RUN_ENV_FILE: envFile(`A=1\n${line}B=2\n`),
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(fs.readFileSync(out.env, "utf8")).openrouterKey).toBe("sk-or-v1-abc123");
+    });
+  }
+
+  it("refuses a key carrying a paste's escape sequences, without printing it", () => {
+    const out = files("pasted");
+    const result = run(["--model", MODEL, "--no-operate"], {
+      CODEX_BIN: fakeCodex(),
+      FAKE_CODEX_ARGS: out.args,
+      OPENROUTER_API_KEY: "",
+      RUN_ENV_FILE: envFile("OPENROUTER_API_KEY=\u001b[200~sk-or-v1-pasted\u001b[201~\n"),
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("holds 2 character(s) an OpenRouter key never contains (2 control, 0 space, 0 non-ASCII)");
+    expect(result.stderr).not.toContain("sk-or-v1-pasted");
+    expect(fs.existsSync(out.args)).toBe(false);
+    expect(fs.existsSync(path.join(result.state, "registration"))).toBe(false);
+  });
+
   it("refuses a spelling without a vendor", () => {
     const result = run(["--model", "openrouter/deepseek-v4-flash", "--no-operate"], {
       CODEX_BIN: fakeCodex(),
