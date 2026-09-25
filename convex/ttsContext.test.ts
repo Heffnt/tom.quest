@@ -595,6 +595,50 @@ describe("insertSession's context", () => {
     expect(row?.contextBytes?.fetchable).toBe(0);
   });
 
+  // Tom's ruling 2026-09-25: a therapy session's subject is the
+  // mental-health area whatever todo it was opened on, and it opens on no
+  // repo. Opened here on the climbing todo, so a subject taken from the todo
+  // would grant know-climbing and know-week instead.
+  it("opens a therapy session on the mental-health area, whatever its todo", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    // A statement the word guess would read a repo out of.
+    await t.run(async (ctx) =>
+      ctx.db.patch(ids.todos[IDS.climb], { statement: "talk about the tom.quest work" }),
+    );
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "therapy",
+      kind: "therapy",
+      todoId: ids.todos[IDS.climb],
+      initialPrompt: "hello",
+    });
+    const row = await t.run(async (ctx) => await ctx.db.get(sessionId));
+    expect(row?.contextExpanded).toEqual(["write", "know-intent", "know-mental-health"]);
+    // No repo, and no word guess over the todo supplied one.
+    expect(row?.repos).toEqual([]);
+    expect(row?.repo).toBe("none");
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
+    expect(inbound[0].text).toContain(grantBlock(["write", "know-intent", "know-mental-health"]));
+  });
+
+  it("refuses a therapy session that names a repo, and inserts nothing", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t);
+    const tom = await withTom(t);
+    await expect(
+      tom.mutation(api.claudeSessions.createSession, {
+        title: "therapy",
+        kind: "therapy",
+        repos: ["tom.quest"],
+        initialPrompt: "hello",
+      }),
+    ).rejects.toThrow(/a therapy session opens on no repo; this one named tom\.quest/);
+    // The fixture's record holds sessions of its own; none of them is this.
+    const sessions = await t.run(async (ctx) => await ctx.db.query("claudeSessions").collect());
+    expect(sessions.filter((s) => s.kind === "therapy")).toHaveLength(0);
+  });
+
   it("strips a pasted stable prefix at the live commit and puts the live one back", async () => {
     const t = convexTest({ schema, modules });
     await seed(t);

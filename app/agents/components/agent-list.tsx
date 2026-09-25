@@ -116,6 +116,12 @@ function AutoFleetStrip() {
   );
 }
 
+// The kinds Tom opens by hand from this form. A therapy session opens on no
+// repo (the server refuses one that names a repo), so choosing it clears the
+// picker and locks it.
+const FORM_KINDS = ["adhoc", "weekly", "therapy"] as const;
+type FormKind = (typeof FORM_KINDS)[number];
+
 function NewSessionForm({
   onCreated,
 }: {
@@ -127,7 +133,7 @@ function NewSessionForm({
   const { open: openSession, busy: creating, error } = useOpenSession();
   const [title, setTitle] = useState("");
   const [repos, setRepos] = useState<string[]>(["tom.quest"]);
-  const [kind, setKind] = useState<"adhoc" | "weekly">("adhoc");
+  const [kind, setKind] = useState<FormKind>("adhoc");
   const [model, setModel] = useState<SessionModel>(DEFAULT_SESSION_MODEL);
   const [prompt, setPrompt] = useState("");
 
@@ -171,6 +177,7 @@ function NewSessionForm({
                 key={r}
                 type="button"
                 aria-pressed={on}
+                disabled={kind === "therapy"}
                 onClick={() =>
                   setRepos((prev) =>
                     prev.includes(r)
@@ -178,7 +185,7 @@ function NewSessionForm({
                       : [...prev, r],
                   )
                 }
-                className={`rounded border px-2.5 py-2 text-sm transition-colors ${
+                className={`rounded border px-2.5 py-2 text-sm transition-colors disabled:opacity-50 disabled:pointer-events-none ${
                   on
                     ? "border-accent bg-accent-dim text-accent hover:brightness-125"
                     : "border-border bg-surface-alt text-text-muted hover:text-text hover:border-accent/60"
@@ -194,11 +201,18 @@ function NewSessionForm({
         </div>
         <select
           value={kind}
-          onChange={(e) => setKind(e.target.value as "adhoc" | "weekly")}
+          onChange={(e) => {
+            const next = e.target.value as FormKind;
+            setKind(next);
+            if (next === "therapy") setRepos([]);
+          }}
           className="bg-surface-alt border border-border rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
         >
-          <option value="adhoc">adhoc</option>
-          <option value="weekly">weekly</option>
+          {FORM_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
         </select>
         <ModelSelect ariaLabel="session model" value={model} onChange={setModel} />
       </div>

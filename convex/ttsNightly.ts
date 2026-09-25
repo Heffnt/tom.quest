@@ -230,7 +230,10 @@ export const internalLearningInput = internalQuery({
     // sessions/ archive is keyed by the whole of it), which the session host
     // stores on the row as sdkSessionId once the SDK reports it — and where
     // its rows come from (convex/sessionRows.ts rowSource).
-    const sessions = new Map<string, { title: string; sdkSessionId: string | null; source: RowSource }>();
+    const sessions = new Map<
+      string,
+      { title: string; sdkSessionId: string | null; source: RowSource; therapy: boolean }
+    >();
     let repliesLookedUp = 0;
     for (const row of inbound) {
       if (row.kind !== "user-turn") continue;
@@ -241,9 +244,13 @@ export const internalLearningInput = internalQuery({
           title: s?.title ?? "",
           sdkSessionId: s?.sdkSessionId ?? null,
           source: s === null ? { from: "none" } : rowSource(s),
+          therapy: s?.kind === "therapy",
         };
         sessions.set(row.sessionId, session);
       }
+      // A therapy session's turns never reach the learning step (Tom's ruling
+      // 2026-09-25): the session owns the mental-health page itself.
+      if (session.therapy) continue;
       // The agent's text just before the turn and just after it. The index
       // pins the rows' owner and the kind; the filter walks the rows on one
       // side of the turn's instant and stops at the first. A session's rows
@@ -366,7 +373,9 @@ export const internalLearningInput = internalQuery({
     // ["status", "statusChangedAt"], so the range read is per status: one read
     // per terminal status rather than a filtered scan whose cap would fall on
     // the sessions still running. A session in no repository ("none") teaches
-    // nothing about a rule file and is dropped here.
+    // nothing about a rule file and is dropped here, and so is a therapy
+    // session, by its kind (Tom's ruling 2026-09-25): insertSession already
+    // refuses one with a repo, and this names the exclusion where it is read.
     const ended = (
       await Promise.all(
         (["ended", "failed"] as const).map((status) =>
@@ -380,7 +389,7 @@ export const internalLearningInput = internalQuery({
       )
     ).flat();
     const repoSessions = ended
-      .filter((s) => s.outcome !== undefined && s.repo !== "none")
+      .filter((s) => s.outcome !== undefined && s.repo !== "none" && s.kind !== "therapy")
       .sort((a, b) => b.statusChangedAt - a.statusChangedAt)
       .slice(0, LEARNING_REPO_SESSIONS_MAX)
       .map((s) => ({
