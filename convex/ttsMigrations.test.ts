@@ -29,6 +29,10 @@ import {
   TIMING_MIGRATION,
   carryCondition,
   previousOnPath,
+  rowDigest,
+  SCRUB_CHUNKS_PER_ROW_MAX,
+  WORKER_KEY_MARKER,
+  WORKER_KEY_ROWS_SCRUBBED,
 } from "./ttsMigrations";
 import {
   CONDITION_WINDOW_MS,
@@ -1846,5 +1850,170 @@ describe("batches removed (every todo stands alone)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── The worker key taken out of stored rows ─────────────────────────────────
+describe("internalScrubWorkerKeyRows (the worker key out of stored rows)", () => {
+  // A fake value: the harness's own, never the deployment's.
+  const KEY = "fake-worker-key-0123456789abcdef";
+  const AGENT = "claude:box:scrub-agent";
+  const OTHER = "claude:box:clean-agent";
+  const PV = "runs-parser-1";
+  const provenance = { fileVersion: "a".repeat(64), file: "f.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: PV, sourceKind: "assistant" };
+
+  async function insertRow(
+    t: ReturnType<typeof convexTest>,
+    runId: string,
+    seq: number,
+    content: unknown,
+    extra: Record<string, unknown> = {},
+  ) {
+    const kind = "tool-result";
+    const digest = await rowDigest(PV, runId, seq, kind, content);
+    return await t.run((ctx) => ctx.db.insert("claudeMessages", {
+      runId, seq, turn: 0, kind, content, provenance, digest, depth: 0, createdAt: seq + 1, ...extra,
+    } as never));
+  }
+
+  async function sha256Hex(text: string) {
+    const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  /** A row with an overflow payload whose value lies across the chunk boundary. */
+  async function insertOverflow(t: ReturnType<typeof convexTest>, runId: string, seq: number, whole: string, cut: number) {
+    const texts = [whole.slice(0, cut), whole.slice(cut)];
+    await insertRow(t, runId, seq, { text: whole.slice(0, 10), truncation: "cut" }, {
+      overflow: { sha256: await sha256Hex(whole), byteLength: new TextEncoder().encode(whole).length, chunkCount: 2 },
+    });
+    await t.run(async (ctx) => {
+      for (const [index, text] of texts.entries()) {
+        await ctx.db.insert("claudeMessageOverflow", { runId, seq, index, chunkCount: 2, text, createdAt: 1 });
+      }
+    });
+  }
+
+  async function runToEnd(t: ReturnType<typeof convexTest>, args: { agentIds: string[]; dryRun?: boolean; pageSize?: number }) {
+    vi.useFakeTimers();
+    try {
+      await t.mutation(internal.ttsMigrations.internalScrubWorkerKeyRows, args);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  const rowsOf = (t: ReturnType<typeof convexTest>) =>
+    t.run((ctx) => ctx.db.query("claudeMessages").collect());
+  const chunksOf = (t: ReturnType<typeof convexTest>) =>
+    t.run((ctx) => ctx.db.query("claudeMessageOverflow").collect());
+
+  async function seed(t: ReturnType<typeof convexTest>) {
+    await insertRow(t, AGENT, 0, { text: "clean line" });
+    await insertRow(t, AGENT, 1, { content: [{ type: "text", text: `TTS_WORKER_KEY=${KEY}\nand ${encodeURIComponent(KEY)}` }], toolUseId: "t1" });
+    await insertRow(t, AGENT, 2, { text: "also clean" });
+    await insertOverflow(t, AGENT, 3, `head ${KEY} middle ${KEY} tail`, 12);
+    await insertRow(t, OTHER, 0, { text: "nothing here" });
+  }
+
+  it("replaces the value in a row and its overflow, recomputes the content hashes, and leaves other rows alone", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    try {
+      const t = convexTest({ schema, modules });
+      await seed(t);
+      const before = await rowsOf(t);
+      await runToEnd(t, { agentIds: [AGENT, OTHER], pageSize: 2 });
+      const after = await rowsOf(t);
+      const changed = after.find((r) => r.runId === AGENT && r.seq === 1)!;
+      expect(JSON.stringify(changed.content)).not.toContain(KEY);
+      expect(changed.content).toEqual({ content: [{ type: "text", text: `TTS_WORKER_KEY=${WORKER_KEY_MARKER}\nand ${WORKER_KEY_MARKER}` }], toolUseId: "t1" });
+      expect(changed.seq).toBe(1);
+      expect(changed.digest).toBe(await rowDigest(PV, AGENT, 1, "tool-result", changed.content));
+      // Every row without the value is exactly as it was.
+      for (const row of before.filter((r) => !(r.runId === AGENT && (r.seq === 1)))) {
+        const now = after.find((r) => r._id === row._id)!;
+        if (row.seq === 3 && row.runId === AGENT) {
+          expect({ ...now, overflow: undefined }).toEqual({ ...row, overflow: undefined });
+        } else {
+          expect(now).toEqual(row);
+        }
+      }
+      const chunks = (await chunksOf(t)).sort((a, b) => a.index - b.index);
+      const whole = chunks.map((c) => c.text).join("");
+      expect(whole).toBe(`head ${WORKER_KEY_MARKER} middle ${WORKER_KEY_MARKER} tail`);
+      expect(chunks.map((c) => c.chunkCount)).toEqual([2, 2]);
+      const stamped = after.find((r) => r.runId === AGENT && r.seq === 3)!;
+      expect(stamped.overflow).toEqual({ sha256: await sha256Hex(whole), byteLength: whole.length, chunkCount: 2 });
+      const [event] = await eventsOfKind(t, WORKER_KEY_ROWS_SCRUBBED);
+      expect(event.data).toEqual({
+        agents: 2, rowsScanned: 5, rowsChanged: 1, chunksScanned: 2, chunksChanged: 2,
+        digestsRecomputed: 1, digestsKept: 0, stampsRecomputed: 1, stampsKept: 0,
+        agentsWithHits: [AGENT], oversized: [],
+      });
+      expect(JSON.stringify(event.data)).not.toContain(KEY);
+      // Idempotent: a second run finds nothing.
+      await runToEnd(t, { agentIds: [AGENT, OTHER] });
+      const second = (await eventsOfKind(t, WORKER_KEY_ROWS_SCRUBBED))[1];
+      expect(second.data).toMatchObject({ rowsChanged: 0, chunksChanged: 0, agentsWithHits: [] });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("a dry run changes nothing and counts what it would change", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    try {
+      const t = convexTest({ schema, modules });
+      await seed(t);
+      const rows = await rowsOf(t);
+      const chunks = await chunksOf(t);
+      await runToEnd(t, { agentIds: [OTHER, AGENT], dryRun: true });
+      expect(await rowsOf(t)).toEqual(rows);
+      expect(await chunksOf(t)).toEqual(chunks);
+      expect(await eventsOfKind(t, WORKER_KEY_ROWS_SCRUBBED)).toHaveLength(0);
+      const [event] = await eventsOfKind(t, `${WORKER_KEY_ROWS_SCRUBBED}-dry-run`);
+      expect(event.data).toMatchObject({ agents: 2, rowsScanned: 5, rowsChanged: 1, chunksChanged: 2, agentsWithHits: [AGENT] });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps a digest it cannot reproduce, and lists a payload too large for one transaction", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    try {
+      const t = convexTest({ schema, modules });
+      const id = await insertRow(t, AGENT, 0, { text: KEY });
+      await t.run((ctx) => ctx.db.patch(id, { digest: "0123456789abcdef" }));
+      const big = SCRUB_CHUNKS_PER_ROW_MAX + 1;
+      await t.run(async (ctx) => {
+        for (let index = 0; index < big; index++) {
+          await ctx.db.insert("claudeMessageOverflow", { runId: AGENT, seq: 7, index, chunkCount: big, text: KEY, createdAt: 1 });
+        }
+      });
+      await runToEnd(t, { agentIds: [AGENT] });
+      const [row] = await rowsOf(t);
+      expect(row.content).toEqual({ text: WORKER_KEY_MARKER });
+      expect(row.digest).toBe("0123456789abcdef");
+      expect((await chunksOf(t)).every((c) => c.text === KEY)).toBe(true);
+      const [event] = await eventsOfKind(t, WORKER_KEY_ROWS_SCRUBBED);
+      expect(event.data).toMatchObject({ rowsChanged: 1, digestsKept: 1, digestsRecomputed: 0, oversized: [{ agentId: AGENT, seq: 7 }] });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("refuses to run when the key is unset or short", async () => {
+    const t = convexTest({ schema, modules });
+    await insertRow(t, AGENT, 0, { text: "x" });
+    try {
+      vi.stubEnv("TTS_WORKER_KEY", undefined);
+      await expect(t.mutation(internal.ttsMigrations.internalScrubWorkerKeyRows, { agentIds: [AGENT] })).rejects.toThrow(/refused/);
+      vi.stubEnv("TTS_WORKER_KEY", "short");
+      await expect(t.mutation(internal.ttsMigrations.internalScrubWorkerKeyRows, { agentIds: [AGENT], dryRun: true })).rejects.toThrow(/refused/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(await eventsOfKind(t, `${WORKER_KEY_ROWS_SCRUBBED}-dry-run`)).toHaveLength(0);
   });
 });
