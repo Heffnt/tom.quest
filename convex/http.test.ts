@@ -845,7 +845,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       await react(t);
       const res = await t.fetch("/tts/label-input", { headers: key });
       expect(res.status).toBe(200);
-      const { items } = (await res.json()) as { items: Record<string, any>[] };
+      const { items } = (await res.json()) as { items: { rows: { contextRow: unknown; spanRows: unknown[] } }[] };
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
         source: "digest-reaction",
@@ -871,7 +871,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
         });
       });
       const { items } = (await (await t.fetch("/tts/label-input", { headers: key })).json()) as
-        { items: Record<string, any>[] };
+        { items: Record<string, unknown>[] };
       expect(items).toMatchObject([{ run: null, rows: { contextRow: null, spanRows: [] } }]);
     });
 
