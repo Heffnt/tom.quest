@@ -126,8 +126,6 @@ const MAX_REASON_LENGTH = 200;
 const MATERIALIZE_REASONS = new Set([
   "object missing from store", "object hash mismatch", "store unreachable",
   "no store key", "file too large", "parse produced no rows", "agent is gone",
-  // The box's spelling until its own rename lands; phase 3 removes it.
-  "run is gone",
 ]);
 const MATERIALIZE_PARTIAL = new Set([
   "sidecar-missing", "no-envelope", "pre-parser-fields",
@@ -364,7 +362,7 @@ export const internalIngest = internalMutation({
 
     const cycleLength = await parentCycleLength(ctx, run.runId, run.parentRunId);
     if (cycleLength) {
-      await event(ctx, "runs-parent-cycle", { runId: run.runId, parentRunId: run.parentRunId, chainLength: cycleLength });
+      await event(ctx, "agents-parent-cycle", { runId: run.runId, parentRunId: run.parentRunId, chainLength: cycleLength });
       return { ok: false as const, reason: "parent cycle" };
     }
 
@@ -374,7 +372,7 @@ export const internalIngest = internalMutation({
       if (!validAgentId(child.runId) || !validAgentId(child.parentRunId) || !validAgentId(child.rootRunId) || !nonNegativeInteger(child.depth) || child.runId === run.runId || child.parentRunId !== run.runId || child.rootRunId !== run.rootRunId || child.depth !== run.depth + 1 || (child.linkKnown && !child.spawnedByToolUseId) || childIds.has(child.runId)) return { ok: false as const, reason: "invalid child edge" };
       const childCycleLength = await parentCycleLength(ctx, child.runId, run.runId);
       if (childCycleLength) {
-        await event(ctx, "runs-parent-cycle", { runId: child.runId, parentRunId: run.runId, chainLength: childCycleLength });
+        await event(ctx, "agents-parent-cycle", { runId: child.runId, parentRunId: run.runId, chainLength: childCycleLength });
         return { ok: false as const, reason: "parent cycle" };
       }
       const knownChild = await agentAt(ctx, child.runId);
@@ -388,16 +386,16 @@ export const internalIngest = internalMutation({
     // later lines, before this mutation changes any record row.
     if (existing && !isStubFile(existing.file)) {
       if (args.previousCommittedLine !== existing.file.committedLine || args.previousPrefixSha256 !== existing.file.committedPrefixSha256) {
-        await event(ctx, "runs-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: args.previousPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
+        await event(ctx, "agents-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: args.previousPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
         return { ok: false as const, reason: "file rewritten", ...heldCursor(existing.file) };
       }
       if (run.file.bytes < existing.file.bytes) {
-        await event(ctx, "runs-file-shrank", { runId: run.runId, storedBytes: existing.file.bytes, presentedBytes: run.file.bytes, path: run.file.path });
+        await event(ctx, "agents-file-shrank", { runId: run.runId, storedBytes: existing.file.bytes, presentedBytes: run.file.bytes, path: run.file.path });
         return { ok: false as const, reason: "file shrank" };
       }
       if (run.file.committedLine < existing.file.committedLine) return { ok: false as const, reason: "committed cursor regressed" };
       if (run.file.committedLine === existing.file.committedLine && run.file.committedPrefixSha256 !== existing.file.committedPrefixSha256) {
-        await event(ctx, "runs-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: run.file.committedPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
+        await event(ctx, "agents-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: run.file.committedPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
         return { ok: false as const, reason: "file rewritten", ...heldCursor(existing.file) };
       }
     }
@@ -407,7 +405,7 @@ export const internalIngest = internalMutation({
     for (const row of args.rows) {
       const landed = await rowAt(ctx, run.runId, row.seq);
       if (landed && landed.digest !== row.digest) {
-        await event(ctx, "runs-entry-mismatch", { runId: run.runId, seq: row.seq, storedDigest: landed.digest, presentedDigest: row.digest });
+        await event(ctx, "agents-entry-mismatch", { runId: run.runId, seq: row.seq, storedDigest: landed.digest, presentedDigest: row.digest });
         return { ok: false as const, reason: "entry digest mismatch" };
       }
     }
@@ -426,7 +424,7 @@ export const internalIngest = internalMutation({
     }
     if (!existing) {
       await ctx.db.insert("runs", { ...run, ingestedAt });
-      if (environmentDefaulted) await event(ctx, "runs-environment-defaulted", { runId: run.runId, launcher: run.context?.launcher });
+      if (environmentDefaulted) await event(ctx, "agents-environment-defaulted", { runId: run.runId, launcher: run.context?.launcher });
     } else {
       const advances = run.file.committedLine > existing.file.committedLine;
       const patch: Record<string, unknown> = { ingestedAt };
@@ -668,9 +666,14 @@ export const internalEligibleComparisons = internalQuery({
   },
   handler: async (ctx, args) => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    // The new kind only. Comparisons stored as runs-shadow-compare before the
+    // rename leave this 24-hour window within a day of the deploy; until then
+    // a session compared under the old kind can be compared once more, which
+    // writes one more event and changes nothing else. The data keys `runId`
+    // and `runStatus` are the stored spelling and stay.
     const comparisons = await ctx.db
       .query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare").gte("at", cutoff))
+      .withIndex("by_kind_at", (q) => q.eq("kind", "agents-shadow-compare").gte("at", cutoff))
       .order("desc")
       .take(1000);
     const comparedAt = new Map<string, number>();
@@ -749,7 +752,7 @@ export const internalShadowCompare = internalMutation({
     // Both reads are `.take()` over a seq floor, never `.paginate()`: a single
     // Convex function may run only one paginated query, and this one reads two
     // indexes — the second `.paginate()` threw, which is what answered every
-    // /runs/compare call with HTTP 400.
+    // /agents/compare call with HTTP 400.
     if (state.daemonPending.length === 0 && !state.daemonDone) {
       const rows = await ctx.db
         .query("claudeMessages")
@@ -819,7 +822,7 @@ export const internalShadowCompare = internalMutation({
       clean,
     };
 
-    await event(ctx, "runs-shadow-compare", result);
+    await event(ctx, "agents-shadow-compare", result);
     const runPatch: Record<string, unknown> = {};
     if (clean) {
       const cutoverAt = run.cutoverAt ?? Date.now();
@@ -954,7 +957,7 @@ export const internalAgentTrace = internalQuery({
         ? null
         : totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens;
     return {
-      runId: run.runId,
+      agentId: run.runId,
       turns: run.outcome?.turns ?? null,
       tokens,
       toolCalls,
@@ -1114,13 +1117,13 @@ export const internalNextMaterialize = internalQuery({
     );
     return {
       request: {
-        requestId: request._id, runId: request.runId, slice: request.slice,
+        requestId: request._id, agentId: request.runId, slice: request.slice,
         requestedBy: request.requestedBy, requestedAt: request.requestedAt,
         cli: cli ?? request.runId.split(":")[0],
         host: run?.host ?? request.runId.split(":")[1],
         threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
         depth: run?.depth ?? 0,
-        parentRunId: run?.parentRunId ?? null,
+        parentAgentId: run?.parentRunId ?? null,
         file,
         hasRows,
         // Where the parse resumes: a backlog run has no rows and starts at 0, a
@@ -1275,7 +1278,7 @@ export const internalEvictTick = internalMutation({
     // there: evicting rows whose store objects sit in a local directory on a
     // machine that may be reinstalled is deleting what nothing can restore.
     if (!evictionEnabled()) {
-      await event(ctx, "runs-evicted", {
+      await event(ctx, "agents-evicted", {
         at: Date.now(), runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0,
         deferred: 0, truncated: false, disabled: true,
       });
@@ -1361,7 +1364,7 @@ export const internalEvictTick = internalMutation({
       .order("asc")
       .first();
     // One row, counts only: no run id, no row content.
-    await event(ctx, "runs-evicted", {
+    await event(ctx, "agents-evicted", {
       at: now, runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred,
       truncated: worked && truncated, oldestRowsUntil: oldest?.rowsUntil ?? null,
     });

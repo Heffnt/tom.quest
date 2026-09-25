@@ -1536,7 +1536,7 @@ describe("a ruling schedules the label writer", () => {
     await drain(t);
     expect(await t.run((ctx) => ctx.db.query("runLabels").collect())).toHaveLength(0);
     const unlinked = (await tom.query(api.tts.listRecentEvents, {})).filter(
-      (e) => e.kind === "run-label-unlinked",
+      (e) => e.kind === "agent-label-unlinked",
     );
     expect(unlinked).toHaveLength(1);
     expect(unlinked[0].data).toMatchObject({

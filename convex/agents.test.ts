@@ -254,7 +254,7 @@ describe("agents", () => {
     const at = (t: SchemaTest, runId: string) =>
       t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
     const defaulted = (t: SchemaTest) =>
-      t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((entry) => entry.kind === "runs-environment-defaulted"));
+      t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((entry) => entry.kind === "agents-environment-defaulted"));
     const childRun = (name: string, overrides: Record<string, unknown> = {}) => run({
       runId: `claude:laptop:${name}`, parentRunId: "claude:laptop:root-run", rootRunId: "claude:laptop:root-run", depth: 1, linkKnown: false, kind: "subagent",
       file: { ...run().file, path: `C:/${name}.jsonl` }, ...overrides,
@@ -505,7 +505,7 @@ describe("agents", () => {
     const [storedRun, storedSession, comparisonEvent] = await t.run(async (ctx) => [
       await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique(),
       await ctx.db.get(sessionId),
-      await ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare")).first(),
+      await ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "agents-shadow-compare")).first(),
     ]);
     expect(storedRun?.cutoverAt).toEqual(expect.any(Number));
     expect(storedSession?.rowsFrom).toBe("runs");
@@ -557,7 +557,7 @@ describe("agents", () => {
     const first = await t.mutation(internal.agents.internalShadowCompare, { sessionId });
     expect(first).toMatchObject({ complete: false, daemonRows: 100, fileRows: 100 });
     if (first.complete) throw new Error("comparison unexpectedly completed on its first page");
-    expect(await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare")).collect())).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "agents-shadow-compare")).collect())).toEqual([]);
     const final = await t.mutation(internal.agents.internalShadowCompare, { sessionId, state: first.state } as never);
     expect(final).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
@@ -718,7 +718,7 @@ async function requests(t: SchemaTest, runId?: string) {
   return runId ? all.filter((request) => request.runId === runId) : all;
 }
 async function evictedEvents(t: SchemaTest) {
-  return await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-evicted")).collect());
+  return await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "agents-evicted")).collect());
 }
 
 describe("agents: materialize requests", () => {
@@ -758,7 +758,7 @@ describe("agents: materialize requests", () => {
     expect(await tom.query(api.agents.materializeStatus, { agentId: "claude:laptop:other-run" })).toBeNull();
   });
 
-  it("hands the box the oldest pending request, answerable even when its run is gone", async () => {
+  it("hands the box the oldest pending request, answerable even when its agent is gone", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
     const orphan = await t.run((ctx) => ctx.db.insert("runMaterializeRequests", { runId: "codex:box:vanished-thread", requestedBy: "worker", requestedAt: 1, status: "pending", slice: 1 }));
@@ -767,16 +767,16 @@ describe("agents: materialize requests", () => {
 
     const oldest = await t.query(internal.agents.internalNextMaterialize, {});
     expect(oldest.request).toMatchObject({
-      requestId: orphan, runId: "codex:box:vanished-thread", cli: "codex", host: "box",
-      threadId: "vanished-thread", depth: 0, parentRunId: null, hasRows: false, fromLine: 0,
+      requestId: orphan, agentId: "codex:box:vanished-thread", cli: "codex", host: "box",
+      threadId: "vanished-thread", depth: 0, parentAgentId: null, hasRows: false, fromLine: 0,
       file: { storeKey: null, sidecarStoredHash: null, totalLines: null },
     });
-    await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: orphan, status: "failed", reason: "run is gone" });
+    await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: orphan, status: "failed", reason: "agent is gone" });
 
     // A backlog run has no rows, so the parse starts at line 0.
     const backlog = await t.query(internal.agents.internalNextMaterialize, {});
     expect(backlog.request).toMatchObject({
-      runId: "claude:laptop:root-run", cli: "claude", host: "laptop", threadId: "root-run",
+      agentId: "claude:laptop:root-run", cli: "claude", host: "laptop", threadId: "root-run",
       hasRows: false, fromLine: 0, file: { storeKey: STORE_KEY, totalLines: 4000, committedLine: 0 },
     });
     expect(backlog.request).not.toHaveProperty("runner");
@@ -1171,7 +1171,7 @@ describe("agents: one agent's tool calls, by its registration token", () => {
     await seed(t, [{ kind: "tool-call", content: { name: "Read", input: { file_path: "a/b.ts" } } }]);
     // input + cacheRead + cacheWrite + output, the sum worker/jobs/evals.mjs
     // tokensOf makes — not totalTokens, which is 999 on this row.
-    expect(await trace(t)).toMatchObject({ runId: TRACE_RUN_ID, turns: 12, tokens: 100 });
+    expect(await trace(t)).toMatchObject({ agentId: TRACE_RUN_ID, turns: 12, tokens: 100 });
 
     const running = convexTest(schema, modules);
     await seed(running, [{ kind: "tool-call", content: { name: "Read", input: { file_path: "a/b.ts" } } }], null);

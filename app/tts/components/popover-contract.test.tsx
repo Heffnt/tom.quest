@@ -341,7 +341,7 @@ const RUNNER = {
   status: "waiting-on-tom",
   openBlockingAsks: 1,
   lastCheckIn: { at: NOW - 600_000, line: "The sweep has 12 jobs running." },
-  stepRunId: "claude:box:00000000-0000-4000-8000-000000000001",
+  stepAgentId: "claude:box:00000000-0000-4000-8000-000000000001",
 };
 
 const RUNNER_DETAIL = {
@@ -351,7 +351,7 @@ const RUNNER_DETAIL = {
     {
       id: "e1",
       at: NOW - 600_000,
-      stepRunId: RUNNER.stepRunId,
+      stepAgentId: RUNNER.stepAgentId,
       decision: "ask",
       verdict: "pass",
       text: "The sweep has 12 jobs running.",
@@ -361,7 +361,7 @@ const RUNNER_DETAIL = {
     {
       id: "e2",
       at: NOW - 600_000,
-      stepRunId: RUNNER.stepRunId,
+      stepAgentId: RUNNER.stepAgentId,
       tier: "plan",
       blocking: true,
       answeredAt: null,

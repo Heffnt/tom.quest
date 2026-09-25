@@ -300,9 +300,9 @@ describe("the step lease", () => {
     const first = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId });
     expect(first.admitted).toBe(true);
     if (!first.admitted) throw new Error("unreachable");
-    expect(first.stepRunId).toMatch(/^claude:box:[0-9a-f-]{36}$/);
+    expect(first.stepAgentId).toMatch(/^claude:box:[0-9a-f-]{36}$/);
     const runner = await t.run((ctx) => ctx.db.get(runnerId));
-    expect(runner?.lease?.stepRunId).toBe(first.stepRunId);
+    expect(runner?.lease?.stepRunId).toBe(first.stepAgentId);
     expect(runner!.lease!.deadline - runner!.lease!.takenAt).toBe(4 * TEN_MINUTES);
     // A second request slipped in while the lease is held.
     const second = await t.run((ctx) => ctx.db.insert("runnerSteps", { runnerId, environment: "runner", dueAt: Date.now(), status: "requested" }));
@@ -330,7 +330,7 @@ describe("the step lease", () => {
     expect(state.runner?.lease).toBeUndefined();
     expect(state.events).toHaveLength(1);
     expect(state.events[0].text).toBe("the box's daemon restarted while this step was running");
-    expect(state.events[0].stepRunId).toBe(claimed.stepRunId);
+    expect(state.events[0].stepRunId).toBe(claimed.stepAgentId);
     expect(state.step?.status).toBe("failed");
     expect(state.runner!.nextStepAt).toBe(Date.now() + TEN_MINUTES);
     // The chain continues: when the next step comes due, it names the dead
@@ -339,7 +339,7 @@ describe("the step lease", () => {
     await t.mutation(internal.ttsRunners.internalRunnerSweep, {});
     const next = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect()).filter((s) => s.status === "requested"));
     expect(next).toHaveLength(1);
-    expect(next[0].previousStepRunId).toBe(claimed.stepRunId);
+    expect(next[0].previousStepRunId).toBe(claimed.stepAgentId);
   });
 
   it("fails a step that exited without checking in, once", async () => {
@@ -443,7 +443,7 @@ describe("the step prompt", () => {
     expect(prompt).toContain("This runner may never call the delegate");
     expect(prompt).not.toContain("tts-ask --runner");
     for (const item of (await import("./ttsShared")).NARROW_LIST) expect(prompt).toContain(item.decision);
-    expect(prompt).toContain(`tts-runner-step --runner ${runnerId} --step-run ${claimed.stepRunId}`);
+    expect(prompt).toContain(`tts-runner-step --runner ${runnerId} --step-agent ${claimed.stepAgentId}`);
     expect(prompt).toContain("tts-turing tree|node|read <path>");
     expect(prompt).toContain("Never restart, stop, or kill `tts-session-host`");
     // The check-in contract names the prompt's own words, which the proof
@@ -530,7 +530,7 @@ describe("the check-in", () => {
     const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
     if (!claim.admitted) throw new Error(claim.reason);
     await t.mutation(internal.ttsRunners.internalRecordStepFacts, { stepId: step._id, facts: { version: 1, jobs: { live: 12, running: 12 }, frontier: { size: 100, done: 40, remaining: 60, unchecked: 0 }, gpuHours: { spent: 3.5, budget: 500 } } });
-    return { runnerId, stepRunId: claim.stepRunId, stepId: step._id, internal };
+    return { runnerId, stepRunId: claim.stepAgentId, stepId: step._id, internal };
   }
 
   it("records the check-in, the document and the schedule, and frees the lease, in one step", async () => {
@@ -716,7 +716,7 @@ describe("a question for Tom", () => {
     const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
     if (!claim.admitted) throw new Error(claim.reason);
     await t.mutation(internal.ttsRunners.internalRecordStep, {
-      runnerId, stepRunId: claim.stepRunId, decision: "ask", checkIn: ASKING, document: "d",
+      runnerId, stepRunId: claim.stepAgentId, decision: "ask", checkIn: ASKING, document: "d",
       asks: [{ tier: "plan", blocking: true, text: "Should I skip pythia?" }], graded: PASS,
     });
     // The ask is routed: this probe may not call the delegate, so it is Tom's.
@@ -794,19 +794,19 @@ describe("the page", () => {
     const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
     if (!claim.admitted) throw new Error(claim.reason);
     await t.mutation(internal.ttsRunners.internalRecordStep, {
-      runnerId, stepRunId: claim.stepRunId, decision: "ask", checkIn: ASKING, document: "# TRAIN25\n\nVersion two.\n",
+      runnerId, stepRunId: claim.stepAgentId, decision: "ask", checkIn: ASKING, document: "# TRAIN25\n\nVersion two.\n",
       asks: [{ tier: "plan", blocking: true, text: "Should I skip pythia?" }], graded: PASS,
     });
     vi.advanceTimersByTime(1000);
     const ended = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ title: "An ended probe" }) });
     await t.run((ctx) => ctx.db.patch(ended, { endedAt: Date.now(), endedReason: "finish" }));
-    return { runnerId, ended, stepRunId: claim.stepRunId };
+    return { runnerId, ended, stepAgentId: claim.stepAgentId };
   }
 
-  it("lists every runner newest first, with its derived status, its last check-in and its newest step run", async () => {
+  it("lists every runner newest first, with its derived status, its last check-in and its newest step agent", async () => {
     const t = convexTest(schema, modules);
     const { api } = await import("./_generated/api");
-    const { runnerId, ended, stepRunId } = await seeded(t);
+    const { runnerId, ended, stepAgentId } = await seeded(t);
     const tom = await asUser(t, "tom");
     const rows = await tom.query(api.ttsRunners.listRunners, {});
     expect(rows.map((r) => r.runnerId)).toEqual([ended, runnerId]);
@@ -819,7 +819,7 @@ describe("the page", () => {
       endedAt: null,
       status: "waiting-on-tom",
       openBlockingAsks: 1,
-      stepRunId,
+      stepAgentId,
     });
     expect(live.lastCheckIn?.line).toBe("The sweep has 12 jobs running.");
     expect(rows[0]).toMatchObject({ status: "done", lastCheckIn: null });
@@ -828,13 +828,13 @@ describe("the page", () => {
   it("gives one runner's document, check-ins and questions, newest first", async () => {
     const t = convexTest(schema, modules);
     const { api } = await import("./_generated/api");
-    const { runnerId, stepRunId } = await seeded(t);
+    const { runnerId, stepAgentId } = await seeded(t);
     const tom = await asUser(t, "tom");
     const detail = await tom.query(api.ttsRunners.runnerDetail, { runnerId });
     expect(detail?.document).toContain("Version two.");
     expect(detail?.documentVersion).toBe(2);
     expect(detail?.checkIns).toHaveLength(1);
-    expect(detail?.checkIns[0]).toMatchObject({ stepRunId, decision: "ask", verdict: "pass", text: ASKING });
+    expect(detail?.checkIns[0]).toMatchObject({ stepAgentId, decision: "ask", verdict: "pass", text: ASKING });
     expect(detail?.asks).toHaveLength(1);
     expect(detail?.asks[0]).toMatchObject({ tier: "plan", blocking: true, answeredAt: null, answerText: null, text: "Should I skip pythia?" });
   });
@@ -853,12 +853,11 @@ describe("the page", () => {
   });
 });
 
-// ── Both spellings, while the box moves from run to agent ───────────────────
-// Each door reads the agent spelling and the run spelling until phase 3, and
-// hands the record the stored spelling only. A case per door: both spellings
-// land the same row, and a body with the agent spelling reaches no strict
-// validator with a key it does not declare (that would be a 400).
-describe("both spellings on the runner doors", () => {
+// ── The agent spelling only ─────────────────────────────────────────────────
+// Each door reads the agent spelling, refuses a body that still carries the
+// run spelling with a 400 naming both keys, and hands the record the stored
+// spelling only. The answers carry the agent spelling only.
+describe("the runner doors read the agent spelling only", () => {
   const GOOD = "The sweep has 12 jobs running.\n\nNothing changed, and nothing failed.";
   const PASS = { verdict: "pass" as const, complaints: [], attempts: 1, judgeModel: "fable" };
   const OPENER = "claude:box:opener-agent-1";
@@ -879,44 +878,46 @@ describe("both spellings on the runner doors", () => {
     });
   }
 
-  it("/tts/runner stores the same createdBy under agentId and under runId", async () => {
+  it("/tts/runner stores createdBy from agentId and refuses runId", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const createdBy = [];
-    for (const key of ["agentId", "runId"]) {
-      const t = convexTest(schema, modules);
-      const response = await post(t, { ...seed(), [key]: OPENER });
-      expect(response.status).toBe(200);
-      const { runnerId } = (await response.json()) as { runnerId: Id<"runners"> };
-      createdBy.push((await t.run((ctx) => ctx.db.get(runnerId)))?.createdBy);
-    }
-    expect(createdBy).toEqual([{ kind: "run", runId: OPENER }, { kind: "run", runId: OPENER }]);
-    const refused = await post(convexTest(schema, modules), { ...seed(), agentId: "not-an-agent" });
+    const t = convexTest(schema, modules);
+    const old = await post(t, { ...seed(), runId: OPENER });
+    expect(old.status).toBe(400);
+    expect(await old.json()).toEqual({ error: "runId is no longer read; send agentId." });
+    expect(await t.run((ctx) => ctx.db.query("runners").collect())).toEqual([]);
+    const response = await post(t, { ...seed(), agentId: OPENER });
+    expect(response.status).toBe(200);
+    const { runnerId } = (await response.json()) as { runnerId: Id<"runners"> };
+    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.createdBy).toEqual({ kind: "run", runId: OPENER });
+    const refused = await post(t, { ...seed(), agentId: "not-an-agent" });
     expect(refused.status).toBe(400);
     expect(await refused.json()).toEqual({ error: "agentId is not an agent id." });
   });
 
-  it("/tts/runner-step records the same check-in under stepAgentId and under stepRunId", async () => {
+  it("/tts/runner-step records a check-in under stepAgentId and refuses stepRunId", async () => {
     vi.useFakeTimers();
     vi.stubEnv("TTS_WORKER_KEY", KEY);
-    for (const key of ["stepAgentId", "stepRunId"]) {
-      const t = convexTest(schema, modules);
-      const { runnerId, stepId, internal } = await requested(t);
-      const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId });
-      if (!claim.admitted) throw new Error(claim.reason);
-      const response = await t.fetch("/tts/runner-step", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-TTS-Key": KEY },
-        body: JSON.stringify({ runnerId, [key]: claim.stepRunId, decision: "continue", checkIn: GOOD, document: "# TRAIN25\n\nVersion two.\n", asks: [], graded: PASS }),
-      });
-      expect(response.status, key).toBe(200);
-      const checkIn = await t.run(async (ctx) =>
-        (await ctx.db.query("runnerEvents").withIndex("by_runner_at", (q) => q.eq("runnerId", runnerId)).collect()).find((e) => e.kind === "check-in"),
-      );
-      expect(checkIn?.stepRunId, key).toBe(claim.stepRunId);
-    }
+    const t = convexTest(schema, modules);
+    const { runnerId, stepId, internal } = await requested(t);
+    const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId });
+    if (!claim.admitted) throw new Error(claim.reason);
+    const checkIn = (key: string) => t.fetch("/tts/runner-step", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-TTS-Key": KEY },
+      body: JSON.stringify({ runnerId, [key]: claim.stepAgentId, decision: "continue", checkIn: GOOD, document: "# TRAIN25\n\nVersion two.\n", asks: [], graded: PASS }),
+    });
+    const checkIns = async () => (await t.run(async (ctx) =>
+      (await ctx.db.query("runnerEvents").withIndex("by_runner_at", (q) => q.eq("runnerId", runnerId)).collect()).filter((e) => e.kind === "check-in"),
+    ));
+    const old = await checkIn("stepRunId");
+    expect(old.status).toBe(400);
+    expect(await old.json()).toEqual({ error: "stepRunId is no longer read; send stepAgentId" });
+    expect(await checkIns()).toEqual([]);
+    expect((await checkIn("stepAgentId")).status).toBe(200);
+    expect((await checkIns()).map((e) => e.stepRunId)).toEqual([claim.stepAgentId]);
   });
 
-  it("/runner-steps/claim answers stepAgentId and previousStepAgentId beside the run spelling", async () => {
+  it("/runner-steps/claim answers stepAgentId and previousStepAgentId only", async () => {
     vi.useFakeTimers();
     vi.stubEnv("SESSIONS_WORKER_KEY", KEY);
     const t = convexTest(schema, modules);
@@ -926,12 +927,16 @@ describe("both spellings on the runner doors", () => {
     expect(response.status).toBe(200);
     const claim = (await response.json()) as Record<string, unknown>;
     expect(claim.admitted).toBe(true);
-    expect(claim.stepAgentId).toBe(claim.stepRunId);
+    expect(claim.stepAgentId).toMatch(/^claude:box:[0-9a-f-]{36}$/);
     expect(claim.previousStepAgentId).toBe(EARLIER);
-    expect(claim.previousStepRunId).toBe(EARLIER);
+    expect(claim).not.toHaveProperty("stepRunId");
+    expect(claim).not.toHaveProperty("previousStepRunId");
+    // The stored fields keep their spelling.
+    const stored = await t.run((ctx) => ctx.db.get(stepId));
+    expect(stored?.stepRunId).toBe(claim.stepAgentId);
   });
 
-  it("/sessions/poll answers previousStepAgentId beside previousStepRunId", async () => {
+  it("/sessions/poll answers previousStepAgentId only", async () => {
     vi.useFakeTimers();
     vi.stubEnv("SESSIONS_WORKER_KEY", KEY);
     const t = convexTest(schema, modules);
@@ -940,6 +945,7 @@ describe("both spellings on the runner doors", () => {
     const response = await daemon(t, "/sessions/poll", { version: "t", daemonStartedAt: 1 });
     expect(response.status).toBe(200);
     const { runnerSteps } = (await response.json()) as { runnerSteps: Record<string, unknown>[] };
-    expect(runnerSteps).toEqual([expect.objectContaining({ stepId, previousStepRunId: EARLIER, previousStepAgentId: EARLIER })]);
+    expect(runnerSteps).toEqual([expect.objectContaining({ stepId, previousStepAgentId: EARLIER })]);
+    expect(runnerSteps[0]).not.toHaveProperty("previousStepRunId");
   });
 });

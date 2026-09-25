@@ -856,25 +856,26 @@ describe("TTS annotations and the preparer", () => {
     vi.unstubAllEnvs();
   });
 
-  // Both spellings until phase 3: the prepare door reads agentToken and
-  // runToken, and the todo stores either as its producedByRunToken.
-  it("the prepare door stores the same token under agentToken and under runToken", async () => {
+  // The prepare door reads agentToken only and stores it as the todo's
+  // producedByRunToken. A body still sending runToken is refused rather than
+  // having its token dropped without the caller learning it.
+  it("the prepare door stores agentToken and refuses runToken", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const token = "11111111-2222-4333-8444-555555555555";
-    const stored = [];
-    for (const key of ["agentToken", "runToken"]) {
-      const t = convexTest({ schema, modules });
-      const tom = await withTom(t);
-      const id = await tom.mutation(api.tts.createTodo, { statement: "renew the visa" });
-      const response = await t.fetch("/tts/prepare-todo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-        body: JSON.stringify({ id, brief: "It expires. Renew it.", readiness: "prepared", [key]: token }),
-      });
-      expect(response.status, key).toBe(200);
-      stored.push((await t.run((ctx) => ctx.db.get(id)))?.producedByRunToken);
-    }
-    expect(stored).toEqual([token, token]);
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.tts.createTodo, { statement: "renew the visa" });
+    const prepare = (key: string) => t.fetch("/tts/prepare-todo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+      body: JSON.stringify({ id, brief: "It expires. Renew it.", readiness: "prepared", [key]: token }),
+    });
+    const old = await prepare("runToken");
+    expect(old.status).toBe(400);
+    expect(await old.json()).toEqual({ error: "runToken is no longer read; send agentToken" });
+    expect((await t.run((ctx) => ctx.db.get(id)))?.producedByRunToken).toBeUndefined();
+    expect((await prepare("agentToken")).status).toBe(200);
+    expect((await t.run((ctx) => ctx.db.get(id)))?.producedByRunToken).toBe(token);
     vi.unstubAllEnvs();
   });
 });

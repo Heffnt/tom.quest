@@ -471,7 +471,7 @@ export async function dueRunnerSteps(ctx: QueryCtx, now: number) {
       repo: runner.repo,
       ...(runner.ref !== undefined ? { ref: runner.ref } : {}),
       model: runner.model ?? DEFAULT_RUNNER_MODEL,
-      ...(step.previousStepRunId !== undefined ? { previousStepRunId: step.previousStepRunId } : {}),
+      ...(step.previousStepRunId !== undefined ? { previousStepAgentId: step.previousStepRunId } : {}),
       stepMs: runner.stepMs,
     });
   }
@@ -503,14 +503,14 @@ export const internalClaimRunnerStep = internalMutation({
     }
     // A lease past its deadline is a dead step the sweep has not reached yet.
     if (runner.lease) await expireLease(ctx, runner, now);
-    const stepRunId = mintStepAgentId();
-    await ctx.db.patch(runner._id, { lease: { stepRunId, deadline: now + leaseMs(runner.stepMs), takenAt: now } });
-    await ctx.db.patch(stepId, { status: "claimed", claimedAt: now, stepRunId });
-    const prompt = await buildRunnerStepPrompt(ctx, { runner: (await ctx.db.get(runner._id))!, stepRunId, now });
+    const stepAgentId = mintStepAgentId();
+    await ctx.db.patch(runner._id, { lease: { stepRunId: stepAgentId, deadline: now + leaseMs(runner.stepMs), takenAt: now } });
+    await ctx.db.patch(stepId, { status: "claimed", claimedAt: now, stepRunId: stepAgentId });
+    const prompt = await buildRunnerStepPrompt(ctx, { runner: (await ctx.db.get(runner._id))!, stepAgentId, now });
     const since = await sinceLastCheckIn(ctx, runner._id);
     return {
       admitted: true as const,
-      stepRunId,
+      stepAgentId,
       runnerId: runner._id,
       // The box hands the step the runner key only when this is true, so a step
       // told to change nothing cannot act on the cluster and then find its
@@ -519,7 +519,7 @@ export const internalClaimRunnerStep = internalMutation({
       repo: runner.repo,
       ...(runner.ref !== undefined ? { ref: runner.ref } : {}),
       model: runner.model ?? DEFAULT_RUNNER_MODEL,
-      ...(step.previousStepRunId !== undefined ? { previousStepRunId: step.previousStepRunId } : {}),
+      ...(step.previousStepRunId !== undefined ? { previousStepAgentId: step.previousStepRunId } : {}),
       prompt,
       // What the box's sensor needs beside the checkout.
       sensor: {
@@ -732,7 +732,7 @@ function stepBranch(runnerId: Id<"runners">): string {
  */
 async function buildRunnerStepPrompt(
   ctx: QueryCtx,
-  { runner, stepRunId, now }: { runner: Doc<"runners">; stepRunId: string; now: number },
+  { runner, stepAgentId, now }: { runner: Doc<"runners">; stepAgentId: string; now: number },
 ): Promise<string> {
   const since = await sinceLastCheckIn(ctx, runner._id);
   const blocking = await openBlockingAsks(ctx, runner._id);
@@ -774,7 +774,7 @@ async function buildRunnerStepPrompt(
 
   const pen = [
     "The step pen records your check-in and schedules the next step. Write the check-in to a file and the rewritten document to another, then call:",
-    `\`tts-runner-step --runner ${runner._id} --step-run ${stepRunId} --decision <${decisions.replaceAll(" or ", "|").replaceAll(", ", "|")}> --check-in-file <path> --document <path>\``,
+    `\`tts-runner-step --runner ${runner._id} --step-agent ${stepAgentId} --decision <${decisions.replaceAll(" or ", "|").replaceAll(", ", "|")}> --check-in-file <path> --document <path>\``,
     "Add `--ask 'tier|blocking|question'` once per question for Tom (tier is routine, plan or setup; blocking is yes or no), and `--next-step-ms <n>` to bring the next step forward or push it back once.",
     ...(actsOnCluster ? ["Add `--act 'launch|<job id>|<what it was for and how it was verified>'` or `--act 'cancel|<job id>|<...>'` once per launch or cancel this step made; each becomes one entry in the record beside the check-in."] : []),
     "The pen checks the check-in against Tom's writing standard, first by its form rules and then by a judge. If it exits 5 it prints what failed and records nothing: rewrite the check-in once and call it again. A second failure is recorded and posted marked as having failed the writing check.",
@@ -788,7 +788,7 @@ async function buildRunnerStepPrompt(
 
   return [
     grants,
-    `You are one step of the runner "${runner.title}" (runner ${runner._id}), which is ${status}. A runner watches one experiment through a chain of short steps: each starts cold, reads the document below as its whole memory, looks at the experiment, decides one thing, acts on it, checks in, rewrites the document for the step after it, and ends. Nothing is re-entered, and nothing you do not write into the document survives this step. Your step agent is ${stepRunId}.`,
+    `You are one step of the runner "${runner.title}" (runner ${runner._id}), which is ${status}. A runner watches one experiment through a chain of short steps: each starts cold, reads the document below as its whole memory, looks at the experiment, decides one thing, acts on it, checks in, rewrites the document for the step after it, and ends. Nothing is re-entered, and nothing you do not write into the document survives this step. Your step agent is ${stepAgentId}.`,
     `## The document (version ${runner.documentVersion})\n\n${runner.document}`,
     `## The facts, read by the box before you started\n\n${facts}`,
     `## Tom's replies since the last step\n\n${replies}`,
@@ -1220,7 +1220,7 @@ export const listRunners = query({
           status: runnerStatus({ runner, openBlockingAsks: blocking }),
           openBlockingAsks: blocking,
           lastCheckIn: checkIn === null ? null : { at: checkIn.at, line: checkInFirstLine(checkIn.text) },
-          stepRunId: (await lastStepAgentId(ctx, runner._id)) ?? null,
+          stepAgentId: (await lastStepAgentId(ctx, runner._id)) ?? null,
         };
       }),
     );
@@ -1248,7 +1248,7 @@ export const runnerDetail = query({
       checkIns: checkIns.map((event) => ({
         id: event._id,
         at: event.at,
-        stepRunId: event.stepRunId ?? null,
+        stepAgentId: event.stepRunId ?? null,
         decision: event.decision ?? null,
         verdict: event.graded?.verdict ?? null,
         text: event.text ?? "",
@@ -1256,7 +1256,7 @@ export const runnerDetail = query({
       asks: asks.map((event) => ({
         id: event._id,
         at: event.at,
-        stepRunId: event.stepRunId ?? null,
+        stepAgentId: event.stepRunId ?? null,
         tier: event.tier ?? null,
         blocking: event.blocking === true,
         answeredAt: event.answeredAt ?? null,
