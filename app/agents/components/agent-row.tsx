@@ -76,9 +76,8 @@ function basename(path: string): string {
 /**
  * What was cut, and the way back to it. Two halves: the note the writer left,
  * verbatim, and the control that reads the stored bytes back. The reader
- * (claudeSessions.getMessageOverflow) finds a row's chunks under its own key —
- * a daemon row's session, an agent file row's run — so every stamped row
- * offers it.
+ * (claudeSessions.getMessageOverflow) finds a row's chunks under its run, so
+ * every stamped row offers it.
  */
 function Cut({ row }: { row: TranscriptMessage }) {
   const note = truncationNoteOf(row.content);

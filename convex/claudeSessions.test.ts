@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { convexTest } from "convex-test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import { AUTO_DEFAULTS } from "./claudeSessions";
 import type { MessageOverflowRead } from "./claudeSessions";
@@ -61,17 +61,16 @@ async function createBasicSession(tom: Awaited<ReturnType<typeof withTom>>) {
   });
 }
 
-// A session from before the one-transcript-path cutover, whose rows are the
-// daemon's under its sessionId. Every session born today reads its agent
-// file (rowsFrom "runs"); the daemon-row path these tests pin still serves
-// the old sessions until the one-off replaces their rows.
-async function createDaemonSession(
+// A session whose run is named: its rows are its agent file's, under the
+// runId, as the sweep lands them.
+async function createRunSession(
   t: ReturnType<typeof convexTest>,
   tom: Awaited<ReturnType<typeof withTom>>,
 ) {
   const sessionId = await createBasicSession(tom);
-  await t.run((ctx) => ctx.db.patch(sessionId, { rowsFrom: undefined, runId: `claude:box:${sessionId}` }));
-  return sessionId;
+  const runId = `claude:box:${sessionId}`;
+  await t.run((ctx) => ctx.db.patch(sessionId, { runId }));
+  return { sessionId, runId };
 }
 
 // THE PER-SESSION EVENT LINE IS GONE (slack-design.md §1.2). It had no channel
@@ -354,7 +353,7 @@ describe("claude sessions", () => {
     const health = await tom.query(api.claudeSessions.getDaemonHealth, {});
     expect(health?.activeAccount).toBe("gmail");
 
-    // Daemon starts the session, delivers the turn, streams, finalizes.
+    // Daemon starts the session, delivers the turn, streams.
     const res = await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       status: "running",
@@ -365,41 +364,36 @@ describe("claude sessions", () => {
           status: "delivered" as const,
         },
       ],
-      finalize: [{ seq: 0, turn: 0, kind: "user" as const, content: "hello" }],
       buf: { turn: 0, seq: 1, text: "Hi Tom, " },
     });
     expect(res.sessionStatus).toBe("running");
-    expect(res.nextSeq).toBe(1);
     expect(res.pendingInbound).toHaveLength(0);
 
     const buf = await tom.query(api.claudeSessions.getStreamBuf, { sessionId });
     expect(buf?.text).toBe("Hi Tom, ");
   });
 
-  // witness: remove the `row.seq < session.nextSeq` drop in internalIngest
-  // and this test goes red (duplicate rows on retry replay).
-  it("drops replayed finalize rows below the seq floor (idempotent retries)", async () => {
+  // One transcript path (Tom's ruling of 2026-09-25): the daemon writes no
+  // rows, so the ingest takes none, no overflow failure report, and no
+  // switch to a session's file rows. A daemon that still sent one of them
+  // would fail loudly on its next flush rather than write a second transcript.
+  //
+  // witness: declare finalize on internalIngest again and this goes red.
+  it("refuses the retired finalize, overflowFailures and rowsFromFiles fields", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
-    const flush = {
-      sessionId,
-      finalize: [
-        { seq: 0, turn: 0, kind: "user" as const, content: "hello" },
-        { seq: 1, turn: 0, kind: "assistant-text" as const, content: "hi" },
-      ],
+    const retired = {
+      finalize: [{ seq: 0, turn: 0, kind: "user", content: "hello" }],
+      overflowFailures: [{ seq: 0, error: "refused" }],
+      rowsFromFiles: true,
     };
-    await t.mutation(internal.claudeSessions.internalIngest, flush);
-    // Blind network retry of the same flush:
-    await t.mutation(internal.claudeSessions.internalIngest, flush);
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudeMessages").collect(),
-    );
-    expect(rows).toHaveLength(2);
-    const session = await tom.query(api.claudeSessions.getSession, {
-      id: sessionId,
-    });
-    expect(session?.nextSeq).toBe(2);
+    for (const [field, value] of Object.entries(retired)) {
+      await expect(
+        t.mutation(internal.claudeSessions.internalIngest, { sessionId, [field]: value } as never),
+      ).rejects.toThrow(new RegExp(field));
+    }
+    expect(await t.run((ctx) => ctx.db.query("claudeMessages").collect())).toEqual([]);
   });
 
   // The permission table and its round-trip are gone (the lifeos update,
@@ -483,21 +477,19 @@ describe("claude sessions", () => {
 
   // witness: move the endedReason patch outside the `if (!terminal)` block in
   // internalIngest and this test goes red.
-  it("terminal sessions accept finalize rows but never state patches", async () => {
+  it("terminal sessions accept notes but never state patches", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
     await tom.mutation(api.claudeSessions.forceClose, { sessionId });
 
-    // Late daemon flush: transcript rows land, state does not change.
+    // Late daemon flush: its notes land, state does not change.
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       status: "failed",
       endedReason: "a git error that did not close this session",
       lastSdkEventAt: 12345,
-      finalize: [
-        { seq: 0, turn: 0, kind: "system" as const, content: "late row" },
-      ],
+      notes: [{ at: 1, text: "late note" }],
       buf: { turn: 0, seq: 1, text: "stray tail" },
     });
     const session = await tom.query(api.claudeSessions.getSession, {
@@ -506,10 +498,8 @@ describe("claude sessions", () => {
     expect(session?.status).toBe("ended");
     expect(session?.endedReason).toBe("force-closed by Tom; worker unconfirmed");
     expect(session?.lastSdkEventAt).toBeUndefined();
-    const messages = await t.run(async (ctx) =>
-      ctx.db.query("claudeMessages").collect(),
-    );
-    expect(messages).toHaveLength(1); // finalize accepted
+    const notes = await tom.query(api.sessionRows.notes, { sessionId });
+    expect(notes.map((note) => note.text)).toEqual(["late note"]); // note accepted
     const buf = await tom.query(api.claudeSessions.getStreamBuf, { sessionId });
     expect(buf).toBeNull(); // stray tail cleared, not stored
   });
@@ -770,37 +760,6 @@ describe("claude sessions", () => {
     const sessionRuling = rulings.find((r) => r._id === sessionRulingId);
     expect(sessionRuling?.applyResult).toBe(`session ${secondSession}`);
     expect(firstSession).not.toBe(secondSession);
-  });
-
-  // witness: drop `parentToolUseId: row.parentToolUseId` from the
-  // internalIngest insert and this test goes red (subagent parentage lost).
-  it("ingest carries parentToolUseId onto the finalized row, and only there", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      finalize: [
-        {
-          seq: 0,
-          turn: 0,
-          kind: "tool-call" as const,
-          content: { toolName: "Task", toolUseId: "task-1" },
-        },
-        {
-          seq: 1,
-          turn: 0,
-          kind: "tool-call" as const,
-          content: { toolName: "Read", toolUseId: "child-1" },
-          parentToolUseId: "task-1",
-        },
-      ],
-    });
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudeMessages").withIndex("by_session_seq").collect(),
-    );
-    expect(rows[0].parentToolUseId).toBeUndefined(); // a top-level call has no parent
-    expect(rows[1].parentToolUseId).toBe("task-1");
   });
 
   // witness: drop the `session.outcome === undefined` condition from the
@@ -1145,7 +1104,7 @@ describe("claude sessions", () => {
   // in convex/claudeSessions.ts and this test goes red — the daemon's blind
   // retry of an ending it already landed would end the session a second time,
   // discard the turn Tom just sent, and report the failure to Slack twice.
-  it("a pre-reopen flush replay lands its rows but no state, and says nothing", async () => {
+  it("a pre-reopen flush replay lands its notes but no state, and says nothing", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1156,9 +1115,7 @@ describe("claude sessions", () => {
       reopenEpoch: 0,
       status: "failed" as const,
       endedReason: "the SDK process exited without a final turn",
-      finalize: [
-        { seq: 0, turn: 0, kind: "system" as const, content: "the end" },
-      ],
+      notes: [{ at: 1, text: "the end" }],
     };
     await t.mutation(internal.claudeSessions.internalIngest, endingFlush);
     expect(await sessionEventMessages(t)).toHaveLength(1);
@@ -1170,9 +1127,7 @@ describe("claude sessions", () => {
     // The retry arrives with the epoch the daemon held BEFORE the reopen.
     await t.mutation(internal.claudeSessions.internalIngest, {
       ...endingFlush,
-      finalize: [
-        { seq: 1, turn: 0, kind: "system" as const, content: "the end (retry)" },
-      ],
+      notes: [{ at: 2, text: "the end (retry)" }],
     });
 
     const session = await tom.query(api.claudeSessions.getSession, {
@@ -1187,12 +1142,9 @@ describe("claude sessions", () => {
     expect(inbound[0].text).toBe("what happened there?");
     // Slack was told about the failure once, on the real crossing.
     expect(await sessionEventMessages(t)).toHaveLength(1);
-    // Transcript completeness is unconditional: a stale payload's rows are
-    // still part of what happened.
-    const messages = await t.run(async (ctx) =>
-      ctx.db.query("claudeMessages").collect(),
-    );
-    expect(messages.map((m) => m.content)).toEqual([
+    // A stale payload's notes are still part of what happened.
+    const notes = await tom.query(api.sessionRows.notes, { sessionId });
+    expect(notes.map((note) => note.text)).toEqual([
       "the end",
       "the end (retry)",
     ]);
@@ -1890,12 +1842,10 @@ describe("Tom-facing mutations have CLI pens with identical effect", () => {
 
 // ── The complete payload behind the 32KB cut ─────────────────────────────────
 // The transcript principle (lifeos update §1): a rendered view may be short,
-// the full bytes must stay retrievable. The daemon uploads a cut payload's
-// complete text as ordered chunks (POST /sessions/overflow) and only then
-// releases the finalize row that names their hash (the hold in
-// worker/session-host/overflow.mjs); these pin what a reader gets back, what
-// the chunk door refuses, and how a payload that missed the live upload is
-// finished later.
+// the full bytes must stay retrievable. The parser cuts a payload over 32 KB,
+// and the sweep stores the complete text as ordered chunks under the row's
+// run (POST /agents/overflow, pinned in agents.test.ts); these pin what a
+// reader of a session's rows gets back.
 
 describe("message overflow (the complete payload)", () => {
   const CHUNKS = 6;
@@ -1922,48 +1872,32 @@ describe("message overflow (the complete payload)", () => {
     };
   };
 
-  async function uploadChunks(
-    t: ReturnType<typeof convexTest>,
-    sessionId: Id<"claudeSessions">,
-    seq: number,
-    chunks: string[],
-    { dropIndex }: { dropIndex?: number } = {},
-  ) {
-    for (const [index, text] of chunks.entries()) {
-      if (index === dropIndex) continue;
-      const res = await t.mutation(
-        internal.claudeSessions.internalIngestOverflow,
-        { sessionId, seq, index, chunkCount: chunks.length, text },
-      );
-      expect(res.ok).toBe(true);
-    }
-  }
-
-  /** The daemon's order: every chunk up, then the row that names them. */
+  /** A cut row of the session's run, and its chunks, as the sweep lands them. */
   async function storeOversized(
     t: ReturnType<typeof convexTest>,
-    sessionId: Id<"claudeSessions">,
+    runId: string,
     chunks: string[],
     { dropIndex }: { dropIndex?: number } = {},
   ) {
     const full = chunks.join("");
     const overflow = stampFor(chunks);
-    await uploadChunks(t, sessionId, 0, chunks, { dropIndex });
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      finalize: [
-        {
-          seq: 0,
-          turn: 0,
-          kind: "tool-result" as const,
-          content: { toolUseId: "tool_1", content: full.slice(0, 32 * 1024) },
-          overflow,
-        },
-      ],
-    });
     const messageId = await t.run(async (ctx) => {
-      const row = await ctx.db.query("claudeMessages").first();
-      return row!._id;
+      for (const [index, text] of chunks.entries()) {
+        if (index === dropIndex) continue;
+        await ctx.db.insert("claudeMessageOverflow", {
+          runId, seq: 0, index, chunkCount: chunks.length, text, createdAt: 1,
+        });
+      }
+      return await ctx.db.insert("claudeMessages", {
+        runId,
+        seq: 0,
+        turn: 0,
+        kind: "tool-result",
+        content: { toolUseId: "tool_1", content: full.slice(0, 32 * 1024) },
+        depth: 0,
+        overflow,
+        createdAt: 1,
+      });
     });
     return { messageId, full, overflow };
   }
@@ -1993,10 +1927,10 @@ describe("message overflow (the complete payload)", () => {
   it("reassembles an oversized tool result byte-identical over paged reads", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
+    const { runId } = await createRunSession(t, tom);
     const { messageId, full, overflow } = await storeOversized(
       t,
-      sessionId,
+      runId,
       payloadChunks(),
     );
 
@@ -2005,6 +1939,7 @@ describe("message overflow (the complete payload)", () => {
     for (const page of pages) {
       expect(page).toMatchObject({
         hasOverflow: true,
+        runId,
         sha256: overflow.sha256,
         byteLength: overflow.byteLength,
         chunkCount: CHUNKS,
@@ -2027,9 +1962,9 @@ describe("message overflow (the complete payload)", () => {
   it("calls a payload complete only when its bytes and hash match the stamp", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
+    const { runId } = await createRunSession(t, tom);
     const chunks = ["héllo ", "wörld"]; // multibyte: bytes ≠ chars
-    const { messageId, full } = await storeOversized(t, sessionId, chunks);
+    const { messageId, full } = await storeOversized(t, runId, chunks);
 
     const whole = await tom.query(api.claudeSessions.getMessageOverflow, {
       messageId,
@@ -2046,8 +1981,8 @@ describe("message overflow (the complete payload)", () => {
     await t.run(async (ctx) => {
       const row = await ctx.db
         .query("claudeMessageOverflow")
-        .withIndex("by_session_seq_index", (q) =>
-          q.eq("sessionId", sessionId).eq("seq", 0).eq("index", 1),
+        .withIndex("by_run_seq_index", (q) =>
+          q.eq("runId", runId).eq("seq", 0).eq("index", 1),
         )
         .first();
       await ctx.db.patch(row!._id, { text: "w0rld" });
@@ -2061,8 +1996,8 @@ describe("message overflow (the complete payload)", () => {
   it("tells the transcript a row was cut, and how much is behind it", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    const { overflow } = await storeOversized(t, sessionId, payloadChunks());
+    const { sessionId, runId } = await createRunSession(t, tom);
+    const { overflow } = await storeOversized(t, runId, payloadChunks());
     const page = await tom.query(api.claudeSessions.getMessages, {
       sessionId,
       paginationOpts: { numItems: 10, cursor: null },
@@ -2078,8 +2013,8 @@ describe("message overflow (the complete payload)", () => {
   it("says so when a chunk the row names never landed", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    const { messageId } = await storeOversized(t, sessionId, payloadChunks(), {
+    const { runId } = await createRunSession(t, tom);
+    const { messageId } = await storeOversized(t, runId, payloadChunks(), {
       dropIndex: 1,
     });
     const page = await tom.query(api.claudeSessions.getMessageOverflow, {
@@ -2094,25 +2029,16 @@ describe("message overflow (the complete payload)", () => {
     expect(page!.text).toHaveLength(CHUNK_CHARS); // chunk 0 only
   });
 
-  it("stores nothing for a message that fits", async () => {
+  it("reads a row that fits as whole, with nothing behind it", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      finalize: [
-        {
-          seq: 0,
-          turn: 0,
-          kind: "tool-result" as const,
-          content: { toolUseId: "tool_1", content: "ok" },
-        },
-      ],
-    });
-    const chunks = await t.run(async (ctx) =>
-      ctx.db.query("claudeMessageOverflow").collect(),
+    const { sessionId, runId } = await createRunSession(t, tom);
+    await t.run((ctx) =>
+      ctx.db.insert("claudeMessages", {
+        runId, seq: 0, turn: 0, kind: "tool-result",
+        content: { toolUseId: "tool_1", content: "ok" }, depth: 0, createdAt: 1,
+      }),
     );
-    expect(chunks).toHaveLength(0);
     const page = await tom.query(api.claudeSessions.getMessages, {
       sessionId,
       paginationOpts: { numItems: 10, cursor: null },
@@ -2124,354 +2050,12 @@ describe("message overflow (the complete payload)", () => {
       await tom.query(api.claudeSessions.getMessageOverflow, { messageId }),
     ).toMatchObject({ hasOverflow: false, complete: true });
   });
-
-  // witness: drop the overflowFailures loop from internalIngest — a payload
-  // Convex refused would sit on the box with nothing pointing at it.
-  it("records an event naming the file when the daemon could not store a payload", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      finalize: [
-        {
-          seq: 0,
-          turn: 0,
-          kind: "error" as const,
-          content: { message: "the complete payload for message 0 …" },
-        },
-      ],
-      overflowFailures: [
-        {
-          seq: 0,
-          error: "HTTP 400",
-          path: "/var/cache/tts/sessions/abc/overflow/0",
-          byteLength: 9_000_000,
-        },
-      ],
-    });
-    const events = await t.run(async (ctx) =>
-      ctx.db.query("dtsEvents").collect(),
-    );
-    const unstored = events.filter(
-      (e) => e.kind === "session-overflow-unstored",
-    );
-    expect(unstored).toHaveLength(1);
-    expect(unstored[0].data).toMatchObject({
-      sessionId,
-      seq: 0,
-      error: "HTTP 400",
-      path: "/var/cache/tts/sessions/abc/overflow/0",
-      byteLength: 9_000_000,
-    });
-  });
-
-  // witness: insert instead of upsert — a blind retry of one chunk would
-  // double it and the reassembly would no longer match its hash.
-  it("upserts a re-sent chunk instead of doubling it", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    const chunk = {
-      sessionId,
-      seq: 3,
-      index: 0,
-      chunkCount: 1,
-      text: "the payload",
-    };
-    await t.mutation(internal.claudeSessions.internalIngestOverflow, chunk);
-    await t.mutation(internal.claudeSessions.internalIngestOverflow, chunk);
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudeMessageOverflow").collect(),
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].text).toBe("the payload");
-  });
-
-  // witness: accept any chunk under a stamped seq — a chunk from a different
-  // chunking of the payload would overwrite one the row's stamp names.
-  it("refuses a chunk that disagrees with the row's stamp, or is malformed", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    const chunks = ["abc", "def"];
-    await storeOversized(t, sessionId, chunks);
-
-    const send = (body: {
-      seq: number;
-      index: number;
-      chunkCount: number;
-      text: string;
-    }) =>
-      t.mutation(internal.claudeSessions.internalIngestOverflow, {
-        sessionId,
-        ...body,
-      });
-    // Same chunking as the stamp: a replay, accepted.
-    expect(await send({ seq: 0, index: 1, chunkCount: 2, text: "def" })).toMatchObject({ ok: true });
-    // A different chunkCount under the stamped seq: refused.
-    expect(await send({ seq: 0, index: 0, chunkCount: 3, text: "ab" })).toMatchObject({
-      ok: false,
-      reason: "chunkCount disagrees with the row's stamp",
-    });
-    // Out of range or not an integer: refused whatever the seq.
-    expect(await send({ seq: 9, index: 2, chunkCount: 2, text: "x" })).toMatchObject({
-      ok: false,
-      reason: "malformed chunk",
-    });
-    expect(await send({ seq: 9, index: 0.5, chunkCount: 1, text: "x" })).toMatchObject({
-      ok: false,
-      reason: "malformed chunk",
-    });
-    // Nothing of the refused ones landed.
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudeMessageOverflow").collect(),
-    );
-    expect(rows.map((r) => r.text).sort()).toEqual(["abc", "def"]);
-  });
-
-  // The re-ingest path (worker/session-host/reingest-overflow.mjs): the row
-  // landed unstamped when the live upload failed; later the chunks go up and
-  // the stamp is written from the file's own hash.
-  it("stamps an unstamped row once its chunks are up, and only then", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    const chunks = ["first half ", "second half"];
-    const stamp = stampFor(chunks);
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      finalize: [
-        {
-          seq: 0,
-          turn: 0,
-          kind: "tool-result" as const,
-          content: { toolUseId: "tool_1", content: "first half " },
-        },
-      ],
-    });
-    const stampIt = () =>
-      t.mutation(internal.claudeSessions.internalStampOverflow, {
-        sessionId,
-        seq: 0,
-        ...stamp,
-      });
-    // Before the chunks: refused, the row untouched.
-    expect(await stampIt()).toMatchObject({ ok: false, reason: "chunks incomplete" });
-    await uploadChunks(t, sessionId, 0, chunks);
-    expect(await stampIt()).toEqual({ ok: true, stamped: true });
-    // Again (a lost response, a re-run): a no-op, not a refusal.
-    expect(await stampIt()).toEqual({ ok: true, stamped: false });
-    // A different stamp for the same row: refused.
-    expect(
-      await t.mutation(internal.claudeSessions.internalStampOverflow, {
-        sessionId,
-        seq: 0,
-        ...stamp,
-        byteLength: stamp.byteLength + 1,
-      }),
-    ).toMatchObject({ ok: false, reason: "row already stamped" });
-    // No row under the seq at all: refused.
-    expect(
-      await t.mutation(internal.claudeSessions.internalStampOverflow, {
-        sessionId,
-        seq: 7,
-        ...stamp,
-      }),
-    ).toMatchObject({ ok: false, reason: "no message row" });
-
-    const page = await tom.query(api.claudeSessions.getMessages, {
-      sessionId,
-      paginationOpts: { numItems: 10, cursor: null },
-    });
-    expect(page.page[0]).toMatchObject({
-      hasOverflow: true,
-      fullByteLength: stamp.byteLength,
-    });
-    const whole = await tom.query(api.claudeSessions.getMessageOverflow, {
-      messageId: page.page[0]._id,
-    });
-    expect(whole).toMatchObject({ complete: true, text: chunks.join("") });
-  });
-
-  // witness: drop the sweep from the seq floor — chunks uploaded for a row
-  // the floor then dropped would sit under a seq whose landed row never
-  // names them, unreadable and undeletable.
-  it("sweeps the chunks of a dropped stamped replay whose landed row has no stamp", async () => {
-    vi.useFakeTimers();
-    try {
-      const t = convexTest({ schema, modules });
-      const tom = await withTom(t);
-      const sessionId = await createDaemonSession(t, tom);
-      // What landed under seq 0: a plain row, no stamp.
-      await t.mutation(internal.claudeSessions.internalIngest, {
-        sessionId,
-        finalize: [
-          {
-            seq: 0,
-            turn: 0,
-            kind: "assistant-text" as const,
-            content: { text: "short" },
-          },
-        ],
-      });
-      // A second writer's chunks under the same seq, then its stamped row,
-      // which the floor drops.
-      const chunks = ["aaa", "bbb"];
-      await uploadChunks(t, sessionId, 0, chunks);
-      await t.mutation(internal.claudeSessions.internalIngest, {
-        sessionId,
-        finalize: [
-          {
-            seq: 0,
-            turn: 0,
-            kind: "tool-result" as const,
-            content: { toolUseId: "tool_1", content: "aaa" },
-            overflow: stampFor(chunks),
-          },
-        ],
-      });
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
-      const rows = await t.run(async (ctx) => ({
-        messages: await ctx.db.query("claudeMessages").collect(),
-        chunks: await ctx.db.query("claudeMessageOverflow").collect(),
-      }));
-      expect(rows.messages).toHaveLength(1);
-      expect(rows.messages[0].overflow).toBeUndefined();
-      expect(rows.chunks).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps the chunks when the dropped replay is a retry of a stamped row", async () => {
-    vi.useFakeTimers();
-    try {
-      const t = convexTest({ schema, modules });
-      const tom = await withTom(t);
-      const sessionId = await createDaemonSession(t, tom);
-      const chunks = ["aaa", "bbb"];
-      await storeOversized(t, sessionId, chunks);
-      // The same row again — a blind retry after a lost response.
-      await t.mutation(internal.claudeSessions.internalIngest, {
-        sessionId,
-        finalize: [
-          {
-            seq: 0,
-            turn: 0,
-            kind: "tool-result" as const,
-            content: { toolUseId: "tool_1", content: "aaa" },
-            overflow: stampFor(chunks),
-          },
-        ],
-      });
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
-      const stored = await t.run(async (ctx) =>
-        ctx.db.query("claudeMessageOverflow").collect(),
-      );
-      expect(stored).toHaveLength(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // The door itself (convex/http.ts): every field typed before the mutation
-  // is reached, and every error a fixed string — a validator error would
-  // spell the arguments, payload text included, into what the daemon logs.
-  it("POST /sessions/overflow validates by type and never echoes the body", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
-    process.env.SESSIONS_WORKER_KEY = "test-sessions-key";
-    try {
-      const post = (path: string, body: unknown) =>
-        t.fetch(path, {
-          method: "POST",
-          headers: {
-            "X-Sessions-Key": "test-sessions-key",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(body),
-        });
-      const secret = "the payload text that must not come back";
-      const bad = await post("/sessions/overflow", {
-        sessionId,
-        seq: "0",
-        index: 0,
-        chunkCount: 1,
-        text: secret,
-      });
-      expect(bad.status).toBe(400);
-      const badBody = await bad.text();
-      expect(badBody).toBe(JSON.stringify({ error: "seq (non-negative integer) required" }));
-      expect(badBody).not.toContain(secret);
-
-      // A sessionId of the wrong shape reaches the mutation's own validator;
-      // what comes back is still the constant, not the arguments.
-      const wrongId = await post("/sessions/overflow", {
-        sessionId: "not-an-id",
-        seq: 0,
-        index: 0,
-        chunkCount: 1,
-        text: secret,
-      });
-      expect(wrongId.status).toBe(400);
-      const wrongBody = await wrongId.text();
-      expect(wrongBody).toBe(JSON.stringify({ error: "overflow chunk rejected" }));
-      expect(wrongBody).not.toContain(secret);
-
-      const ok = await post("/sessions/overflow", {
-        sessionId,
-        seq: 0,
-        index: 0,
-        chunkCount: 1,
-        text: secret,
-      });
-      expect(ok.status).toBe(200);
-      expect(await ok.json()).toEqual({ ok: true, index: 0 });
-
-      // A refusal is a 409: permanent by the daemon's rule, fixed string.
-      const refused = await post("/sessions/overflow", {
-        sessionId,
-        seq: 0,
-        index: 1,
-        chunkCount: 1,
-        text: secret,
-      });
-      expect(refused.status).toBe(409);
-      expect(await refused.json()).toEqual({ error: "malformed chunk" });
-
-      const stamp = await post("/sessions/overflow/stamp", {
-        sessionId,
-        seq: 0,
-        sha256: "not hex",
-        byteLength: 1,
-        chunkCount: 1,
-      });
-      expect(stamp.status).toBe(400);
-      expect(await stamp.json()).toEqual({ error: "sha256 (64 hex chars) required" });
-    } finally {
-      delete process.env.SESSIONS_WORKER_KEY;
-    }
-  });
 });
 
 // ── The transcript the daemon copies into a fork's workspace ─────────────────
 // GET /sessions/transcript pages this internalQuery. Oldest-first and paged:
 // the file it builds is the whole conversation in order, and a long session's
 // transcript is thousands of rows — the read the collect rule exists to stop.
-
-describe("a session's rows (one transcript path)", () => {
-  // witness: leave rowsFrom to the daemon's rowsFromFiles, and a session born
-  // after the daemon stops sending it reads the daemon's rows, which do not
-  // exist, and shows an empty transcript.
-  it("is born reading its agent file", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
-    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBe("runs");
-  });
-});
 
 describe("session transcript pages", () => {
   // witness: order it "desc" (the browser's direction) or collect it whole —
@@ -2480,22 +2064,22 @@ describe("session transcript pages", () => {
   it("pages in seq order and stops on a null cursor", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createDaemonSession(t, tom);
+    const { sessionId, runId } = await createRunSession(t, tom);
     const total = 450; // more than two 200-row pages
     await t.run(async (ctx) => {
       for (let seq = 0; seq < total; seq++) {
         await ctx.db.insert("claudeMessages", {
-          sessionId,
+          runId,
           seq,
           turn: Math.floor(seq / 10),
           kind: "assistant-text",
           content: `line ${seq}`,
+          depth: 0,
           parentToolUseId: seq === 3 ? "tool_abc" : undefined,
           createdAt: 1_000 + seq,
         });
       }
     });
-
     const seqs: number[] = [];
     let cursor: string | undefined;
     let pages = 0;

@@ -2,16 +2,14 @@
 //
 // ONE TRANSCRIPT PATH (Tom's ruling of 2026-09-25, "I want one transcript
 // path. dry absolutism."). A session's rows are its agent file's: the file the
-// CLI itself writes, swept into claudeMessages under the session's runId. A
-// session is born with `rowsFrom: "runs"` (claudeSessions.insertSession), and
-// the daemon's `rowsFromFiles` set it on the sessions born before that.
-// Sessions from before the cutover keep the rows the daemon wrote, under their
-// sessionId, until the backfill replaces them.
+// CLI itself writes, swept into claudeMessages under the session's runId.
+// There is no second source. A session whose runId is not known yet has no
+// rows to read.
 //
-// Every reader of a session's rows asks rowSource below which of the two it
-// is reading, so the answer is written once: the page (getMessages), the fork
-// transcript (internalTranscriptPage), the delivered-turn echo
-// (getPendingInbound) and the nightly learning's reply context.
+// Every reader of a session's rows asks rowSource below, so the answer is
+// written once: the page (getMessages), the fork transcript
+// (internalTranscriptPage), the delivered-turn echo (getPendingInbound), the
+// poll's newest row and the nightly learning's reply context.
 //
 // What the daemon knows about a session that is not in the agent file — the
 // model changed, the workspace was rebuilt, work was preserved or discarded,
@@ -28,28 +26,16 @@ import { INBOUND_ROW_LABEL } from "../shared/session-constants.mjs";
 /**
  * Which rows a session reads.
  *
- *   run     rowsFrom "runs" with its runId known: claudeMessages by runId.
- *   none    no runId: a session before the sweep or the daemon has named its
- *           run, where there is nothing to read yet and the daemon's old rows
- *           under the sessionId are not a stand-in for the file's; or one of
- *           the two sessions that failed on 2026-09-01 before any file was
- *           written, whose one daemon row the one-off
- *           ttsMigrations.internalReplaceDaemonRows deletes. The page shows
- *           such a session's status, endedReason and notes over no rows.
- *   daemon  a session from before the cutover with a runId: claudeMessages by
- *           sessionId, until the one-off replaces them with the file's.
+ *   run   its runId is known: claudeMessages by runId.
+ *   none  no runId: a session before the sweep or the daemon has named its
+ *         run, where there is nothing to read yet; or one of the two sessions
+ *         that failed on 2026-09-01 before any file was written. The page
+ *         shows such a session's status, endedReason and notes over no rows.
  */
-export type RowSource =
-  | { from: "run"; runId: string }
-  | { from: "none" }
-  | { from: "daemon"; sessionId: Id<"claudeSessions"> };
+export type RowSource = { from: "run"; runId: string } | { from: "none" };
 
-export function rowSource(
-  session: Pick<Doc<"claudeSessions">, "_id" | "rowsFrom" | "runId">,
-): RowSource {
-  if (session.runId === undefined) return { from: "none" };
-  if (session.rowsFrom !== "runs") return { from: "daemon", sessionId: session._id };
-  return { from: "run", runId: session.runId };
+export function rowSource(session: Pick<Doc<"claudeSessions">, "runId">): RowSource {
+  return session.runId === undefined ? { from: "none" } : { from: "run", runId: session.runId };
 }
 
 /** The last line of a turn Tom typed, as it arrives in the agent file's user

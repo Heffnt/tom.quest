@@ -37,8 +37,6 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { isStubFile } from "./agents";
-import { OVERFLOW_SWEEP_CHUNKS } from "./claudeSessions";
 
 /** The unarchiveCondition the retired v1 → graph migration
  * (tts.internalMigrateToGraph, deleted with batches on 2026-09-24 after it had
@@ -1402,278 +1400,189 @@ export const internalRemoveBatches = internalMutation({
   },
 });
 
-// ── 10. Codex sessions named under the Claude family (one transcript path) ───
-// Six Codex sessions carry a runId of the form `claude:box:<thread>`: the
-// daemon built the id with the wrong family, so the rows the sweep landed
-// under the real run, `codex:box:<thread>`, are not the rows the page reads
-// for them. This walk rewrites such a runId to the Codex spelling when a run
-// exists under that id and none under the Claude one, and links that run back
-// to the session when it names none. Every other session is left alone and
-// counted. Run once, dry first, through tts-convex; part C of the plan deletes
-// it.
-const CODEX_RUN_LINK_MIGRATION = "codex-session-run-link";
-
-export const internalRelinkCodexSessionRuns = internalMutation({
-  args: MIGRATION_ARGS,
-  handler: async (ctx, args): Promise<MigrationReport> => {
-    const dryRun = args.dryRun ?? false;
-    const pageSize = args.pageSize ?? PAGE_SIZE;
-    const page: Counts = {
-      scanned: 0,
-      relinked: 0,
-      "run-linked-to-session": 0,
-      "claude-run-exists": 0,
-      "no-codex-run": 0,
-    };
-    const result = await ctx.db
-      .query("claudeSessions")
-      .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
-    const runAt = (runId: string) =>
-      ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).first();
-    for (const session of result.page) {
-      page.scanned++;
-      const runId = session.runId;
-      if (runId === undefined || !runId.startsWith("claude:box:")) continue;
-      const codexRunId = `codex:box:${runId.slice("claude:box:".length)}`;
-      const codexRun = await runAt(codexRunId);
-      if (codexRun === null) {
-        page["no-codex-run"]++;
-        continue;
-      }
-      if ((await runAt(runId)) !== null) {
-        page["claude-run-exists"]++;
-        continue;
-      }
-      page.relinked++;
-      if (!dryRun) await ctx.db.patch(session._id, { runId: codexRunId });
-      if (codexRun.sessionId === undefined) {
-        page["run-linked-to-session"]++;
-        if (!dryRun) await ctx.db.patch(codexRun._id, { sessionId: session._id });
-      }
-    }
-    const totals = addCounts(args.totals ?? {}, page);
-    if (result.isDone) {
-      await logEvent(
-        ctx,
-        dryRun ? `${CODEX_RUN_LINK_MIGRATION}-dry-run` : `${CODEX_RUN_LINK_MIGRATION}-migrated`,
-        undefined,
-        totals,
-      );
-      return { done: true, dryRun, page, totals, continueCursor: null };
-    }
-    await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalRelinkCodexSessionRuns, {
-      cursor: result.continueCursor,
-      dryRun,
-      pageSize,
-      totals,
-    });
-    return { done: false, dryRun, page, totals, continueCursor: result.continueCursor };
-  },
-});
-
-// ── 11. The daemon's rows replaced by the agent file's (one transcript path) ─
+// ── 10. The session-keyed row fields cleared (one transcript path) ──────────
 // Tom's ruling of 2026-09-25, "I want one transcript path. dry absolutism."
-// Sessions from before the cutover hold the rows the session daemon wrote,
-// under their sessionId. Once the box's backfill has swept each one's agent
-// file, the file's rows are in the record under the session's runId, and this
-// walk makes the session read them: for every session whose run is in the
-// record, is not a placeholder and has rows, and that still reads the daemon's
-// rows (rowsFrom not "runs") or still holds any of them, it
+// A session's rows are its agent file's, read by its runId
+// (sessionRows.rowSource), and nothing writes the four fields below any more.
+// The narrow that removes them from the schema cannot deploy while a stored
+// document still holds one, because deploy validates every stored document.
+// This walk empties them, in the clearing pattern of section 7: one page per
+// transaction, dry run first, counted, idempotent, one retired-field-cleared
+// event per value that says something, and the totals as one event.
 //
-//   1. sets rowsFrom "runs", so every reader switches before anything goes;
-//   2. deletes the session's overflow chunks, OVERFLOW_SWEEP_CHUNKS a step
-//      (the bound claudeSessions.internalSweepOverflow keeps), every chunk
-//      under the session and not only those a stamped row names, so none is
-//      left for the index to hold;
-//   3. then deletes its daemon rows, 200 a step. Chunks go before rows, so a
-//      crash between steps never leaves a chunk whose row is gone.
+//   claudeSessions.rowsFrom    cleared. "runs" is counted and not recorded:
+//                              it is how every session reads now, and says
+//                              nothing its runId does not. Any other value is
+//                              recorded before it leaves.
+//   runs.cutoverAt             cleared, each instant recorded: it is when the
+//                              retired shadow comparison switched that run's
+//                              session to its file's rows.
+//   claudeMessages.sessionId   NOT cleared, counted. Only the session daemon
+//   claudeMessageOverflow      wrote these fields, and a row that holds one
+//     .sessionId               holds no runId: emptying the field would leave
+//                              a row no reader can find, and deleting it
+//                              deletes transcript text the agent file never
+//                              landed. The walk counts these rows and lists
+//                              their sessions; the narrow waits until there
+//                              are none. The one-off that replaced the
+//                              daemon's rows (ttsMigrations
+//                              .internalReplaceDaemonRows, deleted with this
+//                              walk's arrival) left them only on a session
+//                              whose run had no rows in the record.
 //
-// A session whose run is not in the record, or has no rows, keeps everything
-// and is listed in `noRows`: its file has not been swept, and replacing its
-// rows would empty its transcript. A session with no runId names no file (two
-// failed on 2026-09-01, one daemon row each): its rows go, and it shows its
-// status, endedReason and notes over an empty transcript (sessionRows
-// rowSource answers `none` for it).
-//
-// Last, it drops rowSpan from the session-reply labels the old writer keyed
-// `reply:<sessionId>:<seq>`: that span is in the daemon's seq space, which
-// names no rows of the run the label points at. The label keeps its run, its
-// words and its time; the evals fall back to the run's outcome.finalTextSeq.
-//
-// One step per scheduled call, one paginated query per step. The totals are
-// one event, `daemon-rows-replaced` (or `daemon-rows-replaced-dry-run`):
-// { scanned, sessions, fileLess, rows, chunks, labels, noRowsCount, noRows }.
-// Run once, dry first, through tts-convex, after the backfill and after the
-// Codex relink above has re-run; part C's cleanup deletes it.
-export const DAEMON_ROWS_REPLACED = "daemon-rows-replaced";
+// The totals event is `session-row-fields-cleared` (or
+// `session-row-fields-cleared-dry-run`), with `sessionsWithDaemonRows`, the
+// sessions still holding a row or a chunk. Run it through tts-convex, dry
+// first:
+//   tts-convex run ttsMigrations:internalClearSessionRowFields '{"dryRun":true}'
+//   tts-convex run ttsMigrations:internalClearSessionRowFields '{}'
+// The narrow deletes this walk: once it has deployed, the schema itself
+// guarantees no stored document holds these fields.
+export const SESSION_ROW_FIELDS_MIGRATION = "session-row-fields-cleared";
 
-/** Daemon rows deleted per step, the eviction's bound for the same table. */
-const REPLACE_ROWS_PER_STEP = 200;
-/** Labels scanned per step. */
-const REPLACE_LABELS_PER_STEP = 200;
-/** Session ids the event lists; noRowsCount counts past it. */
-const NO_ROWS_LISTED_MAX = 2000;
-/** The old writer's ref: `reply:<sessionId>:<seq>`. The new one is
- * `reply:<inbound row id>`, with no second colon. */
-const OLD_REPLY_REF = /^reply:[^:]+:\d+$/;
+/** The tables the walk visits, in order. */
+const SESSION_ROW_FIELD_TABLES = [
+  "claudeSessions",
+  "runs",
+  "claudeMessages",
+  "claudeMessageOverflow",
+] as const;
+type SessionRowFieldTable = (typeof SESSION_ROW_FIELD_TABLES)[number];
 
-const REPLACE_PHASE = v.union(
-  v.literal("sessions"),
-  v.literal("chunks"),
-  v.literal("rows"),
-  v.literal("labels"),
-);
-type ReplacePhase = "sessions" | "chunks" | "rows" | "labels";
-
-type ReplaceState = {
-  phase: ReplacePhase;
-  cursor: string | null;
-  sessionsDone: boolean;
-  sessionId?: Id<"claudeSessions">;
-  subCursor: string | null;
+/** The most documents one page reads, per table. A message row can hold 32 KB
+ * of content and a chunk 256 KB, so those two walk in the steps the eviction
+ * and the chunk reader keep; the other two at the clearing page size. */
+const SESSION_ROW_FIELD_PAGE: Record<SessionRowFieldTable, number> = {
+  claudeSessions: CLEAR_PAGE_SIZE,
+  runs: CLEAR_PAGE_SIZE,
+  claudeMessages: 200,
+  claudeMessageOverflow: 8,
 };
 
-/** What the walk does with one session. */
-async function replacementFor(
-  ctx: MutationCtx,
-  session: Doc<"claudeSessions">,
-): Promise<"replace" | "file-less" | "no-rows" | "skip"> {
-  const daemonRow = await ctx.db
-    .query("claudeMessages")
-    .withIndex("by_session_seq", (q) => q.eq("sessionId", session._id))
-    .first();
-  const daemonChunk = await ctx.db
-    .query("claudeMessageOverflow")
-    .withIndex("by_session_seq_index", (q) => q.eq("sessionId", session._id))
-    .first();
-  const holdsDaemonRows = daemonRow !== null || daemonChunk !== null;
-  const runId = session.runId;
-  if (runId === undefined) return holdsDaemonRows ? "file-less" : "skip";
-  if (session.rowsFrom === "runs" && !holdsDaemonRows) return "skip";
-  const run = await ctx.db
-    .query("runs")
-    .withIndex("by_run_id", (q) => q.eq("runId", runId))
-    .first();
-  if (run === null || isStubFile(run.file)) return "no-rows";
-  const fileRow = await ctx.db
-    .query("claudeMessages")
-    .withIndex("by_run_seq", (q) => q.eq("runId", runId))
-    .first();
-  return fileRow === null ? "no-rows" : "replace";
-}
+/** Session ids the event lists; the row counts count past it. */
+const DAEMON_ROW_SESSIONS_LISTED_MAX = 500;
 
-export const internalReplaceDaemonRows = internalMutation({
+const SESSION_ROW_FIELD_COUNT_KEYS = [
+  "claudeSessions-scanned",
+  "runs-scanned",
+  "rowsFrom-runs-cleared",
+  "rowsFrom-other-cleared",
+  "cutoverAt-cleared",
+  "daemon-rows-left",
+  "daemon-chunks-left",
+];
+
+/** The retired fields, as a stored row still holds them. Read through this
+ * rather than the generated Doc types, which the narrow stops declaring them
+ * on. */
+type SessionRowFields = { rowsFrom?: string; cutoverAt?: number; sessionId?: Id<"claudeSessions"> };
+
+export const internalClearSessionRowFields = internalMutation({
   args: {
-    dryRun: v.optional(v.boolean()),
-    // The rest is the walk's state, carried across scheduled continuations;
-    // never passed by a caller.
-    phase: v.optional(REPLACE_PHASE),
-    cursor: v.optional(v.union(v.string(), v.null())),
-    sessionsDone: v.optional(v.boolean()),
-    sessionId: v.optional(v.id("claudeSessions")),
-    subCursor: v.optional(v.union(v.string(), v.null())),
-    totals: v.optional(v.record(v.string(), v.number())),
-    noRows: v.optional(v.array(v.id("claudeSessions"))),
+    ...MIGRATION_ARGS,
+    /** Which table this call walks. Omitted = start at the first and chain
+     * through all four. */
+    table: v.optional(v.union(...SESSION_ROW_FIELD_TABLES.map((t) => v.literal(t)))),
+    /** Carried across scheduled continuations; never passed by a caller. */
+    sessionsWithDaemonRows: v.optional(v.array(v.id("claudeSessions"))),
   },
   handler: async (ctx, args) => {
     const dryRun = args.dryRun ?? false;
-    const totals: Counts = {
-      scanned: 0, sessions: 0, fileLess: 0, rows: 0, chunks: 0, labels: 0, noRowsCount: 0,
-      ...(args.totals ?? {}),
+    const table: SessionRowFieldTable = args.table ?? SESSION_ROW_FIELD_TABLES[0];
+    const pageSize = Math.min(args.pageSize ?? CLEAR_PAGE_SIZE, SESSION_ROW_FIELD_PAGE[table]);
+    const opts = { cursor: args.cursor ?? null, numItems: pageSize };
+    const page: Counts = Object.fromEntries(SESSION_ROW_FIELD_COUNT_KEYS.map((k) => [k, 0]));
+    const listed = new Set<Id<"claudeSessions">>(args.sessionsWithDaemonRows ?? []);
+    const list = (sessionId: Id<"claudeSessions">) => {
+      if (listed.size < DAEMON_ROW_SESSIONS_LISTED_MAX) listed.add(sessionId);
     };
-    const noRows = [...(args.noRows ?? [])];
-    const state: ReplaceState = {
-      phase: args.phase ?? "sessions",
-      cursor: args.cursor ?? null,
-      sessionsDone: args.sessionsDone ?? false,
-      sessionId: args.sessionId,
-      subCursor: args.subCursor ?? null,
+    const record = async (subject: Record<string, unknown>, field: string, value: unknown) => {
+      await logEvent(ctx, RETIRED_FIELD_CLEARED, undefined, { table, field, value, ...subject });
     };
-    const next = async (to: ReplaceState) => {
-      await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalReplaceDaemonRows, {
-        dryRun,
-        phase: to.phase,
-        cursor: to.cursor,
-        sessionsDone: to.sessionsDone,
-        ...(to.sessionId === undefined ? {} : { sessionId: to.sessionId }),
-        subCursor: to.subCursor,
-        totals,
-        noRows,
-      });
-      return { done: false, dryRun, phase: state.phase, totals, noRows };
-    };
-    /** After a session: the next one, or the labels once the sessions are done. */
-    const afterSession = (): ReplaceState => state.sessionsDone
-      ? { phase: "labels", cursor: null, sessionsDone: true, subCursor: null }
-      : { phase: "sessions", cursor: state.cursor, sessionsDone: false, subCursor: null };
+    // The index range holds only rows that carry a sessionId: every id sorts
+    // above the empty string, and a missing field sorts below every string.
+    const ANY_SESSION = "" as Id<"claudeSessions">;
 
-    if (state.phase === "sessions") {
-      const page = await ctx.db
-        .query("claudeSessions")
-        .paginate({ cursor: state.cursor, numItems: 1 });
-      state.cursor = page.continueCursor;
-      state.sessionsDone = page.isDone;
-      const session = page.page[0];
-      if (session === undefined) return await next(afterSession());
-      totals.scanned++;
-      const what = await replacementFor(ctx, session);
-      if (what === "skip") return await next(afterSession());
-      if (what === "no-rows") {
-        totals.noRowsCount++;
-        if (noRows.length < NO_ROWS_LISTED_MAX) noRows.push(session._id);
-        return await next(afterSession());
-      }
-      if (what === "file-less") totals.fileLess++;
-      else {
-        totals.sessions++;
-        if (!dryRun && session.rowsFrom !== "runs") await ctx.db.patch(session._id, { rowsFrom: "runs" });
-      }
-      return await next({ ...state, phase: "chunks", sessionId: session._id, subCursor: null });
-    }
-
-    if (state.phase === "chunks" || state.phase === "rows") {
-      const sessionId = state.sessionId;
-      if (sessionId === undefined) throw new Error(`the ${state.phase} step names no session`);
-      if (state.phase === "chunks") {
-        const page = await ctx.db
-          .query("claudeMessageOverflow")
-          .withIndex("by_session_seq_index", (q) => q.eq("sessionId", sessionId))
-          .paginate({ cursor: state.subCursor, numItems: OVERFLOW_SWEEP_CHUNKS });
-        for (const chunk of page.page) {
-          totals.chunks++;
-          if (!dryRun) await ctx.db.delete(chunk._id);
+    let isDone: boolean;
+    let continueCursor: string;
+    switch (table) {
+      case "claudeSessions": {
+        const result = await ctx.db.query("claudeSessions").paginate(opts);
+        for (const row of result.page) {
+          page["claudeSessions-scanned"]++;
+          const rowsFrom = (row as unknown as SessionRowFields).rowsFrom;
+          if (rowsFrom === undefined) continue;
+          page[rowsFrom === "runs" ? "rowsFrom-runs-cleared" : "rowsFrom-other-cleared"]++;
+          if (dryRun) continue;
+          if (rowsFrom !== "runs") await record({ sessionId: row._id }, "rowsFrom", rowsFrom);
+          await ctx.db.patch(row._id, { rowsFrom: undefined } as Partial<Doc<"claudeSessions">>);
         }
-        return await next(page.isDone
-          ? { ...state, phase: "rows", subCursor: null }
-          : { ...state, subCursor: page.continueCursor });
+        ({ isDone, continueCursor } = result);
+        break;
       }
-      const page = await ctx.db
-        .query("claudeMessages")
-        .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
-        .paginate({ cursor: state.subCursor, numItems: REPLACE_ROWS_PER_STEP });
-      for (const row of page.page) {
-        totals.rows++;
-        if (!dryRun) await ctx.db.delete(row._id);
+      case "runs": {
+        const result = await ctx.db.query("runs").paginate(opts);
+        for (const row of result.page) {
+          page["runs-scanned"]++;
+          const cutoverAt = (row as unknown as SessionRowFields).cutoverAt;
+          if (cutoverAt === undefined) continue;
+          page["cutoverAt-cleared"]++;
+          if (dryRun) continue;
+          await record({ runId: row.runId }, "cutoverAt", cutoverAt);
+          await ctx.db.patch(row._id, { cutoverAt: undefined } as Partial<Doc<"runs">>);
+        }
+        ({ isDone, continueCursor } = result);
+        break;
       }
-      return await next(page.isDone ? afterSession() : { ...state, subCursor: page.continueCursor });
+      case "claudeMessages": {
+        const result = await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_session_seq", (q) => q.gt("sessionId", ANY_SESSION))
+          .paginate(opts);
+        for (const row of result.page) {
+          page["daemon-rows-left"]++;
+          list((row as unknown as SessionRowFields).sessionId!);
+        }
+        ({ isDone, continueCursor } = result);
+        break;
+      }
+      case "claudeMessageOverflow": {
+        const result = await ctx.db
+          .query("claudeMessageOverflow")
+          .withIndex("by_session_seq_index", (q) => q.gt("sessionId", ANY_SESSION))
+          .paginate(opts);
+        for (const row of result.page) {
+          page["daemon-chunks-left"]++;
+          list((row as unknown as SessionRowFields).sessionId!);
+        }
+        ({ isDone, continueCursor } = result);
+        break;
+      }
     }
 
-    const page = await ctx.db
-      .query("runLabels")
-      .withIndex("by_source_at", (q) => q.eq("source", "session-reply"))
-      .paginate({ cursor: state.cursor, numItems: REPLACE_LABELS_PER_STEP });
-    for (const label of page.page) {
-      if (label.rowSpan === undefined || !OLD_REPLY_REF.test(label.ref)) continue;
-      totals.labels++;
-      if (!dryRun) await ctx.db.patch(label._id, { rowSpan: undefined });
+    const totals = addCounts(args.totals ?? {}, page);
+    const sessionsWithDaemonRows = [...listed];
+    const nextTable = isDone
+      ? (SESSION_ROW_FIELD_TABLES[SESSION_ROW_FIELD_TABLES.indexOf(table) + 1] ?? null)
+      : table;
+    if (nextTable === null) {
+      await logEvent(
+        ctx,
+        dryRun ? `${SESSION_ROW_FIELDS_MIGRATION}-dry-run` : SESSION_ROW_FIELDS_MIGRATION,
+        undefined,
+        { ...totals, sessionsWithDaemonRows },
+      );
+      return { done: true, dryRun, page, totals, continueCursor: null, table, nextTable: null, sessionsWithDaemonRows };
     }
-    if (!page.isDone) return await next({ ...state, cursor: page.continueCursor });
-    await logEvent(
-      ctx,
-      dryRun ? `${DAEMON_ROWS_REPLACED}-dry-run` : DAEMON_ROWS_REPLACED,
-      undefined,
-      { ...totals, noRows },
-    );
-    return { done: true, dryRun, phase: state.phase, totals, noRows };
+    const cursor = isDone ? null : continueCursor;
+    await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalClearSessionRowFields, {
+      table: nextTable,
+      cursor,
+      dryRun,
+      ...(args.pageSize === undefined ? {} : { pageSize: args.pageSize }),
+      totals,
+      sessionsWithDaemonRows,
+    });
+    return { done: false, dryRun, page, totals, continueCursor: cursor, table, nextTable, sessionsWithDaemonRows };
   },
 });

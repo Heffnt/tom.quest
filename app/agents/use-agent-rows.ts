@@ -2,10 +2,9 @@
 
 // THE ONE ROW READER (§23.6). A run's rows come from one of two queries and the
 // page must not know which: a run that carries a session reads
-// claudeSessions.getMessages, which holds the session's switch (the agent
-// file's rows by runId once session.rowsFrom is "runs", the daemon's old rows
-// by sessionId before it — convex/sessionRows.ts rowSource); every other run
-// reads agents.rows.
+// claudeSessions.getMessages, which finds the session's run
+// (convex/sessionRows.ts rowSource) and reads its agent file's rows, newest
+// first; every other run reads agents.rows.
 //
 // The two page in OPPOSITE directions and both are right. getMessages pages
 // newest-first, which is the only way a two-thousand-row session opens at its
@@ -44,9 +43,8 @@ const NO_MORE = () => {};
 
 export function useAgentRows(subject: RunSubject): RunRowsResult {
   const { sessionId, runId } = subject;
-  // A session's rows always come from getMessages: it is the reader that holds
-  // the session's switch, so reading agents.rows directly would show an old
-  // session's file rows where the daemon's are the ones it has.
+  // A session's rows always come from getMessages: it resolves the session's
+  // run itself, and it pages newest first so a long session opens at its tail.
   const fromSession = sessionId !== undefined;
 
   const session = usePaginatedQuery(

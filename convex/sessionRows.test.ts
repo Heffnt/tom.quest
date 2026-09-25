@@ -2,12 +2,11 @@
 // agent file's. These cases hold every reader of a session's rows to the one
 // switch (sessionRows.rowSource), and the pieces that exist because the
 // daemon writes no rows: the notes, the delivered turn that is not a row yet,
-// the newest landed row on the poll, the overflow reader on a file row, and
-// the one-off relink of the Codex sessions named under the Claude family.
+// the newest landed row on the poll, and the overflow reader on a file row.
 
 import { createHash } from "node:crypto";
 import { convexTest } from "convex-test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -36,7 +35,6 @@ async function seedSession(
       nextSeq: 0,
       createdAt: 1,
       runId: RUN,
-      rowsFrom: "runs",
       ...over,
     } as never),
   );
@@ -56,12 +54,6 @@ async function fileRow(
   );
 }
 
-async function daemonRow(t: ReturnType<typeof convexTest>, sessionId: Id<"claudeSessions">, seq: number, text: string) {
-  await t.run((ctx) =>
-    ctx.db.insert("claudeMessages", { sessionId, seq, turn: 0, kind: "assistant-text", content: { text }, createdAt: seq + 1 } as never),
-  );
-}
-
 describe("the inbound row line", () => {
   it("reads the id off the last line of a delivered turn, and nothing else", () => {
     expect(inboundRowIdOf({ text: "do the visa one\n\ninbound row: k17abc_def" })).toBe("k17abc_def");
@@ -73,13 +65,12 @@ describe("the inbound row line", () => {
   });
 });
 
-describe("a session since the cutover reads its agent file's rows", () => {
-  // witness: page the fork transcript by sessionId alone and a fork of any
-  // session since the cutover opens with an empty .tts-transcript.md.
+describe("a session reads its agent file's rows", () => {
+  // witness: page the fork transcript by anything but the session's runId and
+  // a fork opens with an empty .tts-transcript.md.
   it("gives the fork transcript the file's rows, oldest first, in the parser's shape", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await seedSession(t);
-    await daemonRow(t, sessionId, 0, "a daemon row, stored before the cutover");
     await fileRow(t, 100, "user", { text: "hello" });
     await fileRow(t, 200, "tool-call", { id: "toolu_1", name: "Read", input: { file_path: "a.ts" } });
     await fileRow(t, 300, "tool-result", { toolUseId: "toolu_1", content: "file body" });
@@ -92,33 +83,10 @@ describe("a session since the cutover reads its agent file's rows", () => {
   it("gives an empty fork transcript and an empty page while the run is not named", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await seedSession(t, { runId: undefined });
-    await daemonRow(t, sessionId, 0, "must not stand in for the file");
     expect(await t.query(internal.claudeSessions.internalTranscriptPage, { sessionId })).toEqual({ rows: [], nextCursor: null });
     const tom = await withTom(t);
     const page = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
     expect(page.page).toEqual([]);
-  });
-
-  // The two sessions that failed on 2026-09-01 named no file. witness: read
-  // a session with no runId by its sessionId, and once the one-off deletes
-  // their one daemon row the page asks an index for rows that cannot exist.
-  it("reads nothing for a session that names no run, whatever its rowsFrom", async () => {
-    const t = convexTest(schema, modules);
-    const sessionId = await seedSession(t, { rowsFrom: undefined, runId: undefined, status: "failed" });
-    await daemonRow(t, sessionId, 0, "the one daemon row");
-    expect(await t.query(internal.claudeSessions.internalTranscriptPage, { sessionId })).toEqual({ rows: [], nextCursor: null });
-    const tom = await withTom(t);
-    const page = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
-    expect(page.page).toEqual([]);
-  });
-
-  it("keeps reading a session from before the cutover by its own id", async () => {
-    const t = convexTest(schema, modules);
-    const sessionId = await seedSession(t, { rowsFrom: undefined });
-    await daemonRow(t, sessionId, 0, "the daemon's row");
-    await fileRow(t, 100, "assistant-text", { text: "the file's row" });
-    const page = await t.query(internal.claudeSessions.internalTranscriptPage, { sessionId });
-    expect(page.rows.map((row) => row.content)).toEqual([{ text: "the daemon's row" }]);
   });
 });
 
@@ -156,16 +124,12 @@ describe("Tom's delivered turn stays on the page until its row lands", () => {
     expect((await tom.query(api.claudeSessions.getPendingInbound, { sessionId })).map((row) => row._id)).toEqual([queued]);
   });
 
-  it("shows no agent's turn, and nothing but pending rows on a session from before the cutover", async () => {
+  it("shows no agent's turn", async () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);
-    const fileBacked = await seedSession(t);
-    await turn(t, fileBacked, "delivered", { author: "agent" });
-    expect(await tom.query(api.claudeSessions.getPendingInbound, { sessionId: fileBacked })).toEqual([]);
-
-    const old = await seedSession(t, { rowsFrom: undefined, runId: "claude:box:an-old-session" });
-    await turn(t, old, "delivered");
-    expect(await tom.query(api.claudeSessions.getPendingInbound, { sessionId: old })).toEqual([]);
+    const sessionId = await seedSession(t);
+    await turn(t, sessionId, "delivered", { author: "agent" });
+    expect(await tom.query(api.claudeSessions.getPendingInbound, { sessionId })).toEqual([]);
   });
 });
 
@@ -208,10 +172,10 @@ describe("the daemon's notes", () => {
 });
 
 describe("the poll carries the run's newest landed row", () => {
-  it("names the newest row of a file-backed session, and nothing for an old one", async () => {
+  it("names the newest row of a session's run, and nothing while no run is named", async () => {
     const t = convexTest(schema, modules);
     await seedSession(t);
-    await seedSession(t, { rowsFrom: undefined, runId: undefined, title: "an old session" });
+    await seedSession(t, { runId: undefined, title: "an old session" });
     await fileRow(t, 100, "user", { text: "hello" });
     await fileRow(t, 250, "assistant-text", { text: "done" });
     const { sessions } = await t.mutation(internal.claudeSessions.internalPoll, { version: "test", daemonStartedAt: 1 });
@@ -244,48 +208,5 @@ describe("the whole payload behind a cut agent file row", () => {
     });
     const read = await tom.query(api.claudeSessions.getMessageOverflow, { messageId });
     expect(read).toMatchObject({ hasOverflow: true, runId: RUN, seq: 7, text: full, end: true, complete: true });
-  });
-});
-
-describe("the Codex sessions named under the Claude family", () => {
-  async function codexRun(t: ReturnType<typeof convexTest>, runId: string, over: Record<string, unknown> = {}) {
-    await t.run((ctx) =>
-      ctx.db.insert("runs", {
-        runId, rootRunId: runId, depth: 0, linkKnown: true, origin: "daemon", host: "box",
-        cli: runId.startsWith("codex:") ? "codex" : "claude", environment: "session", parserVersion: "runs-parser-1",
-        kind: "session", status: "ended", startedAt: 1, lastLineAt: 2, attachments: [],
-        file: { path: "/r.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64), bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64) },
-        ingestedAt: 3, ...over,
-      } as never),
-    );
-  }
-
-  it("rewrites a runId to the Codex spelling when that run exists, dry first", async () => {
-    vi.useFakeTimers();
-    try {
-      const t = convexTest(schema, modules);
-      const wrong = await seedSession(t, { runId: "claude:box:019a-codex-thread", model: "gpt-5.6-sol" });
-      const claude = await seedSession(t, { runId: "claude:box:real-claude-run" });
-      await codexRun(t, "codex:box:019a-codex-thread");
-      await codexRun(t, "claude:box:real-claude-run");
-
-      const dry = await t.mutation(internal.ttsMigrations.internalRelinkCodexSessionRuns, { dryRun: true });
-      expect(dry).toMatchObject({ done: true, totals: { scanned: 2, relinked: 1, "run-linked-to-session": 1, "no-codex-run": 1 } });
-      expect((await t.run((ctx) => ctx.db.get(wrong)))?.runId).toBe("claude:box:019a-codex-thread");
-
-      await t.mutation(internal.ttsMigrations.internalRelinkCodexSessionRuns, {});
-      expect((await t.run((ctx) => ctx.db.get(wrong)))?.runId).toBe("codex:box:019a-codex-thread");
-      expect((await t.run((ctx) => ctx.db.get(claude)))?.runId).toBe("claude:box:real-claude-run");
-      const linked = await t.run((ctx) =>
-        ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "codex:box:019a-codex-thread")).unique(),
-      );
-      expect(linked?.sessionId).toBe(wrong);
-
-      // Run again, it finds nothing left to do.
-      const again = await t.mutation(internal.ttsMigrations.internalRelinkCodexSessionRuns, {});
-      expect(again).toMatchObject({ totals: { relinked: 0 } });
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

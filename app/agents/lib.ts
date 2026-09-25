@@ -288,8 +288,8 @@ export function formatClock(ms: number): string {
 }
 
 // ── The cut payload, and what a reassembly is allowed to claim ──────────────
-// The daemon cuts any payload over 32 KB and stores the whole of it in chunks
-// (claudeMessageOverflow). One read returns up to 1 MB and hands back a cursor,
+// The parser cuts any payload over 32 KB and the sweep stores the whole of it
+// in chunks (claudeMessageOverflow). One read returns up to 1 MB and hands back a cursor,
 // so a large payload takes several — and the page has to say, on the row,
 // whether what it is showing is the whole thing. Three claims, and they are
 // not the same claim:
