@@ -1206,3 +1206,39 @@ describe("agents: one agent's tool calls, by its registration token", () => {
     expect((await trace(short))?.truncated).toBe(false);
   });
 });
+
+// ── One token, one agent ─────────────────────────────────────────────────────
+// The registration token sits in the prompt's registration block, so a copied
+// prompt can carry another agent's token. The first agent to reach the record
+// with it keeps it; any other agent's page carrying it is refused.
+describe("agents: a registration token belongs to one agent", () => {
+  const TOKEN = "5a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d"; // gitleaks:allow — a fixture, not a credential
+  const FIRST = "claude:box:token-first-agent";
+  const SECOND = "claude:box:token-second-agent";
+  const agent = (runId: string) => run({ runId, rootRunId: runId, host: "box", regToken: TOKEN, file: { ...run().file, path: `/srv/${runId}.jsonl` } });
+  const duplicates = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((entry) => entry.kind === "agents-token-duplicate"));
+
+  it("refuses a second agent carrying the same token and records both agents and the token's first eight characters", async () => {
+    const t = convexTest(schema, modules);
+    expect(await t.mutation(internal.agents.internalIngest, ingest(agent(FIRST)) as never)).toMatchObject({ ok: true });
+    const refused = await t.mutation(internal.agents.internalIngest, ingest(agent(SECOND)) as never);
+    expect(refused).toEqual({ ok: false, reason: "token held by another agent" });
+    // Nothing of the second agent was written.
+    const stored = await t.run((ctx) => ctx.db.query("runs").collect());
+    expect(stored.map((entry) => entry.runId)).toEqual([FIRST]);
+    expect(await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", SECOND)).collect())).toEqual([]);
+    const events = await duplicates(t);
+    expect(events).toHaveLength(1);
+    expect(events[0].data).toEqual({ agentId: SECOND, heldByAgentId: FIRST, tokenPrefix: TOKEN.slice(0, 8) });
+    expect(JSON.stringify(events[0].data)).not.toContain(TOKEN);
+  });
+
+  it("takes the same agent's pages again under its own token", async () => {
+    const t = convexTest(schema, modules);
+    expect(await t.mutation(internal.agents.internalIngest, ingest(agent(FIRST)) as never)).toMatchObject({ ok: true, inserted: 1 });
+    expect(await t.mutation(internal.agents.internalIngest, retry(agent(FIRST)) as never)).toMatchObject({ ok: true, inserted: 0, skipped: 1 });
+    expect(await t.mutation(internal.agents.internalIngest, retry(agent(FIRST), [row(0), row(1, { digest: "fedcba9876543210", kind: "assistant-text" })]) as never)).toMatchObject({ ok: true, inserted: 1 });
+    expect(await duplicates(t)).toEqual([]);
+  });
+});

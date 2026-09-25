@@ -53,7 +53,9 @@ const CONTEXT = v.object({
   // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls its
   // transcript holds, beside skillsGranted, which is what the prompt offered
   // it. Same field as convex/schema.ts runs.context; a run carrying it is
-  // refused at store time without it here.
+  // refused at store time without it here. NO WRITER SENDS IT ANY MORE since
+  // Jarvis's registration change of 2026-09-25; it stays accepted because
+  // stored rows carry it and the schema is additive-only.
   skillsAsked: v.optional(v.array(v.string())),
   // The graph version a run ran under, and the exact node ids its prompt
   // carried — the `given` edges. ABSENT IS A SUPPORTED VALUE, as it is for
@@ -297,6 +299,25 @@ export const internalIngest = internalMutation({
   handler: async (ctx, args) => {
     if (!validAgentPayload(args.run) || !nonNegativeInteger(args.previousCommittedLine) || !validHash(args.previousPrefixSha256)) return { ok: false as const, reason: "invalid run record" };
     if (args.rows.length > 200) return { ok: false as const, reason: "too many rows" };
+
+    // ONE TOKEN, ONE AGENT. The registration token sits in the prompt's
+    // registration block, so a prompt copied into another agent carries the
+    // first agent's token, and a label or a produced-by edge that follows the
+    // token would land on the wrong agent. The first agent to reach the record
+    // with a token keeps it; a page from any other agent carrying it is
+    // refused before anything is written, with a fixed phrase like every
+    // other refusal here, and one event names both agents and the token's
+    // first eight characters, never the whole token. Returning rather than
+    // throwing is what lets that event commit.
+    if (args.run.regToken !== undefined) {
+      const token = args.run.regToken;
+      const holders = await ctx.db.query("runs").withIndex("by_reg_token", (q) => q.eq("regToken", token)).take(8);
+      const holder = holders.find((row) => row.runId !== args.run.runId);
+      if (holder) {
+        await event(ctx, "agents-token-duplicate", { agentId: args.run.runId, heldByAgentId: holder.runId, tokenPrefix: token.slice(0, 8) });
+        return { ok: false as const, reason: "token held by another agent" };
+      }
+    }
 
     const existing = await agentAt(ctx, args.run.runId);
     const knownParent = args.run.parentRunId ? await agentAt(ctx, args.run.parentRunId) : null;

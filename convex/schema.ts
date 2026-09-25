@@ -1521,8 +1521,10 @@ export default defineSchema({
       registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
       // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls
       // its transcript holds, beside skillsGranted, which is what the prompt
-      // offered it. Written by worker/agents/registration.mjs; absent on every
-      // run before phase 6.
+      // offered it. Written by worker/agents/registration.mjs until Jarvis's
+      // registration change of 2026-09-25, which stopped writing it; absent on
+      // every agent before phase 6 and after that change. The field stays,
+      // because stored rows carry it and prod is additive-only.
       skillsAsked: v.optional(v.array(v.string())),
       // The graph version a run ran under, and the exact node ids its prompt
       // carried — the `given` edges. They live on the run row because they are
