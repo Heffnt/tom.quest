@@ -404,6 +404,24 @@ export const internalLabelFromSessionReply = internalMutation({
     const ref = `reply:${inboundId}`;
     const said = text.trim();
     if (said === "") return { wrote: false, why: "empty reply" };
+    // A TURN THE OLD WRITER ALREADY LABELLED IS NOT LABELLED TWICE. Until
+    // 2026-09-25 the daemon's own user row wrote this label, keyed
+    // `reply:<sessionId>:<seq>`, at the instant Tom typed the turn. The
+    // backfill of the old sessions sweeps their agent files, whose user rows
+    // carry the inbound row line since 2026-09-06, and would record the same
+    // act again under this key. The old labels are his acts and stay, so the
+    // check cannot be replaced by deleting them.
+    const inbound = await ctx.db.get(inboundId);
+    if (inbound !== null) {
+      const oldRef = `reply:${inbound.sessionId}:`;
+      const sameInstant = await ctx.db
+        .query("runLabels")
+        .withIndex("by_source_at", (q) => q.eq("source", "session-reply").eq("at", at))
+        .take(20);
+      if (sameInstant.some((label) => label.ref.startsWith(oldRef))) {
+        return { wrote: false, why: "labelled by the old writer" };
+      }
+    }
     const run = await ctx.db
       .query("runs")
       .withIndex("by_run_id", (q) => q.eq("runId", runId))

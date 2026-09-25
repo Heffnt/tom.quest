@@ -29,10 +29,15 @@ import { INBOUND_ROW_LABEL } from "../shared/session-constants.mjs";
  * Which rows a session reads.
  *
  *   run     rowsFrom "runs" with its runId known: claudeMessages by runId.
- *   none    rowsFrom "runs" before the sweep or the daemon has named its run:
- *           there is nothing to read yet, and the daemon's old rows under the
- *           sessionId are not a stand-in for the file's.
- *   daemon  a session from before the cutover: claudeMessages by sessionId.
+ *   none    no runId: a session before the sweep or the daemon has named its
+ *           run, where there is nothing to read yet and the daemon's old rows
+ *           under the sessionId are not a stand-in for the file's; or one of
+ *           the two sessions that failed on 2026-09-01 before any file was
+ *           written, whose one daemon row the one-off
+ *           ttsMigrations.internalReplaceDaemonRows deletes. The page shows
+ *           such a session's status, endedReason and notes over no rows.
+ *   daemon  a session from before the cutover with a runId: claudeMessages by
+ *           sessionId, until the one-off replaces them with the file's.
  */
 export type RowSource =
   | { from: "run"; runId: string }
@@ -42,8 +47,9 @@ export type RowSource =
 export function rowSource(
   session: Pick<Doc<"claudeSessions">, "_id" | "rowsFrom" | "runId">,
 ): RowSource {
+  if (session.runId === undefined) return { from: "none" };
   if (session.rowsFrom !== "runs") return { from: "daemon", sessionId: session._id };
-  return session.runId === undefined ? { from: "none" } : { from: "run", runId: session.runId };
+  return { from: "run", runId: session.runId };
 }
 
 /** The last line of a turn Tom typed, as it arrives in the agent file's user

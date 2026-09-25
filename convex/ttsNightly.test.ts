@@ -369,6 +369,9 @@ describe("GET /tts/learning-input", () => {
         statusChangedAt: now,
         nextSeq: 5,
         createdAt: now,
+        // A session from before the cutover names its run and reads the
+        // daemon's rows; one that names no run reads none.
+        runId: "claude:box:the-lease",
       });
       const say = (seq: number, at: number, text: string) =>
         ctx.db.insert("claudeMessages", {

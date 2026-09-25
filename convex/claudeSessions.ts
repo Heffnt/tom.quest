@@ -226,7 +226,7 @@ export const OVERFLOW_CHUNK_MAX_BYTES = 256 * 1024;
 
 // How many chunk rows one sweep deletes before scheduling itself again: the
 // same 2MB read bound as a page, because a delete reads the document too.
-const OVERFLOW_SWEEP_CHUNKS = 8;
+export const OVERFLOW_SWEEP_CHUNKS = 8;
 
 const utf8 = new TextEncoder();
 const utf8Bytes = (text: string) => utf8.encode(text).length;
@@ -2193,9 +2193,10 @@ export const internalStampOverflow = internalMutation({
 
 // Remove every chunk under (sessionId, seq): the one home for taking a
 // message's complete payload out, called by the seq floor above for a
-// stamped replay whose landed twin has no stamp, and what any future removal
-// of claudeMessages rows must call for each row that carried `overflow`
-// (nothing removes messages today). Deletes read their documents, so a
+// stamped replay whose landed twin has no stamp. The one-off that replaces an
+// old session's daemon rows (ttsMigrations.internalReplaceDaemonRows) walks
+// the session's chunks itself, at this sweep's bound, because it must also
+// reach chunks no stamped row names. Deletes read their documents, so a
 // payload of hundreds of chunks goes in bounded steps, each scheduling the
 // next.
 export async function sweepMessageOverflow(

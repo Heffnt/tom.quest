@@ -70,7 +70,7 @@ async function createDaemonSession(
   tom: Awaited<ReturnType<typeof withTom>>,
 ) {
   const sessionId = await createBasicSession(tom);
-  await t.run((ctx) => ctx.db.patch(sessionId, { rowsFrom: undefined }));
+  await t.run((ctx) => ctx.db.patch(sessionId, { rowsFrom: undefined, runId: `claude:box:${sessionId}` }));
   return sessionId;
 }
 

@@ -37,6 +37,8 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
+import { isStubFile } from "./agents";
+import { OVERFLOW_SWEEP_CHUNKS } from "./claudeSessions";
 
 /** The unarchiveCondition the retired v1 → graph migration
  * (tts.internalMigrateToGraph, deleted with batches on 2026-09-24 after it had
@@ -1466,5 +1468,212 @@ export const internalRelinkCodexSessionRuns = internalMutation({
       totals,
     });
     return { done: false, dryRun, page, totals, continueCursor: result.continueCursor };
+  },
+});
+
+// ── 11. The daemon's rows replaced by the agent file's (one transcript path) ─
+// Tom's ruling of 2026-09-25, "I want one transcript path. dry absolutism."
+// Sessions from before the cutover hold the rows the session daemon wrote,
+// under their sessionId. Once the box's backfill has swept each one's agent
+// file, the file's rows are in the record under the session's runId, and this
+// walk makes the session read them: for every session whose run is in the
+// record, is not a placeholder and has rows, and that still reads the daemon's
+// rows (rowsFrom not "runs") or still holds any of them, it
+//
+//   1. sets rowsFrom "runs", so every reader switches before anything goes;
+//   2. deletes the session's overflow chunks, OVERFLOW_SWEEP_CHUNKS a step
+//      (the bound claudeSessions.internalSweepOverflow keeps), every chunk
+//      under the session and not only those a stamped row names, so none is
+//      left for the index to hold;
+//   3. then deletes its daemon rows, 200 a step. Chunks go before rows, so a
+//      crash between steps never leaves a chunk whose row is gone.
+//
+// A session whose run is not in the record, or has no rows, keeps everything
+// and is listed in `noRows`: its file has not been swept, and replacing its
+// rows would empty its transcript. A session with no runId names no file (two
+// failed on 2026-09-01, one daemon row each): its rows go, and it shows its
+// status, endedReason and notes over an empty transcript (sessionRows
+// rowSource answers `none` for it).
+//
+// Last, it drops rowSpan from the session-reply labels the old writer keyed
+// `reply:<sessionId>:<seq>`: that span is in the daemon's seq space, which
+// names no rows of the run the label points at. The label keeps its run, its
+// words and its time; the evals fall back to the run's outcome.finalTextSeq.
+//
+// One step per scheduled call, one paginated query per step. The totals are
+// one event, `daemon-rows-replaced` (or `daemon-rows-replaced-dry-run`):
+// { scanned, sessions, fileLess, rows, chunks, labels, noRowsCount, noRows }.
+// Run once, dry first, through tts-convex, after the backfill and after the
+// Codex relink above has re-run; part C's cleanup deletes it.
+export const DAEMON_ROWS_REPLACED = "daemon-rows-replaced";
+
+/** Daemon rows deleted per step, the eviction's bound for the same table. */
+const REPLACE_ROWS_PER_STEP = 200;
+/** Labels scanned per step. */
+const REPLACE_LABELS_PER_STEP = 200;
+/** Session ids the event lists; noRowsCount counts past it. */
+const NO_ROWS_LISTED_MAX = 2000;
+/** The old writer's ref: `reply:<sessionId>:<seq>`. The new one is
+ * `reply:<inbound row id>`, with no second colon. */
+const OLD_REPLY_REF = /^reply:[^:]+:\d+$/;
+
+const REPLACE_PHASE = v.union(
+  v.literal("sessions"),
+  v.literal("chunks"),
+  v.literal("rows"),
+  v.literal("labels"),
+);
+type ReplacePhase = "sessions" | "chunks" | "rows" | "labels";
+
+type ReplaceState = {
+  phase: ReplacePhase;
+  cursor: string | null;
+  sessionsDone: boolean;
+  sessionId?: Id<"claudeSessions">;
+  subCursor: string | null;
+};
+
+/** What the walk does with one session. */
+async function replacementFor(
+  ctx: MutationCtx,
+  session: Doc<"claudeSessions">,
+): Promise<"replace" | "file-less" | "no-rows" | "skip"> {
+  const daemonRow = await ctx.db
+    .query("claudeMessages")
+    .withIndex("by_session_seq", (q) => q.eq("sessionId", session._id))
+    .first();
+  const daemonChunk = await ctx.db
+    .query("claudeMessageOverflow")
+    .withIndex("by_session_seq_index", (q) => q.eq("sessionId", session._id))
+    .first();
+  const holdsDaemonRows = daemonRow !== null || daemonChunk !== null;
+  const runId = session.runId;
+  if (runId === undefined) return holdsDaemonRows ? "file-less" : "skip";
+  if (session.rowsFrom === "runs" && !holdsDaemonRows) return "skip";
+  const run = await ctx.db
+    .query("runs")
+    .withIndex("by_run_id", (q) => q.eq("runId", runId))
+    .first();
+  if (run === null || isStubFile(run.file)) return "no-rows";
+  const fileRow = await ctx.db
+    .query("claudeMessages")
+    .withIndex("by_run_seq", (q) => q.eq("runId", runId))
+    .first();
+  return fileRow === null ? "no-rows" : "replace";
+}
+
+export const internalReplaceDaemonRows = internalMutation({
+  args: {
+    dryRun: v.optional(v.boolean()),
+    // The rest is the walk's state, carried across scheduled continuations;
+    // never passed by a caller.
+    phase: v.optional(REPLACE_PHASE),
+    cursor: v.optional(v.union(v.string(), v.null())),
+    sessionsDone: v.optional(v.boolean()),
+    sessionId: v.optional(v.id("claudeSessions")),
+    subCursor: v.optional(v.union(v.string(), v.null())),
+    totals: v.optional(v.record(v.string(), v.number())),
+    noRows: v.optional(v.array(v.id("claudeSessions"))),
+  },
+  handler: async (ctx, args) => {
+    const dryRun = args.dryRun ?? false;
+    const totals: Counts = {
+      scanned: 0, sessions: 0, fileLess: 0, rows: 0, chunks: 0, labels: 0, noRowsCount: 0,
+      ...(args.totals ?? {}),
+    };
+    const noRows = [...(args.noRows ?? [])];
+    const state: ReplaceState = {
+      phase: args.phase ?? "sessions",
+      cursor: args.cursor ?? null,
+      sessionsDone: args.sessionsDone ?? false,
+      sessionId: args.sessionId,
+      subCursor: args.subCursor ?? null,
+    };
+    const next = async (to: ReplaceState) => {
+      await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalReplaceDaemonRows, {
+        dryRun,
+        phase: to.phase,
+        cursor: to.cursor,
+        sessionsDone: to.sessionsDone,
+        ...(to.sessionId === undefined ? {} : { sessionId: to.sessionId }),
+        subCursor: to.subCursor,
+        totals,
+        noRows,
+      });
+      return { done: false, dryRun, phase: state.phase, totals, noRows };
+    };
+    /** After a session: the next one, or the labels once the sessions are done. */
+    const afterSession = (): ReplaceState => state.sessionsDone
+      ? { phase: "labels", cursor: null, sessionsDone: true, subCursor: null }
+      : { phase: "sessions", cursor: state.cursor, sessionsDone: false, subCursor: null };
+
+    if (state.phase === "sessions") {
+      const page = await ctx.db
+        .query("claudeSessions")
+        .paginate({ cursor: state.cursor, numItems: 1 });
+      state.cursor = page.continueCursor;
+      state.sessionsDone = page.isDone;
+      const session = page.page[0];
+      if (session === undefined) return await next(afterSession());
+      totals.scanned++;
+      const what = await replacementFor(ctx, session);
+      if (what === "skip") return await next(afterSession());
+      if (what === "no-rows") {
+        totals.noRowsCount++;
+        if (noRows.length < NO_ROWS_LISTED_MAX) noRows.push(session._id);
+        return await next(afterSession());
+      }
+      if (what === "file-less") totals.fileLess++;
+      else {
+        totals.sessions++;
+        if (!dryRun && session.rowsFrom !== "runs") await ctx.db.patch(session._id, { rowsFrom: "runs" });
+      }
+      return await next({ ...state, phase: "chunks", sessionId: session._id, subCursor: null });
+    }
+
+    if (state.phase === "chunks" || state.phase === "rows") {
+      const sessionId = state.sessionId;
+      if (sessionId === undefined) throw new Error(`the ${state.phase} step names no session`);
+      if (state.phase === "chunks") {
+        const page = await ctx.db
+          .query("claudeMessageOverflow")
+          .withIndex("by_session_seq_index", (q) => q.eq("sessionId", sessionId))
+          .paginate({ cursor: state.subCursor, numItems: OVERFLOW_SWEEP_CHUNKS });
+        for (const chunk of page.page) {
+          totals.chunks++;
+          if (!dryRun) await ctx.db.delete(chunk._id);
+        }
+        return await next(page.isDone
+          ? { ...state, phase: "rows", subCursor: null }
+          : { ...state, subCursor: page.continueCursor });
+      }
+      const page = await ctx.db
+        .query("claudeMessages")
+        .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
+        .paginate({ cursor: state.subCursor, numItems: REPLACE_ROWS_PER_STEP });
+      for (const row of page.page) {
+        totals.rows++;
+        if (!dryRun) await ctx.db.delete(row._id);
+      }
+      return await next(page.isDone ? afterSession() : { ...state, subCursor: page.continueCursor });
+    }
+
+    const page = await ctx.db
+      .query("runLabels")
+      .withIndex("by_source_at", (q) => q.eq("source", "session-reply"))
+      .paginate({ cursor: state.cursor, numItems: REPLACE_LABELS_PER_STEP });
+    for (const label of page.page) {
+      if (label.rowSpan === undefined || !OLD_REPLY_REF.test(label.ref)) continue;
+      totals.labels++;
+      if (!dryRun) await ctx.db.patch(label._id, { rowSpan: undefined });
+    }
+    if (!page.isDone) return await next({ ...state, cursor: page.continueCursor });
+    await logEvent(
+      ctx,
+      dryRun ? `${DAEMON_ROWS_REPLACED}-dry-run` : DAEMON_ROWS_REPLACED,
+      undefined,
+      { ...totals, noRows },
+    );
+    return { done: true, dryRun, phase: state.phase, totals, noRows };
   },
 });

@@ -1483,7 +1483,9 @@ export default defineSchema({
   // of the row's ingest; the daemon keeps the order (chunks first, then the
   // row) by holding the row back until they are acknowledged, and nothing
   // here removes chunks with a row — claudeSessions.sweepMessageOverflow is
-  // the one call that does.
+  // the one call that does for a live session, and the one-off
+  // ttsMigrations.internalReplaceDaemonRows removes an old session's chunks
+  // before its rows.
   claudeMessageOverflow: defineTable({
     sessionId: v.optional(v.id("claudeSessions")),
     runId: v.optional(v.string()),

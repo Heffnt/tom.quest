@@ -154,7 +154,7 @@ function validAgentId(runId: unknown): runId is string {
 function agentIdMatches(runId: string, cli: AgentCli, host: "laptop" | "box") {
   return runId.startsWith(`${cli}:${host}:`);
 }
-function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
+export function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
   return file.path === "" && file.sourceHash === "" && file.storedHash === "" && file.bytes === 0 && file.storedBytes === 0 && file.committedLine === 0 && file.committedPrefixSha256 === "";
 }
 /**
