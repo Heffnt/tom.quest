@@ -71,11 +71,11 @@ export const STATIC_NODE_KINDS = Object.freeze([
 
 /**
  * The record kinds. `todo` and `ruling` enter the file as ids only;
- * `run` and `outcome` are never rows in the file at all — they are addressable
- * and their edges live on the run row in Convex, which is already the one home
- * for every per-run fact.
+ * `agent` and `outcome` are never rows in the file at all — they are addressable
+ * and their edges live on the agent's row in Convex, which is already the one
+ * home for every per-agent fact.
  */
-export const RECORD_NODE_KINDS = Object.freeze(["outcome", "ruling", "run", "todo"]);
+export const RECORD_NODE_KINDS = Object.freeze(["agent", "outcome", "ruling", "todo"]);
 
 export const NODE_KINDS = Object.freeze([...new Set([...STATIC_NODE_KINDS, ...RECORD_NODE_KINDS])].sort());
 
@@ -115,7 +115,7 @@ export const RENDER_ORDER = Object.freeze([
   "question",
   "todo",
   "ruling",
-  "run",
+  "agent",
   "outcome",
   "evidence",
   "source",
@@ -181,9 +181,9 @@ export const WEIGHTS = Object.freeze({
   "evidences/entry-line": 200,
   "evidences/source-entry": 180,
   "supersedes/line-line": 100,
-  "given/run-node": 0, // never traversed by a prelude walk
-  "spawned/run-run": 900,
-  "continues/run-run": 900,
+  "given/agent-node": 0, // never traversed by a prelude walk
+  "spawned/agent-agent": 900,
+  "continues/agent-agent": 900,
 });
 
 /** The weight an edge kind takes when the table names no variant for it. */

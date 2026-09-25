@@ -18,9 +18,9 @@ describe("splitting a sentence", () => {
   });
 
   it("finds a plural and asks about the word itself", () => {
-    const parts = split("two runs and three goals");
+    const parts = split("two agents and three goals");
     expect(parts.filter((part) => part.term !== null).map((part) => part.term)).toEqual([
-      "run",
+      "agent",
       "goal",
     ]);
   });

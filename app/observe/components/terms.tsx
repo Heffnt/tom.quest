@@ -41,8 +41,8 @@ function plural(term: string): string {
 }
 
 /**
- * One pattern for the whole vocabulary, longest word first so "run vocabulary"
- * wins over "run", with an optional plural on the words that can take one.
+ * One pattern for the whole vocabulary, longest word first so "agent vocabulary"
+ * wins over "agent", with an optional plural on the words that can take one.
  *
  * NO LOOKBEHIND. The boundary before a word is captured as its own group and
  * written straight back out, because a lookbehind is the one regular-expression
