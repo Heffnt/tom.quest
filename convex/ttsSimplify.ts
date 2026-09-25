@@ -155,8 +155,14 @@ export type SimplifyFacts = {
   agents: SimplifyRunCounts;
   layers: { name: string; given: number; denied: number }[];
   skills: { name: string; offered: number; used: number }[];
-  // `runs` beside `agents` on these three until the box's simplify job reads
-  // `agents`; a later pass drops `runs`.
+  // WHAT THE BOX READS. Since Jarvis's rename (525d6e1, "agents: the noun for
+  // a thread is agent, in every name Jarvis owns") its simplify job,
+  // worker/jobs/simplify.mjs, reads the top-level `agents` with no fallback to
+  // `runs`, and reads each `sample` entry's tokens and graph nodes, never its
+  // id, so `sample[].agentId` replaced `runId` with no reader to break. It
+  // still reads `runs` on the cwds entries and passes the tools and hooks
+  // entries on as they arrive, so these three carry `runs` beside `agents`
+  // until Jarvis's follow-up switches them; a later pass here drops `runs`.
   tools: { name: string; agents: number; runs: number }[];
   hooks: { name: string; agents: number; runs: number }[];
   /** Distinct working directories, plus ONE row with `cwd: null` counting the
