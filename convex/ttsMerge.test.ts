@@ -1616,3 +1616,161 @@ describe("the new audit fields add no fourth gate", () => {
     expect(refused.allowed).toBe(false);
   });
 });
+
+// ── The gate as the `tts-gate` commit status ────────────────────────────────
+describe("the gate posted as the tts-gate commit status", () => {
+  /** GitHub's statuses endpoint, answering `status`; every call is kept. */
+  function statusesApi(status = 201) {
+    const calls: { url: string; method?: string; headers: Record<string, string>; body: Record<string, unknown> }[] = [];
+    const fake = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        method: init?.method,
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        body: JSON.parse(String(init?.body ?? "{}")),
+      });
+      return status === 201
+        ? Response.json({ id: 1, state: "success" }, { status: 201 })
+        : Response.json({ message: "Resource not accessible by personal access token" }, { status });
+    });
+    vi.stubGlobal("fetch", fake);
+    return calls;
+  }
+
+  const recordAudit = (t: TestConvex<typeof schema>, verdict: string) =>
+    t.mutation(internal.ttsMerge.internalRecordAudit, {
+      repo: REPO,
+      sha: SHA,
+      verdict,
+      text: `The change is sound.\nVERDICT: ${verdict}\nIt does what it says.`,
+    });
+  const recordTests = (t: TestConvex<typeof schema>, ok: boolean) =>
+    t.mutation(internal.ttsMerge.internalRecordTests, { repo: REPO, sha: SHA, ok });
+  const settle = (t: TestConvex<typeof schema>) => t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubEnv("GITHUB_MIRROR_TOKEN", "test-token");
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("tests-run green and audit-verdict APPROVED post one status: success, on the head sha", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await greenTests(t);
+    await recordAudit(t, "APPROVED");
+    await settle(t);
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    // POST /repos/{owner}/{repo}/statuses/{sha}, body { state, description, context }
+    // (docs.github.com/en/rest/commits/statuses#create-a-commit-status).
+    expect(call.url).toBe(`https://api.github.com/repos/Heffnt/tom.quest/statuses/${SHA}`);
+    expect(call.method).toBe("POST");
+    expect(call.headers.Authorization).toBe("Bearer test-token");
+    expect(call.headers.Accept).toBe("application/vnd.github+json");
+    expect(call.body).toEqual({
+      state: "success",
+      description: "open at a1b2c3d: tests-run green, audit-verdict APPROVED",
+      context: "tts-gate",
+    });
+  });
+
+  it("a refused audit posts failure and names the row", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await greenTests(t);
+    await recordAudit(t, "REFUSED");
+    await settle(t);
+    expect(calls.map((c) => c.body)).toEqual([
+      { state: "failure", description: "refused at a1b2c3d: audit-verdict REFUSED", context: "tts-gate" },
+    ]);
+  });
+
+  it("red tests post failure; a missing row posts pending naming it", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await recordTests(t, false);
+    await settle(t);
+    await recordAudit(t, "APPROVED");
+    await settle(t);
+    expect(calls.map((c) => c.body.state)).toEqual(["failure", "failure"]);
+    expect(calls[0].body.description).toBe("refused at a1b2c3d: tests-run red; waiting for audit-verdict");
+
+    const t2 = convex();
+    calls.length = 0;
+    await recordTests(t2, true);
+    await settle(t2);
+    expect(calls.map((c) => c.body)).toEqual([
+      { state: "pending", description: "waiting for audit-verdict at a1b2c3d", context: "tts-gate" },
+    ]);
+    // Each row written posts the gate's answer as it now stands.
+    await recordAudit(t2, "APPROVED");
+    await settle(t2);
+    expect(calls.map((c) => c.body.state)).toEqual(["pending", "success"]);
+  });
+
+  it("an UNAVAILABLE audit is no audit: pending, not failure", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await greenTests(t);
+    await recordAudit(t, "UNAVAILABLE");
+    await settle(t);
+    expect(calls.map((c) => c.body)).toEqual([
+      { state: "pending", description: "waiting for audit-verdict at a1b2c3d", context: "tts-gate" },
+    ]);
+  });
+
+  it("a status GitHub refuses is one keyed job-failed row, and the next success recovers it", async () => {
+    statusesApi(403);
+    const t = convex();
+    await greenTests(t);
+    await recordAudit(t, "APPROVED");
+    await settle(t);
+    const failed = await t.run((ctx) =>
+      ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", "job-failed").eq("key", "gate-status:tom.quest")).collect(),
+    );
+    expect(failed).toHaveLength(1);
+    expect((failed[0].data as { error: string }).error).toMatch(
+      /tts-gate status was not posted on tom\.quest@a1b2c3d: GitHub answered 403: Resource not accessible/,
+    );
+
+    statusesApi();
+    await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA });
+    const recovered = await t.run((ctx) =>
+      ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", "job-recovered").eq("key", "gate-status:tom.quest")).collect(),
+    );
+    expect(recovered).toHaveLength(1);
+  });
+
+  it("posts again when a row lands while it was posting, so the last post is the current answer", async () => {
+    const t = convex();
+    await greenTests(t);
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      // The audit is recorded between this action's read and its post.
+      if (bodies.length === 1) await approvedAudit(t);
+      return Response.json({}, { status: 201 });
+    }));
+    const result = await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA });
+    expect(bodies.map((b) => b.state)).toEqual(["pending", "success"]);
+    expect(result.posted.map((p) => p.state)).toEqual(["pending", "success"]);
+  });
+
+  it("posts nothing without a credential, for an unknown repo, or for a short sha", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    expect((await t.action(internal.ttsMerge.internalPostGateStatus, { repo: "nope", sha: SHA })).posted).toEqual([]);
+    expect((await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA.slice(0, 7) })).posted).toEqual([]);
+    vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
+    expect((await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA })).why).toBe(
+      "the record holds no GitHub credential",
+    );
+    expect(calls).toHaveLength(0);
+  });
+});
