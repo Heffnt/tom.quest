@@ -160,15 +160,15 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     ]);
     expect(facts.skills).toEqual([{ name: "graphify", offered: 4, used: 1 }]);
     expect(facts.tools).toEqual([
-      { name: "Bash", agents: 4, runs: 4 },
-      { name: "Read", agents: 3, runs: 3 },
+      { name: "Bash", agents: 4 },
+      { name: "Read", agents: 3 },
     ]);
-    expect(facts.hooks).toEqual([{ name: "PostToolUse", agents: 3, runs: 3 }]);
+    expect(facts.hooks).toEqual([{ name: "PostToolUse", agents: 3 }]);
     // The null row is always the last one, and counts the envelope-less run.
     expect(facts.cwds).toEqual([
-      { cwd: "C:/repo/tom.quest", agents: 3, runs: 3 },
-      { cwd: "C:/repo/CMT", agents: 1, runs: 1 },
-      { cwd: null, agents: 1, runs: 1 },
+      { cwd: "C:/repo/tom.quest", agents: 3 },
+      { cwd: "C:/repo/CMT", agents: 1 },
+      { cwd: null, agents: 1 },
     ]);
   });
 

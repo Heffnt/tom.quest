@@ -155,19 +155,14 @@ export type SimplifyFacts = {
   agents: SimplifyRunCounts;
   layers: { name: string; given: number; denied: number }[];
   skills: { name: string; offered: number; used: number }[];
-  // WHAT THE BOX READS. Since Jarvis's rename (525d6e1, "agents: the noun for
-  // a thread is agent, in every name Jarvis owns") its simplify job,
-  // worker/jobs/simplify.mjs, reads the top-level `agents` with no fallback to
-  // `runs`, and reads each `sample` entry's tokens and graph nodes, never its
-  // id, so `sample[].agentId` replaced `runId` with no reader to break. It
-  // still reads `runs` on the cwds entries and passes the tools and hooks
-  // entries on as they arrive, so these three carry `runs` beside `agents`
-  // until Jarvis's follow-up switches them; a later pass here drops `runs`.
-  tools: { name: string; agents: number; runs: number }[];
-  hooks: { name: string; agents: number; runs: number }[];
+  // WHAT THE BOX READS. Jarvis's simplify job, worker/jobs/simplify.mjs,
+  // reads `agents` on the top level and on every tools, hooks and cwds entry,
+  // and each `sample` entry's tokens and graph nodes, never its id.
+  tools: { name: string; agents: number }[];
+  hooks: { name: string; agents: number }[];
   /** Distinct working directories, plus ONE row with `cwd: null` counting the
    *  runs that reported none. */
-  cwds: { cwd: string | null; agents: number; runs: number }[];
+  cwds: { cwd: string | null; agents: number }[];
   /** One row per sampled run. `graphNodes` is the exact set of node ids that
    *  run's prompt carried — the `given` edges off its context entry — and the
    *  job counts a rule's `loaded` from it. UNDEFINED IS A VALUE: a run that
@@ -516,16 +511,16 @@ export const internalSimplifyInput = internalQuery({
         name,
         ...value,
       })),
-      tools: ranked(tools, (n) => n).map(({ name, value }) => ({ name, agents: value, runs: value })),
-      hooks: ranked(hooks, (n) => n).map(({ name, value }) => ({ name, agents: value, runs: value })),
+      tools: ranked(tools, (n) => n).map(({ name, value }) => ({ name, agents: value })),
+      hooks: ranked(hooks, (n) => n).map(({ name, value }) => ({ name, agents: value })),
       cwds: [
         ...ranked(cwds, (n) => n)
           .slice(0, CWD_DISTINCT_MAX)
-          .map(({ name, value }) => ({ cwd: name as string | null, agents: value, runs: value })),
+          .map(({ name, value }) => ({ cwd: name as string | null, agents: value })),
         // Always present, even at zero: "no run reported a directory" and "the
         // question was not asked" are different answers, and a row that
         // vanishes when it is zero cannot say the first.
-        { cwd: null, agents: cwdless, runs: cwdless },
+        { cwd: null, agents: cwdless },
       ],
       sample,
       gate: { tests, audit, evals: evalsGate },
