@@ -115,7 +115,7 @@ export function isChangeSubject(externalId: string): boolean {
   return /^pr-\d+$/.test(externalId) || /^sha-[0-9a-f]{7,40}$/i.test(externalId);
 }
 
-// <vocabulary generated version=8957fb333b3b3d2a — scripts/vocabulary.mjs; do not edit>
+// <vocabulary generated version=fdd55cb533934518 — scripts/vocabulary.mjs; do not edit>
 export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
 - task — A task is work an agent or Tom performs.
 - goal — A goal is a checkable condition about the world. It is done when its statement is true.
@@ -123,7 +123,7 @@ export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these 
 - ready — Ready is computed, never stored. A todo is ready when it is prepared and active, its wake time has passed or is absent, and every id in its needs is done or archived, because a need set aside is not going to happen.
 - display text — Display text is the always-visible register: the short line always on screen, assuming Tom's background.
 - ground-up explanation — A ground-up explanation is the register behind the more on every line of display text: self-contained, every term defined at first use, one complete HTML document shown fullscreen in the form the writing standard specifies.`;
-export const VOCABULARY_VERSION = "8957fb333b3b3d2a";
+export const VOCABULARY_VERSION = "fdd55cb533934518";
 /** Every word in the vocabulary, names only — the definitions live in
  *  WikiTom tts/vocabulary.json and `tts search define` answers from them. */
 export const VOCABULARY_TERMS: readonly string[] = [
@@ -222,39 +222,6 @@ export const VOCABULARY_TERMS: readonly string[] = [
   "walk",
   "WikiTom",
   "worker",
-];
-/** The graph's closed node kinds, from shared/graph.mjs NODE_KINDS. */
-export const GRAPH_NODE_KINDS: readonly string[] = [
-  "agent",
-  "area",
-  "evidence",
-  "heading",
-  "job",
-  "line",
-  "outcome",
-  "page",
-  "question",
-  "repo",
-  "rule",
-  "ruling",
-  "skill",
-  "source",
-  "term",
-  "todo",
-];
-/** The graph's closed edge kinds, from shared/graph.mjs EDGE_KINDS. */
-export const GRAPH_EDGE_KINDS: readonly string[] = [
-  "applies-to",
-  "continues",
-  "defines",
-  "depends-on",
-  "evidences",
-  "given",
-  "labeled",
-  "member-of",
-  "mentions",
-  "spawned",
-  "supersedes",
 ];
 // </vocabulary generated>
 

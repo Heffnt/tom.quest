@@ -1,6 +1,6 @@
 // scripts/check-vocabulary.mjs, run against a fixture repository.
 //
-// Each case writes a small tree that PASSES all six in-repo checks, breaks one
+// Each case writes a small tree that PASSES all five in-repo checks, breaks one
 // thing in it, and asserts the named failure. The tree is a fixture rather than
 // this repository because a guardrail whose test can only run where the thing it
 // guards is already correct proves nothing on the day it is not.
@@ -17,19 +17,18 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
 import { tempDir } from "../test/temp.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-vocabulary.mjs");
-const PASS_LINE = "check-vocabulary: the 6 in-repo checks passed; the render checks run in the nightly";
+const PASS_LINE = "check-vocabulary: the 5 in-repo checks passed; the render checks run in the nightly";
 const VERSION = "0123456789abcdef";
 
 const list = (values) => values.map((value) => `  ${JSON.stringify(value)},`).join("\n");
 
 /** The generated block, in the shape scripts/vocabulary.mjs renderSharedBlock
- * writes it: ONE block carrying the version, the term names and the graph's two
- * closed kind lists. */
-function sharedBlock({ version = VERSION, nodeKinds = NODE_KINDS, edgeKinds = EDGE_KINDS } = {}) {
+ * writes it: ONE block carrying the closed vocabulary, the version and the term
+ * names. */
+function sharedBlock({ version = VERSION } = {}) {
   return [
     `// <vocabulary generated version=${version} — scripts/vocabulary.mjs; do not edit>`,
     "export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:",
@@ -38,17 +37,11 @@ function sharedBlock({ version = VERSION, nodeKinds = NODE_KINDS, edgeKinds = ED
     "export const VOCABULARY_TERMS: readonly string[] = [",
     list(["batch", "todo"]),
     "];",
-    "export const GRAPH_NODE_KINDS: readonly string[] = [",
-    list([...nodeKinds]),
-    "];",
-    "export const GRAPH_EDGE_KINDS: readonly string[] = [",
-    list([...edgeKinds]),
-    "];",
     "// </vocabulary generated>",
   ].join("\n");
 }
 
-/** A tree that passes all six. `files` replaces or adds paths on top of it. */
+/** A tree that passes all five. `files` replaces or adds paths on top of it. */
 function fixture(files = {}) {
   const dir = tempDir("check-vocabulary-");
   const base = {
@@ -158,24 +151,6 @@ describe("check-vocabulary", () => {
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("convex/ttsEvals.ts:1: the commit key `${args.repo}@${args.sha}` is written inline");
-  });
-
-  it("6: names a kind list that is not what the graph mints", () => {
-    const result = run(
-      fixture({ "convex/ttsShared.ts": `${sharedBlock({ edgeKinds: EDGE_KINDS.slice(1) })}\n` }),
-    );
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("convex/ttsShared.ts: GRAPH_EDGE_KINDS is [");
-    expect(result.stderr).toContain("shared/graph.mjs mints [");
-  });
-
-  it("6: names a missing kind list", () => {
-    const shared = sharedBlock().replace("export const GRAPH_NODE_KINDS", "export const OTHER_KINDS");
-    const result = run(fixture({ "convex/ttsShared.ts": `${shared}\n` }));
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain(
-      "the generated block declares no `export const GRAPH_NODE_KINDS: readonly string[]`",
-    );
   });
 
   // THE TABLE-COUNT AND CONTEXT_CALLERS TESTS WENT WITH THEIR CHECKS. The first

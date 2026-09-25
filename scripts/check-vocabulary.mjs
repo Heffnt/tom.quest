@@ -4,12 +4,12 @@
 //
 // THE CHECK NUMBERS ARE SHARED WITH THE JARVIS REPOSITORY. The checker was one
 // script of eight in-repo checks while the box's code lived here; the split
-// kept each check where the files it reads live. tom.quest keeps 1, 2, 3, 5 and
-// 6, and check 4 over convex/, app/ and vqc/. Jarvis keeps check 4 over its own
-// worker/ and scripts/, check 7 (the graph's generator holds no model, no
-// network and no vector index) and check 8 (the generator's shape parser still
-// reads shared/skills.mjs), under the same numbers, so a failure named "check
-// 7" means the same thing in both.
+// kept each check where the files it reads live. tom.quest keeps 1, 2, 3 and 5,
+// and check 4 over convex/, app/ and vqc/; check 6 is retired (see below).
+// Jarvis keeps check 4 over its own worker/ and scripts/, check 7 (the graph's
+// generator holds no model, no network and no vector index) and check 8 (the
+// generator's shape parser still reads shared/skills.mjs), under the same
+// numbers, so a failure named "check 7" means the same thing in both.
 //
 // THE RENDER CHECKS WENT WITH THE GENERATORS. They asked scripts/graph.mjs and
 // scripts/vocabulary.mjs, both Jarvis's now, whether a WikiTom checkout's
@@ -21,7 +21,6 @@
 // repository root checks the repository root.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
-import { EDGE_KINDS, NODE_KINDS } from "../shared/graph.mjs";
 
 const failures = [];
 const notes = [];
@@ -127,7 +126,7 @@ function matches(re, text) {
   return out;
 }
 
-// ── The six in-repo checks ───────────────────────────────────────────────────
+// ── The five in-repo checks ──────────────────────────────────────────────────
 
 const shared = read(SHARED_PATH);
 if (shared === null) {
@@ -274,39 +273,13 @@ if (block !== null) {
   }
 }
 
-// 6. The graph's closed kind lists, in the SAME block. scripts/vocabulary.mjs
-//    writes ONE combined block — the vocabulary's version and term names and the
-//    graph's two kind lists, inside the one `<vocabulary generated …>` marker
-//    pair — so there is no second `<graph generated …>` pair to look for and
-//    this check does not invent one. What it checks is that the lists the block
-//    carries are the lists shared/graph.mjs actually mints, which is the
-//    same fact a separate marker would have carried.
-// witness: add a kind to STATIC_NODE_KINDS in shared/graph.mjs without
-// regenerating, or delete a line from GRAPH_EDGE_KINDS in the block.
-if (block !== null) {
-  const listOf = (name) => {
-    const declared = new RegExp(
-      `export const ${name}: readonly string\\[\\] = \\[\\r?\\n([\\s\\S]*?)\\r?\\n\\];`,
-    ).exec(block);
-    if (declared === null) return null;
-    return matches(/^ {2}"([^"]*)",\r?$/gm, declared[1]).map(({ match }) => match[1]);
-  };
-  for (const [name, expected] of [["GRAPH_NODE_KINDS", NODE_KINDS], ["GRAPH_EDGE_KINDS", EDGE_KINDS]]) {
-    const found = listOf(name);
-    if (found === null) {
-      failures.push(`${SHARED_PATH}: the generated block declares no \`export const ${name}: readonly string[]\``);
-      continue;
-    }
-    const want = [...expected].join(", ");
-    const got = found.join(", ");
-    if (want !== got) {
-      failures.push(
-        `${SHARED_PATH}: ${name} is [${got}] and shared/graph.mjs mints [${want}] — `
-          + `regenerate from a Jarvis checkout with \`node ${GENERATOR_PATH} --wikitom <dir> --tom-quest <this checkout> --write\``,
-      );
-    }
-  }
-}
+// THERE IS NO CHECK 6 ANY MORE, and there was. It compared the graph's two
+// closed kind lists, which the generated block used to carry, with the lists
+// shared/graph.mjs mints. Nothing read those two lists at runtime, and the
+// mirror tied every node-kind change here to a Jarvis pin bump and a
+// regeneration, so Tom agreed on 2026-09-25 to delete it; the generator stopped
+// writing the lists in the same round. The number stays retired rather than
+// reused, because the check numbers are shared with the Jarvis repository.
 
 // THERE IS NO TABLE-COUNT CHECK AND NO CONTEXT_CALLERS CHECK, and there were.
 //
@@ -331,4 +304,4 @@ if (failures.length > 0) {
   for (const failure of failures) console.error("  - " + failure);
   process.exit(1);
 }
-console.log("check-vocabulary: the 6 in-repo checks passed; the render checks run in the nightly");
+console.log("check-vocabulary: the 5 in-repo checks passed; the render checks run in the nightly");

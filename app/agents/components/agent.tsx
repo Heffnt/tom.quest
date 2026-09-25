@@ -739,9 +739,10 @@ function Lead({
         )}
       </div>
       {rowsEmpty && run !== null && (
-        // The 30-day row window has passed this run by, or it was never
-        // ingested at all (§23.4). The store still holds the version, so the
-        // line carries the one control that brings it back.
+        // The 30-day row window has passed this agent by, or it was never
+        // ingested at all (§23.4). The store keeps the newest version of this
+        // agent's file and serves an older request from it, so the line
+        // carries the one control that brings the rows back.
         <div className="font-mono text-[10px] text-text-faint break-words flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span>
             rows not in the record · {run.file.path.split(/[\\/]/).pop() || "no file"} ·
