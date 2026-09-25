@@ -485,6 +485,68 @@ describe("agents", () => {
     expect(other?.sessionId).toBeUndefined();
   });
 
+  // The backfill of the old sessions sweeps agent files that carry no
+  // envelope and no end marker, long after their sessions ended. The session
+  // row is the fact: witness — take the file's silence as the answer and
+  // every old session's run reads as an unknown worker, abandoned.
+  describe("a session's root run", () => {
+    const boxRun = (id: string, overrides: Record<string, unknown> = {}) =>
+      run({ runId: `claude:box:${id}`, rootRunId: `claude:box:${id}`, host: "box", kind: "unknown", ...overrides });
+    const at = (t: SchemaTest, runId: string) =>
+      t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+    const defaulted = (t: SchemaTest) =>
+      t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((entry) => entry.kind === "agents-environment-defaulted"));
+
+    it("is the session's, and ended with it, when the file says nothing", async () => {
+      const t = convexTest(schema, modules);
+      const sessionId = await session(t, { status: "ended", sdkSessionId: "sdk-old-session" });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(boxRun("sdk-old-session")) as never)).toMatchObject({ ok: true });
+      expect(await at(t, "claude:box:sdk-old-session")).toMatchObject({ sessionId, environment: "session", kind: "session", status: "ended" });
+      expect(await defaulted(t)).toEqual([]);
+    });
+
+    it("corrects a run the record called a worker and abandoned before its session was known", async () => {
+      const t = convexTest(schema, modules);
+      const abandoned = { status: "abandoned", abandonedAt: 5 };
+      await t.mutation(internal.agents.internalIngest, ingest(boxRun("sdk-late-link", abandoned)) as never);
+      expect(await at(t, "claude:box:sdk-late-link")).toMatchObject({ environment: "worker", kind: "unknown", status: "abandoned", abandonedAt: 5 });
+      const sessionId = await session(t, { status: "ended", sdkSessionId: "sdk-late-link" });
+      await t.mutation(internal.agents.internalIngest, retry(boxRun("sdk-late-link", { ...abandoned, file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
+      const stored = await at(t, "claude:box:sdk-late-link");
+      expect(stored).toMatchObject({ sessionId, environment: "session", kind: "session", status: "ended" });
+      expect(stored?.abandonedAt).toBeUndefined();
+    });
+
+    it("stays abandoned while its session has no ending, and keeps an ending its file names", async () => {
+      const t = convexTest(schema, modules);
+      await session(t, { status: "idle", sdkSessionId: "sdk-live" });
+      await t.mutation(internal.agents.internalIngest, ingest(boxRun("sdk-live", { status: "abandoned", abandonedAt: 5 })) as never);
+      expect(await at(t, "claude:box:sdk-live")).toMatchObject({ environment: "session", status: "abandoned", abandonedAt: 5 });
+
+      await session(t, { status: "failed", sdkSessionId: "sdk-failed" });
+      await t.mutation(internal.agents.internalIngest, ingest(boxRun("sdk-failed")) as never);
+      expect((await at(t, "claude:box:sdk-failed"))?.status).toBe("failed");
+
+      await session(t, { status: "ended", sdkSessionId: "sdk-said-failed" });
+      await t.mutation(internal.agents.internalIngest, ingest(boxRun("sdk-said-failed", { status: "failed" })) as never);
+      expect((await at(t, "claude:box:sdk-said-failed"))?.status).toBe("failed");
+    });
+
+    it("keeps an environment the envelope named, and a kind the file named", async () => {
+      const t = convexTest(schema, modules);
+      await session(t, { status: "ended", sdkSessionId: "sdk-named" });
+      await t.mutation(internal.agents.internalIngest, ingest(boxRun("sdk-named", { environment: "orchestrator", kind: "job" })) as never);
+      expect(await at(t, "claude:box:sdk-named")).toMatchObject({ environment: "orchestrator", kind: "job", status: "ended" });
+    });
+
+    it("is linked by the session that names it when the SDK id does not match", async () => {
+      const t = convexTest(schema, modules);
+      const sessionId = await session(t, { status: "ended", runId: "claude:box:named-by-run-id" });
+      await t.mutation(internal.agents.internalIngest, ingest(boxRun("named-by-run-id")) as never);
+      expect(await at(t, "claude:box:named-by-run-id")).toMatchObject({ sessionId, environment: "session", status: "ended" });
+    });
+  });
+
   it("gives a session's next run the run it continues, and never links the old run to itself", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { sdkSessionId: "sdk-after-reopen", continuesRunId: "claude:box:sdk-before-reopen" });
@@ -640,12 +702,15 @@ describe("agents", () => {
 
   it("admits only terminal run rows and does not suppress their later transition", async () => {
     const t = convexTest(schema, modules);
-    const sessionId = await session(t);
+    // The run lands while its session is live, so its status stays the
+    // file's; the session then ends before the next page arrives.
+    const sessionId = await session(t, { status: "running" });
     await t.mutation(internal.agents.internalIngest, ingest(run({ sessionId }), [], []) as never);
+    await t.run((ctx) => ctx.db.patch(sessionId, { status: "ended" }));
     const unknown = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(unknown.eligible).toEqual([]);
     await expect(t.mutation(internal.agents.internalShadowCompare, { sessionId })).rejects.toThrow("run is not terminal");
-    await t.mutation(internal.agents.internalIngest, retry(run({ sessionId, status: "ended" }), [], []) as never);
+    await t.mutation(internal.agents.internalIngest, retry(run({ sessionId }), [], []) as never);
     const terminal = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(terminal.eligible).toEqual([{ sessionId, runId: "claude:laptop:root-run" }]);
   });

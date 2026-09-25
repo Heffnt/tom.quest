@@ -4278,6 +4278,28 @@ http.route({
   handler: sessionsTranscript,
 });
 
+// GET /sessions/backfill-list?cursor= — the sessions whose rows are still the
+// daemon's, for the box's one-off backfill pass (Jarvis sweep
+// --backfill-sessions): { sessions: [{ sessionId, runId, sdkSessionId }],
+// cursor }. Ask again with the cursor until it is null; a page may be empty
+// while it is not (convex/claudeSessions.ts internalBackfillList). Behind the
+// daemon's key, since it names every old session's run.
+const sessionsBackfillList = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const cursor = new URL(request.url).searchParams.get("cursor");
+  try {
+    const result = await ctx.runQuery(internal.claudeSessions.internalBackfillList, {
+      cursor: cursor === null || cursor === "" ? null : cursor,
+    });
+    return jsonResponse(200, result);
+  } catch {
+    return jsonResponse(400, { error: "invalid cursor" });
+  }
+});
+
+http.route({ path: "/sessions/backfill-list", method: "GET", handler: sessionsBackfillList });
+
 // GET /sessions/secrets — every value waiting in the /secrets mailbox
 // (convex/secrets.ts), as { secrets: [{ name, value, setAt }] }. The daemon
 // writes each into its env file and answers POST /sessions/secrets/taken

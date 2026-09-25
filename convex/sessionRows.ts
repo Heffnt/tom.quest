@@ -2,11 +2,11 @@
 //
 // ONE TRANSCRIPT PATH (Tom's ruling of 2026-09-25, "I want one transcript
 // path. dry absolutism."). A session's rows are its agent file's: the file the
-// CLI itself writes, swept into claudeMessages under the session's runId. The
-// session daemon writes no rows once it sends `rowsFromFiles`, which sets
-// `rowsFrom: "runs"` on the session. Sessions from before that cutover keep
-// the rows the daemon wrote, under their sessionId, until the backfill
-// replaces them.
+// CLI itself writes, swept into claudeMessages under the session's runId. A
+// session is born with `rowsFrom: "runs"` (claudeSessions.insertSession), and
+// the daemon's `rowsFromFiles` set it on the sessions born before that.
+// Sessions from before the cutover keep the rows the daemon wrote, under their
+// sessionId, until the backfill replaces them.
 //
 // Every reader of a session's rows asks rowSource below which of the two it
 // is reading, so the answer is written once: the page (getMessages), the fork
