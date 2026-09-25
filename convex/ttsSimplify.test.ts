@@ -17,6 +17,9 @@ import {
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+/** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
+const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
+
 /** A fixed instant, so every assertion below is arithmetic rather than a race
  *  with the clock. */
 const NOW = 1_800_000_000_000;
@@ -99,7 +102,7 @@ async function seedMessage(
   content: unknown,
 ) {
   await t.run(async (ctx) => {
-    await ctx.db.insert("claudeMessages", { runId, seq, turn: 1, kind, content, createdAt: NOW });
+    await ctx.db.insert("claudeMessages", { runId, seq, turn: 1, kind, content, provenance: ROW_PROVENANCE, createdAt: NOW });
   });
 }
 

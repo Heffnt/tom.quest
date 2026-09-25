@@ -1,22 +1,5 @@
-// THE ROWS OF ONE RUN — the subagent fold, the two meanings of
-// parentToolUseId, and what the page shows beside the rows.
-//
-// The fold's live half is gone (one transcript path, 2026-09-25). It came from
-// claudeSessions.getOpenToolWork, which read the daemon's rows as they were
-// written during a turn; a session's rows are now its agent file's and land at
-// the turn's end, so "this subagent is running, and this is the call it is
-// inside" had nothing left to be read from. The fold says who the subagent is,
-// what it was sent to do and how many rows it produced, and nothing else.
-//
-// The window AgentRows groups can hold rows from two writers, and
-// `parentToolUseId` does not mean the same thing in both. On a daemon row it
-// means "this row belongs to that subagent's output"; on a file-derived row it
-// means "this row answers that tool call" — worker/agents/ingest.mjs stamps
-// it on EVERY tool-result and child-run row. Fold on the field alone and every
-// tool result in a run file becomes a one-row fold of its own, which is a
-// silent failure: the page still renders, it just buries the run.
-// `provenance === undefined` is the test that separates them, and nothing but
-// a rendered case can hold it.
+// THE ROWS OF ONE RUN — the paging control, and what the page shows beside
+// the rows.
 //
 // Beside the rows: Tom's delivered turn stays on the page until its row lands
 // (getPendingInbound returns it), and the daemon's notes are drawn between the
@@ -65,21 +48,7 @@ import AgentRows from "./agent-rows";
 const NOW = Date.now();
 const SESSION_ID = "s1" as unknown as Id<"claudeSessions">;
 
-/** One finalized row, in the shape the row readers return. */
-function row(over: Record<string, unknown>): TranscriptMessage {
-  return {
-    _id: "m1",
-    _creationTime: 0,
-    sessionId: "s1",
-    seq: 1,
-    kind: "assistant-text",
-    content: "hello",
-    createdAt: NOW,
-    ...over,
-  } as unknown as TranscriptMessage;
-}
-
-/** A file-derived row's provenance stamp — the field the fold predicate reads. */
+/** What worker/agents/ingest.mjs stamps on every row it parses out of a file. */
 const PROVENANCE = {
   file: "/srv/runs/fixture.jsonl",
   fileVersion: "f".repeat(64),
@@ -89,6 +58,21 @@ const PROVENANCE = {
   parserVersion: "claude/1",
   sourceKind: "user",
 };
+
+/** One finalized row, in the shape the row readers return. */
+function row(over: Record<string, unknown>): TranscriptMessage {
+  return {
+    _id: "m1",
+    _creationTime: 0,
+    runId: "claude:box:s1",
+    seq: 1,
+    kind: "assistant-text",
+    content: "hello",
+    createdAt: NOW,
+    provenance: PROVENANCE,
+    ...over,
+  } as unknown as TranscriptMessage;
+}
 
 /** The live queries AgentRows reads beside its rows. */
 function load(over: { pending?: unknown[]; notes?: unknown[]; buf?: unknown } = {}) {
@@ -125,7 +109,7 @@ function show(
   );
 }
 
-/** The Task call that spawned the subagent, as the daemon writes it. */
+/** A Task call, as the parser writes it. */
 const TASK_ROW = row({
   _id: "m-task",
   seq: 1,
@@ -137,92 +121,10 @@ const TASK_ROW = row({
   },
 });
 
-/** One row the subagent produced, which is what the fold holds. */
-const CHILD_ROW = row({
-  _id: "m-child",
-  seq: 2,
-  parentToolUseId: "task-1",
-  kind: "assistant-text",
-  content: "reading convex/ttsShared.ts",
-});
-
 beforeEach(() => {
   convex.data = {};
   convex.seen = [];
   cleanup();
-});
-
-describe("the subagent fold", () => {
-  it("names the subagent and its errand from its Task row, and claims nothing live", () => {
-    load();
-    show([TASK_ROW, CHILD_ROW]);
-    expect(body()).toContain("agent");
-    expect(body()).toContain("explorer");
-    expect(body()).toContain("find the readiness home");
-    expect(body()).toContain("1 rows");
-    expect(body()).not.toContain("now:");
-    expect(convex.seen.some((call) => call.startsWith("claudeSessions:getOpenToolWork"))).toBe(false);
-  });
-
-  it("keeps the bare id for a subagent whose Task row has been paged out", () => {
-    load();
-    show([CHILD_ROW]);
-    expect(body()).toContain("agent task-1");
-  });
-
-  // THE PREDICATE IS `provenance === undefined`, NOT `parentToolUseId`.
-  //
-  // The two writers of a row mean different things by the same field. On a
-  // daemon row parentToolUseId says "this row is part of that subagent's
-  // output" — the set the fold was written for. On a file-derived row
-  // worker/agents/ingest.mjs stamps it on every tool-result and every child-run
-  // row to say "this row answers that tool call". Folding on the field alone
-  // would therefore wrap every single tool result in a one-row agent fold, and
-  // a window holding both writers' rows — which is exactly what a session that
-  // has cut over to its run file holds — would read as a wall of folds with
-  // the main thread hidden inside them. Nothing else in the file distinguishes
-  // the two, so the case builds one row of each, same parentToolUseId, and
-  // looks for the <details>.
-  it("folds a daemon row on parentToolUseId and leaves a file-derived one alone", () => {
-    load();
-    const daemonResult = row({
-      _id: "m-daemon-result",
-      seq: 3,
-      kind: "tool-result",
-      parentToolUseId: "task-1",
-      content: {
-        toolUseId: "toolu-daemon",
-        content: "daemon result, inside the subagent's output",
-        isError: false,
-      },
-    });
-    const fileResult = row({
-      _id: "m-file-result",
-      seq: 4,
-      kind: "tool-result",
-      parentToolUseId: "task-1",
-      provenance: PROVENANCE,
-      content: {
-        toolUseId: "toolu-file",
-        content: "file-derived result, answering its own call",
-        isError: false,
-      },
-    });
-    show([daemonResult, fileResult]);
-
-    // Nothing is opened: a closed <details> still holds its body in the DOM,
-    // and the question here is which side of the fold a row is on, not whether
-    // the reader can see it. (run.test.tsx opens folds, and says there why
-    // clicking a <summary> is not how it is done in this jsdom.)
-    const daemonLine = screen.getByText(
-      "daemon result, inside the subagent's output",
-    );
-    const fileLine = screen.getByText(
-      "file-derived result, answering its own call",
-    );
-    expect(daemonLine.closest("details")).not.toBeNull();
-    expect(fileLine.closest("details")).toBeNull();
-  });
 });
 
 describe("the paging control", () => {

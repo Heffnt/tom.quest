@@ -14,6 +14,9 @@ import { inboundRowIdOf } from "./sessionRows";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+/** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
+const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
+
 const RUN = "claude:box:file-backed-session";
 
 async function withTom(t: ReturnType<typeof convexTest>) {
@@ -49,7 +52,7 @@ async function fileRow(
 ) {
   return await t.run((ctx) =>
     ctx.db.insert("claudeMessages", {
-      runId, seq, turn: 1, kind, content, depth: 0, digest: "0123456789abcdef", createdAt: 10_000 + seq,
+      runId, seq, turn: 1, kind, content, depth: 0, digest: "0123456789abcdef", provenance: ROW_PROVENANCE, createdAt: 10_000 + seq,
     } as never),
   );
 }
@@ -204,7 +207,7 @@ describe("the whole payload behind a cut agent file row", () => {
         await ctx.db.insert("claudeMessageOverflow", { runId: RUN, seq: 7, index, chunkCount: chunks.length, text, createdAt: 1 });
       }
       return await ctx.db.insert("claudeMessages", {
-        runId: RUN, seq: 7, turn: 1, kind: "tool-result", content: { toolUseId: "t", content: "ab" }, depth: 0, overflow, createdAt: 1,
+        runId: RUN, seq: 7, turn: 1, kind: "tool-result", content: { toolUseId: "t", content: "ab" }, depth: 0, overflow, provenance: ROW_PROVENANCE, createdAt: 1,
       });
     });
     const read = await tom.query(api.claudeSessions.getMessageOverflow, { messageId });

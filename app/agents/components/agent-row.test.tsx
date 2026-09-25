@@ -15,13 +15,11 @@
 //     the WHOLE string rather than a prefix.
 //   - THE RAW LEVEL STOPS BEING CHECKABLE. Provenance (which file, which lines,
 //     which parser) and the stored entry are what make a row verifiable against
-//     the file it came from. A row with no provenance has to SAY so — an empty
-//     header reads as a row nobody can question rather than a daemon row that
-//     predates the cutover — and the level has to name the query that delivered
+//     the file it came from, and the level has to name the query that delivered
 //     it, because the two doors are different surfaces with different contracts.
-//   - THE FALLBACK IS MISSING. content is v.any() with THREE writers (the
-//     session daemon, and the Claude and Codex parsers in worker/agents/ingest.mjs)
-//     and `kind` is a union a fourth runtime will grow. A row whose kind no case
+//   - THE FALLBACK IS MISSING. content is v.any() with two writers (the Claude
+//     and Codex parsers in worker/agents/ingest.mjs)
+//     and `kind` is a union a third runtime will grow. A row whose kind no case
 //     matches must render as itself, not throw — one unhandled kind would take
 //     the whole transcript down, and the row that broke it would be exactly the
 //     row nobody had seen before. That is this phase's named blocker, and it has
@@ -368,7 +366,7 @@ describe("the conversation is never folded", () => {
   // witness: gate the control on sessionId and an agent file row — every row
   // of every session since the cutover — says it was cut and offers no way to
   // the rest of it.
-  it("a cut agent file row offers the whole payload, as a daemon row does", () => {
+  it("a cut row offers the whole payload", () => {
     render(
       <AgentRow
         row={row({
@@ -521,22 +519,6 @@ describe("a Codex row reads the same as its Claude twin", () => {
 });
 
 // ── The raw level's two halves ──────────────────────────────────────────────
-
-it("a row with no provenance says so rather than showing an empty header", () => {
-  // A daemon row predates the run-file cutover: there is no file behind it, and
-  // an empty header would read as a row nobody can check.
-  render(
-    <AgentRow
-      row={row({ kind: "thinking", content: { text: "a daemon row" }, provenance: undefined })}
-      source="session"
-    />,
-  );
-  click(2);
-
-  expect(screen.getByText("daemon row · no agent file")).toBeTruthy();
-  expect(body()).not.toContain("parser runs-parser-1");
-  expect(body()).toContain("seq 1000 · read by claudeSessions.getMessages");
-});
 
 it("the raw level names the query that delivered the row", () => {
   render(<AgentRow row={row({ kind: "thinking", content: { text: "t" } })} source="run" />);

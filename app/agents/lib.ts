@@ -134,8 +134,9 @@ export function toolNameOf(content: unknown): string {
 
 /**
  * Best-effort tool-use id out of a tool-call content payload — the id a
- * subagent row's parentToolUseId points back at. content is v.any(), so the
- * same closed-list idiom as toolNameOf rather than one assumed field name.
+ * tool-result or child-run row's parentToolUseId points back at. content is
+ * v.any(), so the same closed-list idiom as toolNameOf rather than one assumed
+ * field name.
  */
 export function toolUseIdOf(content: unknown): string | undefined {
   if (typeof content === "object" && content !== null) {
@@ -154,35 +155,6 @@ export function toolInputOf(content: unknown): unknown {
     if ("input" in c) return c.input;
   }
   return content;
-}
-
-/**
- * The subagent type of a Task tool-call. `subagent_type` is the SDK's own
- * input field name and is quoted as-is — the surface never renames it.
- */
-export function subagentTypeOf(content: unknown): string | undefined {
-  const input = toolInputOf(content);
-  if (typeof input === "object" && input !== null) {
-    const i = input as Record<string, unknown>;
-    if (typeof i.subagent_type === "string") return i.subagent_type;
-  }
-  return undefined;
-}
-
-/**
- * What a Task tool-call said the subagent is for — the SDK's own `description`
- * input, quoted as-is. It is the line the retired agent panel showed beside a
- * running subagent; the transcript's fold shows it now, from the same row.
- */
-export function taskDescriptionOf(content: unknown): string | undefined {
-  const input = toolInputOf(content);
-  if (typeof input === "object" && input !== null) {
-    const i = input as Record<string, unknown>;
-    if (typeof i.description === "string" && i.description !== "") {
-      return i.description;
-    }
-  }
-  return undefined;
 }
 
 // ── tool-result / error unwrapping ───────────────────────────────────────────
