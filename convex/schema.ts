@@ -17,6 +17,7 @@ import {
   DECISION_KIND,
   FABLE_AVAILABILITY,
   USAGE_LIMIT_REPORT,
+  VOCABULARY_COUNTS,
 } from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
@@ -1173,6 +1174,15 @@ export default defineSchema({
     committedAt: v.number(),
     generatedAt: v.number(),
     wrote: v.boolean(), // whether tts/vocabulary.json was written that night
+    // What `tts search vocabulary` prints beside the terms, posted from the
+    // Jarvis follow-up on (widen first: a row posted before it has none, and
+    // the page leaves out what the row does not carry). `section` is the spec
+    // section the vocabulary is fixed in, printed on every term's row;
+    // `counts` are the render's other sections; `tomQuestCommit` the tom.quest
+    // commit it was generated from.
+    section: v.optional(v.string()),
+    counts: v.optional(VOCABULARY_COUNTS),
+    tomQuestCommit: v.optional(v.string()),
     terms: v.array(v.object({
       term: v.string(),
       kind: v.string(),

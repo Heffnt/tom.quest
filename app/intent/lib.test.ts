@@ -4,9 +4,14 @@ import {
   dateLabel,
   filterLines,
   groupByKind,
+  joinLines,
+  segmentBullets,
   sourcesOf,
   type IntentLine,
 } from "./lib";
+
+// EVERY FIXTURE HERE IS INVENTED. His pages are private to WikiTom and this
+// repository is public.
 
 function line(over: Partial<IntentLine> = {}): IntentLine {
   return {
@@ -86,5 +91,77 @@ describe("sourcesOf and countVoices", () => {
   it("counts the three voices", () => {
     expect(countVoices([line(), line({ voice: "inferred" }), line({ voice: "inferred" })]))
       .toEqual({ his: 1, inferred: 2, unattributed: 0 });
+  });
+});
+
+describe("segmentBullets", () => {
+  const prompt = [
+    "MODEL-OF-TOM FILES (WikiTom commit abc): model-of-tom/agent-rules.md",
+    "",
+    "── model-of-tom/agent-rules.md ──",
+    "# Agent rules",
+    "",
+    "## Never",
+    "- Guess.",
+    "- Spend money,",
+    "  or message anyone.",
+    "",
+    "SKILLS (WikiTom commit abc)",
+  ].join("\n");
+
+  it("cuts out each bullet of a tracked page, with the lines it wraps onto", () => {
+    const parts = segmentBullets(prompt);
+    expect(parts.filter((part) => part.kind === "bullet")).toEqual([
+      { kind: "bullet", text: "- Guess.", source: "model-of-tom/agent-rules.md", key: "Guess." },
+      {
+        kind: "bullet",
+        text: "- Spend money,\n  or message anyone.",
+        source: "model-of-tom/agent-rules.md",
+        key: "Spend money, or message anyone.",
+      },
+    ]);
+  });
+
+  it("keeps the text verbatim", () => {
+    expect(segmentBullets(prompt).map((part) => part.text).join("\n")).toBe(prompt);
+  });
+
+  it("leaves the bullets of an untracked file as plain text", () => {
+    const body = "── model-of-tom/writing.md ──\n- Be plain.\n\n── model-of-tom/intent.md ──\n- Ship it.";
+    const bullets = segmentBullets(body).filter((part) => part.kind === "bullet");
+    expect(bullets.map((part) => part.text)).toEqual(["- Ship it."]);
+  });
+
+  it("finds no bullet in a text with no file header", () => {
+    expect(segmentBullets("- a\n- b")).toEqual([{ kind: "text", text: "- a\n- b" }]);
+  });
+});
+
+describe("joinLines", () => {
+  const listed = line({
+    id: "model-of-tom/agent-rules.md#9",
+    kind: "standing-rule",
+    text: "Spend money,   or message anyone.",
+    source: "model-of-tom/agent-rules.md",
+    voice: "his",
+  });
+
+  it("joins a bullet to its line on file and spacing-normalised text", () => {
+    const rows = joinLines(segmentBullets("── model-of-tom/agent-rules.md ──\n- Spend money,\n  or message anyone."), [listed]);
+    expect(rows[1]).toEqual({ kind: "bullet", text: "- Spend money,\n  or message anyone.", line: listed });
+  });
+
+  it("never joins the same text written in another file", () => {
+    const rows = joinLines(segmentBullets("── model-of-tom/priorities.md ──\n- Spend money, or message anyone."), [listed]);
+    expect(rows[1]).toMatchObject({ kind: "bullet", line: { source: "model-of-tom/priorities.md", evidence: [] } });
+    expect(rows[1].kind === "bullet" && rows[1].line.id).not.toBe(listed.id);
+  });
+
+  it("opens a bullet the list does not hold as a line with no evidence", () => {
+    const rows = joinLines(segmentBullets("── model-of-tom/intent.md ──\n- A newer line (inferred)"), []);
+    expect(rows[1]).toMatchObject({
+      kind: "bullet",
+      line: { kind: "direction", voice: "inferred", locator: "unmatched", evidence: [] },
+    });
   });
 });

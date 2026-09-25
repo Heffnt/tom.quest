@@ -1264,3 +1264,19 @@ export type TtsTab = "calendar" | "everything";
 export function ttsTabLink(tab: TtsTab): string {
   return `https://tom.quest/tts?tab=${tab}`;
 }
+
+/**
+ * The counts `tts search vocabulary` prints after `terms=` in its header: the
+ * render's other sections, in the order printed. The terms themselves are
+ * counted from the row, so they are not one of these. convex/schema.ts's
+ * ttsVocabulary row and the POST /tts/vocabulary door both use this.
+ */
+export const VOCABULARY_COUNT_NAMES = ["entities", "jobs", "search", "skills", "repos", "channels"] as const;
+export const VOCABULARY_COUNTS = v.object({
+  entities: v.number(),
+  jobs: v.number(),
+  search: v.number(),
+  skills: v.number(),
+  repos: v.number(),
+  channels: v.number(),
+});

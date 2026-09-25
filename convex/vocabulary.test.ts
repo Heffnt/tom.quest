@@ -82,6 +82,28 @@ describe("POST /tts/vocabulary", () => {
     expect(row!.disagreements[0].rows).toHaveLength(2);
   });
 
+  it("stores the header fields tts search prints, when the night sends them", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const counts = { entities: 17, jobs: 35, search: 15, skills: 16, repos: 9, channels: 7 };
+    const res = await post(t, { section: "12.1", counts, tomQuestCommit: "c".repeat(40) });
+    expect(res.status).toBe(200);
+    const row = await (await asTom(t)).query(api.vocabulary.current, {});
+    expect(row).toMatchObject({ section: "12.1", counts, tomQuestCommit: "c".repeat(40) });
+  });
+
+  // WIDEN FIRST: the nightly that sends them lands after this door does, and
+  // a post without them must keep storing exactly what it stored before.
+  it("stores a post without them, with none of them on the row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await post(t);
+    const row = await (await asTom(t)).query(api.vocabulary.current, {});
+    expect(row).not.toHaveProperty("section");
+    expect(row).not.toHaveProperty("counts");
+    expect(row).not.toHaveProperty("tomQuestCommit");
+  });
+
   it("replaces the one row rather than adding a second", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
@@ -112,6 +134,10 @@ describe("POST /tts/vocabulary", () => {
     [{ terms: [] }, "terms (non-empty array) required"],
     [{ terms: [TERM, TERM] }, "posted twice"],
     [{ disagreements: [{ code: "D1" }] }, "code, subject, fix and rows"],
+    [{ section: " " }, "section"],
+    [{ tomQuestCommit: "short" }, "tomQuestCommit"],
+    [{ counts: { entities: 1, jobs: 1, search: 1, skills: 1, repos: 1 } }, "counts.channels"],
+    [{ counts: { entities: -1, jobs: 1, search: 1, skills: 1, repos: 1, channels: 1 } }, "counts.entities"],
   ])("refuses a malformed post (%#)", async (over, message) => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);

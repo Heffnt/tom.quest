@@ -8,9 +8,9 @@
 // at, because settling one is choosing a wording and a choice needs the two
 // wordings in front of it.
 //
-// While any of these stand, `scripts/vocabulary.mjs` writes no
-// `tts/vocabulary.json` — which is why this list is above the words and not
-// below them.
+// While any of these stand, the Jarvis repository's `scripts/vocabulary.mjs`
+// writes no `tts/vocabulary.json`. No agent is shown them, so they are the
+// page's second view rather than part of what an agent reads.
 
 import type { Disagreement } from "../lib";
 

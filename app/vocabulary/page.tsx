@@ -3,7 +3,7 @@ import VocabularyClient from "./vocabulary-client";
 
 export const metadata: Metadata = {
   title: "Vocabulary | tom.Quest",
-  description: "Every word TTS uses, what it means, and where it is defined.",
+  description: "Every word TTS uses, as an agent's tts search prints it.",
 };
 
 export default function VocabularyPage() {

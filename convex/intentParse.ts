@@ -56,6 +56,37 @@ export type IntentLine = {
   evidence: EvidenceEntry[];
 };
 
+/**
+ * The callers the agent view offers: the ones whose context is assembled with
+ * no subject — the five HTTP doors that read internalContextPrelude, and the
+ * laptop's session-start hook. Every other caller (the session opener, a
+ * runner step) is granted skills off its subject, so a view of it with none
+ * would show grants no run of it ever gets.
+ *
+ * Here, in the pure half, because the page offers the list the query accepts.
+ */
+export const AGENT_VIEW_CALLERS = [
+  "planner-context",
+  "capture-context",
+  "time-notes",
+  "weekly-input",
+  "simplify-input",
+  "laptop",
+] as const;
+
+export type AgentViewCaller = (typeof AGENT_VIEW_CALLERS)[number];
+
+/** The model-of-tom pages whose lines are intent, and which kind each is. Each
+ *  page's evidence file says what its lines rest on; the query reads the two
+ *  together, or a line arrives with nothing behind it. The agent view finds
+ *  the same bullets in the prompt and in the `know-intent` body, and joins
+ *  them back to the query's lines. */
+export const MODEL_OF_TOM_PAGES = [
+  { name: "intent", path: "model-of-tom/intent.md", kind: "direction" as const },
+  { name: "priorities", path: "model-of-tom/priorities.md", kind: "standing-rule" as const },
+  { name: "agent-rules", path: "model-of-tom/agent-rules.md", kind: "standing-rule" as const },
+];
+
 const MONTHS: Record<string, number> = {
   january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
   july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
@@ -104,7 +135,7 @@ function leadingDate(text: string): string | null {
 /** A page's bullets are matched to their evidence entries by their text, and a
  *  line rewritten in one file and not the other must not match by accident, so
  *  the key is the whole line with only its spacing normalised. */
-function evidenceKey(text: string): string {
+export function evidenceKey(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
@@ -206,7 +237,7 @@ function newestEvidenceDate(entries: EvidenceEntry[]): { at: number | null; text
  *                       calling it an inference about HIM would be a claim the
  *                       evidence file does not make.
  */
-function voiceOf(text: string, entries: EvidenceEntry[]): IntentVoice {
+export function voiceOf(text: string, entries: EvidenceEntry[]): IntentVoice {
   if (/\(inferred\)\s*$/.test(text)) return "inferred";
   if (entries.some((item) => item.form === "said" || item.form === "paraphrase")) return "his";
   if (entries.some((item) => item.form === "rests on")) return "inferred";
