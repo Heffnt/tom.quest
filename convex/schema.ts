@@ -1211,6 +1211,11 @@ export default defineSchema({
       v.literal("weekly"),
       v.literal("adhoc"),
       v.literal("block"), // works through a SET of items (a category block)
+      // A conversation with Tom about his mental health (Tom's ruling
+      // 2026-09-25). Opens on no repo, its opener routes the mental-health
+      // area subject, and the nightly learning passes leave it alone: the
+      // session owns the mental-health page itself.
+      v.literal("therapy"),
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
     // The BATCH subject (ledger graduation session-repos-need-batch-subject,

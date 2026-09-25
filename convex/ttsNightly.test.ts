@@ -596,6 +596,50 @@ describe("GET /tts/learning-input", () => {
     ]);
   }, 120_000);
 
+  // Tom's ruling 2026-09-25: a therapy session owns the mental-health page
+  // itself, so neither learning pass reads it. The therapy row here names a
+  // repo on purpose, written straight to the table past insertSession's
+  // refusal, so the repo pass drops it by its kind and not by its "none".
+  it("leaves therapy sessions out of both learning passes", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const session = (title: string, kind: "adhoc" | "therapy") =>
+        ctx.db.insert("claudeSessions", {
+          title,
+          kind,
+          repo: "tom.quest",
+          repos: ["tom.quest"],
+          status: "ended",
+          statusChangedAt: now,
+          outcome: "completed",
+          outcomeSummary: `${title} ended`,
+          nextSeq: 1,
+          createdAt: now,
+        });
+      for (const [title, kind, text] of [
+        ["the site", "adhoc", "ship the page"],
+        ["therapy", "therapy", "a therapy turn"],
+      ] as const) {
+        const sessionId = await session(title, kind);
+        await ctx.db.insert("claudeInbound", {
+          sessionId,
+          kind: "user-turn",
+          text,
+          author: "tom",
+          status: "done",
+          createdAt: now,
+        });
+      }
+    });
+    const res = await get(t, `/tts/learning-input?since=${now - 3_600_000}&until=${now + 3_600_000}`);
+    expect(res.status).toBe(200);
+    const input = await res.json();
+    expect(input.tomTurns.map((x: { text: string }) => x.text)).toEqual(["ship the page"]);
+    expect(input.repoSessions.map((x: { title: string }) => x.title)).toEqual(["the site"]);
+  });
+
   it("refuses a missing or inverted window", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });

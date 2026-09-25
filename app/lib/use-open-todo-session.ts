@@ -67,7 +67,7 @@ export function useOpenSession() {
 
   const open = async (args: {
     title: string;
-    kind: "gate" | "focus-item" | "weekly" | "adhoc" | "block";
+    kind: "gate" | "focus-item" | "weekly" | "adhoc" | "block" | "therapy";
     initialPrompt: string;
     todoId?: Id<"dtsTodos">;
     blockCategory?: string;

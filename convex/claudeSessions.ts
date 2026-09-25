@@ -504,6 +504,7 @@ const SESSION_KIND = v.union(
   v.literal("weekly"),
   v.literal("adhoc"),
   v.literal("block"),
+  v.literal("therapy"),
 );
 
 /**
@@ -562,8 +563,9 @@ const TEXT_SCAN_SKIPPED: readonly string[] = ["Jarvis"];
 
 type SessionSeed = {
   title: string;
-  kind: "gate" | "focus-item" | "weekly" | "adhoc" | "block";
-  /** Already through resolveSessionRepos. Empty = the empty-scratch posture. */
+  kind: Doc<"claudeSessions">["kind"];
+  /** Already through resolveSessionRepos. Empty = the empty-scratch posture.
+   * Kind "therapy" must name none: insertSession refuses it otherwise. */
   repos: string[];
   todoId?: Id<"dtsTodos">;
   blockCategory?: string;
@@ -614,6 +616,16 @@ export async function insertSession(
   now: number,
 ): Promise<Id<"claudeSessions">> {
   const repos = normalizeSessionRepos(seed.repos);
+  // A therapy session opens on no repo (Tom's ruling 2026-09-25). Refused
+  // rather than quietly emptied: a caller that named a repo for one asked for
+  // something this kind does not do, and the error says so before any row or
+  // opener exists. Here, not in createSessionFrom, because this is the one
+  // row-builder every launch surface goes through.
+  if (seed.kind === "therapy" && repos.length > 0) {
+    throw new Error(
+      `a therapy session opens on no repo; this one named ${repos.join(", ")}`,
+    );
+  }
   const sessionId = await ctx.db.insert("claudeSessions", {
     title: seed.title.trim() || "Untitled session",
     kind: seed.kind,
@@ -733,12 +745,19 @@ export async function insertSession(
   // it go back with the throw — pinned by the test, which finds no session and
   // no inbound row.
   const prompt = seed.prompt(sessionId, repos);
+  // A therapy session's subject is the mental-health area, whatever todo it
+  // was opened on: the router grants write, know-intent and
+  // know-mental-health for it. It is the one thing that builds an area
+  // subject; the Jarvis session-start hook routes the same subject when the
+  // session host hands it TTS_SESSION_KIND=therapy.
   const subject: ContextSubject =
-    seed.todoId !== undefined
-      ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
-      : repos.length > 0 && repos[0] !== NO_REPO
-        ? { kind: "repo", repo: repos[0] }
-        : { kind: "none" };
+    seed.kind === "therapy"
+      ? { kind: "area", area: "mental-health" }
+      : seed.todoId !== undefined
+        ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
+        : repos.length > 0 && repos[0] !== NO_REPO
+          ? { kind: "repo", repo: repos[0] }
+          : { kind: "none" };
   const context = await assembleContext(ctx, subject, { reachesTom: true, caller: "opener", now });
   const body = withoutModelOfTomPrelude(prompt, context.prefix);
   if (body === null) {
@@ -953,7 +972,12 @@ async function createSessionFrom(
     {
       title,
       kind,
-      repos: resolveSessionRepos({ explicit: repos ?? repo, todo }),
+      // A therapy session's repos are known without a guess: none. The word
+      // guess over a todo would otherwise name one and insertSession refuse it.
+      repos: resolveSessionRepos({
+        explicit: repos ?? repo ?? (kind === "therapy" ? [] : undefined),
+        todo,
+      }),
       todoId,
       blockCategory,
       model,
