@@ -1,9 +1,9 @@
 "use client";
 
-// THE TIMELINE. Six lanes across the selected window: the three kinds of run as
-// bars from start to end, and the three kinds of point — a ruling, a merge, a
-// failure — as marks at the instant they happened. A run still going runs to
-// the right edge.
+// THE TIMELINE. Seven lanes across the selected window: the three kinds of run
+// as bars from start to end, and the four kinds of point — a ruling, a merge, a
+// failure, a change to the box or a deploy of it — as marks at the instant they
+// happened. A run still going runs to the right edge.
 //
 // A LANE WITH NOTHING IN IT IS ONE THIN LINE with its name and a nought, not a
 // band of empty rows: a window where nothing merged should say so in the space
@@ -27,9 +27,11 @@ import { LANES, type Lane } from "../map-data";
 import Terms from "./terms";
 import {
   barEnd,
+  boxRowOf,
   dayAndClock,
   failureRowOf,
   fractionOf,
+  isBoxEvent,
   isFailure,
   jobOfRun,
   laneOfRun,
@@ -146,7 +148,21 @@ export default function Timeline({
 
   const mergeMarks: Mark[] = [];
   const failureMarks: Mark[] = [];
+  const boxMarks: Mark[] = [];
   for (const event of events) {
+    if (isBoxEvent(event.kind)) {
+      const row = boxRowOf(event);
+      boxMarks.push({
+        key: event.id,
+        start: row.at,
+        end: row.at,
+        detail: [row.title, ...row.lines, dayAndClock(row.at)],
+        href: row.agentId === null ? null : agentHref(row.agentId),
+        hrefWords: row.agentId === null ? null : "open the agent",
+        tone: row.changed ? "accent" : "plain",
+      });
+      continue;
+    }
     if (event.kind === "merge") {
       const row = mergeRowOf(event);
       mergeMarks.push({
@@ -190,6 +206,7 @@ export default function Timeline({
     rulings: [{ name: null, marks: rulingMarks }],
     merges: [{ name: null, marks: mergeMarks }],
     failures: [{ name: null, marks: failureMarks }],
+    box: [{ name: null, marks: boxMarks }],
   };
 
   const gap = (win.to - win.from) * GAP_FRACTION;

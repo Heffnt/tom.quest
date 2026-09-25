@@ -352,6 +352,7 @@ export default function Agent({
               source={source}
               depth={depth}
               runKey={resolvedRunId ?? runId ?? "unknown"}
+              agentId={active ? resolvedRunId : undefined}
               renderChildRun={renderChildRun}
               tail={tail}
             />
@@ -557,6 +558,7 @@ export default function Agent({
         source={source}
         depth={0}
         runKey={resolvedRunId ?? String(sessionId)}
+        agentId={active ? resolvedRunId : undefined}
         sessionId={subjectSessionId}
         sessionStatus={session?.status}
         renderChildRun={renderChildRun}

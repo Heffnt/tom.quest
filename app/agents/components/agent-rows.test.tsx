@@ -298,3 +298,50 @@ describe("beside the rows", () => {
     expect(text.indexOf("workspace rebuilt")).toBeLessThan(text.indexOf("first answer"));
   });
 });
+
+// ── Box changes (plan-root T1) ──────────────────────────────────────────────
+// A change the agent made to the Jarvis Box as root is a marked row in its
+// chat: right after the tool call that ran it, whose row carries the outcome,
+// or among the rows by time when no loaded call ran it.
+describe("the agent's box changes", () => {
+  const AGENT = "claude:box:s1";
+  const call = row({
+    _id: "m-call",
+    seq: 1,
+    kind: "tool-call",
+    createdAt: NOW - 2_000,
+    content: { toolName: "Bash", toolUseId: "toolu-1", input: { command: "sudo apt-get install -y jq" } },
+  });
+  const later = row({ _id: "m-later", seq: 2, kind: "assistant-text", content: "installed", createdAt: NOW + 60_000 });
+  const changes = [
+    { id: "b1", at: NOW, source: "sudo", why: "ran-as-root", command: "/usr/bin/apt-get install -y jq", user: "jarvis", agentId: AGENT },
+    { id: "b2", at: NOW + 30_000, source: "sudo", why: "ran-as-root", command: "read-only: cat ×2", count: 2, user: "jarvis", agentId: AGENT },
+  ];
+
+  function showWithChanges(agentId: string | undefined) {
+    convex.data[getFunctionName(api.boxChanges.forAgent)] = changes;
+    return render(
+      <AgentRows rows={[call, later]} pageStatus="Exhausted" loadMore={() => {}} source="run" depth={0} runKey="r1" agentId={agentId} />,
+    );
+  }
+
+  it("draws each change marked, after the call that ran it or by its time", () => {
+    load();
+    const { container } = showWithChanges(AGENT);
+    const marked = [...container.querySelectorAll("[data-box-change]")].map((node) => node.getAttribute("data-box-change"));
+    expect(marked).toEqual(["b1", "b2"]);
+    const text = body();
+    expect(text).toContain("/usr/bin/apt-get install -y jq");
+    expect(text).toContain("read-only: cat ×2 (2 read-only commands)");
+    // After the call, before the later row; the count by its time, before the later row too.
+    expect(text.indexOf("/usr/bin/apt-get install -y jq")).toBeLessThan(text.indexOf("installed"));
+    expect(text.indexOf("read-only: cat")).toBeLessThan(text.indexOf("installed"));
+    expect(convex.seen).toContain(`boxChanges:forAgent:${JSON.stringify({ agentId: AGENT })}`);
+  });
+
+  it("asks for no changes when the run has no id in the record", () => {
+    load();
+    showWithChanges(undefined);
+    expect(convex.seen).toContain("boxChanges:forAgent:skip");
+  });
+});

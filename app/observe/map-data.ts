@@ -12,10 +12,12 @@
 // either holds the timeline to one lane or opens a page of this site, never
 // both, and never an address off it.
 
-/** The six lanes of the timeline, which are also the six things counted. */
-export type Lane = "sessions" | "workers" | "runners" | "rulings" | "merges" | "failures";
+/** The seven lanes of the timeline, which are also the seven things counted.
+ *  `box` is every change to the Jarvis Box (convex/boxChanges.ts) and every
+ *  deploy of it. */
+export type Lane = "sessions" | "workers" | "runners" | "rulings" | "merges" | "failures" | "box";
 
-export const LANES: Lane[] = ["sessions", "workers", "runners", "rulings", "merges", "failures"];
+export const LANES: Lane[] = ["sessions", "workers", "runners", "rulings", "merges", "failures", "box"];
 
 /** What a node's number counts. A `lane` tally is that lane's own marks; the
  *  rest are things the timeline has no lane for. */

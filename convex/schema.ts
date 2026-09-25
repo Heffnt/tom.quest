@@ -59,6 +59,18 @@ export default defineSchema({
     error: v.optional(v.string()),
   }).index("by_server", ["serverName"]),
 
+  // THE BOX JOBS' HEARTBEATS: one row per job, the time of its last clean run,
+  // patched by POST /tts/job-ok (convex/ttsJobs.ts internalReportJobOk), the
+  // one door every box job already reports through. The silence alarm reads
+  // it (internalCheckSilence): a watched job whose last clean run is older
+  // than three of its intervals is a #tts-broken line (plan-root T3). Its own
+  // table, not a dtsEvents kind, because it is patched every two minutes and a
+  // row per clean run is exactly what job-ok was written never to make.
+  jobHeartbeats: defineTable({
+    job: v.string(),
+    lastOkAt: v.number(),
+  }).index("by_job", ["job"]),
+
   // Declarative GPU pool: desired state ("keep N GPUs of type T running these
   // commands"). A Convex cron reconciles desired-vs-actual against the Turing
   // API. One row per gpuType. The reconciler derives a reserved squeue job name
@@ -862,7 +874,11 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly fifteen kinds. Five are convex/ttsSlack.ts:
+    // The lookup key, set on exactly sixteen kinds. One is convex/boxChanges.ts:
+    //   "box-change"  — the agentId the box matched to the change, so the
+    //                   /agents chat reads one agent's changes on one index;
+    //                   absent when the box matched none.
+    // The other fifteen: Five are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;

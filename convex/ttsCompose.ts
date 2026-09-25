@@ -78,7 +78,7 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  named here: it is his day, not a ranked list, and it has no page of its own
  *  to send him to. `fit` reduces it in printed order like any other run.
  */
-export const SECTION_ORDER = ["today", "objections", "needs-you-today", "runners", "overnight", "broken"] as const;
+export const SECTION_ORDER = ["today", "objections", "needs-you-today", "runners", "overnight", "broken", "box"] as const;
 
 /** Per-section item caps, before the whole-message fit. Nearest him, most
  *  room. */
@@ -89,6 +89,7 @@ export const SECTION_CAPS = {
   calendar: 12,
   overnight: 6,
   broken: 4,
+  box: 8,
 } as const;
 
 // ── Display text ─────────────────────────────────────────────────────────────
@@ -552,7 +553,15 @@ export type TodayFacts = {
   /** What sessions did overnight, one row per todo, the tail last. */
   overnightByTodo: TodoOutcome[];
   broken: BrokenFact[];
+  /** What changed on the Jarvis Box since the last digest (convex/boxChanges.ts
+   *  boxChangeLines): one line per agent that ran root commands, per deploy,
+   *  per setup run, per other kind of change. Absent or empty: nothing did. */
+  boxChanges?: BoxChangeFact[];
 };
+
+/** One line of the box-changes run: its fact id (`box:…`), its sentence, and
+ *  its link. Declared here, not imported, for the import restriction above. */
+export type BoxChangeFact = { id: string; text: string; url: string };
 
 export type NeedsYouFacts = {
   todoId: string;
@@ -811,6 +820,8 @@ function todoOutcomeUrl(o: TodoOutcome): string {
 /** The overnight run's lead. It carries no number: the plan pass that counted
  *  batches is gone, and the rows below are the count. */
 const OVERNIGHT_LEAD = "Overnight, the box's sessions worked on these todos.";
+/** The box-changes run's lead (plan-root T1). */
+export const BOX_LEAD = "What ran as root and what changed on the Jarvis Box.";
 
 function joinClauses(parts: string[]): string {
   if (parts.length <= 1) return parts.join("");
@@ -1060,6 +1071,20 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
       `${capitalise(countWord(f.broken.length))} ${plural(f.broken.length, "job", "jobs")} failed overnight${failures === f.broken.length ? "" : `, ${countWord(failures)} times in all`}.`,
       f.broken.map((b) => ({ text: brokenLine(b), url: b.url ?? TAB_EVERYTHING })),
       SECTION_CAPS.broken,
+    );
+  }
+
+  // 8. What changed on the box (plan-root T1, guarantee G4): the last run,
+  //    so the first `fit` reduces. No reply invitation: a change is objected
+  //    to where it happened, and a change to who can act already has its own
+  //    #tts-decisions thread.
+  if ((f.boxChanges ?? []).length > 0) {
+    pushRun(
+      lines,
+      "box",
+      BOX_LEAD,
+      (f.boxChanges ?? []).map((b) => ({ text: b.text, url: b.url })),
+      SECTION_CAPS.box,
     );
   }
 
@@ -1645,6 +1670,7 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
       ]),
     );
   });
+  for (const b of f.boxChanges ?? []) facts.push(fact(b.id, b.text, [b.url]));
   return { kind: "today", day: f.day, canReply, facts };
 }
 

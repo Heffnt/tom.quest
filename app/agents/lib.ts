@@ -616,3 +616,133 @@ export function compactInput(toolName: string, input: unknown): string {
   }
   return contentToText(input);
 }
+
+// ── Box changes in an agent's chat (plan-root T1) ───────────────────────────
+// Every change the agent made to the Jarvis Box as root is a box-change row in
+// the record (convex/boxChanges.ts), keyed by the agent's id. The chat shows
+// each as a marked row: right after the tool call that ran it, whose own row
+// carries the outcome, or, when no loaded call ran it, at its time.
+
+/** One box change as convex/boxChanges.ts forAgent returns it. */
+export type BoxChangeRow = {
+  id: string;
+  at: number;
+  source: string;
+  why: string;
+  command?: string;
+  change?: { what: string; before?: string; after?: string };
+  cwd?: string;
+  user: string;
+  count?: number;
+  commit?: string;
+  agentId?: string;
+};
+
+/** How far before the change the call that ran it may be: a command can run a
+ *  while before it reaches its sudo (Jarvis box-change.mjs COMMAND_MATCH_MS). */
+const COMMAND_MATCH_MS = 30 * 60_000;
+
+/** The shell command a tool call ran: Claude's Bash `command`, or Codex's
+ *  `cmd` or `command` (a string or an argv). Null for any other tool. */
+export function shellCommandOf(content: unknown): string | null {
+  const input = toolInputOf(content);
+  if (typeof input !== "object" || input === null) return null;
+  const record = input as Record<string, unknown>;
+  for (const key of ["command", "cmd"]) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+    if (Array.isArray(value) && value.every((part) => typeof part === "string")) return value.join(" ");
+  }
+  return null;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Whether a shell command ran this root command. sudo logs the program by its
+ * full path and the arguments without the shell's quotes, so the test is the
+ * one the box's reader makes (Jarvis box-change.mjs commandLineTime): `sudo`,
+ * then the program's name a few words on in the same command, and the longest
+ * argument anywhere in it.
+ */
+export function runsSudoCommand(shell: string, sudoCommand: string): boolean {
+  const words = sudoCommand.trim().split(/\s+/);
+  let i = 0;
+  if ((words[0] ?? "").split("/").pop() === "env") {
+    i = 1;
+    while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || words[i].startsWith("-"))) i += 1;
+  }
+  const program = (words[i] ?? "").split("/").pop() ?? "";
+  if (program === "") return false;
+  const runs = new RegExp(`\\bsudo\\b[^;&|\\n]{0,200}?(?:^|[\\s/])${escapeRegExp(program)}(?![\\w.-])`);
+  if (!runs.test(shell)) return false;
+  const longest = words.slice(i + 1).filter((word) => !word.startsWith("-")).sort((a, b) => b.length - a.length)[0];
+  return longest === undefined || longest.length < 3 || shell.includes(longest);
+}
+
+/**
+ * Where each box change sits among the loaded rows: after the latest tool
+ * call that ran it (by command text, at or before the change, within half an
+ * hour), or with the rows by time when no loaded call did — a count of
+ * read-only commands, a change the box made without a command, or a call not
+ * paged in yet.
+ */
+export function placeBoxChanges(
+  rows: TranscriptMessage[],
+  changes: BoxChangeRow[],
+): { afterCall: Map<string, BoxChangeRow[]>; byTime: BoxChangeRow[] } {
+  const calls = rows
+    .filter((row) => row.kind === "tool-call")
+    .map((row) => ({ row, shell: shellCommandOf(row.content) }))
+    .filter((call): call is { row: TranscriptMessage; shell: string } => call.shell !== null && /\bsudo\b/.test(call.shell));
+  const afterCall = new Map<string, BoxChangeRow[]>();
+  const byTime: BoxChangeRow[] = [];
+  for (const change of changes) {
+    let best: TranscriptMessage | null = null;
+    if (change.command !== undefined && change.count === undefined) {
+      for (const call of calls) {
+        const t = call.row.createdAt;
+        if (t > change.at + 5_000 || change.at - t > COMMAND_MATCH_MS) continue;
+        if (!runsSudoCommand(call.shell, change.command)) continue;
+        if (best === null || t > best.createdAt) best = call.row;
+      }
+    }
+    if (best === null) byTime.push(change);
+    else afterCall.set(best._id, [...(afterCall.get(best._id) ?? []), change]);
+  }
+  return { afterCall, byTime };
+}
+
+/** The marked row's label: what kind of change it is, in one word. */
+export function boxChangeLabel(change: BoxChangeRow): string {
+  switch (change.why) {
+    case "ran-as-root":
+      return "root";
+    case "unit":
+      return "unit";
+    case "login":
+      return "login";
+    case "setup":
+      return "setup";
+    case "deploy":
+      return "deploy";
+    default:
+      return "state";
+  }
+}
+
+/** The marked row's text: the command, or what changed, in the record's own
+ *  words. */
+export function boxChangeText(change: BoxChangeRow): string {
+  if (change.source === "sudo") {
+    const command = change.command ?? "";
+    return change.count !== undefined ? `${command} (${change.count} read-only ${change.count === 1 ? "command" : "commands"})` : command;
+  }
+  if (change.source === "setup") return `setup ran${change.commit ? ` at ${change.commit.slice(0, 7)}` : ""}${change.change?.after ? `: ${change.change.after}` : ""}`;
+  if (change.source === "deploy") return `deployed ${(change.commit ?? "").slice(0, 7)}`.trim();
+  const what = change.change?.what ?? change.source;
+  const after = change.change?.after;
+  return after ? `${what}: ${after}` : `${what} changed`;
+}

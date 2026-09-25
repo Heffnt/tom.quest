@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  boxChangeText,
   childRunOf,
   contextFactsOf,
   costText,
@@ -24,6 +25,9 @@ import {
   modelOfTomHeadOf,
   orderSessions,
   persistedOutputOf,
+  placeBoxChanges,
+  runsSudoCommand,
+  shellCommandOf,
   runStatusChipClass,
   thinkingTextOf,
   toolInputObjectOf,
@@ -440,5 +444,55 @@ describe("orderSessions", () => {
     expect(ordered.map((s) => s.createdAt)).toEqual([300, 100, 200]);
     expect(input.map((s) => s.status)).toEqual(["running", "running", "idle"]);
     expect(ordered).not.toBe(input);
+  });
+});
+
+// The box-change rows' placement in an agent's chat (plan-root T1) reads the
+// command the box's journal logged against the command the agent's tool call
+// ran. sudo logs the program by its full path and the arguments without the
+// shell's quotes, so the match is the box reader's own (Jarvis box-change.mjs
+// commandLineTime), and a line that merely mentions the program is not a run.
+describe("box changes among an agent's rows", () => {
+  const T = Date.UTC(2026, 8, 25, 5, 8, 34);
+  const call = (id: string, at: number, command: string) =>
+    ({ _id: id, kind: "tool-call", createdAt: at, seq: 1, content: { toolName: "Bash", input: { command } } }) as never;
+  const change = (id: string, at: number, command: string, count?: number) => ({
+    id, at, source: "sudo", why: "ran-as-root", command, user: "jarvis", ...(count === undefined ? {} : { count }),
+  });
+
+  it("reads the command out of Claude's and Codex's shell calls", () => {
+    expect(shellCommandOf({ toolName: "Bash", input: { command: "sudo ls" } })).toBe("sudo ls");
+    expect(shellCommandOf({ toolName: "exec_command", input: { cmd: "sudo ls" } })).toBe("sudo ls");
+    expect(shellCommandOf({ toolName: "shell", input: { command: ["sudo", "ls", "/root"] } })).toBe("sudo ls /root");
+    expect(shellCommandOf({ toolName: "Read", input: { file_path: "/etc/hosts" } })).toBeNull();
+  });
+
+  it("knows a shell command that ran the root command from one that names it", () => {
+    expect(runsSudoCommand("sudo -n /usr/local/sbin/tts-install-cron && echo ok", "/usr/local/sbin/tts-install-cron")).toBe(true);
+    expect(runsSudoCommand("sudo apt-get install -y jq", "/usr/bin/apt-get install -y jq")).toBe(true);
+    expect(runsSudoCommand("ls /usr/local/sbin/tts-install-cron; grep -c sudo f", "/usr/local/sbin/tts-install-cron")).toBe(false);
+    expect(runsSudoCommand("sudo cat /etc/hosts", "/usr/bin/cat /etc/sudoers.d/jarvis")).toBe(false);
+  });
+
+  it("puts a change after the latest call that ran it, and the rest by time", () => {
+    const rows = [
+      call("c1", T - 600_000, "sudo apt-get install -y jq"),
+      call("c2", T - 2_000, "sudo apt-get install -y jq"),
+      call("c3", T + 60_000, "sudo apt-get install -y jq"),
+    ];
+    const placed = placeBoxChanges(rows, [
+      change("b1", T, "/usr/bin/apt-get install -y jq"),
+      change("b2", T, "read-only: cat ×2", 2),
+      change("b3", T, "/usr/bin/systemctl restart nginx"),
+    ]);
+    expect([...placed.afterCall.entries()].map(([id, changes]) => [id, changes.map((c) => c.id)])).toEqual([["c2", ["b1"]]]);
+    expect(placed.byTime.map((c) => c.id)).toEqual(["b2", "b3"]);
+  });
+
+  it("says what changed in the record's own words", () => {
+    expect(boxChangeText(change("b", T, "read-only: cat ×2", 2))).toBe("read-only: cat ×2 (2 read-only commands)");
+    expect(boxChangeText({ id: "s", at: T, source: "setup", why: "setup", user: "jarvis", commit: "0123456789abcdef", change: { what: "setup", after: "folded: 2 unit changes" } }))
+      .toBe("setup ran at 0123456: folded: 2 unit changes");
+    expect(boxChangeText({ id: "u", at: T, source: "systemd", why: "unit", user: "root", change: { what: "cron.service", after: "restart" } })).toBe("cron.service: restart");
   });
 });
