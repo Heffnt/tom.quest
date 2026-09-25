@@ -218,22 +218,20 @@ export function truncationNoteOf(content: unknown): string | undefined {
 }
 
 /**
- * Error-row text. The daemon writes two shapes: `{ message }` (its own
- * failures) and `{ subtype, result, total_cost_usd }` (an SDK error result,
- * the one place cost is persisted). Both render as prose, never as JSON.
+ * Error-row text. The parser writes one shape, `{ error }`
+ * (worker/agents/ingest.mjs): a string of its own (a model change, a malformed
+ * line, a child's errors), or, on a Claude `api_error` line, the CLI's error
+ * object, whose `formatted` is its one-line reading ("529 Overloaded") and
+ * whose `message` is the raw response. The raw level holds the whole entry.
  */
 export function errorTextOf(content: unknown): string {
-  if (typeof content === "string") return content;
   if (typeof content === "object" && content !== null) {
-    const c = content as Record<string, unknown>;
-    if (typeof c.message === "string") return c.message;
-    if (typeof c.subtype === "string") {
-      const result =
-        typeof c.result === "string" ? c.result : contentToText(c.result);
-      const head = result === "" ? c.subtype : `${c.subtype}: ${result}`;
-      return typeof c.total_cost_usd === "number"
-        ? `${head}\ncost $${c.total_cost_usd}`
-        : head;
+    const error = (content as Record<string, unknown>).error;
+    if (typeof error === "string") return error;
+    if (typeof error === "object" && error !== null) {
+      const e = error as Record<string, unknown>;
+      if (typeof e.formatted === "string") return e.formatted;
+      if (typeof e.message === "string") return e.message;
     }
   }
   return contentToText(content);

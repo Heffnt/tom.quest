@@ -383,17 +383,18 @@ describe("the conversation is never folded", () => {
   });
 
   it("an error row is shown in full and is never folded away", () => {
-    const content = { message: "model changed from opus to sonnet" };
+    // The parser's shape (worker/agents/ingest.mjs), a production row's content.
+    const content = { error: "model changed from claude-opus-5 to <synthetic>" };
     render(<AgentRow row={row({ kind: "error", content })} source="run" />);
 
-    expect(screen.getByText(content.message)).toBeTruthy();
+    expect(screen.getByText(content.error)).toBeTruthy();
     // There is no compact line to press: the only control is the raw one.
     const buttons = [...document.querySelectorAll("button")];
     expect(buttons.map((b) => b.textContent)).toEqual(["raw"]);
 
     fireEvent.click(buttons[0]);
     // Still in full, with the stored entry added under it.
-    expect(screen.getByText(content.message)).toBeTruthy();
+    expect(screen.getByText(content.error)).toBeTruthy();
     expect(pres().at(-1)).toBe(JSON.stringify(content, null, 2));
   });
 });
