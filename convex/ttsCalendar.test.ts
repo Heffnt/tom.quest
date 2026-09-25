@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { buildEventBody } from "./ttsCalendarWrite";
@@ -412,5 +412,52 @@ describe("buildEventBody (the calendar write door)", () => {
     expect(() =>
       buildEventBody({ title: "x", start: 2, end: 2 }),
     ).toThrow(/end must be after start/);
+  });
+});
+
+describe("the calendar write door takes one calendar", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  const postEvent = (t: ReturnType<typeof convexTest>, calendarId: string) =>
+    t.fetch("/tts/calendar-event", {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Dinner",
+        start: Date.UTC(2026, 8, 26, 22),
+        end: Date.UTC(2026, 8, 26, 23),
+        calendarId,
+      }),
+    });
+
+  it("refuses any calendar but Tom's primary before asking Google anything", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const google = vi.fn(async () => Response.json({ access_token: "x" }));
+    vi.stubGlobal("fetch", google);
+    const t = convexTest(schema, modules);
+    const res = await postEvent(t, "someone.else@group.calendar.google.com");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/refused: this door writes only to Tom's primary calendar/);
+    expect(google).not.toHaveBeenCalled();
+    const created = await t.run((ctx) =>
+      ctx.db
+        .query("dtsEvents")
+        .filter((q) => q.eq(q.field("kind"), "calendar-event-created"))
+        .collect(),
+    );
+    expect(created).toEqual([]);
+  });
+
+  it("lets primary through the check", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    // No Google credentials in the test env, so the next thing the door says
+    // is that it is not configured: past the calendar check, not stopped by it.
+    const res = await postEvent(t, "primary");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not configured/);
   });
 });
