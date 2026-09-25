@@ -17,6 +17,7 @@
     "./session-constants.mjs": "./session-constants.mjs",
     "./skill-router.mjs": "./skill-router.mjs",
     "./skills.mjs": "./skills.mjs",
+    "./vocabulary-rows.mjs": "./vocabulary-rows.mjs",
     "./package.json": "./package.json"
   },
   "files": ["*.mjs"]
