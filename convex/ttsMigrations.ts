@@ -1399,3 +1399,316 @@ export const internalRemoveBatches = internalMutation({
     };
   },
 });
+
+// ── 10. The worker key taken out of the rows the record already holds ───────
+// The box's redaction before Jarvis #32 recognised a credential by its shape,
+// and the worker key (TTS_WORKER_KEY, the value keyAuth in convex/http.ts
+// checks) has no prefix, so its value reached the record in the rows of the
+// agents whose files printed it. #32 stops new ones; this one-off cleans the
+// old ones, and it runs BEFORE the key is rotated, because it finds the value
+// by reading it from this deployment's own environment. The value never leaves
+// the function: no argument carries it, and neither the return nor the event
+// holds any text.
+//
+// For each agent id given (a runId: `claude:box:<thread>`), it pages the
+// agent's rows (by_run_seq) and then its overflow chunks (by_run_seq_index),
+// and replaces every occurrence of the value, in the four spellings the box's
+// own filter replaces (as written, JSON-escaped once and twice,
+// percent-encoded), by `[redacted:TTS_WORKER_KEY]`, the marker #32 writes:
+//
+//   - a row: every string (and object key) in `content`. `seq`, `runId`,
+//     `provenance` and the rest stay. `digest` IS a content hash — the box
+//     computes it as sha256(`<parserVersion>\n<agentId>\n<seq>\n<kind>\n
+//     <stable(content)>`) cut to 16 hex (Jarvis worker/agents/ingest.mjs
+//     finishResult) — so a changed row gets it recomputed over the new
+//     content with the row's own provenance.parserVersion, but only when the
+//     stored digest reproduces from the old content; one that does not is
+//     kept, and counted, rather than replaced by a guess.
+//   - an overflow payload: its chunks of one seq are read together, joined,
+//     replaced and cut back at the old boundaries (a boundary inside a value
+//     moves to the marker's end), so a value lying across two chunks goes too
+//     and the chunk count never changes. The row's overflow stamp (sha256 and
+//     byteLength of the joined text, the reassembly check) is recomputed when
+//     the old one matches the old text, else kept and counted. A payload of
+//     more than SCRUB_CHUNKS_PER_ROW_MAX chunks is too large for one
+//     transaction: it is left alone and listed in `oversized` by (agent, seq).
+//
+// It refuses to start when TTS_WORKER_KEY is unset or shorter than 16
+// characters (a short value would match ordinary text). A dry run walks the
+// same pages and counts what would change, writing nothing but its event, so
+// it is also the finder: its `agentsWithHits` is the list the real run needs.
+// Idempotent: a second run finds nothing.
+//
+// The totals are one event, `worker-key-rows-scrubbed` (or
+// `worker-key-rows-scrubbed-dry-run`): { agents, rowsScanned, rowsChanged,
+// chunksScanned, chunksChanged, digestsRecomputed, digestsKept,
+// stampsRecomputed, stampsKept, agentsWithHits, oversized }.
+// Run order: dry run, real run, a second dry run reading zero, then the
+// rotation. Delete this walk once it has run.
+export const WORKER_KEY_ROWS_SCRUBBED = "worker-key-rows-scrubbed";
+export const WORKER_KEY_MARKER = "[redacted:TTS_WORKER_KEY]";
+/** Below this the value is refused: it would match ordinary text. */
+const WORKER_KEY_MIN_LENGTH = 16;
+/** Rows per step. A row's content is cut at 32K characters by the box. */
+const SCRUB_ROWS_PER_STEP = 64;
+/** Overflow chunks (at most 256 KB each) read per step, across seqs. */
+const SCRUB_CHUNKS_PER_STEP = 32;
+/** The largest payload joined in one transaction: 32 chunks, 8 MiB read and
+ * at most as much written, inside Convex's 16 MiB per-transaction bounds. */
+export const SCRUB_CHUNKS_PER_ROW_MAX = 32;
+
+/** The spellings of a value the box's filter replaces
+ * (Jarvis worker/agents/secret-values.mjs), longest first. */
+function valueSpellings(value: string): string[] {
+  const once = JSON.stringify(value).slice(1, -1);
+  const twice = JSON.stringify(once).slice(1, -1);
+  return [...new Set([value, once, twice, encodeURIComponent(value)])]
+    .sort((a, b) => b.length - a.length);
+}
+
+function spellingPattern(spellings: string[]): RegExp {
+  return new RegExp(
+    spellings.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"),
+    "g",
+  );
+}
+
+/** Every string (and object key) in a stored value, with the value replaced. */
+function scrubValue(value: unknown, pattern: RegExp): { value: unknown; hits: number } {
+  let hits = 0;
+  const text = (s: string) => {
+    const out = s.replace(pattern, () => {
+      hits++;
+      return WORKER_KEY_MARKER;
+    });
+    return out;
+  };
+  const walk = (x: unknown): unknown => {
+    if (typeof x === "string") return text(x);
+    if (Array.isArray(x)) return x.map(walk);
+    if (x !== null && typeof x === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(x)) out[text(k)] = walk(v);
+      return out;
+    }
+    return x;
+  };
+  const out = walk(value);
+  return { value: hits === 0 ? value : out, hits };
+}
+
+/**
+ * Chunks joined, the value replaced, and the result cut back at the old
+ * boundaries: a boundary inside a replaced value moves to the marker's end.
+ * The chunk count is unchanged.
+ */
+function scrubChunks(texts: string[], pattern: RegExp): { texts: string[]; hits: number } {
+  const joined = texts.join("");
+  const matches = [...joined.matchAll(pattern)].map((m) => ({
+    start: m.index,
+    end: m.index + m[0].length,
+  }));
+  if (matches.length === 0) return { texts, hits: 0 };
+  let scrubbed = "";
+  let from = 0;
+  for (const { start, end } of matches) {
+    scrubbed += joined.slice(from, start) + WORKER_KEY_MARKER;
+    from = end;
+  }
+  scrubbed += joined.slice(from);
+  const moved = (at: number) => {
+    let shift = 0;
+    for (const { start, end } of matches) {
+      if (end <= at) shift += WORKER_KEY_MARKER.length - (end - start);
+      else if (start < at) return start + shift + WORKER_KEY_MARKER.length;
+      else break;
+    }
+    return at + shift;
+  };
+  const out: string[] = [];
+  let oldStart = 0;
+  let newStart = 0;
+  for (const [i, text] of texts.entries()) {
+    const oldEnd = oldStart + text.length;
+    const newEnd = i === texts.length - 1 ? scrubbed.length : moved(oldEnd);
+    out.push(scrubbed.slice(newStart, newEnd));
+    oldStart = oldEnd;
+    newStart = newEnd;
+  }
+  return { texts: out, hits: matches.length };
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The box's canonical JSON (Jarvis worker/agents/ingest.mjs `stable`). */
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** A row's digest as the box computes it (ingest.mjs finishResult). */
+export async function rowDigest(
+  parserVersion: string,
+  agentId: string,
+  seq: number,
+  kind: string,
+  content: unknown,
+): Promise<string> {
+  return (await sha256Hex(`${parserVersion}\n${agentId}\n${seq}\n${kind}\n${stable(content)}`)).slice(0, 16);
+}
+
+type ScrubPhase = "rows" | "chunks";
+
+export const internalScrubWorkerKeyRows = internalMutation({
+  args: {
+    agentIds: v.array(v.string()),
+    dryRun: v.optional(v.boolean()),
+    pageSize: v.optional(v.number()),
+    // The rest is the walk's state, carried across scheduled continuations;
+    // never passed by a caller.
+    cursor: v.optional(v.union(v.string(), v.null())),
+    agentIndex: v.optional(v.number()),
+    phase: v.optional(v.union(v.literal("rows"), v.literal("chunks"))),
+    afterSeq: v.optional(v.number()),
+    totals: v.optional(v.record(v.string(), v.number())),
+    agentsWithHits: v.optional(v.array(v.string())),
+    oversized: v.optional(v.array(v.object({ agentId: v.string(), seq: v.number() }))),
+  },
+  handler: async (ctx, args) => {
+    const key = process.env.TTS_WORKER_KEY;
+    if (key === undefined || key.length < WORKER_KEY_MIN_LENGTH) {
+      throw new Error(
+        `refused: TTS_WORKER_KEY is unset or shorter than ${WORKER_KEY_MIN_LENGTH} characters in this deployment's environment`,
+      );
+    }
+    const pattern = spellingPattern(valueSpellings(key));
+    const dryRun = args.dryRun ?? false;
+    const pageSize = args.pageSize ?? SCRUB_ROWS_PER_STEP;
+    const agentIds = [...new Set(args.agentIds)];
+    const totals: Counts = {
+      rowsScanned: 0, rowsChanged: 0, chunksScanned: 0, chunksChanged: 0,
+      digestsRecomputed: 0, digestsKept: 0, stampsRecomputed: 0, stampsKept: 0,
+      ...(args.totals ?? {}),
+    };
+    const agentsWithHits = [...(args.agentsWithHits ?? [])];
+    const oversized = [...(args.oversized ?? [])];
+    const agentIndex = args.agentIndex ?? 0;
+    const phase: ScrubPhase = args.phase ?? "rows";
+    const hit = (agentId: string) => {
+      if (!agentsWithHits.includes(agentId)) agentsWithHits.push(agentId);
+    };
+    const next = async (to: { agentIndex: number; phase: ScrubPhase; cursor: string | null; afterSeq: number }) => {
+      await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalScrubWorkerKeyRows, {
+        agentIds, dryRun, pageSize, ...to, totals, agentsWithHits, oversized,
+      });
+      return { done: false, dryRun, totals, agentsWithHits, oversized };
+    };
+
+    const agentId = agentIds[agentIndex];
+    if (agentId === undefined) {
+      const summary = { agents: agentIds.length, ...totals, agentsWithHits, oversized };
+      await logEvent(
+        ctx,
+        dryRun ? `${WORKER_KEY_ROWS_SCRUBBED}-dry-run` : WORKER_KEY_ROWS_SCRUBBED,
+        undefined,
+        summary,
+      );
+      return { done: true, dryRun, totals, agentsWithHits, oversized };
+    }
+
+    if (phase === "rows") {
+      const page = await ctx.db
+        .query("claudeMessages")
+        .withIndex("by_run_seq", (q) => q.eq("runId", agentId))
+        .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
+      for (const row of page.page) {
+        totals.rowsScanned++;
+        const scrubbed = scrubValue(row.content, pattern);
+        if (scrubbed.hits === 0) continue;
+        totals.rowsChanged++;
+        hit(agentId);
+        const parserVersion = row.provenance?.parserVersion;
+        const digestReproduces = row.digest !== undefined && parserVersion !== undefined
+          && await rowDigest(parserVersion, agentId, row.seq, row.kind, row.content) === row.digest;
+        const patch: { content: unknown; digest?: string } = { content: scrubbed.value };
+        if (digestReproduces) {
+          totals.digestsRecomputed++;
+          patch.digest = await rowDigest(parserVersion, agentId, row.seq, row.kind, scrubbed.value);
+        } else if (row.digest !== undefined) {
+          totals.digestsKept++;
+        }
+        if (!dryRun) await ctx.db.patch(row._id, patch);
+      }
+      return await next(page.isDone
+        ? { agentIndex, phase: "chunks", cursor: null, afterSeq: -1 }
+        : { agentIndex, phase: "rows", cursor: page.continueCursor, afterSeq: -1 });
+    }
+
+    let afterSeq = args.afterSeq ?? -1;
+    let chunksRead = 0;
+    for (;;) {
+      const first = await ctx.db
+        .query("claudeMessageOverflow")
+        .withIndex("by_run_seq_index", (q) => q.eq("runId", agentId).gt("seq", afterSeq))
+        .first();
+      if (first === null) {
+        return await next({ agentIndex: agentIndex + 1, phase: "rows", cursor: null, afterSeq: -1 });
+      }
+      if (first.chunkCount > SCRUB_CHUNKS_PER_ROW_MAX) {
+        oversized.push({ agentId, seq: first.seq });
+        afterSeq = first.seq;
+        chunksRead++;
+        if (chunksRead >= SCRUB_CHUNKS_PER_STEP) break;
+        continue;
+      }
+      if (chunksRead > 0 && chunksRead + first.chunkCount > SCRUB_CHUNKS_PER_STEP) break;
+      const seq = first.seq;
+      const chunks = await ctx.db
+        .query("claudeMessageOverflow")
+        .withIndex("by_run_seq_index", (q) => q.eq("runId", agentId).eq("seq", seq))
+        .take(SCRUB_CHUNKS_PER_ROW_MAX + 1);
+      chunksRead += chunks.length;
+      totals.chunksScanned += chunks.length;
+      afterSeq = seq;
+      const before = chunks.map((c) => c.text);
+      const scrubbed = scrubChunks(before, pattern);
+      if (scrubbed.hits === 0) continue;
+      hit(agentId);
+      for (const [i, chunk] of chunks.entries()) {
+        if (scrubbed.texts[i] === chunk.text) continue;
+        totals.chunksChanged++;
+        if (!dryRun) await ctx.db.patch(chunk._id, { text: scrubbed.texts[i] });
+      }
+      const row = await ctx.db
+        .query("claudeMessages")
+        .withIndex("by_run_seq", (q) => q.eq("runId", agentId).eq("seq", seq))
+        .first();
+      if (row?.overflow) {
+        const oldText = before.join("");
+        const stampReproduces = row.overflow.chunkCount === chunks.length
+          && row.overflow.byteLength === new TextEncoder().encode(oldText).length
+          && row.overflow.sha256 === await sha256Hex(oldText);
+        if (stampReproduces) {
+          totals.stampsRecomputed++;
+          const newText = scrubbed.texts.join("");
+          const overflow = {
+            ...row.overflow,
+            sha256: await sha256Hex(newText),
+            byteLength: new TextEncoder().encode(newText).length,
+          };
+          if (!dryRun) await ctx.db.patch(row._id, { overflow });
+        } else {
+          totals.stampsKept++;
+        }
+      }
+      if (chunksRead >= SCRUB_CHUNKS_PER_STEP) break;
+    }
+    return await next({ agentIndex, phase: "chunks", cursor: null, afterSeq });
+  },
+});
