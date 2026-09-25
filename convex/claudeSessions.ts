@@ -40,7 +40,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // The staleness threshold comes through ttsShared (its one home is
 // shared/session-constants.mjs, which the worker daemon imports too), and so do
 // the live-status list this file scans by (LIVE_STATUSES / isLive, formerly
-// declared here AND in app/runs/lib.ts). The model-of-tom context each opener carries is assembled for that
+// declared here AND in app/agents/lib.ts). The model-of-tom context each opener carries is assembled for that
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
 import { withoutModelOfTomPrelude } from "./ttsSkills";
@@ -381,7 +381,7 @@ async function messageOverflow(
   };
 }
 
-// Tom's door: what the runs page expands a cut row into.
+// Tom's door: what the agents page expands a cut row into.
 export const getMessageOverflow = query({
   args: {
     messageId: v.id("claudeMessages"),
@@ -1625,7 +1625,7 @@ const MESSAGE_KIND = v.union(
 /**
  * The assistant-text row immediately BEFORE `seq` in this session — the output
  * a reply landing at `seq` is about, and the start of the span its label
- * carries (convex/runLabels.ts).
+ * carries (convex/agentLabels.ts).
  *
  * Bounded rather than unbounded: an opening turn has no assistant row before
  * it at all, and a session whose last hundred rows are tool traffic is a
@@ -1924,7 +1924,7 @@ export const internalIngest = internalMutation({
         // never delivered — an interrupted turn, a session force-closed before
         // its flush — was never said TO a run and has no run's output to be
         // about. What the model received is what the transcript records, so
-        // the transcript row is the act (convex/runLabels.ts writer three).
+        // the transcript row is the act (convex/agentLabels.ts writer three).
         //
         // AN "agent" TURN WRITES NOTHING, and that is the whole gate: the CLI
         // pen, the code-built opener and every relayed turn are authored by
@@ -1951,7 +1951,7 @@ export const internalIngest = internalMutation({
           );
           await ctx.scheduler.runAfter(
             0,
-            internal.runLabels.internalLabelFromSessionReply,
+            internal.agentLabels.internalLabelFromSessionReply,
             {
               sessionId: args.sessionId,
               seq: finalizedUserSeq,
@@ -2302,7 +2302,7 @@ type ToolResultContent = {
 
 // Flatten a tool-result content payload (a string, or an array of typed
 // blocks) to plain text for previews and id matching. Lockstep with
-// app/runs/lib.ts contentToText (the client's renderer of the same
+// app/agents/lib.ts contentToText (the client's renderer of the same
 // daemon-written shapes — the client bundle cannot import this server module).
 function contentText(x: unknown): string {
   if (typeof x === "string") return x;
@@ -2318,7 +2318,7 @@ function contentText(x: unknown): string {
   return x === undefined ? "" : JSON.stringify(x);
 }
 
-// Lockstep with app/runs/lib.ts previewLine (the client's one-line
+// Lockstep with app/agents/lib.ts previewLine (the client's one-line
 // truncation of the same content).
 function previewText(x: unknown): string {
   const s = contentText(x);
@@ -2382,7 +2382,7 @@ export const getOpenToolWork = query({
 
     // ONE name per fact — this is the canonical field list, and the client
     // reads exactly these names (no aliases on either side). The reader is
-    // the transcript's subagent fold (app/runs/components/transcript.tsx):
+    // the transcript's subagent fold (app/agents/components/transcript.tsx):
     // it takes `agents` — the running ones, with their type, description,
     // startedAt and current call — for its summary line, because those are
     // facts about a live subagent that are not rows in the transcript. The
@@ -2527,7 +2527,7 @@ export const getOpenToolWork = query({
 // ceilings admission is judged against, and the two runaway failsafes — and
 // they were set once and never touched again. A number nobody changes is not a
 // decision; it is mechanism, and mechanism belongs in code rather than in a
-// row Tom has to hold in his head to read the runs page. So NO DOOR WRITES
+// row Tom has to hold in his head to read the agents page. So NO DOOR WRITES
 // THEM any more: both pens below write these values verbatim, and Tom's own
 // door (setAutoConfig) takes `enabled` alone.
 //
@@ -2601,7 +2601,7 @@ export const getAutoConfig = query({
 });
 
 // Tom's door, and the whole of it: ON or OFF. See the fleet strip in
-// app/runs/components/session-list.tsx. The stored default model is
+// app/agents/components/session-list.tsx. The stored default model is
 // carried through untouched — a press of "stop" decides nothing about which
 // model the fleet runs on.
 export const setAutoConfig = mutation({

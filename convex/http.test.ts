@@ -4,6 +4,7 @@ import { createHmac } from "node:crypto";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { ablationFindings, MIN_ABLATION_CASES } from "./ttsWeekly";
+import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -139,10 +140,10 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
   });
 });
 
-// ── GET /tts/run-trace: the audit's own run, read back ───────────────────────
+// ── GET /tts/agent-trace: the audit's own agent, read back ───────────────────
 // The door the trace checker asks: it claims it opened a path, and this says
 // whether any Read, Grep or Glob call of that run ever named it.
-describe("GET /tts/run-trace", () => {
+describe("GET /tts/agent-trace", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   const KEY = { "X-TTS-Key": "s3cret" };
@@ -187,14 +188,15 @@ describe("GET /tts/run-trace", () => {
     });
   }
 
-  it("answers the tool calls of one run, redacted, and null for a token nobody swept", async () => {
+  it("answers the tool calls of one agent, redacted, and null for a token nobody swept", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
     await anAudit(t);
-    const res = await t.fetch(`/tts/run-trace?token=${TOKEN}`, { headers: KEY });
+    const res = await t.fetch(`/tts/agent-trace?token=${TOKEN}`, { headers: KEY });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       runId: RUN_ID,
+      agentId: RUN_ID,
       turns: 12,
       // tokensOf: input + cache-read + cache-write + output. NOT totalTokens,
       // which is 999 on this row precisely so the sum is the thing under test.
@@ -209,7 +211,7 @@ describe("GET /tts/run-trace", () => {
     });
 
     const missing = await t.fetch(
-      "/tts/run-trace?token=00000000-0000-4000-8000-000000000000",
+      "/tts/agent-trace?token=00000000-0000-4000-8000-000000000000",
       { headers: KEY },
     );
     expect(missing.status).toBe(200);
@@ -219,16 +221,27 @@ describe("GET /tts/run-trace", () => {
   it("refuses a token that is not one, before the indexed read", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
-    expect((await t.fetch("/tts/run-trace?token=not-a-uuid", { headers: KEY })).status).toBe(400);
-    expect((await t.fetch("/tts/run-trace", { headers: KEY })).status).toBe(400);
-    expect((await t.fetch("/tts/run-trace?token=", { headers: KEY })).status).toBe(400);
+    expect((await t.fetch("/tts/agent-trace?token=not-a-uuid", { headers: KEY })).status).toBe(400);
+    expect((await t.fetch("/tts/agent-trace", { headers: KEY })).status).toBe(400);
+    expect((await t.fetch("/tts/agent-trace?token=", { headers: KEY })).status).toBe(400);
   });
 
   it("is behind the worker key like every other pen", async () => {
     const t = convexTest(schema, modules);
-    expect((await t.fetch(`/tts/run-trace?token=${TOKEN}`)).status).toBe(503);
+    expect((await t.fetch(`/tts/agent-trace?token=${TOKEN}`)).status).toBe(503);
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    expect((await t.fetch(`/tts/run-trace?token=${TOKEN}`, { headers: { "X-TTS-Key": "wrong" } })).status).toBe(401);
+    expect((await t.fetch(`/tts/agent-trace?token=${TOKEN}`, { headers: { "X-TTS-Key": "wrong" } })).status).toBe(401);
+  });
+
+  // The run spelling of the route stays until phase 3.
+  it("answers the same at /tts/run-trace", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await anAudit(t);
+    const agent = await (await t.fetch(`/tts/agent-trace?token=${TOKEN}`, { headers: KEY })).json();
+    const run = await (await t.fetch(`/tts/run-trace?token=${TOKEN}`, { headers: KEY })).json();
+    expect(run).toEqual(agent);
+    expect(agent).toMatchObject({ agentId: RUN_ID, runId: RUN_ID });
   });
 });
 
@@ -361,7 +374,7 @@ describe("POST /tts/audit: what the audit saw", () => {
   });
 });
 
-// ── POST /runs/ingest: the immutable record's one door ───────────────────────
+// ── POST /agents/ingest: the immutable record's one door ─────────────────────
 const body = {
   run: {
     runId: "claude:laptop:http-run", rootRunId: "claude:laptop:http-run", depth: 0, linkKnown: true,
@@ -373,10 +386,10 @@ const body = {
 function post(t: ReturnType<typeof convexTest>, value: unknown, key?: string) {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (key) headers["X-Sessions-Key"] = key;
-  return t.fetch("/runs/ingest", { method: "POST", headers, body: JSON.stringify(value) });
+  return t.fetch("/agents/ingest", { method: "POST", headers, body: JSON.stringify(value) });
 }
 
-describe("POST /runs/ingest", () => {
+describe("POST /agents/ingest", () => {
   afterEach(() => vi.unstubAllEnvs());
   it("returns 503 until the existing worker credential is configured", async () => {
     const t = convexTest(schema, modules);
@@ -391,7 +404,7 @@ describe("POST /runs/ingest", () => {
   it("returns 400 for invalid JSON", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    const response = await t.fetch("/runs/ingest", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: "{ bad" });
+    const response = await t.fetch("/agents/ingest", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: "{ bad" });
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "invalid JSON body" });
   });
@@ -407,7 +420,7 @@ describe("POST /runs/ingest", () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
     const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
-    const response = await t.fetch("/runs/ingest", {
+    const response = await t.fetch("/agents/ingest", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -424,7 +437,7 @@ describe("POST /runs/ingest", () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
     const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
-    const response = await t.fetch("/runs/ingest", {
+    const response = await t.fetch("/agents/ingest", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -438,11 +451,11 @@ describe("POST /runs/ingest", () => {
   });
 });
 
-describe("POST /runs/overflow: bounded chunks", () => {
+describe("POST /agents/overflow: bounded chunks", () => {
   afterEach(() => vi.unstubAllEnvs());
   function overflowBodyAt(byteLength: number, text: string, seq: number) {
     const value: Record<string, unknown> = {
-      runId: "claude:laptop:http-run",
+      agentId: "claude:laptop:http-run",
       seq,
       index: 0,
       chunkCount: 1,
@@ -472,16 +485,16 @@ describe("POST /runs/overflow: bounded chunks", () => {
     const worstCase = overflowBodyAt(maxBody, controls, 1);
     expect(new TextEncoder().encode(commonCase)).toHaveLength(maxBody);
     expect(new TextEncoder().encode(worstCase)).toHaveLength(maxBody);
-    expect((await postOverflow(t, "/runs/overflow", commonCase)).status).toBe(200);
-    expect((await postOverflow(t, "/runs/overflow", worstCase)).status).toBe(200);
+    expect((await postOverflow(t, "/agents/overflow", commonCase)).status).toBe(200);
+    expect((await postOverflow(t, "/agents/overflow", worstCase)).status).toBe(200);
 
     const over = "{".repeat(maxBody + 1);
-    expect((await postOverflow(t, "/runs/overflow", over)).status).toBe(413);
-    expect((await postOverflow(t, "/runs/overflow/stamp", over)).status).toBe(413);
+    expect((await postOverflow(t, "/agents/overflow", over)).status).toBe(413);
+    expect((await postOverflow(t, "/agents/overflow/stamp", over)).status).toBe(413);
   });
 });
 
-describe("phase 3 run routes", () => {
+describe("phase 3 agent routes", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   // The run-id grammar wants at least eight characters in the thread segment,
@@ -493,7 +506,7 @@ describe("phase 3 run routes", () => {
       title: suffix, kind: "adhoc", repo: "none", status: "ended",
       statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
     }));
-    const result = await t.mutation(internal.runs.internalIngest, {
+    const result = await t.mutation(internal.agents.internalIngest, {
       ...body,
       run: {
         ...body.run,
@@ -509,18 +522,18 @@ describe("phase 3 run routes", () => {
 
   it("keeps comparison and manifest reads behind the existing session worker key", async () => {
     const t = convexTest(schema, modules);
-    expect((await t.fetch("/runs/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status).toBe(503);
-    expect((await t.fetch("/runs/manifest?since=0")).status).toBe(503);
+    expect((await t.fetch("/agents/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status).toBe(503);
+    expect((await t.fetch("/agents/manifest?since=0")).status).toBe(503);
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    expect((await t.fetch("/runs/compare", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
-    expect((await t.fetch("/runs/manifest?since=0", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
+    expect((await t.fetch("/agents/compare", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
+    expect((await t.fetch("/agents/manifest?since=0", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
   });
 
   it("compares one session directly and discovers eligible sessions from an empty object", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
     const direct = await linkedSession(t, "direct");
-    const directResponse = await t.fetch("/runs/compare", {
+    const directResponse = await t.fetch("/agents/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
       body: JSON.stringify({ sessionId: direct }),
@@ -529,7 +542,7 @@ describe("phase 3 run routes", () => {
     expect(await directResponse.json()).toMatchObject({ runId: runIdFor("direct"), clean: true });
 
     await linkedSession(t, "batch");
-    const batchResponse = await t.fetch("/runs/compare", {
+    const batchResponse = await t.fetch("/agents/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
       body: "{}",
@@ -549,7 +562,7 @@ describe("phase 3 run routes", () => {
     });
     // The second page lands on the run linkedSession already recorded, so the
     // fence tuple is that run's committed cursor, not a fresh one.
-    const paged = await t.mutation(internal.runs.internalIngest, {
+    const paged = await t.mutation(internal.agents.internalIngest, {
       run: { ...body.run, runId: runIdFor("paged"), rootRunId: runIdFor("paged"), sessionId, status: "ended" },
       rows: Array.from({ length: 101 }, (_, seq) => ({
         seq, turn: 0, kind: "user", content: { text: seq === 100 ? "late-mismatch" : `row-${seq}` },
@@ -561,7 +574,7 @@ describe("phase 3 run routes", () => {
       previousPrefixSha256: body.run.file.committedPrefixSha256,
     } as never);
     expect(paged, JSON.stringify(paged)).toMatchObject({ ok: true, inserted: 101 });
-    const response = await t.fetch("/runs/compare", {
+    const response = await t.fetch("/agents/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
       body: JSON.stringify({ sessionId }),
@@ -577,7 +590,7 @@ describe("phase 3 run routes", () => {
   it("serves verified store versions as manifest entries", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    const stored = await t.mutation(internal.runs.internalIngest, {
+    const stored = await t.mutation(internal.agents.internalIngest, {
       ...body,
       run: {
         ...body.run,
@@ -585,7 +598,7 @@ describe("phase 3 run routes", () => {
       },
     } as never);
     expect(stored, JSON.stringify(stored)).toMatchObject({ ok: true });
-    const response = await t.fetch("/runs/manifest?since=0", {
+    const response = await t.fetch("/agents/manifest?since=0", {
       headers: { "X-Sessions-Key": "right" },
     });
     expect(response.status).toBe(200);
@@ -593,13 +606,13 @@ describe("phase 3 run routes", () => {
       entries: [expect.objectContaining({ run_id: "claude:laptop:http-run", thread_id: "http-run", store_key: "runs/claude/laptop/http-run/stored.jsonl.gz" })],
       nextCursor: null,
     });
-    const entry = (await t.query(internal.runs.internalManifest, { since: 0 })).entries[0];
-    const resumed = new URLSearchParams({ since: String(entry.at), afterRunId: entry.run_id, afterFileVersion: entry.file_version });
-    const retry = await t.fetch(`/runs/manifest?${resumed}`, { headers: { "X-Sessions-Key": "right" } });
+    const entry = (await t.query(internal.agents.internalManifest, { since: 0 })).entries[0];
+    const resumed = new URLSearchParams({ since: String(entry.at), afterAgentId: entry.run_id, afterFileVersion: entry.file_version });
+    const retry = await t.fetch(`/agents/manifest?${resumed}`, { headers: { "X-Sessions-Key": "right" } });
     expect(retry.status).toBe(200);
     expect((await retry.json()).entries).toEqual([]);
-    expect((await t.fetch("/runs/manifest?since=0&afterRunId=only-half", { headers: { "X-Sessions-Key": "right" } })).status).toBe(400);
-    expect((await t.fetch("/runs/manifest", { headers: { "X-Sessions-Key": "right" } })).status).toBe(400);
+    expect((await t.fetch("/agents/manifest?since=0&afterAgentId=only-half", { headers: { "X-Sessions-Key": "right" } })).status).toBe(400);
+    expect((await t.fetch("/agents/manifest", { headers: { "X-Sessions-Key": "right" } })).status).toBe(400);
   });
 });
 
@@ -607,38 +620,38 @@ describe("phase 3 run routes", () => {
 // The box asks for the oldest pending request, serves it, and ANSWERS — a
 // request it cannot serve is written failed with a phrase from the closed
 // vocabulary, so one unreachable object never parks the queue.
-describe("/runs/materialize*: the queue the box drains", () => {
+describe("/agents/materialize*: the queue the box drains", () => {
   afterEach(() => vi.unstubAllEnvs());
   const KEY = { "Content-Type": "application/json", "X-Sessions-Key": "right" };
   const stored = { ...body, run: { ...body.run, file: { ...body.run.file, storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } } };
 
   it("keeps all three doors behind the session worker key", async () => {
     const t = convexTest(schema, modules);
-    expect((await t.fetch("/runs/materialize-request")).status).toBe(503);
+    expect((await t.fetch("/agents/materialize-request")).status).toBe(503);
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    expect((await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
-    expect((await t.fetch("/runs/materialize", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
-    expect((await t.fetch("/runs/materialize-answer", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
+    expect((await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
+    expect((await t.fetch("/agents/materialize", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
+    expect((await t.fetch("/agents/materialize-answer", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
   });
 
   it("queues, hands over and answers one request", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    expect(await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
-    expect(await t.mutation(internal.runs.internalIngest, stored as never)).toMatchObject({ ok: true });
+    expect(await (await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
+    expect(await t.mutation(internal.agents.internalIngest, stored as never)).toMatchObject({ ok: true });
 
-    const queued = await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
+    const queued = await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) });
     expect(queued.status).toBe(200);
     expect(await queued.json()).toMatchObject({ ok: true, slice: 1, queued: true });
     // Idempotent while it is pending.
-    expect(await (await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) })).json()).toMatchObject({ queued: false });
+    expect(await (await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) })).json()).toMatchObject({ queued: false });
 
-    const handed = await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } });
+    const handed = await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } });
     expect(handed.status).toBe(200);
     const { request } = await handed.json();
     expect(request).toMatchObject({ runId: "claude:laptop:http-run", cli: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
 
-    const answer = await t.fetch("/runs/materialize-answer", {
+    const answer = await t.fetch("/agents/materialize-answer", {
       method: "POST", headers: KEY,
       body: JSON.stringify({
         requestId: request.requestId, status: "served", rowsIngested: 0, fromLine: 0, toLine: 4000, totalLines: 4000,
@@ -647,26 +660,26 @@ describe("/runs/materialize*: the queue the box drains", () => {
     });
     expect(answer.status).toBe(200);
     expect(await answer.json()).toMatchObject({ ok: true, continuation: false });
-    expect(await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
+    expect(await (await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
   });
 
-  it("refuses a run with no store key and never reflects a payload", async () => {
+  it("refuses an agent with no store key and never reflects a payload", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    expect(await t.mutation(internal.runs.internalIngest, body as never)).toMatchObject({ ok: true });
-    const refused = await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
+    expect(await t.mutation(internal.agents.internalIngest, body as never)).toMatchObject({ ok: true });
+    const refused = await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) });
     expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: "run has no store key" });
-    expect((await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "nope" }) })).status).toBe(400);
+    expect(await refused.json()).toEqual({ error: "agent has no store key" });
+    expect((await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "nope" }) })).status).toBe(400);
   });
 
   it("narrows every answer field before the record sees it", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    expect(await t.mutation(internal.runs.internalIngest, stored as never)).toMatchObject({ ok: true });
-    await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
-    const { request } = await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json();
-    const answer = (payload: Record<string, unknown>) => t.fetch("/runs/materialize-answer", { method: "POST", headers: KEY, body: JSON.stringify({ requestId: request.requestId, status: "failed", ...payload }) });
+    expect(await t.mutation(internal.agents.internalIngest, stored as never)).toMatchObject({ ok: true });
+    await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) });
+    const { request } = await (await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json();
+    const answer = (payload: Record<string, unknown>) => t.fetch("/agents/materialize-answer", { method: "POST", headers: KEY, body: JSON.stringify({ requestId: request.requestId, status: "failed", ...payload }) });
 
     expect((await answer({ reason: "a".repeat(201) })).status).toBe(400);
     expect((await answer({ status: "maybe" })).status).toBe(400);
@@ -678,6 +691,252 @@ describe("/runs/materialize*: the queue the box drains", () => {
     expect(outside.status).toBe(409);
     expect(await outside.json()).toEqual({ error: "reason outside the closed vocabulary" });
     expect((await answer({ reason: "store unreachable" })).status).toBe(200);
+  });
+});
+
+// ── Both spellings, while the box moves from run to agent ───────────────────
+// Every door the box posts to reads the agent spelling and the run spelling
+// until phase 3, at the agent route and at the run route, and hands the record
+// the stored (run) spelling only. Each case runs one scenario twice, once per
+// spelling on a fresh deployment, and compares what was stored. A body whose
+// agent keys reached internalIngest's strict validator would be refused with a
+// 400, so a 200 with ok: true is the proof that none did.
+describe("both spellings on the agent doors", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const KEY = { "Content-Type": "application/json", "X-Sessions-Key": "right" };
+  const ROOT = "claude:laptop:spelling-root";
+  const CHILD = "claude:laptop:spelling-root/spelling-child";
+  const EARLIER = "claude:laptop:spelling-earlier";
+  const FILE = { path: "C:/spelling.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64), bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64) };
+  const CHILD_FILE = { ...FILE, path: "C:/spelling-child.jsonl", storedHash: "e".repeat(64) };
+  const FACTS = { origin: "unknown", host: "laptop", cli: "claude", parserVersion: "runs-parser-1", status: "unknown", startedAt: 1, lastLineAt: 1, attachments: [] };
+  const HELLO_SHA256 = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+  const SPELLINGS = ["agent", "run"] as const;
+  type Spelling = (typeof SPELLINGS)[number];
+  /** The key a spelling uses for one field: `agentId` or `runId`, and so on. */
+  const key = (spelling: Spelling, field: "Id" | "ParentId" | "RootId" | "ContinuesId") =>
+    ({
+      Id: { agent: "agentId", run: "runId" },
+      ParentId: { agent: "parentAgentId", run: "parentRunId" },
+      RootId: { agent: "rootAgentId", run: "rootRunId" },
+      ContinuesId: { agent: "continuesAgentId", run: "continuesRunId" },
+    })[field][spelling];
+  const route = (spelling: Spelling, door: string) => `/${spelling === "agent" ? "agents" : "runs"}/${door}`;
+  const VOLATILE = new Set(["_id", "_creationTime", "ingestedAt", "at", "createdAt", "requestedAt", "servedAt"]);
+
+  /** Every row of a table, without the fields a clock or an id generator sets. */
+  async function stored(t: ReturnType<typeof convexTest>, table: string) {
+    const rows = (await t.run(async (ctx) => ctx.db.query(table as never).collect())) as Record<string, unknown>[];
+    return rows
+      .map((row) => Object.fromEntries(Object.entries(row).filter(([field]) => !VOLATILE.has(field))))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  }
+
+  /** One ingest body in one spelling: the root, its child edge, and the run it continues. */
+  function rootPage(spelling: Spelling, rows: unknown[] = [], file: Record<string, unknown> = FILE) {
+    return {
+      [spelling]: { [key(spelling, "Id")]: ROOT, [key(spelling, "RootId")]: ROOT, [key(spelling, "ContinuesId")]: EARLIER, depth: 0, linkKnown: true, kind: "session", ...FACTS, file },
+      rows,
+      children: [{ [key(spelling, "Id")]: CHILD, [key(spelling, "ParentId")]: ROOT, [key(spelling, "RootId")]: ROOT, depth: 1, linkKnown: true, spawnedByToolUseId: "toolu-spelling" }],
+      previousCommittedLine: 0,
+      previousPrefixSha256: "d".repeat(64),
+    };
+  }
+  function childPage(spelling: Spelling) {
+    return {
+      [spelling]: { [key(spelling, "Id")]: CHILD, [key(spelling, "ParentId")]: ROOT, [key(spelling, "RootId")]: ROOT, depth: 1, linkKnown: true, spawnedByToolUseId: "toolu-spelling", kind: "subagent", ...FACTS, file: CHILD_FILE },
+      rows: [], children: [], previousCommittedLine: 0, previousPrefixSha256: "d".repeat(64),
+    };
+  }
+  const ROW = {
+    seq: 0, turn: 0, kind: "user", content: { text: "hello" },
+    provenance: { fileVersion: FILE.storedHash, file: FILE.path, lineStart: 0, lineEnd: 0, block: 0, parserVersion: "runs-parser-1", sourceKind: "user" },
+    digest: "0123456789abcdef", depth: 0, createdAt: 1,
+  };
+  const post = (t: ReturnType<typeof convexTest>, path: string, body: unknown) =>
+    t.fetch(path, { method: "POST", headers: KEY, body: JSON.stringify(body) });
+  /** A deployment holding the root in the stored spelling, through the internal door. */
+  async function withRoot(rows: unknown[] = [], file: Record<string, unknown> = FILE) {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    const landed = await t.mutation(internal.agents.internalIngest, rootPage("run", rows, file) as never);
+    expect(landed, JSON.stringify(landed)).toMatchObject({ ok: true });
+    return t;
+  }
+
+  it("/agents/ingest and /runs/ingest store the same agents, edges and file versions", async () => {
+    const tables = [];
+    for (const spelling of SPELLINGS) {
+      vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+      const t = convexTest(schema, modules);
+      for (const page of [rootPage(spelling), childPage(spelling)]) {
+        const response = await post(t, route(spelling, "ingest"), page);
+        expect(response.status, spelling).toBe(200);
+        expect(await response.json(), spelling).toMatchObject({ ok: true });
+      }
+      tables.push({ runs: await stored(t, "runs"), runFileVersions: await stored(t, "runFileVersions") });
+    }
+    expect(tables[0]).toEqual(tables[1]);
+    expect(tables[0].runs.map((row) => row.runId)).toEqual([ROOT, CHILD]);
+    expect(tables[0].runs[0]).toMatchObject({ continuesRunId: EARLIER });
+    expect(tables[0].runs[1]).toMatchObject({ parentRunId: ROOT, rootRunId: ROOT, depth: 1 });
+    expect(JSON.stringify(tables[0])).not.toMatch(/agentId|AgentId/);
+  });
+
+  it("refuses an ingest whose agent id is malformed under either spelling", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    for (const spelling of SPELLINGS) {
+      const body = rootPage(spelling);
+      (body[spelling] as Record<string, unknown>)[key(spelling, "Id")] = "not-an-agent";
+      const response = await post(t, route(spelling, "ingest"), body);
+      expect(response.status, spelling).toBe(400);
+      expect(await response.json()).toEqual({ error: "agentId invalid" });
+    }
+  });
+
+  it("/agents/overflow and /runs/overflow store the same chunk", async () => {
+    const tables = [];
+    for (const spelling of SPELLINGS) {
+      const t = await withRoot([ROW]);
+      const response = await post(t, route(spelling, "overflow"), { [key(spelling, "Id")]: ROOT, seq: 0, index: 0, chunkCount: 1, text: "hello world" });
+      expect(response.status, spelling).toBe(200);
+      tables.push(await stored(t, "claudeMessageOverflow"));
+    }
+    expect(tables[0]).toEqual(tables[1]);
+    expect(tables[0]).toEqual([expect.objectContaining({ runId: ROOT, seq: 0, text: "hello world" })]);
+  });
+
+  it("/agents/overflow/stamp and /runs/overflow/stamp stamp the same row", async () => {
+    const tables = [];
+    for (const spelling of SPELLINGS) {
+      const t = await withRoot([ROW]);
+      expect((await post(t, "/agents/overflow", { agentId: ROOT, seq: 0, index: 0, chunkCount: 1, text: "hello world" })).status).toBe(200);
+      const response = await post(t, route(spelling, "overflow/stamp"), { [key(spelling, "Id")]: ROOT, seq: 0, sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 });
+      expect(response.status, spelling).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true, stamped: true });
+      tables.push(await stored(t, "claudeMessages"));
+    }
+    expect(tables[0]).toEqual(tables[1]);
+    expect(tables[0][0]).toMatchObject({ overflow: { sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 } });
+  });
+
+  it("/agents/materialize and /runs/materialize queue the same request", async () => {
+    const tables = [];
+    for (const spelling of SPELLINGS) {
+      const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
+      const response = await post(t, route(spelling, "materialize"), { [key(spelling, "Id")]: ROOT });
+      expect(response.status, spelling).toBe(200);
+      tables.push(await stored(t, "runMaterializeRequests"));
+    }
+    expect(tables[0]).toEqual(tables[1]);
+    expect(tables[0]).toEqual([expect.objectContaining({ runId: ROOT, requestedBy: "worker", status: "pending" })]);
+  });
+
+  it("/agents/materialize-answer takes \"agent is gone\" and still takes \"run is gone\"", async () => {
+    for (const reason of ["agent is gone", "run is gone"]) {
+      const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
+      expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
+      const { request } = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
+      const response = await post(t, "/agents/materialize-answer", { requestId: request.requestId, status: "failed", reason });
+      expect(response.status, reason).toBe(200);
+      expect(await stored(t, "runMaterializeRequests"), reason).toEqual([expect.objectContaining({ status: "failed", reason })]);
+    }
+  });
+
+  it("/agents/materialize-request answers agentId and parentAgentId beside the run spelling", async () => {
+    const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
+    expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
+    const agent = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
+    const run = await (await t.fetch("/runs/materialize-request", { headers: KEY })).json();
+    expect(run).toEqual(agent);
+    expect(agent.request).toMatchObject({ runId: ROOT, agentId: ROOT, parentRunId: null, parentAgentId: null });
+  });
+
+  it("/agents/manifest resumes the same under afterAgentId and afterRunId", async () => {
+    const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
+    const entry = (await t.query(internal.agents.internalManifest, { since: 0 })).entries[0];
+    const pages = [];
+    for (const spelling of SPELLINGS) {
+      const after = spelling === "agent" ? "afterAgentId" : "afterRunId";
+      const params = new URLSearchParams({ since: String(entry.at - 1), [after]: "claude:laptop:aaaaaaaa", afterFileVersion: "0".repeat(64) });
+      const response = await t.fetch(`${route(spelling, "manifest")}?${params}`, { headers: KEY });
+      expect(response.status, spelling).toBe(200);
+      pages.push(await response.json());
+    }
+    expect(pages[0]).toEqual(pages[1]);
+    expect(pages[0].entries).toEqual([expect.objectContaining({ run_id: ROOT })]);
+  });
+
+  it("/agents/compare answers agentId beside runId, and the stored comparison keeps runId only", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
+      title: "spelling", kind: "adhoc", repo: "none", status: "ended", statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
+    }));
+    const page = rootPage("run");
+    const landed = await t.mutation(internal.agents.internalIngest, { ...page, run: { ...(page.run as object), sessionId, status: "ended" } } as never);
+    expect(landed, JSON.stringify(landed)).toMatchObject({ ok: true });
+    for (const spelling of SPELLINGS) {
+      const response = await post(t, route(spelling, "compare"), { sessionId });
+      expect(response.status, spelling).toBe(200);
+      expect(await response.json(), spelling).toMatchObject({ runId: ROOT, agentId: ROOT });
+    }
+    const [comparison] = await events(t, "runs-shadow-compare");
+    expect(comparison.data).toMatchObject({ runId: ROOT });
+    expect(comparison.data).not.toHaveProperty("agentId");
+  });
+
+  it("/sessions/ingest stores the same runId under agentId and under runId", async () => {
+    const joined = [];
+    for (const spelling of SPELLINGS) {
+      vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+      const t = convexTest(schema, modules);
+      const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
+        title: "spelling", kind: "adhoc", repo: "none", status: "running", statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
+      }));
+      const response = await post(t, "/sessions/ingest", { sessionId, [key(spelling, "Id")]: "claude:box:spelling-session" });
+      expect(response.status, spelling).toBe(200);
+      joined.push((await t.run((ctx) => ctx.db.get(sessionId)))?.runId);
+    }
+    expect(joined).toEqual(["claude:box:spelling-session", "claude:box:spelling-session"]);
+  });
+
+  it("/tts/code-briefs stores the same token under agentToken and under runToken", async () => {
+    const token = "11111111-2222-4333-8444-555555555555";
+    const briefs = [];
+    for (const field of ["agentToken", "runToken"]) {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const response = await t.fetch("/tts/code-briefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+        body: JSON.stringify({
+          briefs: [{ repo: "tom.quest", externalId: "spelling", sourceHash: "h", brief: "Rename the page.", recommendation: "approve", execClass: "box" }],
+          [field]: token,
+        }),
+      });
+      expect(response.status, field).toBe(200);
+      briefs.push((await stored(t, "dtsCodeBriefs")).map((row) => row.producedByRunToken));
+    }
+    expect(briefs).toEqual([[token], [token]]);
+  });
+
+  it("/tts/simplify-input answers agents beside runs and agentId beside each sample's runId", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = await withRoot();
+    await t.run((ctx) => ctx.db.insert("modelOfTomPublication", {
+      key: "current", commit: "testprelude", committedAt: 1, pushed: true, operate: "o", write: "w", know: "k",
+      headers: ([["operate"], ["write"], ["know"], ["operate", "write"], ["operate", "know"], ["write", "know"], ["operate", "write", "know"]] as const)
+        .map((names) => ({ layers: [...names], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude): ${names.join(",")}` })),
+    }));
+    const response = await t.fetch("/tts/simplify-input?until=10", { headers: { "X-TTS-Key": "s3cret" } });
+    expect(response.status).toBe(200);
+    const facts = await response.json();
+    expect(facts.agents).toEqual(facts.runs);
+    // The root and the stub its child edge wrote.
+    expect(facts.sample.map((one: { runId: string }) => one.runId).sort()).toEqual([ROOT, CHILD]);
+    for (const one of facts.sample) expect(one.agentId).toBe(one.runId);
   });
 });
 

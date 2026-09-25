@@ -261,6 +261,45 @@ describe("the morning message's writer", () => {
     expect(typeof (marked[0].data as { slackTs?: unknown }).slackTs).toBe("string");
   });
 
+  // Both spellings until phase 3: the writer's door reads agentToken and
+  // runToken, and the request row stores either as its runToken.
+  it("stores the same writer token from /tts/slack-draft under agentToken and under runToken", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const token = "11111111-2222-4333-8444-555555555555";
+    const stored = [];
+    for (const key of ["agentToken", "runToken"]) {
+      const t = convexTest(schema, modules);
+      await openMorning(t);
+      stubSlack();
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      await t.action(internal.ttsSync.sendToday, {});
+      const [request] = await openRequests(t);
+      const todoFact = request.facts.facts.find((f: { id: string }) => f.id.startsWith("todo:")) as { id: string; urls: string[] };
+      const response = await t.fetch("/tts/slack-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+        body: JSON.stringify({
+          requestId: request.requestId,
+          draft: {
+            firstLine: "One thing carries a date you have passed; the rent is the one to start with.",
+            firstLineSources: ["today:count"],
+            lines: [{ role: "item", text: "Pay the rent: open the bank app. One day late.", url: todoFact.urls[0], sources: [todoFact.id] }],
+          },
+          [key]: token,
+        }),
+      });
+      expect(response.status, key).toBe(200);
+      const [row] = await t.run(async (ctx) =>
+        (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === SLACK_DRAFT_REQUEST),
+      );
+      stored.push((row.data as { runToken?: string }).runToken);
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+    expect(stored).toEqual([token, token]);
+  });
+
   it("refuses an invented number and hands back the complaint for one repair turn", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);

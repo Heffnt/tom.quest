@@ -35,7 +35,7 @@ import {
 } from "./ttsShared";
 
 // ── Runners ──────────────────────────────────────────────────────────────────
-// A runner watches one experiment through a chain of short step runs on the
+// A runner watches one experiment through a chain of short step agents on the
 // box. The row (convex/schema.ts `runners`) holds the handoff document, the
 // step length and the lease; each step starts cold from the document, checks
 // in, rewrites the document and ends. This module is the row's one writer:
@@ -365,9 +365,9 @@ export const createRunner = mutation({
 
 // ── The step schedule ────────────────────────────────────────────────────────
 
-/** The newest step of this runner that was given a run id: its id becomes the
- *  next step run's continuesRunId. */
-async function lastStepRunId(ctx: QueryCtx, runnerId: Id<"runners">): Promise<string | undefined> {
+/** The newest step of this runner that was given an agent id: its id becomes
+ *  the next step agent's continuesRunId. */
+async function lastStepAgentId(ctx: QueryCtx, runnerId: Id<"runners">): Promise<string | undefined> {
   const recent = await ctx.db
     .query("runnerSteps")
     .withIndex("by_runner_due", (q) => q.eq("runnerId", runnerId))
@@ -405,7 +405,7 @@ async function openStep(ctx: MutationCtx, runnerId: Id<"runners">, now: number) 
     });
     return null;
   }
-  const previousStepRunId = await lastStepRunId(ctx, runnerId);
+  const previousStepRunId = await lastStepAgentId(ctx, runnerId);
   return ctx.db.insert("runnerSteps", {
     runnerId,
     environment: "runner",
@@ -435,16 +435,16 @@ function leaseMs(stepMs: number): number {
   return Math.min(4 * stepMs, 2 * 60 * 60_000);
 }
 
-/** The run record's link to one run, the one spelling a check-in carries. */
-export function runLink(runId: string): string {
-  return `https://www.tom.quest/runs?run=${encodeURIComponent(runId)}`;
+/** The record's link to one agent, the one spelling a check-in carries. */
+export function agentLink(agentId: string): string {
+  return `https://www.tom.quest/agents?agent=${encodeURIComponent(agentId)}`;
 }
 
-/** A step run's id: a Claude run on the box, under a session id minted here.
- *  The box starts the CLI with that session id, so the run record's own id for
- *  the step is known before the step exists, and the next step's
+/** A step agent's id: a Claude agent on the box, under a session id minted
+ *  here. The box starts the CLI with that session id, so the record's own id
+ *  for the step is known before the step exists, and the next step's
  *  continuesRunId names it exactly. */
-function mintStepRunId(): string {
+function mintStepAgentId(): string {
   return `claude:box:${crypto.randomUUID()}`;
 }
 
@@ -481,7 +481,7 @@ export async function dueRunnerSteps(ctx: QueryCtx, now: number) {
 /**
  * ADMISSION, in one transaction. The step is admitted only when the runner's
  * lease is free or past its deadline; Convex serializes two claimers, so two
- * daemons cannot both hold it. Admission mints the step run's id, takes the
+ * daemons cannot both hold it. Admission mints the step agent's id, takes the
  * lease, marks the request claimed and returns the prompt. A refusal is an
  * answer too: the request is written failed with a fixed reason, so the queue
  * drains.
@@ -503,7 +503,7 @@ export const internalClaimRunnerStep = internalMutation({
     }
     // A lease past its deadline is a dead step the sweep has not reached yet.
     if (runner.lease) await expireLease(ctx, runner, now);
-    const stepRunId = mintStepRunId();
+    const stepRunId = mintStepAgentId();
     await ctx.db.patch(runner._id, { lease: { stepRunId, deadline: now + leaseMs(runner.stepMs), takenAt: now } });
     await ctx.db.patch(stepId, { status: "claimed", claimedAt: now, stepRunId });
     const prompt = await buildRunnerStepPrompt(ctx, { runner: (await ctx.db.get(runner._id))!, stepRunId, now });
@@ -576,7 +576,7 @@ async function failStep(ctx: MutationCtx, runner: Doc<"runners">, stepRunId: str
     job: `runner:${runner._id}`,
     statement: "A runner's step stopped before it checked in, so that step's look at the experiment was lost; the next step runs on schedule.",
     detail: redactSecrets(`${runner.title}: ${reason}`),
-    ...(stepRunId !== undefined ? { url: runLink(stepRunId) } : {}),
+    ...(stepRunId !== undefined ? { url: agentLink(stepRunId) } : {}),
   });
 }
 
@@ -788,7 +788,7 @@ async function buildRunnerStepPrompt(
 
   return [
     grants,
-    `You are one step of the runner "${runner.title}" (runner ${runner._id}), which is ${status}. A runner watches one experiment through a chain of short steps: each starts cold, reads the document below as its whole memory, looks at the experiment, decides one thing, acts on it, checks in, rewrites the document for the step after it, and ends. Nothing is re-entered, and nothing you do not write into the document survives this step. Your step run is ${stepRunId}.`,
+    `You are one step of the runner "${runner.title}" (runner ${runner._id}), which is ${status}. A runner watches one experiment through a chain of short steps: each starts cold, reads the document below as its whole memory, looks at the experiment, decides one thing, acts on it, checks in, rewrites the document for the step after it, and ends. Nothing is re-entered, and nothing you do not write into the document survives this step. Your step agent is ${stepRunId}.`,
     `## The document (version ${runner.documentVersion})\n\n${runner.document}`,
     `## The facts, read by the box before you started\n\n${facts}`,
     `## Tom's replies since the last step\n\n${replies}`,
@@ -1036,7 +1036,7 @@ export const internalCheckInFacts = internalQuery({
         asks: data.asks ?? 0,
         checkIn: event.text ?? "",
         graded: { verdict: event.graded?.verdict ?? "fail", complaints: event.graded?.complaints ?? [] },
-        runUrl: runLink(event.stepRunId ?? ""),
+        agentUrl: agentLink(event.stepRunId ?? ""),
       },
     };
   },
@@ -1176,13 +1176,13 @@ export async function liveRunnerFacts(ctx: QueryCtx): Promise<RunnerFact[]> {
     .map((row) => row.fact);
 }
 
-/** The runner a step run belongs to, by the id in its `runner:<id>` origin:
- *  its title and its derived status, for the runs page's run view. Behind
- *  the same gate as the run record it sits beside. */
+/** The runner a step agent belongs to, by the id in its `runner:<id>` origin:
+ *  its title and its derived status, for the agents page's agent view. Behind
+ *  the same gate as the agent record it sits beside. */
 export const runnerTitle = query({
   args: { runnerId: v.string() },
   handler: async (ctx, { runnerId }) => {
-    await requireTom(ctx, "Runs");
+    await requireTom(ctx, "Agents");
     const id = ctx.db.normalizeId("runners", runnerId);
     const runner = id === null ? null : await ctx.db.get(id);
     if (!runner) return null;
@@ -1220,7 +1220,7 @@ export const listRunners = query({
           status: runnerStatus({ runner, openBlockingAsks: blocking }),
           openBlockingAsks: blocking,
           lastCheckIn: checkIn === null ? null : { at: checkIn.at, line: checkInFirstLine(checkIn.text) },
-          stepRunId: (await lastStepRunId(ctx, runner._id)) ?? null,
+          stepRunId: (await lastStepAgentId(ctx, runner._id)) ?? null,
         };
       }),
     );

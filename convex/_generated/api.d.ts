@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as agentLabels from "../agentLabels.js";
+import type * as agents from "../agents.js";
 import type * as agentSurfaces from "../agentSurfaces.js";
 import type * as auth from "../auth.js";
 import type * as authRoles from "../authRoles.js";
@@ -24,8 +26,6 @@ import type * as intentParse from "../intentParse.js";
 import type * as observe from "../observe.js";
 import type * as observeMerge from "../observeMerge.js";
 import type * as orchestrator from "../orchestrator.js";
-import type * as runLabels from "../runLabels.js";
-import type * as runs from "../runs.js";
 import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as symbolScores from "../symbolScores.js";
@@ -69,6 +69,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  agentLabels: typeof agentLabels;
+  agents: typeof agents;
   agentSurfaces: typeof agentSurfaces;
   auth: typeof auth;
   authRoles: typeof authRoles;
@@ -85,8 +87,6 @@ declare const fullApi: ApiFromModules<{
   observe: typeof observe;
   observeMerge: typeof observeMerge;
   orchestrator: typeof orchestrator;
-  runLabels: typeof runLabels;
-  runs: typeof runs;
   secrets: typeof secrets;
   serverHealth: typeof serverHealth;
   symbolScores: typeof symbolScores;

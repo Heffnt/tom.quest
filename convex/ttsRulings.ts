@@ -266,7 +266,7 @@ export async function insertRuling(
     // A RULING IS A JUDGMENT ABOUT A RUN'S OUTPUT, and this is where the evals
     // layer hears about it: the label writer finds the run that wrote the text
     // he ruled on (the subject row's producedByRunToken) and records what the
-    // verdict said about it (convex/runLabels.ts).
+    // verdict said about it (convex/agentLabels.ts).
     //
     // SCHEDULED, NOT AWAITED, for the reason this file already gives about the
     // decisions line below: the ruling is the fact. A label that cannot be
@@ -274,7 +274,7 @@ export async function insertRuling(
     // were registered — must not roll back a ruling Tom made, and inside this
     // transaction a throw in the writer would do exactly that. Scheduled, the
     // unlinked act is counted on its own row and the ruling stands.
-    await ctx.scheduler.runAfter(0, internal.runLabels.internalLabelFromRuling, {
+    await ctx.scheduler.runAfter(0, internal.agentLabels.internalLabelFromRuling, {
       rulingId: id,
     });
     // A RULING READ OUT OF HIS SENTENCE IS A DECISION TAKEN IN HIS NAME, so it
@@ -310,7 +310,7 @@ async function ruledSubjectName(
   if (subject.repo !== undefined && subject.externalId !== undefined) {
     return `${subject.repo} ${subject.externalId}`;
   }
-  return "the run";
+  return "the agent";
 }
 
 export const recordRuling = mutation({

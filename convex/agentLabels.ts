@@ -1,4 +1,4 @@
-// runLabels.ts — everywhere Tom's judgment enters becomes a row about a run.
+// agentLabels.ts — everywhere Tom's judgment enters becomes a row about an agent.
 //
 // A LABEL is one act of Tom's about one run's output: a ruling on the todo a
 // prepare pass wrote, an objection in #tts-decisions to a decision the delegate
@@ -31,14 +31,14 @@ import { DIGEST_SENT } from "./ttsDigest";
 import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
 
 /** The four doors, in the schema's own words. */
-export const LABEL_SOURCE = v.union(
+const LABEL_SOURCE = v.union(
   v.literal("ruling"),
   v.literal("objection"),
   v.literal("session-reply"),
   v.literal("digest-reaction"),
 );
 
-export const LABEL_POLARITY = v.union(
+const LABEL_POLARITY = v.union(
   v.literal("good"),
   v.literal("bad"),
   v.literal("mixed"),
@@ -48,15 +48,15 @@ export const LABEL_POLARITY = v.union(
 /** An act that named no run. Counted, never silent: silence would make an old
  *  corpus look like a clean one, and a counted absence is a fact the weekly
  *  gather can report and a later backlog import can repair. */
-export const RUN_LABEL_UNLINKED = "run-label-unlinked";
+const AGENT_LABEL_UNLINKED = "run-label-unlinked";
 /** An emoji nobody mapped. It says what Tom reaches for, which is worth
  *  having; guessing its polarity would put an invented judgment in the
  *  corpus. */
-export const REACTION_UNMAPPED = "reaction-unmapped";
+const REACTION_UNMAPPED = "reaction-unmapped";
 
 /** A session reply is trimmed to this many characters for `meaning`. The full
  *  text is in the transcript row the span names, so nothing is lost. */
-export const MEANING_MAX_CHARS = 300;
+const MEANING_MAX_CHARS = 300;
 
 /**
  * THE EMOJI SET, small and unambiguous, defined once.
@@ -112,7 +112,7 @@ export function meaningFault(meaning: string): string | null {
  * one of them wrote the text Tom read — and a wrong edge poisons the eval
  * corpus silently, which is worse than a missing one.
  */
-export async function runForToken(
+export async function agentForToken(
   ctx: MutationCtx,
   token: string | undefined | null,
 ): Promise<Doc<"runs"> | null> {
@@ -136,7 +136,7 @@ async function unlinked(
   ctx: MutationCtx,
   what: { source: string; ref: string; subjectKey: string | null; why: string },
 ) {
-  await logEvent(ctx, RUN_LABEL_UNLINKED, undefined, what);
+  await logEvent(ctx, AGENT_LABEL_UNLINKED, undefined, what);
 }
 
 /**
@@ -164,7 +164,7 @@ export const internalWriteLabel = internalMutation({
   handler: async (ctx, args) => await writeLabel(ctx, args),
 });
 
-export type LabelInput = {
+type LabelInput = {
   runId: string;
   rowSpan?: { seqStart: number; seqEnd: number };
   source: "ruling" | "objection" | "session-reply" | "digest-reaction";
@@ -179,7 +179,7 @@ export type LabelInput = {
 /** The body both the mutation above and the in-process callers below go
  *  through, so a label written by a scheduler and a label written by a test
  *  cannot take different rules. */
-export async function writeLabel(
+async function writeLabel(
   ctx: MutationCtx,
   args: LabelInput,
 ): Promise<{ id: Id<"runLabels">; existing: boolean }> {
@@ -221,7 +221,7 @@ export async function writeLabel(
  * session verdict says "let us talk", an archive says "not now". Only a
  * judgment label becomes an eval case, so neither enters the corpus.
  */
-export function labelForVerdict(
+function labelForVerdict(
   verdict: string,
   sentence: string | undefined,
 ): { polarity: "good" | "bad" | "neutral"; judgment: boolean; meaning: string } | null {
@@ -282,13 +282,13 @@ export const internalLabelFromRuling = internalMutation({
     const label = labelForVerdict(ruling.verdict, ruling.sentence);
     if (label === null) return { wrote: false, why: `unknown verdict ${ruling.verdict}` };
     const ref = `ruling:${rulingId}`;
-    const run = await runForToken(ctx, await tokenForRulingSubject(ctx, ruling));
+    const run = await agentForToken(ctx, await tokenForRulingSubject(ctx, ruling));
     if (run === null) {
       await unlinked(ctx, {
         source: "ruling",
         ref,
         subjectKey: subjectKeyOf(ruling),
-        why: "the subject row carries no producedByRunToken, or no run claimed it",
+        why: "the subject row carries no producedByRunToken, or no agent claimed it",
       });
       return { wrote: false, why: "unlinked" };
     }
@@ -334,7 +334,7 @@ export const internalLabelFromObjection = internalMutation({
         .first());
     const ref = `objection:${eventId}`;
     const token = (subject?.data as { runToken?: unknown } | undefined)?.runToken;
-    const run = await runForToken(ctx, typeof token === "string" ? token : undefined);
+    const run = await agentForToken(ctx, typeof token === "string" ? token : undefined);
     if (run === null) {
       await unlinked(ctx, {
         source: "objection",
@@ -342,7 +342,7 @@ export const internalLabelFromObjection = internalMutation({
         subjectKey: askId,
         why: subject === null
           ? "no decision or merge row carries this askId"
-          : "the decision row carries no runToken, or no run claimed it",
+          : "the decision row carries no runToken, or no agent claimed it",
       });
       return { wrote: false, why: "unlinked" };
     }
@@ -409,7 +409,7 @@ export const internalLabelFromSessionReply = internalMutation({
         source: "session-reply",
         ref,
         subjectKey: `session ${sessionId}`,
-        why: "no run of this session had started when the reply landed",
+        why: "no agent of this session had started when the reply landed",
       });
       return { wrote: false, why: "unlinked" };
     }
@@ -499,7 +499,7 @@ export const internalLabelFromReaction = internalMutation({
       return { wrote: false, why: "unmapped emoji" };
     }
     const data = (sent.data ?? {}) as { runToken?: unknown; writtenBy?: unknown; day?: unknown };
-    const run = await runForToken(ctx, typeof data.runToken === "string" ? data.runToken : undefined);
+    const run = await agentForToken(ctx, typeof data.runToken === "string" ? data.runToken : undefined);
     if (run === null) {
       // A morning the model path timed out has writtenBy "template" and no
       // token. A reaction on it writes no label, and that is RIGHT: the plain
@@ -510,8 +510,8 @@ export const internalLabelFromReaction = internalMutation({
         ref,
         subjectKey: typeof data.day === "string" ? `digest:${data.day}` : null,
         why: data.writtenBy === "template"
-          ? "the morning was written by the plain template, which is not a run's output"
-          : "the digest-sent row carries no runToken, or no run claimed it",
+          ? "the morning was written by the plain template, which is not an agent's output"
+          : "the digest-sent row carries no runToken, or no agent claimed it",
       });
       return { wrote: false, why: "unlinked" };
     }

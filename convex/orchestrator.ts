@@ -773,7 +773,7 @@ export const internalElevate = internalMutation({
     });
     const concerns = [
       todoId === undefined ? null : `It concerns todo ${todoId}.`,
-      args.concernsRunId?.trim() ? `It concerns run ${args.concernsRunId.trim()}.` : null,
+      args.concernsRunId?.trim() ? `It concerns agent ${args.concernsRunId.trim()}.` : null,
     ].filter((line): line is string => line !== null);
     const delivered = await deliverToOrchestrator(
       ctx,
@@ -1106,7 +1106,7 @@ function curl(route: string, body: string): string {
   return `curl -s -X POST "$CONVEX_SITE_URL${route}" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '${body}'`;
 }
 
-/** The three decision kinds, as every hosted run is told them. */
+/** The three decision kinds, as every hosted agent is told them. */
 const DECISION_KINDS_TEXT = [
   "An agent makes moves and decisions. A move is a trivial action; the transcript records it and nothing else does. A decision is one of three kinds:",
   "- Obvious: one side is clearly better. Make it, and state it in one sentence where your work is reported.",
@@ -1135,11 +1135,11 @@ export function buildOrchestratorPrompt(args: {
   return [
     "You are the orchestrator: the one long-lived jarvis agent on the Jarvis Box that works through Tom's todos by handing each piece of work to a hosted worker, and that answers the decisions those workers raise. You never do a worker's work yourself: you write or delegate its brief, spawn it, and judge what it asks.",
     "",
-    `This run's session id is ${id}. Every pen below names it, and a pen refuses any other.`,
+    `This agent's session id is ${id}. Every pen below names it, and a pen refuses any other.`,
     "",
     "How you live. The box daemon hosts you across turns. Your workers' elevations, their messages and their endings arrive as your next turn; between turns you are idle. End each turn once you have acted on everything in front of you. Your context grows with every turn: when it is long, at your own judgment, rewrite your document with everything your successor needs, then end the turn with a final message whose last line is exactly:",
     ORCHESTRATOR_COMPACT_WORD,
-    "The daemon then ends this run and starts your successor cold from the document. It does the same after a crash, so the document is your memory: keep it current.",
+    "The daemon then ends this agent and starts your successor cold from the document. It does the same after a crash, so the document is your memory: keep it current.",
     "",
     "Decisions (Tom, 2026-09-21).",
     DECISION_KINDS_TEXT,
@@ -1174,12 +1174,12 @@ export function buildOrchestratorPrompt(args: {
     `curl -s "$CONVEX_SITE_URL/tts/orchestrator" -H "X-TTS-Key: $TTS_WORKER_KEY"`,
     "```",
     "",
-    `Prohibitions: never record a ruling of Tom's, never change a todo's status by hand, and never do a worker's work in this run. ${DAEMON_RESTART_SENTENCE}`,
+    `Prohibitions: never record a ruling of Tom's, never change a todo's status by hand, and never do a worker's work as this agent. ${DAEMON_RESTART_SENTENCE}`,
     "",
     BOX_TOOLS_PARAGRAPH,
     "",
-    `Why this run started: ${args.reason}.`,
-    ...(args.instruction ? ["", "The instruction Tom started the orchestrator with (every run of it carries this until he starts it again):", args.instruction] : []),
+    `Why this agent started: ${args.reason}.`,
+    ...(args.instruction ? ["", "The instruction Tom started the orchestrator with (every agent in its chain carries this until he starts it again):", args.instruction] : []),
     "",
     `Your document (version ${args.documentVersion}):`,
     "",
@@ -1191,7 +1191,7 @@ export function buildOrchestratorPrompt(args: {
     "Unanswered elevations:",
     elevations,
     ...(args.carried.length > 0
-      ? ["", "Messages that arrived for your previous run and were never delivered to it, oldest first:", ...args.carried.map((text) => `---\n${text}`)]
+      ? ["", "Messages that arrived for the agent before you and were never delivered to it, oldest first:", ...args.carried.map((text) => `---\n${text}`)]
       : []),
   ].join("\n");
 }
@@ -1207,7 +1207,7 @@ export function buildHostedWorkerPrompt(args: {
   return [
     "You are a worker the orchestrator spawned: an unattended jarvis agent on the Jarvis Box with one brief. The box daemon hosts you across turns, so the orchestrator can reach you while you work: its messages and its answers to your elevations arrive as your next turn.",
     "",
-    `This run's session id is ${id}. Every pen below names it.`,
+    `This agent's session id is ${id}. Every pen below names it.`,
     "",
     "The brief:",
     args.brief,
@@ -1221,7 +1221,7 @@ export function buildHostedWorkerPrompt(args: {
     "",
     "1. Elevate a decision:",
     "```",
-    curl("/tts/elevate", `{"sessionId": "${id}", "question": "<one sentence>", "sides": ["<side one>", "<side two>"]${todo}, "runId": "<optional: a run it concerns, other than yours>"}`),
+    curl("/tts/elevate", `{"sessionId": "${id}", "question": "<one sentence>", "sides": ["<side one>", "<side two>"]${todo}, "agentId": "<optional: an agent it concerns, other than yours>"}`),
     "```",
     "2. Message the orchestrator (what you found, what you need, what you are about to do that it should know):",
     "```",
@@ -1231,12 +1231,12 @@ export function buildHostedWorkerPrompt(args: {
       sessionId: id as Id<"claudeSessions">,
       leadIn: "3. Record your outcome when the brief is done, or blocked for good:",
       summary: "one line: what landed where, and every obvious decision you made",
-      after: '"completed" means the brief is done; otherwise "errored" with what blocked you. The daemon ends this run once the outcome is recorded and your turn has ended.',
+      after: '"completed" means the brief is done; otherwise "errored" with what blocked you. The daemon ends this agent once the outcome is recorded and your turn has ended.',
       fenced: true,
     }),
     "",
     ...(args.repos.length === 0
-      ? [`Prohibitions: never record a ruling and never change a status. This run has an empty scratch directory and no repository. ${DAEMON_RESTART_SENTENCE}`]
+      ? [`Prohibitions: never record a ruling and never change a status. This agent has an empty scratch directory and no repository. ${DAEMON_RESTART_SENTENCE}`]
       : [
           workspaceParagraph(args.repos, id as Id<"claudeSessions">, "Do the brief's work here, code included."),
           "",

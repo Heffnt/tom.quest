@@ -766,7 +766,7 @@ export async function gatherTodayFacts(
     .map((o) => ({
       askId: o.askId,
       todoId: o.todoId,
-      decision: o.decision ?? "no answer came back, so the run took its own fallback",
+      decision: o.decision ?? "no answer came back, so the agent took its own fallback",
       reason: o.reason,
       refused: o.refused,
       refusedBecause:

@@ -1068,7 +1068,7 @@ export function normalizeSessionRepos(
  * every status in the claudeSessions.status union (convex/schema.ts) except
  * the two terminal ones, "ended" and "failed".
  *
- * ONE HOME. Before this, app/runs/lib.ts and convex/claudeSessions.ts each
+ * ONE HOME. Before this, app/agents/lib.ts and convex/claudeSessions.ts each
  * carried their own copy of this list and their own isLive, while the comment
  * above each copy said this file was the home — so the page's "live" and the
  * server's "live" were two facts that happened to agree. They are now one.
@@ -1107,10 +1107,10 @@ export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
 // doubled the length of everything in #dump and told him only that the system
 // worked; the one fact he did not already have is when he next sees it.
 
-/** Deep link to one session on the /runs page — the one spelling every
+/** Deep link to one session on the /agents page — the one spelling every
  * Slack message about a session carries. */
 export function ttsSessionLink(sessionId: string): string {
-  return `https://www.tom.quest/runs?session=${sessionId}`;
+  return `https://www.tom.quest/agents?session=${sessionId}`;
 }
 
 // ── Slack subjects (the lifeos update, phase 2) ──────────────────────────────

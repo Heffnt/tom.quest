@@ -424,7 +424,7 @@ export function claimKey(day: string, ask: SlackAsk, itemId: string): string {
 const ITEM_URL = "https://tom.quest/tts?item=";
 export const TAB_EVERYTHING = "https://tom.quest/tts?tab=everything";
 export const TAB_CALENDAR = "https://tom.quest/tts?tab=calendar";
-const SESSION_URL = "https://www.tom.quest/runs?session=";
+const SESSION_URL = "https://www.tom.quest/agents?session=";
 
 export function itemUrl(todoId: string): string {
   return `${ITEM_URL}${todoId}`;
@@ -1200,7 +1200,7 @@ type CheckInFacts = {
   /** The step's own words, already past the form rules and the judge. */
   checkIn: string;
   graded: { verdict: "pass" | "fail"; complaints: string[] };
-  runUrl: string;
+  agentUrl: string;
 };
 
 /** A check-in's decision in words: the ONE home of that phrasing, read by the
@@ -1247,7 +1247,7 @@ export function composeCheckIn(f: CheckInFacts): Message {
   const first = checkInNumbers(f);
   return {
     firstLine: first.length <= FIRST_LINE_CHARS ? first : `${f.title}, check-in ${f.number}: ${runnerDecisionWords[f.decision]}.`,
-    lines: [{ role: "item", text: "Open the step that wrote this check-in.", url: f.runUrl }],
+    lines: [{ role: "item", text: "Open the step that wrote this check-in.", url: f.agentUrl }],
   };
 }
 
@@ -1415,7 +1415,7 @@ export function composeDecision(f: DecisionFact, o: { canReply: boolean }): Mess
         role: "item",
         section: "decision",
         text: statement(
-          `It would have ${stripStop(f.decision)}${f.fallback ? `; instead the run ${stripStop(f.fallback)}` : ""}`,
+          `It would have ${stripStop(f.decision)}${f.fallback ? `; instead the agent ${stripStop(f.fallback)}` : ""}`,
         ),
         url,
       },

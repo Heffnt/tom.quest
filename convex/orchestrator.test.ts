@@ -528,7 +528,7 @@ describe("restarting from the document", () => {
     expect(opener).toContain("Footer done.");
     expect(opener).toContain("Tests are green.");
     // The first run's own opener was delivered to it and is not carried.
-    expect(opener.split("Why this run started").length).toBe(2);
+    expect(opener.split("Why this agent started").length).toBe(2);
     expect(opener).toContain(worker);
     const hosted = await t.run(async (ctx) => ctx.db.query("hostedRuns").withIndex("by_session", (q) => q.eq("sessionId", next.liveSessionId!)).unique());
     expect(hosted?.environment).toBe("orchestrator");
@@ -567,7 +567,7 @@ describe("restarting from the document", () => {
     const text = (await pendingTexts(t, next))[0];
     expect(text).toContain("PR 1 is open.");
     expect(text).toContain("Spawn one worker on the footer.");
-    expect(text.split("Why this run started").length).toBe(2);
+    expect(text.split("Why this agent started").length).toBe(2);
 
     // The next run crashes during that very opener: the message is carried
     // again, not lost.
@@ -732,5 +732,25 @@ describe("restarting from the document", () => {
     await t.run(async (ctx) => recordElevationReply(ctx, elevationId, "Go with a.", { channel: "C", ts: "2.0", threadTs: "1.0" }));
     const restarted = await t.mutation(internal.orchestrator.internalStart, { reason: "again" });
     expect((await pendingTexts(t, restarted.sessionId as string))[0]).toContain(`Tom answered elevation ${elevationId}`);
+  });
+});
+
+// ── Both spellings, while the box moves from run to agent ───────────────────
+// The elevate pen reads agentId and runId until phase 3 and stores either as
+// the elevation's concernsRunId.
+describe("the elevate pen under both spellings", () => {
+  it("stores the same concernsRunId under agentId and under runId", async () => {
+    const concerns = "claude:box:concerned-agent-1";
+    const stored = [];
+    for (const key of ["agentId", "runId"]) {
+      const t = await setup();
+      const worker = await spawn(t, await start(t));
+      const res = await pen(t, "/tts/elevate", { sessionId: worker, question: "Which colour?", sides: ["Blue.", "Green."], [key]: concerns });
+      expect(res.status, key).toBe(200);
+      const elevation = await t.run((ctx) => ctx.db.get(res.body.elevationId as Id<"elevations">));
+      stored.push(elevation?.concernsRunId);
+      vi.unstubAllEnvs();
+    }
+    expect(stored).toEqual([concerns, concerns]);
   });
 });

@@ -292,7 +292,7 @@ async function settle(
   // The registration token of the run that WROTE this text, carried from the
   // writer's own submission. It travels to the "digest-sent" row and is the
   // edge an emoji on the morning follows back to the run that earned it
-  // (convex/runLabels.ts).
+  // (convex/agentLabels.ts).
   //
   // THE TEMPLATE PATH PASSES NONE, and that is the fact rather than a gap: the
   // plain template is not a run's output, so a reaction on a template morning

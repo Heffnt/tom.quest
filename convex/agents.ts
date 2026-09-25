@@ -8,19 +8,19 @@ import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 
-const RUN_KIND = v.union(
+const AGENT_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
   v.literal("subagent"), v.literal("codex-child"), v.literal("runner-step"), v.literal("unknown"),
 );
 // Where a run ran: a session Tom talks to, a worker nobody watches, a
 // runner, or the orchestrator that hands work out. Named by the launcher's
 // envelope, else inherited from the parent row.
-const RUN_ENVIRONMENT = v.union(v.literal("session"), v.literal("worker"), v.literal("runner"), v.literal("orchestrator"));
-type RunEnvironment = "session" | "worker" | "runner" | "orchestrator";
-const RUN_CLI = v.union(v.literal("claude"), v.literal("codex"));
-type RunCli = "claude" | "codex";
-const RUN_STATUS = v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown"));
-const RUN_MODE = v.union(v.literal("interactive"), v.literal("autonomous"));
+const AGENT_ENVIRONMENT = v.union(v.literal("session"), v.literal("worker"), v.literal("runner"), v.literal("orchestrator"));
+type AgentEnvironment = "session" | "worker" | "runner" | "orchestrator";
+const AGENT_CLI = v.union(v.literal("claude"), v.literal("codex"));
+type AgentCli = "claude" | "codex";
+const AGENT_STATUS = v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown"));
+const AGENT_MODE = v.union(v.literal("interactive"), v.literal("autonomous"));
 const ROW_KIND = v.union(
   v.literal("user"), v.literal("assistant-text"), v.literal("thinking"),
   v.literal("tool-call"), v.literal("tool-result"), v.literal("permission"),
@@ -71,14 +71,14 @@ const OUTCOME = v.object({
   }),
   costUsd: v.optional(v.number()), priceTableVersion: v.optional(v.string()), turns: v.number(), toolCalls: v.number(),
 });
-const RUN = v.object({
+const AGENT = v.object({
   runId: v.string(), parentRunId: v.optional(v.string()), rootRunId: v.string(), depth: v.number(), spawnedByToolUseId: v.optional(v.string()), linkKnown: v.boolean(),
   origin: v.string(), continuesRunId: v.optional(v.string()), host: v.union(v.literal("laptop"), v.literal("box")),
   // The CLI family the run ran under.
-  cli: RUN_CLI,
-  environment: v.optional(RUN_ENVIRONMENT),
-  model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: RUN_KIND, status: RUN_STATUS,
-  mode: v.optional(RUN_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
+  cli: AGENT_CLI,
+  environment: v.optional(AGENT_ENVIRONMENT),
+  model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: AGENT_KIND, status: AGENT_STATUS,
+  mode: v.optional(AGENT_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
   // batchId stays accepted while a box that has not rolled out still sends it;
   // nothing reads it, and the schema narrow removes it.
   todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
@@ -92,7 +92,7 @@ const ROW = v.object({
 });
 const CHILD = v.object({ runId: v.string(), parentRunId: v.string(), rootRunId: v.string(), depth: v.number(), spawnedByToolUseId: v.optional(v.string()), linkKnown: v.boolean() });
 
-const RUN_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
+const AGENT_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_DESCENDANT_REPAIR = 500;
 const MAX_OVERFLOW_CHUNKS = 500;
@@ -105,18 +105,18 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * that stubs it must not depend on import order.
  */
 function rowWindowMs(): number {
-  const days = Number(process.env.RUNS_ROW_WINDOW_DAYS ?? 30);
+  const days = Number(process.env.AGENTS_ROW_WINDOW_DAYS ?? 30);
   return (Number.isFinite(days) && days > 0 ? days : 30) * DAY_MS;
 }
 /** Eviction is OFF unless the deployment says otherwise — also read at call time. */
 function evictionEnabled(): boolean {
-  return /^(1|true|yes|on)$/i.test(String(process.env.RUNS_EVICTION_ENABLED ?? ""));
+  return /^(1|true|yes|on)$/i.test(String(process.env.AGENTS_EVICTION_ENABLED ?? ""));
 }
 
 // One click must not become an hour of mutations: a request ingests at most one
 // slice, and a run stops after five of them and says so.
 const MAX_SLICES = 5;
-const EVICT_RUNS_PER_TICK = 20;
+const EVICT_AGENTS_PER_TICK = 20;
 const EVICT_ROWS_PER_STEP = 200;
 const EVICT_MAX_STEPS = 200;
 const MAX_REASON_LENGTH = 200;
@@ -125,7 +125,9 @@ const MAX_REASON_LENGTH = 200;
 // transcript, a path or a bucket error can never be reflected into the record.
 const MATERIALIZE_REASONS = new Set([
   "object missing from store", "object hash mismatch", "store unreachable",
-  "no store key", "file too large", "parse produced no rows", "run is gone",
+  "no store key", "file too large", "parse produced no rows", "agent is gone",
+  // The box's spelling until its own rename lands; phase 3 removes it.
+  "run is gone",
 ]);
 const MATERIALIZE_PARTIAL = new Set([
   "sidecar-missing", "no-envelope", "pre-parser-fields",
@@ -141,10 +143,10 @@ function positiveInteger(value: unknown): value is number {
 function validHash(value: unknown): value is string {
   return typeof value === "string" && SHA256.test(value);
 }
-function validRunId(runId: unknown): runId is string {
-  return typeof runId === "string" && RUN_ID.test(runId);
+function validAgentId(runId: unknown): runId is string {
+  return typeof runId === "string" && AGENT_ID.test(runId);
 }
-function runIdMatches(runId: string, cli: RunCli, host: "laptop" | "box") {
+function agentIdMatches(runId: string, cli: AgentCli, host: "laptop" | "box") {
   return runId.startsWith(`${cli}:${host}:`);
 }
 function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
@@ -172,11 +174,7 @@ function validFile(file: {
   return file.path !== "" && validHash(file.sourceHash) && validHash(file.storedHash) && nonNegativeInteger(file.bytes) && nonNegativeInteger(file.storedBytes) && nonNegativeInteger(file.committedLine) && validHash(file.committedPrefixSha256) && (file.sidecarStoredHash === undefined || validHash(file.sidecarStoredHash));
 }
 
-async function requireTomForRuns(ctx: QueryCtx | MutationCtx) {
-  await requireTom(ctx, "Runs");
-}
-
-async function runAt(ctx: QueryCtx | MutationCtx, runId: string) {
+async function agentAt(ctx: QueryCtx | MutationCtx, runId: string) {
   return await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).first();
 }
 async function rowAt(ctx: MutationCtx, runId: string, seq: number) {
@@ -195,16 +193,16 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
 // laptop orchestrator spawns box runs through worker/runs/box-run.mjs, which
 // names the laptop session as the box run's parent — so taking them from the
 // revealing run would record a laptop session as a box run, and the sessions
-// view would show Tom that false fact. runIdMatches already requires a run id
+// view would show Tom that false fact. agentIdMatches already requires a run id
 // to name its own host and CLI, so the id is the honest source and both
 // call sites (a parent stub and a child stub) are right by the same rule.
 // parserVersion and the timestamps stay with the revealing run: it is the only
 // evidence of when the placeholder's run was alive. The environment stays with
 // it too, for the same reason: no id names one, and a child runs where its
 // parent runs until an envelope of its own says otherwise.
-function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number; environment: RunEnvironment }, kind: "subagent" | "codex-child" | "unknown") {
+function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number; environment: AgentEnvironment }, kind: "subagent" | "codex-child" | "unknown") {
   const host: "laptop" | "box" = run.runId.startsWith("claude:laptop:") || run.runId.startsWith("codex:laptop:") ? "laptop" : "box";
-  const cli: RunCli = run.runId.startsWith("codex:") ? "codex" : "claude";
+  const cli: AgentCli = run.runId.startsWith("codex:") ? "codex" : "claude";
   return {
     ...run, host, cli, kind, status: "unknown" as const, origin: "unknown", parserVersion: evidence.parserVersion,
     environment: evidence.environment,
@@ -214,7 +212,7 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 }
 
 // `runner:<id>` is a runner's step run: the id is the runners row it belongs
-// to, which is how the runs page names the runner beside the chain.
+// to, which is how the agents page names the runner beside the chain.
 // `desktop` is a box session no launcher started, which scripts/run-hook.mjs
 // records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
 // REMOVAL CHECK: the list is the ingest's refusal of an origin nobody wrote on
@@ -239,19 +237,19 @@ function validOutcome(outcome: {
   return !totals.cacheWriteBreakdownKnown || totals.cacheWriteTokens === totals.cacheWrite5mTokens + totals.cacheWrite1hTokens;
 }
 
-function validRunPayload(run: {
-  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: RunCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
+function validAgentPayload(run: {
+  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: AgentCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
 }) {
-  // ONLY A RUN'S OWN ID MUST NAME ITS OWN HOST AND CLI. The edge ids may
+  // ONLY AN AGENT'S OWN ID MUST NAME ITS OWN HOST AND CLI. The edge ids may
   // name another: worker/runs/box-run.mjs makes a laptop session the parent of
   // a box run, so that run's parentRunId and rootRunId are laptop ids and
   // holding them to the child's host would refuse the whole record. They are
   // still checked as ids, and the root rule below — a run with no parent must
   // be its own root — keeps a root's own id and its rootRunId in agreement.
   const cli = run.cli;
-  if (cli === undefined || !validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, cli, run.host)) return false;
-  if (run.parentRunId !== undefined && !validRunId(run.parentRunId)) return false;
-  if (run.continuesRunId !== undefined && !validRunId(run.continuesRunId)) return false;
+  if (cli === undefined || !validAgentId(run.runId) || !validAgentId(run.rootRunId) || !agentIdMatches(run.runId, cli, run.host)) return false;
+  if (run.parentRunId !== undefined && !validAgentId(run.parentRunId)) return false;
+  if (run.continuesRunId !== undefined && !validAgentId(run.continuesRunId)) return false;
   if (run.mode !== undefined && run.kind !== "session") return false;
   if (!nonNegativeInteger(run.depth) || !nonNegativeInteger(run.startedAt) || !nonNegativeInteger(run.lastLineAt) || !validFile(run.file)) return false;
   if (!validOrigin(run.origin) || (run.linkKnown && run.parentRunId !== undefined && !run.spawnedByToolUseId)) return false;
@@ -273,7 +271,7 @@ async function parentCycleLength(ctx: MutationCtx, runId: string, parentRunId?: 
   let current: string | undefined = parentRunId;
   for (let hops = 0; current && hops < 32; hops += 1) {
     if (current === runId) return hops + 1;
-    const found = await runAt(ctx, current);
+    const found = await agentAt(ctx, current);
     current = found?.parentRunId;
   }
   // A chain beyond the bounded walk is unsafe for every recursive reader.
@@ -297,13 +295,13 @@ async function descendantsForRepair(ctx: MutationCtx, runId: string, rootRunId: 
 }
 
 export const internalIngest = internalMutation({
-  args: { run: RUN, rows: v.array(ROW), children: v.array(CHILD), previousCommittedLine: v.number(), previousPrefixSha256: v.string() },
+  args: { run: AGENT, rows: v.array(ROW), children: v.array(CHILD), previousCommittedLine: v.number(), previousPrefixSha256: v.string() },
   handler: async (ctx, args) => {
-    if (!validRunPayload(args.run) || !nonNegativeInteger(args.previousCommittedLine) || !validHash(args.previousPrefixSha256)) return { ok: false as const, reason: "invalid run record" };
+    if (!validAgentPayload(args.run) || !nonNegativeInteger(args.previousCommittedLine) || !validHash(args.previousPrefixSha256)) return { ok: false as const, reason: "invalid run record" };
     if (args.rows.length > 200) return { ok: false as const, reason: "too many rows" };
 
-    const existing = await runAt(ctx, args.run.runId);
-    const knownParent = args.run.parentRunId ? await runAt(ctx, args.run.parentRunId) : null;
+    const existing = await agentAt(ctx, args.run.runId);
+    const knownParent = args.run.parentRunId ? await agentAt(ctx, args.run.parentRunId) : null;
     let rootRunId = args.run.rootRunId;
     let depth = args.run.depth;
     if (existing && !isStubFile(existing.file)) {
@@ -323,7 +321,7 @@ export const internalIngest = internalMutation({
     // run fail the row-depth check that stood below, which dead-lettered the
     // whole run on a permanent 400.
     //
-    // A ROW TAKES THE DEPTH THE RECORD GIVES ITS RUN, not the depth the page
+    // A ROW TAKES THE DEPTH THE RECORD GIVES ITS AGENT, not the depth the page
     // says. The file knows only that it sits one level under its parent; the
     // record knows where that parent sits. A Codex child whose parent a Claude
     // box run launched is depth 2 here and depth 1 in its own file, and the
@@ -332,7 +330,7 @@ export const internalIngest = internalMutation({
     // The envelope names the environment; a run without one runs where its
     // parent ran; failing both, a row already in the record keeps its own.
     // Only then is it a worker, and that guess is counted below.
-    const environment: RunEnvironment = args.run.environment ?? knownParent?.environment ?? existing?.environment ?? "worker";
+    const environment: AgentEnvironment = args.run.environment ?? knownParent?.environment ?? existing?.environment ?? "worker";
     const environmentDefaulted = args.run.environment === undefined && knownParent?.environment === undefined && existing?.environment === undefined;
     let run = { ...args.run, rootRunId, depth, environment };
     // A box Claude root has the same CLI id as its live session. Resolve that
@@ -370,16 +368,16 @@ export const internalIngest = internalMutation({
       return { ok: false as const, reason: "parent cycle" };
     }
 
-    const knownChildren = new Map<string, Awaited<ReturnType<typeof runAt>>>();
+    const knownChildren = new Map<string, Awaited<ReturnType<typeof agentAt>>>();
     const childIds = new Set<string>();
     for (const child of args.children) {
-      if (!validRunId(child.runId) || !validRunId(child.parentRunId) || !validRunId(child.rootRunId) || !nonNegativeInteger(child.depth) || child.runId === run.runId || child.parentRunId !== run.runId || child.rootRunId !== run.rootRunId || child.depth !== run.depth + 1 || (child.linkKnown && !child.spawnedByToolUseId) || childIds.has(child.runId)) return { ok: false as const, reason: "invalid child edge" };
+      if (!validAgentId(child.runId) || !validAgentId(child.parentRunId) || !validAgentId(child.rootRunId) || !nonNegativeInteger(child.depth) || child.runId === run.runId || child.parentRunId !== run.runId || child.rootRunId !== run.rootRunId || child.depth !== run.depth + 1 || (child.linkKnown && !child.spawnedByToolUseId) || childIds.has(child.runId)) return { ok: false as const, reason: "invalid child edge" };
       const childCycleLength = await parentCycleLength(ctx, child.runId, run.runId);
       if (childCycleLength) {
         await event(ctx, "runs-parent-cycle", { runId: child.runId, parentRunId: run.runId, chainLength: childCycleLength });
         return { ok: false as const, reason: "parent cycle" };
       }
-      const knownChild = await runAt(ctx, child.runId);
+      const knownChild = await agentAt(ctx, child.runId);
       if (knownChild?.parentRunId !== undefined && knownChild.parentRunId !== run.runId) return { ok: false as const, reason: "child parent mismatch" };
       knownChildren.set(child.runId, knownChild);
       childIds.add(child.runId);
@@ -493,7 +491,7 @@ export const internalIngest = internalMutation({
       const session = await ctx.db.get(run.sessionId);
       if (session && session.runId === undefined) await ctx.db.patch(run.sessionId, { runId: run.runId });
     }
-    const landed = await runAt(ctx, run.runId);
+    const landed = await agentAt(ctx, run.runId);
     // `rowsUntil` is present IF AND ONLY IF this run's rows are in the record.
     // That invariant is what bounds the eviction scan and what makes eviction
     // idempotent, so it is maintained here, in the one place every writer of
@@ -508,12 +506,12 @@ export const internalIngest = internalMutation({
   },
 });
 
-async function runIdLogPrefix(runId: string) {
+async function agentIdLogPrefix(runId: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(runId));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 12);
 }
 async function refuseOverflow(reason: string, where: { runId: string; seq: number; index?: number }) {
-  console.warn(`runs overflow refused: ${reason} (run sha256:${await runIdLogPrefix(where.runId)}, seq ${where.seq}${where.index === undefined ? ")" : `, chunk ${where.index})`}`);
+  console.warn(`runs overflow refused: ${reason} (run sha256:${await agentIdLogPrefix(where.runId)}, seq ${where.seq}${where.index === undefined ? ")" : `, chunk ${where.index})`}`);
   return { ok: false as const, reason };
 }
 const chunkBytes = (text: string) => new TextEncoder().encode(text).length;
@@ -526,10 +524,10 @@ export const internalIngestOverflow = internalMutation({
   args: { runId: v.string(), seq: v.number(), index: v.number(), chunkCount: v.number(), text: v.string() },
   handler: async (ctx, args) => {
     const where = { runId: args.runId, seq: args.seq, index: args.index };
-    if (!validRunId(args.runId)) return await refuseOverflow("invalid runId", where);
+    if (!validAgentId(args.runId)) return await refuseOverflow("invalid runId", where);
     // Chunks may arrive before their row, but never before the run itself:
     // otherwise a misspelled id leaves uncollectable overflow behind.
-    if (!(await runAt(ctx, args.runId))) return await refuseOverflow("no run", where);
+    if (!(await agentAt(ctx, args.runId))) return await refuseOverflow("no run", where);
     if (!nonNegativeInteger(args.seq) || !nonNegativeInteger(args.index) || !positiveInteger(args.chunkCount) || args.chunkCount > MAX_OVERFLOW_CHUNKS || args.index >= args.chunkCount) return await refuseOverflow("malformed chunk", where);
     if (chunkBytes(args.text) > 256 * 1024) return await refuseOverflow("chunk too large", where);
     const row = await rowAt(ctx, args.runId, args.seq);
@@ -548,7 +546,7 @@ export const internalStampOverflow = internalMutation({
   args: { runId: v.string(), seq: v.number(), sha256: v.string(), byteLength: v.number(), chunkCount: v.number() },
   handler: async (ctx, args) => {
     const where = { runId: args.runId, seq: args.seq };
-    if (!validRunId(args.runId)) return await refuseOverflow("invalid runId", where);
+    if (!validAgentId(args.runId)) return await refuseOverflow("invalid runId", where);
     if (!nonNegativeInteger(args.seq) || !positiveInteger(args.chunkCount) || args.chunkCount > MAX_OVERFLOW_CHUNKS || !nonNegativeInteger(args.byteLength) || !validHash(args.sha256)) return await refuseOverflow("malformed stamp", where);
     const row = await rowAt(ctx, args.runId, args.seq);
     if (!row) return await refuseOverflow("no message row", where);
@@ -715,7 +713,7 @@ export const internalShadowCompare = internalMutation({
     const session = await ctx.db.get(sessionId);
     if (!session) throw new Error("session not found");
     if (!session.runId) throw new Error("session has no run");
-    const run = await runAt(ctx, session.runId);
+    const run = await agentAt(ctx, session.runId);
     if (!run) throw new Error("run not found");
     if (run.status !== "ended" && run.status !== "failed") throw new Error("run is not terminal");
 
@@ -885,19 +883,19 @@ export const internalManifest = internalQuery({
  *  TOOL CALLS: a transcript interleaves user, assistant, thinking and
  *  tool-result rows, so a long run's tool calls are cut well before there are
  *  400 of them. See the note on `truncated` below for what that costs. */
-export const RUN_TRACE_MAX_ROWS = 400;
+const AGENT_TRACE_MAX_ROWS = 400;
 
 /** A tool name or path is USER TEXT — whatever the model typed — and this door
  *  hands it to a job that posts it onto an event, so it is redacted and cut on
  *  the way out, exactly as ttsMerge.internalRecordAudit treats every string it
  *  is given from outside. */
-const RUN_TRACE_MAX_CHARS = 300;
-const traceText = (value: string) => redactSecrets(value).slice(0, RUN_TRACE_MAX_CHARS);
+const AGENT_TRACE_MAX_CHARS = 300;
+const traceText = (value: string) => redactSecrets(value).slice(0, AGENT_TRACE_MAX_CHARS);
 
 /**
- * ONE RUN'S TOOL CALLS, by the registration token it stamped on what it wrote.
+ * ONE AGENT'S TOOL CALLS, by the registration token it stamped on what it wrote.
  *
- * WHY IT EXISTS. The audit checks its own claims against ITS OWN RUN: it says
+ * WHY IT EXISTS. The audit checks its own claims against ITS OWN AGENT: it says
  * it opened `convex/foo.ts`, and this answers whether any Read, Grep or Glob
  * call in that run ever named that path (worker/jobs/audit.mjs, finding 2).
  * Without it the audit's "I read the whole change" is unverifiable, which is
@@ -912,7 +910,7 @@ const traceText = (value: string) => redactSecrets(value).slice(0, RUN_TRACE_MAX
  * NAMES AND PATHS — never its transcript, its tool results, or any other field
  * of a call's input.
  */
-export const internalRunTrace = internalQuery({
+export const internalAgentTrace = internalQuery({
   args: { token: v.string() },
   handler: async (ctx, { token }) => {
     const run = await ctx.db
@@ -923,7 +921,7 @@ export const internalRunTrace = internalQuery({
     const rows = await ctx.db
       .query("claudeMessages")
       .withIndex("by_run_seq", (q) => q.eq("runId", run.runId))
-      .take(RUN_TRACE_MAX_ROWS);
+      .take(AGENT_TRACE_MAX_ROWS);
     const toolCalls: Array<{ name: string; path: string | null }> = [];
     for (const row of rows) {
       if (row.kind !== "tool-call") continue;
@@ -973,35 +971,35 @@ export const internalRunTrace = internalQuery({
       // pays for on behalf of whoever holds a token, which is why the bound
       // stays. An audit whose own run is longer than 400 rows is not a case
       // this door serves fully, and it says so rather than guessing.
-      truncated: rows.length === RUN_TRACE_MAX_ROWS,
+      truncated: rows.length === AGENT_TRACE_MAX_ROWS,
     };
   },
 });
 
-function assertRunId(runId: string) {
-  if (!validRunId(runId)) throw new Error("invalid runId");
+function assertAgentId(agentId: string) {
+  if (!validAgentId(agentId)) throw new Error("invalid agentId");
 }
 
-export const get = query({ args: { runId: v.string() }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); return await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", args.runId)).first(); } });
+export const get = query({ args: { agentId: v.string() }, handler: async (ctx, args) => { await requireTom(ctx, "Agents"); assertAgentId(args.agentId); return await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", args.agentId)).first(); } });
 export const children = query({
-  args: { runId: v.string(), cursor: v.optional(v.string()), limit: v.optional(v.number()) },
+  args: { agentId: v.string(), cursor: v.optional(v.string()), limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    await requireTomForRuns(ctx);
-    assertRunId(args.runId);
+    await requireTom(ctx, "Agents");
+    assertAgentId(args.agentId);
     const limit = args.limit ?? 100;
     if (!positiveInteger(limit) || limit > 500) throw new Error("children limit must be an integer from 1 to 500");
-    const page = await ctx.db.query("runs").withIndex("by_parent", (q) => q.eq("parentRunId", args.runId)).paginate({ cursor: args.cursor ?? null, numItems: limit });
+    const page = await ctx.db.query("runs").withIndex("by_parent", (q) => q.eq("parentRunId", args.agentId)).paginate({ cursor: args.cursor ?? null, numItems: limit });
     return { items: page.page, nextCursor: page.isDone ? null : page.continueCursor };
   },
 });
-export const rows = query({ args: { runId: v.string(), paginationOpts: paginationOptsValidator }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); const page = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId)).order("asc").paginate(args.paginationOpts); return { ...page, page: page.page.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength })) }; } });
-export const entry = query({ args: { runId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
+export const rows = query({ args: { agentId: v.string(), paginationOpts: paginationOptsValidator }, handler: async (ctx, args) => { await requireTom(ctx, "Agents"); assertAgentId(args.agentId); const page = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.agentId)).order("asc").paginate(args.paginationOpts); return { ...page, page: page.page.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength })) }; } });
+export const entry = query({ args: { agentId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTom(ctx, "Agents"); assertAgentId(args.agentId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.agentId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
 
 // ── Opening an old run from the store ────────────────────────────────────────
 // Convex holds no S3 reader credential and no second request signer, so a run
 // whose rows are not in the record opens by asking the box for them. Tom (or a
 // job) queues a request here; `worker/runs/materialize.mjs` serves it and
-// ingests the rows through the existing /runs/ingest door. There is no second
+// ingests the rows through the existing /agents/ingest door. There is no second
 // ingest path.
 
 async function newestRequest(ctx: QueryCtx | MutationCtx, runId: string) {
@@ -1019,10 +1017,10 @@ async function newestRequest(ctx: QueryCtx | MutationCtx, runId: string) {
  * than queueing work the box would do twice.
  */
 async function enqueueMaterialize(ctx: MutationCtx, runId: string, requestedBy: "tom" | "worker") {
-  if (!validRunId(runId)) return { ok: false as const, reason: "invalid runId" };
-  const run = await runAt(ctx, runId);
-  if (!run) return { ok: false as const, reason: "run not found" };
-  if (!run.file.storeKey) return { ok: false as const, reason: "run has no store key" };
+  if (!validAgentId(runId)) return { ok: false as const, reason: "invalid agentId" };
+  const run = await agentAt(ctx, runId);
+  if (!run) return { ok: false as const, reason: "agent not found" };
+  if (!run.file.storeKey) return { ok: false as const, reason: "agent has no store key" };
   const newest = await newestRequest(ctx, runId);
   if (newest && newest.status === "pending") {
     return { ok: true as const, requestId: newest._id, slice: newest.slice, queued: false };
@@ -1034,10 +1032,10 @@ async function enqueueMaterialize(ctx: MutationCtx, runId: string, requestedBy: 
 }
 
 export const requestMaterialize = mutation({
-  args: { runId: v.string() },
+  args: { agentId: v.string() },
   handler: async (ctx, args) => {
-    await requireTomForRuns(ctx);
-    const queued = await enqueueMaterialize(ctx, args.runId, "tom");
+    await requireTom(ctx, "Agents");
+    const queued = await enqueueMaterialize(ctx, args.agentId, "tom");
     // Fixed phrases: the page renders the refusal and nothing here echoes a payload.
     if (!queued.ok) throw new Error(queued.reason);
     return await ctx.db.get(queued.requestId);
@@ -1045,11 +1043,11 @@ export const requestMaterialize = mutation({
 });
 
 export const materializeStatus = query({
-  args: { runId: v.string() },
+  args: { agentId: v.string() },
   handler: async (ctx, args) => {
-    await requireTomForRuns(ctx);
-    assertRunId(args.runId);
-    return await newestRequest(ctx, args.runId);
+    await requireTom(ctx, "Agents");
+    assertAgentId(args.agentId);
+    return await newestRequest(ctx, args.agentId);
   },
 });
 
@@ -1057,11 +1055,11 @@ export const materializeStatus = query({
 // so looking at an index-only backlog run never makes it evictable, and reading
 // the same run six times in an afternoon is one write, not six.
 export const markOpened = mutation({
-  args: { runId: v.string() },
+  args: { agentId: v.string() },
   handler: async (ctx, args) => {
-    await requireTomForRuns(ctx);
-    assertRunId(args.runId);
-    const run = await runAt(ctx, args.runId);
+    await requireTom(ctx, "Agents");
+    assertAgentId(args.agentId);
+    const run = await agentAt(ctx, args.agentId);
     if (!run || run.rowsUntil === undefined) return { ok: true as const, moved: false };
     const next = Date.now() + rowWindowMs();
     if (next <= run.rowsUntil + DAY_MS) return { ok: true as const, moved: false };
@@ -1091,7 +1089,7 @@ export const internalNextMaterialize = internalQuery({
       .order("asc")
       .first();
     if (!request) return { request: null };
-    const run = await runAt(ctx, request.runId);
+    const run = await agentAt(ctx, request.runId);
     // A request whose run vanished, or whose run never had a store key, is
     // still answerable: it comes back with `storeKey: null` so the job writes
     // `failed` and the queue drains. Skipping it would park it at the head of
@@ -1166,7 +1164,7 @@ export const internalAnswerMaterialize = internalMutation({
     });
     if (args.status !== "served") return { ok: true as const, alreadyAnswered: false, continuation: false };
 
-    const run = await runAt(ctx, request.runId);
+    const run = await agentAt(ctx, request.runId);
     const totalLines = args.totalLines ?? run?.file.totalLines;
     const linesRemain = args.toLine !== undefined && totalLines !== undefined && args.toLine < totalLines;
     // After the last slice the run keeps `committedLine < totalLines` and the
@@ -1221,7 +1219,7 @@ async function evictRefusal(ctx: MutationCtx, run: Doc<"runs">, now: number) {
  * ROW, so a crash can never leave overflow nobody can find — the same discipline
  * as claudeSessions.internalSweepOverflow, applied to the run key.
  */
-async function evictRunStep(ctx: MutationCtx, runId: string, budget: number) {
+async function evictAgentStep(ctx: MutationCtx, runId: string, budget: number) {
   let rowsDeleted = 0;
   let overflowChunksDeleted = 0;
   while (budget > 0) {
@@ -1302,7 +1300,7 @@ export const internalEvictTick = internalMutation({
     let worked = false;
 
     const finish = async (runId: string) => {
-      const run = await runAt(ctx, runId);
+      const run = await agentAt(ctx, runId);
       // Clearing `rowsUntil` takes the run out of the scan index — that, and
       // not a cursor, is what makes the tick idempotent. The runs row, its
       // labels, its file, outcome, context, rowsSource and edges all stay.
@@ -1311,7 +1309,7 @@ export const internalEvictTick = internalMutation({
     };
 
     if (args.pendingRunId !== undefined) {
-      const step = await evictRunStep(ctx, args.pendingRunId, budget);
+      const step = await evictAgentStep(ctx, args.pendingRunId, budget);
       rowsDeleted += step.rowsDeleted;
       overflowChunksDeleted += step.overflowChunksDeleted;
       budget = step.budget;
@@ -1324,7 +1322,7 @@ export const internalEvictTick = internalMutation({
       const candidates = await ctx.db
         .query("runs")
         .withIndex("by_rows_until", (q) => q.gt("rowsUntil", 0).lt("rowsUntil", now))
-        .take(EVICT_RUNS_PER_TICK);
+        .take(EVICT_AGENTS_PER_TICK);
       for (const run of candidates) {
         const refusal = await evictRefusal(ctx, run, now);
         if (refusal) {
@@ -1337,7 +1335,7 @@ export const internalEvictTick = internalMutation({
           worked = true;
           continue;
         }
-        const step = await evictRunStep(ctx, run.runId, budget);
+        const step = await evictAgentStep(ctx, run.runId, budget);
         rowsDeleted += step.rowsDeleted;
         overflowChunksDeleted += step.overflowChunksDeleted;
         budget = step.budget;
@@ -1350,7 +1348,7 @@ export const internalEvictTick = internalMutation({
 
     const truncated = steps + 1 >= EVICT_MAX_STEPS;
     if (worked && !truncated) {
-      await ctx.scheduler.runAfter(0, internal.runs.internalEvictTick, {
+      await ctx.scheduler.runAfter(0, internal.agents.internalEvictTick, {
         runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred,
         steps: steps + 1, ...(pendingRunId === undefined ? {} : { pendingRunId }),
       });
@@ -1383,7 +1381,7 @@ export const roots = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await requireTomForRuns(ctx);
+    await requireTom(ctx, "Agents");
     const limit = args.limit ?? 50;
     if (!positiveInteger(limit) || limit > 500) throw new Error("roots limit must be an integer from 1 to 500");
     const hosts: Array<"laptop" | "box"> = args.host ? [args.host] : ["laptop", "box"];
@@ -1414,29 +1412,14 @@ export const roots = query({
  * page boundary here would be a mechanism with nothing to do.
  */
 export const labels = query({
-  args: { runId: v.string() },
+  args: { agentId: v.string() },
   handler: async (ctx, args) => {
-    await requireTomForRuns(ctx);
-    assertRunId(args.runId);
+    await requireTom(ctx, "Agents");
+    assertAgentId(args.agentId);
     return await ctx.db
       .query("runLabels")
-      .withIndex("by_run_at", (q) => q.eq("runId", args.runId))
+      .withIndex("by_run_at", (q) => q.eq("runId", args.agentId))
       .order("asc")
       .take(200);
-  },
-});
-
-export const internalBackfillRunIds = internalMutation({
-  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
-  handler: async (ctx, args) => {
-    const limit = args.limit ?? 200;
-    if (!positiveInteger(limit) || limit > 500) throw new Error("backfill limit must be an integer from 1 to 500");
-    const page = await ctx.db.query("claudeSessions").withIndex("by_createdAt").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit });
-    let patched = 0;
-    for (const session of page.page) {
-      const runId = session.sdkSessionId ? `claude:box:${session.sdkSessionId}` : undefined;
-      if (runId && !session.runId && validRunId(runId)) { await ctx.db.patch(session._id, { runId }); patched += 1; }
-    }
-    return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
   },
 });
