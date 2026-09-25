@@ -1369,13 +1369,6 @@ export default defineSchema({
     // the forked session's run after a "reopen as". The run the ingest records
     // for this session takes it as its own continuesRunId.
     continuesRunId: v.optional(v.string()),
-    // RETIRED (one transcript path, 2026-09-25): which rows a session read,
-    // when the daemon's rows under its sessionId were still a second source.
-    // Nothing reads or writes it; ttsMigrations.internalClearSessionRowFields
-    // empties it, and the narrow after that run removes it.
-    rowsFrom: v.optional(
-      v.union(v.literal("daemon"), v.literal("runs")),
-    ),
     cwd: v.optional(v.string()), // daemon-reported working dir on the Jarvis Box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
     // Daemon-owned idempotency floor: an ingest carrying seqs below this is a
@@ -1439,11 +1432,7 @@ export default defineSchema({
   // knowledge the (planned) session sweep and analysis layers read, and it
   // is cheap to record now and unreconstructible later.
   claudeMessages: defineTable({
-    // RETIRED: sessionId is the session daemon's key, which nothing writes or
-    // reads any more; every row the record keeps carries its runId. The narrow
-    // removes the field once ttsMigrations.internalClearSessionRowFields
-    // counts no row holding it.
-    sessionId: v.optional(v.id("claudeSessions")),
+    // The run whose agent file the row came from (one transcript path).
     runId: v.optional(v.string()),
     depth: v.optional(v.number()),
     seq: v.number(),
@@ -1491,10 +1480,6 @@ export default defineSchema({
     digest: v.optional(v.string()),
     createdAt: v.number(),
   })
-    // RETIRED with sessionId: the clearing walk's range scan reads the
-    // first; the narrow removes both.
-    .index("by_session_seq", ["sessionId", "seq"])
-    .index("by_session_kind", ["sessionId", "kind", "seq"])
     // A run is ordered by its source cursor (file version, line, block); in
     // phase 2 seq is that cursor's sortable projection.
     .index("by_run_seq", ["runId", "seq"])
@@ -1512,9 +1497,7 @@ export default defineSchema({
   // from an action. A row is stamped only once every chunk it names is there
   // and reassembles to its hash (agents.internalStampOverflow), and the
   // eviction (agents.evictAgentStep) removes a row's chunks before the row.
-  // sessionId and its index are RETIRED with claudeMessages.sessionId.
   claudeMessageOverflow: defineTable({
-    sessionId: v.optional(v.id("claudeSessions")),
     runId: v.optional(v.string()),
     seq: v.number(),
     index: v.number(), // 0-based position; concatenating in order is the payload
@@ -1522,7 +1505,6 @@ export default defineSchema({
     text: v.string(),
     createdAt: v.number(),
   })
-    .index("by_session_seq_index", ["sessionId", "seq", "index"])
     .index("by_run_seq_index", ["runId", "seq", "index"]),
 
   // What the session daemon says about a session that is not a transcript
@@ -1621,7 +1603,7 @@ export default defineSchema({
     // registered — carries no token, and a judgment about its output writes no
     // label at all (convex/agentLabels.ts records the unlinked act instead).
     regToken: v.optional(v.string()),
-    envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()),
+    envelopeKey: v.optional(v.string()), abandonedAt: v.optional(v.number()),
     // `totalLines` is the file's whole length, which only a reader that saw the
     // WHOLE file can honestly write: the backlog importer, which parses a
     // stored version and keeps none of its rows, and the materialize job.
