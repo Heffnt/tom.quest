@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
@@ -518,6 +518,172 @@ export const internalMergeGate = internalQuery({
     await mergeGateFor(ctx, repo, sha),
 });
 
+// ── THE GATE AS A COMMIT STATUS (Guarantee 2, 2026-09-25) ────────────────────
+// The box's policy hook asks GET /tts/merge-gate before a merge command runs,
+// and that is a RULE: it stops the agents that run under the hook and nothing
+// else (a Codex agent, a plain job, anyone with the token). A WALL has to live
+// where the merge happens, on GitHub, and a GitHub ruleset can require only
+// what GitHub can see: a status or a check on the pull request's head. So the
+// gate's answer is posted there, under the one context `tts-gate`, every time
+// one of the rows it reads is written, and the ruleset requires that context.
+//
+// This is not a second gate. The status is mergeGateFor's answer, re-read at
+// posting time, and nothing here decides anything mergeGateFor does not.
+//
+// THE HEAD SHA IS THE ROW'S SHA. The Guardrails report job posts the pull
+// request's head (`github.event.pull_request.head.sha`) and the audit posts
+// the head it audited, so the status lands on the commit a pull request shows.
+//
+// THE CREDENTIAL IS GITHUB_MIRROR_TOKEN, the one the record already uses to
+// read and to land pull requests (convex/observeMerge.ts). Creating a status
+// takes push access (classic scope repo or repo:status; fine-grained "Commit
+// statuses: write"). A refusal is one keyed job-failed row per repository, so
+// #tts-broken hears it once and hears the recovery; a status that never
+// arrives also leaves the ruleset closed, which fails the right way.
+
+/** The status context the rulesets require (Phase 1, P1). */
+const GATE_STATUS_CONTEXT = "tts-gate";
+/** GitHub refuses a status description over 140 characters. */
+const GATE_STATUS_DESCRIPTION_MAX = 140;
+/** The job name a refused status is filed under in the job-failed channel. */
+const GATE_STATUS_JOB = "gate-status";
+/** How many times one action posts before it stops re-reading. Two actions for
+ *  one sha can run at once (the tests row and the audit row landing together);
+ *  each re-reads the gate after its post and posts again if the answer moved,
+ *  so whichever posts last ends on the current answer. The rows are write-once
+ *  (an UNAVAILABLE audit is replaced once), so the answer moves at most twice. */
+const GATE_STATUS_POSTS_MAX = 3;
+
+/** The row kind behind each check name, which is what a status names. */
+const ROW_OF_CHECK: Record<string, string> = {
+  tests: TESTS_RUN,
+  audit: AUDIT_VERDICT,
+  evals: EVALS_RUN,
+};
+
+type GateStatus = {
+  state: "success" | "failure" | "pending";
+  description: string;
+};
+
+/**
+ * The gate's answer in GitHub's three words: `success` when it is open,
+ * `failure` when a row it reads refused (the tests red, the audit answered
+ * something other than APPROVED), `pending` while a row is missing. An
+ * UNAVAILABLE audit is the absence of an audit (see internalRecordAudit), so it
+ * waits rather than refuses. A required evals check that did not pass waits
+ * too: the evals arm has more ways to be unanswered than refused, and a
+ * pending status keeps the merge shut exactly as a failure does.
+ */
+async function gateStatusFor(
+  ctx: QueryCtx | MutationCtx,
+  repo: string,
+  sha: string,
+): Promise<GateStatus> {
+  const gate = await mergeGateFor(ctx, repo, sha);
+  const short = sha.slice(0, 7);
+  const cap = (text: string) => text.slice(0, GATE_STATUS_DESCRIPTION_MAX);
+  if (gate.allowed) {
+    return {
+      state: "success",
+      description: cap(`open at ${short}: ${TESTS_RUN} green, ${AUDIT_VERDICT} ${AUDIT_APPROVED}`),
+    };
+  }
+  const refused: string[] = [];
+  const waiting: string[] = [];
+  for (const name of gate.missing) {
+    if (name === "tests" && gate.testsRun !== null) {
+      refused.push(`${TESTS_RUN} red`);
+    } else if (name === "audit") {
+      const audit = await rowFor(ctx, AUDIT_VERDICT, commitKey(repo, sha));
+      const said = (audit?.data as { verdict?: unknown } | undefined)?.verdict;
+      const word = typeof said === "string" ? said.toUpperCase() : null;
+      if (audit !== null && word !== AUDIT_UNAVAILABLE) {
+        refused.push(`${AUDIT_VERDICT} ${word ?? "unreadable"}`);
+      } else {
+        waiting.push(AUDIT_VERDICT);
+      }
+    } else {
+      waiting.push(ROW_OF_CHECK[name] ?? name);
+    }
+  }
+  const wait = waiting.length === 0 ? "" : `waiting for ${waiting.join(", ")}`;
+  return refused.length > 0
+    ? {
+        state: "failure",
+        description: cap(`refused at ${short}: ${refused.join(", ")}${wait === "" ? "" : `; ${wait}`}`),
+      }
+    : { state: "pending", description: cap(`${wait} at ${short}`) };
+}
+
+export const internalGateStatus = internalQuery({
+  args: { repo: v.string(), sha: v.string() },
+  handler: async (ctx, { repo, sha }): Promise<GateStatus> =>
+    await gateStatusFor(ctx, repo, sha),
+});
+
+/** Schedule the status post for one commit. Called by the two writers of the
+ *  gate's rows, after the row is written, so the status follows every change. */
+async function scheduleGateStatus(ctx: MutationCtx, repo: string, sha: string) {
+  await ctx.scheduler.runAfter(0, internal.ttsMerge.internalPostGateStatus, { repo, sha });
+}
+
+/**
+ * Post the gate's current answer for `repo@sha` as the `tts-gate` status
+ * (POST /repos/{owner}/{repo}/statuses/{sha}, answered 201). Returns what it
+ * posted, for the tests and the function log.
+ */
+export const internalPostGateStatus = internalAction({
+  args: { repo: v.string(), sha: v.string() },
+  handler: async (ctx, { repo, sha }): Promise<{ posted: GateStatus[]; why: string }> => {
+    const slug = (SESSION_REPOS as Record<string, string>)[repo];
+    // Both go into a GitHub URL, and a status takes the full commit sha.
+    if (!slug) return { posted: [], why: `${repo} is not a repository the record knows` };
+    if (!/^[0-9a-f]{40}$/i.test(sha)) return { posted: [], why: `${sha} is not a full commit sha` };
+    const token = process.env.GITHUB_MIRROR_TOKEN;
+    if (!token) return { posted: [], why: "the record holds no GitHub credential" };
+    const key = `${GATE_STATUS_JOB}:${repo}`;
+    const posted: GateStatus[] = [];
+    let status = await ctx.runQuery(internal.ttsMerge.internalGateStatus, { repo, sha });
+    for (let attempt = 0; attempt < GATE_STATUS_POSTS_MAX; attempt += 1) {
+      let failure: string | null = null;
+      try {
+        const res = await fetch(`https://api.github.com/repos/${slug}/statuses/${sha}`, {
+          method: "POST",
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "User-Agent": "tts-gate",
+          },
+          body: JSON.stringify({ ...status, context: GATE_STATUS_CONTEXT }),
+        });
+        if (res.status !== 201) {
+          const said = ((await res.json().catch(() => null)) as { message?: unknown } | null)?.message;
+          failure = `GitHub answered ${res.status}${typeof said === "string" ? `: ${said.slice(0, 200)}` : ""}`;
+        }
+      } catch (error) {
+        failure = `GitHub could not be asked: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (failure !== null) {
+        const why = `the ${GATE_STATUS_CONTEXT} status was not posted on ${repo}@${sha.slice(0, 7)}: ${failure}`;
+        await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
+          job: GATE_STATUS_JOB,
+          error: why,
+          key,
+        });
+        return { posted, why };
+      }
+      posted.push(status);
+      const now = await ctx.runQuery(internal.ttsMerge.internalGateStatus, { repo, sha });
+      if (now.state === status.state && now.description === status.description) break;
+      status = now;
+    }
+    await ctx.runMutation(internal.ttsJobs.internalReportJobOk, { job: GATE_STATUS_JOB, key });
+    return { posted, why: `posted ${posted.map((p) => p.state).join(", then ")}` };
+  },
+});
+
 // ── HOW LONG THE CHECKS TOOK, AND WHEN THAT IS NEWS ──────────────────────────
 // Tom's ruling (2026-09-22): quality is never traded for speed or cost, and a
 // useful test is never left unwritten because the suite is slow. The answer to
@@ -653,6 +819,7 @@ export const internalRecordTests = internalMutation({
       return { existing: true, ok: (existing.data as { ok?: unknown } | undefined)?.ok === true };
     }
     await logEvent(ctx, TESTS_RUN, undefined, { ...args }, key);
+    await scheduleGateStatus(ctx, args.repo, args.sha);
     return { existing: false, ok: args.ok };
   },
 });
@@ -809,6 +976,7 @@ export const internalRecordAudit = internalMutation({
       },
       key,
     );
+    await scheduleGateStatus(ctx, args.repo, args.sha);
     return { existing: false, verdict, replaced: existing !== null };
   },
 });

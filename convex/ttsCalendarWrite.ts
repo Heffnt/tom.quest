@@ -29,8 +29,15 @@ export type CreateEventArgs = {
   // Raw iCalendar recurrence lines, e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO"].
   // Expanded by Google in the event's time zone (America/New_York).
   recurrence?: string[];
-  calendarId?: string; // default "primary" (Tom's own calendar)
+  calendarId?: string; // "primary" only (Tom's own calendar); see ONE_CALENDAR
 };
+
+/** THE ONLY CALENDAR THIS DOOR WRITES TO: Tom's own. The token can create
+ *  events on any calendar his Google account reaches, shared ones included,
+ *  and an event there is seen by whoever shares it: a message to another
+ *  person in his name (Guarantee 2, 2026-09-25). So any other id is refused
+ *  before a token is minted, rather than trusted to the caller. */
+const ONE_CALENDAR = "primary";
 
 /** Pure request-body builder — exported for tests. */
 export function buildEventBody(args: CreateEventArgs) {
@@ -63,6 +70,9 @@ export const internalCreateEvent = internalAction({
     calendarId: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<{ id: string; htmlLink: string }> => {
+    if (args.calendarId !== undefined && args.calendarId !== ONE_CALENDAR) {
+      throw new Error(`calendar ${args.calendarId} refused: this door writes only to Tom's primary calendar`);
+    }
     const clientId = process.env.GOOGLE_CALENDAR_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CALENDAR_CLIENT_SECRET;
     const refreshToken = process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
@@ -89,9 +99,8 @@ export const internalCreateEvent = internalAction({
     }
     const accessToken = (await tokenRes.json()).access_token as string;
 
-    const calendarId = args.calendarId ?? "primary";
     const res = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+      `https://www.googleapis.com/calendar/v3/calendars/${ONE_CALENDAR}/events`,
       {
         method: "POST",
         headers: {
