@@ -24,6 +24,7 @@ import {
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
   type Recommendation,
+  VOCABULARY_COUNT_NAMES,
 } from "./ttsShared";
 import { isNarrowListId } from "./ttsShared";
 import { auditVerdictOf, mergedOnMain } from "./ttsMerge";
@@ -2572,6 +2573,27 @@ const ttsVocabularyPost = httpAction(async (ctx, request) => {
   if (typeof b.wrote !== "boolean") {
     return jsonResponse(400, { error: "wrote (boolean) required" });
   }
+  // The header fields `tts search vocabulary` prints beside the terms. Each is
+  // optional while the nightly that sends them rolls out; one that is sent
+  // must be well formed, or the page would print a header no agent was shown.
+  if (b.section !== undefined && (typeof b.section !== "string" || b.section.trim() === "")) {
+    return jsonResponse(400, { error: "section, when sent, is the spec section (non-empty string)" });
+  }
+  if (b.tomQuestCommit !== undefined && (typeof b.tomQuestCommit !== "string" || !/^[0-9a-f]{40}$/.test(b.tomQuestCommit))) {
+    return jsonResponse(400, { error: "tomQuestCommit, when sent, is 40 hex characters" });
+  }
+  let counts: Record<(typeof VOCABULARY_COUNT_NAMES)[number], number> | undefined;
+  if (b.counts !== undefined) {
+    const c = b.counts as Record<string, unknown> | null;
+    if (typeof c !== "object" || c === null) {
+      return jsonResponse(400, { error: `counts, when sent, carries ${VOCABULARY_COUNT_NAMES.join(", ")}` });
+    }
+    const bad = VOCABULARY_COUNT_NAMES.find((name) => !Number.isSafeInteger(c[name]) || (c[name] as number) < 0);
+    if (bad !== undefined) {
+      return jsonResponse(400, { error: `counts.${bad} (nonnegative integer) required` });
+    }
+    counts = Object.fromEntries(VOCABULARY_COUNT_NAMES.map((name) => [name, c[name] as number])) as typeof counts;
+  }
   if (!Array.isArray(b.terms) || b.terms.length === 0) {
     return jsonResponse(400, { error: "terms (non-empty array) required" });
   }
@@ -2634,6 +2656,9 @@ const ttsVocabularyPost = httpAction(async (ctx, request) => {
       committedAt: b.committedAt,
       generatedAt: b.generatedAt,
       wrote: b.wrote,
+      ...(typeof b.section === "string" ? { section: b.section } : {}),
+      ...(counts === undefined ? {} : { counts }),
+      ...(typeof b.tomQuestCommit === "string" ? { tomQuestCommit: b.tomQuestCommit } : {}),
       terms,
       disagreements,
     });

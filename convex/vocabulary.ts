@@ -26,7 +26,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { requireTom } from "./authRoles";
-import { TTS_CLOSED_VOCABULARY } from "./ttsShared";
+import { TTS_CLOSED_VOCABULARY, VOCABULARY_COUNTS } from "./ttsShared";
 import { closedVocabularyOpening, renderClosedVocabulary } from "../scripts/closed-vocabulary.mjs";
 
 const SURFACE = "Vocabulary";
@@ -52,6 +52,9 @@ export const internalReplaceVocabulary = internalMutation({
     committedAt: v.number(),
     generatedAt: v.number(),
     wrote: v.boolean(),
+    section: v.optional(v.string()),
+    counts: v.optional(VOCABULARY_COUNTS),
+    tomQuestCommit: v.optional(v.string()),
     terms: v.array(v.object({
       term: v.string(),
       kind: v.string(),
