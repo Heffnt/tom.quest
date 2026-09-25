@@ -8,7 +8,9 @@
 // A session's rows are its agent file's (one transcript path, 2026-09-25):
 // they land when the sweep reads the file at the end of a turn, so during a
 // turn the page shows the live tail, Tom's delivered turn (getPendingInbound
-// returns it until its row lands) and nothing else.
+// returns it until its row lands) and nothing else. The daemon's notes about a
+// session — a model change, a rebuilt workspace — are not rows; they come
+// from sessionRows.notes and are drawn between the rows by time.
 //
 // Four things changed, and only four:
 //   1. The rows arrive as a prop from useAgentRows (../use-agent-rows), so one memo
@@ -248,6 +250,43 @@ function AgentSummary({
   );
 }
 
+/** A note the daemon wrote about the session, where it happened among the rows. */
+function NoteLine({ note }: { note: SessionNote }) {
+  return (
+    <div className="flex items-baseline gap-2 px-1 text-xs text-text-faint">
+      <span className="font-mono text-[10px] shrink-0">{formatClock(note.at)}</span>
+      <span className="whitespace-pre-wrap break-words min-w-0">{note.text}</span>
+    </div>
+  );
+}
+
+type SessionNote = { _id: string; at: number; text: string };
+
+/**
+ * Which notes go before each group, and which after the last one. A note sits
+ * before the first group whose first row is later than it. A note older than
+ * every loaded row is drawn only once the window reaches the session's start
+ * (`startLoaded`): until then an earlier row may still belong in front of it.
+ */
+function placeNotes(
+  groups: Group[],
+  notes: SessionNote[],
+  startLoaded: boolean,
+): { before: Map<string, SessionNote[]>; after: SessionNote[] } {
+  const before = new Map<string, SessionNote[]>();
+  let next = 0;
+  groups.forEach((g, index) => {
+    const anchor = g.kind === "row" ? g.message : g.messages[0];
+    const here: SessionNote[] = [];
+    while (next < notes.length && notes[next].at < anchor.createdAt) {
+      if (index > 0 || startLoaded) here.push(notes[next]);
+      next += 1;
+    }
+    if (here.length > 0) before.set(anchor._id, here);
+  });
+  return { before, after: notes.slice(next) };
+}
+
 /** A turn Tom sent that no row records yet, and where it stands. */
 function TurnEcho({ text, state }: { text: string; state: string }) {
   return (
@@ -318,11 +357,26 @@ const AgentRows = memo(function AgentRows({
     api.claudeSessions.getPendingInbound,
     sessionId !== undefined ? { sessionId } : "skip",
   );
+  const notes = useQuery(
+    api.sessionRows.notes,
+    sessionId !== undefined ? { sessionId } : "skip",
+  );
 
   const groups = useMemo(() => groupRows(rows), [rows]);
   const subagents = useMemo(() => subagentIndex(rows), [rows]);
   const toolNames = useMemo(() => toolNameIndex(rows), [rows]);
   const pairing = useMemo(() => pairRows(rows), [rows]);
+  // Session pages load newest first, so the window holds the session's start
+  // only once paging is exhausted; a run's pages start there.
+  const placed = useMemo(
+    () =>
+      placeNotes(
+        groups,
+        notes ?? [],
+        source !== "session" || pageStatus === "Exhausted",
+      ),
+    [groups, notes, source, pageStatus],
+  );
   const pendingTurns = (pendingInbound ?? []).filter(
     (row) => row.kind === "user-turn",
   );
@@ -396,7 +450,7 @@ const AgentRows = memo(function AgentRows({
 
   const contentSignature = `${rows.length}:${streamBuf?.text.length ?? 0}:${
     pendingTurns.length
-  }:${pendingControls.length}`;
+  }:${pendingControls.length}:${notes?.length ?? 0}`;
 
   const firstSeq = rows.length > 0 ? rows[0].seq : null;
   const lastSeq = rows.length > 0 ? rows[rows.length - 1].seq : null;
@@ -485,7 +539,8 @@ const AgentRows = memo(function AgentRows({
     rows.length === 0 &&
     !streamBuf &&
     pendingTurns.length === 0 &&
-    pendingControls.length === 0;
+    pendingControls.length === 0 &&
+    (notes ?? []).length === 0;
 
   const body = (
     <>
@@ -515,6 +570,9 @@ const AgentRows = memo(function AgentRows({
 
       {groups.map((g) => {
         const anchor = g.kind === "row" ? g.message : g.messages[0];
+        const notesBefore = placed.before.get(anchor._id)?.map((note) => (
+          <NoteLine key={note._id} note={note} />
+        ));
         if (g.kind === "row") {
           const message = g.message;
           // A result its call already drew is not drawn twice.
@@ -528,6 +586,7 @@ const AgentRows = memo(function AgentRows({
             message.kind === "child-run" ? childRunOf(message.content) : null;
           return (
             <Fragment key={anchor._id}>
+              {notesBefore}
               {anchor._id === unreadGroupKey && <UnreadDivider />}
               {/* A top-level user row starts a turn — mark it with the clock. */}
               {message.kind === "user" && foldKeyOf(message) === undefined && (
@@ -548,6 +607,7 @@ const AgentRows = memo(function AgentRows({
         }
         return (
           <Fragment key={anchor._id}>
+            {notesBefore}
             {anchor._id === unreadGroupKey && <UnreadDivider />}
             <details className="text-sm">
               {/* The fold: who the subagent is, what it was sent to do, how
@@ -574,6 +634,10 @@ const AgentRows = memo(function AgentRows({
           </Fragment>
         );
       })}
+
+      {placed.after.map((note) => (
+        <NoteLine key={note._id} note={note} />
+      ))}
 
       {/* The turn the agent is working on, until its row lands: the reply
           being typed below answers it. */}

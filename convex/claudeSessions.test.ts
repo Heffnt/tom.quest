@@ -1957,7 +1957,7 @@ describe("message overflow (the complete payload)", () => {
 
   /** Every page of one message's overflow, the way the agents page reads it. */
   async function readAll(
-    t: ReturnType<typeof convexTest>,
+    t: Awaited<ReturnType<typeof withTom>>,
     messageId: Id<"claudeMessages">,
   ) {
     const pages: MessageOverflowRead[] = [];
@@ -1966,7 +1966,7 @@ describe("message overflow (the complete payload)", () => {
       // Annotated: the loop feeds the previous read's nextIndex back in as
       // fromIndex, which TS cannot infer through without a cycle.
       const page: MessageOverflowRead | null = await t.query(
-        internal.claudeSessions.internalMessageOverflow,
+        api.claudeSessions.getMessageOverflow,
         { messageId, fromIndex },
       );
       pages.push(page!);
@@ -1987,7 +1987,7 @@ describe("message overflow (the complete payload)", () => {
       payloadChunks(),
     );
 
-    const pages = await readAll(t, messageId);
+    const pages = await readAll(tom, messageId);
     expect(pages.length).toBeGreaterThan(1); // the read is paged, not unbounded
     for (const page of pages) {
       expect(page).toMatchObject({

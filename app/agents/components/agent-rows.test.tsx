@@ -19,7 +19,8 @@
 // a rendered case can hold it.
 //
 // Beside the rows: Tom's delivered turn stays on the page until its row lands
-// (getPendingInbound returns it).
+// (getPendingInbound returns it), and the daemon's notes are drawn between the
+// rows by time (sessionRows.notes).
 //
 // The paging control is a direction claim: the session query pages
 // newest-first and the run query oldest-first, so the same button loads
@@ -90,10 +91,11 @@ const PROVENANCE = {
 };
 
 /** The live queries AgentRows reads beside its rows. */
-function load(over: { pending?: unknown[]; buf?: unknown } = {}) {
+function load(over: { pending?: unknown[]; notes?: unknown[]; buf?: unknown } = {}) {
   convex.data = {
     [getFunctionName(api.claudeSessions.getStreamBuf)]: over.buf ?? null,
     [getFunctionName(api.claudeSessions.getPendingInbound)]: over.pending ?? [],
+    [getFunctionName(api.sessionRows.notes)]: over.notes ?? [],
   };
 }
 
@@ -267,5 +269,32 @@ describe("beside the rows", () => {
     expect(text).toContain("queued — delivers when the current turn ends");
     expect(text.indexOf("do the visa one first")).toBeLessThan(text.indexOf("Starting on the visa."));
     expect(text.indexOf("Starting on the visa.")).toBeLessThan(text.indexOf("and then the lease"));
+  });
+
+  // witness: render the notes as a block after the rows and a model change
+  // made before a turn reads as if it happened after it.
+  it("draws each note between the rows it happened between", () => {
+    const first = row({ _id: "m-a", seq: 1, content: "first answer", createdAt: NOW });
+    const second = row({ _id: "m-b", seq: 2, content: "second answer", createdAt: NOW + 2_000 });
+    load({
+      notes: [
+        { _id: "n-0", at: NOW - 5_000, text: "workspace rebuilt" },
+        { _id: "n-1", at: NOW + 1_000, text: "model changed to sonnet" },
+        { _id: "n-2", at: NOW + 3_000, text: "pushed 2 commits" },
+      ],
+    });
+    const { unmount } = show([first, second], { pageStatus: "CanLoadMore" });
+    let text = body();
+    expect(text.indexOf("first answer")).toBeLessThan(text.indexOf("model changed to sonnet"));
+    expect(text.indexOf("model changed to sonnet")).toBeLessThan(text.indexOf("second answer"));
+    expect(text.indexOf("second answer")).toBeLessThan(text.indexOf("pushed 2 commits"));
+    // Older than every loaded row, with earlier rows still to load: an
+    // earlier row may belong in front of it, so it waits.
+    expect(text).not.toContain("workspace rebuilt");
+    unmount();
+
+    show([first, second], { pageStatus: "Exhausted" });
+    text = body();
+    expect(text.indexOf("workspace rebuilt")).toBeLessThan(text.indexOf("first answer"));
   });
 });

@@ -1496,6 +1496,18 @@ export default defineSchema({
     .index("by_session_seq_index", ["sessionId", "seq", "index"])
     .index("by_run_seq_index", ["runId", "seq", "index"]),
 
+  // What the session daemon says about a session that is not a transcript
+  // row: the model changed, the workspace was rebuilt, work was preserved or
+  // discarded, the time cap fired, a delivery failed. The agent file is the
+  // only source of rows, and none of these facts is in it, so they are notes:
+  // posted on /sessions/ingest as `notes`, never rows, and drawn on the page
+  // between the rows by time. `text` is capped at 1 KB at insert.
+  sessionNotes: defineTable({
+    sessionId: v.id("claudeSessions"),
+    at: v.number(),
+    text: v.string(),
+  }).index("by_session_at", ["sessionId", "at"]),
+
   // Immutable CLI-file records. The store is the recovery source; these rows
   // make runs searchable without making the live session state machine apply
   // to every Codex or child thread.

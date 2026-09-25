@@ -1,10 +1,11 @@
 // ONE TRANSCRIPT PATH (Tom's ruling of 2026-09-25): a session's rows are its
 // agent file's. These cases hold every reader of a session's rows to the one
 // switch (sessionRows.rowSource), and the pieces that exist because the
-// daemon writes no rows: the delivered turn that is not a row yet, the newest
-// landed row on the poll, and the one-off relink of the Codex sessions named
-// under the Claude family.
+// daemon writes no rows: the notes, the delivered turn that is not a row yet,
+// the newest landed row on the poll, the overflow reader on a file row, and
+// the one-off relink of the Codex sessions named under the Claude family.
 
+import { createHash } from "node:crypto";
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -155,6 +156,44 @@ describe("Tom's delivered turn stays on the page until its row lands", () => {
   });
 });
 
+describe("the daemon's notes", () => {
+  // witness: write notes as rows and they vanish with the daemon's rows — the
+  // agent file is the only source of rows, and none of these facts is in it.
+  it("stores each note once, cut to 1 KB, even on a session that has ended", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const sessionId = await seedSession(t, { status: "ended" });
+    const long = `push failed: ${"é".repeat(2000)}`;
+    const payload = {
+      sessionId,
+      notes: [
+        { at: 2_000, text: "model changed to sonnet" },
+        { at: 1_000, text: "workspace rebuilt" },
+        { at: 3_000, text: long },
+      ],
+    };
+    await t.mutation(internal.claudeSessions.internalIngest, payload);
+    // The flush is a blind retry: the same payload again stores nothing new.
+    await t.mutation(internal.claudeSessions.internalIngest, payload);
+    const notes = await tom.query(api.sessionRows.notes, { sessionId });
+    expect(notes.map((note) => note.text.slice(0, 23))).toEqual([
+      "workspace rebuilt",
+      "model changed to sonnet",
+      "push failed: éééééééééé",
+    ]);
+    expect(Buffer.byteLength(notes[2].text, "utf8")).toBeLessThanOrEqual(1024);
+    expect(Buffer.byteLength(notes[2].text, "utf8")).toBeGreaterThan(1020);
+    // A note is not a row.
+    expect(await t.run((ctx) => ctx.db.query("claudeMessages").collect())).toEqual([]);
+  });
+
+  it("are Tom's to read", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await seedSession(t);
+    await expect(t.withIdentity({ subject: "someone" }).query(api.sessionRows.notes, { sessionId })).rejects.toThrow();
+  });
+});
+
 describe("the poll carries the run's newest landed row", () => {
   it("names the newest row of a file-backed session, and nothing for an old one", async () => {
     const t = convexTest(schema, modules);
@@ -166,6 +205,32 @@ describe("the poll carries the run's newest landed row", () => {
     const byTitle = new Map((sessions as Array<{ title: string; newestRow?: unknown }>).map((s) => [s.title, s.newestRow]));
     expect(byTitle.get("a file-backed session")).toEqual({ seq: 250, turn: 1, createdAt: 10_250 });
     expect(byTitle.get("an old session")).toBeUndefined();
+  });
+});
+
+describe("the whole payload behind a cut agent file row", () => {
+  // witness: find chunks by sessionId alone and every cut row of every
+  // session since the cutover answers null — the expand has nothing to read.
+  it("reassembles the chunks stored under the run", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const chunks = ["abc", "def"];
+    const full = chunks.join("");
+    const overflow = {
+      sha256: createHash("sha256").update(full, "utf8").digest("hex"),
+      byteLength: Buffer.byteLength(full, "utf8"),
+      chunkCount: chunks.length,
+    };
+    const messageId = await t.run(async (ctx) => {
+      for (const [index, text] of chunks.entries()) {
+        await ctx.db.insert("claudeMessageOverflow", { runId: RUN, seq: 7, index, chunkCount: chunks.length, text, createdAt: 1 });
+      }
+      return await ctx.db.insert("claudeMessages", {
+        runId: RUN, seq: 7, turn: 1, kind: "tool-result", content: { toolUseId: "t", content: "ab" }, depth: 0, overflow, createdAt: 1,
+      });
+    });
+    const read = await tom.query(api.claudeSessions.getMessageOverflow, { messageId });
+    expect(read).toMatchObject({ hasOverflow: true, runId: RUN, seq: 7, text: full, end: true, complete: true });
   });
 });
 

@@ -365,6 +365,25 @@ describe("the conversation is never folded", () => {
     expect(body()).toContain("seq 1000 · read by agents.rows");
   });
 
+  // witness: gate the control on sessionId and an agent file row — every row
+  // of every session since the cutover — says it was cut and offers no way to
+  // the rest of it.
+  it("a cut agent file row offers the whole payload, as a daemon row does", () => {
+    render(
+      <AgentRow
+        row={row({
+          kind: "assistant-text",
+          content: { text: "the first 32 KB" },
+          hasOverflow: true,
+          fullByteLength: 40_000,
+        })}
+        source="session"
+      />,
+    );
+    expect(screen.getByRole("button", { name: /show the whole payload \(40000 bytes\)/ })).toBeTruthy();
+    expect(body()).not.toContain("no reader");
+  });
+
   it("an error row is shown in full and is never folded away", () => {
     const content = { message: "model changed from opus to sonnet" };
     render(<AgentRow row={row({ kind: "error", content })} source="run" />);

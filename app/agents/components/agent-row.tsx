@@ -74,13 +74,11 @@ function basename(path: string): string {
 }
 
 /**
- * What was cut, and the way back to it when there is one. Two halves: the note
- * the writer left, verbatim, and the control that reads the stored bytes back.
- *
- * THE CONTROL IS SESSION-ONLY. claudeSessions.getMessageOverflow refuses a row
- * with no sessionId (it is the session surface's door), and phase 4 adds no
- * second reader — so a run row says what the stamp says and offers nothing,
- * rather than a button that cannot fetch. Phase 5 owns the run-side reader.
+ * What was cut, and the way back to it. Two halves: the note the writer left,
+ * verbatim, and the control that reads the stored bytes back. The reader
+ * (claudeSessions.getMessageOverflow) finds a row's chunks under its own key —
+ * a daemon row's session, an agent file row's run — so every stamped row
+ * offers it.
  */
 function Cut({ row }: { row: TranscriptMessage }) {
   const note = truncationNoteOf(row.content);
@@ -90,21 +88,9 @@ function Cut({ row }: { row: TranscriptMessage }) {
       {note !== undefined && (
         <div className="mt-1 font-mono text-[10px] text-text-faint">{note}</div>
       )}
-      {row.hasOverflow === true &&
-        (row.sessionId !== undefined ? (
-          <OverflowExpand
-            messageId={row._id}
-            fullByteLength={row.fullByteLength}
-          />
-        ) : (
-          <div className="mt-1 font-mono text-[10px] text-text-faint">
-            cut ·{" "}
-            {row.fullByteLength === undefined
-              ? "the whole payload is stored beside the row"
-              : `${row.fullByteLength} bytes stored beside the row`}{" "}
-            · no reader for an agent row on this page
-          </div>
-        ))}
+      {row.hasOverflow === true && (
+        <OverflowExpand messageId={row._id} fullByteLength={row.fullByteLength} />
+      )}
     </div>
   );
 }
