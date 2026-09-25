@@ -521,6 +521,27 @@ describe("a reply in a session becomes a label", () => {
     }
   });
 
+  // witness: key the dedupe on the new ref alone, and the backfill of an old
+  // session's agent file records every turn the daemon-row writer already
+  // labelled a second time.
+  it("writes nothing for a turn the old writer labelled under the session's own key", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const sessionId = await seedSession(t, { runId: SESSION_RUN, status: "ended" });
+      const inboundId = await seedTomTurn(t, sessionId);
+      await t.mutation(internal.agentLabels.internalWriteLabel, {
+        runId: SESSION_RUN, source: "session-reply", actor: "tom", polarity: "neutral",
+        meaning: "no, do the visa one first", judgment: false, ref: `reply:${sessionId}:7`, at: 9_000,
+        rowSpan: { seqStart: 5, seqEnd: 7 },
+      });
+      await ingestFile(t, fileRun(), [fileRow(20, "user", delivered("no, do the visa one first", inboundId))]);
+      expect((await labels(t)).map((row) => row.ref)).toEqual([`reply:${sessionId}:7`]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("writes nothing for an agent's own turn", async () => {
     vi.useFakeTimers();
     try {

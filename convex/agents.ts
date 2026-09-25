@@ -154,7 +154,7 @@ function validAgentId(runId: unknown): runId is string {
 function agentIdMatches(runId: string, cli: AgentCli, host: "laptop" | "box") {
   return runId.startsWith(`${cli}:${host}:`);
 }
-function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
+export function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
   return file.path === "" && file.sourceHash === "" && file.storedHash === "" && file.bytes === 0 && file.storedBytes === 0 && file.committedLine === 0 && file.committedPrefixSha256 === "";
 }
 /**
@@ -411,43 +411,68 @@ export const internalIngest = internalMutation({
     // box run launched is depth 2 here and depth 1 in its own file, and the
     // check that refused a row at any other depth than its run's dead-lettered
     // six such children on 2026-09-19.
-    // The envelope names the environment; a run without one runs where its
-    // parent ran; failing both, a row already in the record keeps its own.
-    // Only then is it a worker, and that guess is counted below.
-    const environment: AgentEnvironment = args.run.environment ?? knownParent?.environment ?? existing?.environment ?? "worker";
-    const environmentDefaulted = args.run.environment === undefined && knownParent?.environment === undefined && existing?.environment === undefined;
-    let run = { ...args.run, rootRunId, depth, environment };
+    let linked = { ...args.run, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
     // itself without a second worker round trip.
-    if (run.sessionId === undefined && run.cli === "claude" && run.host === "box" && run.depth === 0) {
-      const sdkSessionId = run.runId.slice("claude:box:".length);
-      if (run.runId.startsWith("claude:box:") && sdkSessionId !== "" && !sdkSessionId.includes("/")) {
+    if (linked.sessionId === undefined && linked.cli === "claude" && linked.host === "box" && linked.depth === 0) {
+      const sdkSessionId = linked.runId.slice("claude:box:".length);
+      if (linked.runId.startsWith("claude:box:") && sdkSessionId !== "" && !sdkSessionId.includes("/")) {
         const session = await ctx.db
           .query("claudeSessions")
           .withIndex("by_sdk_session_id", (q) => q.eq("sdkSessionId", sdkSessionId))
           .unique();
-        if (session) run = { ...run, sessionId: session._id };
+        if (session) linked = { ...linked, sessionId: session._id };
       }
     }
-    // A box Codex root is linked by the session row that names its run: the
-    // daemon reports the rollout's id as the session's runId, and the
-    // session's sdkSessionId is a Codex thread id rather than a Claude one, so
-    // the Claude join above cannot find it.
-    if (run.sessionId === undefined && run.cli === "codex" && run.host === "box" && run.depth === 0) {
+    // A box root is linked by the session row that names its run. A Codex
+    // session needs it: the daemon reports the rollout's id as the session's
+    // runId, and its sdkSessionId is a Codex thread id rather than a Claude
+    // one, so the Claude join above cannot find it. A Claude root whose
+    // session names it but whose SDK id the join above missed takes it too.
+    if (linked.sessionId === undefined && linked.host === "box" && linked.depth === 0) {
       const session = await ctx.db
         .query("claudeSessions")
-        .withIndex("by_run_id", (q) => q.eq("runId", run.runId))
+        .withIndex("by_run_id", (q) => q.eq("runId", linked.runId))
         .first();
-      if (session) run = { ...run, sessionId: session._id };
+      if (session) linked = { ...linked, sessionId: session._id };
     }
+    const linkedSession = linked.sessionId === undefined ? null : await ctx.db.get(linked.sessionId);
     // A reopened or forked session names the run it continues. Its next run
     // takes that link; the run it names never does, so a late page of the old
     // run cannot link to itself.
-    if (run.sessionId !== undefined && run.continuesRunId === undefined) {
-      const session = await ctx.db.get(run.sessionId);
-      if (session?.continuesRunId !== undefined && session.continuesRunId !== run.runId) run = { ...run, continuesRunId: session.continuesRunId };
+    if (linkedSession !== null && linked.continuesRunId === undefined) {
+      if (linkedSession.continuesRunId !== undefined && linkedSession.continuesRunId !== linked.runId) linked = { ...linked, continuesRunId: linkedSession.continuesRunId };
     }
+
+    // A SESSION'S ROOT RUN TAKES WHAT THE SESSION ROW SAYS where the file
+    // says nothing. The session row is the fact: this run is a session Tom
+    // talks to, and it has ended when its session has. The agent file of a
+    // session from before the envelope, or one the sweep reads long after it
+    // ended (the backfill of the old sessions), carries no environment, no
+    // kind and no end marker, and without this every such run would read as
+    // an unknown worker, or as abandoned.
+    const sessionRoot = linkedSession !== null && linked.depth === 0 ? linkedSession : null;
+    // The envelope names the environment; a run without one runs where its
+    // parent ran; a session's root runs in the session; failing those, a row
+    // already in the record keeps its own. Only then is it a worker, and that
+    // guess is counted below. A row the record defaulted to worker before its
+    // session was known is not a named environment, so the session corrects it.
+    const inherited = knownParent?.environment ?? existing?.environment;
+    const fromSession = args.run.environment === undefined && knownParent?.environment === undefined
+      && sessionRoot !== null && (inherited === undefined || inherited === "worker");
+    const environment: AgentEnvironment = args.run.environment ?? (fromSession ? "session" : inherited ?? "worker");
+    const environmentDefaulted = args.run.environment === undefined && inherited === undefined && !fromSession;
+    const kind = sessionRoot !== null && linked.kind === "unknown" ? "session" as const : linked.kind;
+    // A RUN A SESSION NAMES IS NEVER ABANDONED WHILE ITS SESSION HAS ENDED.
+    // Abandoned means the file stopped with no ending; a session that ended or
+    // failed is that ending. A file that says it ended or failed keeps its own
+    // word; a session with no ending leaves the file's status as it is.
+    const sessionEnded = sessionRoot !== null && (sessionRoot.status === "ended" || sessionRoot.status === "failed")
+      && (linked.status === "unknown" || linked.status === "running" || linked.status === "abandoned");
+    const run = sessionEnded && sessionRoot !== null
+      ? { ...linked, environment, kind, status: sessionRoot.status as "ended" | "failed", abandonedAt: undefined }
+      : { ...linked, environment, kind };
 
     let previous = -1;
     for (const row of args.rows) {
@@ -541,6 +566,7 @@ export const internalIngest = internalMutation({
       if (existing.origin === "unknown") patch.origin = run.origin;
       if (!existing.linkKnown && run.linkKnown && run.spawnedByToolUseId) { patch.linkKnown = true; patch.spawnedByToolUseId = run.spawnedByToolUseId; }
       if (isStubFile(existing.file)) Object.assign(patch, { parentRunId: run.parentRunId, rootRunId: run.rootRunId, depth: run.depth, host: run.host, cli: run.cli, environment: run.environment, startedAt: run.startedAt });
+      if (sessionEnded && existing.abandonedAt !== undefined) patch.abandonedAt = undefined;
       await ctx.db.patch(existing._id, patch);
     }
 

@@ -99,6 +99,19 @@ describe("a session since the cutover reads its agent file's rows", () => {
     expect(page.page).toEqual([]);
   });
 
+  // The two sessions that failed on 2026-09-01 named no file. witness: read
+  // a session with no runId by its sessionId, and once the one-off deletes
+  // their one daemon row the page asks an index for rows that cannot exist.
+  it("reads nothing for a session that names no run, whatever its rowsFrom", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await seedSession(t, { rowsFrom: undefined, runId: undefined, status: "failed" });
+    await daemonRow(t, sessionId, 0, "the one daemon row");
+    expect(await t.query(internal.claudeSessions.internalTranscriptPage, { sessionId })).toEqual({ rows: [], nextCursor: null });
+    const tom = await withTom(t);
+    const page = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
+    expect(page.page).toEqual([]);
+  });
+
   it("keeps reading a session from before the cutover by its own id", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await seedSession(t, { rowsFrom: undefined });
@@ -150,7 +163,7 @@ describe("Tom's delivered turn stays on the page until its row lands", () => {
     await turn(t, fileBacked, "delivered", { author: "agent" });
     expect(await tom.query(api.claudeSessions.getPendingInbound, { sessionId: fileBacked })).toEqual([]);
 
-    const old = await seedSession(t, { rowsFrom: undefined, runId: undefined });
+    const old = await seedSession(t, { rowsFrom: undefined, runId: "claude:box:an-old-session" });
     await turn(t, old, "delivered");
     expect(await tom.query(api.claudeSessions.getPendingInbound, { sessionId: old })).toEqual([]);
   });

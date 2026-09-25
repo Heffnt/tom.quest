@@ -1339,8 +1339,8 @@ export default defineSchema({
     // for this session takes it as its own continuesRunId.
     continuesRunId: v.optional(v.string()),
     // Where this session's rows come from. "runs": the agent file, read by
-    // the session's runId; the daemon sets it (rowsFromFiles on the ingest)
-    // and every reader of a session's rows honours it through
+    // the session's runId; a session is born with it (insertSession), the
+    // daemon's rowsFromFiles set it on older ones, and every reader of a session's rows honours it through
     // convex/sessionRows.ts rowSource. Absent or "daemon": the rows the
     // session daemon wrote before the cutover, read by sessionId.
     rowsFrom: v.optional(
@@ -1483,7 +1483,9 @@ export default defineSchema({
   // of the row's ingest; the daemon keeps the order (chunks first, then the
   // row) by holding the row back until they are acknowledged, and nothing
   // here removes chunks with a row — claudeSessions.sweepMessageOverflow is
-  // the one call that does.
+  // the one call that does for a live session, and the one-off
+  // ttsMigrations.internalReplaceDaemonRows removes an old session's chunks
+  // before its rows.
   claudeMessageOverflow: defineTable({
     sessionId: v.optional(v.id("claudeSessions")),
     runId: v.optional(v.string()),

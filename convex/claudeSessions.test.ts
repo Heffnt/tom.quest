@@ -61,6 +61,19 @@ async function createBasicSession(tom: Awaited<ReturnType<typeof withTom>>) {
   });
 }
 
+// A session from before the one-transcript-path cutover, whose rows are the
+// daemon's under its sessionId. Every session born today reads its agent
+// file (rowsFrom "runs"); the daemon-row path these tests pin still serves
+// the old sessions until the one-off replaces their rows.
+async function createDaemonSession(
+  t: ReturnType<typeof convexTest>,
+  tom: Awaited<ReturnType<typeof withTom>>,
+) {
+  const sessionId = await createBasicSession(tom);
+  await t.run((ctx) => ctx.db.patch(sessionId, { rowsFrom: undefined, runId: `claude:box:${sessionId}` }));
+  return sessionId;
+}
+
 // THE PER-SESSION EVENT LINE IS GONE (slack-design.md §1.2). It had no channel
 // of its own and was switched off from the day it was written: a session
 // recording an outcome is not something Tom acts on, and it reaches him in the
@@ -1980,7 +1993,7 @@ describe("message overflow (the complete payload)", () => {
   it("reassembles an oversized tool result byte-identical over paged reads", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const { messageId, full, overflow } = await storeOversized(
       t,
       sessionId,
@@ -2014,7 +2027,7 @@ describe("message overflow (the complete payload)", () => {
   it("calls a payload complete only when its bytes and hash match the stamp", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const chunks = ["héllo ", "wörld"]; // multibyte: bytes ≠ chars
     const { messageId, full } = await storeOversized(t, sessionId, chunks);
 
@@ -2048,7 +2061,7 @@ describe("message overflow (the complete payload)", () => {
   it("tells the transcript a row was cut, and how much is behind it", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const { overflow } = await storeOversized(t, sessionId, payloadChunks());
     const page = await tom.query(api.claudeSessions.getMessages, {
       sessionId,
@@ -2065,7 +2078,7 @@ describe("message overflow (the complete payload)", () => {
   it("says so when a chunk the row names never landed", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const { messageId } = await storeOversized(t, sessionId, payloadChunks(), {
       dropIndex: 1,
     });
@@ -2084,7 +2097,7 @@ describe("message overflow (the complete payload)", () => {
   it("stores nothing for a message that fits", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       finalize: [
@@ -2117,7 +2130,7 @@ describe("message overflow (the complete payload)", () => {
   it("records an event naming the file when the daemon could not store a payload", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       finalize: [
@@ -2158,7 +2171,7 @@ describe("message overflow (the complete payload)", () => {
   it("upserts a re-sent chunk instead of doubling it", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const chunk = {
       sessionId,
       seq: 3,
@@ -2180,7 +2193,7 @@ describe("message overflow (the complete payload)", () => {
   it("refuses a chunk that disagrees with the row's stamp, or is malformed", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const chunks = ["abc", "def"];
     await storeOversized(t, sessionId, chunks);
 
@@ -2223,7 +2236,7 @@ describe("message overflow (the complete payload)", () => {
   it("stamps an unstamped row once its chunks are up, and only then", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const chunks = ["first half ", "second half"];
     const stamp = stampFor(chunks);
     await t.mutation(internal.claudeSessions.internalIngest, {
@@ -2289,7 +2302,7 @@ describe("message overflow (the complete payload)", () => {
     try {
       const t = convexTest({ schema, modules });
       const tom = await withTom(t);
-      const sessionId = await createBasicSession(tom);
+      const sessionId = await createDaemonSession(t, tom);
       // What landed under seq 0: a plain row, no stamp.
       await t.mutation(internal.claudeSessions.internalIngest, {
         sessionId,
@@ -2336,7 +2349,7 @@ describe("message overflow (the complete payload)", () => {
     try {
       const t = convexTest({ schema, modules });
       const tom = await withTom(t);
-      const sessionId = await createBasicSession(tom);
+      const sessionId = await createDaemonSession(t, tom);
       const chunks = ["aaa", "bbb"];
       await storeOversized(t, sessionId, chunks);
       // The same row again — a blind retry after a lost response.
@@ -2368,7 +2381,7 @@ describe("message overflow (the complete payload)", () => {
   it("POST /sessions/overflow validates by type and never echoes the body", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     process.env.SESSIONS_WORKER_KEY = "test-sessions-key";
     try {
       const post = (path: string, body: unknown) =>
@@ -2448,6 +2461,18 @@ describe("message overflow (the complete payload)", () => {
 // the file it builds is the whole conversation in order, and a long session's
 // transcript is thousands of rows — the read the collect rule exists to stop.
 
+describe("a session's rows (one transcript path)", () => {
+  // witness: leave rowsFrom to the daemon's rowsFromFiles, and a session born
+  // after the daemon stops sending it reads the daemon's rows, which do not
+  // exist, and shows an empty transcript.
+  it("is born reading its agent file", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBe("runs");
+  });
+});
+
 describe("session transcript pages", () => {
   // witness: order it "desc" (the browser's direction) or collect it whole —
   // the file the daemon writes would be backwards, or the read would grow
@@ -2455,7 +2480,7 @@ describe("session transcript pages", () => {
   it("pages in seq order and stops on a null cursor", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const sessionId = await createBasicSession(tom);
+    const sessionId = await createDaemonSession(t, tom);
     const total = 450; // more than two 200-row pages
     await t.run(async (ctx) => {
       for (let seq = 0; seq < total; seq++) {

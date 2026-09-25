@@ -226,7 +226,7 @@ export const OVERFLOW_CHUNK_MAX_BYTES = 256 * 1024;
 
 // How many chunk rows one sweep deletes before scheduling itself again: the
 // same 2MB read bound as a page, because a delete reads the document too.
-const OVERFLOW_SWEEP_CHUNKS = 8;
+export const OVERFLOW_SWEEP_CHUNKS = 8;
 
 const utf8 = new TextEncoder();
 const utf8Bytes = (text: string) => utf8.encode(text).length;
@@ -635,6 +635,9 @@ export async function insertSession(
     agendaSubjects: seed.agendaSubjects,
     status: "requested",
     statusChangedAt: now,
+    // Every session born is read from its agent file (one transcript path):
+    // the daemon writes it no rows, so nothing else may be read for it.
+    rowsFrom: "runs",
     nextSeq: 0,
     createdAt: now,
   });
@@ -2190,9 +2193,10 @@ export const internalStampOverflow = internalMutation({
 
 // Remove every chunk under (sessionId, seq): the one home for taking a
 // message's complete payload out, called by the seq floor above for a
-// stamped replay whose landed twin has no stamp, and what any future removal
-// of claudeMessages rows must call for each row that carried `overflow`
-// (nothing removes messages today). Deletes read their documents, so a
+// stamped replay whose landed twin has no stamp. The one-off that replaces an
+// old session's daemon rows (ttsMigrations.internalReplaceDaemonRows) walks
+// the session's chunks itself, at this sweep's bound, because it must also
+// reach chunks no stamped row names. Deletes read their documents, so a
 // payload of hundreds of chunks goes in bounded steps, each scheduling the
 // next.
 export async function sweepMessageOverflow(
@@ -2220,6 +2224,38 @@ export const internalSweepOverflow = internalMutation({
       await sweepMessageOverflow(ctx, sessionId, seq);
     }
     return { deleted: chunks.length };
+  },
+});
+
+// ── The backfill list (one transcript path, part C) ─────────────────────────
+// The sessions whose rows are still the daemon's: a runId, and rowsFrom not
+// "runs". The box's sweep reads this once per backfill pass (GET
+// /sessions/backfill-list) and sweeps each one's agent file from its first
+// line, which is what lets the one-off ttsMigrations.internalReplaceDaemonRows
+// replace the daemon's rows with the file's. A session with no runId names no
+// file and is not listed.
+//
+// A page walks BACKFILL_LIST_PAGE session rows and answers the ones that
+// qualify, so a page can be empty while the cursor is not null; the walk is
+// over when the cursor is null.
+const BACKFILL_LIST_PAGE = 200;
+
+export const internalBackfillList = internalQuery({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) => {
+    const page = await ctx.db
+      .query("claudeSessions")
+      .paginate({ cursor, numItems: BACKFILL_LIST_PAGE });
+    const sessions = [];
+    for (const session of page.page) {
+      if (session.runId === undefined || session.rowsFrom === "runs") continue;
+      sessions.push({
+        sessionId: session._id,
+        runId: session.runId,
+        sdkSessionId: session.sdkSessionId ?? null,
+      });
+    }
+    return { sessions, cursor: page.isDone ? null : page.continueCursor };
   },
 });
 
