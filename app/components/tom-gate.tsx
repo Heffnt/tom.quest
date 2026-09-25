@@ -1,14 +1,14 @@
 "use client";
 
 // Auth gate shared by every Tom-only surface (Forge, Focus, Inventory,
-// Runs): the house loading state while auth resolves, the
+// Agents): the house loading state while auth resolves, the
 // restricted card for anyone else, children for Tom. Purely presentational —
 // callers still use useAuth() themselves for the query "skip" idiom; this
 // only owns the two gate states' JSX so it cannot drift between surfaces.
 //
 // `label` is load-bearing, not decoration: it is the surface name, and it
 // decides whether the read-only `agent` role gets in. Only the labels listed
-// in convex/agentSurfaces.ts ("TTS", "Turing") admit it — "Runs",
+// in convex/agentSurfaces.ts ("TTS", "Turing") admit it — "Agents",
 // "Forge" and "TTS mockup" stay Tom-only, as does every write
 // behind this gate, which Convex refuses independently.
 
@@ -18,7 +18,7 @@ export default function TomGate({
   label,
   children,
 }: {
-  /** Surface name for the restricted card, e.g. "Runs". */
+  /** Surface name for the restricted card, e.g. "Agents". */
   label: string;
   children: React.ReactNode;
 }) {

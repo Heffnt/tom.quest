@@ -3,8 +3,8 @@
 //
 // Tom, 2026-09-10: "there should be one way of viewing agent transcripts that
 // is used by the primary agent or infinitely recursive sub agents." The whole
-// of that ruling lives in one recursion — Run → RunRows → a `child-run` row →
-// Run at depth + 1 — and every way it can break is silent. A tree that mounts
+// of that ruling lives in one recursion — Agent → AgentRows → a `child-run` row →
+// Agent at depth + 1 — and every way it can break is silent. A tree that mounts
 // its grandchildren's rows under the child, a child drawn twice (once inline
 // and once in the unmatched list) or not at all, a composer offered on a
 // subagent, an unbounded mount that hangs the browser on a long stub chain,
@@ -34,7 +34,7 @@ const convex = vi.hoisted(() => ({
   rows: {} as Record<string, unknown[]>,
   children: {} as Record<string, unknown[]>,
   sessions: {} as Record<string, unknown>,
-  /** The newest runs.materializeStatus answer, per run. */
+  /** The newest agents.materializeStatus answer, per agent. */
   requests: {} as Record<string, unknown>,
   /** ttsRunners.runnerTitle, per runner id. */
   runners: {} as Record<string, unknown>,
@@ -46,7 +46,7 @@ const convex = vi.hoisted(() => ({
 vi.mock("convex/react", async () => {
   const { getFunctionName: name } = await import("convex/server");
   const EMPTY: unknown[] = [];
-  // claudeSessions.getMessages pages NEWEST first and useRunRows reverses it,
+  // claudeSessions.getMessages pages NEWEST first and useAgentRows reverses it,
   // so the fixture is stored ascending and handed back descending here. The
   // flip is cached: a fresh array on every render would defeat the memo the
   // hook holds it in.
@@ -69,17 +69,17 @@ vi.mock("convex/react", async () => {
       const fn = name(ref as never);
       record(fn, args);
       if (args === "skip") return undefined;
-      const a = args as { runId?: string; id?: string; sessionId?: string };
+      const a = args as { agentId?: string; id?: string; sessionId?: string };
       switch (fn) {
-        case "runs:get":
-          return convex.runs[a.runId ?? ""] ?? null;
-        case "runs:children":
+        case "agents:get":
+          return convex.runs[a.agentId ?? ""] ?? null;
+        case "agents:children":
           return {
-            items: convex.children[a.runId ?? ""] ?? EMPTY,
+            items: convex.children[a.agentId ?? ""] ?? EMPTY,
             nextCursor: null,
           };
-        case "runs:materializeStatus":
-          return convex.requests[a.runId ?? ""] ?? null;
+        case "agents:materializeStatus":
+          return convex.requests[a.agentId ?? ""] ?? null;
         case "ttsRunners:runnerTitle":
           return convex.runners[(args as { runnerId: string }).runnerId] ?? null;
         case "claudeSessions:getSession":
@@ -100,8 +100,8 @@ vi.mock("convex/react", async () => {
       if (args === "skip") {
         return { results: EMPTY, status: "Exhausted", loadMore: () => {} };
       }
-      const a = args as { runId?: string; sessionId?: string };
-      const rows = convex.rows[a.runId ?? a.sessionId ?? ""] ?? EMPTY;
+      const a = args as { agentId?: string; sessionId?: string };
+      const rows = convex.rows[a.agentId ?? a.sessionId ?? ""] ?? EMPTY;
       return {
         results:
           fn === "claudeSessions:getMessages" ? descending(rows) : rows,
@@ -120,7 +120,7 @@ vi.mock("convex/react", async () => {
   };
 });
 
-import Run, { MAX_NESTING_DEPTH } from "./run";
+import Agent, { MAX_NESTING_DEPTH } from "./agent";
 
 const NOW = Date.now();
 const SESSION_ID = "s1" as unknown as Id<"claudeSessions">;
@@ -164,7 +164,7 @@ function runDoc(over: Record<string, unknown>) {
 }
 
 /**
- * One row as runs.rows returns it. Every row a run file produces carries a
+ * One row as agents.rows returns it. Every row a run file produces carries a
  * provenance stamp — which is also what keeps a `child-run` row's
  * parentToolUseId from folding it into an agent group (run-rows.tsx note 2).
  */
@@ -252,7 +252,7 @@ function loadTree() {
         _id: "m-a-1",
         runId: "run-a",
         seq: 1000,
-        ...bash("tu-a-1", "cat app/runs/lib.ts"),
+        ...bash("tu-a-1", "cat app/agents/lib.ts"),
       }),
       fileRow({
         _id: "m-a-2",
@@ -323,7 +323,7 @@ function openFold(text: string) {
 
 const root = () =>
   render(
-    <Run
+    <Agent
       runId="run-root"
       depth={0}
       now={NOW}
@@ -374,10 +374,10 @@ describe("the recursion", () => {
     // Level 0 is on screen; nothing below it is, because nothing is open.
     expect(screen.getByText("ls -la")).toBeTruthy();
     expect(screen.getByText("walk the fixture tree")).toBeTruthy();
-    expect(screen.queryByText("cat app/runs/lib.ts")).toBeNull();
+    expect(screen.queryByText("cat app/agents/lib.ts")).toBeNull();
 
     openFold("walk the fixture tree");
-    expect(screen.getByText("cat app/runs/lib.ts")).toBeTruthy();
+    expect(screen.getByText("cat app/agents/lib.ts")).toBeTruthy();
     expect(screen.getByText("child A summarizes the fixture")).toBeTruthy();
     expect(screen.getByText("the grandchild leaf")).toBeTruthy();
     expect(screen.queryByText("echo grandchild")).toBeNull();
@@ -389,7 +389,7 @@ describe("the recursion", () => {
     // Every level kept its own rows — the grandchild's did not land in the
     // child's list — and the indent grows by one container per level.
     expect(indentDepth(screen.getByText("ls -la"))).toBe(0);
-    expect(indentDepth(screen.getByText("cat app/runs/lib.ts"))).toBe(1);
+    expect(indentDepth(screen.getByText("cat app/agents/lib.ts"))).toBe(1);
     expect(indentDepth(screen.getByText("echo grandchild"))).toBe(2);
   });
 
@@ -402,13 +402,13 @@ describe("the recursion", () => {
     const childCalls = () =>
       convex.seen.filter((call) => call.includes("run-a"));
     expect(childCalls()).toEqual([]);
-    expect(convex.seen).toContain("runs:children:skip");
-    expect(convex.seen).toContain("runs:get:skip");
+    expect(convex.seen).toContain("agents:children:skip");
+    expect(convex.seen).toContain("agents:get:skip");
 
     openFold("walk the fixture tree");
-    expect(convex.seen).toContain('runs:children:{"runId":"run-a"}');
-    expect(convex.seen).toContain('runs:get:{"runId":"run-a"}');
-    expect(convex.seen).toContain('runs:rows:{"runId":"run-a"}');
+    expect(convex.seen).toContain('agents:children:{"agentId":"run-a"}');
+    expect(convex.seen).toContain('agents:get:{"agentId":"run-a"}');
+    expect(convex.seen).toContain('agents:rows:{"agentId":"run-a"}');
   });
 
   it("draws a named child once and lists only the children no row names", () => {
@@ -441,7 +441,7 @@ describe("the recursion", () => {
     // The unmatched one — a Codex child, whose parent's file names no spawning
     // call — is the only thing in the list, and the heading counts it.
     const heading = screen.getByText(
-      "1 child runs no row in this window names",
+      "1 child agents no row in this window names",
     );
     const list = heading.parentElement as HTMLElement;
     expect(within(list).getByText("run-x")).toBeTruthy();
@@ -463,7 +463,7 @@ describe("the composer", () => {
       },
     };
     render(
-      <Run
+      <Agent
         sessionId={SESSION_ID}
         depth={0}
         now={NOW}
@@ -484,7 +484,7 @@ describe("the composer", () => {
     // A subagent run opened as the page: same answer.
     loadTree();
     render(
-      <Run
+      <Agent
         runId="run-a"
         depth={0}
         now={NOW}
@@ -519,7 +519,7 @@ describe("the composer", () => {
       },
     };
     render(
-      <Run
+      <Agent
         runId="run-nested"
         childFacts={
           childRunOf({
@@ -546,7 +546,7 @@ describe("the edges of the recursion", () => {
       "run-deep": [fileRow({ _id: "m-deep", ...bash("tu-deep", "ls -la") })],
     };
     render(
-      <Run
+      <Agent
         runId="run-deep"
         childFacts={
           childRunOf({
@@ -570,7 +570,7 @@ describe("the edges of the recursion", () => {
     expect(document.querySelector("details")).toBeNull();
     expect(convex.seen.filter((call) => call.includes("run-deep"))).toEqual([]);
 
-    fireEvent.click(screen.getByText("open this run as the page"));
+    fireEvent.click(screen.getByText("open this agent as the page"));
     expect(onOpenRun).toHaveBeenCalledWith("run-deep");
   });
 
@@ -579,7 +579,7 @@ describe("the edges of the recursion", () => {
     // file has not been ingested.
     convex.runs = {};
     render(
-      <Run
+      <Agent
         runId="run-missing"
         childFacts={
           childRunOf({
@@ -635,7 +635,7 @@ describe("a runner's step", () => {
       }),
     };
     convex.runners = { k17runner: { title: "TRAIN25 campaign", status: "running" } };
-    render(<Run runId="run-step" depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />);
+    render(<Agent runId="run-step" depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />);
     expect(body()).toContain("a step of the runner TRAIN25 campaign, which is running");
     fireEvent.click(screen.getByText("continues run-step-before"));
     expect(onOpenRun).toHaveBeenCalledWith("run-step-before");
@@ -645,7 +645,7 @@ describe("a runner's step", () => {
   it("says a runner waiting on Tom in words, never the raw status", () => {
     convex.runs = { "run-step": runDoc({ runId: "run-step", origin: "runner:k17runner", kind: "runner-step" }) };
     convex.runners = { k17runner: { title: "TRAIN25 campaign", status: "waiting-on-tom" } };
-    render(<Run runId="run-step" depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />);
+    render(<Agent runId="run-step" depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />);
     expect(body()).toContain("a step of the runner TRAIN25 campaign, which is waiting on Tom");
     expect(body()).not.toContain("waiting-on-tom");
   });
@@ -696,7 +696,7 @@ function oldRun(over: Record<string, unknown> = {}) {
 
 const openOld = () =>
   render(
-    <Run
+    <Agent
       runId={OLD_RUN}
       depth={0}
       now={NOW}
@@ -718,13 +718,13 @@ describe("a run whose rows are not in the record", () => {
     expect(body()).toContain("old.jsonl");
     expect(body()).toContain("version dddddddddddd");
 
-    fireEvent.click(screen.getByText("open this run from the store"));
-    expect(fired("runs:requestMaterialize")).toEqual([
-      `runs:requestMaterialize:{"runId":"${OLD_RUN}"}`,
+    fireEvent.click(screen.getByText("open this agent from the store"));
+    expect(fired("agents:requestMaterialize")).toEqual([
+      `agents:requestMaterialize:{"agentId":"${OLD_RUN}"}`,
     ]);
     // An index-only run is not made evictable by being looked at: there is
     // nothing to keep, so nothing marks it read.
-    expect(fired("runs:markOpened")).toEqual([]);
+    expect(fired("agents:markOpened")).toEqual([]);
   });
 
   it("says the box is serving it while a request is pending, and offers nothing", () => {
@@ -745,7 +745,7 @@ describe("a run whose rows are not in the record", () => {
     // A plain sentence and no spinner: nothing is streaming, and a second
     // press would queue nothing, so there is nothing to press.
     expect(body()).toContain("opening from the store · slice 2");
-    expect(screen.queryByText("open this run from the store")).toBeNull();
+    expect(screen.queryByText("open this agent from the store")).toBeNull();
   });
 
   it("names the reason a request failed and brings the control back", () => {
@@ -766,7 +766,7 @@ describe("a run whose rows are not in the record", () => {
 
     expect(body()).toContain("could not open · object missing from store");
     // A transient store failure is one more press, never a dead end.
-    expect(screen.getByText("open this run from the store")).toBeTruthy();
+    expect(screen.getByText("open this agent from the store")).toBeTruthy();
   });
 
   it("shows the rows and drops the line once they are back, and marks the run read", () => {
@@ -786,10 +786,10 @@ describe("a run whose rows are not in the record", () => {
 
     expect(screen.getByText("the old run, back from the store")).toBeTruthy();
     expect(body()).not.toContain("rows not in the record");
-    expect(screen.queryByText("open this run from the store")).toBeNull();
+    expect(screen.queryByText("open this agent from the store")).toBeNull();
     // Reading a run keeps it: once per page load, fire and forget, no UI.
-    expect(fired("runs:markOpened")).toEqual([
-      `runs:markOpened:{"runId":"${OLD_RUN}"}`,
+    expect(fired("agents:markOpened")).toEqual([
+      `agents:markOpened:{"agentId":"${OLD_RUN}"}`,
     ]);
   });
 });
@@ -856,7 +856,7 @@ function sourceRun(
 
 const openSource = () =>
   render(
-    <Run
+    <Agent
       runId={SOURCE_RUN}
       depth={0}
       now={NOW}
@@ -948,7 +948,7 @@ const FIXTURE_KIND: [string, string][] = [
   ["ls -la", "tool-call"],
   ["root run plans the sweep", "thinking"],
   ["walk the fixture tree", "child-run"],
-  ["cat app/runs/lib.ts", "tool-call"],
+  ["cat app/agents/lib.ts", "tool-call"],
   ["child A summarizes the fixture", "assistant-text"],
   ["the grandchild leaf", "child-run"],
   ["echo grandchild", "tool-call"],

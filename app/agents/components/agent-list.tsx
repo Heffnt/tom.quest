@@ -249,16 +249,16 @@ function matchesFilter(s: Session, filter: Filter): boolean {
   }
 }
 
-/** Every root run the record holds, newest first — runs.roots is capped. */
+/** Every root agent the record holds, newest first — agents.roots is capped. */
 function RootRuns({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
-  const roots = useQuery(api.runs.roots, {});
+  const roots = useQuery(api.agents.roots, {});
   if (roots === undefined) {
-    return <div className="text-sm text-text-faint">loading runs…</div>;
+    return <div className="text-sm text-text-faint">loading agents…</div>;
   }
   if (roots.length === 0) {
     return (
       <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
-        no runs
+        no agents
       </div>
     );
   }
@@ -308,12 +308,12 @@ function RootRuns({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
         ))}
       </ul>
       {/* The same claim listSessions makes about its own hundred. */}
-      <div className="text-xs text-text-faint">showing the latest 50 root runs</div>
+      <div className="text-xs text-text-faint">showing the latest 50 root agents</div>
     </div>
   );
 }
 
-export default function RunList({
+export default function AgentList({
   sessions,
   now,
   onOpenSession,

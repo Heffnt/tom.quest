@@ -102,7 +102,7 @@ function Cut({ row }: { row: TranscriptMessage }) {
             {row.fullByteLength === undefined
               ? "the whole payload is stored beside the row"
               : `${row.fullByteLength} bytes stored beside the row`}{" "}
-            · no reader for a run row on this page
+            · no reader for an agent row on this page
           </div>
         ))}
     </div>
@@ -144,7 +144,7 @@ function Raw({ row, source }: { row: TranscriptMessage; source: RowSource }) {
     <div className="mt-1 px-1">
       {p === undefined ? (
         <div className="font-mono text-[10px] text-text-faint">
-          daemon row · no run file
+          daemon row · no agent file
         </div>
       ) : (
         <div className="font-mono text-[10px] text-text-faint break-words">
@@ -160,7 +160,7 @@ function Raw({ row, source }: { row: TranscriptMessage; source: RowSource }) {
       )}
       <div className="font-mono text-[10px] text-text-faint">
         seq {row.seq} · read by{" "}
-        {source === "session" ? "claudeSessions.getMessages" : "runs.rows"}
+        {source === "session" ? "claudeSessions.getMessages" : "agents.rows"}
       </div>
       <pre className={PRE_CLASS}>{JSON.stringify(row.content, null, 2)}</pre>
     </div>
@@ -324,7 +324,7 @@ function fullBody(
   }
 }
 
-export default function RunRow({
+export default function AgentRow({
   row,
   result,
   toolNames,

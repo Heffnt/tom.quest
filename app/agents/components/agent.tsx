@@ -16,7 +16,7 @@
 //                controls: Tom does not talk to child runs ("no I don't want to
 //                talk to sub-agents").
 //
-// The recursion is Run → RunRows → a `child-run` row → Run at depth + 1. There
+// The recursion is Agent → AgentRows → a `child-run` row → Agent at depth + 1. There
 // is no second component for a subagent and no single-level fold.
 
 import Link from "next/link";
@@ -27,7 +27,7 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import Info from "@/app/tts/components/info";
 import { RUNNER_STATUS_WORDS } from "@/app/tts/lib";
 import type { SessionModel, TranscriptMessage } from "../lib";
-import { useRunRows } from "../use-run-rows";
+import { useAgentRows } from "../use-agent-rows";
 import {
   MODEL_CHIP_CLASS,
   ageText,
@@ -40,14 +40,14 @@ import {
   sessionModel,
   statusChipClass,
 } from "../lib";
-import RunRows from "./run-rows";
+import AgentRows from "./agent-rows";
 import Composer from "./composer";
 import ModelSelect from "./model-select";
 import ForkDialog from "./fork-dialog";
 
 /**
  * How deep the page mounts before it stops and offers a link instead. Convex
- * refuses parent cycles at ingest (convex/runs.ts parentCycleLength), but a
+ * refuses parent cycles at ingest (convex/agents.ts parentCycleLength), but a
  * stub chain arriving out of order can still be long, and an unbounded
  * recursive mount is a hung browser. Past the cap a child still renders its
  * line and an `open` control, so every run in the tree is reachable.
@@ -74,7 +74,7 @@ function childLine(facts: ChildFacts, run: RunDoc | null | undefined): string[] 
   ].filter((fact): fact is string => typeof fact === "string" && fact !== "");
 }
 
-export default function Run({
+export default function Agent({
   runId,
   sessionId,
   childFacts,
@@ -112,8 +112,8 @@ export default function Run({
   const active = !capped && (depth === 0 || open);
 
   const runFromId = useQuery(
-    api.runs.get,
-    active && runId !== undefined ? { runId } : "skip",
+    api.agents.get,
+    active && runId !== undefined ? { agentId: runId } : "skip",
   );
   const sessionFromId = useQuery(
     api.claudeSessions.getSession,
@@ -123,9 +123,9 @@ export default function Run({
   // a run addressed by its run id finds its session through run.sessionId. Both
   // directions exist because most sessions predate the record.
   const runFromSession = useQuery(
-    api.runs.get,
+    api.agents.get,
     active && runId === undefined && sessionFromId?.runId !== undefined
-      ? { runId: sessionFromId.runId }
+      ? { agentId: sessionFromId.runId }
       : "skip",
   );
   const sessionFromRun = useQuery(
@@ -140,14 +140,14 @@ export default function Run({
   const resolvedRunId = runId ?? session?.runId ?? undefined;
   const subjectSessionId = sessionId ?? run?.sessionId;
 
-  const { rows, status: pageStatus, loadMore, source } = useRunRows(
+  const { rows, status: pageStatus, loadMore, source } = useAgentRows(
     active ? { runId: resolvedRunId, sessionId: subjectSessionId } : {},
   );
 
   const children = useQuery(
-    api.runs.children,
+    api.agents.children,
     active && resolvedRunId !== undefined && pageStatus !== "LoadingFirstPage"
-      ? { runId: resolvedRunId }
+      ? { agentId: resolvedRunId }
       : "skip",
   );
 
@@ -179,11 +179,11 @@ export default function Run({
   const cancelRename = useRef(false);
 
   // These three are referentially stable across the page's 15s age tick, so
-  // RunRows' memo still holds and the tick does not re-render every row — the
+  // AgentRows' memo still holds and the tick does not re-render every row — the
   // reason the rows pane was memoized in the first place.
   const renderChildRun = useCallback(
     (row: TranscriptMessage, childRunId: string) => (
-      <Run
+      <Agent
         key={row._id}
         runId={childRunId}
         childFacts={childRunOf(row.content)}
@@ -212,29 +212,29 @@ export default function Run({
   // outcome and no transcript, and the way back is to ask for it: the press
   // queues a request, worker/runs/materialize.mjs reads the stored version,
   // parses it with the CURRENT parser and ingests the rows through the same
-  // /runs/ingest door the sweep uses. Nothing here fetches anything — the
+  // /agents/ingest door the sweep uses. Nothing here fetches anything — the
   // rows arrive on the subscription this page already holds, and this line
   // goes away when they do.
-  const requestMaterialize = useMutation(api.runs.requestMaterialize);
-  const markOpened = useMutation(api.runs.markOpened);
+  const requestMaterialize = useMutation(api.agents.requestMaterialize);
+  const markOpened = useMutation(api.agents.markOpened);
   const [storeError, setStoreError] = useState<string | null>(null);
   // Subscribed only while there is something for it to say: this run is the
   // page, its rows are missing, and there is a stored version to fetch them
   // from. When the rows land the query is skipped again with the line.
   const materializeStatus = useQuery(
-    api.runs.materializeStatus,
+    api.agents.materializeStatus,
     depth === 0 &&
       resolvedRunId !== undefined &&
       rowsEmpty &&
       run?.file.storeKey !== undefined
-      ? { runId: resolvedRunId }
+      ? { agentId: resolvedRunId }
       : "skip",
   );
   const openFromStore = useCallback(() => {
     if (resolvedRunId === undefined) return;
     setStoreError(null);
-    void requestMaterialize({ runId: resolvedRunId }).catch((e: unknown) => {
-      // The mutation's refusals are fixed phrases ("run has no store key"),
+    void requestMaterialize({ agentId: resolvedRunId }).catch((e: unknown) => {
+      // The mutation's refusals are fixed phrases ("agent has no store key"),
       // so this is bounded text, not a payload echoed back.
       setStoreError(
         e instanceof Error ? previewLine(e.message, 80) : "the request was refused",
@@ -242,7 +242,7 @@ export default function Run({
     });
   }, [requestMaterialize, resolvedRunId]);
 
-  // READING A RUN IS WHAT KEEPS IT. runs.markOpened moves the row window
+  // READING AN AGENT IS WHAT KEEPS IT. agents.markOpened moves the row window
   // forward 30 days, clamped so six reads in an afternoon are one write, and
   // it does nothing at all for a run whose rows are not in the record — an
   // index-only backlog run is not made evictable by being looked at. Fire and
@@ -256,7 +256,7 @@ export default function Run({
     if (depth !== 0 || resolvedRunId === undefined || !hasRows) return;
     if (marked.current === resolvedRunId) return;
     marked.current = resolvedRunId;
-    void markOpened({ runId: resolvedRunId }).catch(() => {});
+    void markOpened({ agentId: resolvedRunId }).catch(() => {});
   }, [depth, resolvedRunId, hasRows, markOpened]);
 
   const lead = useMemo(
@@ -312,7 +312,7 @@ export default function Run({
             onClick={() => onOpenRun(runId)}
             className="text-accent underline underline-offset-2 hover:text-text"
           >
-            open this run as the page
+            open this agent as the page
           </button>
         )}
       </div>
@@ -345,7 +345,7 @@ export default function Run({
             // §23.5's honest state: the child is known, its file is not here.
             <div className="text-xs text-text-faint px-1">file not landed</div>
           ) : (
-            <RunRows
+            <AgentRows
               rows={rows}
               pageStatus={pageStatus}
               loadMore={loadMore}
@@ -363,7 +363,7 @@ export default function Run({
 
   // ── depth 0: the page ────────────────────────────────────────────────────
   if (run === undefined && session === undefined) {
-    return <div className="px-4 py-6 text-sm text-text-faint">loading run…</div>;
+    return <div className="px-4 py-6 text-sm text-text-faint">loading agent…</div>;
   }
   if (run === null && (session === null || session === undefined)) {
     return (
@@ -550,7 +550,7 @@ export default function Run({
         {modelError && <span className="text-xs text-error">{modelError}</span>}
       </header>
 
-      <RunRows
+      <AgentRows
         rows={rows}
         pageStatus={pageStatus}
         loadMore={loadMore}
@@ -611,7 +611,7 @@ function Lead({
   session: Doc<"claudeSessions"> | null;
   live: boolean;
   rowsEmpty: boolean;
-  /** The newest materialize request for this run: runs.materializeStatus. */
+  /** The newest materialize request for this agent: agents.materializeStatus. */
   request?: Doc<"runMaterializeRequests"> | null;
   /** A refusal from the press itself, as opposed to one from the box. */
   storeError?: string | null;
@@ -770,10 +770,10 @@ function Lead({
                   onClick={onOpenFromStore}
                   className="text-accent underline underline-offset-2 hover:text-text"
                 >
-                  open this run from the store
+                  open this agent from the store
                 </button>
-                <Info call="runs.requestMaterialize({ runId })">
-                  Queues this run for the box. It reads the stored version of
+                <Info call="agents.requestMaterialize({ agentId })">
+                  Queues this agent for the box. It reads the stored version of
                   the file back, parses it with the current parser and writes
                   the rows into the record — within a minute, and the rows
                   appear here on their own. Nothing on the host is touched.
@@ -809,7 +809,7 @@ function UnmatchedChildren({
   return (
     <div className="border-t border-border pt-2 space-y-1">
       <div className="text-xs text-text-faint">
-        {children_.length} child runs no row in this window names
+        {children_.length} child agents no row in this window names
       </div>
       <ul className="space-y-0.5">
         {children_.map((child) => (

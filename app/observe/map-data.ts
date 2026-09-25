@@ -107,7 +107,7 @@ export const NODES = [
   { id: "tom", label: "Tom", unit: "rulings", x: 80, y: ROW_MID, shape: "person", tally: { of: "lane", lane: "rulings" }, filters: "rulings" },
 
   // The surfaces he touches.
-  { id: "sessions", label: "sessions", unit: "runs", x: 255, y: ROW_TOP, shape: "surface", tally: { of: "lane", lane: "sessions" }, filters: "sessions" },
+  { id: "sessions", label: "sessions", unit: "agents", x: 255, y: ROW_TOP, shape: "surface", tally: { of: "lane", lane: "sessions" }, filters: "sessions" },
   { id: "pages", label: "the pages", unit: "opens", x: 255, y: ROW_MID, shape: "surface", tally: { of: "events", kind: "tts-opened" }, opens: "/" },
   { id: "slack", label: "Slack", unit: "failures", x: 255, y: ROW_LOW, shape: "surface", tally: { of: "lane", lane: "failures" }, filters: "failures" },
 
@@ -115,9 +115,9 @@ export const NODES = [
   { id: "record", label: "the record", unit: "rows", x: 440, y: ROW_MID, shape: "store", tally: { of: "everything" } },
 
   // The box and what it runs.
-  { id: "box", label: "the Jarvis Box", unit: "runs", x: 625, y: ROW_MID, shape: "machine", tally: { of: "host", host: "box" }, opens: "/runs" },
-  { id: "workers", label: "workers", unit: "runs", x: 810, y: ROW_TOP, shape: "work", tally: { of: "lane", lane: "workers" }, filters: "workers" },
-  { id: "runners", label: "runners", unit: "runs", x: 810, y: ROW_MID, shape: "work", tally: { of: "lane", lane: "runners" }, filters: "runners" },
+  { id: "box", label: "the Jarvis Box", unit: "agents", x: 625, y: ROW_MID, shape: "machine", tally: { of: "host", host: "box" }, opens: "/agents" },
+  { id: "workers", label: "workers", unit: "agents", x: 810, y: ROW_TOP, shape: "work", tally: { of: "lane", lane: "workers" }, filters: "workers" },
+  { id: "runners", label: "runners", unit: "agents", x: 810, y: ROW_MID, shape: "work", tally: { of: "lane", lane: "runners" }, filters: "runners" },
   { id: "gate", label: "the merge gate", unit: "head rows", x: 995, y: ROW_MID, shape: "machine", tally: { of: "gate" }, filters: "merges" },
 
   // The resources, each under what reaches for it.

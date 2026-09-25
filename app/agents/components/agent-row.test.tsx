@@ -57,7 +57,7 @@ vi.mock("convex/react", async () => {
   };
 });
 
-import RunRow, { type PairedResult } from "./run-row";
+import AgentRow, { type PairedResult } from "./agent-row";
 
 afterEach(cleanup);
 
@@ -140,7 +140,7 @@ describe("a row at its three levels, one kind at a time", () => {
       cwd: "/root/tom.quest",
       prompt: "MODEL-OF-TOM FILES (WikiTom commit 0123456789ab): operate\n\nwork the batch",
     };
-    render(<RunRow row={row({ seq: 0, kind: "context", content })} source="run" />);
+    render(<AgentRow row={row({ seq: 0, kind: "context", content })} source="run" />);
 
     expect(compactLine()).toBe(
       "context claude-opus-4-6 tom.quest operate+write 1 skills 2 tools " +
@@ -153,14 +153,14 @@ describe("a row at its three levels, one kind at a time", () => {
 
     click();
     expect(body()).toContain(PROVENANCE_LINE);
-    expect(body()).toContain("seq 0 · read by runs.rows");
+    expect(body()).toContain("seq 0 · read by agents.rows");
     expect(pres().at(-1)).toBe(JSON.stringify(content, null, 2));
   });
 
   it("thinking: the character count, then the reasoning itself, then the stored entry", () => {
     // ingest.mjs:331 / session.mjs — { text }.
     const text = "one thought, kept whole and never summarised";
-    render(<RunRow row={row({ kind: "thinking", content: { text } })} source="run" />);
+    render(<AgentRow row={row({ kind: "thinking", content: { text } })} source="run" />);
 
     expect(text.length).toBe(44);
     expect(compactLine()).toBe(
@@ -178,7 +178,7 @@ describe("a row at its three levels, one kind at a time", () => {
   it("tool-call: the tool's name and its input, then the whole input, then the stored entry", () => {
     // ingest.mjs:334 — { id, name, input }, the input object itself.
     const content = { id: "toolu_1", name: "Bash", input: { command: "ls -la" } };
-    render(<RunRow row={row({ kind: "tool-call", content })} source="run" />);
+    render(<AgentRow row={row({ kind: "tool-call", content })} source="run" />);
 
     // Bash is shown as the command it ran, not as JSON around it.
     expect(compactLine()).toBe("Bash ls -la");
@@ -199,7 +199,7 @@ describe("a row at its three levels, one kind at a time", () => {
       isError: false,
     };
     render(
-      <RunRow
+      <AgentRow
         row={row({ kind: "tool-result", content })}
         toolNames={new Map([["toolu_1", "Bash"]])}
         source="run"
@@ -230,7 +230,7 @@ describe("a row at its three levels, one kind at a time", () => {
       totalDurationMs: 5000,
       totalToolUseCount: 7,
     };
-    render(<RunRow row={row({ kind: "child-run", content })} source="run" />);
+    render(<AgentRow row={row({ kind: "child-run", content })} source="run" />);
 
     expect(compactLine()).toBe(
       "child Explore claude-opus-4-6 completed 1234 tok find the parsers",
@@ -248,7 +248,7 @@ describe("a row at its three levels, one kind at a time", () => {
     // ingest.mjs:346 — a system line the parser kept rather than dropped.
     const content = { subtype: "init", content: "session started" };
     render(
-      <RunRow
+      <AgentRow
         row={row({
           kind: "system",
           content,
@@ -274,7 +274,7 @@ describe("a row at its three levels, one kind at a time", () => {
     // The daemon's historical shape (worker/session-host/__tests__/
     // fork-transcript.test.mjs). Nothing writes these any more.
     const content = { toolName: "Bash", status: "allowed" };
-    render(<RunRow row={row({ kind: "permission", content })} source="run" />);
+    render(<AgentRow row={row({ kind: "permission", content })} source="run" />);
 
     expect(compactLine()).toBe(
       'permission Bash { "toolName": "Bash", "status": "allowed" }',
@@ -295,7 +295,7 @@ describe("a row at its three levels, one kind at a time", () => {
   it("an unrecognised kind: the kind verbatim, then the entry, then the stored entry", () => {
     const content = { text: "a row from a runtime this page has never seen" };
     render(
-      <RunRow row={row({ kind: "future-runtime-row", content })} source="run" />,
+      <AgentRow row={row({ kind: "future-runtime-row", content })} source="run" />,
     );
 
     expect(compactLine()).toBe(
@@ -321,7 +321,7 @@ describe("a row at its three levels, one kind at a time", () => {
 it("does not throw on a kind no union member matches", () => {
   expect(() =>
     render(
-      <RunRow
+      <AgentRow
         row={row({ kind: "future-runtime-row", content: { whatever: [1, 2] } })}
         source="run"
       />,
@@ -337,7 +337,7 @@ it("does not throw on a kind no union member matches", () => {
 describe("the conversation is never folded", () => {
   it("a user row shows its prompt with no click, and offers the raw level beside it", () => {
     const text = "Work the batch below with Tom.";
-    render(<RunRow row={row({ kind: "user", content: { text } })} source="run" />);
+    render(<AgentRow row={row({ kind: "user", content: { text } })} source="run" />);
 
     expect(screen.getByText(text)).toBeTruthy();
     const raw = screen.getByRole("button", { name: "raw" });
@@ -353,7 +353,7 @@ describe("the conversation is never folded", () => {
   it("an assistant-text row shows its prose with no click, and offers the raw level beside it", () => {
     const text = "The parser reads the file; the row shows what it read.";
     render(
-      <RunRow row={row({ kind: "assistant-text", content: { text } })} source="run" />,
+      <AgentRow row={row({ kind: "assistant-text", content: { text } })} source="run" />,
     );
 
     expect(body()).toContain(text);
@@ -362,12 +362,12 @@ describe("the conversation is never folded", () => {
 
     fireEvent.click(raw);
     expect(body()).toContain(text);
-    expect(body()).toContain("seq 1000 · read by runs.rows");
+    expect(body()).toContain("seq 1000 · read by agents.rows");
   });
 
   it("an error row is shown in full and is never folded away", () => {
     const content = { message: "model changed from opus to sonnet" };
-    render(<RunRow row={row({ kind: "error", content })} source="run" />);
+    render(<AgentRow row={row({ kind: "error", content })} source="run" />);
 
     expect(screen.getByText(content.message)).toBeTruthy();
     // There is no compact line to press: the only control is the raw one.
@@ -390,7 +390,7 @@ describe("the conversation is never folded", () => {
 it("a thinking row counts its characters, and opens to every one of them", () => {
   const text = `first line\n${"x".repeat(4000)}\nlast line`;
   expect(text.length).toBe(4021);
-  render(<RunRow row={row({ kind: "thinking", content: { text } })} source="run" />);
+  render(<AgentRow row={row({ kind: "thinking", content: { text } })} source="run" />);
 
   expect(compactLine()).toBe(
     `thinking 4021 chars first line ${"x".repeat(69)}…`,
@@ -411,7 +411,7 @@ it("a permission row is one line and gets no card of its own", () => {
   // (§20.2). The rows that exist are history — and the record never hides a row
   // it holds, so it renders as one line like every other folded kind.
   render(
-    <RunRow
+    <AgentRow
       row={row({ kind: "permission", content: { toolName: "Bash", status: "allowed" } })}
       source="run"
     />,
@@ -430,7 +430,7 @@ describe("a Codex row reads the same as its Claude twin", () => {
   it("thinking: { summary: [...] } renders as { text } does", () => {
     // ingest.mjs:450 — the reasoning summary, as the CLI's own blocks.
     render(
-      <RunRow
+      <AgentRow
         row={row({
           kind: "thinking",
           content: {
@@ -449,7 +449,7 @@ describe("a Codex row reads the same as its Claude twin", () => {
     cleanup();
 
     render(
-      <RunRow
+      <AgentRow
         row={row({
           kind: "thinking",
           content: { text: "first thought\n\nsecond thought" },
@@ -469,7 +469,7 @@ describe("a Codex row reads the same as its Claude twin", () => {
     // ingest.mjs:451 stores payload.arguments, which the CLI writes as a JSON
     // STRING — the same call from the Claude parser carries the object itself.
     render(
-      <RunRow
+      <AgentRow
         row={row({
           kind: "tool-call",
           content: { id: "call_1", name: "shell", input: '{"command":["ls","-la"]}' },
@@ -483,7 +483,7 @@ describe("a Codex row reads the same as its Claude twin", () => {
     cleanup();
 
     render(
-      <RunRow
+      <AgentRow
         row={row({
           kind: "tool-call",
           content: { id: "toolu_1", name: "shell", input: { command: ["ls", "-la"] } },
@@ -507,31 +507,31 @@ it("a row with no provenance says so rather than showing an empty header", () =>
   // A daemon row predates the run-file cutover: there is no file behind it, and
   // an empty header would read as a row nobody can check.
   render(
-    <RunRow
+    <AgentRow
       row={row({ kind: "thinking", content: { text: "a daemon row" }, provenance: undefined })}
       source="session"
     />,
   );
   click(2);
 
-  expect(screen.getByText("daemon row · no run file")).toBeTruthy();
+  expect(screen.getByText("daemon row · no agent file")).toBeTruthy();
   expect(body()).not.toContain("parser runs-parser-1");
   expect(body()).toContain("seq 1000 · read by claudeSessions.getMessages");
 });
 
 it("the raw level names the query that delivered the row", () => {
-  render(<RunRow row={row({ kind: "thinking", content: { text: "t" } })} source="run" />);
+  render(<AgentRow row={row({ kind: "thinking", content: { text: "t" } })} source="run" />);
   click(2);
-  expect(body()).toContain("seq 1000 · read by runs.rows");
+  expect(body()).toContain("seq 1000 · read by agents.rows");
   expect(body()).not.toContain("claudeSessions.getMessages");
   cleanup();
 
   render(
-    <RunRow row={row({ kind: "thinking", content: { text: "t" } })} source="session" />,
+    <AgentRow row={row({ kind: "thinking", content: { text: "t" } })} source="session" />,
   );
   click(2);
   expect(body()).toContain("seq 1000 · read by claudeSessions.getMessages");
-  expect(body()).not.toContain("runs.rows");
+  expect(body()).not.toContain("agents.rows");
 });
 
 // ── A call and the result that answered it ──────────────────────────────────
@@ -560,7 +560,7 @@ describe("a paired tool-call and tool-result", () => {
 
   it("shows how long the call took, and opens to the input and then the output", () => {
     const result: PairedResult = { row: ok, durationMs: 1200 };
-    render(<RunRow row={call} result={result} source="run" />);
+    render(<AgentRow row={call} result={result} source="run" />);
 
     expect(compactLine()).toBe("Bash 1.2s pnpm test");
 
@@ -570,17 +570,17 @@ describe("a paired tool-call and tool-result", () => {
 
   it("says the call failed when the result it is paired with is an error", () => {
     render(
-      <RunRow row={call} result={{ row: failed, durationMs: 1200 }} source="run" />,
+      <AgentRow row={call} result={{ row: failed, durationMs: 1200 }} source="run" />,
     );
     expect(compactLine()).toBe("Bash 1.2s failed pnpm test");
   });
 
   it("shows BOTH stored entries at the raw level, each naming its own seq", () => {
-    render(<RunRow row={call} result={{ row: ok, durationMs: 1200 }} source="run" />);
+    render(<AgentRow row={call} result={{ row: ok, durationMs: 1200 }} source="run" />);
     click(2);
 
-    expect(body()).toContain("seq 1000 · read by runs.rows");
-    expect(body()).toContain("seq 1001 · read by runs.rows");
+    expect(body()).toContain("seq 1000 · read by agents.rows");
+    expect(body()).toContain("seq 1001 · read by agents.rows");
     expect(body()).toContain(PROVENANCE_LINE);
     expect(body()).toContain(
       "9f2c1d.jsonl · lines 13–13 · block 1 · version 0123456789ab",
@@ -607,7 +607,7 @@ it("a persisted output is a fact line and never a link", () => {
       sizeText: "1.2MB",
     },
   };
-  render(<RunRow row={row({ kind: "tool-result", content })} source="run" />);
+  render(<AgentRow row={row({ kind: "tool-result", content })} source="run" />);
   click();
 
   expect(screen.getByText("persisted output · toolu_9.txt · 1.2MB")).toBeTruthy();

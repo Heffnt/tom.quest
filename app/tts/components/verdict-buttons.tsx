@@ -64,7 +64,7 @@ export const VERDICT_EFFECT: Record<
     revise:
       "Sends it back to be prepared again, with your sentence as the redirection: readiness drops to unprepared, and the preparer re-writes the brief against what you said and returns it as prepared. Your sentence is the whole instruction, so it has to stand on its own.",
     session:
-      "Says this needs a conversation rather than a ruling, and opens the session in a new tab with the ruling in its opening prompt. The ruling is consumed the moment a session you open on it exists — an autonomous run that happens to claim the same item never consumes it, so the conversation you asked for still happens.",
+      "Says this needs a conversation rather than a ruling, and opens the session in a new tab with the ruling in its opening prompt. The ruling is consumed the moment a session you open on it exists — an autonomous agent that happens to claim the same item never consumes it, so the conversation you asked for still happens.",
     archive:
       "Sets it aside: its status becomes archived and your sentence is stored as the condition under which it should be proposed back, so nothing is lost — archived is a resting state, not a delete.",
   },

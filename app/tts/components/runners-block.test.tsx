@@ -107,10 +107,10 @@ describe("the runners block", () => {
     expect(within(row).getByText("waiting on Tom")).toBeTruthy();
   });
 
-  it("opens the newest step run in the run view from the title", () => {
+  it("opens the newest step agent in the agent view from the title", () => {
     render(<RunnersBlock now={NOW} />);
     expect(screen.getByRole("link", { name: "TRAIN25 campaign" }).getAttribute("href")).toBe(
-      `/runs?run=${encodeURIComponent(STEP_RUN)}`,
+      `/agents?agent=${encodeURIComponent(STEP_RUN)}`,
     );
   });
 
@@ -121,10 +121,10 @@ describe("the runners block", () => {
     expect(screen.getByText("Objective")).toBeTruthy();
     expect(screen.getByText("sweep").tagName).toBe("STRONG");
 
-    const checkIns = screen.getAllByRole("link", { name: "step run" });
+    const checkIns = screen.getAllByRole("link", { name: "step agent" });
     expect(checkIns.map((a) => a.getAttribute("href"))).toEqual([
-      `/runs?run=${encodeURIComponent(STEP_RUN)}`,
-      `/runs?run=${encodeURIComponent(EARLIER_RUN)}`,
+      `/agents?agent=${encodeURIComponent(STEP_RUN)}`,
+      `/agents?agent=${encodeURIComponent(EARLIER_RUN)}`,
     ]);
     expect(screen.getByText(/it asked a question/)).toBeTruthy();
     expect(screen.getByText(/it changed nothing · did not pass the writing check/)).toBeTruthy();

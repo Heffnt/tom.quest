@@ -84,14 +84,14 @@ describe("the timeline", () => {
     expect(container.textContent).toContain("spawned");
   });
 
-  it("opens a mark in place, with one link to its run page on this site", () => {
+  it("opens a mark in place, with one link to its agent page on this site", () => {
     const { container } = draw([RUN], "workers");
     const bar = container.querySelector("button[aria-expanded]") as HTMLElement;
     expect(bar.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(bar);
     expect(container.textContent).toContain("2 turns");
     const link = container.querySelector("a") as HTMLElement;
-    expect(link.getAttribute("href")).toBe(`/runs?run=${encodeURIComponent(RUN.runId)}`);
+    expect(link.getAttribute("href")).toBe(`/agents?agent=${encodeURIComponent(RUN.runId)}`);
   });
 
   it("places a bar across the window it covers", () => {

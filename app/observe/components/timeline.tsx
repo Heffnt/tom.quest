@@ -19,7 +19,7 @@
 //
 // PRESSING A MARK OPENS IT AND DOES NOT LEAVE: the run's outcome appears under
 // the lanes, in a strip of fixed height so nothing moves, with one link to its
-// run page on this site.
+// agent page on this site.
 
 import { useState } from "react";
 import Link from "next/link";
@@ -38,7 +38,7 @@ import {
   outcomeWords,
   packRows,
   rulingHref,
-  runHref,
+  agentHref,
   type PointEvent,
   type RulingRow,
   type RunMark,
@@ -99,8 +99,8 @@ export default function Timeline({
       outcomeWords(run).join(" · "),
       ...(run.gitBranch === null ? [] : [run.gitBranch]),
     ],
-    href: runHref(run.runId),
-    hrefWords: "open the run",
+    href: agentHref(run.runId),
+    hrefWords: "open the agent",
     tone: run.status === "running" ? "running" : run.status === "failed" ? "failed" : "plain",
   });
 
