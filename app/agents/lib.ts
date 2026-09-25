@@ -679,6 +679,7 @@ export function runsSudoCommand(shell: string, sudoCommand: string): boolean {
   const runs = new RegExp(`\\bsudo\\b[^;&|\\n]{0,200}?(?:^|[\\s/])${escapeRegExp(program)}(?![\\w.-])`);
   if (!runs.test(shell)) return false;
   const longest = words.slice(i + 1).filter((word) => !word.startsWith("-")).sort((a, b) => b.length - a.length)[0];
+  // Kept: Jarvis box-change.mjs commandNeedles drops an argument under 3 characters as a needle, and the page must match the call the box's reader matched.
   return longest === undefined || longest.length < 3 || shell.includes(longest);
 }
 
@@ -704,6 +705,7 @@ export function placeBoxChanges(
     if (change.command !== undefined && change.count === undefined) {
       for (const call of calls) {
         const t = call.row.createdAt;
+        // Kept: the same window as Jarvis box-change.mjs commandLineTime (up to 5 s after the sudo line), so the page places a change after the call the box's reader attributed it to.
         if (t > change.at + 5_000 || change.at - t > COMMAND_MATCH_MS) continue;
         if (!runsSudoCommand(call.shell, change.command)) continue;
         if (best === null || t > best.createdAt) best = call.row;

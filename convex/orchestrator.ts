@@ -39,6 +39,7 @@ import {
   HOSTED_WORKERS_MAX,
   LIVE_STATUSES,
   NARROW_LIST,
+  NEEDS_YOU_CHANNEL_MISSING,
   channelFor,
   isLive,
   isNarrowListId,
@@ -936,11 +937,7 @@ async function openElevationNeedsYou(
   if (channel === null) {
     // Reported through the same door the needs-tom route uses, so #tts-broken
     // says the channel is missing for as long as it is.
-    await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
-      job: "tts/needs-tom",
-      error: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
-      key: "tts/needs-tom:needs-you-channel",
-    });
+    await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, NEEDS_YOU_CHANNEL_MISSING);
     return { opened: false, reason: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID not configured" };
   }
   await ctx.db.insert("dtsEvents", {

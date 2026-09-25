@@ -1372,6 +1372,26 @@ export function runnerAskBody(f: RunnerAskFacts): string {
   return f.question.trim();
 }
 
+/** A message an agent proposes to send in Tom's name (convex/ttsSignoff.ts):
+ *  who it is for and where it goes, NEVER its text. He reads the text where he
+ *  signs it, on /tts beside the two controls, so Slack holds no copy of a
+ *  message in his name that he has not signed. */
+type ProposalAskFacts = { recipient: string; channel: string };
+
+/** No note line: a reply in this thread is a note on the record, never a
+ *  sign-off, which only his press on /tts writes. */
+export function composeProposalAsk(f: ProposalAskFacts): Message {
+  const slack = /^slack:(.+)$/.exec(f.channel);
+  const what = slack === null ? "a calendar invitation" : "a Slack message";
+  const where = slack === null ? "" : ` in ${slack[1]}`;
+  const hold = "Nothing goes out until you sign it on /tts.";
+  const first = `An agent proposes ${what} in your name to ${f.recipient}${where}. ${hold}`;
+  return {
+    firstLine: first.length <= FIRST_LINE_CHARS ? first : `An agent proposes ${what} in your name. ${hold}`,
+    lines: [{ role: "item", text: "Open it to read the text, then sign or decline it.", url: TAB_EVERYTHING }],
+  };
+}
+
 /** A decision a hosted worker raised that the orchestrator judged reserved:
  *  only Tom can make it (convex/orchestrator.ts). */
 type ElevationAskFacts = {

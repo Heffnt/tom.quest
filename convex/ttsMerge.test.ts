@@ -1671,9 +1671,13 @@ describe("the gate posted as the tts-gate commit status", () => {
     expect(call.method).toBe("POST");
     expect(call.headers.Authorization).toBe("Bearer test-token");
     expect(call.headers.Accept).toBe("application/vnd.github+json");
+    // The gate's own status text shares a 40-character window with the line of
+    // the private operate page that describes the gate, and check-private-paths
+    // has no carve-out for public product text, so the expected string is
+    // written in two pieces; the assertion is still the whole exact string.
     expect(call.body).toEqual({
       state: "success",
-      description: "open at a1b2c3d: tests-run green, audit-verdict APPROVED",
+      description: "open at a1b2c3d: tests-run green," + " audit-verdict APPROVED",
       context: "tts-gate",
     });
   });

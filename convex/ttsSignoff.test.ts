@@ -26,6 +26,7 @@ import {
   parseProposal,
   sha256Hex,
 } from "./ttsSignoff";
+import { checkMessage, composeProposalAsk } from "./ttsCompose";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -313,6 +314,18 @@ describe("a calendar event with guests is a message in his name", () => {
     expect(posts.filter((p) => p.url.includes("googleapis"))).toHaveLength(0);
   });
 
+  it("guests that are not a list of strings answer 400 from the door's validator and ask Google nothing", async () => {
+    const t = convexTest(schema, modules);
+    const posts = stubNetwork();
+    const res = await t.fetch("/tts/calendar-event", {
+      method: "POST",
+      headers: { "X-TTS-Key": KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ ...EVENT, guests: "sarah@example.com" }),
+    });
+    expect(res.status).toBe(400);
+    expect(posts.filter((p) => p.url.includes("googleapis"))).toHaveLength(0);
+  });
+
   it("propose → sign → the event is created with its guests invited", async () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);
@@ -381,5 +394,83 @@ describe("the proposal route's shapes", () => {
   it("keeps a Slack text exactly as the agent wrote it", () => {
     const parsed = parseProposal({ channel: CHANNEL, recipient: ` ${RECIPIENT} `, text: `  ${TEXT}  ` });
     expect(parsed).toEqual({ proposal: { channel: CHANNEL, recipient: RECIPIENT, text: `  ${TEXT}  ` } });
+  });
+});
+
+describe("a new proposal opens a #tts-needs-you thread that names who and where, never the text", () => {
+  const NEEDS_YOU = "C0NEEDSYOU";
+
+  /** Every line of the proposal's text, so a thread quoting any one of them
+   *  is caught, not only one quoting all of it. */
+  function expectNoTextOf(posted: string, text: string) {
+    for (const line of text.split("\n").filter((l) => l.trim() !== "")) expect(posted).not.toContain(line.trim());
+  }
+
+  it("a Slack proposal posts one thread to #tts-needs-you naming its recipient and conversation", async () => {
+    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
+    const t = convexTest(schema, modules);
+    const posts = stubNetwork();
+    const proposalId = await proposeSlack(t);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const threads = slackPosts(posts).filter((p) => p.body.channel === NEEDS_YOU);
+    expect(threads).toHaveLength(1);
+    const posted = String(threads[0].body.text);
+    expect(posted).toContain(RECIPIENT);
+    expect(posted).toContain("C0SARAH01");
+    expect(posted).toContain("https://tom.quest/tts?tab=everything");
+    expectNoTextOf(posted, TEXT);
+    // Nothing went to the person it is for: the thread is Tom's, the send waits.
+    expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(0);
+
+    const [marker] = await kinds(t, "needs-tom");
+    expect(marker.key).toBe(`${SEND_PROPOSAL}:${proposalId}`);
+    expect(marker.data).toEqual({ key: marker.key, proposalId, recipient: RECIPIENT, channel: CHANNEL });
+  });
+
+  it("a calendar proposal's thread names its guests and never the invitation text", async () => {
+    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
+    const t = convexTest(schema, modules);
+    const posts = stubNetwork();
+    const event = {
+      title: "Quarterly planning with the lab",
+      start: Date.UTC(2026, 9, 2, 15, 0),
+      end: Date.UTC(2026, 9, 2, 16, 0),
+      description: "Bring the draft agenda and the budget numbers.",
+      guests: ["sarah@example.com"],
+    };
+    const res = await propose(t, { channel: CALENDAR_CHANNEL, event });
+    expect(res.status).toBe(200);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const [thread] = slackPosts(posts).filter((p) => p.body.channel === NEEDS_YOU);
+    const posted = String(thread.body.text);
+    expect(posted).toContain("a calendar invitation");
+    expect(posted).toContain("sarah@example.com");
+    expect(posted).not.toContain(event.title);
+    expectNoTextOf(posted, event.description);
+    expect(posts.filter((p) => p.url.includes("googleapis"))).toHaveLength(0);
+  });
+
+  it("with the channel unset it posts nothing and says so on the one standing needs-you failure", async () => {
+    const t = convexTest(schema, modules);
+    const posts = stubNetwork();
+    await proposeSlack(t);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(slackPosts(posts).filter((p) => p.body.channel === NEEDS_YOU)).toHaveLength(0);
+    expect(await kinds(t, "needs-tom")).toHaveLength(0);
+    const [failed] = await kinds(t, "job-failed");
+    expect(failed.key).toBe("tts/needs-tom:needs-you-channel");
+  });
+
+  it("the thread's message passes the form every Slack message is held to", () => {
+    for (const channel of [CHANNEL, CALENDAR_CHANNEL]) {
+      const message = composeProposalAsk({ recipient: RECIPIENT, channel });
+      expect(checkMessage(message, { canReply: false })).toEqual([]);
+    }
+    const long = composeProposalAsk({ recipient: "x".repeat(200), channel: CHANNEL });
+    expect(checkMessage(long, { canReply: false })).toEqual([]);
+    expect(long.firstLine).not.toContain("x".repeat(200));
   });
 });

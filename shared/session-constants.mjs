@@ -33,10 +33,14 @@ export const NARROW_LIST = /** @type {const} */ ([
     decision: "delete data irreversibly outside git — anything a checkout, a snapshot or a branch cannot bring back",
     command: "delete data that git cannot restore — anything outside the working directory, and any history rewrite that is pushed",
   },
+  // Tom, 2026-09-25: "idk why agents should never move credentials." The
+  // line is where a credential can be held, not whether it moves: moving one
+  // between files or processes is allowed; putting it where a transcript, the
+  // record or a repo can hold it is not.
   {
     id: "credential",
-    decision: "read, print, move, create, rotate or revoke a credential",
-    command: "read, print, move, or send a credential, key, token or password anywhere",
+    decision: "put a credential where a transcript, the record or a repo can hold it (print it, send it, commit it), or create, rotate or revoke one",
+    command: "put a credential, key, token or password where a transcript, the record or a repo can hold it: print it, echo it into output, send it in a message, or commit it (moving it between files or processes without printing it is allowed)",
   },
 ]);
 

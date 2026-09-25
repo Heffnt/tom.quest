@@ -7,6 +7,7 @@ import { applyStatusChange, logEvent } from "./tts";
 import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
 import { DIGEST_SENT } from "./ttsDigest";
 import {
+  NEEDS_TOM,
   SLACK_SUBJECT,
   channelFor,
   isLive,
@@ -155,7 +156,7 @@ export const internalRecordSlackFailed = internalMutation({
 // after a redeployment. The marker is an ordinary dtsEvents row keyed like the
 // door's own rows; two concurrent calls with one key conflict on it in Convex
 // and the retry reads the marker the winner wrote.
-export const NEEDS_TOM = "needs-tom";
+export { NEEDS_TOM };
 /** A reply Tom typed in a thread that could not be routed (the row records
  * what was tried; the reply is captured as a todo instead). */
 export const SLACK_REPLY_FAILED = "slack-reply-failed";

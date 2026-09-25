@@ -98,6 +98,7 @@ function ProposalRow({ proposal: p, now }: { proposal: Proposal; now: number }) 
             </>
           )}
         </span>
+        {/* Kept: shows his press landed, in place of a button the server would now refuse. */}
         {p.status === "sending" ? (
           <span className="text-xs text-text-faint">signed · sending</span>
         ) : (
