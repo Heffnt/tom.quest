@@ -1,10 +1,11 @@
 "use client";
 
 // THE ONE ROW READER (§23.6). A run's rows come from one of two queries and the
-// page must not know which: a run that carries a live session reads
-// claudeSessions.getMessages, which phase 3 taught the cutover switch (it pages
-// by_session_seq until that session's shadow comparison is clean and by_run_seq
-// after it, off session.rowsFrom); every other run reads runs.rows.
+// page must not know which: a run that carries a session reads
+// claudeSessions.getMessages, which holds the session's switch (the agent
+// file's rows by runId once session.rowsFrom is "runs", the daemon's old rows
+// by sessionId before it — convex/sessionRows.ts rowSource); every other run
+// reads agents.rows.
 //
 // The two page in OPPOSITE directions and both are right. getMessages pages
 // newest-first, which is the only way a two-thousand-row session opens at its
@@ -44,8 +45,8 @@ const NO_MORE = () => {};
 export function useAgentRows(subject: RunSubject): RunRowsResult {
   const { sessionId, runId } = subject;
   // A session's rows always come from getMessages: it is the reader that holds
-  // the cutover switch, so reading runs.rows directly would bypass it and show
-  // a session's file rows before its comparison said they match the daemon's.
+  // the session's switch, so reading agents.rows directly would show an old
+  // session's file rows where the daemon's are the ones it has.
   const fromSession = sessionId !== undefined;
 
   const session = usePaginatedQuery(

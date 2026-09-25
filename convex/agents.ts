@@ -7,6 +7,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
+import { inboundRowIdOf } from "./sessionRows";
 
 const AGENT_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
@@ -298,6 +299,66 @@ async function descendantsForRepair(ctx: MutationCtx, runId: string, rootRunId: 
   return repairs;
 }
 
+/**
+ * The assistant-text row immediately BEFORE `seq` in this run — the output a
+ * reply landing at `seq` is about, and the start of the span its label
+ * carries (convex/agentLabels.ts).
+ *
+ * Bounded rather than unbounded: an opening turn has no assistant row before
+ * it at all, and a run whose last hundred rows are tool traffic is a run
+ * where the reply is not answering any one thing the agent said. Undefined
+ * then, and the label carries no span — never a span starting at zero, which
+ * would read as "the whole run".
+ */
+const PRIOR_ASSISTANT_SCAN = 100;
+
+async function priorAssistantRowSeq(ctx: MutationCtx, runId: string, seq: number): Promise<number | undefined> {
+  const before = await ctx.db
+    .query("claudeMessages")
+    .withIndex("by_run_seq", (q) => q.eq("runId", runId).lt("seq", seq))
+    .order("desc")
+    .take(PRIOR_ASSISTANT_SCAN);
+  return before.find((row) => row.kind === "assistant-text")?.seq;
+}
+
+/**
+ * A TURN TOM TYPED BECOMES A LABEL WHEN ITS ROW LANDS. The daemon ends every
+ * turn Tom typed with an `inbound row: <id>` line (convex/sessionRows.ts
+ * inboundRowIdOf), so the agent file's user row names the claudeInbound row it
+ * delivered. That line is text in a file, and text can be copied into any
+ * run's prompt, so it is an edge only when every fact agrees:
+ *
+ *   - the id names a claudeInbound row that is a user turn authored by Tom
+ *     (an agent's own turn writing a label would put an unreviewed verdict
+ *     into the corpus the golden set is mined from);
+ *   - this run is a root (depth 0), and it is the run that row's session
+ *     names (`session.runId === run.runId`).
+ *
+ * A copied line in another run's prompt fails the second test and writes
+ * nothing. The label's text is the inbound row's (Tom's words alone, without
+ * the id line), its time is when he typed it, and its span is in this run's
+ * own seq space.
+ */
+async function sessionReplyLabel(ctx: MutationCtx, run: Doc<"runs">, seq: number, content: unknown) {
+  if (run.depth !== 0) return;
+  const id = inboundRowIdOf(content);
+  const inboundId = id === null ? null : ctx.db.normalizeId("claudeInbound", id);
+  if (inboundId === null) return;
+  const inbound = await ctx.db.get(inboundId);
+  if (inbound === null || inbound.kind !== "user-turn" || inbound.author !== "tom" || typeof inbound.text !== "string") return;
+  const session = await ctx.db.get(inbound.sessionId);
+  if (session === null || session.runId !== run.runId) return;
+  const priorAssistantSeq = await priorAssistantRowSeq(ctx, run.runId, seq);
+  await ctx.scheduler.runAfter(0, internal.agentLabels.internalLabelFromSessionReply, {
+    runId: run.runId,
+    inboundId,
+    seq,
+    text: inbound.text,
+    at: inbound.createdAt,
+    ...(priorAssistantSeq === undefined ? {} : { priorAssistantSeq }),
+  });
+}
+
 export const internalIngest = internalMutation({
   args: { run: AGENT, rows: v.array(ROW), children: v.array(CHILD), previousCommittedLine: v.number(), previousPrefixSha256: v.string() },
   handler: async (ctx, args) => {
@@ -368,6 +429,17 @@ export const internalIngest = internalMutation({
           .unique();
         if (session) run = { ...run, sessionId: session._id };
       }
+    }
+    // A box Codex root is linked by the session row that names its run: the
+    // daemon reports the rollout's id as the session's runId, and the
+    // session's sdkSessionId is a Codex thread id rather than a Claude one, so
+    // the Claude join above cannot find it.
+    if (run.sessionId === undefined && run.cli === "codex" && run.host === "box" && run.depth === 0) {
+      const session = await ctx.db
+        .query("claudeSessions")
+        .withIndex("by_run_id", (q) => q.eq("runId", run.runId))
+        .first();
+      if (session) run = { ...run, sessionId: session._id };
     }
     // A reopened or forked session names the run it continues. Its next run
     // takes that link; the run it names never does, so a late page of the old
@@ -503,9 +575,11 @@ export const internalIngest = internalMutation({
     for (const repair of descendantRepairs) await ctx.db.patch(repair.id as never, { rootRunId: repair.rootRunId, depth: repair.depth });
 
     let inserted = 0, skipped = 0;
+    const insertedSeqs = new Set<number>();
     for (const row of args.rows) {
       if (await rowAt(ctx, run.runId, row.seq)) { skipped += 1; continue; }
       await ctx.db.insert("claudeMessages", { runId: run.runId, seq: row.seq, turn: row.turn, kind: row.kind, content: row.content, provenance: row.provenance, digest: row.digest, depth: run.depth, parentToolUseId: row.parentToolUseId, createdAt: row.createdAt });
+      insertedSeqs.add(row.seq);
       inserted += 1;
     }
     // Three writers converge on this field; whoever is first wins, so a later
@@ -515,6 +589,12 @@ export const internalIngest = internalMutation({
       if (session && session.runId === undefined) await ctx.db.patch(run.sessionId, { runId: run.runId });
     }
     const landed = await agentAt(ctx, run.runId);
+    // A turn Tom typed becomes a session-reply label when its row lands here.
+    if (landed) {
+      for (const row of args.rows) {
+        if (row.kind === "user" && insertedSeqs.has(row.seq)) await sessionReplyLabel(ctx, landed, row.seq, row.content);
+      }
+    }
     // `rowsUntil` is present IF AND ONLY IF this run's rows are in the record.
     // That invariant is what bounds the eviction scan and what makes eviction
     // idempotent, so it is maintained here, in the one place every writer of
@@ -1230,14 +1310,26 @@ export const internalAnswerMaterialize = internalMutation({
 // Rows for runs outside the window and not opened inside it are removed nightly.
 // The run index is never removed, a label is never removed, and the store is
 // never touched — nothing here destroys a byte the store does not already hold.
+// A run a session names is exempt until its session has been ended for the
+// row window (evictRefusal): its rows are that session's transcript.
 
-/** Why this run keeps its rows tonight, or null when it may lose them. */
+/**
+ * Why this run keeps its rows tonight, or null when it may lose them.
+ *
+ * A RUN A SESSION NAMES KEEPS ITS ROWS while the session is live and for the
+ * row window (30 days unless the deployment says otherwise) after it ended.
+ * Those rows are the session's whole transcript — the agent file is the only
+ * source of a session's rows — and a session Tom can still reopen or scroll
+ * back through is read by its session, which neither opens the run nor moves
+ * its window, so the run's own last-line clock would evict it under him.
+ */
 async function evictRefusal(ctx: MutationCtx, run: Doc<"runs">, now: number) {
   if (run.status === "running") return "running";
   if (run.lastLineAt > now - rowWindowMs()) return "inside the window";
   if (run.sessionId) {
     const session = await ctx.db.get(run.sessionId);
     if (session && (LIVE_STATUSES as readonly string[]).includes(session.status)) return "live session";
+    if (session && session.statusChangedAt > now - rowWindowMs()) return "session ended inside the window";
   }
   return null;
 }

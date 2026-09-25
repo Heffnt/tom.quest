@@ -2,8 +2,9 @@
 
 // THE REST OF A CUT PAYLOAD (the lifeos update, phase 7).
 //
-// The daemon cuts any transcript payload over 32 KB before it writes the row,
-// and stores the whole of it in chunks beside it. Until now the row said so in
+// A transcript payload over 32 KB is cut before its row is written — by the
+// agent file's parser, or on an old session by the daemon — and the whole of
+// it is stored in chunks beside the row. Until now the row said so in
 // a footer and stopped there, which made the transcript a summary of itself —
 // against the one rule this surface has (everything the session actually did,
 // in full). This control fetches the rest.
@@ -84,8 +85,8 @@ export default function OverflowExpand({
           {fullByteLength !== undefined ? ` (${fullByteLength} bytes)` : ""}
         </button>
         <Info call="claudeSessions.getMessageOverflow({ messageId, fromIndex })">
-          Reads back the part of this payload the daemon cut off, from the
-          chunks it stored beside the row — a megabyte per read, as many reads
+          Reads back the part of this payload the cut left off, from the
+          chunks stored beside the row — a megabyte per read, as many reads
           as it takes. Nothing is written; the line under the payload says how
           many bytes came back and whether the server matched them against the
           hash it stamped on the row.

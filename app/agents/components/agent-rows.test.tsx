@@ -1,33 +1,30 @@
-// THE ROWS OF ONE RUN — the subagent fold, and the two meanings of
-// parentToolUseId.
+// THE ROWS OF ONE RUN — the subagent fold, the two meanings of
+// parentToolUseId, and what the page shows beside the rows.
 //
-// The panel that used to sit beside the transcript is gone (the lifeos update,
-// phase 7). Three of the things it showed about a RUNNING subagent are not
-// rows in the transcript and never were — that it is still going, how long it
-// has been going, and the tool call it is inside right now — so if the fold
-// did not carry them they would simply be gone from the page, while the
-// retirement ledger claimed every fact had moved into the transcript. They
-// come from the query the panel itself read (claudeSessions.getOpenToolWork),
-// which walks the session's newest tool calls rather than the transcript's
-// loaded window: that is why a fold whose Task row has been paged out still
-// says who the subagent is, instead of showing a bare tool-use id. Those four
-// witnesses were written against the transcript pane; the pane is now AgentRows
-// fed by useAgentRows, so they are driven here with `rows` as a prop and they
-// must survive the move unchanged.
+// The fold's live half is gone (one transcript path, 2026-09-25). It came from
+// claudeSessions.getOpenToolWork, which read the daemon's rows as they were
+// written during a turn; a session's rows are now its agent file's and land at
+// the turn's end, so "this subagent is running, and this is the call it is
+// inside" had nothing left to be read from. The fold says who the subagent is,
+// what it was sent to do and how many rows it produced, and nothing else.
 //
-// The fifth is the reason this file exists at all. The window AgentRows groups
-// now holds rows from two writers, and `parentToolUseId` does not mean the
-// same thing in both. On a daemon row it means "this row belongs to that
-// subagent's output"; on a file-derived row it means "this row answers that
-// tool call" — worker/agents/ingest.mjs stamps it on EVERY tool-result and
-// child-run row. Fold on the field alone and every tool result in a run file
-// becomes a one-row fold of its own, which is a silent failure: the page still
-// renders, it just buries the run. `provenance === undefined` is the test that
-// separates them, and nothing but a rendered case can hold it.
+// The window AgentRows groups can hold rows from two writers, and
+// `parentToolUseId` does not mean the same thing in both. On a daemon row it
+// means "this row belongs to that subagent's output"; on a file-derived row it
+// means "this row answers that tool call" — worker/agents/ingest.mjs stamps
+// it on EVERY tool-result and child-run row. Fold on the field alone and every
+// tool result in a run file becomes a one-row fold of its own, which is a
+// silent failure: the page still renders, it just buries the run.
+// `provenance === undefined` is the test that separates them, and nothing but
+// a rendered case can hold it.
 //
-// The sixth is the paging control, which is a direction claim: the session
-// query pages newest-first and the run query oldest-first, so the same button
-// loads EARLIER rows on one and LATER rows on the other. A label that stopped
+// Beside the rows: Tom's delivered turn stays on the page until its row lands
+// (getPendingInbound returns it), and the daemon's notes are drawn between the
+// rows by time (sessionRows.notes).
+//
+// The paging control is a direction claim: the session query pages
+// newest-first and the run query oldest-first, so the same button loads
+// EARLIER rows on one and LATER rows on the other. A label that stopped
 // tracking `source` would be a lie no type checker can see.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -93,12 +90,12 @@ const PROVENANCE = {
   sourceKind: "user",
 };
 
-/** The three live queries AgentRows reads beside its rows. */
-function load(openWork?: unknown) {
+/** The live queries AgentRows reads beside its rows. */
+function load(over: { pending?: unknown[]; notes?: unknown[]; buf?: unknown } = {}) {
   convex.data = {
-    [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
-    [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
-    [getFunctionName(api.claudeSessions.getOpenToolWork)]: openWork,
+    [getFunctionName(api.claudeSessions.getStreamBuf)]: over.buf ?? null,
+    [getFunctionName(api.claudeSessions.getPendingInbound)]: over.pending ?? [],
+    [getFunctionName(api.sessionRows.notes)]: over.notes ?? [],
   };
 }
 
@@ -149,21 +146,6 @@ const CHILD_ROW = row({
   content: "reading convex/ttsShared.ts",
 });
 
-const OPEN = {
-  agents: [
-    {
-      toolUseId: "task-1",
-      subagentType: "explorer",
-      description: "find the readiness home",
-      startedAt: NOW - 5 * 60_000,
-      running: true,
-      current: { toolName: "Grep", inputPreview: "isReadyForTom" },
-    },
-  ],
-  commands: [],
-  finished: [],
-};
-
 beforeEach(() => {
   convex.data = {};
   convex.seen = [];
@@ -171,48 +153,21 @@ beforeEach(() => {
 });
 
 describe("the subagent fold", () => {
-  it("says a subagent is running, for how long, and the call it is inside", () => {
-    load(OPEN);
+  it("names the subagent and its errand from its Task row, and claims nothing live", () => {
+    load();
     show([TASK_ROW, CHILD_ROW]);
     expect(body()).toContain("agent");
     expect(body()).toContain("explorer");
     expect(body()).toContain("find the readiness home");
-    // The three facts that are not rows.
-    expect(body()).toContain("running 5m");
-    expect(body()).toContain("now: Grep isReadyForTom");
+    expect(body()).toContain("1 rows");
+    expect(body()).not.toContain("now:");
+    expect(convex.seen.some((call) => call.startsWith("claudeSessions:getOpenToolWork"))).toBe(false);
   });
 
-  // witness: read the label off the loaded window alone. A long session pages
-  // its Task row out of the window while the subagent is still working, and
-  // the fold then reads "agent task-1" — the id, for the one agent whose
-  // progress Tom is actually watching.
-  it("names a subagent whose Task row has been paged out", () => {
-    load(OPEN);
+  it("keeps the bare id for a subagent whose Task row has been paged out", () => {
+    load();
     show([CHILD_ROW]);
-    expect(body()).toContain("explorer");
-    expect(body()).toContain("find the readiness home");
-    expect(body()).not.toContain("agent task-1");
-  });
-
-  it("claims nothing about a subagent that has returned", () => {
-    load({ agents: [], commands: [], finished: [] });
-    show([TASK_ROW, CHILD_ROW]);
-    expect(body()).toContain("explorer");
-    // No elapsed on the fold and no "now:" line — its outcome is its result
-    // row. ("Task running" below the rows is the live tail's own claim about
-    // the main thread's unanswered call, which is a different fact.)
-    expect(body()).not.toContain("running 5m");
-    expect(body()).not.toContain("now: Grep");
-  });
-
-  it("asks for no open work once the session is over", () => {
-    load(OPEN);
-    show([TASK_ROW, CHILD_ROW], { sessionStatus: "ended" });
-    // The query is skipped on a terminal session, so the live half is absent
-    // even though the fixture would have answered it.
-    expect(convex.seen).toContain("claudeSessions:getOpenToolWork:skip");
-    expect(body()).not.toContain("running 5m");
-    expect(body()).toContain("explorer");
+    expect(body()).toContain("agent task-1");
   });
 
   // THE PREDICATE IS `provenance === undefined`, NOT `parentToolUseId`.
@@ -229,7 +184,7 @@ describe("the subagent fold", () => {
   // the two, so the case builds one row of each, same parentToolUseId, and
   // looks for the <details>.
   it("folds a daemon row on parentToolUseId and leaves a file-derived one alone", () => {
-    load({ agents: [], commands: [], finished: [] });
+    load();
     const daemonResult = row({
       _id: "m-daemon-result",
       seq: 3,
@@ -275,7 +230,7 @@ describe("the paging control", () => {
   // newest-first so more rows are EARLIER ones, runs.rows pages oldest-first so
   // more rows are LATER ones. The label is the only place the reader is told.
   it("loads earlier rows on a session and later rows on a run", () => {
-    load({ agents: [], commands: [], finished: [] });
+    load();
     const { unmount } = show([TASK_ROW], {
       pageStatus: "CanLoadMore",
       source: "session",
@@ -291,5 +246,55 @@ describe("the paging control", () => {
     });
     expect(screen.getByText("load later rows")).toBeTruthy();
     expect(screen.queryByText("load earlier rows")).toBeNull();
+  });
+});
+
+describe("beside the rows", () => {
+  // witness: show pending rows only and Tom's words vanish from the page the
+  // moment the daemon delivers them, for the whole turn the agent spends on
+  // them — the agent file's row for the turn lands only when the turn ends.
+  it("keeps Tom's delivered turn on the page, above the reply being typed", () => {
+    load({
+      pending: [
+        { _id: "in-1", kind: "user-turn", text: "do the visa one first", status: "delivered", author: "tom" },
+        { _id: "in-2", kind: "user-turn", text: "and then the lease", status: "pending", author: "tom" },
+      ],
+      buf: { text: "Starting on the visa." },
+    });
+    show([TASK_ROW]);
+    const text = body();
+    expect(text).toContain("do the visa one first");
+    expect(text).toContain("delivered");
+    expect(text).toContain("and then the lease");
+    expect(text).toContain("queued — delivers when the current turn ends");
+    expect(text.indexOf("do the visa one first")).toBeLessThan(text.indexOf("Starting on the visa."));
+    expect(text.indexOf("Starting on the visa.")).toBeLessThan(text.indexOf("and then the lease"));
+  });
+
+  // witness: render the notes as a block after the rows and a model change
+  // made before a turn reads as if it happened after it.
+  it("draws each note between the rows it happened between", () => {
+    const first = row({ _id: "m-a", seq: 1, content: "first answer", createdAt: NOW });
+    const second = row({ _id: "m-b", seq: 2, content: "second answer", createdAt: NOW + 2_000 });
+    load({
+      notes: [
+        { _id: "n-0", at: NOW - 5_000, text: "workspace rebuilt" },
+        { _id: "n-1", at: NOW + 1_000, text: "model changed to sonnet" },
+        { _id: "n-2", at: NOW + 3_000, text: "pushed 2 commits" },
+      ],
+    });
+    const { unmount } = show([first, second], { pageStatus: "CanLoadMore" });
+    let text = body();
+    expect(text.indexOf("first answer")).toBeLessThan(text.indexOf("model changed to sonnet"));
+    expect(text.indexOf("model changed to sonnet")).toBeLessThan(text.indexOf("second answer"));
+    expect(text.indexOf("second answer")).toBeLessThan(text.indexOf("pushed 2 commits"));
+    // Older than every loaded row, with earlier rows still to load: an
+    // earlier row may belong in front of it, so it waits.
+    expect(text).not.toContain("workspace rebuilt");
+    unmount();
+
+    show([first, second], { pageStatus: "Exhausted" });
+    text = body();
+    expect(text.indexOf("workspace rebuilt")).toBeLessThan(text.indexOf("first answer"));
   });
 });

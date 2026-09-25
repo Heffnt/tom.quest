@@ -1399,3 +1399,72 @@ export const internalRemoveBatches = internalMutation({
     };
   },
 });
+
+// ── 10. Codex sessions named under the Claude family (one transcript path) ───
+// Six Codex sessions carry a runId of the form `claude:box:<thread>`: the
+// daemon built the id with the wrong family, so the rows the sweep landed
+// under the real run, `codex:box:<thread>`, are not the rows the page reads
+// for them. This walk rewrites such a runId to the Codex spelling when a run
+// exists under that id and none under the Claude one, and links that run back
+// to the session when it names none. Every other session is left alone and
+// counted. Run once, dry first, through tts-convex; part C of the plan deletes
+// it.
+const CODEX_RUN_LINK_MIGRATION = "codex-session-run-link";
+
+export const internalRelinkCodexSessionRuns = internalMutation({
+  args: MIGRATION_ARGS,
+  handler: async (ctx, args): Promise<MigrationReport> => {
+    const dryRun = args.dryRun ?? false;
+    const pageSize = args.pageSize ?? PAGE_SIZE;
+    const page: Counts = {
+      scanned: 0,
+      relinked: 0,
+      "run-linked-to-session": 0,
+      "claude-run-exists": 0,
+      "no-codex-run": 0,
+    };
+    const result = await ctx.db
+      .query("claudeSessions")
+      .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
+    const runAt = (runId: string) =>
+      ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).first();
+    for (const session of result.page) {
+      page.scanned++;
+      const runId = session.runId;
+      if (runId === undefined || !runId.startsWith("claude:box:")) continue;
+      const codexRunId = `codex:box:${runId.slice("claude:box:".length)}`;
+      const codexRun = await runAt(codexRunId);
+      if (codexRun === null) {
+        page["no-codex-run"]++;
+        continue;
+      }
+      if ((await runAt(runId)) !== null) {
+        page["claude-run-exists"]++;
+        continue;
+      }
+      page.relinked++;
+      if (!dryRun) await ctx.db.patch(session._id, { runId: codexRunId });
+      if (codexRun.sessionId === undefined) {
+        page["run-linked-to-session"]++;
+        if (!dryRun) await ctx.db.patch(codexRun._id, { sessionId: session._id });
+      }
+    }
+    const totals = addCounts(args.totals ?? {}, page);
+    if (result.isDone) {
+      await logEvent(
+        ctx,
+        dryRun ? `${CODEX_RUN_LINK_MIGRATION}-dry-run` : `${CODEX_RUN_LINK_MIGRATION}-migrated`,
+        undefined,
+        totals,
+      );
+      return { done: true, dryRun, page, totals, continueCursor: null };
+    }
+    await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalRelinkCodexSessionRuns, {
+      cursor: result.continueCursor,
+      dryRun,
+      pageSize,
+      totals,
+    });
+    return { done: false, dryRun, page, totals, continueCursor: result.continueCursor };
+  },
+});

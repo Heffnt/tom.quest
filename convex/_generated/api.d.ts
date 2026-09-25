@@ -28,6 +28,7 @@ import type * as observeMerge from "../observeMerge.js";
 import type * as orchestrator from "../orchestrator.js";
 import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
+import type * as sessionRows from "../sessionRows.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as tts from "../tts.js";
 import type * as ttsAsk from "../ttsAsk.js";
@@ -89,6 +90,7 @@ declare const fullApi: ApiFromModules<{
   orchestrator: typeof orchestrator;
   secrets: typeof secrets;
   serverHealth: typeof serverHealth;
+  sessionRows: typeof sessionRows;
   symbolScores: typeof symbolScores;
   tts: typeof tts;
   ttsAsk: typeof ttsAsk;

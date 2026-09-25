@@ -433,15 +433,20 @@ describe("agents", () => {
     expect(await t.run((ctx) => ctx.db.get(sessionId))).toMatchObject({ runId: value.runId, rowsFrom: "runs" });
   });
 
-  it("fails closed when a run-backed session has no run id", async () => {
+  // A session whose rows come from its agent file, before the sweep or the
+  // daemon has named its run: its first turn is still running. The page shows
+  // an empty transcript, never the daemon's rows under its id, and never an
+  // error that takes the page down.
+  it("answers an empty page, not the daemon's rows, while a run-backed session has no run id", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { rowsFrom: "runs" });
     await daemonRow(t, sessionId, 0, "user", { text: "must not leak through fallback" });
     const tom = await withTom(t);
-    await expect(tom.query(api.claudeSessions.getMessages, {
+    const page = await tom.query(api.claudeSessions.getMessages, {
       sessionId,
       paginationOpts: { cursor: null, numItems: 10 },
-    })).rejects.toThrow("run-backed session has no runId");
+    });
+    expect(page).toMatchObject({ page: [], isDone: true });
   });
 
   it("repairs a box session link from the Claude root id", async () => {
@@ -457,6 +462,27 @@ describe("agents", () => {
     ]);
     expect(storedRun?.sessionId).toBe(sessionId);
     expect(storedSession?.runId).toBe("claude:box:sdk-root");
+  });
+
+  // witness: link only Claude roots by the SDK id and a Codex session's rows
+  // land under a run no session names — the page reads nothing for it, the
+  // labeller finds no session, and eviction treats its transcript as nobody's.
+  it("links a box Codex root to the session that names its run", async () => {
+    const t = convexTest(schema, modules);
+    const runId = "codex:box:019a7c1e-thread-1";
+    const sessionId = await session(t, { status: "running", runId, rowsFrom: "runs", model: "gpt-5.6-sol", sdkSessionId: "019a7c1e-thread-1" });
+    const result = await t.mutation(internal.agents.internalIngest, ingest(
+      run({ runId, rootRunId: runId, host: "box", cli: "codex" }), [], [],
+    ) as never);
+    expect(result).toMatchObject({ ok: true, runId });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+    expect(stored?.sessionId).toBe(sessionId);
+    // A Codex root no session names stays unlinked.
+    await t.mutation(internal.agents.internalIngest, ingest(
+      run({ runId: "codex:box:019a7c1e-thread-2", rootRunId: "codex:box:019a7c1e-thread-2", host: "box", cli: "codex" }), [], [],
+    ) as never);
+    const other = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "codex:box:019a7c1e-thread-2")).unique());
+    expect(other?.sessionId).toBeUndefined();
   });
 
   it("gives a session's next run the run it continues, and never links the old run to itself", async () => {
@@ -969,6 +995,35 @@ describe("agents: eviction", () => {
       expect((await runRow(t, record.runId))?.rowsUntil, record.runId).toBe(now + DAY_MS);
     }
     expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 0, rowsDeleted: 0, deferred: 3, truncated: false, oldestRowsUntil: now + DAY_MS });
+  });
+
+  // witness: keep only a LIVE session's run and a session Tom ended last week
+  // loses its transcript tonight: its run's last line is older than the
+  // window, and reading a session through its session never moves the run's
+  // window.
+  it("keeps a session's run until the session has been ended for the window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EVICTION_HOUR_UTC);
+    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const endedLastWeek = await session(t, { status: "ended", statusChangedAt: now - 7 * DAY_MS });
+    const endedLongAgo = await session(t, { status: "ended", statusChangedAt: now - 45 * DAY_MS });
+    const records = [
+      { runId: "claude:laptop:ended-last-week", sessionId: endedLastWeek },
+      { runId: "claude:laptop:ended-long-ago", sessionId: endedLongAgo },
+    ];
+    await t.run(async (ctx) => {
+      for (const record of records) {
+        await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, status: "ended", startedAt: 1, lastLineAt: now - 60 * DAY_MS }), environment: "session", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
+        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
+      }
+    });
+
+    await tick(t);
+    expect((await transcript(t, "claude:laptop:ended-last-week")).rows).toBe(1);
+    expect((await runRow(t, "claude:laptop:ended-last-week"))?.rowsUntil).toBe(now + DAY_MS);
+    expect((await transcript(t, "claude:laptop:ended-long-ago")).rows).toBe(0);
   });
 
   it("deletes nothing while AGENTS_EVICTION_ENABLED is unset, and says so", async () => {

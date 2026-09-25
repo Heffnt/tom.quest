@@ -381,35 +381,39 @@ export const internalLabelFromObjection = internalMutation({
  * writes its own `ref` suffix, so a reclassification is visible rather than a
  * silent rewrite of what he said.
  *
- * The run is found by `sessionId` and no token is needed: a session IS a run
- * Tom talks to, and the link is the field itself.
+ * THE RUN IS PASSED IN, and no token is needed: a session IS a run Tom talks
+ * to. The caller is the agent file's ingest (convex/agents.ts
+ * sessionReplyLabel), which calls this only for a user row whose text ends
+ * with the `inbound row:` line of a turn Tom typed in the session whose run
+ * this is — so a row, its run and its session are one exact edge, and the
+ * span is in the run's own seq space.
+ *
+ * The ref is the turn itself (`reply:<inbound row id>`): one turn Tom typed is
+ * one act, however often the file it landed in is ingested.
  */
 export const internalLabelFromSessionReply = internalMutation({
   args: {
-    sessionId: v.id("claudeSessions"),
+    runId: v.string(),
+    inboundId: v.id("claudeInbound"),
     seq: v.number(),
     text: v.string(),
     at: v.number(),
     priorAssistantSeq: v.optional(v.number()),
   },
-  handler: async (ctx, { sessionId, seq, text, at, priorAssistantSeq }) => {
-    const ref = `reply:${sessionId}:${seq}`;
+  handler: async (ctx, { runId, inboundId, seq, text, at, priorAssistantSeq }) => {
+    const ref = `reply:${inboundId}`;
     const said = text.trim();
     if (said === "") return { wrote: false, why: "empty reply" };
-    // The newest run of this session that had started when he typed. A session
-    // can be reopened, and a reply belongs to the conversation it landed in.
-    const run = (await ctx.db
+    const run = await ctx.db
       .query("runs")
-      .withIndex("by_session", (q) => q.eq("sessionId", sessionId))
-      .collect())
-      .filter((one) => one.startedAt <= at)
-      .sort((a, b) => b.startedAt - a.startedAt)[0] ?? null;
+      .withIndex("by_run_id", (q) => q.eq("runId", runId))
+      .first();
     if (run === null) {
       await unlinked(ctx, {
         source: "session-reply",
         ref,
-        subjectKey: `session ${sessionId}`,
-        why: "no agent of this session had started when the reply landed",
+        subjectKey: `run ${runId}`,
+        why: "the run the reply landed in is not in the record",
       });
       return { wrote: false, why: "unlinked" };
     }

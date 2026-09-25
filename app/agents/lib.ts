@@ -14,8 +14,8 @@ type InboundRow = Doc<"claudeInbound">;
 type DaemonHealth = Doc<"claudeDaemonHealth">;
 
 /**
- * A finalized row AS THE PAGE READS IT. claudeSessions.getMessages adds two
- * fields to every row it returns, and both are about the daemon's 32 KB cut:
+ * A finalized row AS THE PAGE READS IT. claudeSessions.getMessages and
+ * agents.rows add two fields to every row they return, both about the 32 KB cut:
  * whether anything was cut at all, and how many bytes the whole payload is —
  * so a row can offer to fetch the rest without fetching it to find out.
  * The bytes themselves come from claudeSessions.getMessageOverflow, a page at
@@ -93,25 +93,6 @@ export function statusChipClass(status: SessionStatus): string {
       return "border-border text-text-faint";
   }
 }
-
-/** Compact age: "just now", "4m", "3h", "2d" — for "waiting 4m" style copy. */
-export function shortAge(ms: number, now: number): string {
-  const diff = Math.max(0, now - ms);
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
-// contentToText / previewLine below are the client-side twins of contentText
-// / previewText in convex/claudeSessions.ts. Deliberately named apart so a
-// reader is never unsure which side they are looking at: the server pair
-// flattens for stored previews (fixed PREVIEW_CHARS cap, no whitespace
-// collapsing), this pair renders for the screen (caller-chosen max, newlines
-// collapsed). Same job, different cut — keep the two comments in lockstep if
-// either behaviour moves.
 
 /**
  * Message content is v.any(). Render strings directly; anything else via

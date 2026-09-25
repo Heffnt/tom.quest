@@ -13,6 +13,11 @@
 - `internal.serverHealth.pollTuring` probes the Turing API's `/health` and writes the `serverHealth` table; `useServer().status` reads it.
 - `internal.gpuPool.reconcile` drives the `gpuPool` table's desired state against the Turing API and tracks its own jobs in `gpuPoolAllocation`, so it cancels only pool-created jobs. It needs `TURING_API_KEY` in the Convex env, not only Vercel's.
 
+## sessions
+
+- A session's rows are its agent file's, read by its `runId`; a session from before the cutover (`rowsFrom` not `"runs"`) keeps the daemon's rows under its `sessionId`. A reader asks `sessionRows.rowSource` which, and never picks an index itself.
+- What the session daemon knows that the agent file does not is a note in `sessionNotes`, never a row.
+
 ## inspecting
 
 - The Convex dashboard is where server state, function logs and query performance are read.

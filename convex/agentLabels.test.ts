@@ -388,31 +388,66 @@ async function seedSession(
   );
 }
 
-async function seedTranscriptRow(
+async function seedTomTurn(
   t: ReturnType<typeof convexTest>,
   sessionId: Id<"claudeSessions">,
-  seq: number,
-  kind: string,
-) {
-  await t.run((ctx) =>
-    ctx.db.insert("claudeMessages", {
+  over: Record<string, unknown> = {},
+): Promise<Id<"claudeInbound">> {
+  return await t.run((ctx) =>
+    ctx.db.insert("claudeInbound", {
       sessionId,
-      seq,
-      turn: 0,
-      kind,
-      content: { text: `row ${seq}` },
-      createdAt: seq + 1,
+      kind: "user-turn",
+      text: "no, do the visa one first",
+      author: "tom",
+      status: "done",
+      createdAt: 9_000,
+      ...over,
     } as never),
   );
 }
+
+// The agent file's side: one page of a box root run's rows, in the shape the
+// sweep posts to agents.internalIngest.
+const SESSION_RUN = "claude:box:session-root-run";
+function fileRun(runId = SESSION_RUN, over: Record<string, unknown> = {}) {
+  return {
+    runId, rootRunId: runId, depth: 0, linkKnown: true, origin: "daemon", host: "box", cli: "claude",
+    environment: "session", parserVersion: "runs-parser-1", kind: "session", status: "running",
+    startedAt: 1_000, lastLineAt: 2_000, attachments: [],
+    file: { path: "/home/jarvis/.claude/projects/x/session.jsonl", sourceHash: SOURCE_HASH, storedHash: STORED_HASH, bytes: 10, storedBytes: 8, committedLine: 3, committedPrefixSha256: PREFIX_HASH },
+    ...over,
+  };
+}
+function fileRow(seq: number, kind: string, text: string, depth = 0) {
+  return {
+    seq, turn: 1, kind, content: { text }, depth, createdAt: 5_000 + seq,
+    digest: seq.toString(16).padStart(16, "0"),
+    provenance: { fileVersion: STORED_HASH, file: "/home/jarvis/.claude/projects/x/session.jsonl", lineStart: seq, lineEnd: seq, block: 0, parserVersion: "runs-parser-1", sourceKind: kind },
+  };
+}
+async function ingestFile(
+  t: ReturnType<typeof convexTest>,
+  run: ReturnType<typeof fileRun>,
+  rows: ReturnType<typeof fileRow>[],
+  previous: { line: number; hash: string } = { line: 0, hash: "d".repeat(64) },
+) {
+  const result = await t.mutation(internal.agents.internalIngest, {
+    run, rows, children: [], previousCommittedLine: previous.line, previousPrefixSha256: previous.hash,
+  } as never);
+  expect(result).toMatchObject({ ok: true });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+}
+const delivered = (text: string, inboundId: string) => `${text}\n\ninbound row: ${inboundId}`;
 
 describe("a reply in a session becomes a label", () => {
   it("is never a judgment, and spans from the assistant row it answers", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await seedSession(t);
+    const inboundId = await seedTomTurn(t, sessionId);
     await seedRun(t, { regToken: "tok-session", runId: "claude:box:session-run", sessionId });
     await t.mutation(internal.agentLabels.internalLabelFromSessionReply, {
-      sessionId,
+      runId: "claude:box:session-run",
+      inboundId,
       seq: 12,
       text: "that is not what I asked for",
       at: 9_000,
@@ -430,15 +465,18 @@ describe("a reply in a session becomes a label", () => {
       runId: "claude:box:session-run",
       rowSpan: { seqStart: 9, seqEnd: 12 },
       meaning: "that is not what I asked for",
+      ref: `reply:${inboundId}`,
     });
   });
 
   it("carries no span when nothing was said before it", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await seedSession(t);
+    const inboundId = await seedTomTurn(t, sessionId);
     await seedRun(t, { regToken: "tok-session", sessionId });
     await t.mutation(internal.agentLabels.internalLabelFromSessionReply, {
-      sessionId,
+      runId: "claude:box:the-run",
+      inboundId,
       seq: 0,
       text: "start with the passport one",
       at: 9_000,
@@ -447,54 +485,77 @@ describe("a reply in a session becomes a label", () => {
     expect((await labels(t))[0].rowSpan).toBeUndefined();
   });
 
-  it("writes for a turn Tom typed and nothing for an agent's own turn", async () => {
+  it("writes when the agent file's user row of a turn Tom typed lands, once", async () => {
     vi.useFakeTimers();
     try {
       const t = convexTest(schema, modules);
-      const sessionId = await seedSession(t);
-      await seedRun(t, { regToken: "tok-session", runId: "claude:box:session-run", sessionId });
-      await seedTranscriptRow(t, sessionId, 0, "user");
-      await seedTranscriptRow(t, sessionId, 1, "assistant-text");
-      await t.run((ctx) => ctx.db.patch(sessionId, { nextSeq: 2 }));
-
-      const inbound = async (author: "tom" | "agent", text: string) =>
-        await t.run((ctx) =>
-          ctx.db.insert("claudeInbound", {
-            sessionId,
-            kind: "user-turn",
-            text,
-            author,
-            status: "pending",
-            createdAt: 9_000,
-          }),
-        );
-      const agentTurn = await inbound("agent", "continue with the next item");
-      await t.mutation(internal.claudeSessions.internalIngest, {
-        sessionId,
-        finalize: [{ seq: 2, turn: 1, kind: "user", content: { text: "continue with the next item" } }],
-        inboundUpdates: [{ id: agentTurn, status: "delivered" }],
-      });
-      expect(await labels(t)).toHaveLength(0);
-
-      const tomTurn = await inbound("tom", "no, do the visa one first");
-      await t.mutation(internal.claudeSessions.internalIngest, {
-        sessionId,
-        finalize: [{ seq: 3, turn: 2, kind: "user", content: { text: "no, do the visa one first" } }],
-        inboundUpdates: [{ id: tomTurn, status: "delivered" }],
-      });
-      // Scheduling is asynchronous even at delay zero. Fake timers establish
-      // the queue's completion boundary before the label row is inspected.
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const sessionId = await seedSession(t, { runId: SESSION_RUN, rowsFrom: "runs" });
+      const inboundId = await seedTomTurn(t, sessionId);
+      await ingestFile(t, fileRun(), [
+        fileRow(10, "assistant-text", "which one first?"),
+        fileRow(20, "user", delivered("no, do the visa one first", inboundId)),
+      ]);
       const rows = await labels(t);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         source: "session-reply",
-        ref: `reply:${sessionId}:3`,
+        runId: SESSION_RUN,
+        ref: `reply:${inboundId}`,
+        // His words alone, off the inbound row — not the id line the model saw.
         meaning: "no, do the visa one first",
-        // The span the reply is about: from the assistant row before it to the
-        // reply's own row.
-        rowSpan: { seqStart: 1, seqEnd: 3 },
+        // In the run's own seq space: the assistant row before it to its row.
+        rowSpan: { seqStart: 10, seqEnd: 20 },
+        at: 9_000,
       });
+
+      // A later page of the same file lands more rows; the turn is one act.
+      await ingestFile(
+        t,
+        fileRun(SESSION_RUN, { file: { ...fileRun().file, bytes: 20, committedLine: 4, committedPrefixSha256: "e".repeat(64) } }),
+        [fileRow(20, "user", delivered("no, do the visa one first", inboundId)), fileRow(30, "assistant-text", "on it")],
+        { line: 3, hash: PREFIX_HASH },
+      );
+      expect(await labels(t)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("writes nothing for an agent's own turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const sessionId = await seedSession(t, { runId: SESSION_RUN, rowsFrom: "runs" });
+      const inboundId = await seedTomTurn(t, sessionId, { author: "agent", text: "continue with the next item" });
+      await ingestFile(t, fileRun(), [fileRow(20, "user", delivered("continue with the next item", inboundId))]);
+      expect(await labels(t)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // witness: trust the line alone and any run whose prompt quotes a turn of
+  // Tom's — a fork reading the old transcript, an agent handed the text —
+  // writes a label about ITS output for a reply he made to another run.
+  it("writes nothing for a copied inbound row line in another run's prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const sessionId = await seedSession(t, { runId: SESSION_RUN, rowsFrom: "runs" });
+      const inboundId = await seedTomTurn(t, sessionId);
+      const copied = delivered("no, do the visa one first", inboundId);
+      // Another root run on the box, which no session names.
+      await ingestFile(t, fileRun("claude:box:some-other-run"), [fileRow(20, "user", copied)]);
+      // The session's own run's subagent, whose prompt carries the line.
+      await ingestFile(
+        t,
+        fileRun(`${SESSION_RUN}/agent-subagent-1`, {
+          parentRunId: SESSION_RUN, rootRunId: SESSION_RUN, depth: 1, kind: "subagent", spawnedByToolUseId: "toolu-1",
+          file: { ...fileRun().file, path: "/home/jarvis/.claude/projects/x/subagent.jsonl" },
+        }),
+        [fileRow(20, "user", copied, 1)],
+      );
+      expect(await labels(t)).toHaveLength(0);
     } finally {
       vi.useRealTimers();
     }

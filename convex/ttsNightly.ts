@@ -24,6 +24,7 @@ import { internal } from "./_generated/api";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
 import { clip } from "../shared/clip.mjs";
+import { rowSource, type RowSource } from "./sessionRows";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { postBroken } from "./tts";
@@ -224,40 +225,52 @@ export const internalLearningInput = internalQuery({
       )
       .take(LEARNING_INPUT_MAX);
     const tomTurns = [];
-    // Per session, read once: the title, and the SDK session id — the id the
+    // Per session, read once: the title, the SDK session id — the id the
     // pages cite a session by (its first 8 hex characters; WikiTom's
     // sessions/ archive is keyed by the whole of it), which the session host
-    // stores on the row as sdkSessionId once the SDK reports it.
-    const sessions = new Map<string, { title: string; sdkSessionId: string | null }>();
+    // stores on the row as sdkSessionId once the SDK reports it — and where
+    // its rows come from (convex/sessionRows.ts rowSource).
+    const sessions = new Map<string, { title: string; sdkSessionId: string | null; source: RowSource }>();
     let repliesLookedUp = 0;
     for (const row of inbound) {
       if (row.kind !== "user-turn") continue;
       let session = sessions.get(row.sessionId);
       if (session === undefined) {
         const s = await ctx.db.get(row.sessionId);
-        session = { title: s?.title ?? "", sdkSessionId: s?.sdkSessionId ?? null };
+        session = {
+          title: s?.title ?? "",
+          sdkSessionId: s?.sdkSessionId ?? null,
+          source: s === null ? { from: "none" } : rowSource(s),
+        };
         sessions.set(row.sessionId, session);
       }
       // The agent's text just before the turn and just after it. The index
-      // pins the session and the kind; the filter walks the rows on one side
-      // of the turn's instant and stops at the first.
+      // pins the rows' owner and the kind; the filter walks the rows on one
+      // side of the turn's instant and stops at the first. A session's rows
+      // are its agent file's since the cutover, by runId, and the daemon's
+      // before it, by sessionId.
       let replyBefore: string | null = null;
       let replyAfter: string | null = null;
-      if (repliesLookedUp < LEARNING_REPLY_TURNS) {
+      const source = session.source;
+      if (repliesLookedUp < LEARNING_REPLY_TURNS && source.from !== "none") {
         repliesLookedUp += 1;
-        const before = await ctx.db
-          .query("claudeMessages")
-          .withIndex("by_session_kind", (q) =>
-            q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
-          )
+        const assistantText = () =>
+          source.from === "run"
+            ? ctx.db
+                .query("claudeMessages")
+                .withIndex("by_run_kind", (q) =>
+                  q.eq("runId", source.runId).eq("kind", "assistant-text"),
+                )
+            : ctx.db
+                .query("claudeMessages")
+                .withIndex("by_session_kind", (q) =>
+                  q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
+                );
+        const before = await assistantText()
           .order("desc")
           .filter((q) => q.lte(q.field("createdAt"), row.createdAt))
           .first();
-        const after = await ctx.db
-          .query("claudeMessages")
-          .withIndex("by_session_kind", (q) =>
-            q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
-          )
+        const after = await assistantText()
           .order("asc")
           .filter((q) => q.gt(q.field("createdAt"), row.createdAt))
           .first();
