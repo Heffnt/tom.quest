@@ -7,6 +7,7 @@
 - `roleAccess("agent")` returns `isAdmin: false` and `isTom: false`, so every gate denies `agent` unless it names the agent door.
 - The reach of `agent` is one list, `convex/agentSurfaces.ts`. Widening it is adding one label; the labels are the ones `requireTom` already takes, so read gates and write gates share one vocabulary.
 - `users.setRoleByUsername` grants or revokes `user`, `admin` and `agent`; it never mints or demotes a `tom`.
+- A message to a human other than Tom (a Slack post to someone else, a calendar event with guests) goes out only inside `ttsSignoff.deliverAsTom`, which needs a `signoffs` row matching sha256(text), recipient and channel. `ttsSignoff.signAndSend` (requireTom) is that table's one writer; no route or internal function inserts there. An agent asks through `POST /tts/send-proposal`.
 
 ## crons
 

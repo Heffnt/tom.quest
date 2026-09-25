@@ -70,14 +70,14 @@ const SLACK_CHANNEL = /^slack:([CDGUW][A-Z0-9]{4,})$/;
  *  rather than the 400 a malformed event gets. */
 export const NO_SIGNOFF = "no sign-off of Tom's matches this text, recipient and channel";
 
-export const TEXT_MAX = 4000;
-export const RECIPIENT_MAX = 200;
-export const WHY_MAX = 500;
-export const GUESTS_MAX = 20;
+const TEXT_MAX = 4000;
+const RECIPIENT_MAX = 200;
+const WHY_MAX = 500;
+const GUESTS_MAX = 20;
 /** The proposals the page reads, newest first. Tens a week at most. */
 const PROPOSALS_READ = 200;
 
-export type CalendarInvite = {
+type CalendarInvite = {
   title: string;
   start: number;
   end: number;
@@ -87,7 +87,7 @@ export type CalendarInvite = {
   guests: string[];
 };
 
-export const CALENDAR_INVITE = v.object({
+const CALENDAR_INVITE = v.object({
   title: v.string(),
   start: v.number(),
   end: v.number(),
@@ -122,7 +122,7 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 /** Which door a channel names, or null for one this module does not send on. */
-export function parseChannel(
+function parseChannel(
   channel: string,
 ): { via: "slack"; conversation: string } | { via: "calendar" } | null {
   if (channel === CALENDAR_CHANNEL) return { via: "calendar" };
@@ -160,7 +160,7 @@ export function invitationText(e: CalendarInvite): string {
 }
 
 /** A proposal as the route accepts it, before it has a row. */
-export type ProposalInput = {
+type ProposalInput = {
   text: string;
   recipient: string;
   channel: string;
@@ -390,6 +390,9 @@ export const internalClaimSignoff = internalMutation({
     | { ok: false; sha256: string }
   > => {
     const sha256 = await sha256Hex(text);
+    // Kept, not deletable: this match on sha256(text) + recipient + channel is
+    // what makes his sign-off a condition on what goes out (I5) rather than a
+    // note of what he approved; the text compare is the hash's own backstop.
     const match = (
       await ctx.db
         .query("signoffs")
@@ -445,6 +448,8 @@ export async function deliverAsTom<T>(
     recipient: target.recipient,
     channel: target.channel,
   });
+  // Kept, not deletable: this refusal is the wall for I5. Without it a text he
+  // never signed goes out in his name, and the record is the only trace.
   if (!claim.ok) {
     await ctx.runMutation(internal.ttsSignoff.internalRecordFailed, {
       recipient: target.recipient,

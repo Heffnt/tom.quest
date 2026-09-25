@@ -870,8 +870,8 @@ http.route({
 // send (that happens from Convex once he has signed, and only then). The
 // answer names where he signs.
 //
-// Why this route is not a deletion: without it the only paths an agent has to
-// another human are ones Tom never reads first. It is half of the wall; the
+// Kept, not deletable: without it the only paths an agent has to another
+// human are ones Tom never reads first. It is half of the wall for I5; the
 // check in ttsSignoff.deliverAsTom is the other half.
 const ttsSendProposal = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
