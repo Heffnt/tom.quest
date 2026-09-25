@@ -2113,4 +2113,25 @@ export default defineSchema({
     setAt: v.number(),
     takenAt: v.optional(v.number()),
   }).index("by_name", ["name"]),
+
+  // TOM'S SIGN-OFF ON ONE MESSAGE IN HIS NAME (convex/ttsSignoff.ts). His
+  // ruling of 2026-09-25: agents "can also send messages in my name after i
+  // have reviewed the content and explicitily signed off." One row is one
+  // press of "sign and send" beside the verbatim text on /tts, and the ONLY
+  // writer is ttsSignoff.signAndSend, a requireTom mutation: no HTTP door, no
+  // worker key and no internal function inserts here. A send to a human other
+  // than Tom (a Slack message, a calendar event with guests) goes out only
+  // when a row matches it by sha256(text) + recipient + channel, and it takes
+  // the row with it: `usedAt` is stamped by the send, so one signature is one
+  // send. `text` is kept whole so the record shows what he signed, not only
+  // its hash.
+  signoffs: defineTable({
+    text: v.string(),
+    sha256: v.string(),
+    recipient: v.string(),
+    channel: v.string(),
+    signedAt: v.number(),
+    signedBy: v.literal("tom"),
+    usedAt: v.optional(v.number()),
+  }).index("by_match", ["sha256", "recipient", "channel"]),
 });

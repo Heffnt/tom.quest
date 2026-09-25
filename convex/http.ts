@@ -29,6 +29,7 @@ import { isNarrowListId } from "./ttsShared";
 import { auditVerdictOf, mergedOnMain } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
+import { NO_SIGNOFF, parseProposal } from "./ttsSignoff";
 import { INTENT_SOURCES_MAX, isIntentSourcePath } from "./intent";
 import { VOCABULARY_TERMS_MAX } from "./vocabulary";
 import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../shared/skills.mjs";
@@ -804,7 +805,10 @@ http.route({ path: "/tts/job-ok", method: "POST", handler: ttsJobOk });
 // POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
 // to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this
 // route only carries the traffic). Body: { title, start, end, description?,
-// location?, recurrence?, calendarId? } — start/end epoch ms.
+// location?, recurrence?, calendarId?, guests? } — start/end epoch ms.
+// `guests` makes the event a message in Tom's name: the door creates it only
+// on his matching sign-off (convex/ttsSignoff.ts), and answers 403 without
+// one. The way to get one is POST /tts/send-proposal, below.
 const ttsCalendarEvent = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -824,6 +828,9 @@ const ttsCalendarEvent = httpAction(async (ctx, request) => {
   const recurrence = Array.isArray(b.recurrence)
     ? b.recurrence.filter((r): r is string => typeof r === "string")
     : undefined;
+  if (b.guests !== undefined && !(Array.isArray(b.guests) && b.guests.every((g) => typeof g === "string"))) {
+    return jsonResponse(400, { error: "guests, when given, is an array of email addresses" });
+  }
   try {
     const created = await ctx.runAction(
       internal.ttsCalendarWrite.internalCreateEvent,
@@ -835,13 +842,13 @@ const ttsCalendarEvent = httpAction(async (ctx, request) => {
         location: typeof b.location === "string" ? b.location : undefined,
         recurrence,
         calendarId: typeof b.calendarId === "string" ? b.calendarId : undefined,
+        guests: b.guests as string[] | undefined,
       },
     );
     return jsonResponse(200, { ok: true, ...created });
   } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
+    const error = e instanceof Error ? e.message : String(e);
+    return jsonResponse(error.includes(NO_SIGNOFF) ? 403 : 400, { error });
   }
 });
 
@@ -850,6 +857,53 @@ http.route({
   method: "POST",
   handler: ttsCalendarEvent,
 });
+
+// POST /tts/send-proposal — an agent's message to a human other than Tom, put
+// in front of him to sign (Tom, 2026-09-25: agents "can also send messages in
+// my name after i have reviewed the content and explicitily signed off").
+// Body, one of two shapes (convex/ttsSignoff.ts parseProposal):
+//   { channel: "slack:<conversation id>", recipient, text, why?, agentId? }
+//   { channel: "calendar", event: { title, start, end, guests, description?,
+//     location?, recurrence? }, why?, agentId? }
+// It writes one "send-proposal" row and NOTHING ELSE: no sign-off (the worker
+// key cannot write one; only his press of "sign and send" on /tts does) and no
+// send (that happens from Convex once he has signed, and only then). The
+// answer names where he signs.
+//
+// Why this route is not a deletion: without it the only paths an agent has to
+// another human are ones Tom never reads first. It is half of the wall; the
+// check in ttsSignoff.deliverAsTom is the other half.
+const ttsSendProposal = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (b.agentId !== undefined && !validAgentId(b.agentId)) {
+    return jsonResponse(400, { error: "agentId, when given, is an agent id (claude|codex):(laptop|box):<id>" });
+  }
+  const parsed = parseProposal(b);
+  if ("error" in parsed) return jsonResponse(400, { error: parsed.error });
+  const { proposalId, sha256 } = await ctx.runMutation(internal.ttsSignoff.internalPropose, {
+    ...parsed.proposal,
+    ...(typeof b.agentId === "string" ? { agentId: b.agentId } : {}),
+  });
+  return jsonResponse(200, {
+    ok: true,
+    proposalId,
+    sha256,
+    text: parsed.proposal.text,
+    recipient: parsed.proposal.recipient,
+    channel: parsed.proposal.channel,
+    signAt: "https://tom.quest/tts",
+  });
+});
+
+http.route({ path: "/tts/send-proposal", method: "POST", handler: ttsSendProposal });
 
 // ── POST /slack/events — Slack PUSHES #dump messages to TTS ──────────────────
 // Tom's ruling 2026-08-30: Slack pushes instead of TTS polling every two
