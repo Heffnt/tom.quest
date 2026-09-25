@@ -30,6 +30,7 @@ import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
 import OptionsRow from "./options-row";
 import RunnersBlock from "./runners-block";
+import SignoffBlock from "./signoff-block";
 import SectionHeader from "./section-header";
 import TimeNoteField, {
   groupTimeNotes,
@@ -469,6 +470,7 @@ export default function EverythingTab({
 
   return (
     <div className="space-y-6">
+      <SignoffBlock now={coarseNow} />
       <RunnersBlock now={coarseNow} />
 
       <section className="space-y-2">

@@ -84,6 +84,7 @@ import RepeatDialog from "./repeat-dialog";
 import RepeatsStrip from "./repeats-strip";
 import RulingDialog from "./ruling-dialog";
 import RunnersBlock from "./runners-block";
+import SignoffBlock from "./signoff-block";
 import TimeNoteField from "./time-note-field";
 import TodoRow from "./todo-row";
 import VerdictButtons from "./verdict-buttons";
@@ -371,6 +372,18 @@ const RUNNER_DETAIL = {
   ],
 };
 
+const PROPOSAL = {
+  id: "p1",
+  at: NOW - 60_000,
+  text: "Hi Sarah — Thursday at 3 works.",
+  recipient: "Sarah Chen",
+  channel: "slack:C0SARAH01",
+  agentId: "claude:box:abcdef0123456789",
+  why: "she asked for a time",
+  status: "proposed",
+  error: null,
+};
+
 function load() {
   convex.data = {
     [getFunctionName(api.ttsRunners.listRunners)]: [
@@ -398,6 +411,7 @@ function load() {
     // wants of it anyway.
     [getFunctionName(api.ttsRepeats.listRepeats)]: [REPEAT],
     [getFunctionName(api.ttsCalendar.listCalendarEvents)]: [],
+    [getFunctionName(api.ttsSignoff.listProposals)]: [PROPOSAL],
   };
 }
 
@@ -441,6 +455,7 @@ const CASES: { file: string; render: () => void }[] = [
   },
   { file: "app/tts/components/repeats-strip.tsx", render: () => void render(<RepeatsStrip />) },
   { file: "app/tts/components/runners-block.tsx", render: () => void render(<RunnersBlock now={NOW} />) },
+  { file: "app/tts/components/signoff-block.tsx", render: () => void render(<SignoffBlock now={NOW} />) },
   {
     file: "app/tts/components/ruling-dialog.tsx",
     render: () =>
