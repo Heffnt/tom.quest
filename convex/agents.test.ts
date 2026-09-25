@@ -477,9 +477,8 @@ describe("agents", () => {
     expect(other?.sessionId).toBeUndefined();
   });
 
-  // The backfill of the old sessions sweeps agent files that carry no
-  // envelope and no end marker, long after their sessions ended. The session
-  // row is the fact: witness — take the file's silence as the answer and
+  // The sweep can read an agent file that carries no envelope and no end
+  // marker, long after its session ended. The session row is the fact: witness — take the file's silence as the answer and
   // every old session's run reads as an unknown worker, abandoned.
   describe("a session's root run", () => {
     const boxRun = (id: string, overrides: Record<string, unknown> = {}) =>

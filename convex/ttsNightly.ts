@@ -48,7 +48,7 @@ export function isExportTable(name: unknown): name is TableNames {
 }
 
 // Page bounds. ROWS ARE NOT THE UNIT THAT MATTERS: a dtsTodos row is a few
-// hundred bytes, a claudeMessages row up to ~32KB (the daemon's cut), and a
+// hundred bytes, a claudeMessages row up to ~32KB (the parser's cut), and a
 // claudeMessageOverflow chunk 256KB — so a fixed 200 rows is 40KB of one table
 // and 50MB of another, past what one query may read. A page that cannot be
 // read is not a slow copy, it is no copy of that table at all, every night.

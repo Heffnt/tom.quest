@@ -134,8 +134,9 @@ describe("Tom's delivered turn stays on the page until its row lands", () => {
 });
 
 describe("the daemon's notes", () => {
-  // witness: write notes as rows and they vanish with the daemon's rows — the
-  // agent file is the only source of rows, and none of these facts is in it.
+  // witness: write notes as rows and the transcript holds rows no agent file
+  // backs — the agent file is the only source of rows, and none of these
+  // facts is in it.
   it("stores each note once, cut to 1 KB, even on a session that has ended", async () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);

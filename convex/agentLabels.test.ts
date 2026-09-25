@@ -521,9 +521,9 @@ describe("a reply in a session becomes a label", () => {
     }
   });
 
-  // witness: key the dedupe on the new ref alone, and the backfill of an old
-  // session's agent file records every turn the daemon-row writer already
-  // labelled a second time.
+  // witness: key the dedupe on the new ref alone, and a sweep of an old
+  // session's agent file records every turn the old writer already labelled
+  // a second time.
   it("writes nothing for a turn the old writer labelled under the session's own key", async () => {
     vi.useFakeTimers();
     try {

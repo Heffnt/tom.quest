@@ -1,6 +1,6 @@
 // THE EXPAND CONTROL over a cut payload, against a scripted overflow query.
 //
-// The daemon cuts anything over 32 KB before it writes a transcript row, and
+// The parser cuts anything over 32 KB before it writes a transcript row, and
 // this control reads the rest back — a page at a time, because one read
 // returns at most 1 MB and hands back a cursor. Three things here are
 // invisible to a type checker and each is a lie about the transcript:

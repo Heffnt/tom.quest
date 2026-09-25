@@ -1363,7 +1363,7 @@ export default defineSchema({
     forkedFrom: v.optional(v.id("claudeSessions")),
     sdkSessionId: v.optional(v.string()), // set once the SDK reports it; resume key
     // The run this session's CLI file is recorded as (§23). One session is one
-    // run; absent until the sweep or backfill writes the derivable CLI id.
+    // run; absent until the sweep writes the derivable CLI id.
     runId: v.optional(v.string()),
     // The run this session continues: the old session's run after a reopen,
     // the forked session's run after a "reopen as". The run the ingest records
@@ -1427,7 +1427,8 @@ export default defineSchema({
     // The run-file ingest repairs the session link from the CLI's own id.
     .index("by_sdk_session_id", ["sdkSessionId"]),
 
-  // Finalized transcript — written exactly once per row by the daemon.
+  // A run's transcript — written once per row by the sweep's ingest
+  // (agents.internalIngest), out of the run's agent file.
   // `turn` has no UI reader yet; it is kept because transcript structure is
   // knowledge the (planned) session sweep and analysis layers read, and it
   // is cheap to record now and unreconstructible later.
@@ -1449,10 +1450,9 @@ export default defineSchema({
       v.literal("child-run"),
       v.literal("context"),
     ),
-    content: v.any(), // typed payload per kind; tool results truncated at 32KB by the daemon
-    // Subagent parentage (P2): on a tool-call row emitted INSIDE a running
-    // Task subagent, the parent Task's toolUseId — the daemon reports it so
-    // the agent panel can show what each subagent is doing right now.
+    content: v.any(), // typed payload per kind; cut at 32KB by the parser (Jarvis worker/agents/cut.mjs)
+    // On a tool-result or child-run row, the toolUseId of the tool call it
+    // answers (Jarvis worker/agents/ingest.mjs).
     parentToolUseId: v.optional(v.string()),
     // Set when the 32KB cut above fired (lifeos update §1, the transcript
     // principle: a rendered view may be short, the full bytes must stay

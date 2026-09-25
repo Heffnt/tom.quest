@@ -167,16 +167,6 @@ export function isModelOfTomPath(path: unknown): path is string {
 }
 
 // ── The base ─────────────────────────────────────────────────────────────────
-//
-// THE ONE-SHOT BACKFILL IS GONE with this commit, and could not have been kept.
-// `internalBackfillModelOfTom`, `backfillLayers` and `publicationFromFacts`
-// existed to seed the singleton ONCE out of the per-file rows the retired
-// six-hourly sync had left in `ttsSkills`, and they refused to run at all once
-// a publication was stored — so they have been spent since the first nightly
-// post after phase 4. The door they repaired cannot be reached from the new
-// table shape either: `ttsSkills` no longer carries a `sourcePath` or a
-// per-file body, so there is nothing left for `publicationFromFacts` to read.
-// Their tests went with them.
 
 export const internalReplaceModelOfTom = internalMutation({
   args: {

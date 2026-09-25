@@ -13,8 +13,8 @@ import { describe, expect, it } from "vitest";
 
 import { redactSecrets } from "../redact.mjs";
 
-// The daemon's cut, TRUNCATE_LIMIT, is 32KB and lives in the Jarvis
-// repository with the daemon. Here it is a fixture: what these cases state is
+// The parser's cut, TRUNCATE_LIMIT, is 32KB and lives in the Jarvis
+// repository (worker/agents/cut.mjs). Here it is a fixture: what these cases state is
 // that redaction runs on the bytes after a cut, wherever the cut falls.
 const TRUNCATE_LIMIT = 32 * 1024;
 
