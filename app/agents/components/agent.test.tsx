@@ -13,7 +13,7 @@
 // are a page that still renders and quietly says something false.
 //
 // So the fixture here is a real depth-3 tree, built in the shapes
-// worker/runs/ingest.mjs writes, and the cases open it level by level and look
+// worker/agents/ingest.mjs writes, and the cases open it level by level and look
 // at what each level actually drew. The last one prints the whole rendered
 // tree — kind, nesting depth, compact line — because the phase's claim is
 // about a SHAPE, and a shape has to be looked at rather than asserted about.

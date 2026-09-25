@@ -38,7 +38,7 @@ cat /tmp/codex-k7qz.err; echo '=== ANSWER ==='; cat /tmp/codex-k7qz.out; rm -f /
    The `.err` side carries the transport's progress lines; everything after `=== ANSWER ===` is Codex's answer, and its **last line** is the box's status line.
 
 4. Reply with exactly two parts and nothing else:
-   - The status line, read off the last line of the output: `box-run: run <id> host box cli codex exit <code> after <s>s`.
+   - The status line, read off the last line of the output: `launcher: agent <id> host box cli <cli> exit <n> after <s>s`.
    - Codex's answer, in full, inside a fenced block.
 
 ## Rules

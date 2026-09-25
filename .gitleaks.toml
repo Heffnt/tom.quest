@@ -48,7 +48,7 @@ regexes = [
   # remove a real credential-shaped token before it reaches an item.
   '''ghp_abcdefghijklmnopqrstuvwxyz1234567890''',
   # convex/http.test.ts — a SECOND run-registration token fixture, the reaction
-  # door suite's. Same reason as the UUID above: GET /tts/run-trace checks the
+  # door suite's. Same reason as the UUID above: GET /tts/agent-trace checks the
   # token's shape before the indexed lookup, so a shapeless placeholder would
   # not exercise the path that suite exists for. gitleaks reads it as
   # generic-api-key on entropy, and every push to main whose range includes

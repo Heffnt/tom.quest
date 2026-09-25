@@ -32,8 +32,8 @@ vi.mock("@/app/lib/auth", () => ({
 }));
 
 const NOW = 1_756_000_000_000;
-const STEP_RUN = "claude:box:00000000-0000-4000-8000-000000000002";
-const EARLIER_RUN = "claude:box:00000000-0000-4000-8000-000000000001";
+const STEP_AGENT = "claude:box:00000000-0000-4000-8000-000000000002";
+const EARLIER_AGENT = "claude:box:00000000-0000-4000-8000-000000000001";
 
 const LIVE = {
   runnerId: "r1",
@@ -47,7 +47,7 @@ const LIVE = {
   status: "waiting-on-tom",
   openBlockingAsks: 1,
   lastCheckIn: { at: NOW - 12 * 60_000, line: "14 of 20 jobs are running." },
-  stepRunId: STEP_RUN,
+  stepAgentId: STEP_AGENT,
 };
 
 const ENDED = {
@@ -59,21 +59,21 @@ const ENDED = {
   status: "done",
   openBlockingAsks: 0,
   lastCheckIn: null,
-  stepRunId: null,
+  stepAgentId: null,
 };
 
 const DETAIL = {
   document: "# TRAIN25\n\n## Objective\n\nWatch the **sweep**.\n",
   documentVersion: 3,
   checkIns: [
-    { id: "c2", at: NOW - 12 * 60_000, stepRunId: STEP_RUN, decision: "ask", verdict: "pass", text: "14 of 20 jobs are running." },
-    { id: "c1", at: NOW - 22 * 60_000, stepRunId: EARLIER_RUN, decision: "continue", verdict: "fail", text: "12 of 20 jobs are running." },
+    { id: "c2", at: NOW - 12 * 60_000, stepAgentId: STEP_AGENT, decision: "ask", verdict: "pass", text: "14 of 20 jobs are running." },
+    { id: "c1", at: NOW - 22 * 60_000, stepAgentId: EARLIER_AGENT, decision: "continue", verdict: "fail", text: "12 of 20 jobs are running." },
   ],
   asks: [
     {
       id: "a1",
       at: NOW - 12 * 60_000,
-      stepRunId: STEP_RUN,
+      stepAgentId: STEP_AGENT,
       tier: "setup",
       blocking: true,
       answeredAt: null,
@@ -110,7 +110,7 @@ describe("the runners block", () => {
   it("opens the newest step agent in the agent view from the title", () => {
     render(<RunnersBlock now={NOW} />);
     expect(screen.getByRole("link", { name: "TRAIN25 campaign" }).getAttribute("href")).toBe(
-      `/agents?agent=${encodeURIComponent(STEP_RUN)}`,
+      `/agents?agent=${encodeURIComponent(STEP_AGENT)}`,
     );
   });
 
@@ -123,8 +123,8 @@ describe("the runners block", () => {
 
     const checkIns = screen.getAllByRole("link", { name: "step agent" });
     expect(checkIns.map((a) => a.getAttribute("href"))).toEqual([
-      `/agents?agent=${encodeURIComponent(STEP_RUN)}`,
-      `/agents?agent=${encodeURIComponent(EARLIER_RUN)}`,
+      `/agents?agent=${encodeURIComponent(STEP_AGENT)}`,
+      `/agents?agent=${encodeURIComponent(EARLIER_AGENT)}`,
     ]);
     expect(screen.getByText(/it asked a question/)).toBeTruthy();
     expect(screen.getByText(/it changed nothing · did not pass the writing check/)).toBeTruthy();

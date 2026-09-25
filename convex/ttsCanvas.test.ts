@@ -427,7 +427,7 @@ describe("POST /tts/job-failed", () => {
 
   // #TTS-BROKEN GETS A LINE PER DISTINCT FAILURE. This route once inserted its
   // row beside logEvent rather than through it, so postBroken never ran and no
-  // box job's failure (runs-sweep, deploy, the needs-you drop) ever reached
+  // box job's failure (agents-sweep, deploy, the needs-you drop) ever reached
   // #tts-broken, while the comments here said the digest carried it there.
   const brokenScheduled = async (t: ReturnType<typeof convexTest>) =>
     await t.run(async (ctx) =>
@@ -440,14 +440,14 @@ describe("POST /tts/job-failed", () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const failure = {
-      job: "runs-sweep",
+      job: "agents-sweep",
       error: "the sweep could not read the run table",
-      key: "runs-sweep:read",
+      key: "agents-sweep:read",
     };
     expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
     const first = await brokenScheduled(t);
     expect(first).toHaveLength(1);
-    expect(first[0].job).toBe("runs-sweep");
+    expect(first[0].job).toBe("agents-sweep");
     expect(first[0].detail).toBe(failure.error);
 
     // The same condition again the same day: suppressed as standing, so it
@@ -476,7 +476,7 @@ describe("POST /tts/job-failed", () => {
     for (const body of [
       { job: "deploy", error: "vercel build failed" },
       { job: "deploy", error: "vercel build failed again" },
-      { job: "runs-sweep", error: "sweep failed" },
+      { job: "agents-sweep", error: "sweep failed" },
     ]) {
       await report(t, body);
       await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -486,7 +486,7 @@ describe("POST /tts/job-failed", () => {
     const broken = posts.filter((p) => p.channel === "C0BROKEN");
     expect(broken).toHaveLength(2);
     expect(broken.filter((p) => p.text.includes("deploy"))).toHaveLength(1);
-    expect(broken.filter((p) => p.text.includes("runs-sweep"))).toHaveLength(1);
+    expect(broken.filter((p) => p.text.includes("agents-sweep"))).toHaveLength(1);
   });
 
   it("refuses a blank key on either route, and an unnamed clean run", async () => {

@@ -115,7 +115,7 @@ describe("describeOverflow", () => {
 // The run-row readers below all face the same hazard: a claudeMessages row is
 // v.any() and now has THREE writers — the session daemon
 // (worker/session-host/session.mjs), and the Claude and Codex parsers in
-// worker/runs/ingest.mjs. A reader written against one writer's object reads
+// worker/agents/ingest.mjs. A reader written against one writer's object reads
 // the others' as nothing, silently, so each shape is pinned here against the
 // line that writes it.
 

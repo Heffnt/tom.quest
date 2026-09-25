@@ -12,7 +12,7 @@ schema or regex. Cheap, exact, narrow.
 **the audit** is a model of another family reading a change before it merges —
 Codex, and Claude Opus at the Codex weekly cap, where the row says so
 (`fallback: codex-cap`), and an OpenRouter model (`MODELS.auditOpenrouter` in
-`worker/runs/models.mjs`) when Claude is also refused for the account's limit
+`worker/agents/models.mjs`) when Claude is also refused for the account's limit
 and the box holds a usable OpenRouter key (`fallback: codex-cap, claude-limit`).
 
 **the evals** are a model reading outputs against Tom's labels: the golden set,

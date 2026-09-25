@@ -735,22 +735,23 @@ describe("restarting from the document", () => {
   });
 });
 
-// ── Both spellings, while the box moves from run to agent ───────────────────
-// The elevate pen reads agentId and runId until phase 3 and stores either as
-// the elevation's concernsRunId.
-describe("the elevate pen under both spellings", () => {
-  it("stores the same concernsRunId under agentId and under runId", async () => {
+// ── The agent spelling only ─────────────────────────────────────────────────
+// The elevate pen reads agentId and stores it as the elevation's
+// concernsRunId. A body still sending runId is refused, not silently dropped.
+describe("the elevate pen reads agentId only", () => {
+  it("stores concernsRunId from agentId and refuses runId", async () => {
     const concerns = "claude:box:concerned-agent-1";
-    const stored = [];
-    for (const key of ["agentId", "runId"]) {
-      const t = await setup();
-      const worker = await spawn(t, await start(t));
-      const res = await pen(t, "/tts/elevate", { sessionId: worker, question: "Which colour?", sides: ["Blue.", "Green."], [key]: concerns });
-      expect(res.status, key).toBe(200);
-      const elevation = await t.run((ctx) => ctx.db.get(res.body.elevationId as Id<"elevations">));
-      stored.push(elevation?.concernsRunId);
-      vi.unstubAllEnvs();
-    }
-    expect(stored).toEqual([concerns, concerns]);
+    const t = await setup();
+    const worker = await spawn(t, await start(t));
+    const ask = { sessionId: worker, question: "Which colour?", sides: ["Blue.", "Green."] };
+    const old = await pen(t, "/tts/elevate", { ...ask, runId: concerns });
+    expect(old.status).toBe(400);
+    expect(old.body).toEqual({ error: "runId is no longer read; send agentId" });
+    expect(await t.run((ctx) => ctx.db.query("elevations").collect())).toEqual([]);
+    const res = await pen(t, "/tts/elevate", { ...ask, agentId: concerns });
+    expect(res.status).toBe(200);
+    const elevation = await t.run((ctx) => ctx.db.get(res.body.elevationId as Id<"elevations">));
+    expect(elevation?.concernsRunId).toBe(concerns);
+    vi.unstubAllEnvs();
   });
 });

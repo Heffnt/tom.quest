@@ -34,7 +34,7 @@ cat /tmp/box-k7qz.err; echo '=== ANSWER ==='; cat /tmp/box-k7qz.out; rm -f /tmp/
    The `.err` side carries progress and the queue notice; everything after `=== ANSWER ===` is the agent's report, and its **last line** is the status line.
 
 4. Reply with exactly two parts and nothing else:
-   - The status line, read off the last line of the output: `box-run: run <id> host box cli claude exit <code> after <s>s`.
+   - The status line, read off the last line of the output: `launcher: agent <id> host box cli <cli> exit <n> after <s>s`.
    - The report, in full, inside a fenced block.
 
 ## What Tom sets up once
@@ -43,15 +43,14 @@ The address is his to place. The permission entries travel with the repository n
 
 - `JARVIS_DIR`, the path of the Jarvis checkout, whose `scripts/box-agent.mjs` this agent runs. Jarvis's laptop setup exports it on the laptop and its box setup exports `/opt/jarvis` on the box. Without it the procedure stops at step 1 with one line naming `JARVIS_DIR`.
 - The box's address, in the laptop's env file `~/.tts/env`: `TTS_BOX_HOST=<the box>`. Without it `box-agent.mjs` refuses with exit 255 and says so, because tom.quest is public and the address is not written in it.
-- Three `permissions.allow` entries, so the relay is not stopped at a prompt on every call. The project's own `.claude/settings.json` carries them, beside the two the `codex` agent already had:
+- Two `permissions.allow` entries, so the relay is not stopped at a prompt on every call. The project's own `.claude/settings.json` carries them, beside the two the `codex` agent already had:
 
 ```
 "Bash(node \"$JARVIS_DIR/scripts/box-agent.mjs\":*)",
-"Bash(tts-run:*)",
 "Bash(tts-agent:*)"
 ```
 
-  The first is the laptop half; the second and third are the same program reached directly on the box, where an agent delegates to another agent. The box's tool is named `tts-run` until Jarvis renames it `tts-agent`, and the `tts-run` entry is removed then. A machine whose Claude Code reads a different settings file than this one needs the same entries there.
+  The first is the laptop half; the second is the same program reached directly on the box, where an agent delegates to another agent. A machine whose Claude Code reads a different settings file than this one needs the same entries there.
 
 ## Rules
 

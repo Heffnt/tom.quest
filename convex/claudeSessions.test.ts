@@ -4804,7 +4804,7 @@ describe("the fleet model and the usage gates", () => {
   });
 });
 
-// THE MODEL CEILING (worker/runs/models.mjs; Tom's rulings of 2026-09-24). The
+// THE MODEL CEILING (worker/agents/models.mjs; Tom's rulings of 2026-09-24). The
 // daemon reports the box's Fable availability file on its heartbeat, and the
 // health row keeps it for the pages that say "Fable unavailable since <time>,
 // last checked <time>". A heartbeat without it keeps the last report.

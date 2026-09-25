@@ -152,20 +152,28 @@ export type SimplifyRunCounts = {
 
 export type SimplifyFacts = {
   window: SimplifyWindow;
-  runs: SimplifyRunCounts;
+  agents: SimplifyRunCounts;
   layers: { name: string; given: number; denied: number }[];
   skills: { name: string; offered: number; used: number }[];
-  tools: { name: string; runs: number }[];
-  hooks: { name: string; runs: number }[];
+  // WHAT THE BOX READS. Since Jarvis's rename (525d6e1, "agents: the noun for
+  // a thread is agent, in every name Jarvis owns") its simplify job,
+  // worker/jobs/simplify.mjs, reads the top-level `agents` with no fallback to
+  // `runs`, and reads each `sample` entry's tokens and graph nodes, never its
+  // id, so `sample[].agentId` replaced `runId` with no reader to break. It
+  // still reads `runs` on the cwds entries and passes the tools and hooks
+  // entries on as they arrive, so these three carry `runs` beside `agents`
+  // until Jarvis's follow-up switches them; a later pass here drops `runs`.
+  tools: { name: string; agents: number; runs: number }[];
+  hooks: { name: string; agents: number; runs: number }[];
   /** Distinct working directories, plus ONE row with `cwd: null` counting the
    *  runs that reported none. */
-  cwds: { cwd: string | null; runs: number }[];
+  cwds: { cwd: string | null; agents: number; runs: number }[];
   /** One row per sampled run. `graphNodes` is the exact set of node ids that
    *  run's prompt carried — the `given` edges off its context entry — and the
    *  job counts a rule's `loaded` from it. UNDEFINED IS A VALUE: a run that
    *  recorded no node list is not a run that was given no nodes, and the job
    *  counts those separately rather than reading absence as zero. */
-  sample: { runId: string; startedAt: number; depth: number; tokens: string[]; graphNodes: string[] | undefined }[];
+  sample: { agentId: string; startedAt: number; depth: number; tokens: string[]; graphNodes: string[] | undefined }[];
   /** The three checks of the mechanical merge gate, by the names the deny
    *  message and the morning line already use. */
   gate: { tests: SimplifyGateCheck; audit: SimplifyGateCheck; evals: SimplifyGateCheck };
@@ -422,7 +430,7 @@ export const internalSimplifyInput = internalQuery({
         .withIndex("by_run_seq", (q) => q.eq("runId", run.runId))
         .take(ROW_SCAN_PER_RUN);
       sample.push({
-        runId: run.runId,
+        agentId: run.runId,
         startedAt: run.startedAt,
         depth: run.depth,
         tokens: tokenBag(rows.map(rowText)),
@@ -499,7 +507,7 @@ export const internalSimplifyInput = internalQuery({
 
     return {
       window: { since, until, weeks: WINDOW_WEEKS },
-      runs: counts,
+      agents: counts,
       layers: ranked(layers, (row) => row.given + row.denied).map(({ name, value }) => ({
         name,
         ...value,
@@ -508,16 +516,16 @@ export const internalSimplifyInput = internalQuery({
         name,
         ...value,
       })),
-      tools: ranked(tools, (n) => n).map(({ name, value }) => ({ name, runs: value })),
-      hooks: ranked(hooks, (n) => n).map(({ name, value }) => ({ name, runs: value })),
+      tools: ranked(tools, (n) => n).map(({ name, value }) => ({ name, agents: value, runs: value })),
+      hooks: ranked(hooks, (n) => n).map(({ name, value }) => ({ name, agents: value, runs: value })),
       cwds: [
         ...ranked(cwds, (n) => n)
           .slice(0, CWD_DISTINCT_MAX)
-          .map(({ name, value }) => ({ cwd: name as string | null, runs: value })),
+          .map(({ name, value }) => ({ cwd: name as string | null, agents: value, runs: value })),
         // Always present, even at zero: "no run reported a directory" and "the
         // question was not asked" are different answers, and a row that
         // vanishes when it is zero cannot say the first.
-        { cwd: null, runs: cwdless },
+        { cwd: null, agents: cwdless, runs: cwdless },
       ],
       sample,
       gate: { tests, audit, evals: evalsGate },

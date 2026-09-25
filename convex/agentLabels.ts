@@ -48,7 +48,7 @@ const LABEL_POLARITY = v.union(
 /** An act that named no run. Counted, never silent: silence would make an old
  *  corpus look like a clean one, and a counted absence is a fact the weekly
  *  gather can report and a later backlog import can repair. */
-const AGENT_LABEL_UNLINKED = "run-label-unlinked";
+const AGENT_LABEL_UNLINKED = "agent-label-unlinked";
 /** An emoji nobody mapped. It says what Tom reaches for, which is worth
  *  having; guessing its polarity would put an invented judgment in the
  *  corpus. */

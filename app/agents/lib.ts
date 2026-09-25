@@ -252,7 +252,7 @@ export function isErrorOf(content: unknown): boolean {
  * THREE FIELD NAMES, one fact. The daemon writes `truncationNote`. The run-file
  * ingest writes `truncation`, and on a `context` row `promptTruncation`, because
  * there it cuts the prompt alone and leaves the other context fields standing
- * (worker/runs/ingest.mjs finishResult). Reading only the first would make a
+ * (worker/agents/ingest.mjs finishResult). Reading only the first would make a
  * file-derived cut silent, which is the one thing this footer exists to stop.
  */
 export function truncationNoteOf(content: unknown): string | undefined {
@@ -378,7 +378,7 @@ export type { ModelOfTomHead } from "@/convex/ttsShared";
 // ── The three writers of a row's content ────────────────────────────────────
 // A claudeMessages row is v.any() and now has THREE authors: the session
 // daemon (worker/session-host/session.mjs), the Claude run-file parser and the
-// Codex run-file parser (both worker/runs/ingest.mjs). The same `kind` carries
+// Codex run-file parser (both worker/agents/ingest.mjs). The same `kind` carries
 // a different object from each, and a run file is read long after it was
 // written — so every reader below takes the shapes it can meet and returns a
 // value for all of them rather than throwing on the one it did not expect.
@@ -514,13 +514,13 @@ export function contextFactsOf(content: unknown): ContextFacts {
 
 /**
  * A Claude tool result too large for the transcript points at a file on the
- * host — the CLI's `<persisted-output>` marker, which worker/runs/ingest.mjs
+ * host — the CLI's `<persisted-output>` marker, which worker/agents/ingest.mjs
  * reads off the result and stores as `persistedOutput`. Nothing serves that
  * file: the page has the path and not the bytes, so this is a fact line, never
  * a link.
  *
  * THE SIZE ARRIVES AS THE CLI'S OWN STRING. The parser stores what the marker
- * said, verbatim (`{ path, sizeText }` — worker/runs/ingest.mjs persistedOutput),
+ * said, verbatim (`{ path, sizeText }` — worker/agents/ingest.mjs persistedOutput),
  * so "1.2MB" is quoted rather than reinterpreted as a byte count nobody
  * measured. `bytes` is kept beside it for a writer that reports a number.
  */
@@ -579,7 +579,7 @@ export function runStatusChipClass(status: string): string {
 
 /**
  * "$0.42". ABSENT MUST RETURN "": costUsd is written only when the price table
- * prices the model (worker/runs/prices.mjs returns null otherwise), so an
+ * prices the model (worker/agents/prices.mjs returns null otherwise), so an
  * absent cost means nobody knows what the run cost — and "$0.00" would be the
  * page claiming the run was free.
  */

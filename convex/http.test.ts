@@ -195,7 +195,6 @@ describe("GET /tts/agent-trace", () => {
     const res = await t.fetch(`/tts/agent-trace?token=${TOKEN}`, { headers: KEY });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      runId: RUN_ID,
       agentId: RUN_ID,
       turns: 12,
       // tokensOf: input + cache-read + cache-write + output. NOT totalTokens,
@@ -231,17 +230,6 @@ describe("GET /tts/agent-trace", () => {
     expect((await t.fetch(`/tts/agent-trace?token=${TOKEN}`)).status).toBe(503);
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     expect((await t.fetch(`/tts/agent-trace?token=${TOKEN}`, { headers: { "X-TTS-Key": "wrong" } })).status).toBe(401);
-  });
-
-  // The run spelling of the route stays until phase 3.
-  it("answers the same at /tts/run-trace", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest(schema, modules);
-    await anAudit(t);
-    const agent = await (await t.fetch(`/tts/agent-trace?token=${TOKEN}`, { headers: KEY })).json();
-    const run = await (await t.fetch(`/tts/run-trace?token=${TOKEN}`, { headers: KEY })).json();
-    expect(run).toEqual(agent);
-    expect(agent).toMatchObject({ agentId: RUN_ID, runId: RUN_ID });
   });
 });
 
@@ -383,6 +371,11 @@ const body = {
   },
   rows: [], children: [], previousCommittedLine: 0, previousPrefixSha256: "d".repeat(64),
 };
+/** The same page in the wire spelling, as the box posts it to /agents/ingest;
+ *  `body` itself is in the stored spelling, for the internal door. */
+const { run: storedAgent, ...bodyRest } = body;
+const { runId: bodyAgentId, rootRunId: bodyRootAgentId, ...bodyAgentRest } = storedAgent;
+const wireBody = { ...bodyRest, agent: { ...bodyAgentRest, agentId: bodyAgentId, rootAgentId: bodyRootAgentId } };
 function post(t: ReturnType<typeof convexTest>, value: unknown, key?: string) {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (key) headers["X-Sessions-Key"] = key;
@@ -393,13 +386,13 @@ describe("POST /agents/ingest", () => {
   afterEach(() => vi.unstubAllEnvs());
   it("returns 503 until the existing worker credential is configured", async () => {
     const t = convexTest(schema, modules);
-    const response = await post(t, body, "key");
+    const response = await post(t, wireBody, "key");
     expect(response.status).toBe(503);
   });
   it("returns 401 for a wrong worker credential", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    expect((await post(t, body, "wrong")).status).toBe(401);
+    expect((await post(t, wireBody, "wrong")).status).toBe(401);
   });
   it("returns 400 for invalid JSON", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
@@ -411,7 +404,7 @@ describe("POST /agents/ingest", () => {
   it("accepts a well-typed page", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    const response = await post(t, body, "right");
+    const response = await post(t, wireBody, "right");
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, runId: "claude:laptop:http-run" });
   });
@@ -473,7 +466,7 @@ describe("POST /agents/overflow: bounded chunks", () => {
   it("accepts worst-case 256 KiB chunks at the body boundary and rejects one byte more", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    expect((await post(t, body, "right")).status).toBe(200);
+    expect((await post(t, wireBody, "right")).status).toBe(200);
 
     const maxBody = 6 * 256 * 1024 + 4 * 1024;
     const quoteAndSlash = '"\\'.repeat(128 * 1024);
@@ -539,7 +532,7 @@ describe("phase 3 agent routes", () => {
       body: JSON.stringify({ sessionId: direct }),
     });
     expect(directResponse.status).toBe(200);
-    expect(await directResponse.json()).toMatchObject({ runId: runIdFor("direct"), clean: true });
+    expect(await directResponse.json()).toMatchObject({ agentId: runIdFor("direct"), clean: true });
 
     await linkedSession(t, "batch");
     const batchResponse = await t.fetch("/agents/compare", {
@@ -548,7 +541,7 @@ describe("phase 3 agent routes", () => {
       body: "{}",
     });
     expect(batchResponse.status).toBe(200);
-    expect(await batchResponse.json()).toMatchObject({ comparisons: [expect.objectContaining({ runId: runIdFor("batch"), clean: true })] });
+    expect(await batchResponse.json()).toMatchObject({ comparisons: [expect.objectContaining({ agentId: runIdFor("batch"), clean: true })] });
   });
 
   it("finishes every bounded comparison page before returning a verdict", async () => {
@@ -649,7 +642,7 @@ describe("/agents/materialize*: the queue the box drains", () => {
     const handed = await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } });
     expect(handed.status).toBe(200);
     const { request } = await handed.json();
-    expect(request).toMatchObject({ runId: "claude:laptop:http-run", cli: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
+    expect(request).toMatchObject({ agentId: "claude:laptop:http-run", cli: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
 
     const answer = await t.fetch("/agents/materialize-answer", {
       method: "POST", headers: KEY,
@@ -694,14 +687,14 @@ describe("/agents/materialize*: the queue the box drains", () => {
   });
 });
 
-// ── Both spellings, while the box moves from run to agent ───────────────────
-// Every door the box posts to reads the agent spelling and the run spelling
-// until phase 3, at the agent route and at the run route, and hands the record
-// the stored (run) spelling only. Each case runs one scenario twice, once per
-// spelling on a fresh deployment, and compares what was stored. A body whose
-// agent keys reached internalIngest's strict validator would be refused with a
-// 400, so a 200 with ok: true is the proof that none did.
-describe("both spellings on the agent doors", () => {
+// ── The agent spelling only ─────────────────────────────────────────────────
+// Every door the box posts to reads the agent spelling, refuses a body that
+// still carries a run-spelled key with a 400 naming both keys, and hands the
+// record the stored (run) spelling only. The /runs/* paths and /tts/run-trace
+// are gone. A body whose agent keys reached internalIngest's strict validator
+// would be refused with a 400, so a 200 with ok: true is the proof that none
+// did.
+describe("the agent doors read the agent spelling only", () => {
   afterEach(() => vi.unstubAllEnvs());
   const KEY = { "Content-Type": "application/json", "X-Sessions-Key": "right" };
   const ROOT = "claude:laptop:spelling-root";
@@ -709,19 +702,9 @@ describe("both spellings on the agent doors", () => {
   const EARLIER = "claude:laptop:spelling-earlier";
   const FILE = { path: "C:/spelling.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64), bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64) };
   const CHILD_FILE = { ...FILE, path: "C:/spelling-child.jsonl", storedHash: "e".repeat(64) };
+  const STORED_FILE = { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" };
   const FACTS = { origin: "unknown", host: "laptop", cli: "claude", parserVersion: "runs-parser-1", status: "unknown", startedAt: 1, lastLineAt: 1, attachments: [] };
   const HELLO_SHA256 = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
-  const SPELLINGS = ["agent", "run"] as const;
-  type Spelling = (typeof SPELLINGS)[number];
-  /** The key a spelling uses for one field: `agentId` or `runId`, and so on. */
-  const key = (spelling: Spelling, field: "Id" | "ParentId" | "RootId" | "ContinuesId") =>
-    ({
-      Id: { agent: "agentId", run: "runId" },
-      ParentId: { agent: "parentAgentId", run: "parentRunId" },
-      RootId: { agent: "rootAgentId", run: "rootRunId" },
-      ContinuesId: { agent: "continuesAgentId", run: "continuesRunId" },
-    })[field][spelling];
-  const route = (spelling: Spelling, door: string) => `/${spelling === "agent" ? "agents" : "runs"}/${door}`;
   const VOLATILE = new Set(["_id", "_creationTime", "ingestedAt", "at", "createdAt", "requestedAt", "servedAt"]);
 
   /** Every row of a table, without the fields a clock or an id generator sets. */
@@ -732,20 +715,30 @@ describe("both spellings on the agent doors", () => {
       .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   }
 
-  /** One ingest body in one spelling: the root, its child edge, and the run it continues. */
-  function rootPage(spelling: Spelling, rows: unknown[] = [], file: Record<string, unknown> = FILE) {
+  /** The root's ingest page in the wire spelling: the root, its child edge, and the agent it continues. */
+  function rootPage(rows: unknown[] = [], file: Record<string, unknown> = FILE) {
     return {
-      [spelling]: { [key(spelling, "Id")]: ROOT, [key(spelling, "RootId")]: ROOT, [key(spelling, "ContinuesId")]: EARLIER, depth: 0, linkKnown: true, kind: "session", ...FACTS, file },
+      agent: { agentId: ROOT, rootAgentId: ROOT, continuesAgentId: EARLIER, depth: 0, linkKnown: true, kind: "session", ...FACTS, file },
       rows,
-      children: [{ [key(spelling, "Id")]: CHILD, [key(spelling, "ParentId")]: ROOT, [key(spelling, "RootId")]: ROOT, depth: 1, linkKnown: true, spawnedByToolUseId: "toolu-spelling" }],
+      children: [{ agentId: CHILD, parentAgentId: ROOT, rootAgentId: ROOT, depth: 1, linkKnown: true, spawnedByToolUseId: "toolu-spelling" }],
       previousCommittedLine: 0,
       previousPrefixSha256: "d".repeat(64),
     };
   }
-  function childPage(spelling: Spelling) {
+  function childPage() {
     return {
-      [spelling]: { [key(spelling, "Id")]: CHILD, [key(spelling, "ParentId")]: ROOT, [key(spelling, "RootId")]: ROOT, depth: 1, linkKnown: true, spawnedByToolUseId: "toolu-spelling", kind: "subagent", ...FACTS, file: CHILD_FILE },
+      agent: { agentId: CHILD, parentAgentId: ROOT, rootAgentId: ROOT, depth: 1, linkKnown: true, spawnedByToolUseId: "toolu-spelling", kind: "subagent", ...FACTS, file: CHILD_FILE },
       rows: [], children: [], previousCommittedLine: 0, previousPrefixSha256: "d".repeat(64),
+    };
+  }
+  /** The same root page in the stored spelling, for the internal door. */
+  function storedRootPage(rows: unknown[] = [], file: Record<string, unknown> = FILE) {
+    return {
+      run: { runId: ROOT, rootRunId: ROOT, continuesRunId: EARLIER, depth: 0, linkKnown: true, kind: "session", ...FACTS, file },
+      rows,
+      children: [{ runId: CHILD, parentRunId: ROOT, rootRunId: ROOT, depth: 1, linkKnown: true, spawnedByToolUseId: "toolu-spelling" }],
+      previousCommittedLine: 0,
+      previousPrefixSha256: "d".repeat(64),
     };
   }
   const ROW = {
@@ -759,170 +752,175 @@ describe("both spellings on the agent doors", () => {
   async function withRoot(rows: unknown[] = [], file: Record<string, unknown> = FILE) {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    const landed = await t.mutation(internal.agents.internalIngest, rootPage("run", rows, file) as never);
+    const landed = await t.mutation(internal.agents.internalIngest, storedRootPage(rows, file) as never);
     expect(landed, JSON.stringify(landed)).toMatchObject({ ok: true });
     return t;
   }
+  /** A 400 that names the old key and the key that replaced it. */
+  async function refusedAs(response: Response, old: string, replacement: string) {
+    expect(response.status, old).toBe(400);
+    expect(await response.json()).toEqual({ error: `${old} is no longer read; send ${replacement}` });
+  }
 
-  it("/agents/ingest and /runs/ingest store the same agents, edges and file versions", async () => {
-    const tables = [];
-    for (const spelling of SPELLINGS) {
-      vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-      const t = convexTest(schema, modules);
-      for (const page of [rootPage(spelling), childPage(spelling)]) {
-        const response = await post(t, route(spelling, "ingest"), page);
-        expect(response.status, spelling).toBe(200);
-        expect(await response.json(), spelling).toMatchObject({ ok: true });
-      }
-      tables.push({ runs: await stored(t, "runs"), runFileVersions: await stored(t, "runFileVersions") });
+  it("the /runs/* paths and /tts/run-trace answer nothing", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    for (const path of ["ingest", "overflow", "overflow/stamp", "compare", "materialize-answer", "materialize"]) {
+      expect((await post(t, `/runs/${path}`, {})).status, path).toBe(404);
     }
-    expect(tables[0]).toEqual(tables[1]);
-    expect(tables[0].runs.map((row) => row.runId)).toEqual([ROOT, CHILD]);
-    expect(tables[0].runs[0]).toMatchObject({ continuesRunId: EARLIER });
-    expect(tables[0].runs[1]).toMatchObject({ parentRunId: ROOT, rootRunId: ROOT, depth: 1 });
-    expect(JSON.stringify(tables[0])).not.toMatch(/agentId|AgentId/);
+    for (const path of ["manifest?since=0", "materialize-request"]) {
+      expect((await t.fetch(`/runs/${path}`, { headers: KEY })).status, path).toBe(404);
+    }
+    expect((await t.fetch("/tts/run-trace?token=3f2504e0-4f89-41d3-9a0c-0305e82c3301", { headers: { "X-TTS-Key": "s3cret" } })).status).toBe(404);
   });
 
-  it("refuses an ingest whose agent id is malformed under either spelling", async () => {
+  it("/agents/ingest stores agents, edges and file versions in the stored spelling", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
-    for (const spelling of SPELLINGS) {
-      const body = rootPage(spelling);
-      (body[spelling] as Record<string, unknown>)[key(spelling, "Id")] = "not-an-agent";
-      const response = await post(t, route(spelling, "ingest"), body);
-      expect(response.status, spelling).toBe(400);
-      expect(await response.json()).toEqual({ error: "agentId invalid" });
+    for (const page of [rootPage(), childPage()]) {
+      const response = await post(t, "/agents/ingest", page);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true });
     }
+    const tables = { runs: await stored(t, "runs"), runFileVersions: await stored(t, "runFileVersions") };
+    expect(tables.runs.map((row) => row.runId)).toEqual([ROOT, CHILD]);
+    expect(tables.runs[0]).toMatchObject({ continuesRunId: EARLIER });
+    expect(tables.runs[1]).toMatchObject({ parentRunId: ROOT, rootRunId: ROOT, depth: 1 });
+    expect(JSON.stringify(tables)).not.toMatch(/agentId|AgentId/);
   });
 
-  it("/agents/overflow and /runs/overflow store the same chunk", async () => {
-    const tables = [];
-    for (const spelling of SPELLINGS) {
-      const t = await withRoot([ROW]);
-      const response = await post(t, route(spelling, "overflow"), { [key(spelling, "Id")]: ROOT, seq: 0, index: 0, chunkCount: 1, text: "hello world" });
-      expect(response.status, spelling).toBe(200);
-      tables.push(await stored(t, "claudeMessageOverflow"));
+  it("/agents/ingest refuses a run-spelled key on the body, the agent object or a child edge", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    await refusedAs(await post(t, "/agents/ingest", storedRootPage()), "run", "agent");
+    const page = rootPage();
+    for (const [old, replacement] of [["runId", "agentId"], ["rootRunId", "rootAgentId"], ["continuesRunId", "continuesAgentId"], ["parentRunId", "parentAgentId"]]) {
+      await refusedAs(await post(t, "/agents/ingest", { ...page, agent: { ...page.agent, [old]: ROOT } }), old, replacement);
     }
-    expect(tables[0]).toEqual(tables[1]);
-    expect(tables[0]).toEqual([expect.objectContaining({ runId: ROOT, seq: 0, text: "hello world" })]);
+    for (const [old, replacement] of [["runId", "agentId"], ["parentRunId", "parentAgentId"], ["rootRunId", "rootAgentId"]]) {
+      await refusedAs(await post(t, "/agents/ingest", { ...page, children: [{ ...page.children[0], [old]: CHILD }] }), old, replacement);
+    }
+    expect(await stored(t, "runs")).toEqual([]);
   });
 
-  it("/agents/overflow/stamp and /runs/overflow/stamp stamp the same row", async () => {
-    const tables = [];
-    for (const spelling of SPELLINGS) {
-      const t = await withRoot([ROW]);
-      expect((await post(t, "/agents/overflow", { agentId: ROOT, seq: 0, index: 0, chunkCount: 1, text: "hello world" })).status).toBe(200);
-      const response = await post(t, route(spelling, "overflow/stamp"), { [key(spelling, "Id")]: ROOT, seq: 0, sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 });
-      expect(response.status, spelling).toBe(200);
-      expect(await response.json()).toMatchObject({ ok: true, stamped: true });
-      tables.push(await stored(t, "claudeMessages"));
-    }
-    expect(tables[0]).toEqual(tables[1]);
-    expect(tables[0][0]).toMatchObject({ overflow: { sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 } });
+  it("refuses an ingest whose agent id is malformed", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    const page = rootPage();
+    const response = await post(t, "/agents/ingest", { ...page, agent: { ...page.agent, agentId: "not-an-agent" } });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "agentId invalid" });
   });
 
-  it("/agents/materialize and /runs/materialize queue the same request", async () => {
-    const tables = [];
-    for (const spelling of SPELLINGS) {
-      const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
-      const response = await post(t, route(spelling, "materialize"), { [key(spelling, "Id")]: ROOT });
-      expect(response.status, spelling).toBe(200);
-      tables.push(await stored(t, "runMaterializeRequests"));
-    }
-    expect(tables[0]).toEqual(tables[1]);
-    expect(tables[0]).toEqual([expect.objectContaining({ runId: ROOT, requestedBy: "worker", status: "pending" })]);
+  it("/agents/overflow stores a chunk under agentId and refuses runId", async () => {
+    const t = await withRoot([ROW]);
+    await refusedAs(await post(t, "/agents/overflow", { runId: ROOT, seq: 0, index: 0, chunkCount: 1, text: "hello world" }), "runId", "agentId");
+    expect((await post(t, "/agents/overflow", { agentId: ROOT, seq: 0, index: 0, chunkCount: 1, text: "hello world" })).status).toBe(200);
+    expect(await stored(t, "claudeMessageOverflow")).toEqual([expect.objectContaining({ runId: ROOT, seq: 0, text: "hello world" })]);
   });
 
-  it("/agents/materialize-answer takes \"agent is gone\" and still takes \"run is gone\"", async () => {
-    for (const reason of ["agent is gone", "run is gone"]) {
-      const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
-      expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
-      const { request } = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
-      const response = await post(t, "/agents/materialize-answer", { requestId: request.requestId, status: "failed", reason });
-      expect(response.status, reason).toBe(200);
-      expect(await stored(t, "runMaterializeRequests"), reason).toEqual([expect.objectContaining({ status: "failed", reason })]);
-    }
+  it("/agents/overflow/stamp stamps a row under agentId and refuses runId", async () => {
+    const t = await withRoot([ROW]);
+    expect((await post(t, "/agents/overflow", { agentId: ROOT, seq: 0, index: 0, chunkCount: 1, text: "hello world" })).status).toBe(200);
+    await refusedAs(await post(t, "/agents/overflow/stamp", { runId: ROOT, seq: 0, sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 }), "runId", "agentId");
+    const response = await post(t, "/agents/overflow/stamp", { agentId: ROOT, seq: 0, sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, stamped: true });
+    expect((await stored(t, "claudeMessages"))[0]).toMatchObject({ overflow: { sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 } });
   });
 
-  it("/agents/materialize-request answers agentId and parentAgentId beside the run spelling", async () => {
-    const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
+  it("/agents/materialize queues a request under agentId and refuses runId", async () => {
+    const t = await withRoot([], STORED_FILE);
+    await refusedAs(await post(t, "/agents/materialize", { runId: ROOT }), "runId", "agentId");
+    expect(await stored(t, "runMaterializeRequests")).toEqual([]);
     expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
-    const agent = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
-    const run = await (await t.fetch("/runs/materialize-request", { headers: KEY })).json();
-    expect(run).toEqual(agent);
-    expect(agent.request).toMatchObject({ runId: ROOT, agentId: ROOT, parentRunId: null, parentAgentId: null });
+    expect(await stored(t, "runMaterializeRequests")).toEqual([expect.objectContaining({ runId: ROOT, requestedBy: "worker", status: "pending" })]);
   });
 
-  it("/agents/manifest resumes the same under afterAgentId and afterRunId", async () => {
-    const t = await withRoot([], { ...FILE, storeKey: "runs/claude/laptop/spelling-root/stored.jsonl.gz" });
+  it("/agents/materialize-answer takes \"agent is gone\" and refuses \"run is gone\"", async () => {
+    const t = await withRoot([], STORED_FILE);
+    expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
+    const { request } = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
+    const old = await post(t, "/agents/materialize-answer", { requestId: request.requestId, status: "failed", reason: "run is gone" });
+    expect(old.status).toBe(409);
+    expect(await old.json()).toEqual({ error: "reason outside the closed vocabulary" });
+    const response = await post(t, "/agents/materialize-answer", { requestId: request.requestId, status: "failed", reason: "agent is gone" });
+    expect(response.status).toBe(200);
+    expect(await stored(t, "runMaterializeRequests")).toEqual([expect.objectContaining({ status: "failed", reason: "agent is gone" })]);
+  });
+
+  it("/agents/materialize-request answers agentId and parentAgentId only", async () => {
+    const t = await withRoot([], STORED_FILE);
+    expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
+    const { request } = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
+    expect(request).toMatchObject({ agentId: ROOT, parentAgentId: null });
+    expect(request).not.toHaveProperty("runId");
+    expect(request).not.toHaveProperty("parentRunId");
+  });
+
+  it("/agents/manifest resumes under afterAgentId and refuses afterRunId", async () => {
+    const t = await withRoot([], STORED_FILE);
     const entry = (await t.query(internal.agents.internalManifest, { since: 0 })).entries[0];
-    const pages = [];
-    for (const spelling of SPELLINGS) {
-      const after = spelling === "agent" ? "afterAgentId" : "afterRunId";
-      const params = new URLSearchParams({ since: String(entry.at - 1), [after]: "claude:laptop:aaaaaaaa", afterFileVersion: "0".repeat(64) });
-      const response = await t.fetch(`${route(spelling, "manifest")}?${params}`, { headers: KEY });
-      expect(response.status, spelling).toBe(200);
-      pages.push(await response.json());
-    }
-    expect(pages[0]).toEqual(pages[1]);
-    expect(pages[0].entries).toEqual([expect.objectContaining({ run_id: ROOT })]);
+    const checkpoint = { since: String(entry.at - 1), afterFileVersion: "0".repeat(64) };
+    const old = await t.fetch(`/agents/manifest?${new URLSearchParams({ ...checkpoint, afterRunId: "claude:laptop:aaaaaaaa" })}`, { headers: KEY });
+    await refusedAs(old, "afterRunId", "afterAgentId");
+    const response = await t.fetch(`/agents/manifest?${new URLSearchParams({ ...checkpoint, afterAgentId: "claude:laptop:aaaaaaaa" })}`, { headers: KEY });
+    expect(response.status).toBe(200);
+    // The entries keep run_id: WikiTom stores them as written.
+    expect((await response.json()).entries).toEqual([expect.objectContaining({ run_id: ROOT })]);
   });
 
-  it("/agents/compare answers agentId beside runId, and the stored comparison keeps runId only", async () => {
+  it("/agents/compare answers agentId, and the stored comparison keeps runId", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
     const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
       title: "spelling", kind: "adhoc", repo: "none", status: "ended", statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
     }));
-    const page = rootPage("run");
-    const landed = await t.mutation(internal.agents.internalIngest, { ...page, run: { ...(page.run as object), sessionId, status: "ended" } } as never);
+    const page = storedRootPage();
+    const landed = await t.mutation(internal.agents.internalIngest, { ...page, run: { ...page.run, sessionId, status: "ended" } } as never);
     expect(landed, JSON.stringify(landed)).toMatchObject({ ok: true });
-    for (const spelling of SPELLINGS) {
-      const response = await post(t, route(spelling, "compare"), { sessionId });
-      expect(response.status, spelling).toBe(200);
-      expect(await response.json(), spelling).toMatchObject({ runId: ROOT, agentId: ROOT });
-    }
-    const [comparison] = await events(t, "runs-shadow-compare");
-    expect(comparison.data).toMatchObject({ runId: ROOT });
+    const response = await post(t, "/agents/compare", { sessionId });
+    expect(response.status).toBe(200);
+    const answer = await response.json();
+    expect(answer).toMatchObject({ agentId: ROOT, runStatus: "ended" });
+    expect(answer).not.toHaveProperty("runId");
+    const [comparison] = await events(t, "agents-shadow-compare");
+    expect(comparison.data).toMatchObject({ runId: ROOT, runStatus: "ended" });
     expect(comparison.data).not.toHaveProperty("agentId");
   });
 
-  it("/sessions/ingest stores the same runId under agentId and under runId", async () => {
-    const joined = [];
-    for (const spelling of SPELLINGS) {
-      vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-      const t = convexTest(schema, modules);
-      const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
-        title: "spelling", kind: "adhoc", repo: "none", status: "running", statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
-      }));
-      const response = await post(t, "/sessions/ingest", { sessionId, [key(spelling, "Id")]: "claude:box:spelling-session" });
-      expect(response.status, spelling).toBe(200);
-      joined.push((await t.run((ctx) => ctx.db.get(sessionId)))?.runId);
-    }
-    expect(joined).toEqual(["claude:box:spelling-session", "claude:box:spelling-session"]);
+  it("/sessions/ingest stores runId from agentId and refuses runId", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
+      title: "spelling", kind: "adhoc", repo: "none", status: "running", statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
+    }));
+    await refusedAs(await post(t, "/sessions/ingest", { sessionId, runId: "claude:box:spelling-session" }), "runId", "agentId");
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBeUndefined();
+    expect((await post(t, "/sessions/ingest", { sessionId, agentId: "claude:box:spelling-session" })).status).toBe(200);
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBe("claude:box:spelling-session");
   });
 
-  it("/tts/code-briefs stores the same token under agentToken and under runToken", async () => {
+  it("/tts/code-briefs stores agentToken and refuses runToken", async () => {
     const token = "11111111-2222-4333-8444-555555555555";
-    const briefs = [];
-    for (const field of ["agentToken", "runToken"]) {
-      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-      const t = convexTest(schema, modules);
-      const response = await t.fetch("/tts/code-briefs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-        body: JSON.stringify({
-          briefs: [{ repo: "tom.quest", externalId: "spelling", sourceHash: "h", brief: "Rename the page.", recommendation: "approve", execClass: "box" }],
-          [field]: token,
-        }),
-      });
-      expect(response.status, field).toBe(200);
-      briefs.push((await stored(t, "dtsCodeBriefs")).map((row) => row.producedByRunToken));
-    }
-    expect(briefs).toEqual([[token], [token]]);
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const briefsPost = (field: string) => t.fetch("/tts/code-briefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+      body: JSON.stringify({
+        briefs: [{ repo: "tom.quest", externalId: "spelling", sourceHash: "h", brief: "Rename the page.", recommendation: "approve", execClass: "box" }],
+        [field]: token,
+      }),
+    });
+    await refusedAs(await briefsPost("runToken"), "runToken", "agentToken");
+    expect(await stored(t, "dtsCodeBriefs")).toEqual([]);
+    expect((await briefsPost("agentToken")).status).toBe(200);
+    expect((await stored(t, "dtsCodeBriefs")).map((row) => row.producedByRunToken)).toEqual([token]);
   });
 
-  it("/tts/simplify-input answers agents beside runs and agentId beside each sample's runId", async () => {
+  it("/tts/simplify-input answers agents and each sample's agentId, and .agents beside .runs on tools, hooks and cwds", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = await withRoot();
     await t.run((ctx) => ctx.db.insert("modelOfTomPublication", {
@@ -933,10 +931,12 @@ describe("both spellings on the agent doors", () => {
     const response = await t.fetch("/tts/simplify-input?until=10", { headers: { "X-TTS-Key": "s3cret" } });
     expect(response.status).toBe(200);
     const facts = await response.json();
-    expect(facts.agents).toEqual(facts.runs);
+    expect(facts.agents).toMatchObject({ total: 2 });
+    expect(facts).not.toHaveProperty("runs");
     // The root and the stub its child edge wrote.
-    expect(facts.sample.map((one: { runId: string }) => one.runId).sort()).toEqual([ROOT, CHILD]);
-    for (const one of facts.sample) expect(one.agentId).toBe(one.runId);
+    expect(facts.sample.map((one: { agentId: string }) => one.agentId).sort()).toEqual([ROOT, CHILD]);
+    for (const one of facts.sample) expect(one).not.toHaveProperty("runId");
+    for (const row of facts.cwds) expect(row.agents).toBe(row.runs);
   });
 });
 

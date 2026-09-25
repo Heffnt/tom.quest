@@ -20,7 +20,7 @@
 //     predates the cutover — and the level has to name the query that delivered
 //     it, because the two doors are different surfaces with different contracts.
 //   - THE FALLBACK IS MISSING. content is v.any() with THREE writers (the
-//     session daemon, and the Claude and Codex parsers in worker/runs/ingest.mjs)
+//     session daemon, and the Claude and Codex parsers in worker/agents/ingest.mjs)
 //     and `kind` is a union a fourth runtime will grow. A row whose kind no case
 //     matches must render as itself, not throw — one unhandled kind would take
 //     the whole transcript down, and the row that broke it would be exactly the
@@ -65,7 +65,7 @@ afterEach(cleanup);
 
 const NOW = 1_757_000_000_000;
 
-/** What worker/runs/ingest.mjs stamps on every row it parses out of a file. */
+/** What worker/agents/ingest.mjs stamps on every row it parses out of a file. */
 const PROVENANCE = {
   fileVersion: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
   file: "/root/.claude/projects/tom-quest/9f2c1d.jsonl",

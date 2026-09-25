@@ -19,7 +19,7 @@
 // now holds rows from two writers, and `parentToolUseId` does not mean the
 // same thing in both. On a daemon row it means "this row belongs to that
 // subagent's output"; on a file-derived row it means "this row answers that
-// tool call" — worker/runs/ingest.mjs stamps it on EVERY tool-result and
+// tool call" — worker/agents/ingest.mjs stamps it on EVERY tool-result and
 // child-run row. Fold on the field alone and every tool result in a run file
 // becomes a one-row fold of its own, which is a silent failure: the page still
 // renders, it just buries the run. `provenance === undefined` is the test that
@@ -220,7 +220,7 @@ describe("the subagent fold", () => {
   // The two writers of a row mean different things by the same field. On a
   // daemon row parentToolUseId says "this row is part of that subagent's
   // output" — the set the fold was written for. On a file-derived row
-  // worker/runs/ingest.mjs stamps it on every tool-result and every child-run
+  // worker/agents/ingest.mjs stamps it on every tool-result and every child-run
   // row to say "this row answers that tool call". Folding on the field alone
   // would therefore wrap every single tool result in a one-row agent fold, and
   // a window holding both writers' rows — which is exactly what a session that

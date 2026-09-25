@@ -210,7 +210,7 @@ export default function Agent({
   // Convex holds the run index and a bounded window of rows; the store holds
   // every version (§23.4). So a run outside the window has a header, an
   // outcome and no transcript, and the way back is to ask for it: the press
-  // queues a request, worker/runs/materialize.mjs reads the stored version,
+  // queues a request, worker/agents/materialize.mjs reads the stored version,
   // parses it with the CURRENT parser and ingests the rows through the same
   // /agents/ingest door the sweep uses. Nothing here fetches anything — the
   // rows arrive on the subscription this page already holds, and this line
@@ -739,9 +739,10 @@ function Lead({
         )}
       </div>
       {rowsEmpty && run !== null && (
-        // The 30-day row window has passed this run by, or it was never
-        // ingested at all (§23.4). The store still holds the version, so the
-        // line carries the one control that brings it back.
+        // The 30-day row window has passed this agent by, or it was never
+        // ingested at all (§23.4). The store keeps the newest version of this
+        // agent's file and serves an older request from it, so the line
+        // carries the one control that brings the rows back.
         <div className="font-mono text-[10px] text-text-faint break-words flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span>
             rows not in the record · {run.file.path.split(/[\\/]/).pop() || "no file"} ·

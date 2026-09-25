@@ -1521,8 +1521,10 @@ export default defineSchema({
       registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
       // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls
       // its transcript holds, beside skillsGranted, which is what the prompt
-      // offered it. Written by worker/runs/registration.mjs; absent on every
-      // run before phase 6.
+      // offered it. Written by worker/agents/registration.mjs until Jarvis's
+      // registration change of 2026-09-25, which stopped writing it; absent on
+      // every agent before phase 6 and after that change. The field stays,
+      // because stored rows carry it and prod is additive-only.
       skillsAsked: v.optional(v.array(v.string())),
       // The graph version a run ran under, and the exact node ids its prompt
       // carried — the `given` edges. They live on the run row because they are
@@ -1580,7 +1582,7 @@ export default defineSchema({
     ingestedAt: v.number(),
     // Where this run's rows came from, when they were not written as the file
     // grew. It lives on the RUN and not in the context row because a row's
-    // whole content is folded into its digest (worker/runs/ingest.mjs), so a
+    // whole content is folded into its digest (worker/agents/ingest.mjs), so a
     // materialize timestamp inside a row would change that row's digest on
     // every open and collide with the landed twin. The fact belongs to the
     // run, not to a line of its file.
@@ -1759,7 +1761,7 @@ export default defineSchema({
     reason: v.optional(v.string()),
     // Becomes the step run's continuesRunId.
     previousStepRunId: v.optional(v.string()),
-    // The sensor's facts block (worker/runs/runner-sensor.mjs), posted by the
+    // The sensor's facts block (worker/agents/runner-sensor.mjs), posted by the
     // daemon before the model starts. The check-in copies it from here, never
     // from the step's own pen, so a step cannot restate its own numbers.
     facts: v.optional(v.any()),

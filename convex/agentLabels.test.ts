@@ -248,7 +248,7 @@ describe("a ruling becomes a label", () => {
     expect(await labels(t)).toHaveLength(0);
     // Counted, never silent: an uncounted absence would make an old corpus
     // look like a clean one.
-    const unlinked = await events(t, "run-label-unlinked");
+    const unlinked = await events(t, "agent-label-unlinked");
     expect(unlinked).toHaveLength(1);
     expect(unlinked[0].data).toMatchObject({
       source: "ruling",
@@ -272,7 +272,7 @@ describe("a ruling becomes a label", () => {
     const rulingId = await seedRuling(t, { subjectType: "batch", batchId, verdict: "approve" });
     await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
     expect(await labels(t)).toEqual([]);
-    const unlinked = await events(t, "run-label-unlinked");
+    const unlinked = await events(t, "agent-label-unlinked");
     expect(unlinked).toHaveLength(1);
     expect(unlinked[0].data).toMatchObject({ source: "ruling", ref: `ruling:${rulingId}`, subjectKey: null });
   });
@@ -362,7 +362,7 @@ describe("an objection becomes a label", () => {
     });
     expect(result).toMatchObject({ wrote: false, why: "unlinked" });
     expect(await labels(t)).toHaveLength(0);
-    expect((await events(t, "run-label-unlinked"))[0].data).toMatchObject({
+    expect((await events(t, "agent-label-unlinked"))[0].data).toMatchObject({
       why: "no decision or merge row carries this askId",
     });
   });
@@ -573,7 +573,7 @@ describe("a reaction on the morning becomes a label", () => {
     await seedDigestSent(t, { day: "2026-09-11", writtenBy: "template", slackTs: "1757500000.0001" });
     await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction());
     expect(await labels(t)).toHaveLength(0);
-    const unlinked = await events(t, "run-label-unlinked");
+    const unlinked = await events(t, "agent-label-unlinked");
     expect(unlinked).toHaveLength(1);
     expect(unlinked[0].data).toMatchObject({
       source: "digest-reaction",

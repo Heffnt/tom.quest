@@ -95,7 +95,7 @@ for (const file of [...walk("app"), ...walk("convex")]) {
 // PR #28 the same fact was hand-written three more times (AUTO_REPOS,
 // PROSPECT_REPOS, REPO_OPTIONS), so adding a repo in one place left the others
 // silently disagreeing. Those three are gone — two are now DERIVED from the one
-// home and one was deleted — and so are the daemon's and box-run's hand copies,
+// home and one was deleted — and so are the daemon's and the launcher's hand copies,
 // which import shared/session-constants.mjs now. This check is what stops
 // another appearing.
 // Rule: outside the files listed in REPO_LIST_ALLOWED, no source file may name

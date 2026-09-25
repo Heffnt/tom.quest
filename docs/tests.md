@@ -67,7 +67,8 @@ like that decays in one direction only — every test file added outside it was 
 test nobody ran. Three of them had been failing for as long as anyone can tell,
 and this branch is what found them, because nothing in CI had ever executed
 them: two carried a Windows-only path or filename and one inherited the box's
-`RUN_HOST=box`, so all three passed on Tom's laptop and nowhere else.
+`AGENT_HOST=box` (then named `RUN_HOST`), so all three passed on Tom's laptop and
+nowhere else.
 
 Affected-only testing removed the reason the list existed, so the list is gone
 and the whole suite is what CI runs.

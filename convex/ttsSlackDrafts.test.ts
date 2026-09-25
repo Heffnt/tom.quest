@@ -261,9 +261,9 @@ describe("the morning message's writer", () => {
     expect(typeof (marked[0].data as { slackTs?: unknown }).slackTs).toBe("string");
   });
 
-  // Both spellings until phase 3: the writer's door reads agentToken and
-  // runToken, and the request row stores either as its runToken.
-  it("stores the same writer token from /tts/slack-draft under agentToken and under runToken", async () => {
+  // The writer's door reads agentToken only, and the request row stores it as
+  // its runToken. A body still sending runToken is refused and stores nothing.
+  it("stores the writer token from /tts/slack-draft under agentToken and refuses runToken", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const token = "11111111-2222-4333-8444-555555555555";
@@ -289,7 +289,12 @@ describe("the morning message's writer", () => {
           [key]: token,
         }),
       });
-      expect(response.status, key).toBe(200);
+      if (key === "runToken") {
+        expect(response.status, key).toBe(400);
+        expect(await response.json()).toEqual({ error: "runToken is no longer read; send agentToken" });
+      } else {
+        expect(response.status, key).toBe(200);
+      }
       const [row] = await t.run(async (ctx) =>
         (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === SLACK_DRAFT_REQUEST),
       );
@@ -297,7 +302,7 @@ describe("the morning message's writer", () => {
       vi.unstubAllGlobals();
       vi.unstubAllEnvs();
     }
-    expect(stored).toEqual([token, token]);
+    expect(stored).toEqual([token, undefined]);
   });
 
   it("refuses an invented number and hands back the complaint for one repair turn", async () => {

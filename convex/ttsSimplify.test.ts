@@ -144,14 +144,14 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     await seedRun(t, { startedAt: NOW + DAY });
 
     const facts = await gather(t);
-    expect(facts.runs.total).toBe(5);
-    expect(facts.runs.capped).toBe(false);
-    expect(facts.runs.withContext).toBe(4);
-    expect(facts.runs.layersKnownTrue).toBe(4);
-    expect(facts.runs.byHost).toEqual({ box: 4, laptop: 1 });
-    expect(facts.runs.byCli).toEqual({ claude: 4, codex: 1 });
-    expect(facts.runs.byKind).toEqual({ session: 4, job: 1 });
-    expect(facts.runs.byOrigin).toEqual({ cli: 4, "codex-cli": 1 });
+    expect(facts.agents.total).toBe(5);
+    expect(facts.agents.capped).toBe(false);
+    expect(facts.agents.withContext).toBe(4);
+    expect(facts.agents.layersKnownTrue).toBe(4);
+    expect(facts.agents.byHost).toEqual({ box: 4, laptop: 1 });
+    expect(facts.agents.byCli).toEqual({ claude: 4, codex: 1 });
+    expect(facts.agents.byKind).toEqual({ session: 4, job: 1 });
+    expect(facts.agents.byOrigin).toEqual({ cli: 4, "codex-cli": 1 });
 
     expect(facts.layers).toEqual([
       { name: "operate", given: 4, denied: 0 },
@@ -160,15 +160,15 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     ]);
     expect(facts.skills).toEqual([{ name: "graphify", offered: 4, used: 1 }]);
     expect(facts.tools).toEqual([
-      { name: "Bash", runs: 4 },
-      { name: "Read", runs: 3 },
+      { name: "Bash", agents: 4, runs: 4 },
+      { name: "Read", agents: 3, runs: 3 },
     ]);
-    expect(facts.hooks).toEqual([{ name: "PostToolUse", runs: 3 }]);
+    expect(facts.hooks).toEqual([{ name: "PostToolUse", agents: 3, runs: 3 }]);
     // The null row is always the last one, and counts the envelope-less run.
     expect(facts.cwds).toEqual([
-      { cwd: "C:/repo/tom.quest", runs: 3 },
-      { cwd: "C:/repo/CMT", runs: 1 },
-      { cwd: null, runs: 1 },
+      { cwd: "C:/repo/tom.quest", agents: 3, runs: 3 },
+      { cwd: "C:/repo/CMT", agents: 1, runs: 1 },
+      { cwd: null, agents: 1, runs: 1 },
     ]);
   });
 
@@ -179,7 +179,7 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
       await seedRun(t, { startedAt: NOW - DAY - i * 1_000 });
     }
     const facts = await gather(t);
-    expect(facts.runs.total).toBe(SAMPLE_RUNS + extra);
+    expect(facts.agents.total).toBe(SAMPLE_RUNS + extra);
     expect(facts.sample).toHaveLength(SAMPLE_RUNS);
     // Newest-first, so the same week measured twice samples the same runs.
     expect(facts.sample[0].startedAt).toBeGreaterThan(facts.sample[1].startedAt);
@@ -229,14 +229,14 @@ describe("the sample's node lists", () => {
     await seedRun(t, { runId: "no-context", startedAt: NOW - DAY - 3_000, context: null });
 
     const { sample } = await gather(t);
-    const by = new Map(sample.map((row) => [row.runId, row]));
+    const by = new Map(sample.map((row) => [row.agentId, row]));
     expect(by.get("with-nodes")?.graphNodes).toEqual(nodes);
     // An empty list is a run that was given nothing, and it is not undefined.
     expect(by.get("empty-list")?.graphNodes).toEqual([]);
     expect(by.get("no-list")?.graphNodes).toBeUndefined();
     expect(by.get("no-context")?.graphNodes).toBeUndefined();
     // The fields the pass already read are untouched beside the new one.
-    expect(by.get("with-nodes")).toMatchObject({ runId: "with-nodes", depth: 0, tokens: [] });
+    expect(by.get("with-nodes")).toMatchObject({ agentId: "with-nodes", depth: 0, tokens: [] });
   });
 });
 

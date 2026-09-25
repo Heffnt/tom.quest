@@ -135,9 +135,9 @@ function RunnerRow({
         </button>
         <span className="min-w-0">
           <span className="flex items-baseline gap-2">
-            {r.stepRunId !== null ? (
+            {r.stepAgentId !== null ? (
               <a
-                href={agentHref(r.stepRunId)}
+                href={agentHref(r.stepAgentId)}
                 className="truncate text-[15px] text-text underline underline-offset-2 hover:opacity-80"
               >
                 {r.title}
@@ -239,11 +239,11 @@ function RunnerDetail({ runnerId, now }: { runnerId: Id<"runners">; now: number 
                 {fmtDate(c.at)} {clock(c.at)}
                 {c.decision !== null && ` · ${runnerDecisionWords[c.decision]}`}
                 {c.verdict === "fail" && " · did not pass the writing check"}
-                {c.stepRunId !== null && (
+                {c.stepAgentId !== null && (
                   <>
                     {" · "}
                     <a
-                      href={agentHref(c.stepRunId)}
+                      href={agentHref(c.stepAgentId)}
                       className="underline underline-offset-2 hover:text-text"
                     >
                       step agent

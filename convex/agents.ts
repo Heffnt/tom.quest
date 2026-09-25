@@ -53,7 +53,9 @@ const CONTEXT = v.object({
   // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls its
   // transcript holds, beside skillsGranted, which is what the prompt offered
   // it. Same field as convex/schema.ts runs.context; a run carrying it is
-  // refused at store time without it here.
+  // refused at store time without it here. NO WRITER SENDS IT ANY MORE since
+  // Jarvis's registration change of 2026-09-25; it stays accepted because
+  // stored rows carry it and the schema is additive-only.
   skillsAsked: v.optional(v.array(v.string())),
   // The graph version a run ran under, and the exact node ids its prompt
   // carried — the `given` edges. ABSENT IS A SUPPORTED VALUE, as it is for
@@ -126,12 +128,14 @@ const MAX_REASON_LENGTH = 200;
 const MATERIALIZE_REASONS = new Set([
   "object missing from store", "object hash mismatch", "store unreachable",
   "no store key", "file too large", "parse produced no rows", "agent is gone",
-  // The box's spelling until its own rename lands; phase 3 removes it.
-  "run is gone",
 ]);
 const MATERIALIZE_PARTIAL = new Set([
   "sidecar-missing", "no-envelope", "pre-parser-fields",
   "unknown-line-types", "row-cap-reached", "incomplete-tail",
+  // The store keeps an agent's newest file version and retains older ones
+  // away; a request for a version no longer held is served from the newest
+  // one, and the answer says so rather than passing it off as the one asked for.
+  "served-newer-version",
 ]);
 
 function nonNegativeInteger(value: unknown): value is number {
@@ -190,7 +194,7 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
 
 // A PLACEHOLDER'S HOST AND CLI COME FROM THE ID IT IS STUBBING, never from
 // the run that revealed it. A cross-host parent link is ordinary now — the
-// laptop orchestrator spawns box runs through worker/runs/box-run.mjs, which
+// laptop orchestrator spawns box runs through worker/agents/launcher.mjs, which
 // names the laptop session as the box run's parent — so taking them from the
 // revealing run would record a laptop session as a box run, and the sessions
 // view would show Tom that false fact. agentIdMatches already requires a run id
@@ -213,7 +217,7 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 
 // `runner:<id>` is a runner's step run: the id is the runners row it belongs
 // to, which is how the agents page names the runner beside the chain.
-// `desktop` is a box session no launcher started, which scripts/run-hook.mjs
+// `desktop` is a box session no launcher started, which scripts/agent-hook.mjs
 // records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
 // REMOVAL CHECK: the list is the ingest's refusal of an origin nobody wrote on
 // purpose; without this entry every desktop session's row is refused.
@@ -241,7 +245,7 @@ function validAgentPayload(run: {
   runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: AgentCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
 }) {
   // ONLY AN AGENT'S OWN ID MUST NAME ITS OWN HOST AND CLI. The edge ids may
-  // name another: worker/runs/box-run.mjs makes a laptop session the parent of
+  // name another: worker/agents/launcher.mjs makes a laptop session the parent of
   // a box run, so that run's parentRunId and rootRunId are laptop ids and
   // holding them to the child's host would refuse the whole record. They are
   // still checked as ids, and the root rule below — a run with no parent must
@@ -299,6 +303,25 @@ export const internalIngest = internalMutation({
   handler: async (ctx, args) => {
     if (!validAgentPayload(args.run) || !nonNegativeInteger(args.previousCommittedLine) || !validHash(args.previousPrefixSha256)) return { ok: false as const, reason: "invalid run record" };
     if (args.rows.length > 200) return { ok: false as const, reason: "too many rows" };
+
+    // ONE TOKEN, ONE AGENT. The registration token sits in the prompt's
+    // registration block, so a prompt copied into another agent carries the
+    // first agent's token, and a label or a produced-by edge that follows the
+    // token would land on the wrong agent. The first agent to reach the record
+    // with a token keeps it; a page from any other agent carrying it is
+    // refused before anything is written, with a fixed phrase like every
+    // other refusal here, and one event names both agents and the token's
+    // first eight characters, never the whole token. Returning rather than
+    // throwing is what lets that event commit.
+    if (args.run.regToken !== undefined) {
+      const token = args.run.regToken;
+      const holders = await ctx.db.query("runs").withIndex("by_reg_token", (q) => q.eq("regToken", token)).take(8);
+      const holder = holders.find((row) => row.runId !== args.run.runId);
+      if (holder) {
+        await event(ctx, "agents-token-duplicate", { agentId: args.run.runId, heldByAgentId: holder.runId, tokenPrefix: token.slice(0, 8) });
+        return { ok: false as const, reason: "token held by another agent" };
+      }
+    }
 
     const existing = await agentAt(ctx, args.run.runId);
     const knownParent = args.run.parentRunId ? await agentAt(ctx, args.run.parentRunId) : null;
@@ -364,7 +387,7 @@ export const internalIngest = internalMutation({
 
     const cycleLength = await parentCycleLength(ctx, run.runId, run.parentRunId);
     if (cycleLength) {
-      await event(ctx, "runs-parent-cycle", { runId: run.runId, parentRunId: run.parentRunId, chainLength: cycleLength });
+      await event(ctx, "agents-parent-cycle", { runId: run.runId, parentRunId: run.parentRunId, chainLength: cycleLength });
       return { ok: false as const, reason: "parent cycle" };
     }
 
@@ -374,7 +397,7 @@ export const internalIngest = internalMutation({
       if (!validAgentId(child.runId) || !validAgentId(child.parentRunId) || !validAgentId(child.rootRunId) || !nonNegativeInteger(child.depth) || child.runId === run.runId || child.parentRunId !== run.runId || child.rootRunId !== run.rootRunId || child.depth !== run.depth + 1 || (child.linkKnown && !child.spawnedByToolUseId) || childIds.has(child.runId)) return { ok: false as const, reason: "invalid child edge" };
       const childCycleLength = await parentCycleLength(ctx, child.runId, run.runId);
       if (childCycleLength) {
-        await event(ctx, "runs-parent-cycle", { runId: child.runId, parentRunId: run.runId, chainLength: childCycleLength });
+        await event(ctx, "agents-parent-cycle", { runId: child.runId, parentRunId: run.runId, chainLength: childCycleLength });
         return { ok: false as const, reason: "parent cycle" };
       }
       const knownChild = await agentAt(ctx, child.runId);
@@ -388,16 +411,16 @@ export const internalIngest = internalMutation({
     // later lines, before this mutation changes any record row.
     if (existing && !isStubFile(existing.file)) {
       if (args.previousCommittedLine !== existing.file.committedLine || args.previousPrefixSha256 !== existing.file.committedPrefixSha256) {
-        await event(ctx, "runs-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: args.previousPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
+        await event(ctx, "agents-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: args.previousPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
         return { ok: false as const, reason: "file rewritten", ...heldCursor(existing.file) };
       }
       if (run.file.bytes < existing.file.bytes) {
-        await event(ctx, "runs-file-shrank", { runId: run.runId, storedBytes: existing.file.bytes, presentedBytes: run.file.bytes, path: run.file.path });
+        await event(ctx, "agents-file-shrank", { runId: run.runId, storedBytes: existing.file.bytes, presentedBytes: run.file.bytes, path: run.file.path });
         return { ok: false as const, reason: "file shrank" };
       }
       if (run.file.committedLine < existing.file.committedLine) return { ok: false as const, reason: "committed cursor regressed" };
       if (run.file.committedLine === existing.file.committedLine && run.file.committedPrefixSha256 !== existing.file.committedPrefixSha256) {
-        await event(ctx, "runs-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: run.file.committedPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
+        await event(ctx, "agents-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: run.file.committedPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
         return { ok: false as const, reason: "file rewritten", ...heldCursor(existing.file) };
       }
     }
@@ -407,7 +430,7 @@ export const internalIngest = internalMutation({
     for (const row of args.rows) {
       const landed = await rowAt(ctx, run.runId, row.seq);
       if (landed && landed.digest !== row.digest) {
-        await event(ctx, "runs-entry-mismatch", { runId: run.runId, seq: row.seq, storedDigest: landed.digest, presentedDigest: row.digest });
+        await event(ctx, "agents-entry-mismatch", { runId: run.runId, seq: row.seq, storedDigest: landed.digest, presentedDigest: row.digest });
         return { ok: false as const, reason: "entry digest mismatch" };
       }
     }
@@ -426,7 +449,7 @@ export const internalIngest = internalMutation({
     }
     if (!existing) {
       await ctx.db.insert("runs", { ...run, ingestedAt });
-      if (environmentDefaulted) await event(ctx, "runs-environment-defaulted", { runId: run.runId, launcher: run.context?.launcher });
+      if (environmentDefaulted) await event(ctx, "agents-environment-defaulted", { runId: run.runId, launcher: run.context?.launcher });
     } else {
       const advances = run.file.committedLine > existing.file.committedLine;
       const patch: Record<string, unknown> = { ingestedAt };
@@ -668,9 +691,14 @@ export const internalEligibleComparisons = internalQuery({
   },
   handler: async (ctx, args) => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    // The new kind only. Comparisons stored as runs-shadow-compare before the
+    // rename leave this 24-hour window within a day of the deploy; until then
+    // a session compared under the old kind can be compared once more, which
+    // writes one more event and changes nothing else. The data keys `runId`
+    // and `runStatus` are the stored spelling and stay.
     const comparisons = await ctx.db
       .query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare").gte("at", cutoff))
+      .withIndex("by_kind_at", (q) => q.eq("kind", "agents-shadow-compare").gte("at", cutoff))
       .order("desc")
       .take(1000);
     const comparedAt = new Map<string, number>();
@@ -749,7 +777,7 @@ export const internalShadowCompare = internalMutation({
     // Both reads are `.take()` over a seq floor, never `.paginate()`: a single
     // Convex function may run only one paginated query, and this one reads two
     // indexes — the second `.paginate()` threw, which is what answered every
-    // /runs/compare call with HTTP 400.
+    // /agents/compare call with HTTP 400.
     if (state.daemonPending.length === 0 && !state.daemonDone) {
       const rows = await ctx.db
         .query("claudeMessages")
@@ -819,7 +847,7 @@ export const internalShadowCompare = internalMutation({
       clean,
     };
 
-    await event(ctx, "runs-shadow-compare", result);
+    await event(ctx, "agents-shadow-compare", result);
     const runPatch: Record<string, unknown> = {};
     if (clean) {
       const cutoverAt = run.cutoverAt ?? Date.now();
@@ -954,7 +982,7 @@ export const internalAgentTrace = internalQuery({
         ? null
         : totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens;
     return {
-      runId: run.runId,
+      agentId: run.runId,
       turns: run.outcome?.turns ?? null,
       tokens,
       toolCalls,
@@ -998,7 +1026,7 @@ export const entry = query({ args: { agentId: v.string(), seq: v.number() }, han
 // ── Opening an old run from the store ────────────────────────────────────────
 // Convex holds no S3 reader credential and no second request signer, so a run
 // whose rows are not in the record opens by asking the box for them. Tom (or a
-// job) queues a request here; `worker/runs/materialize.mjs` serves it and
+// job) queues a request here; `worker/agents/materialize.mjs` serves it and
 // ingests the rows through the existing /agents/ingest door. There is no second
 // ingest path.
 
@@ -1114,13 +1142,13 @@ export const internalNextMaterialize = internalQuery({
     );
     return {
       request: {
-        requestId: request._id, runId: request.runId, slice: request.slice,
+        requestId: request._id, agentId: request.runId, slice: request.slice,
         requestedBy: request.requestedBy, requestedAt: request.requestedAt,
         cli: cli ?? request.runId.split(":")[0],
         host: run?.host ?? request.runId.split(":")[1],
         threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
         depth: run?.depth ?? 0,
-        parentRunId: run?.parentRunId ?? null,
+        parentAgentId: run?.parentRunId ?? null,
         file,
         hasRows,
         // Where the parse resumes: a backlog run has no rows and starts at 0, a
@@ -1275,7 +1303,7 @@ export const internalEvictTick = internalMutation({
     // there: evicting rows whose store objects sit in a local directory on a
     // machine that may be reinstalled is deleting what nothing can restore.
     if (!evictionEnabled()) {
-      await event(ctx, "runs-evicted", {
+      await event(ctx, "agents-evicted", {
         at: Date.now(), runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0,
         deferred: 0, truncated: false, disabled: true,
       });
@@ -1361,7 +1389,7 @@ export const internalEvictTick = internalMutation({
       .order("asc")
       .first();
     // One row, counts only: no run id, no row content.
-    await event(ctx, "runs-evicted", {
+    await event(ctx, "agents-evicted", {
       at: now, runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred,
       truncated: worked && truncated, oldestRowsUntil: oldest?.rowsUntil ?? null,
     });
