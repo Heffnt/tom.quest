@@ -35,12 +35,12 @@ export const NARROW_LIST = /** @type {const} */ ([
   },
   // Tom, 2026-09-25: "idk why agents should never move credentials." The
   // line is where a credential can be held, not whether it moves: moving one
-  // between files or processes is allowed; putting it where a transcript, the
-  // record or a repo can hold it is not.
+  // between files or processes is allowed; leaving it in a transcript, in the
+  // record or in a repository's tree or history is not.
   {
     id: "credential",
-    decision: "put a credential where a transcript, the record or a repo can hold it (print it, send it, commit it), or create, rotate or revoke one",
-    command: "put a credential, key, token or password where a transcript, the record or a repo can hold it: print it, echo it into output, send it in a message, or commit it (moving it between files or processes without printing it is allowed)",
+    decision: "leave a credential in a transcript, in the record or in a repository (print it, send it, commit it), or create, rotate or revoke one",
+    command: "leave a credential, key, token or password in a transcript, in the record or in a repository: print it, echo it into output, send it in a message, or commit it (moving it between files or processes without printing it is allowed)",
   },
 ]);
 

@@ -33,7 +33,7 @@ describe("the session constants", () => {
   it("draw the credential line at where a credential can be held, not at moving it", () => {
     const credential = NARROW_LIST.find((item) => item.id === "credential");
     for (const text of [credential.decision, credential.command]) {
-      expect(text).toContain("where a transcript, the record or a repo can hold it");
+      expect(text).toContain("in a transcript, in the record or in a repository");
       expect(text).not.toMatch(/\bread, print, move\b/);
     }
     expect(credential.command).toContain("moving it between files or processes without printing it is allowed");
