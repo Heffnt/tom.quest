@@ -5,6 +5,9 @@ import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+/** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
+const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
 const SOURCE_HASH = "a".repeat(64);
 const STORED_HASH = "b".repeat(64);
 const PREFIX_HASH = "c".repeat(64);
@@ -690,7 +693,7 @@ describe("agents: materialize requests", () => {
     await t.run(async (ctx) => {
       const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique();
       if (stored) await ctx.db.patch(stored._id, { file: { ...stored.file, committedLine: 2000, committedPrefixSha256: PREFIX_HASH } });
-      await ctx.db.insert("claudeMessages", { runId: "claude:laptop:root-run", seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 });
+      await ctx.db.insert("claudeMessages", { runId: "claude:laptop:root-run", seq: 0, turn: 0, kind: "user", content: { text: "x" }, provenance: { fileVersion: STORED_HASH, file: "C:/root.jsonl", lineStart: 0, lineEnd: 0, block: 0, parserVersion: "runs-parser-1", sourceKind: "user" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 });
     });
     const continued = await t.query(internal.agents.internalNextMaterialize, {});
     expect(continued.request).toMatchObject({ hasRows: true, fromLine: 2000 });
@@ -798,7 +801,7 @@ describe("agents: eviction", () => {
       else await ctx.db.insert("runs", { ...storedRun({ status: "ended", startedAt: now - 61 * DAY_MS, lastLineAt: now - 60 * DAY_MS }), environment: "worker", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
       for (let seq = 0; seq < rows; seq += 1) {
         const overflow = seq < 2 ? { sha256: "a".repeat(64), byteLength: 6, chunkCount: 2 } : undefined;
-        await ctx.db.insert("claudeMessages", { runId, seq, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: seq + 1, overflow } as never);
+        await ctx.db.insert("claudeMessages", { runId, seq, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: seq + 1, overflow, provenance: ROW_PROVENANCE } as never);
         if (overflow) for (let index = 0; index < 2; index += 1) await ctx.db.insert("claudeMessageOverflow", { runId, seq, index, chunkCount: 2, text: "abc", createdAt: 1 } as never);
       }
     });
@@ -864,7 +867,7 @@ describe("agents: eviction", () => {
     await t.run(async (ctx) => {
       for (const record of kept) {
         await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, startedAt: 1 }), environment: "worker", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
-        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
+        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, provenance: ROW_PROVENANCE, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
       }
     });
 
@@ -895,7 +898,7 @@ describe("agents: eviction", () => {
     await t.run(async (ctx) => {
       for (const record of records) {
         await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, status: "ended", startedAt: 1, lastLineAt: now - 60 * DAY_MS }), environment: "session", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
-        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
+        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, provenance: ROW_PROVENANCE, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
       }
     });
 
@@ -1032,7 +1035,7 @@ describe("agents: one agent's tool calls, by its registration token", () => {
       } as never);
       for (const [seq, row] of rows.entries()) {
         await ctx.db.insert("claudeMessages", {
-          runId: TRACE_RUN_ID, seq, turn: 0, kind: row.kind, content: row.content, createdAt: seq + 1,
+          runId: TRACE_RUN_ID, seq, turn: 0, kind: row.kind, content: row.content, provenance: ROW_PROVENANCE, createdAt: seq + 1,
         } as never);
       }
     });

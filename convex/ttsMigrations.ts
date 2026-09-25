@@ -1633,8 +1633,8 @@ export const internalScrubWorkerKeyRows = internalMutation({
         if (scrubbed.hits === 0) continue;
         totals.rowsChanged++;
         hit(agentId);
-        const parserVersion = row.provenance?.parserVersion;
-        const digestReproduces = row.digest !== undefined && parserVersion !== undefined
+        const parserVersion = row.provenance.parserVersion;
+        const digestReproduces = row.digest !== undefined
           && await rowDigest(parserVersion, agentId, row.seq, row.kind, row.content) === row.digest;
         const patch: { content: unknown; digest?: string } = { content: scrubbed.value };
         if (digestReproduces) {

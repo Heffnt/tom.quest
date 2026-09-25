@@ -11,6 +11,9 @@ import {
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+/** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
+const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
+
 const KEY = "s3cret";
 
 function get(t: ReturnType<typeof convexTest>, path: string, key = KEY) {
@@ -153,6 +156,7 @@ describe("GET /tts/export", () => {
             turn: 1,
             kind: "tool-result",
             content: { text: body },
+            provenance: ROW_PROVENANCE,
             createdAt: 1,
           }),
         );
@@ -373,6 +377,7 @@ describe("GET /tts/learning-input", () => {
           kind: "assistant-text",
           content: { text },
           depth: 0,
+          provenance: ROW_PROVENANCE,
           createdAt: at,
         });
       await say(1, now - 3000, "an earlier answer");

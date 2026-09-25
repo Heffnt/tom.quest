@@ -1468,7 +1468,9 @@ export default defineSchema({
         chunkCount: v.number(),
       }),
     ),
-    provenance: v.optional(v.object({
+    // Where in the agent file the row came from. Every row has one: the
+    // parser is the only writer (one transcript path, 2026-09-25).
+    provenance: v.object({
       fileVersion: v.string(),
       file: v.string(),
       lineStart: v.number(),
@@ -1476,7 +1478,7 @@ export default defineSchema({
       block: v.number(),
       parserVersion: v.string(),
       sourceKind: v.string(),
-    })),
+    }),
     digest: v.optional(v.string()),
     createdAt: v.number(),
   })

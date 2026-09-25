@@ -19,6 +19,9 @@ import type { SessionModel } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+/** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
+const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
+
 // The distinctive half of the one sentence every session prompt carries about
 // the daemon that runs it (DAEMON_RESTART_SENTENCE in convex/ttsShared.ts).
 // Written out here rather than imported: a hard-coded expectation that goes red
@@ -1896,6 +1899,7 @@ describe("message overflow (the complete payload)", () => {
         content: { toolUseId: "tool_1", content: full.slice(0, 32 * 1024) },
         depth: 0,
         overflow,
+        provenance: ROW_PROVENANCE,
         createdAt: 1,
       });
     });
@@ -2036,7 +2040,7 @@ describe("message overflow (the complete payload)", () => {
     await t.run((ctx) =>
       ctx.db.insert("claudeMessages", {
         runId, seq: 0, turn: 0, kind: "tool-result",
-        content: { toolUseId: "tool_1", content: "ok" }, depth: 0, createdAt: 1,
+        content: { toolUseId: "tool_1", content: "ok" }, depth: 0, provenance: ROW_PROVENANCE, createdAt: 1,
       }),
     );
     const page = await tom.query(api.claudeSessions.getMessages, {
@@ -2076,6 +2080,7 @@ describe("session transcript pages", () => {
           content: `line ${seq}`,
           depth: 0,
           parentToolUseId: seq === 3 ? "tool_abc" : undefined,
+          provenance: ROW_PROVENANCE,
           createdAt: 1_000 + seq,
         });
       }

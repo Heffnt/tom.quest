@@ -8,6 +8,9 @@ import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+/** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
+const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
+
 const TTS_TODAY = "C0TTS";
 const NEEDS_YOU = "C0NEEDSYOU";
 
@@ -182,7 +185,7 @@ describe("GET /tts/agent-trace", () => {
       ];
       for (const [seq, row] of rows.entries()) {
         await ctx.db.insert("claudeMessages", {
-          runId: RUN_ID, seq, turn: 0, kind: row.kind as never, content: row.content, createdAt: seq + 1,
+          runId: RUN_ID, seq, turn: 0, kind: row.kind as never, content: row.content, provenance: ROW_PROVENANCE, createdAt: seq + 1,
         });
       }
     });
@@ -941,7 +944,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       for (const row of rows) {
         await ctx.db.insert("claudeMessages", {
           runId: RUN_ID, seq: row.seq, turn: 0, kind: row.kind,
-          content: { text: row.text }, createdAt: 1_757_000_000_000 + row.seq,
+          content: { text: row.text }, provenance: ROW_PROVENANCE, createdAt: 1_757_000_000_000 + row.seq,
         });
       }
     });

@@ -163,11 +163,7 @@ function runDoc(over: Record<string, unknown>) {
   };
 }
 
-/**
- * One row as agents.rows returns it. Every row a run file produces carries a
- * provenance stamp — which is also what keeps a `child-run` row's
- * parentToolUseId from folding it into an agent group (run-rows.tsx note 2).
- */
+/** One row as agents.rows returns it, provenance stamp and all. */
 function fileRow(over: Record<string, unknown>) {
   return {
     _id: "m-fixture",

@@ -20,8 +20,8 @@
 // rows carry the raw level on their own small control instead of swallowing a
 // click on prose he is trying to select.
 //
-// content is v.any() and now has THREE writers — the session daemon, the
-// Claude run-file parser and the Codex run-file parser. Every reader here lives
+// content is v.any() and has two writers — the Claude run-file parser and the
+// Codex run-file parser. Every reader here lives
 // in ../lib and handles all the shapes it can meet; none of them throws.
 
 import { useState } from "react";
@@ -56,10 +56,8 @@ export type PairedResult = {
   row: TranscriptMessage;
   /**
    * result.createdAt − call.createdAt, when both are positive and the result is
-   * not earlier than the call. On a file-derived row createdAt is the file
-   * line's own timestamp, so this is a measurement; on a daemon row it is the
-   * INGEST time (the daemon batches a flush per ~400ms), so the number is
-   * coarse there. Absent rather than negative.
+   * not earlier than the call. createdAt is the file line's own timestamp, so
+   * this is a measurement. Absent rather than negative.
    */
   durationMs?: number;
 };
@@ -120,29 +118,22 @@ function ModelOfTomHead({ text }: { text: string }) {
 
 /**
  * The third level. Provenance is what makes a row checkable against the file it
- * came from; a row written before its session's cutover has none, and says so
- * rather than showing an empty header.
+ * came from, and every row has one: the parser is the rows' only writer.
  */
 function Raw({ row, source }: { row: TranscriptMessage; source: RowSource }) {
   const p = row.provenance;
   return (
     <div className="mt-1 px-1">
-      {p === undefined ? (
-        <div className="font-mono text-[10px] text-text-faint">
-          daemon row · no agent file
+      <div className="font-mono text-[10px] text-text-faint break-words">
+        <div>
+          {basename(p.file)} · lines {p.lineStart}–{p.lineEnd} · block{" "}
+          {p.block} · version {p.fileVersion.slice(0, 12)}
         </div>
-      ) : (
-        <div className="font-mono text-[10px] text-text-faint break-words">
-          <div>
-            {basename(p.file)} · lines {p.lineStart}–{p.lineEnd} · block{" "}
-            {p.block} · version {p.fileVersion.slice(0, 12)}
-          </div>
-          <div>
-            parser {p.parserVersion} · source {p.sourceKind}
-            {row.digest === undefined ? "" : ` · digest ${row.digest}`}
-          </div>
+        <div>
+          parser {p.parserVersion} · source {p.sourceKind}
+          {row.digest === undefined ? "" : ` · digest ${row.digest}`}
         </div>
-      )}
+      </div>
       <div className="font-mono text-[10px] text-text-faint">
         seq {row.seq} · read by{" "}
         {source === "session" ? "claudeSessions.getMessages" : "agents.rows"}
@@ -270,8 +261,7 @@ function compactOf(
     case "system": {
       return {
         label: "system",
-        facts:
-          row.provenance === undefined ? [] : [row.provenance.sourceKind],
+        facts: [row.provenance.sourceKind],
         preview: previewLine(contentToText(content), 120),
       };
     }

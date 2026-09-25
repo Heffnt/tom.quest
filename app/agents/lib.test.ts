@@ -22,6 +22,7 @@ import {
   costText,
   describeOverflow,
   durationText,
+  errorTextOf,
   modelOfTomHeadOf,
   orderSessions,
   persistedOutputOf,
@@ -32,6 +33,36 @@ import {
   thinkingTextOf,
   toolInputObjectOf,
 } from "./lib";
+
+// Both rows are the parser's own output: the first is a production row's
+// content verbatim, the second what worker/agents/ingest.mjs made of a real
+// Claude `system/api_error` line (request id replaced).
+describe("errorTextOf", () => {
+  it("reads the parser's string error", () => {
+    expect(errorTextOf({ error: "model changed from gpt-5.6-sol to gpt-5.6-terra" })).toBe(
+      "model changed from gpt-5.6-sol to gpt-5.6-terra",
+    );
+  });
+
+  it("reads the one-line reading off an api_error's error object", () => {
+    const content = {
+      error: {
+        message: '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_fixture"}',
+        status: 529,
+        requestId: "req_fixture",
+        formatted: "529 Overloaded",
+        connection: null,
+        isNetworkDown: false,
+        rateLimits: null,
+        noResponse: null,
+      },
+    };
+    expect(errorTextOf(content)).toBe("529 Overloaded");
+    expect(errorTextOf({ error: { ...content.error, formatted: undefined } })).toBe(
+      content.error.message,
+    );
+  });
+});
 
 describe("modelOfTomHeadOf", () => {
   it("reads back the commit and canonical layers from the stored all-layer header", () => {
