@@ -31,6 +31,7 @@ import {
   pullRequestChange,
 } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
+import { BOX_CHANGE, DEPLOY, boxChangeOf, redactedBoxChange } from "./boxChanges";
 
 /** The label every gate in this module names, so a denial says which surface. */
 const SURFACE = "Observe";
@@ -98,6 +99,10 @@ function wanted(kind: string): boolean {
     kind === DELEGATE_OBJECTION_KIND ||
     kind === PAGE_OPENED_KIND ||
     kind === SENT_AS_TOM_KIND ||
+    // The box lane: every change to the Jarvis Box, and the deploy job's own
+    // rows (plan-root T1).
+    kind === BOX_CHANGE ||
+    kind === DEPLOY ||
     (GATE_KINDS as readonly string[]).includes(kind) ||
     isFailureKind(kind)
   );
@@ -110,7 +115,7 @@ function wanted(kind: string): boolean {
  * own stderr — the nightly reports git's verbatim, and git names its remote
  * with the token in it. Every other surface that shows a failure sends that
  * string through redactSecrets first, which convex/tts.ts calls the one choke
- * point. Rather than add a second, this sends the browser the ten fields
+ * point. Rather than add a second, this sends the browser the sixteen fields
  * app/observe reads and leaves the rest on the server, so there is nothing to
  * redact: a field added to a row is not on the wire until this list names it.
  */
@@ -125,9 +130,10 @@ function drawnFields(data: unknown): Record<string, unknown> | null {
 }
 
 /** A merge row's four, a failure's job, the five a delegate decision is read
- *  from, and the four a message sent in Tom's name is (app/observe/lib.ts and
- *  components/rulings-list.tsx). A sent message's text is not among them: the
- *  row carries its hash, and the text stays with his sign-off. */
+ *  from, the four a message sent in Tom's name is (app/observe/lib.ts and
+ *  components/rulings-list.tsx), and a deploy's two commits. A sent message's
+ *  text is not among them: the row carries its hash, and the text stays with
+ *  his sign-off. A box change is drawn whole, redacted (boxDrawn). */
 const DRAWN_FIELDS = [
   "repo",
   "sha",
@@ -143,7 +149,17 @@ const DRAWN_FIELDS = [
   "channel",
   "sha256",
   "signedAt",
+  // A deploy row's two commits (Jarvis worker/jobs/deploy.mjs).
+  "from",
+  "to",
 ] as const;
+
+/** A box change's fields, all of them, with its command and change text sent
+ *  through redactSecrets: the one field on this page that is a command line. */
+function boxDrawn(data: unknown): Record<string, unknown> | null {
+  const change = boxChangeOf(data);
+  return change === null ? null : (redactedBoxChange(change) as Record<string, unknown>);
+}
 
 /** The kinds a page of events counts but never draws, so their bodies stay on
  *  the server. An audit row carries up to eight kilobytes of the audit's prose,
@@ -272,7 +288,11 @@ export const eventsInWindow = query({
           kind: event.kind,
           key: event.key ?? null,
           todoId: (event.todoId ?? null) as string | null,
-          data: COUNTED_NOT_DRAWN.has(event.kind) ? null : drawnFields(event.data),
+          data: COUNTED_NOT_DRAWN.has(event.kind)
+            ? null
+            : event.kind === BOX_CHANGE
+              ? boxDrawn(event.data)
+              : drawnFields(event.data),
         })),
     };
   },

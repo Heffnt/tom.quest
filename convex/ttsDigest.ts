@@ -19,6 +19,7 @@ import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SENT_AS_TOM } from "./ttsSignoff";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { liveRunnerFacts } from "./ttsRunners";
+import { BOX_CHANGE, DEPLOY, boxChangeLines, boxChangeOf } from "./boxChanges";
 import {
   DAY_MS,
   LIVE_STATUSES,
@@ -282,6 +283,9 @@ export function calendarLeadText(spans: { start: number; end: number; allDay: bo
 // pattern: dtsEvents is busy instrumentation, and if the kind is not inside
 // this many rows "never" is the honest answer.
 const EVENT_SCAN = 2000;
+/** The most box-change rows, and deploy rows, one digest reads. A day holds
+ *  tens (every sudo run, unit change, login and state change, folded). */
+const BOX_SCAN = 2000;
 
 // The same shape for the email-capture read: the newest rows on the source
 // index, cut at the window. A window holding more email captures than this is
@@ -811,6 +815,28 @@ export async function gatherTodayFacts(
   //    runnerStatus, the one home; nothing here counts or guesses a number.
   const runners = await liveRunnerFacts(ctx);
 
+  // 8. What changed on the box (plan-root T1): the box-change rows and the
+  //    deploy job's own rows since the last digest, each read on its own
+  //    kind's index so a busy night of other events cannot crowd them out.
+  const boxRows = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).gte("at", since).lt("at", now))
+    .take(BOX_SCAN);
+  const deployRows = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_at", (q) => q.eq("kind", DEPLOY).gte("at", since).lt("at", now))
+    .take(BOX_SCAN);
+  const boxChanges = boxChangeLines(
+    boxRows.flatMap((row) => {
+      const change = boxChangeOf(row.data);
+      return change === null ? [] : [change];
+    }),
+    deployRows.map((row) => {
+      const d = (row.data ?? {}) as Record<string, unknown>;
+      return { at: row.at, repo: str(d.repo), to: str(d.to), commits: d.commits };
+    }),
+  );
+
   // The tail row, if any, last: it is the one line that names no todo.
   const overnightByTodo = [...byTodo.values()].sort(
     (a, b) => Number(a.todoId === null) - Number(b.todoId === null),
@@ -845,6 +871,7 @@ export async function gatherTodayFacts(
     runners,
     overnightByTodo,
     broken: [...failures.values()],
+    boxChanges,
   };
 }
 

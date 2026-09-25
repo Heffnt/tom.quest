@@ -73,6 +73,12 @@ crons.interval(
   {},
 );
 
+// THE SILENCE ALARM (plan-root T3; convex/ttsJobs.ts internalCheckSilence):
+// a #tts-broken line when the box-change reader, the state comparison or the
+// sweep has not run clean for three of its intervals. Every two minutes, the
+// shortest interval it watches.
+crons.interval("box silence alarm", { minutes: 2 }, internal.ttsJobs.internalCheckSilence, {});
+
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});
 

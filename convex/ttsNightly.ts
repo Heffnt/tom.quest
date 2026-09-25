@@ -28,6 +28,7 @@ import { rowSource, type RowSource } from "./sessionRows";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { postBroken } from "./tts";
+import { BOX_CHANGE, boxChangeFaults, onBoxChange } from "./boxChanges";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
@@ -612,7 +613,16 @@ export const internalRecordWorkerEvent = internalMutation({
     if (!EVENT_KIND_PATTERN.test(kind) || RESERVED_EVENT_KINDS.has(kind)) {
       throw new Error(`not a worker event kind: ${kind}`);
     }
+    // A BOX CHANGE HAS ONE SHAPE (convex/boxChanges.ts), and its key is the
+    // agent it names: the /agents chat reads an agent's changes on that key.
+    if (kind === BOX_CHANGE) {
+      const faults = boxChangeFaults(data);
+      if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
+      const agentId = (data as { agentId?: string }).agentId;
+      if (key !== agentId) throw new Error("a box change's key is its agentId, and it has none when the agentId is absent");
+    }
     const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    if (kind === BOX_CHANGE) await onBoxChange(ctx, id, data);
     // The same broken line logEvent posts, because this is the other way a
     // failure row is written: the nightly's and the weekly's failures arrive
     // here, and #tts-broken is a line per distinct failure whichever door the

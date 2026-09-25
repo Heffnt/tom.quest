@@ -179,6 +179,100 @@ export function mergeRowOf(event: PointEvent): MergeRow {
   };
 }
 
+// ── The box lane ─────────────────────────────────────────────────────────────
+
+/** A row the box lane draws: a change to the Jarvis Box (convex/boxChanges.ts)
+ *  or a deploy of it (Jarvis worker/jobs/deploy.mjs). */
+export function isBoxEvent(kind: string): boolean {
+  return kind === "box-change" || kind === "deploy";
+}
+
+type BoxRow = {
+  /** The first line: what happened, in the record's own words. */
+  title: string;
+  /** The lines under it, each a fact the row carries. */
+  lines: string[];
+  /** When it happened on the box: a box change's own time, not when the
+   *  record took it (up to two minutes later). */
+  at: number;
+  /** The agent it names, when the box matched one. */
+  agentId: string | null;
+  /** A command that may have changed the machine, a state change or a setup
+   *  run, rather than a read, a login or a deploy. */
+  changed: boolean;
+};
+
+function numberField(data: unknown, name: string): number | null {
+  if (typeof data !== "object" || data === null) return null;
+  const value = (data as Record<string, unknown>)[name];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function changeField(data: unknown, name: "what" | "before" | "after"): string | null {
+  if (typeof data !== "object" || data === null) return null;
+  return field((data as Record<string, unknown>).change, name);
+}
+
+/** A box-lane row as the page reads it. */
+export function boxRowOf(event: PointEvent): BoxRow {
+  const d = event.data;
+  if (event.kind === "deploy") {
+    const to = field(d, "to");
+    const from = field(d, "from");
+    return {
+      title: `deployed ${field(d, "repo") ?? "Jarvis"} ${(to ?? "").slice(0, 7)}`.trim(),
+      lines: from === null ? [] : [`from ${from.slice(0, 7)}`],
+      at: event.at,
+      agentId: null,
+      changed: false,
+    };
+  }
+  const source = field(d, "source") ?? "";
+  const user = field(d, "user") ?? "someone";
+  const command = field(d, "command");
+  const count = numberField(d, "count");
+  const what = changeField(d, "what");
+  const before = changeField(d, "before");
+  const after = changeField(d, "after");
+  const commit = field(d, "commit");
+  const cwd = field(d, "cwd");
+  let title: string;
+  let changed = false;
+  if (source === "sudo") {
+    title = count !== null ? `${user} ran ${count} read-only root ${count === 1 ? "command" : "commands"}` : `${user} ran as root: ${command ?? ""}`;
+    changed = count === null;
+  } else if (source === "systemd") {
+    title = `${what ?? "a unit"}: ${after ?? "changed"}`;
+  } else if (source === "ssh") {
+    title = `ssh login: ${after ?? user}${count !== null ? ` (${count} times)` : ""}`;
+  } else if (source === "user") {
+    title = `account change: ${after ?? ""}`;
+    changed = true;
+  } else if (source === "setup") {
+    title = `setup ran as root${commit !== null ? ` at ${commit.slice(0, 7)}` : ""}`;
+    changed = true;
+  } else if (source === "deploy") {
+    title = `deployed ${(commit ?? "").slice(0, 7)}`.trim();
+  } else {
+    title = `${what ?? "the machine's state"} changed`;
+    changed = true;
+  }
+  const lines = [
+    ...(source === "sudo" && count !== null && command !== null ? [command] : []),
+    ...(source === "setup" && after !== null ? [after] : []),
+    ...(source === "state" && after !== null ? [`now: ${after}`] : []),
+    ...(source === "state" && before !== null ? [`gone: ${before}`] : []),
+    ...(cwd === null ? [] : [`in ${cwd}`]),
+  ];
+  return {
+    title,
+    lines,
+    at: numberField(d, "at") ?? event.at,
+    agentId: field(d, "agentId"),
+    changed,
+  };
+}
+
 type FailureRow = {
   id: string;
   at: number;
@@ -253,7 +347,7 @@ function laneTally(data: WindowData, lane: Lane, now: number): Tallied {
     for (const ruling of data.rulings) lastAt = latest(lastAt, ruling.ruledAt);
     return { count: data.rulings.length, lastAt };
   }
-  const wanted = lane === "merges" ? (kind: string) => kind === "merge" : isFailure;
+  const wanted = lane === "merges" ? (kind: string) => kind === "merge" : lane === "box" ? isBoxEvent : isFailure;
   let count = 0;
   let lastAt: number | null = null;
   for (const event of data.events) {

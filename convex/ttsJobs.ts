@@ -26,6 +26,7 @@
 // is about this run and not about a standing condition.
 
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
@@ -87,6 +88,9 @@ export const internalReportJobOk = internalMutation({
     ctx,
     { job, key },
   ): Promise<{ recovered: boolean; since?: number }> => {
+    // THE HEARTBEAT, before anything else: a clean run is the one fact the
+    // silence alarm below reads, whether or not it ends a failure.
+    await beat(ctx, job, Date.now());
     const standing = await standingFailure(ctx, key);
     // A job that has not failed says nothing by running: only the run that
     // ENDS a reported failure is news, so only that one writes a row. A clean
@@ -99,5 +103,85 @@ export const internalReportJobOk = internalMutation({
       data: { job, key, since: standing.at },
     });
     return { recovered: true, since: standing.at };
+  },
+});
+
+// ── THE SILENCE ALARM (plan-root T3) ────────────────────────────────────────
+// Guarantee G4 says every change to the box is in the record within minutes.
+// A reader that has stopped says nothing, so its silence is the thing to hear:
+// every job below reports its clean runs through POST /tts/job-ok, which
+// stamps jobHeartbeats (beat, above), and a cron here reads the stamps. A
+// watched job whose last clean run is older than three of its intervals is a
+// job-failed row under `<job>:silent` and one #tts-broken line naming how
+// long it has been quiet; the first clean run after it writes the recovery
+// row, which re-arms the alarm. A job with no heartbeat yet is not watched: the
+// alarm is armed by the job's first clean run, so it cannot fire before the
+// job is deployed.
+//
+// The intervals are the schedule's (Jarvis worker/jobs/schedule.json):
+// box-watch every 2 minutes, box-state every 10, the sweep every 2.
+
+/** The watched jobs: the name each reports under, and its interval. */
+const SILENCE_WATCH = [
+  { job: "box-watch", everyMs: 2 * 60_000, feeds: "changes to the box" },
+  { job: "box-state", everyMs: 10 * 60_000, feeds: "the box's state comparison" },
+  { job: "agents-sweep", everyMs: 2 * 60_000, feeds: "the agents' transcripts" },
+] as const;
+
+/** How many intervals of silence make a job silent: the plan's three, so one
+ *  run lost to a lock or a slow tick is not an alarm. */
+export const SILENCE_INTERVALS = 3;
+
+async function beat(ctx: MutationCtx, job: string, at: number): Promise<void> {
+  const row = await ctx.db
+    .query("jobHeartbeats")
+    .withIndex("by_job", (q) => q.eq("job", job))
+    .first();
+  if (row === null) await ctx.db.insert("jobHeartbeats", { job, lastOkAt: at });
+  else if (row.lastOkAt < at) await ctx.db.patch(row._id, { lastOkAt: at });
+}
+
+function minutesWord(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 120) return `${minutes} minutes`;
+  return `${Math.round(minutes / 60)} hours`;
+}
+
+/** The alarm's one pass: which watched jobs are silent, and which recovered. */
+export const internalCheckSilence = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<{ silent: string[]; recovered: string[] }> => {
+    const now = Date.now();
+    const silent: string[] = [];
+    const recovered: string[] = [];
+    for (const { job, everyMs, feeds } of SILENCE_WATCH) {
+      const heartbeat = await ctx.db
+        .query("jobHeartbeats")
+        .withIndex("by_job", (q) => q.eq("job", job))
+        .first();
+      if (heartbeat === null) continue;
+      const key = `${job}:silent`;
+      const standing = await standingFailure(ctx, key);
+      const quiet = now - heartbeat.lastOkAt;
+      if (quiet > SILENCE_INTERVALS * everyMs) {
+        silent.push(job);
+        if (standing !== null) continue;
+        const error = `The ${job} job has not run clean for ${minutesWord(quiet)} (it runs every ${minutesWord(everyMs)}), so ${feeds} after that are not reaching the record.`;
+        // The row directly, not logEvent: its #tts-broken line is the one
+        // below, in the alarm's own words, and logEvent would post a second.
+        await ctx.db.insert("dtsEvents", { at: now, kind: JOB_FAILED, key, data: { job, error } });
+        await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+          job: key,
+          statement: error,
+          url: "https://tom.quest/observe",
+        });
+        continue;
+      }
+      if (standing !== null) {
+        await ctx.db.insert("dtsEvents", { at: now, kind: JOB_RECOVERED, key, data: { job, key, since: standing.at } });
+        recovered.push(job);
+      }
+    }
+    return { silent, recovered };
   },
 });

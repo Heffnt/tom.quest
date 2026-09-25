@@ -383,11 +383,12 @@ describe("composeToday", () => {
             count: 11,
           },
         ],
+        boxChanges: [{ id: "box:logins", text: "2 ssh logins reached the box: jarvis 2.", url: "https://tom.quest/observe" }],
       }),
       { canReply: false },
     );
     const order = withAll.lines.filter((l) => l.role === "lead").map((l) => l.section);
-    expect(order).toEqual(["today", "objections", "needs-you-today", "runners", "calendar", "overnight", "broken"]);
+    expect(order).toEqual(["today", "objections", "needs-you-today", "runners", "calendar", "overnight", "broken", "box"]);
     // The four ranked sections keep the design's order among themselves.
     expect(order.filter((s) => (SECTION_ORDER as readonly string[]).includes(s as string))).toEqual([
       ...SECTION_ORDER,

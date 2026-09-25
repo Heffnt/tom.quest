@@ -1,4 +1,4 @@
-// The timeline holds six lanes, collapses a lane with nothing in it to one
+// The timeline holds seven lanes, collapses a lane with nothing in it to one
 // line, groups the workers lane by the job each run names, and opens a mark in
 // place rather than leaving the page.
 
@@ -48,7 +48,7 @@ const draw = (runs: RunMark[], onlyLane: Parameters<typeof Timeline>[0]["onlyLan
 afterEach(() => cleanup());
 
 describe("the timeline", () => {
-  it("names all six lanes", () => {
+  it("names all seven lanes", () => {
     const { container } = draw([]);
     for (const lane of LANES) expect(container.textContent).toContain(lane);
   });
@@ -108,5 +108,32 @@ describe("the timeline", () => {
       expect(link.getAttribute("href")?.startsWith("/")).toBe(true);
     }
     void within;
+  });
+});
+
+// The box lane (plan-root T1): every change to the Jarvis Box, and the deploy
+// job's own rows, as marks at the time each happened on the box.
+describe("the box lane", () => {
+  it("draws a box change at its own time and a deploy, and opens a change to its agent", () => {
+    const events = [
+      {
+        id: "e1",
+        at: 900,
+        kind: "box-change",
+        key: "claude:box:s1",
+        todoId: null,
+        data: { source: "sudo", why: "ran-as-root", command: "/usr/bin/apt-get install -y jq", user: "jarvis", at: 300, agentId: "claude:box:s1" },
+      },
+      { id: "e2", at: 600, kind: "deploy", key: "Jarvis:888b43a", todoId: null, data: { repo: "Jarvis", from: "1cdb2c2aaaa", to: "888b43a0000" } },
+      { id: "e3", at: 700, kind: "tts-opened", key: null, todoId: null, data: null },
+    ];
+    const { container } = render(<Timeline win={WIN} now={1000} runs={[]} events={events} rulings={[]} onlyLane="box" />);
+    const marks = container.querySelectorAll("button[aria-expanded]");
+    expect(marks.length).toBe(2);
+    fireEvent.click(marks[0]);
+    expect(container.textContent).toContain("jarvis ran as root: /usr/bin/apt-get install -y jq");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/agents?agent=claude%3Abox%3As1");
+    fireEvent.click(within(container).getByRole("button", { name: "deployed Jarvis 888b43a" }));
+    expect(container.textContent).toContain("from 1cdb2c2");
   });
 });

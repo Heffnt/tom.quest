@@ -42,12 +42,15 @@ import {
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import type { TranscriptMessage } from "../lib";
+import type { BoxChangeRow, TranscriptMessage } from "../lib";
 import {
+  boxChangeLabel,
+  boxChangeText,
   childRunOf,
   compactInput,
   formatClock,
   isLive,
+  placeBoxChanges,
   previewLine,
   subagentTypeOf,
   taskDescriptionOf,
@@ -263,21 +266,44 @@ function NoteLine({ note }: { note: SessionNote }) {
 type SessionNote = { _id: string; at: number; text: string };
 
 /**
- * Which notes go before each group, and which after the last one. A note sits
- * before the first group whose first row is later than it. A note older than
- * every loaded row is drawn only once the window reaches the session's start
- * (`startLoaded`): until then an earlier row may still belong in front of it.
+ * A change this agent made to the Jarvis Box as root (convex/boxChanges.ts),
+ * marked so it cannot be read as the agent's own words: the time, what kind
+ * of change, and the command or what changed. It sits right after the tool
+ * call that ran it, whose row carries the outcome, or among the rows by time.
  */
-function placeNotes(
+function BoxChangeLine({ change }: { change: BoxChangeRow }) {
+  return (
+    <div
+      data-box-change={change.id}
+      className="flex items-baseline gap-2 border-l-2 border-warning/70 bg-warning/5 rounded-r px-2 py-1 text-xs"
+    >
+      <span className="font-mono text-[10px] text-text-faint shrink-0">{formatClock(change.at)}</span>
+      <span className="shrink-0 rounded border border-warning/50 px-1 text-[10px] uppercase tracking-wide text-warning">
+        {boxChangeLabel(change)}
+      </span>
+      <span className="font-mono text-text-muted whitespace-pre-wrap break-all min-w-0">{boxChangeText(change)}</span>
+    </div>
+  );
+}
+
+/**
+ * Which timed lines go before each group, and which after the last one. A
+ * line sits before the first group whose first row is later than it. A line
+ * older than every loaded row is drawn only once the window reaches the
+ * session's start (`startLoaded`): until then an earlier row may still belong
+ * in front of it. The daemon's notes and the box changes no call ran are both
+ * placed this way.
+ */
+function placeNotes<T extends { at: number }>(
   groups: Group[],
-  notes: SessionNote[],
+  notes: T[],
   startLoaded: boolean,
-): { before: Map<string, SessionNote[]>; after: SessionNote[] } {
-  const before = new Map<string, SessionNote[]>();
+): { before: Map<string, T[]>; after: T[] } {
+  const before = new Map<string, T[]>();
   let next = 0;
   groups.forEach((g, index) => {
     const anchor = g.kind === "row" ? g.message : g.messages[0];
-    const here: SessionNote[] = [];
+    const here: T[] = [];
     while (next < notes.length && notes[next].at < anchor.createdAt) {
       if (index > 0 || startLoaded) here.push(notes[next]);
       next += 1;
@@ -322,6 +348,7 @@ const AgentRows = memo(function AgentRows({
   runKey,
   sessionId,
   sessionStatus,
+  agentId,
   lead,
   tail,
   renderChildRun,
@@ -338,6 +365,8 @@ const AgentRows = memo(function AgentRows({
   /** The live tail's subject; absent on a run that is not a session. */
   sessionId?: Id<"claudeSessions">;
   sessionStatus?: string;
+  /** The run's id in the record, whose box changes are drawn among its rows. */
+  agentId?: string;
   /** The outcome block — first thing inside the scrolling region (§20.3). */
   lead?: React.ReactNode;
   /** The unmatched children list, after the last row. */
@@ -361,6 +390,10 @@ const AgentRows = memo(function AgentRows({
     api.sessionRows.notes,
     sessionId !== undefined ? { sessionId } : "skip",
   );
+  const boxChanges = useQuery(
+    api.boxChanges.forAgent,
+    agentId !== undefined ? { agentId } : "skip",
+  );
 
   const groups = useMemo(() => groupRows(rows), [rows]);
   const subagents = useMemo(() => subagentIndex(rows), [rows]);
@@ -377,6 +410,18 @@ const AgentRows = memo(function AgentRows({
       ),
     [groups, notes, source, pageStatus],
   );
+  // Box changes: after the call that ran each one, or by time among the rows.
+  const boxPlaced = useMemo(() => {
+    const { afterCall, byTime } = placeBoxChanges(rows, boxChanges ?? []);
+    return {
+      afterCall,
+      timed: placeNotes(groups, byTime, source !== "session" || pageStatus === "Exhausted"),
+    };
+  }, [rows, boxChanges, groups, source, pageStatus]);
+  const boxAfter = (row: TranscriptMessage) =>
+    boxPlaced.afterCall.get(row._id)?.map((change) => (
+      <BoxChangeLine key={change.id} change={change} />
+    ));
   const pendingTurns = (pendingInbound ?? []).filter(
     (row) => row.kind === "user-turn",
   );
@@ -450,7 +495,7 @@ const AgentRows = memo(function AgentRows({
 
   const contentSignature = `${rows.length}:${streamBuf?.text.length ?? 0}:${
     pendingTurns.length
-  }:${pendingControls.length}:${notes?.length ?? 0}`;
+  }:${pendingControls.length}:${notes?.length ?? 0}:${boxChanges?.length ?? 0}`;
 
   const firstSeq = rows.length > 0 ? rows[0].seq : null;
   const lastSeq = rows.length > 0 ? rows[rows.length - 1].seq : null;
@@ -540,7 +585,8 @@ const AgentRows = memo(function AgentRows({
     !streamBuf &&
     pendingTurns.length === 0 &&
     pendingControls.length === 0 &&
-    (notes ?? []).length === 0;
+    (notes ?? []).length === 0 &&
+    (boxChanges ?? []).length === 0;
 
   const body = (
     <>
@@ -570,9 +616,14 @@ const AgentRows = memo(function AgentRows({
 
       {groups.map((g) => {
         const anchor = g.kind === "row" ? g.message : g.messages[0];
-        const notesBefore = placed.before.get(anchor._id)?.map((note) => (
-          <NoteLine key={note._id} note={note} />
-        ));
+        const notesBefore = [
+          ...(placed.before.get(anchor._id)?.map((note) => (
+            <NoteLine key={note._id} note={note} />
+          )) ?? []),
+          ...(boxPlaced.timed.before.get(anchor._id)?.map((change) => (
+            <BoxChangeLine key={change.id} change={change} />
+          )) ?? []),
+        ];
         if (g.kind === "row") {
           const message = g.message;
           // A result its call already drew is not drawn twice.
@@ -602,6 +653,7 @@ const AgentRows = memo(function AgentRows({
                   source={source}
                 />
               )}
+              {boxAfter(message)}
             </Fragment>
           );
         }
@@ -620,13 +672,15 @@ const AgentRows = memo(function AgentRows({
               <div className="mt-1 space-y-2 border-l border-border pl-3">
                 {g.messages.map((m) =>
                   m.kind === "tool-result" && pairing.consumed.has(m._id) ? null : (
-                    <AgentRow
-                      key={m._id}
-                      row={m}
-                      result={pairing.forCall.get(m._id)}
-                      toolNames={toolNames}
-                      source={source}
-                    />
+                    <Fragment key={m._id}>
+                      <AgentRow
+                        row={m}
+                        result={pairing.forCall.get(m._id)}
+                        toolNames={toolNames}
+                        source={source}
+                      />
+                      {boxAfter(m)}
+                    </Fragment>
                   ),
                 )}
               </div>
@@ -637,6 +691,9 @@ const AgentRows = memo(function AgentRows({
 
       {placed.after.map((note) => (
         <NoteLine key={note._id} note={note} />
+      ))}
+      {boxPlaced.timed.after.map((change) => (
+        <BoxChangeLine key={change.id} change={change} />
       ))}
 
       {/* The turn the agent is working on, until its row lands: the reply
