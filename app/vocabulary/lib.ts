@@ -1,44 +1,52 @@
 // The vocabulary page's own reading of the render the record holds: the kinds
-// a word can be, where a word is defined, and the search over the list.
+// a word can be, and the rows `tts search` would print for it — the header,
+// every term, or what `define` answers for one word. The rows themselves are
+// spelled once, in shared/vocabulary-rows.mjs, which the box's CLI imports too.
 
 import type { Doc } from "@/convex/_generated/dataModel";
+import {
+  defineTerm,
+  formatTermRow,
+  formatUnknownTerm,
+  formatVersionRow,
+} from "../../shared/vocabulary-rows.mjs";
 
 type VocabularyRow = Doc<"ttsVocabulary">;
 export type Term = VocabularyRow["terms"][number];
 export type Disagreement = VocabularyRow["disagreements"][number];
-
-/**
- * Where a word is defined, in one line.
- *
- * §12.1 IS THE AUTHORITY and the generator says so; a word also present in the
- * code carries the symbol that holds it, so a disagreement between the two has
- * both its addresses on screen. A word the spec does not define at all is a
- * word the generator minted from the code, and saying "the code" is the whole
- * of what is true about it.
- */
-export function definedIn(term: Term): string {
-  const places: string[] = [];
-  if (term.specSection !== undefined) places.push(`spec §${term.specSection}`);
-  if (term.codeSymbol !== undefined) places.push(term.codeSymbol);
-  return places.length === 0 ? "the code" : places.join(" · ");
-}
 
 /** Every kind present in the render, sorted, for the filter row. */
 export function kindsOf(terms: Term[]): string[] {
   return [...new Set(terms.map((term) => term.kind))].sort();
 }
 
+/** `tts search vocabulary`'s header, from what the row carries. A count or a
+ *  commit the night has not posted yet is left out rather than guessed. */
+export function versionRow(row: VocabularyRow): string {
+  return formatVersionRow({
+    version: row.version,
+    counts: { terms: row.terms.length, ...row.counts },
+    wikitom: row.commit,
+    tomQuest: row.tomQuestCommit,
+  });
+}
+
 /**
- * The words a query shows: the word itself, its definition, and the word it is
- * refused in favour of — so typing a word that is NOT in the vocabulary still
- * finds the entry that says which word to use instead.
+ * The rows the page prints under the header. With no word typed, every term
+ * of the picked kind, as `tts search vocabulary --kind` prints them. With a
+ * word, what `tts search define <word>` prints: its one row, or the line that
+ * says it is unknown and the words it could have meant.
  */
-export function searchTerms(terms: Term[], kind: string, query: string): Term[] {
-  const q = query.trim().toLowerCase();
-  return terms.filter((term) =>
-    (kind === "all" || term.kind === kind)
-    && (q === ""
-      || term.term.toLowerCase().includes(q)
-      || term.definition.toLowerCase().includes(q)
-      || (term.refusedFor ?? "").toLowerCase().includes(q)));
+export function termRows(row: VocabularyRow, kind: string, word: string): string[] {
+  const asked = word.trim();
+  const section = row.section;
+  if (asked === "") {
+    return row.terms
+      .filter((term) => kind === "all" || term.kind === kind)
+      .map((term) => formatTermRow({ section, term }));
+  }
+  const { found, candidates } = defineTerm(row.terms, asked);
+  return found === null
+    ? [formatUnknownTerm({ section, term: asked, candidates })]
+    : [formatTermRow({ section, term: found })];
 }
