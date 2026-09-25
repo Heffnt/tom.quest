@@ -30,6 +30,7 @@ import { rowSource, type RowSource } from "./sessionRows";
 import { postBroken } from "./tts";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
+import { SEND_AS_TOM_FAILED, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
 
 // ── The export ───────────────────────────────────────────────────────────────
 // Every table in the schema except the auth ones (the six @convex-dev/auth
@@ -581,7 +582,17 @@ export const internalConsumeLearningObjections = internalMutation({
 // rather than letting a worker write, say, "slack-sent" and confuse the
 // digest's own bookkeeping — the route refuses the kinds Convex writes itself.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
-export const RESERVED_EVENT_KINDS = new Set(["slack-sent", "slack-event"]);
+// The sign-off's three kinds are Convex's own too (convex/ttsSignoff.ts): a
+// "sent-as-tom" row written by a worker would put a message in Tom's name on
+// /observe and in the morning message that no sign-off of his ever let out,
+// and a "send-proposal" row written here would skip the route's checks.
+export const RESERVED_EVENT_KINDS = new Set([
+  "slack-sent",
+  "slack-event",
+  SEND_PROPOSAL,
+  SENT_AS_TOM,
+  SEND_AS_TOM_FAILED,
+]);
 /** The nightly job's failure row (data { day, step, error }); the worker's
  * spelling is worker/jobs/nightly.mjs NIGHTLY_FAILURE, shared by name. */
 export const NIGHTLY_FAILURE = "nightly-failure";

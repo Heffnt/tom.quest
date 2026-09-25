@@ -53,6 +53,7 @@ import type * as ttsRulings from "../ttsRulings.js";
 import type * as ttsRunners from "../ttsRunners.js";
 import type * as ttsSearch from "../ttsSearch.js";
 import type * as ttsShared from "../ttsShared.js";
+import type * as ttsSignoff from "../ttsSignoff.js";
 import type * as ttsSimplify from "../ttsSimplify.js";
 import type * as ttsSkills from "../ttsSkills.js";
 import type * as ttsSlack from "../ttsSlack.js";
@@ -115,6 +116,7 @@ declare const fullApi: ApiFromModules<{
   ttsRunners: typeof ttsRunners;
   ttsSearch: typeof ttsSearch;
   ttsShared: typeof ttsShared;
+  ttsSignoff: typeof ttsSignoff;
   ttsSimplify: typeof ttsSimplify;
   ttsSkills: typeof ttsSkills;
   ttsSlack: typeof ttsSlack;

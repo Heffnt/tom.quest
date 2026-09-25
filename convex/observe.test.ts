@@ -144,6 +144,26 @@ describe("the point events", () => {
     ]);
   });
 
+  it("keeps a message sent in Tom's name, with its four fields and not its text", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 100,
+        kind: "sent-as-tom",
+        data: { recipient: "Sarah Chen", channel: "slack:C0SARAH01", sha256: "ab".repeat(32), signedAt: 90, text: "never drawn" },
+      });
+    });
+    const page = await tom.query(api.observe.eventsInWindow, {
+      from: 0,
+      to: 1_000,
+      paginationOpts: PAGE,
+    });
+    expect(page.page.map((event) => event.data)).toEqual([
+      { recipient: "Sarah Chen", channel: "slack:C0SARAH01", sha256: "ab".repeat(32), signedAt: 90 },
+    ]);
+  });
+
   it("counts a gate head row and a page open without carrying their bodies", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);

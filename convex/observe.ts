@@ -73,6 +73,11 @@ const DELEGATE_OBJECTION_KIND = "delegate-objection";
  *  itself records (convex/tts.ts recordEvent). */
 const PAGE_OPENED_KIND = "tts-opened";
 
+/** A message that went out in Tom's name on his sign-off
+ *  (convex/ttsSignoff.ts SENT_AS_TOM). The rulings list shows it beside his
+ *  rulings: it is his decision too, made by pressing "sign and send". */
+const SENT_AS_TOM_KIND = "sent-as-tom";
+
 /** The three head rows the merge gate reads for one commit
  *  (convex/ttsMerge.ts). */
 export const GATE_KINDS = ["tests-run", "audit-verdict", "evals-run"] as const;
@@ -92,6 +97,7 @@ function wanted(kind: string): boolean {
     kind === DELEGATE_DECISION_KIND ||
     kind === DELEGATE_OBJECTION_KIND ||
     kind === PAGE_OPENED_KIND ||
+    kind === SENT_AS_TOM_KIND ||
     (GATE_KINDS as readonly string[]).includes(kind) ||
     isFailureKind(kind)
   );
@@ -118,8 +124,10 @@ function drawnFields(data: unknown): Record<string, unknown> | null {
   return drawn;
 }
 
-/** A merge row's four, a failure's job, and the five a delegate decision is
- *  read from (app/observe/lib.ts and components/rulings-list.tsx). */
+/** A merge row's four, a failure's job, the five a delegate decision is read
+ *  from, and the four a message sent in Tom's name is (app/observe/lib.ts and
+ *  components/rulings-list.tsx). A sent message's text is not among them: the
+ *  row carries its hash, and the text stays with his sign-off. */
 const DRAWN_FIELDS = [
   "repo",
   "sha",
@@ -131,6 +139,10 @@ const DRAWN_FIELDS = [
   "question",
   "reason",
   "refused",
+  "recipient",
+  "channel",
+  "sha256",
+  "signedAt",
 ] as const;
 
 /** The kinds a page of events counts but never draws, so their bodies stay on

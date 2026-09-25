@@ -14,11 +14,20 @@
 // Every creation is logged to dtsEvents (kind "calendar-event-created") and a
 // mirror refresh is scheduled, so the new event shows on /tts within the ICS
 // feed's own propagation delay rather than waiting for the hourly cron.
+//
+// AN EVENT WITH GUESTS IS A MESSAGE IN TOM'S NAME: Google sends each guest an
+// invitation from him. So `guests` is accepted only through the sign-off gate
+// (convex/ttsSignoff.ts deliverAsTom): the door derives the invitation's text
+// from the event it is about to create and inserts it only when a sign-off of
+// Tom's matches that text, the guests and the "calendar" channel. An event
+// with no guests reaches nobody but him and needs none.
 
 import { v } from "convex/values";
 import { internalAction, internalMutation } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
+import { CALENDAR_CHANNEL, calendarRecipient, deliverAsTom, invitationText } from "./ttsSignoff";
 
 export type CreateEventArgs = {
   title: string;
@@ -30,6 +39,8 @@ export type CreateEventArgs = {
   // Expanded by Google in the event's time zone (America/New_York).
   recurrence?: string[];
   calendarId?: string; // "primary" only (Tom's own calendar); see ONE_CALENDAR
+  // Email addresses Google invites. Present only through the sign-off gate.
+  guests?: string[];
 };
 
 /** THE ONLY CALENDAR THIS DOOR WRITES TO: Tom's own. The token can create
@@ -56,6 +67,9 @@ export function buildEventBody(args: CreateEventArgs) {
       timeZone: "America/New_York",
     },
     recurrence: args.recurrence,
+    ...(args.guests !== undefined && args.guests.length > 0
+      ? { attendees: args.guests.map((email) => ({ email: email.trim() })) }
+      : {}),
   };
 }
 
@@ -68,68 +82,91 @@ export const internalCreateEvent = internalAction({
     location: v.optional(v.string()),
     recurrence: v.optional(v.array(v.string())),
     calendarId: v.optional(v.string()),
+    guests: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args): Promise<{ id: string; htmlLink: string }> => {
     if (args.calendarId !== undefined && args.calendarId !== ONE_CALENDAR) {
       throw new Error(`calendar ${args.calendarId} refused: this door writes only to Tom's primary calendar`);
     }
-    const clientId = process.env.GOOGLE_CALENDAR_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CALENDAR_CLIENT_SECRET;
-    const refreshToken = process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
-    if (!clientId || !clientSecret || !refreshToken) {
-      throw new Error(
-        "Calendar write is not configured — GOOGLE_CALENDAR_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN missing from the Convex env (mint them with worker/jobs/calendar-auth.mjs)",
-      );
-    }
-
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
-        grant_type: "refresh_token",
-      }),
-    });
-    if (!tokenRes.ok) {
-      throw new Error(
-        `calendar token refresh -> HTTP ${tokenRes.status}: ${(await tokenRes.text()).slice(0, 200)}`,
-      );
-    }
-    const accessToken = (await tokenRes.json()).access_token as string;
-
-    const res = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${ONE_CALENDAR}/events`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
+    const guests = (args.guests ?? []).filter((g) => g.trim() !== "");
+    if (guests.length > 0) {
+      return await deliverAsTom(
+        ctx,
+        {
+          text: invitationText({ ...args, guests }),
+          recipient: calendarRecipient(guests),
+          channel: CALENDAR_CHANNEL,
         },
-        body: JSON.stringify(buildEventBody(args)),
-      },
-    );
-    if (!res.ok) {
-      throw new Error(
-        `calendar insert -> HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`,
+        async () => await createEvent(ctx, { ...args, guests }),
       );
     }
-    const created = (await res.json()) as { id: string; htmlLink: string };
-
-    await ctx.runMutation(internal.ttsCalendarWrite.internalLogCreated, {
-      title: args.title,
-      start: args.start,
-      end: args.end,
-      recurring: (args.recurrence?.length ?? 0) > 0,
-      htmlLink: created.htmlLink,
-    });
-    // The mirror learns about the event through the ICS feed; refresh now so
-    // it appears as soon as Google's feed serves it, not at the next hour.
-    await ctx.scheduler.runAfter(0, internal.ttsCalendarFetch.refreshFeeds, {});
-    return { id: created.id, htmlLink: created.htmlLink };
+    return await createEvent(ctx, { ...args, guests: undefined });
   },
 });
+
+async function createEvent(
+  ctx: ActionCtx,
+  args: CreateEventArgs,
+): Promise<{ id: string; htmlLink: string }> {
+  const clientId = process.env.GOOGLE_CALENDAR_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CALENDAR_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error(
+      "Calendar write is not configured — GOOGLE_CALENDAR_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN missing from the Convex env (mint them with worker/jobs/calendar-auth.mjs)",
+    );
+  }
+
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }),
+  });
+  if (!tokenRes.ok) {
+    throw new Error(
+      `calendar token refresh -> HTTP ${tokenRes.status}: ${(await tokenRes.text()).slice(0, 200)}`,
+    );
+  }
+  const accessToken = (await tokenRes.json()).access_token as string;
+
+  // sendUpdates=all: a guest is invited by the email Google sends, which is
+  // the message Tom signed. Without guests there is nobody to send it to.
+  const invite = args.guests !== undefined && args.guests.length > 0 ? "?sendUpdates=all" : "";
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${ONE_CALENDAR}/events${invite}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildEventBody(args)),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(
+      `calendar insert -> HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`,
+    );
+  }
+  const created = (await res.json()) as { id: string; htmlLink: string };
+
+  await ctx.runMutation(internal.ttsCalendarWrite.internalLogCreated, {
+    title: args.title,
+    start: args.start,
+    end: args.end,
+    recurring: (args.recurrence?.length ?? 0) > 0,
+    htmlLink: created.htmlLink,
+  });
+  // The mirror learns about the event through the ICS feed; refresh now so
+  // it appears as soon as Google's feed serves it, not at the next hour.
+  await ctx.scheduler.runAfter(0, internal.ttsCalendarFetch.refreshFeeds, {});
+  return { id: created.id, htmlLink: created.htmlLink };
+}
 
 // Transparency record (spec §10): every write to Tom's calendar leaves a
 // dtsEvents row, whoever made it and whyever.
