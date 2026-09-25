@@ -8,13 +8,16 @@ const nextConfig: NextConfig = {
   async redirects() {
     // "dts" -> "tts" rename (2026-08-29): links in already-sent Slack
     // digests point at the old path — query params are preserved by default.
-    // "sessions" -> "runs" rename (2026-09-21): the page lists every agent
-    // run, not only sessions, and links in the record and in Slack still
-    // name /sessions. `:path*` matches zero segments too, so this one rule
-    // also sends the bare /sessions to /runs.
+    // "sessions" -> "runs" rename (2026-09-21), then "runs" -> "agents"
+    // (2026-09-25): the page lists every agent, not only sessions, and links
+    // in the record and in Slack still name /sessions and /runs. `:path*`
+    // matches zero segments too, so each rule also sends its bare path to
+    // /agents. The page reads ?run= as it reads ?agent=, so an old
+    // /runs?run=<id> link opens the same agent.
     return [
       { source: "/" + "dts", destination: "/tts", permanent: true },
-      { source: "/sessions/:path*", destination: "/runs/:path*", permanent: true },
+      { source: "/sessions/:path*", destination: "/agents/:path*", permanent: true },
+      { source: "/runs/:path*", destination: "/agents/:path*", permanent: true },
     ];
   },
 };

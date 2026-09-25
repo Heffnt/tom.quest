@@ -855,6 +855,28 @@ describe("TTS annotations and the preparer", () => {
     expect((await notStrings.json()).error).toContain("doorFaults");
     vi.unstubAllEnvs();
   });
+
+  // Both spellings until phase 3: the prepare door reads agentToken and
+  // runToken, and the todo stores either as its producedByRunToken.
+  it("the prepare door stores the same token under agentToken and under runToken", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const token = "11111111-2222-4333-8444-555555555555";
+    const stored = [];
+    for (const key of ["agentToken", "runToken"]) {
+      const t = convexTest({ schema, modules });
+      const tom = await withTom(t);
+      const id = await tom.mutation(api.tts.createTodo, { statement: "renew the visa" });
+      const response = await t.fetch("/tts/prepare-todo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+        body: JSON.stringify({ id, brief: "It expires. Renew it.", readiness: "prepared", [key]: token }),
+      });
+      expect(response.status, key).toBe(200);
+      stored.push((await t.run((ctx) => ctx.db.get(id)))?.producedByRunToken);
+    }
+    expect(stored).toEqual([token, token]);
+    vi.unstubAllEnvs();
+  });
 });
 
 // The one time input on the /dts page: Tom writes a sentence, the worker job

@@ -29,7 +29,7 @@ export const PAGES: Page[] = [
   { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6, visibility: "public" },
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
-  { slug: "runs", title: "Runs", blurb: "TTS — every agent run, at every depth", priority: 9, visibility: "tom" },
+  { slug: "agents", title: "Agents", blurb: "TTS — every agent, at every depth", priority: 9, visibility: "tom" },
   { slug: OBSERVE_SLUG, title: "Observe", blurb: "Everything that ran and every ruling, by window", priority: 9, visibility: "tom" },
   { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
   { slug: "intent", title: "Intent", blurb: "Every line of his intent, and what it rests on", priority: 8, visibility: "tom" },

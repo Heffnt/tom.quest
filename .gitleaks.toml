@@ -27,8 +27,8 @@ useDefault = true
 description = "Test fixtures that are credential-SHAPED on purpose and are not credentials."
 regexTarget = "line"
 regexes = [
-  # convex/runs.test.ts, convex/http.test.ts — the canonical example UUID,
-  # standing in for a run registration token. GET /tts/run-trace checks the
+  # convex/agents.test.ts, convex/http.test.ts — the canonical example UUID,
+  # standing in for an agent registration token. GET /tts/agent-trace checks the
   # token's SHAPE before the indexed lookup, so a shapeless placeholder would
   # not exercise the path those suites exist for.
   '''3f2504e0-4f89-41d3-9a0c-0305e82c3301''',
@@ -39,7 +39,7 @@ regexes = [
   # Long enough to match the real `github-pat` rule rather than generic-api-key,
   # and it has to be: the assertion is that the door redacted it back out.
   '''ghp_0123456789abcdefghijklmnopqrstuvwxyz''',
-  # app/runs/components/run.test.tsx — a content-addressed store path, not
+  # app/agents/components/agent.test.tsx — a content-addressed store path, not
   # a key. generic-api-key matched it on the field NAME ending in "Key".
   '''storeKey: "runs/claude/box/x/y"''',
   # worker/jobs/evals.test.mjs, in this repository's history from before the

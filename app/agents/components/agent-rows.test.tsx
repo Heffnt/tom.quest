@@ -11,11 +11,11 @@
 // which walks the session's newest tool calls rather than the transcript's
 // loaded window: that is why a fold whose Task row has been paged out still
 // says who the subagent is, instead of showing a bare tool-use id. Those four
-// witnesses were written against the transcript pane; the pane is now RunRows
-// fed by useRunRows, so they are driven here with `rows` as a prop and they
+// witnesses were written against the transcript pane; the pane is now AgentRows
+// fed by useAgentRows, so they are driven here with `rows` as a prop and they
 // must survive the move unchanged.
 //
-// The fifth is the reason this file exists at all. The window RunRows groups
+// The fifth is the reason this file exists at all. The window AgentRows groups
 // now holds rows from two writers, and `parentToolUseId` does not mean the
 // same thing in both. On a daemon row it means "this row belongs to that
 // subagent's output"; on a file-derived row it means "this row answers that
@@ -63,7 +63,7 @@ vi.mock("convex/react", async () => {
   };
 });
 
-import RunRows from "./run-rows";
+import AgentRows from "./agent-rows";
 
 const NOW = Date.now();
 const SESSION_ID = "s1" as unknown as Id<"claudeSessions">;
@@ -93,7 +93,7 @@ const PROVENANCE = {
   sourceKind: "user",
 };
 
-/** The three live queries RunRows reads beside its rows. */
+/** The three live queries AgentRows reads beside its rows. */
 function load(openWork?: unknown) {
   convex.data = {
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
@@ -104,7 +104,7 @@ function load(openWork?: unknown) {
 
 const body = () => document.body.textContent ?? "";
 
-/** Rows arrive ASCENDING as a prop — the paging hook lives in <Run/>. */
+/** Rows arrive ASCENDING as a prop — the paging hook lives in <Agent/>. */
 function show(
   rows: TranscriptMessage[],
   over: {
@@ -115,7 +115,7 @@ function show(
   } = {},
 ) {
   return render(
-    <RunRows
+    <AgentRows
       rows={rows}
       pageStatus={over.pageStatus ?? "Exhausted"}
       loadMore={() => {}}

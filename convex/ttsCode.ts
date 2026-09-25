@@ -53,7 +53,7 @@ export const internalStoreBriefs = internalMutation({
     ),
     // THE RUN THAT WROTE THESE BRIEFS. A code ruling of Tom's is a judgment
     // about the brief he read, and this is the edge back to the run that wrote
-    // it (convex/runLabels.ts tokenForRulingSubject reads it off the brief
+    // it (convex/agentLabels.ts tokenForRulingSubject reads it off the brief
     // row). One token per call rather than per brief: one brief pass is one
     // run, and the pen takes the pass's output as a batch. Absent is a
     // supported value and is never inferred.

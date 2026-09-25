@@ -1361,7 +1361,7 @@ export const internalPrepareTodo = internalMutation({
     dateKind: v.optional(DATE_KIND),
     // THE RUN THAT WROTE THE WRITE-UP. A ruling of Tom's on this todo is a
     // judgment about the text he read on the page, and this token is the only
-    // honest edge back to the run that produced it (convex/runLabels.ts; the
+    // honest edge back to the run that produced it (convex/agentLabels.ts; the
     // schema note on runs.regToken says why a time-window search over `runs`
     // by todoId is wrong on the ordinary case). Absent is a supported value:
     // an unregistered caller stamps nothing and a ruling on the row writes no
@@ -1643,7 +1643,7 @@ export const internalMarkDigestSent = internalMutation({
     // objectionAskIds note above says of its own field.
     //
     // The pair is what makes a reaction on the morning scorable: `slackTs` is
-    // what a reaction event is resolved against (convex/runLabels.ts
+    // what a reaction event is resolved against (convex/agentLabels.ts
     // internalLabelFromReaction), and `runToken` is the edge from this row to
     // the run whose output the reaction judged.
     //

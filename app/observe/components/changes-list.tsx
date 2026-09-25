@@ -36,7 +36,7 @@ import {
   lasted,
   mergeRowOf,
   outcomeWords,
-  runHref,
+  agentHref,
   type PointEvent,
   type RunMark,
 } from "../lib";
@@ -141,10 +141,10 @@ export default function ChangesList({
                       )}
                     </>
                   )}
-                  <Opens head={`${did.length} runs did this work`} tone="plain">
+                  <Opens head={`${did.length} agents did this work`} tone="plain">
                     {did.length === 0 ? (
                       <p className="text-[11px] text-text-faint">
-                        No run in this window names this merge.
+                        No agent in this window names this merge.
                       </p>
                     ) : (
                       <ul className="space-y-1">
@@ -155,10 +155,10 @@ export default function ChangesList({
                               className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-muted"
                             />
                             <Link
-                              href={runHref(run.runId)}
+                              href={agentHref(run.runId)}
                               className="shrink-0 text-[11px] text-text-muted underline hover:text-text"
                             >
-                              open the run
+                              open the agent
                             </Link>
                           </li>
                         ))}

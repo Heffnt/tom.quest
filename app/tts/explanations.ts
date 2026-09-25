@@ -256,7 +256,7 @@ ${WHAT_TTS_IS}
 
 <p>Three of the four also stamp the todo as touched by Tom. <span class="mono">revise</span> is the exception, and deliberately: a revise hands the item back to an agent rather than settling it.</p>
 
-<h2>Why an autonomous run cannot consume a session verdict</h2>
+<h2>Why an autonomous agent cannot consume a session verdict</h2>
 
 <p>The <span class="mono">session</span> verdict means "this needs a conversation, not a ruling". A ruling is consumed — marked applied — only when a session is created with the todo attached <em>and</em> that session is interactive, meaning Tom opened it. A session the automatic picker started on the same todo is explicitly excluded from consuming it.</p>
 
@@ -287,13 +287,13 @@ ${WHAT_TTS_IS}
 export const SESSIONS_EXPLANATION = page(
   "Opening a session — what is created and where it runs",
   "Opening a session: what is created, where it runs, and what it may do",
-  "The button beside this caption starts one run of Claude Code on Tom's own machine, with this item already in its opening prompt.",
+  "The button beside this caption starts one Claude Code agent on Tom's own machine, with this item already in its opening prompt.",
   `
 <h2>What this is</h2>
 
 ${WHAT_TTS_IS}
 
-<p>A <span class="term">session</span> is one run of Claude Code — the command-line coding agent — started by TTS and carried out on the machine the code calls the <span class="term">Jarvis Box</span>, Tom's always-on machine. Pressing the button beside this caption calls the mutation <span class="mono">createSession</span> in the file <span class="mono">convex/claudeSessions.ts</span>, which stores a row describing the session and the text of its opening prompt. Nothing is launched by that mutation; it only writes.</p>
+<p>A <span class="term">session</span> is one agent of Claude Code — the command-line coding agent — started by TTS and carried out on the machine the code calls the <span class="term">Jarvis Box</span>, Tom's always-on machine. Pressing the button beside this caption calls the mutation <span class="mono">createSession</span> in the file <span class="mono">convex/claudeSessions.ts</span>, which stores a row describing the session and the text of its opening prompt. Nothing is launched by that mutation; it only writes.</p>
 
 <p>A program on the Jarvis Box, the <span class="term">daemon</span>, polls TTS constantly — every second while something is happening, every thirty seconds when nothing is — and claims any session row it finds in the requested state. TTS treats the daemon as absent if it has not polled for ninety seconds. Everything the session then does is streamed back into TTS through that same connection, which is what the session view on the site is showing.</p>
 
@@ -307,7 +307,7 @@ ${WHAT_TTS_IS}
   <tr><td class="mono">focus-item</td><td>Any other todo.</td><td>That Tom chose to begin this item now: open with the smallest concrete first step and work it with him.</td></tr>
   <tr><td class="mono">block</td><td>A placed span of calendar time that targets a category rather than one todo.</td><td>That Tom committed this span to the category, followed by a list of every active todo carrying that category, one line each with its timing, date, entry action and work description.</td></tr>
   <tr><td class="mono">weekly</td><td>The session list page only.</td><td>Nothing extra — the prompt is whatever was typed.</td></tr>
-  <tr><td class="mono">adhoc</td><td>The session list page, and every automatic exploration run.</td><td>Nothing extra, or the exploration prompt.</td></tr>
+  <tr><td class="mono">adhoc</td><td>The session list page, and every automatic exploration agent.</td><td>Nothing extra, or the exploration prompt.</td></tr>
 </table>
 
 <p>The button beside a todo picks between the first two by that todo's readiness alone. There is one exception to the block prompt: for the category <span class="mono">code</span> no list is printed, because the work there is the mirror of code todos and their prepared briefs rather than a list in a prompt.</p>
@@ -344,7 +344,7 @@ ${WHAT_TTS_IS}
 
 <h2>Interactive versus automatic, and why it matters here</h2>
 
-<p>The same row shape is used for sessions Tom opens and for sessions a picker starts by itself every five minutes. Two differences are visible from this button. First, a session Tom opens consumes a standing <span class="mono">session</span> verdict on the item — the ruling that says "this needs a conversation" — and an automatic run on the same item deliberately does not, so the conversation he asked for still happens. Second, automatic runs carry a cap of two hundred turns and ninety minutes of wall-clock time per turn; an interactive session has neither.</p>
+<p>The same row shape is used for sessions Tom opens and for sessions a picker starts by itself every five minutes. Two differences are visible from this button. First, a session Tom opens consumes a standing <span class="mono">session</span> verdict on the item — the ruling that says "this needs a conversation" — and an automatic agent on the same item deliberately does not, so the conversation he asked for still happens. Second, automatic agents carry a cap of two hundred turns and ninety minutes of wall-clock time per turn; an interactive session has neither.</p>
 
 <h2>What happens next, and who does it</h2>
 

@@ -70,23 +70,23 @@ async function daemonRow(t: ReturnType<typeof convexTest>, sessionId: string, se
   } as never));
 }
 
-describe("runs", () => {
+describe("agents", () => {
   it("ingests immutable rows and returns them in source order", async () => {
     const t = convexTest(schema, modules);
-    const result = await t.mutation(internal.runs.internalIngest, ingest(run(), [row(0), row(1, { digest: "fedcba9876543210", kind: "assistant-text" })]) as never);
+    const result = await t.mutation(internal.agents.internalIngest, ingest(run(), [row(0), row(1, { digest: "fedcba9876543210", kind: "assistant-text" })]) as never);
     expect(result).toMatchObject({ ok: true, inserted: 2, skipped: 0, committedLine: 1 });
     const tom = await withTom(t);
-    expect((await tom.query(api.runs.get, { runId: "claude:laptop:root-run" }))?.runId).toBe("claude:laptop:root-run");
-    const rows = await tom.query(api.runs.rows, { runId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 10 } });
+    expect((await tom.query(api.agents.get, { agentId: "claude:laptop:root-run" }))?.runId).toBe("claude:laptop:root-run");
+    const rows = await tom.query(api.agents.rows, { agentId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 10 } });
     expect(rows.page.map((entry) => entry.seq)).toEqual([0, 1]);
-    expect(await tom.query(api.runs.entry, { runId: "claude:laptop:root-run", seq: 1 })).toMatchObject({ provenance: { fileVersion: STORED_HASH }, digest: "fedcba9876543210" });
+    expect(await tom.query(api.agents.entry, { agentId: "claude:laptop:root-run", seq: 1 })).toMatchObject({ provenance: { fileVersion: STORED_HASH }, digest: "fedcba9876543210" });
   });
 
   it("uses the prior cursor/hash tuple as an append compare-and-swap fence", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    await t.mutation(internal.agents.internalIngest, ingest() as never);
     const grown = run({ file: { ...run().file, bytes: 20, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(grown, [row(1000, { digest: "1111111111111111" })], [], 1, PREFIX_HASH) as never)).toMatchObject({ ok: true, inserted: 1, committedLine: 2 });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(grown, [row(1000, { digest: "1111111111111111" })], [], 1, PREFIX_HASH) as never)).toMatchObject({ ok: true, inserted: 1, committedLine: 2 });
 
     // A rewrite plus append cannot bypass the fence just because its new cursor
     // is greater than the stored cursor.
@@ -94,7 +94,7 @@ describe("runs", () => {
     // The refusal names the cursor the record holds. Without it a sweeper that
     // lost its own cursor has no way back: it re-presents line 0 of a file the
     // record already committed, is refused for ever, and strands the run.
-    expect(await t.mutation(internal.runs.internalIngest, ingest(rewrittenAppend, [row(2000, { digest: "2222222222222222" })], [], 2, "0".repeat(64)) as never)).toEqual({ ok: false, reason: "file rewritten", committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(rewrittenAppend, [row(2000, { digest: "2222222222222222" })], [], 2, "0".repeat(64)) as never)).toEqual({ ok: false, reason: "file rewritten", committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH });
     const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
     expect(landed?.file.committedLine).toBe(2);
     expect((await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "claude:laptop:root-run")).collect())).map((entry) => entry.seq)).toEqual([0, 1000]);
@@ -113,7 +113,7 @@ describe("runs", () => {
       spawnedByToolUseId: "exact-tool-use",
       file: { ...run().file, path: "C:/grandchild.jsonl" },
     });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(grandchild, [row(0, { depth: 2 })]) as never))
+    expect(await t.mutation(internal.agents.internalIngest, ingest(grandchild, [row(0, { depth: 2 })]) as never))
       .toMatchObject({ ok: true, inserted: 1 });
 
     // The second grandchild reads the placeholder its sibling created; before
@@ -125,7 +125,7 @@ describe("runs", () => {
       spawnedByToolUseId: "exact-tool-use",
       file: { ...run().file, path: "C:/sibling.jsonl" },
     });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(sibling, [row(0, { depth: 2 })]) as never))
+    expect(await t.mutation(internal.agents.internalIngest, ingest(sibling, [row(0, { depth: 2 })]) as never))
       .toMatchObject({ ok: true, inserted: 1 });
 
     const middle = run({
@@ -134,7 +134,7 @@ describe("runs", () => {
       spawnedByToolUseId: "exact-tool-use",
       file: { ...run().file, path: "C:/middle.jsonl" },
     });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(middle, [row(0, { depth: 1 })]) as never))
+    expect(await t.mutation(internal.agents.internalIngest, ingest(middle, [row(0, { depth: 1 })]) as never))
       .toMatchObject({ ok: true, inserted: 1 });
 
     for (const [runId, path] of [["claude:laptop:root-run/grandchild-agent", "C:/grandchild.jsonl"], ["claude:laptop:root-run/sibling-agent", "C:/sibling.jsonl"]] as const) {
@@ -154,13 +154,13 @@ describe("runs", () => {
       depth: 1, linkKnown: false, host: "box", cli: "codex", kind: "unknown",
       file: { ...run().file, path: "/parent.jsonl" },
     });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(parent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(parent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
     const child = run({
       runId: "codex:box:child-thread", rootRunId: "codex:box:parent-thread", parentRunId: "codex:box:parent-thread",
       depth: 1, linkKnown: false, host: "box", cli: "codex", kind: "codex-child",
       file: { ...run().file, path: "/child.jsonl" },
     });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(child, [row(0, { depth: 1 }), row(1000, { depth: 1 })]) as never)).toMatchObject({ ok: true, inserted: 2 });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(child, [row(0, { depth: 1 }), row(1000, { depth: 1 })]) as never)).toMatchObject({ ok: true, inserted: 2 });
     const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "codex:box:child-thread")).unique());
     expect(landed).toMatchObject({ depth: 2, rootRunId: "claude:box:launcher-run" });
     const rows = await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "codex:box:child-thread")).collect());
@@ -169,15 +169,15 @@ describe("runs", () => {
 
   it("refuses malformed identifiers, numeric facts, and child edges before writes", async () => {
     const t = convexTest(schema, modules);
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "not-a-run" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ startedAt: -1 })) as never)).toEqual({ ok: false, reason: "invalid run record" });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", "claude:laptop:not-root", "claude:laptop:root-run", 1)]) as never)).toEqual({ ok: false, reason: "invalid child edge" });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ runId: "not-a-run" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: -1 })) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", "claude:laptop:not-root", "claude:laptop:root-run", 1)]) as never)).toEqual({ ok: false, reason: "invalid child edge" });
     expect(await t.run((ctx) => ctx.db.query("runs").collect())).toEqual([]);
   });
 
   it("takes a Workflow's agent as an ordinary child with no spawning tool-use id", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest(run()) as never);
+    await t.mutation(internal.agents.internalIngest, ingest(run()) as never);
     // The Workflow sidecar carries no toolUseId, so the link is honestly
     // unknown; the workflow it belongs to is on the run's context instead.
     const agent = run({
@@ -185,7 +185,7 @@ describe("runs", () => {
       kind: "subagent", origin: "workflow",
       context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], workflowId: "wf_abc" },
     });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(agent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(agent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
     const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run/a27aa4b9a7caecc56")).unique());
     expect(stored).toMatchObject({ depth: 1, parentRunId: "claude:laptop:root-run", origin: "workflow", linkKnown: false });
     expect(stored?.spawnedByToolUseId).toBeUndefined();
@@ -199,7 +199,7 @@ describe("runs", () => {
       layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [],
       graphVersion: "0123456789abcdef", graphNodes,
     };
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ context })) as never)).toMatchObject({ ok: true });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ context })) as never)).toMatchObject({ ok: true });
     const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
     expect(stored?.context?.graphVersion).toBe("0123456789abcdef");
     expect(stored?.context?.graphNodes).toEqual(graphNodes);
@@ -208,7 +208,7 @@ describe("runs", () => {
     // it is not a node id, and the door refuses it rather than storing a shape
     // no reader of the `given` edges can follow.
     const bad = convexTest(schema, modules);
-    await expect(bad.mutation(internal.runs.internalIngest, ingest(run({
+    await expect(bad.mutation(internal.agents.internalIngest, ingest(run({
       context: { ...context, graphNodes: ["line:1a2b3c4d", 7] },
     })) as never)).rejects.toThrow();
   });
@@ -217,7 +217,7 @@ describe("runs", () => {
     // Absent is a supported value: an unregistered run, and one whose launcher
     // could not build a graph, carry nothing and nothing is inferred.
     const t = convexTest(schema, modules);
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run({
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({
       context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [] },
     })) as never)).toMatchObject({ ok: true });
     const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
@@ -237,9 +237,9 @@ describe("runs", () => {
       parentRunId: "claude:laptop:orchestrator", rootRunId: "claude:laptop:orchestrator", depth: 1,
       file: { ...run().file, path: `C:/${name}.jsonl` },
     });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(boxChild("box-child-one"), [row(0, { depth: 1 })]) as never))
+    expect(await t.mutation(internal.agents.internalIngest, ingest(boxChild("box-child-one"), [row(0, { depth: 1 })]) as never))
       .toMatchObject({ ok: true, inserted: 1 });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(boxChild("box-child-two"), [row(0, { depth: 1 })]) as never))
+    expect(await t.mutation(internal.agents.internalIngest, ingest(boxChild("box-child-two"), [row(0, { depth: 1 })]) as never))
       .toMatchObject({ ok: true, inserted: 1 });
 
     const parent = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:orchestrator")).unique());
@@ -262,51 +262,51 @@ describe("runs", () => {
 
     it("takes the envelope's word first and counts no guess", async () => {
       const t = convexTest(schema, modules);
-      expect(await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" })) as never)).toMatchObject({ ok: true });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(run({ environment: "session" })) as never)).toMatchObject({ ok: true });
       expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("session");
       expect(await defaulted(t)).toEqual([]);
     });
 
     it("gives a silent child its parent's environment", async () => {
       const t = convexTest(schema, modules);
-      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" })) as never);
-      expect(await t.mutation(internal.runs.internalIngest, ingest(childRun("silent-child"), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      await t.mutation(internal.agents.internalIngest, ingest(run({ environment: "session" })) as never);
+      expect(await t.mutation(internal.agents.internalIngest, ingest(childRun("silent-child"), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
       expect((await at(t, "claude:laptop:silent-child"))?.environment).toBe("session");
       expect(await defaulted(t)).toEqual([]);
     });
 
     it("keeps a row's own environment when neither envelope nor parent names one", async () => {
       const t = convexTest(schema, modules);
-      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "runner" })) as never);
-      expect(await t.mutation(internal.runs.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never)).toMatchObject({ ok: true });
+      await t.mutation(internal.agents.internalIngest, ingest(run({ environment: "runner" })) as never);
+      expect(await t.mutation(internal.agents.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never)).toMatchObject({ ok: true });
       expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("runner");
     });
 
     it("calls a run nothing named a worker, once, and says so", async () => {
       const t = convexTest(schema, modules);
-      await t.mutation(internal.runs.internalIngest, ingest(run({ context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], launcher: "worker/jobs/example.mjs" } })) as never);
+      await t.mutation(internal.agents.internalIngest, ingest(run({ context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], launcher: "worker/jobs/example.mjs" } })) as never);
       expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("worker");
       expect((await defaulted(t)).map((entry) => entry.data)).toEqual([{ runId: "claude:laptop:root-run", launcher: "worker/jobs/example.mjs" }]);
       // A later page is a repair, never a second count.
-      await t.mutation(internal.runs.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
+      await t.mutation(internal.agents.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
       expect(await defaulted(t)).toHaveLength(1);
     });
 
     it("repairs a row ingested before its envelope, when a later page names one", async () => {
       const t = convexTest(schema, modules);
-      await t.mutation(internal.runs.internalIngest, ingest(run()) as never);
+      await t.mutation(internal.agents.internalIngest, ingest(run()) as never);
       expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("worker");
-      await t.mutation(internal.runs.internalIngest, retry(run({ environment: "session", file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
+      await t.mutation(internal.agents.internalIngest, retry(run({ environment: "session", file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
       expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("session");
     });
 
     it("gives a placeholder the environment of the run that revealed it, and its own run repairs it", async () => {
       const t = convexTest(schema, modules);
-      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" }), [row()], [child("claude:laptop:stubbed-child", "claude:laptop:root-run", "claude:laptop:root-run", 1)]) as never);
+      await t.mutation(internal.agents.internalIngest, ingest(run({ environment: "session" }), [row()], [child("claude:laptop:stubbed-child", "claude:laptop:root-run", "claude:laptop:root-run", 1)]) as never);
       expect(await at(t, "claude:laptop:stubbed-child")).toMatchObject({ kind: "subagent", environment: "session" });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(childRun("orphaned-child", { parentRunId: "claude:laptop:unseen-parent", rootRunId: "claude:laptop:unseen-parent", environment: "runner" }), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(childRun("orphaned-child", { parentRunId: "claude:laptop:unseen-parent", rootRunId: "claude:laptop:unseen-parent", environment: "runner" }), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
       expect(await at(t, "claude:laptop:unseen-parent")).toMatchObject({ kind: "unknown", environment: "runner" });
-      await t.mutation(internal.runs.internalIngest, ingest(childRun("stubbed-child", { environment: "worker", linkKnown: true, spawnedByToolUseId: "exact-tool-use" }), [row(0, { depth: 1 })]) as never);
+      await t.mutation(internal.agents.internalIngest, ingest(childRun("stubbed-child", { environment: "worker", linkKnown: true, spawnedByToolUseId: "exact-tool-use" }), [row(0, { depth: 1 })]) as never);
       expect((await at(t, "claude:laptop:stubbed-child"))?.environment).toBe("worker");
     });
   });
@@ -315,36 +315,36 @@ describe("runs", () => {
     const t = convexTest(schema, modules);
     const legacy: Record<string, unknown> = run({ runner: "claude" });
     delete legacy.cli;
-    await expect(t.mutation(internal.runs.internalIngest, ingest(legacy as never) as never)).rejects.toThrow();
+    await expect(t.mutation(internal.agents.internalIngest, ingest(legacy as never) as never)).rejects.toThrow();
     const nameless: Record<string, unknown> = run({ runId: "claude:laptop:nameless-run", rootRunId: "claude:laptop:nameless-run" });
     delete nameless.cli;
-    await expect(t.mutation(internal.runs.internalIngest, ingest(nameless as never) as never)).rejects.toThrow();
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:laptop:mismatched-run", rootRunId: "claude:laptop:mismatched-run", cli: "codex" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    await expect(t.mutation(internal.agents.internalIngest, ingest(nameless as never) as never)).rejects.toThrow();
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ runId: "claude:laptop:mismatched-run", rootRunId: "claude:laptop:mismatched-run", cli: "codex" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
   });
 
   it("stores mode only for session runs", async () => {
     const t = convexTest(schema, modules);
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });
     const autonomous = run({ runId: "claude:laptop:auto-session", rootRunId: "claude:laptop:auto-session", mode: "autonomous" });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(autonomous) as never)).toMatchObject({ ok: true });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(autonomous) as never)).toMatchObject({ ok: true });
     const job = run({ runId: "claude:laptop:cron-job-run", rootRunId: "claude:laptop:cron-job-run", kind: "job", mode: "interactive" });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(job) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(job) as never)).toEqual({ ok: false, reason: "invalid run record" });
   });
 
   it("keeps chunks immutable and stamps only a complete, verified reassembly", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest() as never);
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run(), [row(1, { overflow: { sha256: "a".repeat(64), byteLength: 1, chunkCount: 1 } })]) as never)).toEqual({ ok: false, reason: "overflow must be stamped separately" });
-    expect(await t.mutation(internal.runs.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: HELLO_WORLD_SHA256, byteLength: 11, chunkCount: 2 })).toEqual({ ok: false, reason: "chunks incomplete" });
-    expect(await t.mutation(internal.runs.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 1, chunkCount: 2, text: "world" })).toEqual({ ok: true, index: 1 });
-    expect(await t.mutation(internal.runs.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: HELLO_WORLD_SHA256, byteLength: 11, chunkCount: 2 })).toEqual({ ok: false, reason: "chunks incomplete" });
-    expect(await t.mutation(internal.runs.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 0, chunkCount: 2, text: "hello " })).toEqual({ ok: true, index: 0 });
-    expect(await t.mutation(internal.runs.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 0, chunkCount: 2, text: "different" })).toEqual({ ok: false, reason: "chunk already written" });
-    expect(await t.mutation(internal.runs.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: "a".repeat(64), byteLength: 11, chunkCount: 2 })).toEqual({ ok: false, reason: "chunk integrity mismatch" });
-    expect(await t.mutation(internal.runs.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: HELLO_WORLD_SHA256, byteLength: 11, chunkCount: 2 })).toEqual({ ok: true, stamped: true });
-    expect(await t.mutation(internal.runs.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 0, chunkCount: 2, text: "hello " })).toEqual({ ok: false, reason: "row already stamped" });
+    await t.mutation(internal.agents.internalIngest, ingest() as never);
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run(), [row(1, { overflow: { sha256: "a".repeat(64), byteLength: 1, chunkCount: 1 } })]) as never)).toEqual({ ok: false, reason: "overflow must be stamped separately" });
+    expect(await t.mutation(internal.agents.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: HELLO_WORLD_SHA256, byteLength: 11, chunkCount: 2 })).toEqual({ ok: false, reason: "chunks incomplete" });
+    expect(await t.mutation(internal.agents.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 1, chunkCount: 2, text: "world" })).toEqual({ ok: true, index: 1 });
+    expect(await t.mutation(internal.agents.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: HELLO_WORLD_SHA256, byteLength: 11, chunkCount: 2 })).toEqual({ ok: false, reason: "chunks incomplete" });
+    expect(await t.mutation(internal.agents.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 0, chunkCount: 2, text: "hello " })).toEqual({ ok: true, index: 0 });
+    expect(await t.mutation(internal.agents.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 0, chunkCount: 2, text: "different" })).toEqual({ ok: false, reason: "chunk already written" });
+    expect(await t.mutation(internal.agents.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: "a".repeat(64), byteLength: 11, chunkCount: 2 })).toEqual({ ok: false, reason: "chunk integrity mismatch" });
+    expect(await t.mutation(internal.agents.internalStampOverflow, { runId: "claude:laptop:root-run", seq: 0, sha256: HELLO_WORLD_SHA256, byteLength: 11, chunkCount: 2 })).toEqual({ ok: true, stamped: true });
+    expect(await t.mutation(internal.agents.internalIngestOverflow, { runId: "claude:laptop:root-run", seq: 0, index: 0, chunkCount: 2, text: "hello " })).toEqual({ ok: false, reason: "row already stamped" });
     const viewer = await withTom(t);
-    expect((await viewer.query(api.runs.rows, { runId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 1 } })).page[0]).toMatchObject({ hasOverflow: true, fullByteLength: 11 });
+    expect((await viewer.query(api.agents.rows, { agentId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 1 } })).page[0]).toMatchObject({ hasOverflow: true, fullByteLength: 11 });
   });
 
   for (const cli of ["claude", "codex"] as const) {
@@ -354,12 +354,12 @@ describe("runs", () => {
       const first = `${cli}:laptop:first-child`;
       const second = `${cli}:laptop:second-child`;
       const parentRun = run({ runId: parent, rootRunId: parent, cli, kind: cli === "claude" ? "session" : "unknown" });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, [], [child(first, parent, parent, 1, cli === "claude")]) as never)).toMatchObject({ ok: true });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(parentRun, [], [child(first, parent, parent, 1, cli === "claude")]) as never)).toMatchObject({ ok: true });
       const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
-      const firstResponse = await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })], [child(second, first, parent, 2, cli === "claude")]) as never);
+      const firstResponse = await t.mutation(internal.agents.internalIngest, ingest(firstRun, [row(0, { depth: 1 })], [child(second, first, parent, 2, cli === "claude")]) as never);
       expect(firstResponse, JSON.stringify(firstResponse)).toMatchObject({ ok: true });
       const secondRun = run({ runId: second, parentRunId: first, rootRunId: parent, depth: 2, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(secondRun, [row(0, { depth: 2 })]) as never)).toMatchObject({ ok: true });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(secondRun, [row(0, { depth: 2 })]) as never)).toMatchObject({ ok: true });
       const tree = await t.run((ctx) => ctx.db.query("runs").withIndex("by_root_depth", (q) => q.eq("rootRunId", parent)).collect());
       expect(tree.map((entry) => [entry.runId, entry.depth])).toEqual(expect.arrayContaining([[parent, 0], [first, 1], [second, 2]]));
     });
@@ -370,11 +370,11 @@ describe("runs", () => {
       const first = `${cli}:laptop:first-child`;
       const second = `${cli}:laptop:second-child`;
       const secondRun = run({ runId: second, parentRunId: first, rootRunId: first, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(secondRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(secondRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
       const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(firstRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
       const parentRun = run({ runId: parent, rootRunId: parent, cli, kind: cli === "claude" ? "session" : "unknown" });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, []) as never)).toMatchObject({ ok: true });
+      expect(await t.mutation(internal.agents.internalIngest, ingest(parentRun, []) as never)).toMatchObject({ ok: true });
       const tree = await t.run((ctx) => ctx.db.query("runs").withIndex("by_root_depth", (q) => q.eq("rootRunId", parent)).collect());
       expect(tree.map((entry) => [entry.runId, entry.depth])).toEqual(expect.arrayContaining([[parent, 0], [first, 1], [second, 2]]));
     });
@@ -383,40 +383,27 @@ describe("runs", () => {
   it("pages children with an explicit bounded cursor contract", async () => {
     const t = convexTest(schema, modules);
     const parent = "claude:laptop:parent-run";
-    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: parent, rootRunId: parent }), [], [
+    await t.mutation(internal.agents.internalIngest, ingest(run({ runId: parent, rootRunId: parent }), [], [
       child("claude:laptop:child-one", parent, parent, 1),
       child("claude:laptop:child-two", parent, parent, 1),
     ]) as never);
     const viewer = await withTom(t);
-    const first = await viewer.query(api.runs.children, { runId: parent, limit: 1 });
+    const first = await viewer.query(api.agents.children, { agentId: parent, limit: 1 });
     expect(first.items).toHaveLength(1);
     expect(first.nextCursor).toEqual(expect.any(String));
-    const second = await viewer.query(api.runs.children, { runId: parent, limit: 1, cursor: first.nextCursor! });
+    const second = await viewer.query(api.agents.children, { agentId: parent, limit: 1, cursor: first.nextCursor! });
     expect(second.items).toHaveLength(1);
-    await expect(viewer.query(api.runs.children, { runId: parent, limit: 501 })).rejects.toThrow();
+    await expect(viewer.query(api.agents.children, { agentId: parent, limit: 501 })).rejects.toThrow();
   });
 
   it("denies every public reader without Tom identity", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    await t.mutation(internal.agents.internalIngest, ingest() as never);
     const stranger = t.withIdentity({ subject: "someone-else" });
-    await expect(stranger.query(api.runs.get, { runId: "claude:laptop:root-run" })).rejects.toThrow();
-    await expect(stranger.query(api.runs.children, { runId: "claude:laptop:root-run" })).rejects.toThrow();
-    await expect(stranger.query(api.runs.rows, { runId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 1 } })).rejects.toThrow();
-    await expect(stranger.query(api.runs.entry, { runId: "claude:laptop:root-run", seq: 0 })).rejects.toThrow();
-  });
-
-  it("pages the idempotent legacy-session backfill only within 1..500", async () => {
-    const t = convexTest(schema, modules);
-    const owner = await withTom(t);
-    const first = await owner.mutation(api.claudeSessions.createSession, { title: "one", kind: "adhoc", repo: "none", initialPrompt: "one" });
-    const second = await owner.mutation(api.claudeSessions.createSession, { title: "two", kind: "adhoc", repo: "none", initialPrompt: "two" });
-    await t.run(async (ctx) => { await ctx.db.patch(first, { sdkSessionId: "first-sdk" }); await ctx.db.patch(second, { sdkSessionId: "short" }); });
-    expect((await t.mutation(internal.runs.internalBackfillRunIds, { limit: 1 })).patched).toBe(1);
-    expect((await t.run(async (ctx) => ctx.db.get(first)))?.runId).toBe("claude:box:first-sdk");
-    expect((await t.run(async (ctx) => ctx.db.get(second)))?.runId).toBeUndefined();
-    await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 0 })).rejects.toThrow();
-    await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 501 })).rejects.toThrow();
+    await expect(stranger.query(api.agents.get, { agentId: "claude:laptop:root-run" })).rejects.toThrow();
+    await expect(stranger.query(api.agents.children, { agentId: "claude:laptop:root-run" })).rejects.toThrow();
+    await expect(stranger.query(api.agents.rows, { agentId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 1 } })).rejects.toThrow();
+    await expect(stranger.query(api.agents.entry, { agentId: "claude:laptop:root-run", seq: 0 })).rejects.toThrow();
   });
 
   it("switches getMessages from daemon rows to the same run-row page shape", async () => {
@@ -426,7 +413,7 @@ describe("runs", () => {
     await daemonRow(t, sessionId, 0, "user", { text: "hello" });
     await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" }, stamp);
     const value = run({ sessionId });
-    await t.mutation(internal.runs.internalIngest, ingest(value, [
+    await t.mutation(internal.agents.internalIngest, ingest(value, [
       row(0, { kind: "user", content: { text: "hello" } }),
       row(1, { kind: "assistant-text", content: { text: "answer" }, digest: "1111111111111111" }),
     ], []) as never);
@@ -460,7 +447,7 @@ describe("runs", () => {
   it("repairs a box session link from the Claude root id", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { sdkSessionId: "sdk-root", status: "running" });
-    const result = await t.mutation(internal.runs.internalIngest, ingest(
+    const result = await t.mutation(internal.agents.internalIngest, ingest(
       run({ runId: "claude:box:sdk-root", rootRunId: "claude:box:sdk-root", host: "box" }), [], [],
     ) as never);
     expect(result).toMatchObject({ ok: true, runId: "claude:box:sdk-root" });
@@ -476,10 +463,10 @@ describe("runs", () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { sdkSessionId: "sdk-after-reopen", continuesRunId: "claude:box:sdk-before-reopen" });
     const at = (runId: string) => t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
-    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:box:sdk-after-reopen", rootRunId: "claude:box:sdk-after-reopen", host: "box" }), [], []) as never);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ runId: "claude:box:sdk-after-reopen", rootRunId: "claude:box:sdk-after-reopen", host: "box" }), [], []) as never);
     expect(await at("claude:box:sdk-after-reopen")).toMatchObject({ sessionId, continuesRunId: "claude:box:sdk-before-reopen" });
     // A late page of the old run, carrying the same session, stays unlinked.
-    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:box:sdk-before-reopen", rootRunId: "claude:box:sdk-before-reopen", host: "box", sessionId }), [], []) as never);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ runId: "claude:box:sdk-before-reopen", rootRunId: "claude:box:sdk-before-reopen", host: "box", sessionId }), [], []) as never);
     expect((await at("claude:box:sdk-before-reopen"))?.continuesRunId).toBeUndefined();
   });
 
@@ -491,7 +478,7 @@ describe("runs", () => {
     await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" });
     await daemonRow(t, sessionId, 2, "thinking", { text: "reasoning" });
     await daemonRow(t, sessionId, 3, "tool-call", { toolName: "Read" });
-    await t.mutation(internal.runs.internalIngest, ingest(run({
+    await t.mutation(internal.agents.internalIngest, ingest(run({
         sessionId, status: "ended", envelopeKey: "runs/registration.json.gz",
         context: {
           layersKnown: true, layersGiven: ["write"], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [],
@@ -506,9 +493,9 @@ describe("runs", () => {
         row(4000, { kind: "tool-call", content: { name: "Read" }, digest: "5555555555555555" }),
       ], []) as never);
 
-    const eligible = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    const eligible = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(eligible.eligible).toContainEqual({ sessionId, runId: "claude:laptop:root-run" });
-    const comparison = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
+    const comparison = await t.mutation(internal.agents.internalShadowCompare, { sessionId });
     expect(comparison).toMatchObject({
       runId: "claude:laptop:root-run", daemonRows: 4, fileRows: 4,
       byKind: { user: { daemon: 1, file: 1 }, "assistant-text": { daemon: 1, file: 1 }, thinking: { daemon: 1, file: 1 }, "tool-call": { daemon: 1, file: 1 } },
@@ -523,7 +510,7 @@ describe("runs", () => {
     expect(storedRun?.cutoverAt).toEqual(expect.any(Number));
     expect(storedSession?.rowsFrom).toBe("runs");
     expect(JSON.stringify(comparisonEvent?.data)).not.toContain(text);
-    const after = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    const after = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(after.eligible).not.toContainEqual(expect.objectContaining({ sessionId }));
   });
 
@@ -532,12 +519,12 @@ describe("runs", () => {
     const sessionId = await session(t);
     await daemonRow(t, sessionId, 0, "user", { text: "daemon text" });
     await daemonRow(t, sessionId, 1, "system", { text: "extra" });
-    await t.mutation(internal.runs.internalIngest, ingest(
+    await t.mutation(internal.agents.internalIngest, ingest(
       run({ sessionId, status: "failed" }),
       [row(1000, { kind: "user", content: { text: "file text" }, digest: "1111111111111111" })],
       [],
     ) as never);
-    const comparison = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
+    const comparison = await t.mutation(internal.agents.internalShadowCompare, { sessionId });
     expect(comparison).toMatchObject({
       daemonRows: 2, fileRows: 1, textRows: 1, textMatches: 0,
       firstDiffSeq: 1000, clean: false,
@@ -558,7 +545,7 @@ describe("runs", () => {
         sessionId, seq, turn: 0, kind: "user", content: { text: `row-${seq}` }, createdAt: seq + 1,
       } as never);
     });
-    await t.mutation(internal.runs.internalIngest, ingest(
+    await t.mutation(internal.agents.internalIngest, ingest(
       run({ sessionId, status: "ended" }),
       Array.from({ length: 101 }, (_, seq) => row(seq, {
         kind: "user",
@@ -567,11 +554,11 @@ describe("runs", () => {
       })),
       [],
     ) as never);
-    const first = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
+    const first = await t.mutation(internal.agents.internalShadowCompare, { sessionId });
     expect(first).toMatchObject({ complete: false, daemonRows: 100, fileRows: 100 });
     if (first.complete) throw new Error("comparison unexpectedly completed on its first page");
     expect(await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare")).collect())).toEqual([]);
-    const final = await t.mutation(internal.runs.internalShadowCompare, { sessionId, state: first.state } as never);
+    const final = await t.mutation(internal.agents.internalShadowCompare, { sessionId, state: first.state } as never);
     expect(final).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
   }, 30_000);
@@ -590,7 +577,7 @@ describe("runs", () => {
     // and what is under test is the read side, not the append fence. All 500
     // rows land in ONE t.run: a transaction per row is 500 transactions, which
     // on a loaded runner is the whole of the default 5s test budget.
-    expect(await t.mutation(internal.runs.internalIngest, ingest(
+    expect(await t.mutation(internal.agents.internalIngest, ingest(
       run({ sessionId, status: "ended" }), [], [],
     ) as never)).toMatchObject({ ok: true });
     await t.run(async (ctx) => {
@@ -608,7 +595,7 @@ describe("runs", () => {
     let state: unknown;
     let result: Awaited<ReturnType<typeof t.mutation>> | undefined;
     for (let call = 0; call < 20; call += 1) {
-      result = await t.mutation(internal.runs.internalShadowCompare, {
+      result = await t.mutation(internal.agents.internalShadowCompare, {
         sessionId,
         ...(state === undefined ? {} : { state }),
       } as never);
@@ -628,12 +615,12 @@ describe("runs", () => {
   it("admits only terminal run rows and does not suppress their later transition", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t);
-    await t.mutation(internal.runs.internalIngest, ingest(run({ sessionId }), [], []) as never);
-    const unknown = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    await t.mutation(internal.agents.internalIngest, ingest(run({ sessionId }), [], []) as never);
+    const unknown = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(unknown.eligible).toEqual([]);
-    await expect(t.mutation(internal.runs.internalShadowCompare, { sessionId })).rejects.toThrow("run is not terminal");
-    await t.mutation(internal.runs.internalIngest, retry(run({ sessionId, status: "ended" }), [], []) as never);
-    const terminal = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    await expect(t.mutation(internal.agents.internalShadowCompare, { sessionId })).rejects.toThrow("run is not terminal");
+    await t.mutation(internal.agents.internalIngest, retry(run({ sessionId, status: "ended" }), [], []) as never);
+    const terminal = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(terminal.eligible).toEqual([{ sessionId, runId: "claude:laptop:root-run" }]);
   });
 
@@ -649,30 +636,30 @@ describe("runs", () => {
         await ctx.db.insert("runs", { ...run({ runId, rootRunId: runId, sessionId, status: "ended" }), environment: "worker", ingestedAt: Date.now() } as never);
       }
     });
-    const first = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    const first = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(first).toMatchObject({ isDone: false });
     expect(first.eligible).toHaveLength(100);
-    const second = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: first.continueCursor, numItems: 100 } });
+    const second = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: first.continueCursor, numItems: 100 } });
     expect(second).toMatchObject({ isDone: true });
     expect(second.eligible).toHaveLength(1);
   });
 
   it("accepts abandoned lifecycle state and emits paged manifest entries", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest(run({
+    await t.mutation(internal.agents.internalIngest, ingest(run({
         origin: "job", status: "abandoned", abandonedAt: 123,
         envelopeKey: "runs/claude/laptop/root/registration-hash.json.gz",
         file: { ...run().file, storeKey: "runs/claude/laptop/root/stored.jsonl.gz" },
       }), [], []) as never);
     const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
     expect(stored).toMatchObject({ status: "abandoned", abandonedAt: 123, origin: "job" });
-    const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
+    const manifest = await t.query(internal.agents.internalManifest, { since: 0 });
     expect(manifest.entries).toEqual([expect.objectContaining({
       run_id: "claude:laptop:root-run", cli: "claude", thread_id: "root-run", file_version: STORED_HASH,
       store_key: "runs/claude/laptop/root/stored.jsonl.gz", parent_run_id: null,
     })]);
-    expect((await t.query(internal.runs.internalManifest, { since: manifest.entries[0].at, afterRunId: manifest.entries[0].run_id, afterFileVersion: manifest.entries[0].file_version })).entries).toEqual([]);
-    await t.mutation(internal.runs.internalIngest, retry(run({ status: "ended" }), [], []) as never);
+    expect((await t.query(internal.agents.internalManifest, { since: manifest.entries[0].at, afterRunId: manifest.entries[0].run_id, afterFileVersion: manifest.entries[0].file_version })).entries).toEqual([]);
+    await t.mutation(internal.agents.internalIngest, retry(run({ status: "ended" }), [], []) as never);
     expect((await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique()))?.status).toBe("ended");
   });
 
@@ -681,16 +668,16 @@ describe("runs", () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     try {
       const firstRun = run({ file: { ...run().file, storedHash: VERSION_A_HASH, storeKey: "runs/a.jsonl.gz" } });
-      await t.mutation(internal.runs.internalIngest, ingest(firstRun, [], []) as never);
+      await t.mutation(internal.agents.internalIngest, ingest(firstRun, [], []) as never);
       const secondRun = run({ file: { ...run().file, storedHash: VERSION_B_HASH, storeKey: "runs/b.jsonl.gz", bytes: 20, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } });
       const secondInput = retry(secondRun, [], []);
-      await t.mutation(internal.runs.internalIngest, secondInput as never);
-      await t.mutation(internal.runs.internalIngest, secondInput as never);
+      await t.mutation(internal.agents.internalIngest, secondInput as never);
+      await t.mutation(internal.agents.internalIngest, secondInput as never);
       const versions = await t.run((ctx) => ctx.db.query("runFileVersions").collect());
       expect(versions.map((version) => version.fileVersion).sort()).toEqual([VERSION_A_HASH, VERSION_B_HASH]);
-      const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
+      const manifest = await t.query(internal.agents.internalManifest, { since: 0 });
       expect(manifest.entries.map((entry) => entry.file_version)).toEqual([VERSION_A_HASH, VERSION_B_HASH]);
-      const resumed = await t.query(internal.runs.internalManifest, {
+      const resumed = await t.query(internal.agents.internalManifest, {
         since: manifest.entries[0].at,
         afterRunId: manifest.entries[0].run_id,
         afterFileVersion: manifest.entries[0].file_version,
@@ -734,60 +721,60 @@ async function evictedEvents(t: SchemaTest) {
   return await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-evicted")).collect());
 }
 
-describe("runs: materialize requests", () => {
+describe("agents: materialize requests", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("refuses a run with no store key, and every caller who is not Tom", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    await t.mutation(internal.agents.internalIngest, ingest() as never);
     const tom = await withTom(t);
-    await expect(tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" })).rejects.toThrow("run has no store key");
-    await expect(tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:absent-run" })).rejects.toThrow("run not found");
-    await expect(tom.mutation(api.runs.requestMaterialize, { runId: "not-a-run" })).rejects.toThrow("invalid runId");
+    await expect(tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" })).rejects.toThrow("agent has no store key");
+    await expect(tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:absent-run" })).rejects.toThrow("agent not found");
+    await expect(tom.mutation(api.agents.requestMaterialize, { agentId: "not-a-run" })).rejects.toThrow("invalid agentId");
     expect(await requests(t)).toEqual([]);
     const stranger = t.withIdentity({ subject: "someone-else" });
-    await expect(stranger.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" })).rejects.toThrow();
-    await expect(stranger.query(api.runs.materializeStatus, { runId: "claude:laptop:root-run" })).rejects.toThrow();
-    await expect(stranger.mutation(api.runs.markOpened, { runId: "claude:laptop:root-run" })).rejects.toThrow();
+    await expect(stranger.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" })).rejects.toThrow();
+    await expect(stranger.query(api.agents.materializeStatus, { agentId: "claude:laptop:root-run" })).rejects.toThrow();
+    await expect(stranger.mutation(api.agents.markOpened, { agentId: "claude:laptop:root-run" })).rejects.toThrow();
   });
 
   it("queues one request while it is pending and a fresh one once it is answered", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
     const tom = await withTom(t);
-    const first = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
-    const second = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    const first = await tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" });
+    const second = await tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" });
     expect(second?._id).toBe(first?._id);
     expect(await requests(t)).toHaveLength(1);
     expect(first).toMatchObject({ status: "pending", requestedBy: "tom", slice: 1 });
-    expect(await tom.query(api.runs.materializeStatus, { runId: "claude:laptop:root-run" })).toMatchObject({ _id: first?._id });
+    expect(await tom.query(api.agents.materializeStatus, { agentId: "claude:laptop:root-run" })).toMatchObject({ _id: first?._id });
 
-    await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "failed", reason: "store unreachable" });
-    const third = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: first!._id, status: "failed", reason: "store unreachable" });
+    const third = await tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" });
     expect(third?._id).not.toBe(first?._id);
     expect(await requests(t)).toHaveLength(2);
     // The status query reads the newest, which is the one the page waits on.
-    expect(await tom.query(api.runs.materializeStatus, { runId: "claude:laptop:root-run" })).toMatchObject({ _id: third?._id, status: "pending" });
-    expect(await tom.query(api.runs.materializeStatus, { runId: "claude:laptop:other-run" })).toBeNull();
+    expect(await tom.query(api.agents.materializeStatus, { agentId: "claude:laptop:root-run" })).toMatchObject({ _id: third?._id, status: "pending" });
+    expect(await tom.query(api.agents.materializeStatus, { agentId: "claude:laptop:other-run" })).toBeNull();
   });
 
   it("hands the box the oldest pending request, answerable even when its run is gone", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
     const orphan = await t.run((ctx) => ctx.db.insert("runMaterializeRequests", { runId: "codex:box:vanished-thread", requestedBy: "worker", requestedAt: 1, status: "pending", slice: 1 }));
     const tom = await withTom(t);
-    await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    await tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" });
 
-    const oldest = await t.query(internal.runs.internalNextMaterialize, {});
+    const oldest = await t.query(internal.agents.internalNextMaterialize, {});
     expect(oldest.request).toMatchObject({
       requestId: orphan, runId: "codex:box:vanished-thread", cli: "codex", host: "box",
       threadId: "vanished-thread", depth: 0, parentRunId: null, hasRows: false, fromLine: 0,
       file: { storeKey: null, sidecarStoredHash: null, totalLines: null },
     });
-    await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: orphan, status: "failed", reason: "run is gone" });
+    await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: orphan, status: "failed", reason: "run is gone" });
 
     // A backlog run has no rows, so the parse starts at line 0.
-    const backlog = await t.query(internal.runs.internalNextMaterialize, {});
+    const backlog = await t.query(internal.agents.internalNextMaterialize, {});
     expect(backlog.request).toMatchObject({
       runId: "claude:laptop:root-run", cli: "claude", host: "laptop", threadId: "root-run",
       hasRows: false, fromLine: 0, file: { storeKey: STORE_KEY, totalLines: 4000, committedLine: 0 },
@@ -800,23 +787,23 @@ describe("runs: materialize requests", () => {
       if (stored) await ctx.db.patch(stored._id, { file: { ...stored.file, committedLine: 2000, committedPrefixSha256: PREFIX_HASH } });
       await ctx.db.insert("claudeMessages", { runId: "claude:laptop:root-run", seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 });
     });
-    const continued = await t.query(internal.runs.internalNextMaterialize, {});
+    const continued = await t.query(internal.agents.internalNextMaterialize, {});
     expect(continued.request).toMatchObject({ hasRows: true, fromLine: 2000 });
   });
 
   it("records what the box answered and continues the run itself, once", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
     const tom = await withTom(t);
-    const first = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    const first = await tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" });
     const rowsSource = { from: "store" as const, at: 10, parserVersion: "runs-parser-1", storeKey: STORE_KEY, rowsFromLine: 0, rowsToLine: 2000, slices: 1, droppedLines: 3, partial: ["unknown-line-types"] };
 
-    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", reason: "a".repeat(201) })).toEqual({ ok: false, reason: "reason too long" });
-    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "failed", reason: "the bucket said no" })).toEqual({ ok: false, reason: "reason outside the closed vocabulary" });
-    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", rowsSource: { ...rowsSource, partial: ["everything-is-fine"] } })).toEqual({ ok: false, reason: "partial outside the closed vocabulary" });
+    expect(await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: first!._id, status: "served", reason: "a".repeat(201) })).toEqual({ ok: false, reason: "reason too long" });
+    expect(await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: first!._id, status: "failed", reason: "the bucket said no" })).toEqual({ ok: false, reason: "reason outside the closed vocabulary" });
+    expect(await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: first!._id, status: "served", rowsSource: { ...rowsSource, partial: ["everything-is-fine"] } })).toEqual({ ok: false, reason: "partial outside the closed vocabulary" });
     expect((await requests(t))[0].status).toBe("pending");
 
-    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", rowsIngested: 2000, fromLine: 0, toLine: 2000, totalLines: 4000, rowsSource })).toEqual({ ok: true, alreadyAnswered: false, continuation: true });
+    expect(await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: first!._id, status: "served", rowsIngested: 2000, fromLine: 0, toLine: 2000, totalLines: 4000, rowsSource })).toEqual({ ok: true, alreadyAnswered: false, continuation: true });
     const stored = await runRow(t, "claude:laptop:root-run");
     expect(stored?.rowsSource).toMatchObject({ from: "store", rowsFromLine: 0, rowsToLine: 2000, droppedLines: 3, partial: ["unknown-line-types"] });
     expect(stored?.file.totalLines).toBe(4000);
@@ -826,15 +813,15 @@ describe("runs: materialize requests", () => {
     expect(queued.find((request) => request.status === "served")).toMatchObject({ rowsIngested: 2000, fromLine: 0, toLine: 2000 });
 
     // The same answer again queues nothing further.
-    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", toLine: 2000, totalLines: 4000 })).toEqual({ ok: true, alreadyAnswered: true, continuation: false });
+    expect(await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: first!._id, status: "served", toLine: 2000, totalLines: 4000 })).toEqual({ ok: true, alreadyAnswered: true, continuation: false });
     expect(await requests(t, "claude:laptop:root-run")).toHaveLength(2);
   });
 
   it("stops at the fifth slice and says the cap was reached", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
     const last = await t.run((ctx) => ctx.db.insert("runMaterializeRequests", { runId: "claude:laptop:root-run", requestedBy: "tom", requestedAt: 5, status: "pending", slice: 5 }));
-    const answer = await t.mutation(internal.runs.internalAnswerMaterialize, {
+    const answer = await t.mutation(internal.agents.internalAnswerMaterialize, {
       requestId: last, status: "served", rowsIngested: 100, fromLine: 3000, toLine: 3900, totalLines: 4000,
       rowsSource: { from: "store", at: 20, parserVersion: "runs-parser-1", storeKey: STORE_KEY, rowsFromLine: 3000, rowsToLine: 3900, slices: 5, droppedLines: 0, partial: [] },
     });
@@ -844,44 +831,44 @@ describe("runs: materialize requests", () => {
   });
 });
 
-describe("runs: the row window", () => {
+describe("agents: the row window", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("gives an index-only backlog row no window at all, and a row-bearing ingest one", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
     expect((await runRow(t, "claude:laptop:root-run"))?.rowsUntil).toBeUndefined();
 
     const grown = convexTest(schema, modules);
-    await grown.mutation(internal.runs.internalIngest, ingest() as never);
+    await grown.mutation(internal.agents.internalIngest, ingest() as never);
     expect((await runRow(grown, "claude:laptop:root-run"))?.rowsUntil).toBe(2 + WINDOW_MS);
     // A no-op ingest of the same file writes nothing; a later line moves it.
-    await grown.mutation(internal.runs.internalIngest, retry(run(), []) as never);
+    await grown.mutation(internal.agents.internalIngest, retry(run(), []) as never);
     expect((await runRow(grown, "claude:laptop:root-run"))?.rowsUntil).toBe(2 + WINDOW_MS);
-    await grown.mutation(internal.runs.internalIngest, retry(run({ lastLineAt: 5000 }), []) as never);
+    await grown.mutation(internal.agents.internalIngest, retry(run({ lastLineAt: 5000 }), []) as never);
     expect((await runRow(grown, "claude:laptop:root-run"))?.rowsUntil).toBe(5000 + WINDOW_MS);
   });
 
   it("moves the window on an opened run only past the one-day threshold", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest() as never);
-    await t.mutation(internal.runs.internalIngest, backlogIngest({ runId: "claude:laptop:index-only", rootRunId: "claude:laptop:index-only" }) as never);
+    await t.mutation(internal.agents.internalIngest, ingest() as never);
+    await t.mutation(internal.agents.internalIngest, backlogIngest({ runId: "claude:laptop:index-only", rootRunId: "claude:laptop:index-only" }) as never);
     const tom = await withTom(t);
 
-    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: true });
+    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: true });
     const moved = (await runRow(t, "claude:laptop:root-run"))?.rowsUntil;
     expect(moved).toBeGreaterThan(2 + WINDOW_MS);
     // Reading the same run again inside the day is not a second write.
-    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: false });
+    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: false });
     expect((await runRow(t, "claude:laptop:root-run"))?.rowsUntil).toBe(moved);
     // Looking at an index-only run does not make it evictable.
-    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:index-only" })).toEqual({ ok: true, moved: false });
+    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:index-only" })).toEqual({ ok: true, moved: false });
     expect((await runRow(t, "claude:laptop:index-only"))?.rowsUntil).toBeUndefined();
-    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:absent-run" })).toEqual({ ok: true, moved: false });
+    expect(await tom.mutation(api.agents.markOpened, { agentId: "claude:laptop:absent-run" })).toEqual({ ok: true, moved: false });
   });
 });
 
-describe("runs: eviction", () => {
+describe("agents: eviction", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.useRealTimers();
@@ -909,14 +896,14 @@ describe("runs: eviction", () => {
     }));
   }
   async function tick(t: SchemaTest) {
-    await t.mutation(internal.runs.internalEvictTick, {});
+    await t.mutation(internal.agents.internalEvictTick, {});
     await t.finishAllScheduledFunctions(vi.runAllTimers);
   }
 
   it("evicts rows and their chunks exactly once, and leaves the index row standing", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(EVICTION_HOUR_UTC);
-    vi.stubEnv("RUNS_EVICTION_ENABLED", "1");
+    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
     const t = convexTest(schema, modules);
     const now = Date.now();
     const runId = await seedEvictable(t, now);
@@ -938,7 +925,7 @@ describe("runs: eviction", () => {
     expect((await evictedEvents(t))[1].data).toMatchObject({ runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0, deferred: 0 });
 
     // A third tick, after the rows came back from the store, evicts them again.
-    await t.mutation(internal.runs.internalIngest, retry(run({ status: "ended", lastLineAt: now - 60 * DAY_MS, file: { ...run().file, storeKey: STORE_KEY } }), [row(0)]) as never);
+    await t.mutation(internal.agents.internalIngest, retry(run({ status: "ended", lastLineAt: now - 60 * DAY_MS, file: { ...run().file, storeKey: STORE_KEY } }), [row(0)]) as never);
     expect((await transcript(t, runId)).rows).toBe(1);
     expect((await runRow(t, runId))?.rowsUntil).toBe(now - 60 * DAY_MS + WINDOW_MS);
     await tick(t);
@@ -949,7 +936,7 @@ describe("runs: eviction", () => {
   it("refuses a running run, a live session's run, and a run inside the window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(EVICTION_HOUR_UTC);
-    vi.stubEnv("RUNS_EVICTION_ENABLED", "1");
+    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
     const t = convexTest(schema, modules);
     const now = Date.now();
     const sessionId = await session(t, { status: "running" });
@@ -973,12 +960,12 @@ describe("runs: eviction", () => {
     expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 0, rowsDeleted: 0, deferred: 3, truncated: false, oldestRowsUntil: now + DAY_MS });
   });
 
-  it("deletes nothing while RUNS_EVICTION_ENABLED is unset, and says so", async () => {
+  it("deletes nothing while AGENTS_EVICTION_ENABLED is unset, and says so", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(EVICTION_HOUR_UTC);
     const t = convexTest(schema, modules);
     const runId = await seedEvictable(t, Date.now(), 3);
-    expect(await t.mutation(internal.runs.internalEvictTick, {})).toEqual({ ok: true, disabled: true });
+    expect(await t.mutation(internal.agents.internalEvictTick, {})).toEqual({ ok: true, disabled: true });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect((await transcript(t, runId)).rows).toBe(3);
     expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 0, rowsDeleted: 0, deferred: 0, disabled: true });
@@ -988,26 +975,26 @@ describe("runs: eviction", () => {
   it("leaves the record alone outside the eviction hour", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.UTC(2026, 0, 15, 20, 0));
-    vi.stubEnv("RUNS_EVICTION_ENABLED", "1");
+    vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
     const t = convexTest(schema, modules);
     const runId = await seedEvictable(t, Date.now(), 3);
-    expect(await t.mutation(internal.runs.internalEvictTick, {})).toEqual({ ok: true, skipped: "not the eviction hour" });
+    expect(await t.mutation(internal.agents.internalEvictTick, {})).toEqual({ ok: true, skipped: "not the eviction hour" });
     expect((await transcript(t, runId)).rows).toBe(3);
     expect(await evictedEvents(t)).toEqual([]);
   });
 });
 
-describe("runs.roots", () => {
+describe("agents.roots", () => {
   async function root(t: ReturnType<typeof convexTest>, runId: string, host: "laptop" | "box", startedAt: number) {
-    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, host, startedAt }), [], []) as never)).toMatchObject({ ok: true });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ runId, rootRunId: runId, host, startedAt }), [], []) as never)).toMatchObject({ ok: true });
   }
 
   it("lists roots and never their children", async () => {
     const t = convexTest(schema, modules);
     const parent = "claude:laptop:root-run";
-    await t.mutation(internal.runs.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", parent, parent, 1)]) as never);
+    await t.mutation(internal.agents.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", parent, parent, 1)]) as never);
     const viewer = await withTom(t);
-    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([parent]);
+    expect((await viewer.query(api.agents.roots, {})).map((entry) => entry.runId)).toEqual([parent]);
   });
 
   it("merges both hosts newest first", async () => {
@@ -1017,7 +1004,7 @@ describe("runs.roots", () => {
     await root(t, "claude:laptop:laptop-new", "laptop", 30);
     await root(t, "claude:box:box-oldest", "box", 5);
     const viewer = await withTom(t);
-    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([
+    expect((await viewer.query(api.agents.roots, {})).map((entry) => entry.runId)).toEqual([
       "claude:laptop:laptop-new", "claude:box:box-newer", "claude:laptop:laptop-old", "claude:box:box-oldest",
     ]);
   });
@@ -1028,7 +1015,7 @@ describe("runs.roots", () => {
     await root(t, "claude:box:tie-alpha", "box", 7);
     await root(t, "claude:laptop:tie-later", "laptop", 8);
     const viewer = await withTom(t);
-    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([
+    expect((await viewer.query(api.agents.roots, {})).map((entry) => entry.runId)).toEqual([
       "claude:laptop:tie-later", "claude:box:tie-alpha", "claude:laptop:tie-bravo",
     ]);
   });
@@ -1038,8 +1025,8 @@ describe("runs.roots", () => {
     await root(t, "claude:laptop:laptop-one", "laptop", 10);
     await root(t, "claude:box:box-run-one", "box", 20);
     const viewer = await withTom(t);
-    expect((await viewer.query(api.runs.roots, { host: "box" })).map((entry) => entry.runId)).toEqual(["claude:box:box-run-one"]);
-    expect((await viewer.query(api.runs.roots, { host: "laptop" })).map((entry) => entry.runId)).toEqual(["claude:laptop:laptop-one"]);
+    expect((await viewer.query(api.agents.roots, { host: "box" })).map((entry) => entry.runId)).toEqual(["claude:box:box-run-one"]);
+    expect((await viewer.query(api.agents.roots, { host: "laptop" })).map((entry) => entry.runId)).toEqual(["claude:laptop:laptop-one"]);
   });
 
   it("caps the merged result and refuses a limit outside 1..500", async () => {
@@ -1048,25 +1035,25 @@ describe("runs.roots", () => {
     await root(t, "claude:box:box-newest", "box", 30);
     await root(t, "claude:laptop:laptop-mid", "laptop", 20);
     const viewer = await withTom(t);
-    expect((await viewer.query(api.runs.roots, { limit: 2 })).map((entry) => entry.runId)).toEqual([
+    expect((await viewer.query(api.agents.roots, { limit: 2 })).map((entry) => entry.runId)).toEqual([
       "claude:box:box-newest", "claude:laptop:laptop-mid",
     ]);
-    await expect(viewer.query(api.runs.roots, { limit: 0 })).rejects.toThrow();
-    await expect(viewer.query(api.runs.roots, { limit: 501 })).rejects.toThrow();
+    await expect(viewer.query(api.agents.roots, { limit: 0 })).rejects.toThrow();
+    await expect(viewer.query(api.agents.roots, { limit: 501 })).rejects.toThrow();
   });
 
   it("denies the reader without Tom identity", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    await t.mutation(internal.agents.internalIngest, ingest() as never);
     const stranger = t.withIdentity({ subject: "someone-else" });
-    await expect(stranger.query(api.runs.roots, {})).rejects.toThrow();
+    await expect(stranger.query(api.agents.roots, {})).rejects.toThrow();
   });
 });
 
 // ── runs.internalRunTrace: the audit's own run, by its token ─────────────────
 // What the trace checker reads to tell a claim from a fact: it said it opened a
 // path, and this is every Read, Grep and Glob call the run actually made.
-describe("runs: one run's tool calls, by its registration token", () => {
+describe("agents: one agent's tool calls, by its registration token", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   // The canonical example UUID, and a fixture. The door checks the token’s
@@ -1105,7 +1092,7 @@ describe("runs: one run's tool calls, by its registration token", () => {
       }
     });
   }
-  const trace = (t: SchemaTest) => t.query(internal.runs.internalRunTrace, { token: TOKEN });
+  const trace = (t: SchemaTest) => t.query(internal.agents.internalAgentTrace, { token: TOKEN });
 
   it("returns the tool-call rows and nothing else in the transcript", async () => {
     const t = convexTest(schema, modules);
@@ -1130,14 +1117,14 @@ describe("runs: one run's tool calls, by its registration token", () => {
   it("reads a path out of file_path, path or pattern, in that order", async () => {
     const t = convexTest(schema, modules);
     await seed(t, [
-      { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/runs.ts" } } },
+      { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/agents.ts" } } },
       { kind: "tool-call", content: { name: "Glob", input: { path: "convex/" } } },
       { kind: "tool-call", content: { name: "Grep", input: { pattern: "internalRunTrace" } } },
       // Both present: file_path wins, because it is the one a Read names.
       { kind: "tool-call", content: { name: "Edit", input: { file_path: "convex/http.ts", path: "elsewhere" } } },
     ]);
     expect((await trace(t))?.toolCalls).toEqual([
-      { name: "Read", path: "convex/runs.ts" },
+      { name: "Read", path: "convex/agents.ts" },
       { name: "Glob", path: "convex/" },
       { name: "Grep", path: "internalRunTrace" },
       { name: "Edit", path: "convex/http.ts" },
@@ -1159,12 +1146,12 @@ describe("runs: one run's tool calls, by its registration token", () => {
       // it can read is the half finding 2 counts.
       { kind: "tool-call", content: { name: "Bash", input: "npm test" } },
       { kind: "tool-call", content: { name: "Read", input: { file_path: 7 } } },
-      { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/runs.ts" } } },
+      { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/agents.ts" } } },
     ]);
     expect((await trace(t))?.toolCalls).toEqual([
       { name: "Bash", path: null },
       { name: "Read", path: null },
-      { name: "Read", path: "convex/runs.ts" },
+      { name: "Read", path: "convex/agents.ts" },
     ]);
   });
 
@@ -1194,7 +1181,7 @@ describe("runs: one run's tool calls, by its registration token", () => {
   it("answers null for a token no run carries", async () => {
     const t = convexTest(schema, modules);
     await seed(t, []);
-    expect(await t.query(internal.runs.internalRunTrace, { token: "00000000-0000-4000-8000-000000000000" })).toBeNull();
+    expect(await t.query(internal.agents.internalAgentTrace, { token: "00000000-0000-4000-8000-000000000000" })).toBeNull();
   });
 
   // THE BOUND IS 400 ROWS, and the answer says when it bit: a cut list makes

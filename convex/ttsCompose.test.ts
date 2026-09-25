@@ -948,7 +948,7 @@ describe("composeHourly", () => {
     expect(message).not.toBeNull();
     expect(message?.lines).toEqual([]);
     expect(message?.firstLine).toBe(
-      "<https://www.tom.quest/runs?session=k97a|Retire the superseded CMT code paths> has been working on its own for 2h15m, and 3 todos were captured.",
+      "<https://www.tom.quest/agents?session=k97a|Retire the superseded CMT code paths> has been working on its own for 2h15m, and 3 todos were captured.",
     );
   });
 
@@ -1112,7 +1112,7 @@ describe("composeDecision", () => {
       ),
     );
     expect(refused).toContain("Parked for you: a message to another human in your name. Nothing was done in your name.");
-    expect(refused).toContain("instead the run left it for you");
+    expect(refused).toContain("instead the agent left it for you");
     expect(refused).not.toContain("reply");
   });
 });

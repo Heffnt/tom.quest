@@ -10,7 +10,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // EVERY TEST HERE MAKES ITS DATABASE THROUGH THIS, and nothing calls
 // convexTest directly, because recording a ruling schedules work that outlives
 // the mutation: the label writer (convex/ttsRulings.ts, runAfter(0) into
-// internal.runLabels.internalLabelFromRuling) and, on the words door, the
+// internal.agentLabels.internalLabelFromRuling) and, on the words door, the
 // decisions line. convex-test runs a scheduled function on a transaction of
 // its own, opened after the scheduling mutation returned; a test that ends
 // without draining leaves that transaction to open against a database Vitest
@@ -1423,15 +1423,15 @@ describe("a ruling from Tom's words", () => {
 });
 
 // ── The label a ruling schedules (phase 7) ───────────────────────────────────
-// convex/ttsRulings.ts:304 schedules internal.runLabels.internalLabelFromRuling
-// on every ruling this file's doors write. convex/runLabels.test.ts proves what
+// convex/ttsRulings.ts:304 schedules internal.agentLabels.internalLabelFromRuling
+// on every ruling this file's doors write. convex/agentLabels.test.ts proves what
 // that writer DOES when it is called; these two prove that recording a ruling
 // CALLS IT — the edge between the two files, which neither file's other tests
 // touch, and the edge whose scheduled transaction is the reason every test here
 // drains (see testDb above).
 
 /** A `runs` row the token resolver can find: `regToken` is the exact edge from
- *  the row an agent wrote to the run that wrote it (convex/runLabels.ts
+ *  the row an agent wrote to the run that wrote it (convex/agentLabels.ts
  *  runForToken), and `finalTextSeq` is the row a judgment about the run's final
  *  output covers. */
 async function seedRunWithToken(

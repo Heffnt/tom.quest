@@ -238,7 +238,7 @@ export const sendSlackDraft = internalAction({
         // THE TWO COORDINATES A REACTION IS RESOLVED THROUGH. `slackTs`
         // addresses the message an emoji lands on, and `runToken` names the run
         // that WROTE it — the fourth door judgment enters by
-        // (convex/runLabels.ts) needs both, and neither is recoverable once
+        // (convex/agentLabels.ts) needs both, and neither is recoverable once
         // this action has returned.
         //
         // A morning the model path could not write has mode "template" and
@@ -413,7 +413,7 @@ export const sendToday = internalAction({
       // The ts an emoji on this morning lands on. NO runToken, and the absence
       // is the fact: the plain template is not a run's output, so a reaction
       // here writes no label rather than scoring a model for words no model
-      // wrote (convex/runLabels.ts).
+      // wrote (convex/agentLabels.ts).
       slackTs: posted.ts,
       // THE FACTS BLOCK, on the event: the transcript shows the inputs the
       // message was written from, not only the message (amendment 2).

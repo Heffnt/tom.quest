@@ -2,7 +2,7 @@
 
 // RUNNERS — the box's runners, at the top of the everything tab. The
 // live ones newest first, the ended ones under a fold. A row's title opens its
-// newest step run in the run view on /runs, which already walks the chain
+// newest step agent in the agent view on /agents, which already walks the chain
 // of steps back; a row expands to the runner's document, its check-ins and the
 // questions it asked. The one action is Tom's: open a new runner.
 //
@@ -19,16 +19,16 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { elapsedText, runnerDecisionWords, runnerTierWords } from "@/convex/ttsCompose";
 import { NO_REPO, RUNNER_CEILING_DEFAULT, RUNNER_CEILING_MAX, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
-import Markdown from "@/app/runs/components/markdown";
+import Markdown from "@/app/agents/components/markdown";
 import Info from "./info";
 import SectionHeader from "./section-header";
 import { RUNNER_STATUS_WORDS, ageText, errMessage, fmtDate, untilText } from "@/app/tts/lib";
 
 type Runner = FunctionReturnType<typeof api.ttsRunners.listRunners>[number];
 
-/** The run view on /runs, which reads ?run= on arrival. */
-function runHref(runId: string): string {
-  return `/runs?run=${encodeURIComponent(runId)}`;
+/** The agent view on /agents, which reads ?agent= on arrival. */
+function agentHref(agentId: string): string {
+  return `/agents?agent=${encodeURIComponent(agentId)}`;
 }
 
 function clock(ms: number): string {
@@ -137,7 +137,7 @@ function RunnerRow({
           <span className="flex items-baseline gap-2">
             {r.stepRunId !== null ? (
               <a
-                href={runHref(r.stepRunId)}
+                href={agentHref(r.stepRunId)}
                 className="truncate text-[15px] text-text underline underline-offset-2 hover:opacity-80"
               >
                 {r.title}
@@ -243,10 +243,10 @@ function RunnerDetail({ runnerId, now }: { runnerId: Id<"runners">; now: number 
                   <>
                     {" · "}
                     <a
-                      href={runHref(c.stepRunId)}
+                      href={agentHref(c.stepRunId)}
                       className="underline underline-offset-2 hover:text-text"
                     >
-                      step run
+                      step agent
                     </a>
                   </>
                 )}

@@ -28,7 +28,7 @@ import {
   type NeedsYouFacts,
   type RunnerAskFacts,
 } from "./ttsCompose";
-import { recordRunnerReply, runLink } from "./ttsRunners";
+import { recordRunnerReply, agentLink } from "./ttsRunners";
 import { onElevationThreadFailed, recordElevationReply } from "./orchestrator";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 
@@ -330,7 +330,7 @@ async function openRunnerNeedsYou(
     question: ask.text ?? "",
     tier: ask.tier ?? "plan",
     blocking: ask.blocking === true,
-    stepUrl: runLink(ask.stepRunId ?? ""),
+    stepUrl: agentLink(ask.stepRunId ?? ""),
   };
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel,

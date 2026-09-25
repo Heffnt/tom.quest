@@ -1527,7 +1527,7 @@ export default defineSchema({
       // The graph version a run ran under, and the exact node ids its prompt
       // carried — the `given` edges. They live on the run row because they are
       // per-run and unbounded, which the capped nightly-committed graph file
-      // cannot hold. Same pair as convex/runs.ts CONTEXT; absent is a supported
+      // cannot hold. Same pair as convex/agents.ts CONTEXT; absent is a supported
       // value, exactly as it is for wikitomCommit.
       graphVersion: v.optional(v.string()),
       graphNodes: v.optional(v.array(v.string())),
@@ -1568,7 +1568,7 @@ export default defineSchema({
     // ABSENT IS A SUPPORTED VALUE and is never inferred: an unregistered run —
     // every laptop terminal, and everything written before runs were
     // registered — carries no token, and a judgment about its output writes no
-    // label at all (convex/runLabels.ts records the unlinked act instead).
+    // label at all (convex/agentLabels.ts records the unlinked act instead).
     regToken: v.optional(v.string()),
     envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()),
     // `totalLines` is the file's whole length, which only a reader that saw the
@@ -1593,7 +1593,7 @@ export default defineSchema({
       rowsToLine: v.number(),
       slices: v.number(),
       droppedLines: v.number(),
-      // A closed vocabulary (convex/runs.ts MATERIALIZE_PARTIAL): what the
+      // A closed vocabulary (convex/agents.ts MATERIALIZE_PARTIAL): what the
       // stored version could not say, so the page names it instead of
       // pretending the run opened whole.
       partial: v.array(v.string()),
@@ -1621,7 +1621,7 @@ export default defineSchema({
     .index("by_host_depth_started", ["host", "depth", "startedAt"])
     // Joins a run to the legacy session state row.
     .index("by_session", ["sessionId"])
-    // runLabels.runForToken turns a row's producedByRunToken into the run that
+    // agentLabels.agentForToken turns a row's producedByRunToken into the run that
     // wrote it, on one point lookup inside a mutation's budget.
     .index("by_reg_token", ["regToken"])
     // The nightly manifest walks changed store versions in a stable order.
@@ -1928,7 +1928,7 @@ export default defineSchema({
     // had no writer and no row when the narrowing was made, so it was free.
     ref: v.string(), at: v.number(),
   })
-    // The run page reads Tom's words oldest first.
+    // The agent page reads Tom's words oldest first.
     .index("by_run_at", ["runId", "at"])
     // Eval extraction reads a source's labels over time.
     .index("by_source_at", ["source", "at"])

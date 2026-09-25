@@ -200,9 +200,9 @@ export function failureRowOf(event: PointEvent): FailureRow {
 
 // ── Addresses ────────────────────────────────────────────────────────────────
 
-/** The run view, which reads ?run= on arrival. */
-export function runHref(runId: string): string {
-  return `/runs?run=${encodeURIComponent(runId)}`;
+/** The agent view, which reads ?agent= on arrival. */
+export function agentHref(agentId: string): string {
+  return `/agents?agent=${encodeURIComponent(agentId)}`;
 }
 
 /** Where a ruling's subject is shown, or null where no page shows it. An item

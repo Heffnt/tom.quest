@@ -53,7 +53,7 @@ The merge bar is four CI jobs green — `static-boundaries`, `secret-scan`,
 `tests` and `e2e` — and a fifth job, `report`, that writes all four onto the
 `tests-run` head row. Nothing outside that row gates a merge.
 
-The box's code and its tests — the cron jobs, the run record, the session
+The box's code and its tests — the cron jobs, the agent record, the session
 daemon, the session hooks, the prelude, the graph and vocabulary generators, the
 writing standard and the evals golden set — are the Jarvis repository's, and
 its own `pnpm verify` runs them.

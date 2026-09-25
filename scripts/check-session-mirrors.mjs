@@ -21,7 +21,7 @@ const failures = [];
 // union minus the two terminal statuses, so adding a status to the schema
 // without deciding whether it is live fails here instead of silently being
 // treated as finished. The second half of the fence is a no-second-home check:
-// app/runs/lib.ts and convex/claudeSessions.ts each carried their own copy
+// app/agents/lib.ts and convex/claudeSessions.ts each carried their own copy
 // (with a comment claiming this file was the home), so the check refuses any
 // re-declaration outside ttsShared.ts.
 // witness: paste `const LIVE_STATUSES = [...]` back into claudeSessions.ts, or

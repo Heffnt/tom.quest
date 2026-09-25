@@ -1783,7 +1783,7 @@ describe("sendDecision", () => {
     expect(posts[0].text).toContain(
       "Parked for you: a message to another human in your name. Nothing was done in your name.",
     );
-    expect(posts[0].text).toContain("instead the run left it for you");
+    expect(posts[0].text).toContain("instead the agent left it for you");
   });
 
   // ONE APPEARANCE PER ITEM PER DAY. A decision about an item the morning has

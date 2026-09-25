@@ -4,7 +4,8 @@
       "Bash(node \"$JARVIS_DIR/scripts/codex-run.mjs\":*)",
       "Bash(tts-codex:*)",
       "Bash(node \"$JARVIS_DIR/scripts/box-agent.mjs\":*)",
-      "Bash(tts-run:*)"
+      "Bash(tts-run:*)",
+      "Bash(tts-agent:*)"
     ]
   }
 }

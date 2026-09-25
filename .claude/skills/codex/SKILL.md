@@ -17,17 +17,17 @@ The one prose home for reaching Codex from a laptop Claude session. Three doors,
 
 ## run
 
-- Launch the `codex` subagent (Agent tool, `subagent_type: "codex"`) with the prompt as its task and wait; a long run is a working run.
+- Launch the `codex` subagent (Agent tool, `subagent_type: "codex"`) with the prompt as its task and wait; an agent that takes long is still working.
 - In a Workflow, `agent(prompt, { agentType: "codex" })` composes with `parallel`, `pipeline` and `schema`.
 
 ## answer
 
 - **Codex says:** the answer verbatim in a fenced block, never as your own view.
 - **Assessment:** two to five sentences; for each concrete claim, whether you agree and why, after checking the code where cheap. State disagreements plainly.
-- A failed run: one line with the exit code. Never substitute your own review.
+- A failed agent: one line with the exit code. Never substitute your own review.
 
 ## flags
 
 - read-only: `--sandbox read-only`; the review path always passes it.
 - cheap: `--model gpt-5.6-terra`, for a mechanical lookup.
-- lower effort: `--effort medium` or lower; `xhigh` is slow, and nothing cuts a run off unless `--timeout <ms>` is named.
+- lower effort: `--effort medium` or lower; `xhigh` is slow, and nothing cuts an agent off unless `--timeout <ms>` is named.

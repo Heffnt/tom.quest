@@ -189,10 +189,10 @@
     does not duplicate it.
   verified: >-
     2026-09-12: nothing is built. The one file with a colliding name,
-    worker/runs/sweep.mjs, is the runs-record ingester — changed CLI files to
-    the run record — not a transcript sweep: no mining for abandoned threads,
-    no re-entry paragraph, no dedupe against prior proposals. The unified runs
-    record (convex/runs.ts, worker/runs/) did not exist when this was written
+    worker/runs/sweep.mjs, is the agent-record ingester — changed CLI files to
+    the agent record — not a transcript sweep: no mining for abandoned threads,
+    no re-entry paragraph, no dedupe against prior proposals. The unified agent
+    record (convex/agents.ts, worker/runs/) did not exist when this was written
     and is now the obvious substrate, since the sweep would read the record
     rather than the raw transcript files. That is a plan change to put to Tom
     before anyone builds it.

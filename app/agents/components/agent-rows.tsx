@@ -6,8 +6,8 @@
 // echo and the jump-to-latest button are all proven code and they stay.
 //
 // Four things changed, and only four:
-//   1. The rows arrive as a prop from useRunRows (../use-run-rows), so one memo
-//      in <Run/> can match child runs against the same loaded window this file
+//   1. The rows arrive as a prop from useAgentRows (../use-agent-rows), so one memo
+//      in <Agent/> can match child runs against the same loaded window this file
 //      pairs tool calls over.
 //   2. THE AGENT FOLD APPLIES TO A ROW WITH NO `provenance`. On a daemon row
 //      parentToolUseId means "this row belongs to that subagent's output"; on a
@@ -49,18 +49,19 @@ import {
   toolNameOf,
   toolUseIdOf,
 } from "../lib";
-import RunRow from "./run-row";
-import type { PairedResult, RowSource } from "./run-row";
+import AgentRow from "./agent-row";
+import type { PairedResult, RowSource } from "./agent-row";
 
 const NEAR_BOTTOM_PX = 150;
 
 /**
- * Where the reader got to last visit, per RUN. A new key prefix on purpose:
- * the old one was keyed by session id, and reusing it would silently
- * reinterpret one reader's mark under a different identity.
+ * Where the reader got to last visit, per AGENT. The prefix changed with the
+ * page's name, and a mark kept under the old prefix is not read: each agent
+ * shows no unread divider until the next visit writes a mark, as after commit
+ * 58b13a9c.
  */
 const lastReadKey = (runKey: string) =>
-  `tts.runs.lastReadSeq.${runKey}`;
+  `tts.agents.lastReadSeq.${runKey}`;
 
 // A subagent's rows arrive interleaved in the one seq stream — several parallel
 // agents take turns, row by row. EVERY row carrying a given parentToolUseId
@@ -303,7 +304,7 @@ function UnreadDivider() {
 
 // Memoized: the parent tree re-renders on a 15s age tick, and the rows show no
 // ages, so the tick must not re-render every row.
-const RunRows = memo(function RunRows({
+const AgentRows = memo(function AgentRows({
   rows,
   pageStatus,
   loadMore,
@@ -316,7 +317,7 @@ const RunRows = memo(function RunRows({
   tail,
   renderChildRun,
 }: {
-  /** Ascending, oldest first, from useRunRows. */
+  /** Ascending, oldest first, from useAgentRows. */
   rows: TranscriptMessage[];
   pageStatus: "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
   loadMore: (numItems: number) => void;
@@ -573,7 +574,7 @@ const RunRows = memo(function RunRows({
               {child !== null && renderChildRun !== undefined ? (
                 renderChildRun(message, child.childRunId)
               ) : (
-                <RunRow
+                <AgentRow
                   row={message}
                   result={pairing.forCall.get(message._id)}
                   toolNames={toolNames}
@@ -608,7 +609,7 @@ const RunRows = memo(function RunRows({
               <div className="mt-1 space-y-2 border-l border-border pl-3">
                 {g.messages.map((m) =>
                   m.kind === "tool-result" && pairing.consumed.has(m._id) ? null : (
-                    <RunRow
+                    <AgentRow
                       key={m._id}
                       row={m}
                       result={pairing.forCall.get(m._id)}
@@ -698,4 +699,4 @@ const RunRows = memo(function RunRows({
   );
 });
 
-export default RunRows;
+export default AgentRows;

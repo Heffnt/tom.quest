@@ -41,7 +41,7 @@ type RunRowsResult = {
 
 const NO_MORE = () => {};
 
-export function useRunRows(subject: RunSubject): RunRowsResult {
+export function useAgentRows(subject: RunSubject): RunRowsResult {
   const { sessionId, runId } = subject;
   // A session's rows always come from getMessages: it is the reader that holds
   // the cutover switch, so reading runs.rows directly would bypass it and show
@@ -54,8 +54,8 @@ export function useRunRows(subject: RunSubject): RunRowsResult {
     { initialNumItems: 60 },
   );
   const run = usePaginatedQuery(
-    api.runs.rows,
-    !fromSession && runId !== undefined ? { runId } : "skip",
+    api.agents.rows,
+    !fromSession && runId !== undefined ? { agentId: runId } : "skip",
     { initialNumItems: 60 },
   );
 

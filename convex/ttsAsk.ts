@@ -78,7 +78,7 @@ const ASK_ARGS = {
   promptSha: v.string(),
   // THE RUN THAT TOOK THIS DECISION — the delegate run itself, so an objection
   // of Tom's in #tts-decisions can be scored against the output he objected to
-  // (convex/runLabels.ts internalLabelFromObjection reads it back off this
+  // (convex/agentLabels.ts internalLabelFromObjection reads it back off this
   // row's data). `data` is v.any(), so this is not a schema change, exactly as
   // the objectionAskIds note on tts.internalMarkDigestSent says of its own
   // field. A caller that passes no token stores none: an unregistered
@@ -305,7 +305,7 @@ export const internalRecordDelegateObjection = internalMutation({
     // carries no token, and an unlinkable label must not roll back an
     // objection Tom typed into Slack — Slack has already been answered 200 and
     // will not deliver the reply again.
-    await ctx.scheduler.runAfter(0, internal.runLabels.internalLabelFromObjection, {
+    await ctx.scheduler.runAfter(0, internal.agentLabels.internalLabelFromObjection, {
       eventId,
       askId: args.askId,
     });

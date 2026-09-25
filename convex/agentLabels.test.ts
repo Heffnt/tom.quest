@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { REACTION_POLARITY, baseEmoji, meaningFault, plainMeaning } from "./runLabels";
+import { REACTION_POLARITY, baseEmoji, meaningFault, plainMeaning } from "./agentLabels";
 import { parseConfirmReply } from "./ttsSlack";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -126,8 +126,8 @@ const label = (over: Record<string, unknown> = {}) => ({
 describe("the one writer", () => {
   it("writes one row per ref, however often the act is replayed", async () => {
     const t = convexTest(schema, modules);
-    const first = await t.mutation(internal.runLabels.internalWriteLabel, label());
-    const second = await t.mutation(internal.runLabels.internalWriteLabel, label({
+    const first = await t.mutation(internal.agentLabels.internalWriteLabel, label());
+    const second = await t.mutation(internal.agentLabels.internalWriteLabel, label({
       // A redelivery carries the same act and may differ in everything else;
       // the ref is what decides, and the first row stands.
       polarity: "bad",
@@ -143,7 +143,7 @@ describe("the one writer", () => {
   it("refuses an actor that is not Tom", async () => {
     const t = convexTest(schema, modules);
     await expect(
-      t.mutation(internal.runLabels.internalWriteLabel, label({ actor: "agent" })),
+      t.mutation(internal.agentLabels.internalWriteLabel, label({ actor: "agent" })),
     ).rejects.toThrow(/must be "tom"/);
     expect(await labels(t)).toHaveLength(0);
   });
@@ -151,12 +151,12 @@ describe("the one writer", () => {
   it("refuses a meaning carrying a date or a quote mark", async () => {
     const t = convexTest(schema, modules);
     await expect(
-      t.mutation(internal.runLabels.internalWriteLabel, label({
+      t.mutation(internal.agentLabels.internalWriteLabel, label({
         meaning: "Tom approved this on 2026-09-11",
       })),
     ).rejects.toThrow(/date/);
     await expect(
-      t.mutation(internal.runLabels.internalWriteLabel, label({
+      t.mutation(internal.agentLabels.internalWriteLabel, label({
         ref: "ruling:two",
         meaning: 'Tom said "do it again"',
       })),
@@ -186,7 +186,7 @@ describe("a ruling becomes a label", () => {
         verdict,
         sentence: verdict === "revise" ? "say what it costs" : undefined,
       });
-      await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
+      await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
       const row = (await labels(t)).find((one) => one.ref === `ruling:${rulingId}`)!;
       seen[verdict] = { polarity: row.polarity, judgment: row.judgment };
     }
@@ -209,7 +209,7 @@ describe("a ruling becomes a label", () => {
       verdict: "revise",
       sentence: "this reads like a status report",
     });
-    await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
+    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
     expect((await labels(t))[0].meaning).toBe("this reads like a status report");
   });
 
@@ -218,7 +218,7 @@ describe("a ruling becomes a label", () => {
     const runId = await seedRun(t, { regToken: "tok-life", runId: "claude:box:prepare-pass" });
     const todoId = await seedTodo(t, { producedByRunToken: "tok-life" });
     const rulingId = await seedRuling(t, { todoId, verdict: "approve" });
-    await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
+    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
     const rows = await labels(t);
     expect(rows).toHaveLength(1);
     expect(rows[0].runId).toBe(runId);
@@ -233,8 +233,8 @@ describe("a ruling becomes a label", () => {
     await seedRun(t, { regToken: "tok-life" });
     const todoId = await seedTodo(t, { producedByRunToken: "tok-life" });
     const rulingId = await seedRuling(t, { todoId, verdict: "approve" });
-    await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
-    const second = await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
+    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
+    const second = await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
     expect(second).toMatchObject({ wrote: false });
     expect(await labels(t)).toHaveLength(1);
   });
@@ -244,7 +244,7 @@ describe("a ruling becomes a label", () => {
     await seedRun(t, { regToken: "tok-life" });
     const todoId = await seedTodo(t);
     const rulingId = await seedRuling(t, { todoId, verdict: "approve" });
-    await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
+    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
     expect(await labels(t)).toHaveLength(0);
     // Counted, never silent: an uncounted absence would make an old corpus
     // look like a clean one.
@@ -270,7 +270,7 @@ describe("a ruling becomes a label", () => {
       }),
     );
     const rulingId = await seedRuling(t, { subjectType: "batch", batchId, verdict: "approve" });
-    await t.mutation(internal.runLabels.internalLabelFromRuling, { rulingId });
+    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
     expect(await labels(t)).toEqual([]);
     const unlinked = await events(t, "run-label-unlinked");
     expect(unlinked).toHaveLength(1);
@@ -319,11 +319,11 @@ describe("an objection becomes a label", () => {
       revert: false,
       sentence: "wait for the merge gate instead",
     });
-    await t.mutation(internal.runLabels.internalLabelFromObjection, {
+    await t.mutation(internal.agentLabels.internalLabelFromObjection, {
       eventId: reverted,
       askId: "ask-1",
     });
-    await t.mutation(internal.runLabels.internalLabelFromObjection, {
+    await t.mutation(internal.agentLabels.internalLabelFromObjection, {
       eventId: redirected,
       askId: "ask-2",
     });
@@ -342,7 +342,7 @@ describe("an objection becomes a label", () => {
     await seedRun(t, { regToken: "tok-merge", runId: "claude:box:merge-run" });
     await seedDecision(t, "merge", "tom.quest:abc123", { runToken: "tok-merge" });
     const eventId = await seedObjection(t, "tom.quest:abc123", { revert: true, sentence: null });
-    await t.mutation(internal.runLabels.internalLabelFromObjection, {
+    await t.mutation(internal.agentLabels.internalLabelFromObjection, {
       eventId,
       askId: "tom.quest:abc123",
     });
@@ -356,7 +356,7 @@ describe("an objection becomes a label", () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-ask" });
     const eventId = await seedObjection(t, "ask-missing", { revert: true, sentence: null });
-    const result = await t.mutation(internal.runLabels.internalLabelFromObjection, {
+    const result = await t.mutation(internal.agentLabels.internalLabelFromObjection, {
       eventId,
       askId: "ask-missing",
     });
@@ -411,7 +411,7 @@ describe("a reply in a session becomes a label", () => {
     const t = convexTest(schema, modules);
     const sessionId = await seedSession(t);
     await seedRun(t, { regToken: "tok-session", runId: "claude:box:session-run", sessionId });
-    await t.mutation(internal.runLabels.internalLabelFromSessionReply, {
+    await t.mutation(internal.agentLabels.internalLabelFromSessionReply, {
       sessionId,
       seq: 12,
       text: "that is not what I asked for",
@@ -437,7 +437,7 @@ describe("a reply in a session becomes a label", () => {
     const t = convexTest(schema, modules);
     const sessionId = await seedSession(t);
     await seedRun(t, { regToken: "tok-session", sessionId });
-    await t.mutation(internal.runLabels.internalLabelFromSessionReply, {
+    await t.mutation(internal.agentLabels.internalLabelFromSessionReply, {
       sessionId,
       seq: 0,
       text: "start with the passport one",
@@ -529,7 +529,7 @@ describe("a reaction on the morning becomes a label", () => {
     await seedRun(t, { regToken: "tok-morning", runId: "claude:box:write-slack" });
     await seedDigestSent(t, { day: "2026-09-11", writtenBy: "fable", runToken: "tok-morning", slackTs: "1757500000.0001" });
     for (const emoji of Object.keys(REACTION_POLARITY)) {
-      await t.mutation(internal.runLabels.internalLabelFromReaction, reaction({ emoji }));
+      await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji }));
     }
     const rows = await labels(t);
     expect(rows).toHaveLength(Object.keys(REACTION_POLARITY).length);
@@ -547,7 +547,7 @@ describe("a reaction on the morning becomes a label", () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-morning" });
     await seedDigestSent(t, { day: "2026-09-11", writtenBy: "fable", runToken: "tok-morning", slackTs: "1757500000.0001" });
-    await t.mutation(internal.runLabels.internalLabelFromReaction, reaction({ emoji: "+1::skin-tone-3" }));
+    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "+1::skin-tone-3" }));
     const rows = await labels(t);
     expect(rows).toHaveLength(1);
     expect(rows[0].ref.endsWith(":+1")).toBe(true);
@@ -559,7 +559,7 @@ describe("a reaction on the morning becomes a label", () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-morning" });
     await seedDigestSent(t, { day: "2026-09-11", writtenBy: "fable", runToken: "tok-morning", slackTs: "1757500000.0001" });
-    await t.mutation(internal.runLabels.internalLabelFromReaction, reaction({ emoji: "thinking_face" }));
+    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "thinking_face" }));
     expect(await labels(t)).toHaveLength(0);
     // What he reaches for is worth having; guessing what it meant is not.
     expect((await events(t, "reaction-unmapped"))[0].data).toMatchObject({
@@ -571,14 +571,14 @@ describe("a reaction on the morning becomes a label", () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-morning" });
     await seedDigestSent(t, { day: "2026-09-11", writtenBy: "template", slackTs: "1757500000.0001" });
-    await t.mutation(internal.runLabels.internalLabelFromReaction, reaction());
+    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction());
     expect(await labels(t)).toHaveLength(0);
     const unlinked = await events(t, "run-label-unlinked");
     expect(unlinked).toHaveLength(1);
     expect(unlinked[0].data).toMatchObject({
       source: "digest-reaction",
       subjectKey: "digest:2026-09-11",
-      why: "the morning was written by the plain template, which is not a run's output",
+      why: "the morning was written by the plain template, which is not an agent's output",
     });
   });
 
@@ -586,9 +586,9 @@ describe("a reaction on the morning becomes a label", () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-morning" });
     await seedDigestSent(t, { day: "2026-09-11", writtenBy: "fable", runToken: "tok-morning", slackTs: "1757500000.0001" });
-    await t.mutation(internal.runLabels.internalLabelFromReaction, reaction({ emoji: "+1" }));
-    await t.mutation(internal.runLabels.internalLabelFromReaction, reaction({ emoji: "tada" }));
-    await t.mutation(internal.runLabels.internalLabelFromReaction, reaction({ emoji: "+1", removed: true }));
+    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "+1" }));
+    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "tada" }));
+    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "+1", removed: true }));
     const rows = await labels(t);
     expect(rows).toHaveLength(1);
     expect(rows[0].ref.endsWith(":tada")).toBe(true);

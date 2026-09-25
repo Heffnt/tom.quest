@@ -151,7 +151,7 @@ function assertWindow(from: number, to: number) {
 }
 
 /** A run, trimmed to what a bar on a lane needs. The transcript, the token
- *  totals and the context stay where they are: the run page reads them, and a
+ *  totals and the context stay where they are: the agent page reads them, and a
  *  timeline that carried them would be a month of transcripts in the browser. */
 function mark(run: Doc<"runs">) {
   return {
@@ -173,7 +173,7 @@ function mark(run: Doc<"runs">) {
     startedAt: run.startedAt,
     lastLineAt: run.lastLineAt,
     // The outcome a mark opens to. Four numbers and a word, which is what the
-    // run row itself holds; the transcript stays on the run page.
+    // run row itself holds; the transcript stays on the agent page.
     endedReason: run.outcome?.endedReason ?? null,
     turns: run.outcome?.turns ?? null,
     toolCalls: run.outcome?.toolCalls ?? null,

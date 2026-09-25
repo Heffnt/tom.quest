@@ -64,16 +64,16 @@ function jsonResponse(status: number, body: unknown): Response {
 // carries at most 200 rows whose display payloads are each cut to 32 KiB, so
 // reserve that worst case plus the former 1 MiB body limit as the envelope for
 // the run, children, row metadata, and JSON punctuation.
-const RUNS_INGEST_ENVELOPE_BYTES = 1024 * 1024;
-const RUNS_INGEST_MAX_BODY_BYTES =
-  6 * 200 * 32 * 1024 + RUNS_INGEST_ENVELOPE_BYTES;
+const AGENTS_INGEST_ENVELOPE_BYTES = 1024 * 1024;
+const AGENTS_INGEST_MAX_BODY_BYTES =
+  6 * 200 * 32 * 1024 + AGENTS_INGEST_ENVELOPE_BYTES;
 // A chunk itself may be 256 KiB. In the worst valid JSON string encoding every
 // content byte is a six-byte `\uXXXX` escape (quotes and backslashes use two),
 // with 4 KiB left for the fixed fields and JSON punctuation.
-const RUNS_OVERFLOW_ENVELOPE_BYTES = 4 * 1024;
-const RUNS_OVERFLOW_MAX_BODY_BYTES =
-  6 * 256 * 1024 + RUNS_OVERFLOW_ENVELOPE_BYTES;
-const RUN_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
+const AGENTS_OVERFLOW_ENVELOPE_BYTES = 4 * 1024;
+const AGENTS_OVERFLOW_MAX_BODY_BYTES =
+  6 * 256 * 1024 + AGENTS_OVERFLOW_ENVELOPE_BYTES;
+const AGENT_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
 
 /** Read no more than `limit` bytes before JSON parsing or allocating its tree. */
 async function boundedJson(request: Request, limit: number): Promise<{ body: unknown } | { tooLarge: true } | { invalid: true }> {
@@ -103,8 +103,51 @@ async function boundedJson(request: Request, limit: number): Promise<{ body: unk
   }
 }
 
-function validRunId(runId: unknown): runId is string {
-  return typeof runId === "string" && RUN_ID.test(runId);
+function validAgentId(agentId: unknown): agentId is string {
+  return typeof agentId === "string" && AGENT_ID.test(agentId);
+}
+
+// ── Both spellings, while the box moves from run to agent ───────────────────
+// The box names a thread a run until its own rename lands, and the record
+// stores the run spelling until Tom rules on the stored names. So each door
+// below reads either spelling, the agent one first, and hands the internal
+// function the stored spelling only. The strict argument validators then
+// never meet a key they do not declare. Phase 3 removes the run spelling from
+// every door, and these three helpers with it.
+
+/** The value under the agent key, else the one under the run key. */
+function eitherKey(b: Record<string, unknown>, agentKey: string, runKey: string): unknown {
+  return b[agentKey] !== undefined ? b[agentKey] : b[runKey];
+}
+
+const STORED_AGENT_KEYS = [
+  ["agentId", "runId"],
+  ["parentAgentId", "parentRunId"],
+  ["rootAgentId", "rootRunId"],
+  ["continuesAgentId", "continuesRunId"],
+] as const;
+
+/** An agent object or a child edge in the stored spelling: each agent key
+ *  replaces its run key and is then removed. Anything that is not an object
+ *  is returned as it came, for the caller's own check to refuse. */
+function storedAgentKeys(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const [agentKey, runKey] of STORED_AGENT_KEYS) {
+    if (out[agentKey] !== undefined) out[runKey] = out[agentKey];
+    delete out[agentKey];
+  }
+  return out;
+}
+
+/** An ingest body in the stored spelling: `agent` becomes `run`, and the
+ *  agent object and each child edge take the stored keys. Rows are not
+ *  touched; a row's digest covers its content. */
+function storedIngestBody(body: Record<string, unknown>): Record<string, unknown> {
+  const { agent, ...rest } = body;
+  const out: Record<string, unknown> = { ...rest, run: storedAgentKeys(agent !== undefined ? agent : body.run) };
+  if (Array.isArray(body.children)) out.children = body.children.map(storedAgentKeys);
+  return out;
 }
 
 /** Worker jobs need the original missing-layer sentence, not a framework
@@ -583,14 +626,15 @@ const ttsSlackDraftSubmit = httpAction(async (ctx, request) => {
   // The token of the run that wrote this draft — the edge an emoji on the
   // morning follows back to the run that earned it. The template path sends
   // none and none is invented.
-  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
-    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  const agentToken = eitherKey(b, "agentToken", "runToken");
+  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
+    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
   }
   try {
     const result = await ctx.runMutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
       requestId: b.requestId,
       draft: b.draft,
-      runToken: typeof b.runToken === "string" ? b.runToken : undefined,
+      runToken: typeof agentToken === "string" ? agentToken : undefined,
     });
     return jsonResponse(200, { ok: true, ...result });
   } catch (e) {
@@ -900,7 +944,7 @@ const slackEvents = httpAction(async (ctx, request) => {
   const event = (body.event ?? {}) as Record<string, unknown>;
 
   // ── An emoji on the morning digest (the evals layer, phase 7) ─────────────
-  // The fourth door judgment enters by (convex/runLabels.ts): Tom taps a
+  // The fourth door judgment enters by (convex/agentLabels.ts): Tom taps a
   // thumb on the morning message and that becomes a label on the run that
   // WROTE it. It is the cheapest act he can perform, which is the point — the
   // other three doors all cost him a sentence.
@@ -947,7 +991,7 @@ const slackEvents = httpAction(async (ctx, request) => {
     // a missing one falls back to the arrival clock rather than to zero.
     const eventTs = typeof event.event_ts === "string" ? Number(event.event_ts) : NaN;
     const at = Number.isFinite(eventTs) ? Math.round(eventTs * 1000) : Date.now();
-    const result = await ctx.runMutation(internal.runLabels.internalLabelFromReaction, {
+    const result = await ctx.runMutation(internal.agentLabels.internalLabelFromReaction, {
       channel: itemChannel,
       ts: itemTs,
       emoji: reaction,
@@ -1097,7 +1141,7 @@ function parseDoorFaults(
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
 // Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, evidence?, groundUpExplanation?, status?, runToken?,
+// dateKind?, evidence?, groundUpExplanation?, status?, agentToken? (or runToken?),
 // doorFaults? }.
 const ttsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -1139,14 +1183,15 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: 'status must be "done"' });
   }
   // The run that wrote this write-up, stamped on the row so a ruling on it
-  // later finds the run that produced the text Tom read (convex/runLabels.ts
-  // runForToken). A DOOR THAT RECEIVES NO TOKEN STORES NONE: absent is a
+  // later finds the run that produced the text Tom read (convex/agentLabels.ts
+  // agentForToken). A DOOR THAT RECEIVES NO TOKEN STORES NONE: absent is a
   // supported value and is never inferred, because the alternative — guessing
   // the newest run that touched this todo — is wrong on the ordinary case (a
   // prepare pass, a repair pass and a planner pass can all touch one todo in
   // an hour) and a wrong edge poisons the eval corpus silently.
-  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
-    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  const agentToken = eitherKey(b, "agentToken", "runToken");
+  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
+    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
   }
   // The door check's complaints, when the write-up was refused twice. A pass
   // that got through sends no key at all and the event carries none — absence
@@ -1174,7 +1219,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       evidence: str(b.evidence),
       groundUpExplanation: str(b.groundUpExplanation),
       status: b.status as "done" | undefined,
-      runToken: str(b.runToken),
+      runToken: str(agentToken),
       doorFaults,
     });
     return jsonResponse(200, { ok: true });
@@ -1457,14 +1502,15 @@ const ttsCodeBriefs = httpAction(async (ctx, request) => {
   // The registration token of the run that WROTE these briefs — one brief pass
   // is one run, so one token covers the batch. It becomes producedByRunToken on
   // each row, which is the edge a ruling on a code subject follows back to the
-  // run whose text Tom judged (convex/runLabels.ts). A caller that sends none
+  // run whose text Tom judged (convex/agentLabels.ts). A caller that sends none
   // stores none, and the field stays absent.
-  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
-    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  const agentToken = eitherKey(b, "agentToken", "runToken");
+  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
+    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
   }
   await ctx.runMutation(internal.ttsCode.internalStoreBriefs, {
     briefs,
-    runToken: typeof b.runToken === "string" ? b.runToken : undefined,
+    runToken: typeof agentToken === "string" ? agentToken : undefined,
   });
   return jsonResponse(200, { ok: true, count: briefs.length });
 });
@@ -2639,7 +2685,14 @@ const ttsSimplifyInput = httpAction(async (ctx, request) => {
   } catch (error) {
     return modelOfTomErrorResponse(error);
   }
-  return jsonResponse(200, { ...facts, writingStandard });
+  // Both spellings until the box reads the agent one; phase 3 drops `runs`
+  // and each sample's `runId`.
+  return jsonResponse(200, {
+    ...facts,
+    agents: facts.runs,
+    sample: facts.sample.map((one) => ({ ...one, agentId: one.runId })),
+    writingStandard,
+  });
 });
 
 http.route({ path: "/tts/simplify-input", method: "GET", handler: ttsSimplifyInput });
@@ -2804,17 +2857,20 @@ http.route({ path: "/tts/run-by-token", method: "GET", handler: ttsRunByToken })
 // Read-only, worker-keyed, and SHAPE-CHECKED BEFORE THE LOOKUP for the reason
 // stated at RUN_TOKEN_SHAPE. `null` for an unknown token is a normal answer,
 // exactly as it is next door: the sweeper needs a moment to see the run's file.
-const ttsRunTrace = httpAction(async (ctx, request) => {
+const ttsAgentTrace = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const token = new URL(request.url).searchParams.get("token") ?? "";
   if (!RUN_TOKEN_SHAPE.test(token)) {
     return jsonResponse(400, { error: "token (a registration UUID) required" });
   }
-  return jsonResponse(200, await ctx.runQuery(internal.runs.internalRunTrace, { token }));
+  const trace = await ctx.runQuery(internal.agents.internalAgentTrace, { token });
+  // Both spellings until the box reads the agent one; phase 3 drops `runId`.
+  return jsonResponse(200, trace === null ? null : { ...trace, agentId: trace.runId });
 });
 
-http.route({ path: "/tts/run-trace", method: "GET", handler: ttsRunTrace });
+http.route({ path: "/tts/agent-trace", method: "GET", handler: ttsAgentTrace });
+http.route({ path: "/tts/run-trace", method: "GET", handler: ttsAgentTrace });
 
 // EITHER KEY, the way POST /tts/tests takes either. CI holds the narrow evals
 // key, which can request and read evals and never write another TTS event. The
@@ -3195,7 +3251,7 @@ http.route({ path: "/tts/event", method: "POST", handler: ttsEvent });
 // still running the old plan pass gets a 404 from each, and forms no batch.)
 
 // POST /tts/session — the Friday weekly job's door (worker/jobs/weekly.mjs)
-// to open ITS session on the runs page. Body: { title, kind: "weekly",
+// to open ITS session on the agents page. Body: { title, kind: "weekly",
 // day, agendaSubjects, repos?, model?, initialPrompt } →
 // claudeSessions.internalCreateWeeklySession, the same one row-builder
 // (insertSession) behind every session, so the opener begins with the
@@ -3269,11 +3325,12 @@ http.route({ path: "/tts/session", method: "POST", handler: ttsSession });
 
 // POST /tts/runner — open a runner (convex/ttsRunners.ts). Body: { title,
 // type, experimentHost, repo, ref?, stepMs, model?, delegateAllowed?,
-// budgetGpuHours?, specs?, askOverrides?, subject?, from, runId? }, where `from` is
+// budgetGpuHours?, specs?, askOverrides?, subject?, from, agentId? }, where `from` is
 // { kind: "prompt", text } | { kind: "handoff", runnerId } | { kind:
 // "document", text }. A `document` is taken as given: that is how a CMT
 // dev/handoff file becomes a runner, the calling run having read the file.
-// `runId` names the run that opened it; absent, the runner is Tom's.
+// `agentId` (or `runId`, until phase 3) names the agent that opened it;
+// absent, the runner is Tom's.
 //
 // The shape is checked here and refused in named sentences; the seed's meaning
 // (repo, step length, model family, overrides) is checked once, by
@@ -3290,6 +3347,7 @@ const ttsRunner = httpAction(async (ctx, request) => {
   const b = (body ?? {}) as Record<string, unknown>;
   const fault = runnerBodyFault(b);
   if (fault) return jsonResponse(400, { error: fault });
+  const openedBy = eitherKey(b, "agentId", "runId");
   const from = b.from as Record<string, unknown>;
   const subject = b.subject as Record<string, unknown> | undefined;
   try {
@@ -3314,7 +3372,7 @@ const ttsRunner = httpAction(async (ctx, request) => {
     };
     const runnerId = await ctx.runMutation(internal.ttsRunners.internalCreateRunner, {
       seed,
-      ...(typeof b.runId === "string" ? { createdBy: { kind: "run" as const, runId: b.runId } } : {}),
+      ...(typeof openedBy === "string" ? { createdBy: { kind: "run" as const, runId: openedBy } } : {}),
     });
     return jsonResponse(200, { ok: true, runnerId });
   } catch (e) {
@@ -3334,7 +3392,8 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
   if (b.delegateAllowed !== undefined && typeof b.delegateAllowed !== "boolean") return "delegateAllowed must be true or false.";
   if (b.budgetGpuHours !== undefined && typeof b.budgetGpuHours !== "number") return "budgetGpuHours must be a number.";
   if (b.specs !== undefined && (!Array.isArray(b.specs) || !b.specs.every((spec) => typeof spec === "string"))) return "specs must be a list of glob patterns.";
-  if (b.runId !== undefined && !validRunId(b.runId)) return "runId is not a run id.";
+  const openedBy = eitherKey(b, "agentId", "runId");
+  if (openedBy !== undefined && !validAgentId(openedBy)) return "agentId is not an agent id.";
   // Refused, not ignored: a caller that sent a ceiling must learn it was not
   // taken. Every run on the box holds this pen's key, a runner step included,
   // so a ceiling set here would be an agent widening its own reach; a runner
@@ -3369,7 +3428,7 @@ http.route({ path: "/tts/runner", method: "POST", handler: ttsRunner });
 
 
 // POST /tts/runner-step — a runner step's check-in, through tts-runner-step.
-// Body { runnerId, stepRunId, decision, checkIn, document, asks: [{ tier,
+// Body { runnerId, stepAgentId (or stepRunId), decision, checkIn, document, asks: [{ tier,
 // blocking, text }], acts?: [{ verb: launch|cancel, jobId, text }],
 // nextStepMs?, graded: { verdict, complaints, attempts, judgeModel } }. The record (convex/ttsRunners.ts internalRecordStep) refuses
 // a body with no grade and runs the form rules again itself; everything else
@@ -3386,7 +3445,8 @@ const ttsRunnerStep = httpAction(async (ctx, request) => {
   }
   const b = (body ?? {}) as Record<string, unknown>;
   if (typeof b.runnerId !== "string" || b.runnerId === "") return jsonResponse(400, { error: "runnerId required" });
-  if (!validRunId(b.stepRunId)) return jsonResponse(400, { error: "stepRunId is not a run id" });
+  const stepAgentId = eitherKey(b, "stepAgentId", "stepRunId");
+  if (!validAgentId(stepAgentId)) return jsonResponse(400, { error: "stepAgentId is not an agent id" });
   if (!["continue", "change", "ask", "hand-off", "finish"].includes(b.decision as string)) {
     return jsonResponse(400, { error: "decision must be continue, change, ask, hand-off or finish" });
   }
@@ -3417,7 +3477,7 @@ const ttsRunnerStep = httpAction(async (ctx, request) => {
   try {
     const result = await ctx.runMutation(internal.ttsRunners.internalRecordStep, {
       runnerId: b.runnerId as Id<"runners">,
-      stepRunId: b.stepRunId,
+      stepRunId: stepAgentId,
       decision: b.decision as "continue" | "change" | "ask" | "hand-off" | "finish",
       checkIn: b.checkIn,
       document: b.document,
@@ -3563,7 +3623,7 @@ http.route({
       question: str(b.question),
       sides: Array.isArray(b.sides) ? b.sides.map((side) => str(side)) : [],
       todoId: optionalStr(b.todoId),
-      concernsRunId: optionalStr(b.runId),
+      concernsRunId: optionalStr(eitherKey(b, "agentId", "runId")),
     }),
   ),
 });
@@ -3648,7 +3708,14 @@ const sessionsPoll = httpAction(async (ctx, request) => {
         ? (b.usageLimit as never)
         : undefined,
   });
-  return jsonResponse(200, result);
+  // Both spellings until the daemon reads the agent one; phase 3 drops
+  // `previousStepRunId`.
+  return jsonResponse(200, {
+    ...result,
+    runnerSteps: result.runnerSteps.map((step) =>
+      step.previousStepRunId === undefined ? step : { ...step, previousStepAgentId: step.previousStepRunId },
+    ),
+  });
 });
 
 /** A list of strings from a daemon body, or undefined when it is not one. */
@@ -3661,7 +3728,7 @@ http.route({ path: "/sessions/poll", method: "POST", handler: sessionsPoll });
 // POST /runner-steps/claim — the daemon asks to launch one runner step it saw
 // on the poll. Body { stepId }. Admission is the mutation's, in one
 // transaction (convex/ttsRunners.ts internalClaimRunnerStep): the answer is
-// { admitted: true, stepRunId, prompt, ... } or { admitted: false, reason }.
+// { admitted: true, stepAgentId, stepRunId, prompt, ... } or { admitted: false, reason }.
 const runnerStepClaim = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
@@ -3674,7 +3741,15 @@ const runnerStepClaim = httpAction(async (ctx, request) => {
   const b = (body ?? {}) as Record<string, unknown>;
   if (typeof b.stepId !== "string" || b.stepId === "") return jsonResponse(400, { error: "stepId required" });
   try {
-    return jsonResponse(200, await ctx.runMutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: b.stepId as Id<"runnerSteps"> }));
+    const claim = await ctx.runMutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: b.stepId as Id<"runnerSteps"> });
+    if (!claim.admitted) return jsonResponse(200, claim);
+    // Both spellings until the daemon reads the agent one; phase 3 drops
+    // `stepRunId` and `previousStepRunId`.
+    return jsonResponse(200, {
+      ...claim,
+      stepAgentId: claim.stepRunId,
+      ...(claim.previousStepRunId !== undefined ? { previousStepAgentId: claim.previousStepRunId } : {}),
+    });
   } catch (e) {
     return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
   }
@@ -3742,7 +3817,10 @@ const sessionsIngest = httpAction(async (ctx, request) => {
   } catch {
     return jsonResponse(400, { error: "invalid JSON body" });
   }
-  const b = (body ?? {}) as Record<string, unknown>;
+  // `agentId` is the new spelling of the stored `runId`: it is moved to the
+  // stored key here, so the strict validator below never meets it.
+  const { agentId, ...rest } = (body ?? {}) as Record<string, unknown>;
+  const b: Record<string, unknown> = agentId !== undefined ? { ...rest, runId: agentId } : rest;
   if (typeof b.sessionId !== "string" || b.sessionId === "") {
     return jsonResponse(400, { error: "sessionId required" });
   }
@@ -3883,68 +3961,78 @@ http.route({
   handler: sessionsOverflowStamp,
 });
 
-// Run-file ingestion deliberately shares the daemon worker credential while
-// migration still has one box-side installation surface. New routes use the
-// run vocabulary; only this legacy auth helper retains the old name.
-const runsIngest = httpAction(async (ctx, request) => {
+// Agent-file ingestion deliberately shares the daemon worker credential while
+// migration still has one box-side installation surface. Only this legacy
+// auth helper retains the old name.
+//
+// The body arrives in either spelling (`agent` or `run`, `agentId` or
+// `runId` on the agent object and on each child edge) and is put in the stored
+// spelling before any check, so internalIngest's strict validator sees only
+// keys it declares.
+const agentsIngest = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  const parsed = await boundedJson(request, RUNS_INGEST_MAX_BODY_BYTES);
+  const parsed = await boundedJson(request, AGENTS_INGEST_MAX_BODY_BYTES);
   if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
   if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
-  const b = (parsed.body ?? {}) as Record<string, unknown>;
+  const b = storedIngestBody((parsed.body ?? {}) as Record<string, unknown>);
   if (typeof b.run !== "object" || b.run === null || !Array.isArray(b.rows) || !Array.isArray(b.children)) {
-    return jsonResponse(400, { error: "run, rows, and children required" });
+    return jsonResponse(400, { error: "agent, rows, and children required" });
   }
-  if (!validRunId((b.run as Record<string, unknown>).runId)) return jsonResponse(400, { error: "runId invalid" });
+  if (!validAgentId((b.run as Record<string, unknown>).runId)) return jsonResponse(400, { error: "agentId invalid" });
   try {
-    const result = await ctx.runMutation(internal.runs.internalIngest, b as never);
+    const result = await ctx.runMutation(internal.agents.internalIngest, b as never);
     return jsonResponse(200, result);
   } catch {
-    return jsonResponse(400, { error: "run ingest rejected" });
+    return jsonResponse(400, { error: "agent ingest rejected" });
   }
 });
-http.route({ path: "/runs/ingest", method: "POST", handler: runsIngest });
+http.route({ path: "/agents/ingest", method: "POST", handler: agentsIngest });
+http.route({ path: "/runs/ingest", method: "POST", handler: agentsIngest });
 
 // Payload text never reaches a validator error: every field is narrowed here
 // and failures use fixed words so the caller cannot reflect a transcript.
-const runsOverflow = httpAction(async (ctx, request) => {
+const agentsOverflow = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  const parsed = await boundedJson(request, AGENTS_OVERFLOW_MAX_BODY_BYTES);
   if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
   if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
   const b = (parsed.body ?? {}) as Record<string, unknown>;
-  if (!validRunId(b.runId)) return jsonResponse(400, { error: "runId invalid" });
+  const agentId = eitherKey(b, "agentId", "runId");
+  if (!validAgentId(agentId)) return jsonResponse(400, { error: "agentId invalid" });
   for (const field of ["seq", "index", "chunkCount"] as const) if (!nonNegativeInteger(b[field])) return jsonResponse(400, { error: `${field} (non-negative integer) required` });
   if (typeof b.text !== "string") return jsonResponse(400, { error: "text (string) required" });
   try {
-    const result = await ctx.runMutation(internal.runs.internalIngestOverflow, { runId: b.runId, seq: b.seq as number, index: b.index as number, chunkCount: b.chunkCount as number, text: b.text });
+    const result = await ctx.runMutation(internal.agents.internalIngestOverflow, { runId: agentId, seq: b.seq as number, index: b.index as number, chunkCount: b.chunkCount as number, text: b.text });
     return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
   } catch { return jsonResponse(400, { error: "overflow chunk rejected" }); }
 });
-http.route({ path: "/runs/overflow", method: "POST", handler: runsOverflow });
+http.route({ path: "/agents/overflow", method: "POST", handler: agentsOverflow });
+http.route({ path: "/runs/overflow", method: "POST", handler: agentsOverflow });
 
-const runsOverflowStamp = httpAction(async (ctx, request) => {
+const agentsOverflowStamp = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  const parsed = await boundedJson(request, AGENTS_OVERFLOW_MAX_BODY_BYTES);
   if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
   if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
   const b = (parsed.body ?? {}) as Record<string, unknown>;
-  if (!validRunId(b.runId)) return jsonResponse(400, { error: "runId invalid" });
+  const agentId = eitherKey(b, "agentId", "runId");
+  if (!validAgentId(agentId)) return jsonResponse(400, { error: "agentId invalid" });
   for (const field of ["seq", "byteLength", "chunkCount"] as const) if (!nonNegativeInteger(b[field])) return jsonResponse(400, { error: `${field} (non-negative integer) required` });
   if (typeof b.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(b.sha256)) return jsonResponse(400, { error: "sha256 (64 hex chars) required" });
   try {
-    const result = await ctx.runMutation(internal.runs.internalStampOverflow, { runId: b.runId, seq: b.seq as number, sha256: b.sha256, byteLength: b.byteLength as number, chunkCount: b.chunkCount as number });
+    const result = await ctx.runMutation(internal.agents.internalStampOverflow, { runId: agentId, seq: b.seq as number, sha256: b.sha256, byteLength: b.byteLength as number, chunkCount: b.chunkCount as number });
     return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
   } catch { return jsonResponse(400, { error: "overflow stamp rejected" }); }
 });
-http.route({ path: "/runs/overflow/stamp", method: "POST", handler: runsOverflowStamp });
+http.route({ path: "/agents/overflow/stamp", method: "POST", handler: agentsOverflowStamp });
+http.route({ path: "/runs/overflow/stamp", method: "POST", handler: agentsOverflowStamp });
 
 // The comparison reads both row sets inside Convex and returns counts and
 // digests only. Transcript text never crosses this route.
-const runsCompare = httpAction(async (ctx, request) => {
+const agentsCompare = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
   let body: unknown;
@@ -3952,14 +4040,17 @@ const runsCompare = httpAction(async (ctx, request) => {
   const b = (body ?? {}) as Record<string, unknown>;
   if (b.sessionId !== undefined && (typeof b.sessionId !== "string" || b.sessionId === "")) return jsonResponse(400, { error: "sessionId must be a non-empty string" });
   try {
+    // The comparison's result is also stored on the runs-shadow-compare
+    // event, so `agentId` is added here, to the answer only. Phase 3 drops
+    // `runId` from the answer.
     const compareAllPages = async (sessionId: Id<"claudeSessions">) => {
       let state: Record<string, unknown> | undefined;
       for (;;) {
-        const result = await ctx.runMutation(internal.runs.internalShadowCompare, {
+        const result = await ctx.runMutation(internal.agents.internalShadowCompare, {
           sessionId,
           ...(state === undefined ? {} : { state }),
         } as never);
-        if (result.complete) return result;
+        if (result.complete) return { ...result, agentId: result.runId };
         state = result.state;
       }
     };
@@ -3975,7 +4066,7 @@ const runsCompare = httpAction(async (ctx, request) => {
           eligible: Array<{ sessionId: Id<"claudeSessions">; runId: string }>;
           isDone: boolean;
           continueCursor: string | null;
-        } = await ctx.runQuery(internal.runs.internalEligibleComparisons, {
+        } = await ctx.runQuery(internal.agents.internalEligibleComparisons, {
           status,
           paginationOpts: { cursor, numItems: 100 },
         });
@@ -3986,17 +4077,19 @@ const runsCompare = httpAction(async (ctx, request) => {
     }
     return jsonResponse(200, { comparisons });
   } catch (error) {
-    // The reason, not a phrase. An opaque "run comparison rejected" is what
+    // The reason, not a phrase. An opaque "comparison rejected" is what
     // hid a thrown Convex limit behind an hourly HTTP 400 in the cron log.
     return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
   }
 });
-http.route({ path: "/runs/compare", method: "POST", handler: runsCompare });
+http.route({ path: "/agents/compare", method: "POST", handler: agentsCompare });
+http.route({ path: "/runs/compare", method: "POST", handler: agentsCompare });
 
 // The WikiTom writer receives already-shaped manifest entries and an opaque
-// cursor. The full `(at, runId, fileVersion)` checkpoint makes equal-ms
+// cursor. The full `(at, agentId, fileVersion)` checkpoint makes equal-ms
 // versions retry-safe without dropping later lines at the same timestamp.
-const runsManifest = httpAction(async (ctx, request) => {
+// The entries keep their `run_id` keys: WikiTom stores them as written.
+const agentsManifest = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
   const url = new URL(request.url);
@@ -4004,11 +4097,11 @@ const runsManifest = httpAction(async (ctx, request) => {
   if (sinceText === null || sinceText === "") return jsonResponse(400, { error: "since required" });
   const since = Number(sinceText);
   if (!Number.isFinite(since) || since < 0) return jsonResponse(400, { error: "since (non-negative number) required" });
-  const afterRunId = url.searchParams.get("afterRunId") ?? undefined;
+  const afterRunId = url.searchParams.get("afterAgentId") ?? url.searchParams.get("afterRunId") ?? undefined;
   const afterFileVersion = url.searchParams.get("afterFileVersion") ?? undefined;
-  if ((afterRunId === undefined) !== (afterFileVersion === undefined)) return jsonResponse(400, { error: "manifest checkpoint requires runId and fileVersion together" });
+  if ((afterRunId === undefined) !== (afterFileVersion === undefined)) return jsonResponse(400, { error: "manifest checkpoint requires agentId and fileVersion together" });
   try {
-    const result = await ctx.runQuery(internal.runs.internalManifest, {
+    const result = await ctx.runQuery(internal.agents.internalManifest, {
       since,
       afterRunId,
       afterFileVersion,
@@ -4019,33 +4112,40 @@ const runsManifest = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "manifest page rejected" });
   }
 });
-http.route({ path: "/runs/manifest", method: "GET", handler: runsManifest });
+http.route({ path: "/agents/manifest", method: "GET", handler: agentsManifest });
+http.route({ path: "/runs/manifest", method: "GET", handler: agentsManifest });
 
-// ── Opening an old run: the box serves what Convex cannot read ───────────────
+// ── Opening an old agent: the box serves what Convex cannot read ─────────────
 // Convex holds no S3 reader credential and no second request signer, so the
 // oldest pending request is handed to the box job, which fetches the stored
-// version, parses it and ingests the rows through /runs/ingest. The queue is
+// version, parses it and ingests the rows through /agents/ingest. The queue is
 // drained by ANSWERS: a request the box cannot serve is answered `failed` with
 // a fixed phrase, never left pending.
-const runsMaterializeRequest = httpAction(async (ctx, request) => {
+const agentsMaterializeRequest = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
   try {
-    const result = await ctx.runQuery(internal.runs.internalNextMaterialize, {});
-    return jsonResponse(200, result);
+    const result = await ctx.runQuery(internal.agents.internalNextMaterialize, {});
+    if (result.request === null) return jsonResponse(200, result);
+    // Both spellings until the box reads the agent one; phase 3 drops
+    // `runId` and `parentRunId`.
+    return jsonResponse(200, {
+      request: { ...result.request, agentId: result.request.runId, parentAgentId: result.request.parentRunId },
+    });
   } catch {
     return jsonResponse(400, { error: "materialize request rejected" });
   }
 });
-http.route({ path: "/runs/materialize-request", method: "GET", handler: runsMaterializeRequest });
+http.route({ path: "/agents/materialize-request", method: "GET", handler: agentsMaterializeRequest });
+http.route({ path: "/runs/materialize-request", method: "GET", handler: agentsMaterializeRequest });
 
 // Every field is narrowed here and every failure uses fixed words: a store
 // error, a path or a transcript line must never reach the record through
 // `reason`, and a payload must never be reflected in a route error.
-const runsMaterializeAnswer = httpAction(async (ctx, request) => {
+const agentsMaterializeAnswer = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  const parsed = await boundedJson(request, AGENTS_OVERFLOW_MAX_BODY_BYTES);
   if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
   if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
   const b = (parsed.body ?? {}) as Record<string, unknown>;
@@ -4073,7 +4173,7 @@ const runsMaterializeAnswer = httpAction(async (ctx, request) => {
     };
   }
   try {
-    const result = await ctx.runMutation(internal.runs.internalAnswerMaterialize, {
+    const result = await ctx.runMutation(internal.agents.internalAnswerMaterialize, {
       requestId: b.requestId as Id<"runMaterializeRequests">,
       status: b.status,
       reason: b.reason as string | undefined,
@@ -4088,26 +4188,29 @@ const runsMaterializeAnswer = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "materialize answer rejected" });
   }
 });
-http.route({ path: "/runs/materialize-answer", method: "POST", handler: runsMaterializeAnswer });
+http.route({ path: "/agents/materialize-answer", method: "POST", handler: agentsMaterializeAnswer });
+http.route({ path: "/runs/materialize-answer", method: "POST", handler: agentsMaterializeAnswer });
 
-// The worker-key twin of runs.requestMaterialize, for a job that needs an old
-// run's rows. Same refusals, same idempotence, `requestedBy: "worker"`.
-const runsMaterialize = httpAction(async (ctx, request) => {
+// The worker-key twin of agents.requestMaterialize, for a job that needs an old
+// agent's rows. Same refusals, same idempotence, `requestedBy: "worker"`.
+const agentsMaterialize = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  const parsed = await boundedJson(request, AGENTS_OVERFLOW_MAX_BODY_BYTES);
   if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
   if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
   const b = (parsed.body ?? {}) as Record<string, unknown>;
-  if (!validRunId(b.runId)) return jsonResponse(400, { error: "runId invalid" });
+  const agentId = eitherKey(b, "agentId", "runId");
+  if (!validAgentId(agentId)) return jsonResponse(400, { error: "agentId invalid" });
   try {
-    const result = await ctx.runMutation(internal.runs.internalRequestMaterialize, { runId: b.runId, requestedBy: "worker" });
+    const result = await ctx.runMutation(internal.agents.internalRequestMaterialize, { runId: agentId, requestedBy: "worker" });
     return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
   } catch {
     return jsonResponse(400, { error: "materialize request rejected" });
   }
 });
-http.route({ path: "/runs/materialize", method: "POST", handler: runsMaterialize });
+http.route({ path: "/agents/materialize", method: "POST", handler: agentsMaterialize });
+http.route({ path: "/runs/materialize", method: "POST", handler: agentsMaterialize });
 
 // GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a
 // session's finalized transcript, oldest first. The daemon walks it to write

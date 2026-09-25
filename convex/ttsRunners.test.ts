@@ -645,7 +645,7 @@ describe("composeCheckIn", () => {
     asks: 0,
     checkIn: "Nothing changed.",
     graded: { verdict: "pass" as const, complaints: [] },
-    runUrl: "https://www.tom.quest/runs?run=claude%3Abox%3Ax",
+    agentUrl: "https://www.tom.quest/agents?agent=claude%3Abox%3Ax",
   };
 
   it("still composes one line when nothing changed, the numbers in their fixed order", async () => {
@@ -750,7 +750,7 @@ describe("a question for Tom", () => {
 
   it("composes the question whole under a first line that says whether the runner is holding still", async () => {
     const { composeRunnerAsk, runnerAskBody, renderSlack } = await import("./ttsCompose");
-    const facts = { title: "TRAIN25 campaign", question: "Should I skip pythia? If you do not answer, I keep training it.", tier: "plan" as const, blocking: true, stepUrl: "https://www.tom.quest/runs?run=x" };
+    const facts = { title: "TRAIN25 campaign", question: "Should I skip pythia? If you do not answer, I keep training it.", tier: "plan" as const, blocking: true, stepUrl: "https://www.tom.quest/agents?agent=x" };
     const text = renderSlack(composeRunnerAsk(facts, { canReply: true }));
     expect(text.split("\n")[0]).toBe("The runner TRAIN25 campaign has a question about what the experiment is only you can settle. Its steps change nothing until you answer.");
     expect(text).toContain("reply here");
@@ -850,5 +850,96 @@ describe("the page", () => {
     await expect(user.query(api.ttsRunners.listRunners, {})).rejects.toThrow(/restricted to Tom/);
     await expect(user.query(api.ttsRunners.runnerDetail, { runnerId })).rejects.toThrow(/restricted to Tom/);
     await expect(t.query(api.ttsRunners.listRunners, {})).rejects.toThrow();
+  });
+});
+
+// ── Both spellings, while the box moves from run to agent ───────────────────
+// Each door reads the agent spelling and the run spelling until phase 3, and
+// hands the record the stored spelling only. A case per door: both spellings
+// land the same row, and a body with the agent spelling reaches no strict
+// validator with a key it does not declare (that would be a 400).
+describe("both spellings on the runner doors", () => {
+  const GOOD = "The sweep has 12 jobs running.\n\nNothing changed, and nothing failed.";
+  const PASS = { verdict: "pass" as const, complaints: [], attempts: 1, judgeModel: "fable" };
+  const OPENER = "claude:box:opener-agent-1";
+  const EARLIER = "claude:box:earlier-step-1";
+
+  async function requested(t: TestConvex<typeof schema>) {
+    const { internal } = await import("./_generated/api");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed() });
+    const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
+    return { runnerId, stepId: step._id, internal };
+  }
+
+  function daemon(t: TestConvex<typeof schema>, path: string, body: unknown) {
+    return t.fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Sessions-Key": KEY },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("/tts/runner stores the same createdBy under agentId and under runId", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const createdBy = [];
+    for (const key of ["agentId", "runId"]) {
+      const t = convexTest(schema, modules);
+      const response = await post(t, { ...seed(), [key]: OPENER });
+      expect(response.status).toBe(200);
+      const { runnerId } = (await response.json()) as { runnerId: Id<"runners"> };
+      createdBy.push((await t.run((ctx) => ctx.db.get(runnerId)))?.createdBy);
+    }
+    expect(createdBy).toEqual([{ kind: "run", runId: OPENER }, { kind: "run", runId: OPENER }]);
+    const refused = await post(convexTest(schema, modules), { ...seed(), agentId: "not-an-agent" });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: "agentId is not an agent id." });
+  });
+
+  it("/tts/runner-step records the same check-in under stepAgentId and under stepRunId", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    for (const key of ["stepAgentId", "stepRunId"]) {
+      const t = convexTest(schema, modules);
+      const { runnerId, stepId, internal } = await requested(t);
+      const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId });
+      if (!claim.admitted) throw new Error(claim.reason);
+      const response = await t.fetch("/tts/runner-step", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": KEY },
+        body: JSON.stringify({ runnerId, [key]: claim.stepRunId, decision: "continue", checkIn: GOOD, document: "# TRAIN25\n\nVersion two.\n", asks: [], graded: PASS }),
+      });
+      expect(response.status, key).toBe(200);
+      const checkIn = await t.run(async (ctx) =>
+        (await ctx.db.query("runnerEvents").withIndex("by_runner_at", (q) => q.eq("runnerId", runnerId)).collect()).find((e) => e.kind === "check-in"),
+      );
+      expect(checkIn?.stepRunId, key).toBe(claim.stepRunId);
+    }
+  });
+
+  it("/runner-steps/claim answers stepAgentId and previousStepAgentId beside the run spelling", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("SESSIONS_WORKER_KEY", KEY);
+    const t = convexTest(schema, modules);
+    const { stepId } = await requested(t);
+    await t.run((ctx) => ctx.db.patch(stepId, { previousStepRunId: EARLIER }));
+    const response = await daemon(t, "/runner-steps/claim", { stepId });
+    expect(response.status).toBe(200);
+    const claim = (await response.json()) as Record<string, unknown>;
+    expect(claim.admitted).toBe(true);
+    expect(claim.stepAgentId).toBe(claim.stepRunId);
+    expect(claim.previousStepAgentId).toBe(EARLIER);
+    expect(claim.previousStepRunId).toBe(EARLIER);
+  });
+
+  it("/sessions/poll answers previousStepAgentId beside previousStepRunId", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("SESSIONS_WORKER_KEY", KEY);
+    const t = convexTest(schema, modules);
+    const { stepId } = await requested(t);
+    await t.run((ctx) => ctx.db.patch(stepId, { previousStepRunId: EARLIER }));
+    const response = await daemon(t, "/sessions/poll", { version: "t", daemonStartedAt: 1 });
+    expect(response.status).toBe(200);
+    const { runnerSteps } = (await response.json()) as { runnerSteps: Record<string, unknown>[] };
+    expect(runnerSteps).toEqual([expect.objectContaining({ stepId, previousStepRunId: EARLIER, previousStepAgentId: EARLIER })]);
   });
 });

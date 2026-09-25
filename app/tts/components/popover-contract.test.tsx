@@ -6,7 +6,7 @@
 // directions:
 //
 //   1. RENDERED. Every component under app/tts/components AND
-//      app/runs/components that has controls is rendered here, and every
+//      app/agents/components that has controls is rendered here, and every
 //      control it puts on screen either carries a popover naming a call, or
 //      fires nothing on the backend — which is checked by pressing it and
 //      watching the mutations. The table of components is closed against BOTH
@@ -29,7 +29,7 @@
 // verdict-buttons.tsx and every verdict surface reads that same text.
 //
 // What counts as fired: `useMutation(api.<module>.<function>)` in any .tsx
-// under app/tts or app/runs. What counts as named: the same
+// under app/tts or app/agents. What counts as named: the same
 // `<module>.<function>` opening a string literal — the `call=` of an Info, the
 // `call:` of an info table, a Caption's children — anywhere under those two.
 
@@ -87,20 +87,20 @@ import RunnersBlock from "./runners-block";
 import TimeNoteField from "./time-note-field";
 import TodoRow from "./todo-row";
 import VerdictButtons from "./verdict-buttons";
-import Composer from "@/app/runs/components/composer";
-import ForkDialog from "@/app/runs/components/fork-dialog";
-import ModelSelect from "@/app/runs/components/model-select";
-import OverflowExpand from "@/app/runs/components/overflow-expand";
-import Run from "@/app/runs/components/run";
-import RunList from "@/app/runs/components/run-list";
-import RunRow from "@/app/runs/components/run-row";
-import RunRows from "@/app/runs/components/run-rows";
+import Composer from "@/app/agents/components/composer";
+import ForkDialog from "@/app/agents/components/fork-dialog";
+import ModelSelect from "@/app/agents/components/model-select";
+import OverflowExpand from "@/app/agents/components/overflow-expand";
+import Agent from "@/app/agents/components/agent";
+import AgentList from "@/app/agents/components/agent-list";
+import AgentRow from "@/app/agents/components/agent-row";
+import AgentRows from "@/app/agents/components/agent-rows";
 
 const APP = join(__dirname, "..", "..");
 const TTS = join(APP, "tts");
-const SESSIONS = join(APP, "runs");
+const AGENTS = join(APP, "agents");
 /** The two component directories the table of cases is closed against. */
-const COMPONENT_DIRS = [join(TTS, "components"), join(SESSIONS, "components")];
+const COMPONENT_DIRS = [join(TTS, "components"), join(AGENTS, "components")];
 
 function sources(dir: string): string[] {
   const out: string[] = [];
@@ -115,7 +115,7 @@ function sources(dir: string): string[] {
 /** A file as this test names it: the path from `app/` down, forward slashes. */
 const shortOf = (f: string) => f.slice(f.indexOf("app")).replace(/\\/g, "/");
 
-const files = [...sources(TTS), ...sources(SESSIONS)].map((f) => ({
+const files = [...sources(TTS), ...sources(AGENTS)].map((f) => ({
   short: shortOf(f),
   src: readFileSync(f, "utf8"),
 }));
@@ -280,7 +280,7 @@ const ROW = {
   content: {
     toolName: "Read",
     toolUseId: "tu1",
-    input: { file_path: "app/runs/components/run.tsx" },
+    input: { file_path: "app/agents/components/agent.tsx" },
   },
   createdAt: NOW,
 };
@@ -384,8 +384,8 @@ function load() {
     [getFunctionName(api.claudeSessions.getMessages)]: [],
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
     [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
-    [getFunctionName(api.runs.get)]: RUN,
-    [getFunctionName(api.runs.materializeStatus)]: null,
+    [getFunctionName(api.agents.get)]: RUN,
+    [getFunctionName(api.agents.materializeStatus)]: null,
     [getFunctionName(api.tts.listTodos)]: [TODO],
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
     [getFunctionName(api.ttsCode.listCodeBriefs)]: [BRIEF],
@@ -486,13 +486,13 @@ const CASES: { file: string; render: () => void }[] = [
       void render(<VerdictButtons subject="todo" statement="s" onRule={noop} />),
   },
   {
-    file: "app/runs/components/composer.tsx",
+    file: "app/agents/components/composer.tsx",
     // daemonStale, so "Force close" is on screen with the rest.
     render: () =>
       void render(<Composer session={SESSION as never} daemonStale />),
   },
   {
-    file: "app/runs/components/fork-dialog.tsx",
+    file: "app/agents/components/fork-dialog.tsx",
     render: () =>
       void render(
         <ForkDialog
@@ -504,24 +504,24 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/runs/components/model-select.tsx",
+    file: "app/agents/components/model-select.tsx",
     render: () =>
       void render(
         <ModelSelect ariaLabel="session model" value="gpt-5.6-sol" onChange={noop} />,
       ),
   },
   {
-    file: "app/runs/components/overflow-expand.tsx",
+    file: "app/agents/components/overflow-expand.tsx",
     render: () =>
       void render(
         <OverflowExpand messageId={"m1" as never} fullByteLength={40_000} />,
       ),
   },
   {
-    file: "app/runs/components/run-list.tsx",
+    file: "app/agents/components/agent-list.tsx",
     render: () =>
       void render(
-        <RunList
+        <AgentList
           sessions={[SESSION as never]}
           now={NOW}
           onOpenSession={noop}
@@ -530,20 +530,20 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/runs/components/run-row.tsx",
-    // source="run", so the raw level names runs.rows rather than the session
+    file: "app/agents/components/agent-row.tsx",
+    // source="run", so the raw level names agents.rows rather than the session
     // reader. The compact line is the control; pressing it is what proves the
     // three levels fire nothing on the backend.
-    render: () => void render(<RunRow row={ROW as never} source="run" />),
+    render: () => void render(<AgentRow row={ROW as never} source="run" />),
   },
   {
-    file: "app/runs/components/run-rows.tsx",
+    file: "app/agents/components/agent-rows.tsx",
     // CanLoadMore, so its one control — "load earlier rows" — is on screen.
     // source="session" is the branch that has one: a run pages the other way
     // and the same button reads "load later rows".
     render: () =>
       void render(
-        <RunRows
+        <AgentRows
           rows={[ROW as never]}
           pageStatus="CanLoadMore"
           loadMore={noop}
@@ -554,16 +554,16 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/runs/components/run.tsx",
+    file: "app/agents/components/agent.tsx",
     // depth 0 and a session id, because that is the only posture that draws
     // controls at all: the header's rename ⓘ and model select, the rows, and
     // the composer. daemonStale, so the composer's "Force close" comes with
-    // them. The run row itself is left undefined (runs.get answers nothing) —
+    // them. The run row itself is left undefined (agents.get answers nothing) —
     // a session whose runs row has not landed is the common case, and the
     // header reads off the session either way.
     render: () => {
       render(
-        <Run
+        <Agent
           sessionId={"s1" as never}
           depth={0}
           now={NOW}
@@ -579,7 +579,7 @@ const CASES: { file: string; render: () => void }[] = [
       // session's states: it needs a run that is not live, whose rows are
       // outside the window, and whose file has a stored version.
       render(
-        <Run
+        <Agent
           runId={RUN.runId}
           depth={0}
           now={NOW}
@@ -718,7 +718,7 @@ describe("every mutation the screens fire is named by a popover", () => {
    */
   const NO_CONTROL = new Map([
     [
-      "runs.markOpened",
+      "agents.markOpened",
       "the page marking the run it drew as read, on arrival, so the 30-day row window moves forward",
     ],
   ]);

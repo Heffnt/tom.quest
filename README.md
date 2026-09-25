@@ -67,7 +67,7 @@ pnpm lint             # ESLint
 
 Heavy work — tests, builds, audits, long reads and edits — goes to the `box` agent (`.claude/agents/box.md`), which runs it on the Jarvis Box instead of the laptop.
 
-The Jarvis Box's own code — its jobs, run launcher, session daemon, tools and evals set — is the private Jarvis repository, which installs `shared/` from here as the package `tom-quest-shared`.
+The Jarvis Box's own code — its jobs, agent launcher, session daemon, tools and evals set — is the private Jarvis repository, which installs `shared/` from here as the package `tom-quest-shared`.
 
 ## Deployment
 

@@ -137,7 +137,7 @@ export default function ObserveClient() {
             </Group>
             <Group>
               <Pick on={children} onClick={() => setChildren((value) => !value)}>
-                child runs
+                child agents
               </Pick>
             </Group>
             <Group>
