@@ -132,6 +132,10 @@ const MATERIALIZE_REASONS = new Set([
 const MATERIALIZE_PARTIAL = new Set([
   "sidecar-missing", "no-envelope", "pre-parser-fields",
   "unknown-line-types", "row-cap-reached", "incomplete-tail",
+  // The store keeps an agent's newest file version and retains older ones
+  // away; a request for a version no longer held is served from the newest
+  // one, and the answer says so rather than passing it off as the one asked for.
+  "served-newer-version",
 ]);
 
 function nonNegativeInteger(value: unknown): value is number {

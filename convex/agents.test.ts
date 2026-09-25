@@ -817,6 +817,17 @@ describe("agents: materialize requests", () => {
     expect(await requests(t, "claude:laptop:root-run")).toHaveLength(2);
   });
 
+  it("accepts an answer that says it served the agent's newest version instead of the one requested", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
+    const tom = await withTom(t);
+    const first = await tom.mutation(api.agents.requestMaterialize, { agentId: "claude:laptop:root-run" });
+    const rowsSource = { from: "store" as const, at: 10, parserVersion: "runs-parser-1", storeKey: STORE_KEY, rowsFromLine: 0, rowsToLine: 2000, slices: 1, droppedLines: 0, partial: ["served-newer-version"] };
+    expect(await t.mutation(internal.agents.internalAnswerMaterialize, { requestId: first!._id, status: "served", rowsIngested: 2000, fromLine: 0, toLine: 2000, totalLines: 4000, rowsSource })).toMatchObject({ ok: true, alreadyAnswered: false });
+    expect((await runRow(t, "claude:laptop:root-run"))?.rowsSource?.partial).toEqual(["served-newer-version"]);
+    expect((await requests(t, "claude:laptop:root-run")).find((request) => request.status === "served")).toMatchObject({ rowsIngested: 2000 });
+  });
+
   it("stops at the fifth slice and says the cap was reached", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.agents.internalIngest, backlogIngest() as never);
