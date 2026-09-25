@@ -7,22 +7,13 @@
 // page, so nothing below it moves and nobody loses their place in a list that
 // is hundreds of lines long.
 
-import { dateLabel, type IntentKind, type IntentLine } from "../lib";
+import { dateLabel, VOICE_CLASS, type IntentKind, type IntentLine } from "../lib";
 
 const KIND_TITLE: Record<IntentKind, string> = {
   direction: "directions",
   "standing-rule": "standing rules",
   ruling: "rulings",
   label: "labels",
-};
-
-/** `his` is the only one of the three that gets the accent: the page is read to
- *  find drift from what HE said, so his own lines are the ones that must be
- *  findable at a glance. */
-const VOICE_CLASS: Record<IntentLine["voice"], string> = {
-  his: "text-accent",
-  inferred: "text-text-muted",
-  unattributed: "text-text-faint",
 };
 
 export default function LineList({

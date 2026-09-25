@@ -1,8 +1,17 @@
-// The intent page's own reading of what the query returns: the filters, the
-// grouping, and the one date each line shows.
+// The intent page's own reading of what the two queries return: the filters,
+// the grouping and the one date each line shows for the list, and for the
+// agent's view, which of its lines are lines of the list.
 
 import { nyCalendarDayKey } from "@/convex/ttsShared";
-import type { IntentKind, IntentLine, IntentVoice } from "@/convex/intentParse";
+import {
+  evidenceKey,
+  MODEL_OF_TOM_PAGES,
+  parseBullets,
+  voiceOf,
+  type IntentKind,
+  type IntentLine,
+  type IntentVoice,
+} from "@/convex/intentParse";
 
 export type { IntentKind, IntentLine, IntentVoice };
 
@@ -64,4 +73,112 @@ export function countVoices(lines: IntentLine[]): Record<IntentVoice, number> {
   const counts: Record<IntentVoice, number> = { his: 0, inferred: 0, unattributed: 0 };
   for (const line of lines) counts[line.voice] += 1;
   return counts;
+}
+
+/** `his` is the only voice that gets the accent: the page is read to find
+ *  drift from what HE said, so his own lines must be findable at a glance. */
+export const VOICE_CLASS: Record<IntentVoice, string> = {
+  his: "text-accent",
+  inferred: "text-text-muted",
+  unattributed: "text-text-faint",
+};
+
+// ── The agent's view ─────────────────────────────────────────────────────────
+
+/** A run of the agent's text: plain lines, or one bullet of a model-of-tom
+ *  page whose lines the list holds, with every line it wraps onto. */
+type AgentPart =
+  | { kind: "text"; text: string }
+  | { kind: "bullet"; text: string; source: string; key: string };
+
+/** The `── <path> ──` line the prelude and a joined skill body put over each
+ *  file they carry. */
+const FILE_HEADER = /^── (\S+) ──$/;
+
+const PAGE_KIND = new Map<string, IntentKind>(MODEL_OF_TOM_PAGES.map((page) => [page.path, page.kind]));
+
+/**
+ * The agent's text cut into plain runs and bullets. A bullet counts only
+ * inside a `── model-of-tom/{agent-rules,intent,priorities}.md ──` file, and
+ * is found by the same parseBullets the list's query uses over that file, so
+ * its key is the key its line in the list carries. The text is kept verbatim:
+ * joining the parts' texts with newlines gives the input back.
+ */
+export function segmentBullets(text: string): AgentPart[] {
+  const lines = text.split("\n");
+  const bullets = new Map<number, { last: number; source: string; key: string }>();
+  const headers = lines.flatMap((line, index) => {
+    const match = FILE_HEADER.exec(line);
+    return match === null ? [] : [{ index, path: match[1] }];
+  });
+  headers.forEach((header, n) => {
+    if (!PAGE_KIND.has(header.path)) return;
+    const start = header.index + 1;
+    const end = headers[n + 1]?.index ?? lines.length;
+    for (const bullet of parseBullets(lines.slice(start, end).join("\n"))) {
+      const first = start + bullet.line - 1;
+      let last = first;
+      while (last + 1 < end && /^\s+\S/.test(lines[last + 1])) last += 1;
+      bullets.set(first, { last, source: header.path, key: evidenceKey(bullet.text) });
+    }
+  });
+
+  const parts: AgentPart[] = [];
+  let plain: string[] = [];
+  const flush = () => {
+    if (plain.length > 0) parts.push({ kind: "text", text: plain.join("\n") });
+    plain = [];
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const bullet = bullets.get(index);
+    if (bullet === undefined) {
+      plain.push(lines[index]);
+      continue;
+    }
+    flush();
+    parts.push({
+      kind: "bullet",
+      text: lines.slice(index, bullet.last + 1).join("\n"),
+      source: bullet.source,
+      key: bullet.key,
+    });
+    index = bullet.last;
+  }
+  flush();
+  return parts;
+}
+
+type AgentRow =
+  | { kind: "text"; text: string }
+  | { kind: "bullet"; text: string; line: IntentLine };
+
+/**
+ * Each bullet joined to its line in the list: same file, same text once its
+ * spacing is normalised — the join the list itself makes to the evidence
+ * file. A bullet the list does not hold (the prompt and the list read two
+ * posts, which can stand at two commits) still opens, as a line with no
+ * evidence behind it.
+ */
+export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
+  const byKey = new Map<string, IntentLine>();
+  for (const line of lines) {
+    if (PAGE_KIND.has(line.source)) byKey.set(`${line.source}\n${evidenceKey(line.text)}`, line);
+  }
+  return parts.map((part, index) => {
+    if (part.kind === "text") return part;
+    const line = byKey.get(`${part.source}\n${part.key}`) ?? {
+      id: `${part.source}#unmatched-${index}`,
+      // segmentBullets cuts a bullet only out of a page this map names.
+      kind: PAGE_KIND.get(part.source)!,
+      text: part.key,
+      section: "",
+      voice: voiceOf(part.key, []),
+      source: part.source,
+      locator: "unmatched",
+      at: null,
+      dateText: null,
+      evidence: [],
+    };
+    return { kind: "bullet", text: part.text, line };
+  });
 }

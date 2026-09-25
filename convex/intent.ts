@@ -35,7 +35,9 @@ import { parseFrontmatter } from "../shared/markdown-sections.mjs";
 import { byteLength, renderSkillMd, skillDirName } from "../shared/skills.mjs";
 import { quoted } from "../shared/vocabulary-rows.mjs";
 import {
+  AGENT_VIEW_CALLERS,
   type IntentLine,
+  MODEL_OF_TOM_PAGES,
   parseAdoptionRulings,
   parseModelOfTomPage,
   parseRepoRules,
@@ -79,15 +81,6 @@ const RULINGS_MAX = 500;
  * about the difference.
  */
 const LABELS_MAX = 250;
-
-/** The model-of-tom pages whose lines are intent, and which kind each is.
- *  `evidence` is the file that says what each line rests on; the two are read
- *  together or the line arrives with nothing behind it. */
-const MODEL_OF_TOM_PAGES = [
-  { name: "intent", path: "model-of-tom/intent.md", kind: "direction" as const },
-  { name: "priorities", path: "model-of-tom/priorities.md", kind: "standing-rule" as const },
-  { name: "agent-rules", path: "model-of-tom/agent-rules.md", kind: "standing-rule" as const },
-];
 
 const LABEL_SOURCES = ["ruling", "objection", "session-reply", "digest-reaction"] as const;
 
@@ -309,22 +302,6 @@ export const lines = query({
 });
 
 // ── The agent's view ─────────────────────────────────────────────────────────
-
-/**
- * The callers the agent view offers: the ones assembleContext serves with no
- * subject. A caller that carries a subject (`opener`, `runner-step`, a todo's
- * `prepare`) is granted skills off that subject, so a view of it with none
- * would show grants no run of it ever gets. `planner` is left out for the same
- * reason: it runs per todo.
- */
-export const AGENT_VIEW_CALLERS = [
-  "planner-context",
-  "capture-context",
-  "time-notes",
-  "weekly-input",
-  "simplify-input",
-  "laptop",
-] as const;
 
 /** One granted skill as the agent loads it: `tts search skills <name>`'s
  *  head (name, group, bytes, description) over its SKILL.md body. */

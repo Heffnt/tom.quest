@@ -3,7 +3,7 @@ import IntentClient from "./intent-client";
 
 export const metadata: Metadata = {
   title: "Intent | tom.Quest",
-  description: "Every line of Tom's intent, from every place it is written.",
+  description: "Tom's intent as an agent reads it, and every line of it from every place it is written.",
 };
 
 export default function IntentPage() {

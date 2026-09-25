@@ -32,7 +32,7 @@ export const PAGES: Page[] = [
   { slug: "agents", title: "Agents", blurb: "TTS — every agent, at every depth", priority: 9, visibility: "tom" },
   { slug: OBSERVE_SLUG, title: "Observe", blurb: "Everything that ran and every ruling, by window", priority: 9, visibility: "tom" },
   { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
-  { slug: "intent", title: "Intent", blurb: "Every line of his intent, and what it rests on", priority: 8, visibility: "tom" },
+  { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, and what each line rests on", priority: 8, visibility: "tom" },
   { slug: "vocabulary", title: "Vocabulary", blurb: "Every word TTS uses, and where it is defined", priority: 7, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5, visibility: "tom" },
