@@ -146,7 +146,7 @@ export const SKILL_SHAPES = Object.freeze({
   }),
   repo: Object.freeze({
     group: "repo",
-    base: "Rules of the {name} repository, for a run reasoning about it with no checkout of it open. ",
+    base: "Rules of the {name} repository, for an agent reasoning about it with no checkout of it open. ",
     suffix: "",
   }),
 });

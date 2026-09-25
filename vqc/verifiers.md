@@ -32,7 +32,7 @@ verifiers — a register would be a cross-cutting dimension every future change
 had to satisfy, which is the wicked feature Tom's 2026-09-11 ruling refuses.
 
 Above all three sits Tom's label — his ruling, his objection, his session reply,
-his digest reaction (`convex/runLabels.ts`, `LABEL_SOURCE`). It is the ground
+his digest reaction (`convex/agentLabels.ts`, `LABEL_SOURCE`). It is the ground
 truth the three are scored against, and the only thing here that is not itself
 verified.
 
