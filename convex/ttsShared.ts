@@ -959,7 +959,7 @@ export const CODEX_WEEKLY_CAP_PERCENT = 90;
 export const CODEX_USAGE_STALE_MS = 15 * 60_000;
 /**
  * Whether Fable answers on the box, as the session daemon reports it on its
- * heartbeat from worker/runs/models.mjs's availability file. While
+ * heartbeat from worker/agents/models.mjs's availability file. While
  * `available` is false a request for Fable runs Opus (the model ceiling, Tom's
  * rulings of 2026-09-24); the daemon's hourly probe sets it true again.
  * `since` is when the value last changed, `checkedAt` the last run or probe

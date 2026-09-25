@@ -2846,7 +2846,7 @@ const ttsLabelInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/label-input", method: "GET", handler: ttsLabelInput });
 
-// A registration token is a UUID (worker/runs/registration.mjs mints it with
+// A registration token is a UUID (worker/agents/registration.mjs mints it with
 // crypto.randomUUID), and the shape is CHECKED BEFORE THE LOOKUP. An
 // unvalidated string on an indexed read is a scan this deployment pays for on
 // behalf of whoever sent it; refusing the shape costs one regex.
@@ -3729,7 +3729,7 @@ const sessionsPoll = httpAction(async (ctx, request) => {
     codexModels: stringList(b.codexModels),
     hosts: stringList(b.hosts),
     held: stringList(b.held),
-    // Fable availability (worker/runs/models.mjs), the same loose-shape
+    // Fable availability (worker/agents/models.mjs), the same loose-shape
     // posture: the mutation's arg validator is the final gate.
     fableAvailability:
       typeof b.fableAvailability === "object" && b.fableAvailability !== null

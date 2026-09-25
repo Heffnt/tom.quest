@@ -106,7 +106,7 @@ export const INITIAL_DOCUMENT = [
  * Opus at the cap for a box run; the orchestrator's own ruling names Fable as
  * its fallback, so Fable it is).
  *
- * The model ceiling (worker/runs/models.mjs) is applied where every session
+ * The model ceiling (worker/agents/models.mjs) is applied where every session
  * starts, the daemon's modelSpec: while the heartbeat's fableAvailability says
  * Fable is unavailable, a session asked for Fable runs Opus, and the first
  * Fable probe that answers lifts it. So the choice stays "fable", and only

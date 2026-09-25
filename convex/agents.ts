@@ -188,7 +188,7 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
 
 // A PLACEHOLDER'S HOST AND CLI COME FROM THE ID IT IS STUBBING, never from
 // the run that revealed it. A cross-host parent link is ordinary now — the
-// laptop orchestrator spawns box runs through worker/runs/box-run.mjs, which
+// laptop orchestrator spawns box runs through worker/agents/launcher.mjs, which
 // names the laptop session as the box run's parent — so taking them from the
 // revealing run would record a laptop session as a box run, and the sessions
 // view would show Tom that false fact. agentIdMatches already requires a run id
@@ -211,7 +211,7 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 
 // `runner:<id>` is a runner's step run: the id is the runners row it belongs
 // to, which is how the agents page names the runner beside the chain.
-// `desktop` is a box session no launcher started, which scripts/run-hook.mjs
+// `desktop` is a box session no launcher started, which scripts/agent-hook.mjs
 // records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
 // REMOVAL CHECK: the list is the ingest's refusal of an origin nobody wrote on
 // purpose; without this entry every desktop session's row is refused.
@@ -239,7 +239,7 @@ function validAgentPayload(run: {
   runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: AgentCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
 }) {
   // ONLY AN AGENT'S OWN ID MUST NAME ITS OWN HOST AND CLI. The edge ids may
-  // name another: worker/runs/box-run.mjs makes a laptop session the parent of
+  // name another: worker/agents/launcher.mjs makes a laptop session the parent of
   // a box run, so that run's parentRunId and rootRunId are laptop ids and
   // holding them to the child's host would refuse the whole record. They are
   // still checked as ids, and the root rule below — a run with no parent must
@@ -1001,7 +1001,7 @@ export const entry = query({ args: { agentId: v.string(), seq: v.number() }, han
 // ── Opening an old run from the store ────────────────────────────────────────
 // Convex holds no S3 reader credential and no second request signer, so a run
 // whose rows are not in the record opens by asking the box for them. Tom (or a
-// job) queues a request here; `worker/runs/materialize.mjs` serves it and
+// job) queues a request here; `worker/agents/materialize.mjs` serves it and
 // ingests the rows through the existing /agents/ingest door. There is no second
 // ingest path.
 

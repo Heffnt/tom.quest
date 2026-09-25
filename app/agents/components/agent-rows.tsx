@@ -12,7 +12,7 @@
 //   2. THE AGENT FOLD APPLIES TO A ROW WITH NO `provenance`. On a daemon row
 //      parentToolUseId means "this row belongs to that subagent's output"; on a
 //      file-derived row it means "this row answers that tool call"
-//      (worker/runs/ingest.mjs sets it on tool-result and child-run rows), and
+//      (worker/agents/ingest.mjs sets it on tool-result and child-run rows), and
 //      folding on it would put every tool result in a one-row fold of its own.
 //      `provenance === undefined` is exactly the daemon's rows, which is
 //      exactly the set the fold was written for, and it stays correct in a

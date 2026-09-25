@@ -225,7 +225,7 @@ describe("agents", () => {
     expect(stored?.context?.graphNodes).toBeUndefined();
   });
 
-  // witness: worker/runs/box-run.mjs names the laptop session that launched a
+  // witness: worker/agents/launcher.mjs names the laptop session that launched a
   // box run as that run's parent, so a parent edge now crosses hosts. The
   // placeholder used to take its host and runner from the child that revealed
   // it, which recorded a laptop session as a box run — a false fact the
@@ -565,7 +565,7 @@ describe("agents", () => {
 
   // The defect this covers: the comparison used to call `.paginate()` on both
   // indexes inside one mutation, which the Convex backend refuses (one
-  // paginated query per function), so /runs/compare answered 400 for every
+  // paginated query per function), so the compare route answered 400 for every
   // session. convex-test does not enforce that limit, so what this asserts is
   // the shape that replaced it: bounded `.take()` reads over a seq floor that
   // still walk three pages a side to a complete, clean verdict.

@@ -210,7 +210,7 @@ export default function Agent({
   // Convex holds the run index and a bounded window of rows; the store holds
   // every version (§23.4). So a run outside the window has a header, an
   // outcome and no transcript, and the way back is to ask for it: the press
-  // queues a request, worker/runs/materialize.mjs reads the stored version,
+  // queues a request, worker/agents/materialize.mjs reads the stored version,
   // parses it with the CURRENT parser and ingests the rows through the same
   // /agents/ingest door the sweep uses. Nothing here fetches anything — the
   // rows arrive on the subscription this page already holds, and this line

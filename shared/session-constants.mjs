@@ -1,7 +1,7 @@
 // THE ONE HOME for the session constants that the Convex record, the site and
 // the Jarvis Box all read. Each of these used to be typed out on both sides:
 // the record in convex/ttsShared.ts, the box's daemon in
-// worker/session-host/session.mjs and its launcher in worker/runs/box-run.mjs,
+// worker/session-host/session.mjs and its launcher in worker/agents/launcher.mjs,
 // because the box's plain Node loads no TypeScript. A check held the copies
 // equal. They are one table now, imported by all three.
 //
@@ -42,8 +42,8 @@ export const NARROW_LIST = /** @type {const} */ ([
 
 /**
  * The repos a session may check out, with their GitHub homes. The browser's
- * repo picker is Object.keys(SESSION_REPOS) + NO_REPO; the daemon and box-run
- * clone SESSION_REPOS[repo].
+ * repo picker is Object.keys(SESSION_REPOS) + NO_REPO; the daemon and the
+ * launcher clone SESSION_REPOS[repo].
  */
 export const SESSION_REPOS = /** @type {const} */ ({
   "tom.quest": "Heffnt/tom.quest",

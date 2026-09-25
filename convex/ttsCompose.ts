@@ -1180,7 +1180,7 @@ export function composeHourly(f: HourlyFacts): Message | null {
 }
 
 /** One runner check-in, as the numbers the box read and the words the step
- *  wrote. `facts` is the sensor's block (worker/runs/runner-sensor.mjs), which
+ *  wrote. `facts` is the sensor's block (worker/agents/runner-sensor.mjs), which
  *  may be absent or partial: a step whose box read nothing still checks in. */
 type CheckInFacts = {
   title: string;
