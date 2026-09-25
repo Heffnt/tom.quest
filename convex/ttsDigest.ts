@@ -16,6 +16,7 @@ import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
+import { SENT_AS_TOM } from "./ttsSignoff";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { liveRunnerFacts } from "./ttsRunners";
 import {
@@ -538,6 +539,9 @@ export async function gatherTodayFacts(
     // A merge, not a delegate decision. The lead counts the two separately
     // (ttsCompose.objectionsLead): nobody decided a merge in Tom's name.
     merged?: boolean;
+    // A message sent in his name on his own sign-off: his decision, counted
+    // apart from both.
+    sentAsTom?: boolean;
   }[] = [];
 
   for (const e of events) {
@@ -605,6 +609,32 @@ export async function gatherTodayFacts(
           decision: `merged ${repo}@${sha}: ${str(d.subject) ?? "no subject"}`,
           refused: false,
           merged: true,
+        });
+        break;
+      }
+      case SENT_AS_TOM: {
+        // A MESSAGE WENT OUT IN HIS NAME (convex/ttsSignoff.ts). He signed it
+        // on /tts, so it is not his to object to; it is listed with the
+        // decisions because it is one taken in his name, and the record of a
+        // send reaching another person is what the guarantee "only Tom speaks
+        // for Tom" asks him to be able to read. The askId is empty, as a
+        // merge's is: a reply naming its number reaches no delegate decision.
+        const recipient = str(d.recipient) ?? "someone";
+        const channel = str(d.channel) ?? "";
+        const where =
+          channel === "calendar"
+            ? "a calendar invitation"
+            : channel.startsWith("slack:")
+              ? `Slack ${channel.slice("slack:".length)}`
+              : channel;
+        const signedAt = typeof d.signedAt === "number" ? d.signedAt : undefined;
+        rawObjections.push({
+          at: e.at,
+          askId: "",
+          decision: `sent as you to ${recipient} on ${where}${signedAt === undefined ? "" : `, signed at ${nyHhmm(signedAt)}`}`,
+          refused: false,
+          merged: false,
+          sentAsTom: true,
         });
         break;
       }
@@ -773,6 +803,7 @@ export async function gatherTodayFacts(
         o.refusedBecause === undefined ? undefined : stripNarrowListId(o.refusedBecause),
       fallback: o.fallback,
       merged: o.merged === true,
+      ...(o.sentAsTom === true ? { sentAsTom: true } : {}),
     }));
 
   // 7. Every live runner: what it is doing, whether a question of its is
@@ -798,6 +829,7 @@ export async function gatherTodayFacts(
     // Counted over the WHOLE list, printed and beyond, because the lead's
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
+    objectionSent: objections.filter((o) => o.sentAsTom === true).length,
     // A flagged capture that preparation has since dated keeps its lateness
     // here, and is said once, in the needs-you run (composeToday). Dated ones
     // lead the run in the today list's own oldest-first order, so the item the

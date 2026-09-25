@@ -15,6 +15,12 @@
 // #tts-decisions thread, so the browser cannot write one. Its control is
 // therefore present and disabled, carrying no word, rather than a control that
 // would fail or a row that quietly has one fewer action than its neighbour.
+//
+// A MESSAGE SENT IN HIS NAME is the third kind of row: his press of "sign and
+// send" on /tts, recorded as a `sent-as-tom` row once the message went out
+// (convex/ttsSignoff.ts). It is his decision, so it sits with his rulings; it
+// has gone to another person, so its control is the same disabled one. The
+// row carries the text's hash and not the text.
 
 import { useState } from "react";
 import Link from "next/link";
@@ -37,7 +43,29 @@ type Row =
       fallback: string | null;
       todoId: string | null;
       refused: boolean;
+    }
+  | {
+      id: string;
+      at: number;
+      by: "Tom's sign-off";
+      recipient: string;
+      channel: string;
+      sha256: string;
+      signedAt: number | null;
     };
+
+/** Where a sent message went, in words (the proposal's channel spelling). */
+function channelWords(channel: string): string {
+  if (channel === "calendar") return "a calendar invitation";
+  const slack = /^slack:(.+)$/.exec(channel);
+  return slack === null ? channel : `Slack ${slack[1]}`;
+}
+
+function when(data: unknown, name: string): number | null {
+  if (typeof data !== "object" || data === null) return null;
+  const value = (data as Record<string, unknown>)[name];
+  return typeof value === "number" ? value : null;
+}
 
 function text(data: unknown, name: string): string | null {
   if (typeof data !== "object" || data === null) return null;
@@ -79,6 +107,17 @@ export default function RulingsList({
         todoId: event.todoId,
         refused: flag(event.data, "refused"),
       })),
+    ...events
+      .filter((event) => event.kind === "sent-as-tom")
+      .map((event): Row => ({
+        id: event.id,
+        at: event.at,
+        by: "Tom's sign-off",
+        recipient: text(event.data, "recipient") ?? "",
+        channel: text(event.data, "channel") ?? "",
+        sha256: text(event.data, "sha256") ?? "",
+        signedAt: when(event.data, "signedAt"),
+      })),
   ].sort((left, right) => right.at - left.at);
 
   return (
@@ -90,7 +129,9 @@ export default function RulingsList({
           const head =
             row.by === "Tom"
               ? (row.ruling.sentence ?? row.ruling.quote ?? row.ruling.subject)
-              : row.statement;
+              : row.by === "Tom's sign-off"
+                ? `sent as you to ${row.recipient} on ${channelWords(row.channel)}`
+                : row.statement;
           return (
             <div key={row.id} className="rounded-md border border-border bg-surface/50">
               <button
@@ -101,10 +142,16 @@ export default function RulingsList({
               >
                 <span
                   className={`shrink-0 text-[11px] font-mono ${
-                    row.by === "Tom" ? "text-accent" : "text-text-muted"
+                    row.by === "the delegate" ? "text-text-muted" : "text-accent"
                   }`}
                 >
-                  {row.by === "Tom" ? row.ruling.verdict : row.refused ? "refused" : "decision"}
+                  {row.by === "Tom"
+                    ? row.ruling.verdict
+                    : row.by === "Tom's sign-off"
+                      ? "sent"
+                      : row.refused
+                        ? "refused"
+                        : "decision"}
                 </span>
                 <span className="min-w-0 flex-1 text-[13px] text-text">{head}</span>
                 <span className="shrink-0 text-[10px] font-mono text-text-faint">
@@ -160,6 +207,20 @@ export default function RulingsList({
                           </button>
                         )}
                       </div>
+                    </>
+                  ) : row.by === "Tom's sign-off" ? (
+                    <>
+                      <p className="text-[12px] leading-snug text-text">
+                        {row.signedAt === null
+                          ? "signed by you"
+                          : `signed by you at ${dayAndClock(row.signedAt)}`}
+                      </p>
+                      <p className="font-mono text-[11px] text-text-faint">sha256 {row.sha256.slice(0, 16)}</p>
+                      <span
+                        aria-disabled="true"
+                        aria-label="a message that has been sent cannot be objected to here"
+                        className="block h-[19px] w-[46px] rounded border border-border/60 bg-surface-alt/40"
+                      />
                     </>
                   ) : (
                     <>

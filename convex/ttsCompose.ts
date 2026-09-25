@@ -461,6 +461,10 @@ export type ObjectionFact = {
    *  kinds (convex/ttsDigest.ts MERGE) and the lead must not credit a merge to
    *  the delegate, so the two are counted separately. */
   merged?: boolean;
+  /** TRUE FOR A MESSAGE SENT IN HIS NAME on his own sign-off
+   *  (convex/ttsSignoff.ts): he decided it by pressing "sign and send", so
+   *  the lead credits it to neither the delegate nor the gates. */
+  sentAsTom?: boolean;
 };
 
 /** One line per TODO, from every session event in the window that named it
@@ -537,6 +541,9 @@ export type TodayFacts = {
    *  rather than delegate decisions. Absent means "count the printed ones",
    *  which is right whenever nothing was held back. */
   objectionMerges?: number;
+  /** How many of the WHOLE objection list are messages sent in his name on
+   *  his sign-off. Absent means "count the printed ones". */
+  objectionSent?: number;
   /** Captured since the last morning message, still active, and judged by the
    *  triage to need him today; oldest first. */
   needsYou: NeedsYouTodayFact[];
@@ -868,6 +875,12 @@ function objectionMergeCount(f: TodayFacts): number {
   return f.objectionMerges ?? f.objections.filter((o) => o.merged === true).length;
 }
 
+/** How many of the objection list are messages sent on his sign-off, counted
+ *  the same way as the merges. */
+function objectionSentCount(f: TodayFacts): number {
+  return f.objectionSent ?? f.objections.filter((o) => o.sentAsTom === true).length;
+}
+
 /**
  * The objection list's lead. TWO KINDS SHARE THE LIST and the lead names each
  * for what it is: the delegate DECIDED things in his name, and the box MERGED
@@ -875,9 +888,22 @@ function objectionMergeCount(f: TodayFacts): number {
  * morning of merges credited to the delegate is a false statement about who
  * acted, which is the one thing this list exists to let him object to.
  */
-export function objectionsLead(all: number, merges: number): string {
-  const decided = Math.max(0, all - merges);
+export function objectionsLead(all: number, merges: number, sent = 0): string {
+  const decided = Math.max(0, all - merges - sent);
   const stand = "silence means they stand";
+  // THE THIRD KIND: a message that went out in his name on his own sign-off.
+  // He decided it, so it is neither the delegate's nor the gates', and there
+  // is nothing left for silence to let stand once it has been sent.
+  if (sent > 0) {
+    const went = `${countWord(sent)} ${plural(sent, "message", "messages")} went out on your sign-off`;
+    const others: string[] = [];
+    if (decided > 0) others.push(`the delegate decided ${countWord(decided)} ${plural(decided, "thing", "things")}`);
+    if (merges > 0) {
+      others.push(`${countWord(merges)} ${plural(merges, "merge", "merges")} landed on ${plural(merges, "its", "their")} own`);
+    }
+    if (others.length === 0) return `${capitalise(went)}.`;
+    return `${capitalise(others.join(", "))} and ${went}; ${stand}.`;
+  }
   if (merges === 0) {
     return `The delegate decided ${countWord(all)} ${plural(all, "thing", "things")} while you were asleep; ${stand}.`;
   }
@@ -961,7 +987,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     pushRun(
       lines,
       "objections",
-      objectionsLead(all, objectionMergeCount(f)),
+      objectionsLead(all, objectionMergeCount(f), objectionSentCount(f)),
       f.objections.map((objection, index) => objectionLine(objection, index + 1)),
       SECTION_CAPS.objections,
       beyond > 0

@@ -561,6 +561,16 @@ describe("objectionsLead", () => {
     expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
   });
 
+  it("credits a message sent on his sign-off to him, apart from both", () => {
+    expect(objectionsLead(1, 0, 1)).toBe("One message went out on your sign-off.");
+    expect(objectionsLead(2, 0, 2)).toBe("Two messages went out on your sign-off.");
+    const lead = objectionsLead(6, 2, 1);
+    expect(lead).toBe(
+      "The delegate decided three things, two merges landed on their own and one message went out on your sign-off; silence means they stand.",
+    );
+    expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
+  });
+
   it("is the lead composeToday prints, counting the beyond as well", () => {
     const merges = composeToday(
       sept9({
