@@ -17,6 +17,7 @@ import {
   DAY_MS,
   NARROW_LIST,
   RECOMMENDATION_VALUES,
+  NEEDS_YOU_CHANNEL_MISSING,
   SESSION_REPO_NAMES,
   channelFor,
   isRecommendation,
@@ -581,12 +582,7 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   // the digest and the hourly update list it for as long as it stands.
   const channel = channelFor("needsYou");
   if (channel === null) {
-    const reported = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
-      job: "tts/needs-tom",
-      error:
-        "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
-      key: "tts/needs-tom:needs-you-channel",
-    });
+    const reported = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, NEEDS_YOU_CHANNEL_MISSING);
     return jsonResponse(200, {
       ok: false,
       opened: false,
@@ -866,10 +862,11 @@ http.route({
 //   { channel: "slack:<conversation id>", recipient, text, why?, agentId? }
 //   { channel: "calendar", event: { title, start, end, guests, description?,
 //     location?, recurrence? }, why?, agentId? }
-// It writes one "send-proposal" row and NOTHING ELSE: no sign-off (the worker
-// key cannot write one; only his press of "sign and send" on /tts does) and no
-// send (that happens from Convex once he has signed, and only then). The
-// answer names where he signs.
+// It writes one "send-proposal" row and opens one #tts-needs-you thread that
+// names the recipient and the channel, never the text. Nothing else: no
+// sign-off (the worker key cannot write one; only his press of "sign and
+// send" on /tts does) and no send (that happens from Convex once he has
+// signed, and only then). The answer names where he signs.
 //
 // Kept, not deletable: without it the only paths an agent has to another
 // human are ones Tom never reads first. It is half of the wall for I5; the

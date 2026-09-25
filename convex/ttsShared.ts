@@ -1184,6 +1184,21 @@ const CHANNEL_ENV: Record<SlackChannelKind, string> = {
  *  postSlack's default target is SLACK_TTS_CHANNEL_ID, so a caller that omits
  *  `channel` when its own variable is unset posts into #tts-today — the one
  *  room the design says nothing but the morning message may write to. */
+/** The kind of the marker row every needs-you thread writes when it opens,
+ *  keyed on the producer's own id for the thing that needs Tom. Here, beside
+ *  channelFor, so an opener outside convex/ttsSlack.ts needs no import of it. */
+export const NEEDS_TOM = "needs-tom";
+
+/** The one job-failed report for a needs-you thread dropped because its
+ *  channel is unset. Keyed on the condition, so every opener writes the same
+ *  standing row and #tts-broken says it once. */
+export const NEEDS_YOU_CHANNEL_MISSING = {
+  job: "tts/needs-tom",
+  error:
+    "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
+  key: "tts/needs-tom:needs-you-channel",
+};
+
 export function channelFor(kind: SlackChannelKind): string | null {
   const own = process.env[CHANNEL_ENV[kind]];
   if (typeof own === "string" && own !== "") return own;

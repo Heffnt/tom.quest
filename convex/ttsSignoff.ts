@@ -7,8 +7,9 @@
 // THREE STEPS, THREE WRITERS, and only the middle one is his:
 //   1. PROPOSE. An agent posts the exact text, the recipient and the channel
 //      through POST /tts/send-proposal (the worker key). That writes one
-//      dtsEvents row of kind "send-proposal" and nothing else: no sign-off,
-//      no send.
+//      dtsEvents row of kind "send-proposal" and opens one #tts-needs-you
+//      thread naming the recipient and the channel, never the text. No
+//      sign-off, no send.
 //   2. SIGN. Tom reads the verbatim text on /tts and presses "sign and send".
 //      That is signAndSend, a requireTom mutation, and it is the ONLY function
 //      in this repository that inserts into `signoffs`. No HTTP route reaches
@@ -42,12 +43,13 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import type { ActionCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import { logEvent } from "./tts";
-import { nyCalendarDayKey, nyHhmm } from "./ttsShared";
+import { NEEDS_TOM, NEEDS_YOU_CHANNEL_MISSING, channelFor, nyCalendarDayKey, nyHhmm } from "./ttsShared";
+import { composeProposalAsk, renderSlack } from "./ttsCompose";
 
 /** The label the gates name: the sign-off control lives on the TTS page. */
 const SURFACE = "TTS";
@@ -260,6 +262,33 @@ function proposalOf(row: Doc<"dtsEvents"> | null): ProposalData | null {
 
 // ── 1. Propose (the worker key, through POST /tts/send-proposal) ────────────
 
+/**
+ * One #tts-needs-you thread per proposal, so a proposal does not wait unseen
+ * until he next opens /tts. It names the recipient and the channel and links
+ * to where he signs; it never carries the text (composeProposalAsk). The
+ * proposal is new, so its id is a key no earlier thread holds. Its subject is
+ * the job "send-proposal": his reply there is a note on the record and signs
+ * nothing.
+ */
+async function openProposalNeedsYou(
+  ctx: MutationCtx,
+  proposalId: Id<"dtsEvents">,
+  target: { recipient: string; channel: string },
+): Promise<void> {
+  const channel = channelFor("needsYou");
+  if (channel === null) {
+    await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, NEEDS_YOU_CHANNEL_MISSING);
+    return;
+  }
+  const key = `${SEND_PROPOSAL}:${proposalId}`;
+  await logEvent(ctx, NEEDS_TOM, undefined, { key, proposalId, recipient: target.recipient, channel: target.channel }, key);
+  await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+    channel,
+    text: renderSlack(composeProposalAsk(target)),
+    subject: { kind: "job", id: SEND_PROPOSAL },
+  });
+}
+
 export const internalPropose = internalMutation({
   args: {
     text: v.string(),
@@ -274,6 +303,7 @@ export const internalPropose = internalMutation({
     const sha256 = await sha256Hex(args.text);
     const data: ProposalData = { ...args, sha256, status: "proposed" };
     const proposalId = await logEvent(ctx, SEND_PROPOSAL, undefined, data);
+    await openProposalNeedsYou(ctx, proposalId, { recipient: args.recipient, channel: args.channel });
     return { proposalId, sha256 };
   },
 });
