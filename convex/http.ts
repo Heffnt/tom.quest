@@ -4185,20 +4185,6 @@ http.route({
   handler: sessionsTranscript,
 });
 
-// GET /sessions/backfill-list — the list the box's one-off backfill pass
-// (Jarvis sweep --backfill-sessions) read: the sessions whose rows were still
-// the daemon's. None is any more, so it answers an empty list and a null
-// cursor. It stays, behind the daemon's key, until the Jarvis change that
-// deletes the flag has deployed, so a box still running the flag reads
-// "nothing left" rather than an error; then it goes.
-const sessionsBackfillList = httpAction(async (_ctx, request) => {
-  const denied = sessionsAuth(request);
-  if (denied) return denied;
-  return jsonResponse(200, { sessions: [], cursor: null });
-});
-
-http.route({ path: "/sessions/backfill-list", method: "GET", handler: sessionsBackfillList });
-
 // GET /sessions/secrets — every value waiting in the /secrets mailbox
 // (convex/secrets.ts), as { secrets: [{ name, value, setAt }] }. The daemon
 // writes each into its env file and answers POST /sessions/secrets/taken
