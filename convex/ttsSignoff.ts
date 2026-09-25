@@ -97,6 +97,7 @@ const CALENDAR_INVITE = v.object({
   guests: v.array(v.string()),
 });
 
+// Kept: "sending" refuses a second press before the scheduled send finishes, which would otherwise schedule a second send that the spent sign-off refuses and records as a failure.
 type ProposalStatus = "proposed" | "sending" | "sent" | "failed" | "declined";
 
 /** What a "send-proposal" row's `data` holds. */

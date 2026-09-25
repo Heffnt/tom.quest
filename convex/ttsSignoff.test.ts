@@ -313,6 +313,18 @@ describe("a calendar event with guests is a message in his name", () => {
     expect(posts.filter((p) => p.url.includes("googleapis"))).toHaveLength(0);
   });
 
+  it("guests that are not a list of strings answer 400 from the door's validator and ask Google nothing", async () => {
+    const t = convexTest(schema, modules);
+    const posts = stubNetwork();
+    const res = await t.fetch("/tts/calendar-event", {
+      method: "POST",
+      headers: { "X-TTS-Key": KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ ...EVENT, guests: "sarah@example.com" }),
+    });
+    expect(res.status).toBe(400);
+    expect(posts.filter((p) => p.url.includes("googleapis"))).toHaveLength(0);
+  });
+
   it("propose → sign → the event is created with its guests invited", async () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);

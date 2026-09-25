@@ -829,9 +829,6 @@ const ttsCalendarEvent = httpAction(async (ctx, request) => {
   const recurrence = Array.isArray(b.recurrence)
     ? b.recurrence.filter((r): r is string => typeof r === "string")
     : undefined;
-  if (b.guests !== undefined && !(Array.isArray(b.guests) && b.guests.every((g) => typeof g === "string"))) {
-    return jsonResponse(400, { error: "guests, when given, is an array of email addresses" });
-  }
   try {
     const created = await ctx.runAction(
       internal.ttsCalendarWrite.internalCreateEvent,
@@ -843,12 +840,15 @@ const ttsCalendarEvent = httpAction(async (ctx, request) => {
         location: typeof b.location === "string" ? b.location : undefined,
         recurrence,
         calendarId: typeof b.calendarId === "string" ? b.calendarId : undefined,
+        // internalCreateEvent's validator refuses a guests that is not an
+        // array of strings, and the catch below answers that 400.
         guests: b.guests as string[] | undefined,
       },
     );
     return jsonResponse(200, { ok: true, ...created });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
+    // Kept: 403 tells the caller its event was well formed and Tom has not signed it, so it proposes rather than retries.
     return jsonResponse(error.includes(NO_SIGNOFF) ? 403 : 400, { error });
   }
 });
