@@ -76,7 +76,7 @@ const PROVENANCE = {
   sourceKind: "assistant",
 };
 
-/** One claudeMessages row, in the shape the parsers and the daemon write. */
+/** One claudeMessages row, in the shape the parsers write. */
 function row(over: Record<string, unknown>): TranscriptMessage {
   return {
     _id: "m1",

@@ -5,9 +5,8 @@
 // other's language:
 //
 //   PRELUDE_LAYERS — the retiring side. scripts/prelude.mjs builds the nightly
-//     publication out of a WikiTom commit with it, and convex/ttsSkills.ts's
-//     one-shot backfill rebuilds the same publication out of the per-file rows
-//     already stored. Neither keeps a second copy of the selection.
+//     publication out of a WikiTom commit with it, and keeps no second copy of
+//     the selection.
 //   The skill machinery — the arriving side. scripts/publish-skills.mjs reads
 //     the bodies out of git and writes the directories; this file decides what
 //     the set IS, what each description says, and what the grant block looks

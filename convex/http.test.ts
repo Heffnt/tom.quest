@@ -818,7 +818,7 @@ describe("the agent doors read the agent spelling only", () => {
     expect((await stored(t, "dtsCodeBriefs")).map((row) => row.producedByRunToken)).toEqual([token]);
   });
 
-  it("/tts/simplify-input answers agents and each sample's agentId, and .agents beside .runs on tools, hooks and cwds", async () => {
+  it("/tts/simplify-input answers agents, each sample's agentId, and .agents alone on tools, hooks and cwds", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = await withRoot();
     await t.run((ctx) => ctx.db.insert("modelOfTomPublication", {
@@ -834,7 +834,11 @@ describe("the agent doors read the agent spelling only", () => {
     // The root and the stub its child edge wrote.
     expect(facts.sample.map((one: { agentId: string }) => one.agentId).sort()).toEqual([ROOT, CHILD]);
     for (const one of facts.sample) expect(one).not.toHaveProperty("runId");
-    for (const row of facts.cwds) expect(row.agents).toBe(row.runs);
+    expect(facts.cwds.length).toBeGreaterThan(0);
+    for (const row of [...facts.tools, ...facts.hooks, ...facts.cwds]) {
+      expect(typeof row.agents).toBe("number");
+      expect(row).not.toHaveProperty("runs");
+    }
   });
 });
 

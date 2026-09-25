@@ -449,9 +449,8 @@ export const internalIngest = internalMutation({
     // says nothing. The session row is the fact: this run is a session Tom
     // talks to, and it has ended when its session has. The agent file of a
     // session from before the envelope, or one the sweep reads long after it
-    // ended (the backfill of the old sessions), carries no environment, no
-    // kind and no end marker, and without this every such run would read as
-    // an unknown worker, or as abandoned.
+    // ended, carries no environment, no kind and no end marker, and without
+    // this every such run would read as an unknown worker, or as abandoned.
     const sessionRoot = linkedSession !== null && linked.depth === 0 ? linkedSession : null;
     // The envelope names the environment; a run without one runs where its
     // parent ran; a session's root runs in the session; failing those, a row

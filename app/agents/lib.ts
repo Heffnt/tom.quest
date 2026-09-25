@@ -186,13 +186,12 @@ export function taskDescriptionOf(content: unknown): string | undefined {
 }
 
 // ── tool-result / error unwrapping ───────────────────────────────────────────
-// A tool-result row's content is the daemon's WRAPPER object
+// A tool-result row's content is the ingest's WRAPPER object
 // ({ toolUseId, content, isError?, truncationNote? }), not the tool output.
 // contentToText on the wrapper serializes the scaffolding — the exact defect
 // the render-honesty round removed. These three read the wrapper's fields.
-// Both shapes of the inner content are handled: the daemon now flattens to a
-// plain string, but rows written before that fix still carry the SDK's array
-// of typed blocks.
+// Both shapes of the inner content are handled: the agent file carries either
+// a plain string or the SDK's array of typed blocks.
 
 /**
  * The tool output itself, as plain text. Never the serialized wrapper: string
