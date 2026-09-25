@@ -15,7 +15,7 @@
 
 ## sessions
 
-- A session's rows are its agent file's, read by its `runId`; a session from before the cutover (`rowsFrom` not `"runs"`) keeps the daemon's rows under its `sessionId` until the one-off `ttsMigrations.internalReplaceDaemonRows` replaces them with its file's. A reader asks `sessionRows.rowSource` which, and never picks an index itself.
+- A session's rows are its agent file's, read by its `runId`; a session with no `runId` has none. A reader asks `sessionRows.rowSource`, and never picks an index itself.
 - What the session daemon knows that the agent file does not is a note in `sessionNotes`, never a row.
 
 ## inspecting

@@ -1301,7 +1301,7 @@ export default defineSchema({
     // transcript where no restart happened and no turn was interrupted.
     reopenedAt: v.optional(v.number()),
     // Monotonic reopen generation. The daemon stamps the epoch it holds into
-    // every ingest; the server drops STATE (never finalize rows) from a payload
+    // every ingest; the server drops STATE (never notes) from a payload
     // whose epoch predates the current one. Without it, an ending flush that
     // committed but lost its response is blind-retried after the reopen and
     // re-terminalizes the session — sweeping Tom's reopening turn to
@@ -1343,11 +1343,10 @@ export default defineSchema({
     // the forked session's run after a "reopen as". The run the ingest records
     // for this session takes it as its own continuesRunId.
     continuesRunId: v.optional(v.string()),
-    // Where this session's rows come from. "runs": the agent file, read by
-    // the session's runId; a session is born with it (insertSession), the
-    // daemon's rowsFromFiles set it on older ones, and every reader of a session's rows honours it through
-    // convex/sessionRows.ts rowSource. Absent or "daemon": the rows the
-    // session daemon wrote before the cutover, read by sessionId.
+    // RETIRED (one transcript path, 2026-09-25): which rows a session read,
+    // when the daemon's rows under its sessionId were still a second source.
+    // Nothing reads or writes it; ttsMigrations.internalClearSessionRowFields
+    // empties it, and the narrow after that run removes it.
     rowsFrom: v.optional(
       v.union(v.literal("daemon"), v.literal("runs")),
     ),
@@ -1414,8 +1413,10 @@ export default defineSchema({
   // knowledge the (planned) session sweep and analysis layers read, and it
   // is cheap to record now and unreconstructible later.
   claudeMessages: defineTable({
-    // Legacy daemon rows carry sessionId. Run ingest writes runId instead;
-    // every transcript row carries one of the two identities.
+    // RETIRED: sessionId is the session daemon's key, which nothing writes or
+    // reads any more; every row the record keeps carries its runId. The narrow
+    // removes the field once ttsMigrations.internalClearSessionRowFields
+    // counts no row holding it.
     sessionId: v.optional(v.id("claudeSessions")),
     runId: v.optional(v.string()),
     depth: v.optional(v.number()),
@@ -1441,10 +1442,10 @@ export default defineSchema({
     // Set when the 32KB cut above fired (lifeos update §1, the transcript
     // principle: a rendered view may be short, the full bytes must stay
     // retrievable). The complete payload lives in claudeMessageOverflow as
-    // `chunkCount` ordered chunks under this row's (sessionId, seq); `sha256`
-    // and `byteLength` describe the reassembly, so a reader can check that
-    // what comes back is what the daemon stored. Absent = `content` IS the
-    // whole payload.
+    // `chunkCount` ordered chunks under this row's (runId, seq); `sha256` and
+    // `byteLength` describe the reassembly, so a reader can check that what
+    // comes back is what the sweep stored. Absent = `content` IS the whole
+    // payload.
     overflow: v.optional(
       v.object({
         sha256: v.string(),
@@ -1464,33 +1465,28 @@ export default defineSchema({
     digest: v.optional(v.string()),
     createdAt: v.number(),
   })
+    // RETIRED with sessionId: the clearing walk's range scan reads the
+    // first; the narrow removes both.
     .index("by_session_seq", ["sessionId", "seq"])
-    // Kind-scoped reads (getOpenToolWork): tool-call/tool-result rows only,
-    // without paging the whole transcript.
     .index("by_session_kind", ["sessionId", "kind", "seq"])
     // A run is ordered by its source cursor (file version, line, block); in
     // phase 2 seq is that cursor's sortable projection.
     .index("by_run_seq", ["runId", "seq"])
     // Kind-scoped reads of a run's rows: the nightly learning's reply context
     // (assistant text around Tom's turn) and the page's check that a turn Tom
-    // typed has landed as a user row. The run twin of by_session_kind, for
-    // the sessions whose rows come from the agent file (rowsFrom "runs").
+    // typed has landed as a user row.
     .index("by_run_kind", ["runId", "kind", "seq"]),
 
-  // The complete payload behind a cut message row, in ordered chunks of ≤256KB
-  // (OVERFLOW_CHUNK_BYTES in worker/session-host/overflow.mjs). Keyed by
-  // (sessionId, seq) rather than by the message's _id because the daemon
-  // uploads the bytes before internalIngest has inserted the row — seq is the
-  // message's identity on the daemon's side of the wire, and unique per
-  // session by the seq floor. Chunks rather than file storage: the read side
-  // is a QUERY (claudeSessions.getMessageOverflow) and ctx.storage.get is
-  // reachable only from an action. Each chunk is its own mutation, not part
-  // of the row's ingest; the daemon keeps the order (chunks first, then the
-  // row) by holding the row back until they are acknowledged, and nothing
-  // here removes chunks with a row — claudeSessions.sweepMessageOverflow is
-  // the one call that does for a live session, and the one-off
-  // ttsMigrations.internalReplaceDaemonRows removes an old session's chunks
-  // before its rows.
+  // The complete payload behind a cut message row, in ordered chunks of ≤256KB.
+  // Keyed by (runId, seq) rather than by the message's _id because a chunk may
+  // land before its row (POST /agents/overflow; agents.internalIngestOverflow
+  // refuses one only when its run is unknown) — seq is the row's identity in
+  // its agent file. Chunks rather than file storage: the read side is a QUERY
+  // (claudeSessions.getMessageOverflow) and ctx.storage.get is reachable only
+  // from an action. A row is stamped only once every chunk it names is there
+  // and reassembles to its hash (agents.internalStampOverflow), and the
+  // eviction (agents.evictAgentStep) removes a row's chunks before the row.
+  // sessionId and its index are RETIRED with claudeMessages.sessionId.
   claudeMessageOverflow: defineTable({
     sessionId: v.optional(v.id("claudeSessions")),
     runId: v.optional(v.string()),

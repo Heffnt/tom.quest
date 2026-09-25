@@ -64,11 +64,6 @@ async function session(t: ReturnType<typeof convexTest>, overrides: Record<strin
   } as never));
 }
 
-async function daemonRow(t: ReturnType<typeof convexTest>, sessionId: string, seq: number, kind: string, content: unknown, overflow?: { sha256: string; byteLength: number; chunkCount: number }) {
-  await t.run((ctx) => ctx.db.insert("claudeMessages", {
-    sessionId, seq, turn: 0, kind, content, overflow, createdAt: seq + 1,
-  } as never));
-}
 
 describe("agents", () => {
   it("ingests immutable rows and returns them in source order", async () => {
@@ -406,41 +401,38 @@ describe("agents", () => {
     await expect(stranger.query(api.agents.entry, { agentId: "claude:laptop:root-run", seq: 0 })).rejects.toThrow();
   });
 
-  it("switches getMessages from daemon rows to the same run-row page shape", async () => {
+  // witness: let a later ingest's runId replace the link and the page reads
+  // another run's rows under this session.
+  it("reads a session's rows from the run it names, and a later runId never replaces the link", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { status: "running" });
     const stamp = { sha256: "a".repeat(64), byteLength: 20, chunkCount: 1 };
-    await daemonRow(t, sessionId, 0, "user", { text: "hello" });
-    await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" }, stamp);
     const value = run({ sessionId });
     await t.mutation(internal.agents.internalIngest, ingest(value, [
       row(0, { kind: "user", content: { text: "hello" } }),
       row(1, { kind: "assistant-text", content: { text: "answer" }, digest: "1111111111111111" }),
     ], []) as never);
     // The overflow stamp itself is verified elsewhere (chunk reassembly); here
-    // it only needs to exist so the two page shapes can be compared.
+    // it only needs to exist so the page can say the row was cut.
     await t.run(async (ctx) => {
       const inserted = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", value.runId).eq("seq", 1)).unique();
       if (inserted) await ctx.db.patch(inserted._id, { overflow: stamp });
     });
     const tom = await withTom(t);
-    const pick = (page: Array<Record<string, unknown>>) => page.map(({ seq, kind, content, hasOverflow, fullByteLength }) => ({ seq, kind, content, hasOverflow, fullByteLength }));
-    const before = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
-    await t.mutation(internal.claudeSessions.internalIngest, { sessionId, runId: "different-run-must-not-replace-the-link", rowsFromFiles: true });
-    const after = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
-    expect(pick(after.page as never)).toEqual(pick(before.page as never));
-    expect(after.page.map((entry) => entry.seq)).toEqual([1, 0]);
-    expect(await t.run((ctx) => ctx.db.get(sessionId))).toMatchObject({ runId: value.runId, rowsFrom: "runs" });
+    await t.mutation(internal.claudeSessions.internalIngest, { sessionId, runId: "different-run-must-not-replace-the-link" });
+    const page = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
+    expect(page.page.map(({ seq, kind, content, hasOverflow, fullByteLength }) => ({ seq, kind, content, hasOverflow, fullByteLength }))).toEqual([
+      { seq: 1, kind: "assistant-text", content: { text: "answer" }, hasOverflow: true, fullByteLength: 20 },
+      { seq: 0, kind: "user", content: { text: "hello" }, hasOverflow: false, fullByteLength: undefined },
+    ]);
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBe(value.runId);
   });
 
-  // A session whose rows come from its agent file, before the sweep or the
-  // daemon has named its run: its first turn is still running. The page shows
-  // an empty transcript, never the daemon's rows under its id, and never an
-  // error that takes the page down.
-  it("answers an empty page, not the daemon's rows, while a run-backed session has no run id", async () => {
+  // A session whose run is not named yet: its first turn is still running.
+  // The page shows an empty transcript, never an error that takes it down.
+  it("answers an empty page while a session has no run id", async () => {
     const t = convexTest(schema, modules);
-    const sessionId = await session(t, { rowsFrom: "runs" });
-    await daemonRow(t, sessionId, 0, "user", { text: "must not leak through fallback" });
+    const sessionId = await session(t);
     const tom = await withTom(t);
     const page = await tom.query(api.claudeSessions.getMessages, {
       sessionId,
@@ -470,7 +462,7 @@ describe("agents", () => {
   it("links a box Codex root to the session that names its run", async () => {
     const t = convexTest(schema, modules);
     const runId = "codex:box:019a7c1e-thread-1";
-    const sessionId = await session(t, { status: "running", runId, rowsFrom: "runs", model: "gpt-5.6-sol", sdkSessionId: "019a7c1e-thread-1" });
+    const sessionId = await session(t, { status: "running", runId, model: "gpt-5.6-sol", sdkSessionId: "019a7c1e-thread-1" });
     const result = await t.mutation(internal.agents.internalIngest, ingest(
       run({ runId, rootRunId: runId, host: "box", cli: "codex" }), [], [],
     ) as never);
@@ -556,183 +548,6 @@ describe("agents", () => {
     // A late page of the old run, carrying the same session, stays unlinked.
     await t.mutation(internal.agents.internalIngest, ingest(run({ runId: "claude:box:sdk-before-reopen", rootRunId: "claude:box:sdk-before-reopen", host: "box", sessionId }), [], []) as never);
     expect((await at("claude:box:sdk-before-reopen"))?.continuesRunId).toBeUndefined();
-  });
-
-  it("compares row sets without recording text and cuts over a clean terminal run", async () => {
-    const t = convexTest(schema, modules);
-    const sessionId = await session(t);
-    const text = "comparison-text-sentinel";
-    await daemonRow(t, sessionId, 0, "user", { text: `${text}   ` });
-    await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" });
-    await daemonRow(t, sessionId, 2, "thinking", { text: "reasoning" });
-    await daemonRow(t, sessionId, 3, "tool-call", { toolName: "Read" });
-    await t.mutation(internal.agents.internalIngest, ingest(run({
-        sessionId, status: "ended", envelopeKey: "runs/registration.json.gz",
-        context: {
-          layersKnown: true, layersGiven: ["write"], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [],
-          registered: true, launcher: "worker/jobs/evals.mjs", modelRequested: "claude-fable-5", skillsGranted: [], skillsRefused: [], promptSha256: "prompt", writingStandardSource: "/tts/capture-context",
-        },
-      }), [
-        row(0, { kind: "context", content: { modelRequested: "claude-fable-5" } }),
-        row(1000, { kind: "user", content: { text }, digest: "1111111111111111" }),
-        row(1500, { kind: "child-run", content: { childRunId: "claude:laptop:root-run/child" }, digest: "2222222222222222" }),
-        row(2000, { kind: "assistant-text", content: { text: "answer" }, digest: "3333333333333333" }),
-        row(3000, { kind: "thinking", content: { text: "reasoning" }, digest: "4444444444444444" }),
-        row(4000, { kind: "tool-call", content: { name: "Read" }, digest: "5555555555555555" }),
-      ], []) as never);
-
-    const eligible = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
-    expect(eligible.eligible).toContainEqual({ sessionId, runId: "claude:laptop:root-run" });
-    const comparison = await t.mutation(internal.agents.internalShadowCompare, { sessionId });
-    expect(comparison).toMatchObject({
-      runId: "claude:laptop:root-run", daemonRows: 4, fileRows: 4,
-      byKind: { user: { daemon: 1, file: 1 }, "assistant-text": { daemon: 1, file: 1 }, thinking: { daemon: 1, file: 1 }, "tool-call": { daemon: 1, file: 1 } },
-      textRows: 3, textMatches: 3, clean: true,
-    });
-    expect(comparison).not.toHaveProperty("firstDiffSeq");
-    const [storedRun, storedSession, comparisonEvent] = await t.run(async (ctx) => [
-      await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique(),
-      await ctx.db.get(sessionId),
-      await ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "agents-shadow-compare")).first(),
-    ]);
-    expect(storedRun?.cutoverAt).toEqual(expect.any(Number));
-    expect(storedSession?.rowsFrom).toBe("runs");
-    expect(JSON.stringify(comparisonEvent?.data)).not.toContain(text);
-    const after = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
-    expect(after.eligible).not.toContainEqual(expect.objectContaining({ sessionId }));
-  });
-
-  it("reports row-count and text differences at the file row without cutting over", async () => {
-    const t = convexTest(schema, modules);
-    const sessionId = await session(t);
-    await daemonRow(t, sessionId, 0, "user", { text: "daemon text" });
-    await daemonRow(t, sessionId, 1, "system", { text: "extra" });
-    await t.mutation(internal.agents.internalIngest, ingest(
-      run({ sessionId, status: "failed" }),
-      [row(1000, { kind: "user", content: { text: "file text" }, digest: "1111111111111111" })],
-      [],
-    ) as never);
-    const comparison = await t.mutation(internal.agents.internalShadowCompare, { sessionId });
-    expect(comparison).toMatchObject({
-      daemonRows: 2, fileRows: 1, textRows: 1, textMatches: 0,
-      firstDiffSeq: 1000, clean: false,
-      byKind: { system: { daemon: 1, file: 0 }, user: { daemon: 1, file: 1 } },
-    });
-    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
-  });
-
-  it("continues past 100 rows and never truncates a late mismatch to clean", async () => {
-    const t = convexTest(schema, modules);
-    const sessionId = await session(t);
-    // One transaction, not 101: the per-row helper spent the default 5s budget
-    // on transaction overhead alone whenever the runner was busy, and the
-    // merge gate writes a commit's tests row ONCE — a timeout here bars that
-    // head for good.
-    await t.run(async (ctx) => {
-      for (let seq = 0; seq < 101; seq += 1) await ctx.db.insert("claudeMessages", {
-        sessionId, seq, turn: 0, kind: "user", content: { text: `row-${seq}` }, createdAt: seq + 1,
-      } as never);
-    });
-    await t.mutation(internal.agents.internalIngest, ingest(
-      run({ sessionId, status: "ended" }),
-      Array.from({ length: 101 }, (_, seq) => row(seq, {
-        kind: "user",
-        content: { text: seq === 100 ? "late-mismatch" : `row-${seq}` },
-        digest: seq.toString(16).padStart(16, "0"),
-      })),
-      [],
-    ) as never);
-    const first = await t.mutation(internal.agents.internalShadowCompare, { sessionId });
-    expect(first).toMatchObject({ complete: false, daemonRows: 100, fileRows: 100 });
-    if (first.complete) throw new Error("comparison unexpectedly completed on its first page");
-    expect(await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "agents-shadow-compare")).collect())).toEqual([]);
-    const final = await t.mutation(internal.agents.internalShadowCompare, { sessionId, state: first.state } as never);
-    expect(final).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
-    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
-  }, 30_000);
-
-  // The defect this covers: the comparison used to call `.paginate()` on both
-  // indexes inside one mutation, which the Convex backend refuses (one
-  // paginated query per function), so the compare route answered 400 for every
-  // session. convex-test does not enforce that limit, so what this asserts is
-  // the shape that replaced it: bounded `.take()` reads over a seq floor that
-  // still walk three pages a side to a complete, clean verdict.
-  it("walks a 250-row session to completion over bounded reads", async () => {
-    const t = convexTest(schema, modules);
-    const sessionId = await session(t);
-    // The run row comes through the ingest door; its 250 file rows are written
-    // directly because one ingest call accepts at most 200 (`too many rows`),
-    // and what is under test is the read side, not the append fence. All 500
-    // rows land in ONE t.run: a transaction per row is 500 transactions, which
-    // on a loaded runner is the whole of the default 5s test budget.
-    expect(await t.mutation(internal.agents.internalIngest, ingest(
-      run({ sessionId, status: "ended" }), [], [],
-    ) as never)).toMatchObject({ ok: true });
-    await t.run(async (ctx) => {
-      for (let seq = 0; seq < 250; seq += 1) {
-        await ctx.db.insert("claudeMessages", {
-          sessionId, seq, turn: 0, kind: "user", content: { text: `row-${seq}` }, createdAt: seq + 1,
-        } as never);
-        await ctx.db.insert("claudeMessages", {
-          runId: "claude:laptop:root-run", seq, turn: 0, kind: "user", content: { text: `row-${seq}` },
-          digest: seq.toString(16).padStart(16, "0"), depth: 0, createdAt: seq + 1,
-        } as never);
-      }
-    });
-
-    let state: unknown;
-    let result: Awaited<ReturnType<typeof t.mutation>> | undefined;
-    for (let call = 0; call < 20; call += 1) {
-      result = await t.mutation(internal.agents.internalShadowCompare, {
-        sessionId,
-        ...(state === undefined ? {} : { state }),
-      } as never);
-      if (result.complete) break;
-      state = result.state;
-    }
-    expect(result).toMatchObject({
-      complete: true, daemonRows: 250, fileRows: 250, textRows: 250, textMatches: 250, clean: true,
-      byKind: { user: { daemon: 250, file: 250 } },
-    });
-    expect(result).not.toHaveProperty("firstDiffSeq");
-    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBe("runs");
-    // The biggest fixture in this file, and the default 5s is a budget for a
-    // test that writes a handful of rows, not five hundred.
-  }, 30_000);
-
-  it("admits only terminal run rows and does not suppress their later transition", async () => {
-    const t = convexTest(schema, modules);
-    // The run lands while its session is live, so its status stays the
-    // file's; the session then ends before the next page arrives.
-    const sessionId = await session(t, { status: "running" });
-    await t.mutation(internal.agents.internalIngest, ingest(run({ sessionId }), [], []) as never);
-    await t.run((ctx) => ctx.db.patch(sessionId, { status: "ended" }));
-    const unknown = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
-    expect(unknown.eligible).toEqual([]);
-    await expect(t.mutation(internal.agents.internalShadowCompare, { sessionId })).rejects.toThrow("run is not terminal");
-    await t.mutation(internal.agents.internalIngest, retry(run({ sessionId }), [], []) as never);
-    const terminal = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
-    expect(terminal.eligible).toEqual([{ sessionId, runId: "claude:laptop:root-run" }]);
-  });
-
-  it("paginates terminal candidates beyond the first 100 sessions", async () => {
-    const t = convexTest(schema, modules);
-    await t.run(async (ctx) => {
-      for (let index = 0; index < 101; index += 1) {
-        const runId = `claude:laptop:candidate-${index.toString().padStart(3, "0")}`;
-        const sessionId = await ctx.db.insert("claudeSessions", {
-          title: runId, kind: "adhoc", repo: "none", status: "ended",
-          statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(), runId,
-        } as never);
-        await ctx.db.insert("runs", { ...run({ runId, rootRunId: runId, sessionId, status: "ended" }), environment: "worker", ingestedAt: Date.now() } as never);
-      }
-    });
-    const first = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
-    expect(first).toMatchObject({ isDone: false });
-    expect(first.eligible).toHaveLength(100);
-    const second = await t.query(internal.agents.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: first.continueCursor, numItems: 100 } });
-    expect(second).toMatchObject({ isDone: true });
-    expect(second.eligible).toHaveLength(1);
   });
 
   it("accepts abandoned lifecycle state and emits paged manifest entries", async () => {

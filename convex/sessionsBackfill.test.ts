@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { DAEMON_ROWS_REPLACED } from "./ttsMigrations";
+import { RETIRED_FIELD_CLEARED, SESSION_ROW_FIELDS_MIGRATION } from "./ttsMigrations";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const KEY = "test-sessions-key";
@@ -18,228 +18,143 @@ async function session(t: SchemaTest, overrides: Record<string, unknown> = {}) {
   } as never));
 }
 
-async function backfillList(t: SchemaTest, cursor: string | null = null, key: string | null = KEY) {
-  const query = cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`;
-  return await t.fetch(`/sessions/backfill-list${query}`, {
-    method: "GET",
-    headers: key === null ? {} : { "X-Sessions-Key": key },
-  });
-}
-
 beforeEach(() => {
   vi.stubEnv("SESSIONS_WORKER_KEY", KEY);
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
+// The box's one-off backfill pass reads this until the Jarvis change that
+// deletes its flag has deployed. Every session's rows are its file's now.
 describe("GET /sessions/backfill-list", () => {
-  it("lists the sessions whose rows are still the daemon's, with each one's run and SDK id", async () => {
+  it("answers that no session is left, and only to the sessions key", async () => {
     const t = schemaTest();
-    const old = await session(t, { runId: "claude:box:sdk-old", sdkSessionId: "sdk-old" });
-    const codex = await session(t, { runId: "claude:box:019a-thread", rowsFrom: "daemon" });
-    await session(t, { runId: "claude:box:sdk-new", sdkSessionId: "sdk-new", rowsFrom: "runs" });
-    await session(t, { status: "failed" }); // no runId: it names no file
-    const response = await backfillList(t);
+    await session(t, { runId: "claude:box:sdk-old", sdkSessionId: "sdk-old" });
+    const ask = (key: string | null) => t.fetch("/sessions/backfill-list", {
+      method: "GET",
+      headers: key === null ? {} : { "X-Sessions-Key": key },
+    });
+    const response = await ask(KEY);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      sessions: [
-        { sessionId: old, runId: "claude:box:sdk-old", sdkSessionId: "sdk-old" },
-        { sessionId: codex, runId: "claude:box:019a-thread", sdkSessionId: null },
-      ],
-      cursor: null,
-    });
-  });
-
-  it("pages with a cursor until the cursor is null", async () => {
-    const t = schemaTest();
-    await t.run(async (ctx) => {
-      for (let index = 0; index < 205; index += 1) {
-        await ctx.db.insert("claudeSessions", {
-          title: `old ${index}`, kind: "adhoc", repo: "none", status: "ended",
-          statusChangedAt: 1, nextSeq: 0, createdAt: 1, runId: `claude:box:sdk-${index}`,
-        } as never);
-      }
-    });
-    const first = await (await backfillList(t)).json();
-    expect(first.sessions).toHaveLength(200);
-    expect(typeof first.cursor).toBe("string");
-    const second = await (await backfillList(t, first.cursor)).json();
-    expect(second.sessions).toHaveLength(5);
-    expect(second.cursor).toBeNull();
-    const runIds = new Set([...first.sessions, ...second.sessions].map((entry: { runId: string }) => entry.runId));
-    expect(runIds.size).toBe(205);
-  });
-
-  it("refuses a caller without the sessions key", async () => {
-    const t = schemaTest();
-    expect((await backfillList(t, null, null)).status).toBe(401);
-    expect((await backfillList(t, null, "wrong")).status).toBe(401);
+    expect(await response.json()).toEqual({ sessions: [], cursor: null });
+    expect((await ask(null)).status).toBe(401);
+    expect((await ask("wrong")).status).toBe(401);
   });
 });
 
-// ── The one-off: a session's daemon rows replaced by its file's ─────────────
+// ── The clearing walk before the narrow ─────────────────────────────────────
 
 const HASH = "a".repeat(64);
 
-async function runWithRows(t: SchemaTest, runId: string, rows: number[]) {
-  await t.run(async (ctx) => {
-    await ctx.db.insert("runs", {
-      runId, rootRunId: runId, depth: 0, linkKnown: true, origin: "unknown", host: "box", cli: "claude",
-      environment: "session", parserVersion: "runs-parser-1", kind: "session", status: "ended", startedAt: 1, lastLineAt: 2,
-      attachments: [], ingestedAt: 3,
-      file: { path: `/f/${runId}.jsonl`, sourceHash: HASH, storedHash: HASH, bytes: 10, storedBytes: 8, committedLine: rows.length, committedPrefixSha256: HASH },
-    } as never);
-    for (const seq of rows) {
-      await ctx.db.insert("claudeMessages", {
-        runId, seq, turn: 0, kind: "assistant-text", content: { text: `file row ${seq}` }, depth: 0, digest: "0123456789abcdef", createdAt: seq,
-      } as never);
-    }
-  });
-}
-
-async function daemonRows(t: SchemaTest, sessionId: Id<"claudeSessions">, count: number, overflowAt?: { seq: number; chunks: number }) {
-  await t.run(async (ctx) => {
-    for (let seq = 0; seq < count; seq += 1) {
-      const stamped = overflowAt?.seq === seq;
-      await ctx.db.insert("claudeMessages", {
-        sessionId, seq, turn: 0, kind: "tool-result", content: { text: `daemon row ${seq}` }, createdAt: seq,
-        ...(stamped ? { overflow: { sha256: HASH, byteLength: 10, chunkCount: overflowAt.chunks } } : {}),
-      } as never);
-      if (stamped) {
-        for (let index = 0; index < overflowAt.chunks; index += 1) {
-          await ctx.db.insert("claudeMessageOverflow", { sessionId, seq, index, chunkCount: overflowAt.chunks, text: `chunk ${index}`, createdAt: 1 } as never);
-        }
-      }
-    }
-  });
-}
-
-async function held(t: SchemaTest, sessionId: Id<"claudeSessions">) {
-  return await t.run(async (ctx) => ({
-    rows: (await ctx.db.query("claudeMessages").withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId)).collect()).length,
-    chunks: (await ctx.db.query("claudeMessageOverflow").withIndex("by_session_seq_index", (q) => q.eq("sessionId", sessionId)).collect()).length,
-  }));
-}
-
-async function replaceEvent(t: SchemaTest, kind: string) {
-  const rows = await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === kind));
-  expect(rows).toHaveLength(1);
-  return rows[0].data as Record<string, unknown>;
-}
-
-/** Five sessions, one of each kind the walk meets, and three reply labels. */
-async function seedOldSessions(t: SchemaTest) {
-  const replaced = await session(t, { runId: "claude:box:replaced" });
-  await daemonRows(t, replaced, 250, { seq: 3, chunks: 10 });
-  // A chunk whose row never landed: it goes with the session's other chunks.
-  await t.run((ctx) => ctx.db.insert("claudeMessageOverflow", { sessionId: replaced, seq: 999, index: 0, chunkCount: 2, text: "orphan", createdAt: 1 } as never));
-  await runWithRows(t, "claude:box:replaced", [100, 200]);
-
-  const notSwept = await session(t, { runId: "claude:box:not-swept" });
-  await daemonRows(t, notSwept, 2);
-  const noRows = await session(t, { runId: "claude:box:index-only" });
-  await daemonRows(t, noRows, 2);
-  await runWithRows(t, "claude:box:index-only", []);
-
-  const fileLess = await session(t, { status: "failed", endedReason: "spawn failed" });
-  await daemonRows(t, fileLess, 1);
-
-  const born = await session(t, { runId: "claude:box:born-today", rowsFrom: "runs" });
-  await runWithRows(t, "claude:box:born-today", [100]);
-
-  const label = (ref: string, rowSpan?: { seqStart: number; seqEnd: number }) => t.run((ctx) => ctx.db.insert("runLabels", {
-    runId: "claude:box:replaced", source: "session-reply", actor: "tom", polarity: "neutral", meaning: "his words",
-    judgment: false, ref, at: 5, ...(rowSpan === undefined ? {} : { rowSpan }),
+async function run(t: SchemaTest, runId: string, overrides: Record<string, unknown> = {}) {
+  await t.run((ctx) => ctx.db.insert("runs", {
+    runId, rootRunId: runId, depth: 0, linkKnown: true, origin: "unknown", host: "box", cli: "claude",
+    environment: "session", parserVersion: "runs-parser-1", kind: "session", status: "ended", startedAt: 1, lastLineAt: 2,
+    attachments: [], ingestedAt: 3,
+    file: { path: `/f/${runId}.jsonl`, sourceHash: HASH, storedHash: HASH, bytes: 10, storedBytes: 8, committedLine: 1, committedPrefixSha256: HASH },
+    ...overrides,
   } as never));
-  const oldSpan = await label(`reply:${replaced}:7`, { seqStart: 5, seqEnd: 7 });
-  const oldNoSpan = await label(`reply:${replaced}:9`);
-  const newSpan = await label("reply:k17inboundrow", { seqStart: 100, seqEnd: 200 });
-  return { replaced, notSwept, noRows, fileLess, born, oldSpan, oldNoSpan, newSpan };
 }
 
-describe("ttsMigrations.internalReplaceDaemonRows", () => {
-  afterEach(() => {
-    vi.useRealTimers();
+/** One of each shape the walk meets. */
+async function seed(t: SchemaTest) {
+  const fromRuns = await session(t, { runId: "claude:box:from-runs", rowsFrom: "runs" });
+  const fromDaemon = await session(t, { runId: "claude:box:not-swept", rowsFrom: "daemon" });
+  const neither = await session(t, { runId: "claude:box:born-today" });
+  await run(t, "claude:box:from-runs", { cutoverAt: 1_700 });
+  await run(t, "claude:box:born-today");
+  await t.run(async (ctx) => {
+    // A daemon row and chunk the replacement left: their session's file never landed.
+    await ctx.db.insert("claudeMessages", { sessionId: fromDaemon, seq: 0, turn: 0, kind: "assistant-text", content: { text: "kept" }, createdAt: 1 });
+    await ctx.db.insert("claudeMessageOverflow", { sessionId: fromDaemon, seq: 0, index: 0, chunkCount: 1, text: "kept", createdAt: 1 });
+    // A file row and chunk, which hold no sessionId and are not the walk's.
+    await ctx.db.insert("claudeMessages", { runId: "claude:box:from-runs", seq: 0, turn: 0, kind: "assistant-text", content: { text: "file" }, depth: 0, createdAt: 1 });
+    await ctx.db.insert("claudeMessageOverflow", { runId: "claude:box:from-runs", seq: 0, index: 0, chunkCount: 1, text: "file", createdAt: 1 });
   });
+  return { fromRuns, fromDaemon, neither };
+}
 
+async function events(t: SchemaTest, kind: string) {
+  return await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === kind));
+}
+
+async function walk(t: SchemaTest, args: { dryRun?: boolean; pageSize?: number } = {}) {
+  await t.mutation(internal.ttsMigrations.internalClearSessionRowFields, args);
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+}
+
+const FOUND = {
+  "claudeSessions-scanned": 3,
+  "runs-scanned": 2,
+  "rowsFrom-runs-cleared": 1,
+  "rowsFrom-other-cleared": 1,
+  "cutoverAt-cleared": 1,
+  "daemon-rows-left": 1,
+  "daemon-chunks-left": 1,
+};
+
+describe("ttsMigrations.internalClearSessionRowFields", () => {
   it("counts on a dry run and changes nothing", async () => {
     vi.useFakeTimers();
     const t = schemaTest();
-    const seeded = await seedOldSessions(t);
-    await t.mutation(internal.ttsMigrations.internalReplaceDaemonRows, { dryRun: true });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await replaceEvent(t, `${DAEMON_ROWS_REPLACED}-dry-run`)).toEqual({
-      scanned: 5, sessions: 1, fileLess: 1, rows: 251, chunks: 11, labels: 1, noRowsCount: 2,
-      noRows: [seeded.notSwept, seeded.noRows],
-    });
-    expect(await held(t, seeded.replaced)).toEqual({ rows: 250, chunks: 11 });
-    expect(await held(t, seeded.fileLess)).toEqual({ rows: 1, chunks: 0 });
-    expect((await t.run((ctx) => ctx.db.get(seeded.replaced)))?.rowsFrom).toBeUndefined();
-    expect((await t.run((ctx) => ctx.db.get(seeded.oldSpan)))?.rowSpan).toEqual({ seqStart: 5, seqEnd: 7 });
+    const seeded = await seed(t);
+    await walk(t, { dryRun: true, pageSize: 1 });
+    const [dry] = await events(t, `${SESSION_ROW_FIELDS_MIGRATION}-dry-run`);
+    expect(dry.data).toEqual({ ...FOUND, sessionsWithDaemonRows: [seeded.fromDaemon] });
+    expect((await t.run((ctx) => ctx.db.get(seeded.fromDaemon)))?.rowsFrom).toBe("daemon");
+    expect(await events(t, RETIRED_FIELD_CLEARED)).toEqual([]);
   });
 
-  it("replaces a session's rows, lists the ones whose run has no rows, and empties the file-less ones", async () => {
+  // witness: leave a field on one stored document and the narrow's deploy
+  // fails validating it.
+  it("clears rowsFrom and cutoverAt, records what says something, and leaves the daemon's rows counted", async () => {
     vi.useFakeTimers();
     const t = schemaTest();
-    const seeded = await seedOldSessions(t);
-    await t.mutation(internal.ttsMigrations.internalReplaceDaemonRows, {});
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await replaceEvent(t, DAEMON_ROWS_REPLACED)).toEqual({
-      scanned: 5, sessions: 1, fileLess: 1, rows: 251, chunks: 11, labels: 1, noRowsCount: 2,
-      noRows: [seeded.notSwept, seeded.noRows],
-    });
-    // The replaced session reads its file's rows, and holds no daemon row or chunk.
-    expect(await t.run((ctx) => ctx.db.get(seeded.replaced))).toMatchObject({ rowsFrom: "runs" });
-    expect(await held(t, seeded.replaced)).toEqual({ rows: 0, chunks: 0 });
-    const fileRows = await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "claude:box:replaced")).collect());
-    expect(fileRows.map((row) => row.seq)).toEqual([100, 200]);
-    // A session whose file is not in the record keeps everything.
-    expect(await held(t, seeded.notSwept)).toEqual({ rows: 2, chunks: 0 });
-    expect(await held(t, seeded.noRows)).toEqual({ rows: 2, chunks: 0 });
-    expect((await t.run((ctx) => ctx.db.get(seeded.notSwept)))?.rowsFrom).toBeUndefined();
-    // The file-less session loses its one row and keeps what it says of itself.
-    expect(await held(t, seeded.fileLess)).toEqual({ rows: 0, chunks: 0 });
-    expect(await t.run((ctx) => ctx.db.get(seeded.fileLess))).toMatchObject({ status: "failed", endedReason: "spawn failed" });
-    // A session born reading its file is left alone.
-    expect(await t.run((ctx) => ctx.db.get(seeded.born))).toMatchObject({ rowsFrom: "runs" });
-    // The old writer's span is dropped; the label and the new writer's span stay.
-    const [oldSpan, oldNoSpan, newSpan] = await t.run(async (ctx) => [
-      await ctx.db.get(seeded.oldSpan), await ctx.db.get(seeded.oldNoSpan), await ctx.db.get(seeded.newSpan),
+    const seeded = await seed(t);
+    await walk(t, { pageSize: 1 });
+    const [done] = await events(t, SESSION_ROW_FIELDS_MIGRATION);
+    expect(done.data).toEqual({ ...FOUND, sessionsWithDaemonRows: [seeded.fromDaemon] });
+
+    const [sessions, runs] = await t.run(async (ctx) => [
+      await ctx.db.query("claudeSessions").collect(),
+      await ctx.db.query("runs").collect(),
     ]);
-    expect(oldSpan).toMatchObject({ ref: `reply:${seeded.replaced}:7`, meaning: "his words" });
-    expect(oldSpan?.rowSpan).toBeUndefined();
-    expect(oldNoSpan?.rowSpan).toBeUndefined();
-    expect(newSpan?.rowSpan).toEqual({ seqStart: 100, seqEnd: 200 });
+    expect(sessions.map((row) => row.rowsFrom)).toEqual([undefined, undefined, undefined]);
+    expect(runs.map((row) => row.cutoverAt)).toEqual([undefined, undefined]);
+    // "runs" is how every session reads now, so only the other two values are recorded.
+    const recorded = (await events(t, RETIRED_FIELD_CLEARED)).map((row) => row.data);
+    expect(recorded).toEqual([
+      { table: "claudeSessions", field: "rowsFrom", value: "daemon", sessionId: seeded.fromDaemon },
+      { table: "runs", field: "cutoverAt", value: 1_700, runId: "claude:box:from-runs" },
+    ]);
+    // Nothing of the daemon's is emptied or deleted: the narrow waits on them.
+    const held = await t.run(async (ctx) => ({
+      rows: await ctx.db.query("claudeMessages").collect(),
+      chunks: await ctx.db.query("claudeMessageOverflow").collect(),
+    }));
+    expect(held.rows.map((row) => row.sessionId ?? row.runId)).toEqual([seeded.fromDaemon, "claude:box:from-runs"]);
+    expect(held.chunks.map((row) => row.sessionId ?? row.runId)).toEqual([seeded.fromDaemon, "claude:box:from-runs"]);
 
-    // Run again, it finds nothing left to replace.
-    await t.mutation(internal.ttsMigrations.internalReplaceDaemonRows, {});
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    const again = await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === DAEMON_ROWS_REPLACED));
-    expect(again[1].data).toMatchObject({ sessions: 0, fileLess: 0, rows: 0, chunks: 0, labels: 0, noRowsCount: 2 });
+    // Run again, it clears nothing and still counts what the narrow waits on.
+    await walk(t);
+    const again = await events(t, SESSION_ROW_FIELDS_MIGRATION);
+    expect(again[1].data).toMatchObject({
+      "rowsFrom-runs-cleared": 0, "rowsFrom-other-cleared": 0, "cutoverAt-cleared": 0,
+      "daemon-rows-left": 1, "daemon-chunks-left": 1,
+    });
   });
 
-  // witness: delete a row before its chunks, and a step that stops between
-  // the two leaves chunks no row names, under an index part C drops.
-  it("deletes every chunk of a session before any of its rows", async () => {
+  it("reports zero left once no stored row holds a sessionId", async () => {
     vi.useFakeTimers();
     const t = schemaTest();
-    const sessionId = await session(t, { runId: "claude:box:ordered" });
-    await daemonRows(t, sessionId, 250, { seq: 0, chunks: 20 });
-    await runWithRows(t, "claude:box:ordered", [100]);
-    await t.mutation(internal.ttsMigrations.internalReplaceDaemonRows, {});
-    const seen: Array<{ rows: number; chunks: number }> = [];
-    for (let step = 0; step < 50; step += 1) {
-      vi.runOnlyPendingTimers();
-      await t.finishInProgressScheduledFunctions();
-      const now = await held(t, sessionId);
-      seen.push(now);
-      if (now.rows < 250) expect(now.chunks).toBe(0);
-      if (now.rows === 0) break;
-    }
-    // The chunks went a bounded number at a time, then the rows.
-    expect(seen.some((entry) => entry.chunks > 0 && entry.chunks < 20)).toBe(true);
-    expect(seen.at(-1)).toEqual({ rows: 0, chunks: 0 });
+    const sessionId: Id<"claudeSessions"> = await session(t, { runId: "claude:box:clean" });
+    await t.run((ctx) => ctx.db.insert("claudeMessages", { runId: "claude:box:clean", seq: 0, turn: 0, kind: "user", content: { text: "hi" }, depth: 0, createdAt: 1 }));
+    await walk(t);
+    const [done] = await events(t, SESSION_ROW_FIELDS_MIGRATION);
+    expect(done.data).toMatchObject({ "daemon-rows-left": 0, "daemon-chunks-left": 0, sessionsWithDaemonRows: [] });
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBe("claude:box:clean");
   });
 });

@@ -489,7 +489,7 @@ describe("a reply in a session becomes a label", () => {
     vi.useFakeTimers();
     try {
       const t = convexTest(schema, modules);
-      const sessionId = await seedSession(t, { runId: SESSION_RUN, rowsFrom: "runs" });
+      const sessionId = await seedSession(t, { runId: SESSION_RUN });
       const inboundId = await seedTomTurn(t, sessionId);
       await ingestFile(t, fileRun(), [
         fileRow(10, "assistant-text", "which one first?"),
@@ -546,7 +546,7 @@ describe("a reply in a session becomes a label", () => {
     vi.useFakeTimers();
     try {
       const t = convexTest(schema, modules);
-      const sessionId = await seedSession(t, { runId: SESSION_RUN, rowsFrom: "runs" });
+      const sessionId = await seedSession(t, { runId: SESSION_RUN });
       const inboundId = await seedTomTurn(t, sessionId, { author: "agent", text: "continue with the next item" });
       await ingestFile(t, fileRun(), [fileRow(20, "user", delivered("continue with the next item", inboundId))]);
       expect(await labels(t)).toHaveLength(0);
@@ -562,7 +562,7 @@ describe("a reply in a session becomes a label", () => {
     vi.useFakeTimers();
     try {
       const t = convexTest(schema, modules);
-      const sessionId = await seedSession(t, { runId: SESSION_RUN, rowsFrom: "runs" });
+      const sessionId = await seedSession(t, { runId: SESSION_RUN });
       const inboundId = await seedTomTurn(t, sessionId);
       const copied = delivered("no, do the visa one first", inboundId);
       // Another root run on the box, which no session names.

@@ -1,7 +1,7 @@
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
@@ -86,7 +86,7 @@ const AGENT = v.object({
   // nothing reads it, and the schema narrow removes it.
   todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
   regToken: v.optional(v.string()),
-  envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()), file: FILE,
+  envelopeKey: v.optional(v.string()), abandonedAt: v.optional(v.number()), file: FILE,
 });
 const PROVENANCE = v.object({ fileVersion: v.string(), file: v.string(), lineStart: v.number(), lineEnd: v.number(), block: v.number(), parserVersion: v.string(), sourceKind: v.string() });
 const ROW = v.object({
@@ -154,7 +154,7 @@ function validAgentId(runId: unknown): runId is string {
 function agentIdMatches(runId: string, cli: AgentCli, host: "laptop" | "box") {
   return runId.startsWith(`${cli}:${host}:`);
 }
-export function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
+function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
   return file.path === "" && file.sourceHash === "" && file.storedHash === "" && file.bytes === 0 && file.storedBytes === 0 && file.committedLine === 0 && file.committedPrefixSha256 === "";
 }
 /**
@@ -693,278 +693,6 @@ export const internalStampOverflow = internalMutation({
   },
 });
 
-const SHADOW_PAGE_ROWS = 100;
-const SHADOW_IGNORED_KINDS = new Set(["context", "child-run"]);
-const SHADOW_TEXT_KINDS = new Set(["user", "assistant-text", "thinking"]);
-
-function textContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (content && typeof content === "object" && "text" in content && typeof (content as { text?: unknown }).text === "string") {
-    return (content as { text: string }).text;
-  }
-  try { return JSON.stringify(content); } catch { return ""; }
-}
-
-function normalizeTrailingWhitespace(text: string): string {
-  return text.replace(/[ \t]+$/gm, "").replace(/\s+$/u, "");
-}
-
-type ShadowDigestRow = { seq: number; kind: string; digest: string };
-type ShadowCount = { kind: string; daemon: number; file: number };
-type ShadowState = {
-  sessionId: Id<"claudeSessions">;
-  runLastLineAt: number;
-  // The seq of the last row read from each side — a floor, not a pagination
-  // cursor. Convex allows ONE paginated query per function call and this
-  // comparison reads two indexes, so both sides are bounded `.take()` reads
-  // over an explicit seq floor. (sessionId, seq) and (runId, seq) are each
-  // unique — the seq floor on both writers — so `gt("seq", …)` neither skips
-  // a row nor returns one twice.
-  daemonAfterSeq: number | null;
-  fileAfterSeq: number | null;
-  daemonDone: boolean;
-  fileDone: boolean;
-  daemonPending: ShadowDigestRow[];
-  filePending: ShadowDigestRow[];
-  counts: ShadowCount[];
-  daemonRows: number;
-  fileRows: number;
-  daemonTextRows: number;
-  fileTextRows: number;
-  textMatches: number;
-  firstDiffSeq?: number;
-  daemonTextSha256: string;
-  fileTextSha256: string;
-};
-
-const SHADOW_STATE = v.object({
-  sessionId: v.id("claudeSessions"),
-  runLastLineAt: v.number(),
-  daemonAfterSeq: v.union(v.number(), v.null()),
-  fileAfterSeq: v.union(v.number(), v.null()),
-  daemonDone: v.boolean(),
-  fileDone: v.boolean(),
-  daemonPending: v.array(v.object({ seq: v.number(), kind: v.string(), digest: v.string() })),
-  filePending: v.array(v.object({ seq: v.number(), kind: v.string(), digest: v.string() })),
-  counts: v.array(v.object({ kind: v.string(), daemon: v.number(), file: v.number() })),
-  daemonRows: v.number(),
-  fileRows: v.number(),
-  daemonTextRows: v.number(),
-  fileTextRows: v.number(),
-  textMatches: v.number(),
-  firstDiffSeq: v.optional(v.number()),
-  daemonTextSha256: v.string(),
-  fileTextSha256: v.string(),
-});
-
-function addKindCount(state: ShadowState, side: "daemon" | "file", kind: string) {
-  let count = state.counts.find((entry) => entry.kind === kind);
-  if (!count) {
-    count = { kind, daemon: 0, file: 0 };
-    state.counts.push(count);
-  }
-  count[side] += 1;
-}
-
-async function addShadowPage(
-  state: ShadowState,
-  side: "daemon" | "file",
-  rows: Array<{ seq: number; kind: string; content: unknown }>,
-) {
-  for (const row of rows) {
-    if (SHADOW_IGNORED_KINDS.has(row.kind)) continue;
-    addKindCount(state, side, row.kind);
-    if (side === "daemon") state.daemonRows += 1;
-    else state.fileRows += 1;
-    if (!SHADOW_TEXT_KINDS.has(row.kind)) continue;
-    const digest = await sha256(normalizeTrailingWhitespace(textContent(row.content)));
-    const pending = side === "daemon" ? state.daemonPending : state.filePending;
-    pending.push({ seq: row.seq, kind: row.kind, digest });
-    if (side === "daemon") {
-      state.daemonTextRows += 1;
-      state.daemonTextSha256 = await sha256(`${state.daemonTextSha256}\n${row.kind}\n${digest}`);
-    } else {
-      state.fileTextRows += 1;
-      state.fileTextSha256 = await sha256(`${state.fileTextSha256}\n${row.kind}\n${digest}`);
-    }
-  }
-}
-
-export const internalEligibleComparisons = internalQuery({
-  args: {
-    status: v.union(v.literal("ended"), v.literal("failed")),
-    paginationOpts: paginationOptsValidator,
-  },
-  handler: async (ctx, args) => {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    // The new kind only. Comparisons stored as runs-shadow-compare before the
-    // rename leave this 24-hour window within a day of the deploy; until then
-    // a session compared under the old kind can be compared once more, which
-    // writes one more event and changes nothing else. The data keys `runId`
-    // and `runStatus` are the stored spelling and stay.
-    const comparisons = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", "agents-shadow-compare").gte("at", cutoff))
-      .order("desc")
-      .take(1000);
-    const comparedAt = new Map<string, number>();
-    for (const comparison of comparisons) {
-      const data = comparison.data;
-      if (!data || typeof data !== "object") continue;
-      const result = data as { runId?: unknown; runStatus?: unknown };
-      if (typeof result.runId !== "string" || (result.runStatus !== "ended" && result.runStatus !== "failed")) continue;
-      if (!comparedAt.has(result.runId)) comparedAt.set(result.runId, comparison.at);
-    }
-    const page = await ctx.db
-      .query("claudeSessions")
-      .withIndex("by_status", (q) => q.eq("status", args.status).gte("statusChangedAt", cutoff))
-      .order("asc")
-      .paginate(args.paginationOpts);
-    const eligible: Array<{ sessionId: Id<"claudeSessions">; runId: string }> = [];
-    for (const session of page.page) {
-      const runId = session.runId;
-      if (!runId || session.rowsFrom === "runs") continue;
-      const run = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
-      // A clean comparison while the run was still unknown cannot authorize a
-      // later cutover. Only terminal run rows enter the comparison pipeline.
-      if (!run || (run.status !== "ended" && run.status !== "failed") || (comparedAt.get(run.runId) ?? -Infinity) >= run.lastLineAt) continue;
-      eligible.push({ sessionId: session._id, runId: run.runId });
-    }
-    return {
-      eligible,
-      isDone: page.isDone,
-      continueCursor: page.isDone ? null : page.continueCursor,
-    };
-  },
-});
-
-// The comparison stays beside both row sets. Only counts and digests leave
-// this transaction; transcript text is neither returned nor written to the
-// event that the digest reads.
-export const internalShadowCompare = internalMutation({
-  args: { sessionId: v.id("claudeSessions"), state: v.optional(SHADOW_STATE) },
-  handler: async (ctx, { sessionId, state: priorState }) => {
-    const session = await ctx.db.get(sessionId);
-    if (!session) throw new Error("session not found");
-    if (!session.runId) throw new Error("session has no run");
-    const run = await agentAt(ctx, session.runId);
-    if (!run) throw new Error("run not found");
-    if (run.status !== "ended" && run.status !== "failed") throw new Error("run is not terminal");
-
-    const emptyDigest = await sha256("");
-    const state: ShadowState = priorState && priorState.sessionId === sessionId && priorState.runLastLineAt === run.lastLineAt
-      ? {
-          ...priorState,
-          daemonPending: priorState.daemonPending.map((row) => ({ ...row })),
-          filePending: priorState.filePending.map((row) => ({ ...row })),
-          counts: priorState.counts.map((count) => ({ ...count })),
-        }
-      : {
-          sessionId,
-          runLastLineAt: run.lastLineAt,
-          daemonAfterSeq: null,
-          fileAfterSeq: null,
-          daemonDone: false,
-          fileDone: false,
-          daemonPending: [],
-          filePending: [],
-          counts: [],
-          daemonRows: 0,
-          fileRows: 0,
-          daemonTextRows: 0,
-          fileTextRows: 0,
-          textMatches: 0,
-          daemonTextSha256: emptyDigest,
-          fileTextSha256: emptyDigest,
-        };
-
-    // Each invocation reads at most one 100-row page from each source. The
-    // unmatched boundary rows are hashes only and stay bounded by one page.
-    // Both reads are `.take()` over a seq floor, never `.paginate()`: a single
-    // Convex function may run only one paginated query, and this one reads two
-    // indexes — the second `.paginate()` threw, which is what answered every
-    // /agents/compare call with HTTP 400.
-    if (state.daemonPending.length === 0 && !state.daemonDone) {
-      const rows = await ctx.db
-        .query("claudeMessages")
-        .withIndex("by_session_seq", (q) => {
-          const scoped = q.eq("sessionId", sessionId);
-          return state.daemonAfterSeq === null ? scoped : scoped.gt("seq", state.daemonAfterSeq);
-        })
-        .order("asc")
-        .take(SHADOW_PAGE_ROWS);
-      await addShadowPage(state, "daemon", rows);
-      state.daemonDone = rows.length < SHADOW_PAGE_ROWS;
-      if (rows.length > 0) state.daemonAfterSeq = rows[rows.length - 1].seq;
-    }
-    if (state.filePending.length === 0 && !state.fileDone) {
-      const runId = session.runId;
-      const rows = await ctx.db
-        .query("claudeMessages")
-        .withIndex("by_run_seq", (q) => {
-          const scoped = q.eq("runId", runId);
-          return state.fileAfterSeq === null ? scoped : scoped.gt("seq", state.fileAfterSeq);
-        })
-        .order("asc")
-        .take(SHADOW_PAGE_ROWS);
-      await addShadowPage(state, "file", rows);
-      state.fileDone = rows.length < SHADOW_PAGE_ROWS;
-      if (rows.length > 0) state.fileAfterSeq = rows[rows.length - 1].seq;
-    }
-
-    while (state.daemonPending.length > 0 && state.filePending.length > 0) {
-      const daemonRow = state.daemonPending.shift()!;
-      const fileRow = state.filePending.shift()!;
-      if (daemonRow.kind === fileRow.kind && daemonRow.digest === fileRow.digest) state.textMatches += 1;
-      else if (state.firstDiffSeq === undefined) state.firstDiffSeq = fileRow.seq;
-    }
-    if (state.daemonDone && state.daemonPending.length === 0 && state.filePending.length > 0) {
-      if (state.firstDiffSeq === undefined) state.firstDiffSeq = state.filePending[0].seq;
-      state.filePending = [];
-    }
-    if (state.fileDone && state.filePending.length === 0 && state.daemonPending.length > 0) {
-      if (state.firstDiffSeq === undefined) state.firstDiffSeq = state.daemonPending[0].seq;
-      state.daemonPending = [];
-    }
-
-    if (!state.daemonDone || !state.fileDone || state.daemonPending.length > 0 || state.filePending.length > 0) {
-      return { complete: false as const, runId: run.runId, daemonRows: state.daemonRows, fileRows: state.fileRows, state };
-    }
-
-    const byKind: Record<string, { daemon: number; file: number }> = Object.fromEntries(
-      [...state.counts]
-        .sort((left, right) => left.kind.localeCompare(right.kind))
-        .map(({ kind, daemon, file }) => [kind, { daemon, file }]),
-    );
-    const textRows = Math.max(state.daemonTextRows, state.fileTextRows);
-    const clean = Object.values(byKind).every((count) => count.daemon === count.file) && state.firstDiffSeq === undefined;
-    const result = {
-      complete: true as const,
-      runId: run.runId,
-      runStatus: run.status,
-      daemonRows: state.daemonRows,
-      fileRows: state.fileRows,
-      byKind,
-      textRows,
-      textMatches: state.textMatches,
-      ...(state.firstDiffSeq === undefined ? {} : { firstDiffSeq: state.firstDiffSeq }),
-      daemonTextSha256: state.daemonTextSha256,
-      fileTextSha256: state.fileTextSha256,
-      clean,
-    };
-
-    await event(ctx, "agents-shadow-compare", result);
-    const runPatch: Record<string, unknown> = {};
-    if (clean) {
-      const cutoverAt = run.cutoverAt ?? Date.now();
-      if (session.rowsFrom !== "runs") await ctx.db.patch(sessionId, { rowsFrom: "runs" });
-      if (run.cutoverAt === undefined) runPatch.cutoverAt = cutoverAt;
-    }
-    if (Object.keys(runPatch).length > 0) await ctx.db.patch(run._id, runPatch);
-    return result;
-  },
-});
-
 // The nightly writer consumes immutable manifest lines, not database rows.
 // Pagination remains over the source index even when a page contains stubs
 // with no verified store key, so its cursor always advances.
@@ -1362,8 +1090,7 @@ async function evictRefusal(ctx: MutationCtx, run: Doc<"runs">, now: number) {
 
 /**
  * Delete up to `budget` documents of one run's transcript. CHUNKS BEFORE THEIR
- * ROW, so a crash can never leave overflow nobody can find — the same discipline
- * as claudeSessions.internalSweepOverflow, applied to the run key.
+ * ROW, so a crash can never leave overflow nobody can find.
  */
 async function evictAgentStep(ctx: MutationCtx, runId: string, budget: number) {
   let rowsDeleted = 0;

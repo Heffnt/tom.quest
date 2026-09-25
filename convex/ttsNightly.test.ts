@@ -355,6 +355,8 @@ describe("GET /tts/learning-input", () => {
     expect(input.rulings[0].quote).toBe("ask for a shorter term");
   });
 
+  // witness: read the reply context by anything but the session's runId and
+  // the learning run sees every one of Tom's turns with nothing around it.
   it("carries the agent's text on either side of each of Tom's turns", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
@@ -369,17 +371,17 @@ describe("GET /tts/learning-input", () => {
         statusChangedAt: now,
         nextSeq: 5,
         createdAt: now,
-        // A session from before the cutover names its run and reads the
-        // daemon's rows; one that names no run reads none.
+        // Its rows are its agent file's, under the run it names.
         runId: "claude:box:the-lease",
       });
       const say = (seq: number, at: number, text: string) =>
         ctx.db.insert("claudeMessages", {
-          sessionId,
+          runId: "claude:box:the-lease",
           seq,
           turn: seq,
           kind: "assistant-text",
           content: { text },
+          depth: 0,
           createdAt: at,
         });
       await say(1, now - 3000, "an earlier answer");
@@ -405,58 +407,6 @@ describe("GET /tts/learning-input", () => {
     expect(input.tomTurns[0].replyAfter.startsWith("Noted. xxx")).toBe(true);
     expect(input.tomTurns[0].replyAfter.length).toBe(LEARNING_REPLY_CHARS + 1);
     expect(input.tomTurns[0].replyAfter.endsWith("…")).toBe(true);
-  });
-
-  // witness: read the reply context by sessionId alone and a session whose
-  // rows come from its agent file (rowsFrom "runs") has no rows there — the
-  // learning run would see every one of Tom's turns with nothing around it.
-  it("reads the agent file's rows around Tom's turn for a session since the cutover", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    const runId = "claude:box:47f04bc9-1111-4222-8333-555555555555";
-    await t.run(async (ctx) => {
-      const sessionId = await ctx.db.insert("claudeSessions", {
-        title: "the lease, from the file",
-        kind: "adhoc",
-        repo: "none",
-        repos: [],
-        status: "ended",
-        statusChangedAt: now,
-        nextSeq: 0,
-        createdAt: now,
-        runId,
-        rowsFrom: "runs",
-      });
-      // A daemon row under the session's id: stored data from before the
-      // cutover, which a file-backed session must not read.
-      await ctx.db.insert("claudeMessages", {
-        sessionId, seq: 9, turn: 0, kind: "assistant-text",
-        content: { text: "a daemon row" }, createdAt: now - 500,
-      });
-      const say = (seq: number, at: number, text: string) =>
-        ctx.db.insert("claudeMessages", {
-          runId, seq, turn: seq, kind: "assistant-text",
-          content: { text }, depth: 0, createdAt: at,
-        });
-      await say(100, now - 3000, "an earlier answer");
-      await say(200, now - 1000, "Which lease?");
-      await ctx.db.insert("claudeInbound", {
-        sessionId,
-        kind: "user-turn",
-        text: "the apartment one",
-        author: "tom",
-        status: "done",
-        createdAt: now,
-      });
-      await say(300, now + 1000, "Noted.");
-      await say(400, now + 3000, "a later answer");
-    });
-    const res = await get(t, `/tts/learning-input?since=${now - 3_600_000}&until=${now + 3_600_000}`);
-    const input = await res.json();
-    expect(input.tomTurns).toHaveLength(1);
-    expect(input.tomTurns[0].replyBefore).toBe("Which lease?");
-    expect(input.tomTurns[0].replyAfter).toBe("Noted.");
   });
 
   it("starts where the last learning run stopped when since is not given", async () => {

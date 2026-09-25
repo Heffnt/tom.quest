@@ -490,95 +490,12 @@ describe("POST /agents/overflow: bounded chunks", () => {
 describe("phase 3 agent routes", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  // The run-id grammar wants at least eight characters in the thread segment,
-  // so the suffix names the session rather than abbreviating it.
-  const runIdFor = (suffix: string) => `claude:laptop:${suffix}-session`;
-
-  async function linkedSession(t: ReturnType<typeof convexTest>, suffix: string) {
-    const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
-      title: suffix, kind: "adhoc", repo: "none", status: "ended",
-      statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
-    }));
-    const result = await t.mutation(internal.agents.internalIngest, {
-      ...body,
-      run: {
-        ...body.run,
-        runId: runIdFor(suffix),
-        rootRunId: runIdFor(suffix),
-        sessionId,
-        status: "ended",
-      },
-    } as never);
-    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
-    return sessionId;
-  }
-
-  it("keeps comparison and manifest reads behind the existing session worker key", async () => {
+  it("keeps manifest reads behind the existing session worker key", async () => {
     const t = convexTest(schema, modules);
-    expect((await t.fetch("/agents/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status).toBe(503);
     expect((await t.fetch("/agents/manifest?since=0")).status).toBe(503);
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    expect((await t.fetch("/agents/compare", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
     expect((await t.fetch("/agents/manifest?since=0", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
   });
-
-  it("compares one session directly and discovers eligible sessions from an empty object", async () => {
-    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest(schema, modules);
-    const direct = await linkedSession(t, "direct");
-    const directResponse = await t.fetch("/agents/compare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
-      body: JSON.stringify({ sessionId: direct }),
-    });
-    expect(directResponse.status).toBe(200);
-    expect(await directResponse.json()).toMatchObject({ agentId: runIdFor("direct"), clean: true });
-
-    await linkedSession(t, "batch");
-    const batchResponse = await t.fetch("/agents/compare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
-      body: "{}",
-    });
-    expect(batchResponse.status).toBe(200);
-    expect(await batchResponse.json()).toMatchObject({ comparisons: [expect.objectContaining({ agentId: runIdFor("batch"), clean: true })] });
-  });
-
-  it("finishes every bounded comparison page before returning a verdict", async () => {
-    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest(schema, modules);
-    const sessionId = await linkedSession(t, "paged");
-    await t.run(async (ctx) => {
-      for (let seq = 0; seq < 101; seq += 1) await ctx.db.insert("claudeMessages", {
-        sessionId, seq, turn: 0, kind: "user", content: { text: `row-${seq}` }, createdAt: seq + 1,
-      });
-    });
-    // The second page lands on the run linkedSession already recorded, so the
-    // fence tuple is that run's committed cursor, not a fresh one.
-    const paged = await t.mutation(internal.agents.internalIngest, {
-      run: { ...body.run, runId: runIdFor("paged"), rootRunId: runIdFor("paged"), sessionId, status: "ended" },
-      rows: Array.from({ length: 101 }, (_, seq) => ({
-        seq, turn: 0, kind: "user", content: { text: seq === 100 ? "late-mismatch" : `row-${seq}` },
-        provenance: { fileVersion: body.run.file.storedHash, file: "C:/http.jsonl", lineStart: seq, lineEnd: seq, block: 0, parserVersion: "runs-parser-1", sourceKind: "user" },
-        digest: seq.toString(16).padStart(16, "0"), depth: 0, createdAt: seq + 1,
-      })),
-      children: [],
-      previousCommittedLine: body.run.file.committedLine,
-      previousPrefixSha256: body.run.file.committedPrefixSha256,
-    } as never);
-    expect(paged, JSON.stringify(paged)).toMatchObject({ ok: true, inserted: 101 });
-    const response = await t.fetch("/agents/compare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
-      body: JSON.stringify({ sessionId }),
-    });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
-    // 202 rows and a two-page comparison over one route: the default 5s budget
-    // is for a test that writes a handful of rows, and it was timing out on a
-    // busy runner. The merge gate writes a commit's tests row ONCE, so a
-    // timeout here bars that head for good.
-  }, 30_000);
 
   it("serves verified store versions as manifest entries", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
@@ -869,25 +786,6 @@ describe("the agent doors read the agent spelling only", () => {
     expect(response.status).toBe(200);
     // The entries keep run_id: WikiTom stores them as written.
     expect((await response.json()).entries).toEqual([expect.objectContaining({ run_id: ROOT })]);
-  });
-
-  it("/agents/compare answers agentId, and the stored comparison keeps runId", async () => {
-    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest(schema, modules);
-    const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
-      title: "spelling", kind: "adhoc", repo: "none", status: "ended", statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
-    }));
-    const page = storedRootPage();
-    const landed = await t.mutation(internal.agents.internalIngest, { ...page, run: { ...page.run, sessionId, status: "ended" } } as never);
-    expect(landed, JSON.stringify(landed)).toMatchObject({ ok: true });
-    const response = await post(t, "/agents/compare", { sessionId });
-    expect(response.status).toBe(200);
-    const answer = await response.json();
-    expect(answer).toMatchObject({ agentId: ROOT, runStatus: "ended" });
-    expect(answer).not.toHaveProperty("runId");
-    const [comparison] = await events(t, "agents-shadow-compare");
-    expect(comparison.data).toMatchObject({ runId: ROOT, runStatus: "ended" });
-    expect(comparison.data).not.toHaveProperty("agentId");
   });
 
   it("/sessions/ingest stores runId from agentId and refuses runId", async () => {

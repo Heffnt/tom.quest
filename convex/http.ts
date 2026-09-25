@@ -3867,121 +3867,8 @@ http.route({
   handler: sessionsIngest,
 });
 
-// POST /sessions/overflow — one ≤256KB chunk of a message's COMPLETE payload
-// (the transcript principle: the 32KB cut is what the page renders, not what
-// is stored). Its own route rather than a field on the ingest body: the flush
-// cadence is ~400ms and a failed flush re-sends its whole payload, so a
-// multi-megabyte tool result riding along would wreck both. Same
-// SESSIONS_WORKER_KEY door as poll/ingest.
-//
-// Every field is checked HERE, by type, and every error this route returns
-// is a fixed string. The body carries payload text, and a validator error
-// from the mutation would spell its arguments — text included — into a
-// message the daemon would then store in an error row and print to journald.
-// So the mutation is only ever reached with well-typed arguments, and
-// whatever it throws is reported as one constant.
 const nonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0;
-
-const sessionsOverflow = httpAction(async (ctx, request) => {
-  const denied = sessionsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.sessionId !== "string" || b.sessionId === "") {
-    return jsonResponse(400, { error: "sessionId required" });
-  }
-  for (const field of ["seq", "index", "chunkCount"] as const) {
-    if (!nonNegativeInteger(b[field])) {
-      return jsonResponse(400, {
-        error: `${field} (non-negative integer) required`,
-      });
-    }
-  }
-  if (typeof b.text !== "string") {
-    return jsonResponse(400, { error: "text (string) required" });
-  }
-  try {
-    const result = await ctx.runMutation(
-      internal.claudeSessions.internalIngestOverflow,
-      {
-        sessionId: b.sessionId as Id<"claudeSessions">,
-        seq: b.seq as number,
-        index: b.index as number,
-        chunkCount: b.chunkCount as number,
-        text: b.text,
-      },
-    );
-    // A refusal is permanent by the daemon's rule (4xx other than 408/429):
-    // re-sending the same chunk cannot change the verdict.
-    if (!result.ok) return jsonResponse(409, { error: result.reason });
-    return jsonResponse(200, result);
-  } catch {
-    return jsonResponse(400, { error: "overflow chunk rejected" });
-  }
-});
-
-http.route({
-  path: "/sessions/overflow",
-  method: "POST",
-  handler: sessionsOverflow,
-});
-
-// POST /sessions/overflow/stamp — the second step of a re-ingest
-// (worker/session-host/reingest-overflow.mjs): the row landed without its
-// stamp when the live upload failed, the chunks are up now, and this names
-// them from the row. Same door, same posture: typed fields, fixed errors.
-const sessionsOverflowStamp = httpAction(async (ctx, request) => {
-  const denied = sessionsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.sessionId !== "string" || b.sessionId === "") {
-    return jsonResponse(400, { error: "sessionId required" });
-  }
-  for (const field of ["seq", "byteLength", "chunkCount"] as const) {
-    if (!nonNegativeInteger(b[field])) {
-      return jsonResponse(400, {
-        error: `${field} (non-negative integer) required`,
-      });
-    }
-  }
-  if (typeof b.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(b.sha256)) {
-    return jsonResponse(400, { error: "sha256 (64 hex chars) required" });
-  }
-  try {
-    const result = await ctx.runMutation(
-      internal.claudeSessions.internalStampOverflow,
-      {
-        sessionId: b.sessionId as Id<"claudeSessions">,
-        seq: b.seq as number,
-        sha256: b.sha256,
-        byteLength: b.byteLength as number,
-        chunkCount: b.chunkCount as number,
-      },
-    );
-    if (!result.ok) return jsonResponse(409, { error: result.reason });
-    return jsonResponse(200, result);
-  } catch {
-    return jsonResponse(400, { error: "overflow stamp rejected" });
-  }
-});
-
-http.route({
-  path: "/sessions/overflow/stamp",
-  method: "POST",
-  handler: sessionsOverflowStamp,
-});
 
 // Agent-file ingestion deliberately shares the daemon worker credential while
 // migration still has one box-side installation surface. Only this legacy
@@ -4057,62 +3944,6 @@ const agentsOverflowStamp = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/agents/overflow/stamp", method: "POST", handler: agentsOverflowStamp });
 
-// The comparison reads both row sets inside Convex and returns counts and
-// digests only. Transcript text never crosses this route.
-const agentsCompare = httpAction(async (ctx, request) => {
-  const denied = sessionsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (b.sessionId !== undefined && (typeof b.sessionId !== "string" || b.sessionId === "")) return jsonResponse(400, { error: "sessionId must be a non-empty string" });
-  try {
-    // The comparison's result is also stored on the agents-shadow-compare
-    // event in the stored spelling (`runId`, which internalEligibleComparisons
-    // reads back), so the answer alone is put in the wire spelling here.
-    const compareAllPages = async (sessionId: Id<"claudeSessions">) => {
-      let state: Record<string, unknown> | undefined;
-      for (;;) {
-        const result = await ctx.runMutation(internal.agents.internalShadowCompare, {
-          sessionId,
-          ...(state === undefined ? {} : { state }),
-        } as never);
-        if (result.complete) {
-          const { runId, ...rest } = result;
-          return { ...rest, agentId: runId };
-        }
-        state = result.state;
-      }
-    };
-    if (typeof b.sessionId === "string") {
-      const result = await compareAllPages(b.sessionId as Id<"claudeSessions">);
-      return jsonResponse(200, result);
-    }
-    const comparisons = [];
-    for (const status of ["ended", "failed"] as const) {
-      let cursor: string | null = null;
-      for (;;) {
-        const page: {
-          eligible: Array<{ sessionId: Id<"claudeSessions">; runId: string }>;
-          isDone: boolean;
-          continueCursor: string | null;
-        } = await ctx.runQuery(internal.agents.internalEligibleComparisons, {
-          status,
-          paginationOpts: { cursor, numItems: 100 },
-        });
-        for (const session of page.eligible) comparisons.push(await compareAllPages(session.sessionId));
-        if (page.isDone) break;
-        cursor = page.continueCursor;
-      }
-    }
-    return jsonResponse(200, { comparisons });
-  } catch (error) {
-    // The reason, not a phrase. An opaque "comparison rejected" is what
-    // hid a thrown Convex limit behind an hourly HTTP 400 in the cron log.
-    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
-  }
-});
-http.route({ path: "/agents/compare", method: "POST", handler: agentsCompare });
 
 // The WikiTom writer receives already-shaped manifest entries and an opaque
 // cursor. The full `(at, agentId, fileVersion)` checkpoint makes equal-ms
@@ -4278,24 +4109,16 @@ http.route({
   handler: sessionsTranscript,
 });
 
-// GET /sessions/backfill-list?cursor= — the sessions whose rows are still the
-// daemon's, for the box's one-off backfill pass (Jarvis sweep
-// --backfill-sessions): { sessions: [{ sessionId, runId, sdkSessionId }],
-// cursor }. Ask again with the cursor until it is null; a page may be empty
-// while it is not (convex/claudeSessions.ts internalBackfillList). Behind the
-// daemon's key, since it names every old session's run.
-const sessionsBackfillList = httpAction(async (ctx, request) => {
+// GET /sessions/backfill-list — the list the box's one-off backfill pass
+// (Jarvis sweep --backfill-sessions) read: the sessions whose rows were still
+// the daemon's. None is any more, so it answers an empty list and a null
+// cursor. It stays, behind the daemon's key, until the Jarvis change that
+// deletes the flag has deployed, so a box still running the flag reads
+// "nothing left" rather than an error; then it goes.
+const sessionsBackfillList = httpAction(async (_ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  const cursor = new URL(request.url).searchParams.get("cursor");
-  try {
-    const result = await ctx.runQuery(internal.claudeSessions.internalBackfillList, {
-      cursor: cursor === null || cursor === "" ? null : cursor,
-    });
-    return jsonResponse(200, result);
-  } catch {
-    return jsonResponse(400, { error: "invalid cursor" });
-  }
+  return jsonResponse(200, { sessions: [], cursor: null });
 });
 
 http.route({ path: "/sessions/backfill-list", method: "GET", handler: sessionsBackfillList });

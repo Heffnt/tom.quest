@@ -252,27 +252,20 @@ export const internalLearningInput = internalQuery({
       // 2026-09-25): the session owns the mental-health page itself.
       if (session.therapy) continue;
       // The agent's text just before the turn and just after it. The index
-      // pins the rows' owner and the kind; the filter walks the rows on one
-      // side of the turn's instant and stops at the first. A session's rows
-      // are its agent file's since the cutover, by runId, and the daemon's
-      // before it, by sessionId.
+      // pins the run and the kind; the filter walks the rows on one side of
+      // the turn's instant and stops at the first. A session's rows are its
+      // agent file's, by runId.
       let replyBefore: string | null = null;
       let replyAfter: string | null = null;
       const source = session.source;
-      if (repliesLookedUp < LEARNING_REPLY_TURNS && source.from !== "none") {
+      if (repliesLookedUp < LEARNING_REPLY_TURNS && source.from === "run") {
         repliesLookedUp += 1;
         const assistantText = () =>
-          source.from === "run"
-            ? ctx.db
-                .query("claudeMessages")
-                .withIndex("by_run_kind", (q) =>
-                  q.eq("runId", source.runId).eq("kind", "assistant-text"),
-                )
-            : ctx.db
-                .query("claudeMessages")
-                .withIndex("by_session_kind", (q) =>
-                  q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
-                );
+          ctx.db
+            .query("claudeMessages")
+            .withIndex("by_run_kind", (q) =>
+              q.eq("runId", source.runId).eq("kind", "assistant-text"),
+            );
         const before = await assistantText()
           .order("desc")
           .filter((q) => q.lte(q.field("createdAt"), row.createdAt))
