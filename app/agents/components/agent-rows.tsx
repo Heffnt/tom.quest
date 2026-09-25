@@ -5,6 +5,11 @@
 // divider, the turn clocks, the agent fold, the live tail, the pending-inbound
 // echo and the jump-to-latest button are all proven code and they stay.
 //
+// A session's rows are its agent file's (one transcript path, 2026-09-25):
+// they land when the sweep reads the file at the end of a turn, so during a
+// turn the page shows the live tail, Tom's delivered turn (getPendingInbound
+// returns it until its row lands) and nothing else.
+//
 // Four things changed, and only four:
 //   1. The rows arrive as a prop from useAgentRows (../use-agent-rows), so one memo
 //      in <Agent/> can match child runs against the same loaded window this file
@@ -42,7 +47,6 @@ import {
   formatClock,
   isLive,
   previewLine,
-  shortAge,
   subagentTypeOf,
   taskDescriptionOf,
   toolInputOf,
@@ -110,9 +114,8 @@ function groupRows(messages: TranscriptMessage[]): Group[] {
 
 // toolUseId → what its Task tool-call said the subagent is: its type, and the
 // description the call gave it. Read off the Task rows in the loaded window; a
-// group whose Task row has not been paged in yet falls back to the open-work
-// query below, and keeps the bare id only when neither knows it — an invented
-// name would be worse than the literal one.
+// group whose Task row has not been paged in yet keeps the bare id — an
+// invented name would be worse than the literal one.
 type TaskLabel = { type?: string; description?: string };
 
 function subagentIndex(messages: TranscriptMessage[]): Map<string, TaskLabel> {
@@ -222,71 +225,38 @@ function openToolCall(
   return null;
 }
 
-/**
- * How long a running subagent has been going, ticking on its own 15s interval.
- * The interval is HERE and not in the parent on purpose: the rows show no ages,
- * and a tick hoisted up would re-render every row in the pane once a minute.
- */
-function Elapsed({ startedAt }: { startedAt: number }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 15_000);
-    return () => clearInterval(t);
-  }, []);
-  return <>{shortAge(startedAt, now)}</>;
-}
-
-/** One running subagent, as claudeSessions.getOpenToolWork names it. */
-type OpenAgent = {
-  toolUseId: string;
-  subagentType: string;
-  description: string;
-  startedAt: number;
-  current?: { toolName: string; inputPreview: string };
-};
-
-/** The first of these that says something. The open-work query spells an
- * absent field as "", so a plain ?? chain would take the empty one. */
-function firstText(...values: (string | undefined)[]): string | undefined {
-  return values.find((v) => v !== undefined && v.trim() !== "");
-}
-
-/** The line on the closed fold: who, what it was sent to do, how many rows —
- * and, while it is still going, that it is running, for how long, and the call
- * it is inside. */
+/** The line on the closed fold: who, what it was sent to do, how many rows. */
 function AgentSummary({
   label,
   description,
   rows,
-  open,
 }: {
   label: string;
   description?: string;
   rows: number;
-  /** Absent = the subagent has returned (or the session is over). */
-  open?: OpenAgent;
 }) {
   return (
     <summary className="cursor-pointer list-none text-xs text-text-faint px-1 hover:text-text-muted">
       agent <span className="text-text-muted">{label}</span> — {rows} rows
-      {description !== undefined && (
+      {description !== undefined && description.trim() !== "" && (
         <span>
           {" · "}
           {previewLine(description, 80)}
         </span>
       )}
-      {open !== undefined && (
-        <span className="text-accent">
-          {" · running "}
-          <Elapsed startedAt={open.startedAt} />
-        </span>
-      )}
-      {open?.current !== undefined && (
-        <span className="block font-mono text-[10px] text-text-faint break-words">
-          now: {open.current.toolName} {previewLine(open.current.inputPreview, 80)}
-        </span>
-      )}
     </summary>
+  );
+}
+
+/** A turn Tom sent that no row records yet, and where it stands. */
+function TurnEcho({ text, state }: { text: string; state: string }) {
+  return (
+    <div className="border-l-2 border-accent/50 bg-surface-alt/30 rounded-r px-3 py-2 ml-6 sm:ml-16">
+      <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
+        {text}
+      </pre>
+      <div className="text-xs text-text-faint mt-1">{state}</div>
+    </div>
   );
 }
 
@@ -348,24 +318,16 @@ const AgentRows = memo(function AgentRows({
     api.claudeSessions.getPendingInbound,
     sessionId !== undefined ? { sessionId } : "skip",
   );
-  // The open subagents, for the fold summaries. A terminal session has none by
-  // definition, so it is not asked; neither is a run with no session.
-  const openWork = useQuery(
-    api.claudeSessions.getOpenToolWork,
-    sessionId !== undefined && isLive(sessionStatus ?? "") ? { sessionId } : "skip",
-  );
 
   const groups = useMemo(() => groupRows(rows), [rows]);
   const subagents = useMemo(() => subagentIndex(rows), [rows]);
   const toolNames = useMemo(() => toolNameIndex(rows), [rows]);
   const pairing = useMemo(() => pairRows(rows), [rows]);
-  const running = useMemo(
-    () => new Map((openWork?.agents ?? []).map((a) => [a.toolUseId, a])),
-    [openWork],
-  );
   const pendingTurns = (pendingInbound ?? []).filter(
     (row) => row.kind === "user-turn",
   );
+  const deliveredTurns = pendingTurns.filter((row) => row.status !== "pending");
+  const queuedTurns = pendingTurns.filter((row) => row.status === "pending");
   const pendingControls = (pendingInbound ?? []).filter(
     (row) => row.kind !== "user-turn",
   );
@@ -588,23 +550,12 @@ const AgentRows = memo(function AgentRows({
           <Fragment key={anchor._id}>
             {anchor._id === unreadGroupKey && <UnreadDivider />}
             <details className="text-sm">
-              {/* The fold IS the agent panel now: who it is, what it was sent
-                  to do, how much it has done — and, while it is still going,
-                  that it is running, for how long, and the call it is inside.
-                  Then every row it produced, one press away. */}
+              {/* The fold: who the subagent is, what it was sent to do, how
+                  many rows it produced — then every row, one press away. */}
               <AgentSummary
-                label={
-                  firstText(
-                    subagents.get(g.parentToolUseId)?.type,
-                    running.get(g.parentToolUseId)?.subagentType,
-                  ) ?? g.parentToolUseId
-                }
-                description={firstText(
-                  subagents.get(g.parentToolUseId)?.description,
-                  running.get(g.parentToolUseId)?.description,
-                )}
+                label={subagents.get(g.parentToolUseId)?.type ?? g.parentToolUseId}
+                description={subagents.get(g.parentToolUseId)?.description}
                 rows={g.messages.length}
-                open={running.get(g.parentToolUseId)}
               />
               <div className="mt-1 space-y-2 border-l border-border pl-3">
                 {g.messages.map((m) =>
@@ -623,6 +574,12 @@ const AgentRows = memo(function AgentRows({
           </Fragment>
         );
       })}
+
+      {/* The turn the agent is working on, until its row lands: the reply
+          being typed below answers it. */}
+      {deliveredTurns.map((row) => (
+        <TurnEcho key={row._id} text={row.text ?? ""} state="delivered" />
+      ))}
 
       {streamBuf && (
         <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text px-1">
@@ -646,20 +603,16 @@ const AgentRows = memo(function AgentRows({
         </div>
       )}
 
-      {pendingTurns.map((row) => (
-        <div
+      {queuedTurns.map((row) => (
+        <TurnEcho
           key={row._id}
-          className="border-l-2 border-accent/50 bg-surface-alt/30 rounded-r px-3 py-2 ml-6 sm:ml-16"
-        >
-          <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
-            {row.text ?? ""}
-          </pre>
-          <div className="text-xs text-text-faint mt-1">
-            {sessionStatus === "running"
+          text={row.text ?? ""}
+          state={
+            sessionStatus === "running"
               ? "queued — delivers when the current turn ends"
-              : "sending"}
-          </div>
-        </div>
+              : "sending"
+          }
+        />
       ))}
 
       {pendingControls.map((row) => (

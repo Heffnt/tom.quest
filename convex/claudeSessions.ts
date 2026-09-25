@@ -18,6 +18,7 @@ import {
   subjectKey,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
+import { inboundRowIdOf, rowSource } from "./sessionRows";
 import { isIsoDay } from "../shared/markdown-sections.mjs";
 import { redactSecrets } from "../shared/redact.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
@@ -158,8 +159,15 @@ export const getSession = query({
   },
 });
 
-// Finalized transcript, seq-ascending, paginated — history rows never change,
+// A session's rows, newest page first, paginated — history rows never change,
 // so pages are cache-friendly forever.
+//
+// The rows are the agent file's, read by the session's runId, for every
+// session since the cutover (convex/sessionRows.ts rowSource); a session from
+// before it reads the rows the daemon wrote. Both indexes return the same row
+// shape in the same order, so the page cannot tell which it got. A session
+// whose run is not named yet has no rows to show, and gets an empty page
+// rather than an error: its first turn is still running.
 //
 // Every row says whether the 32KB cut hid anything (`hasOverflow`) and how
 // many bytes the whole payload is (`fullByteLength`), so the page can offer an
@@ -173,16 +181,14 @@ export const getMessages = query({
   handler: async (ctx, { sessionId, paginationOpts }) => {
     await requireTomId(ctx);
     const session = await ctx.db.get(sessionId);
-    if (session?.rowsFrom === "runs" && session.runId === undefined) {
-      throw new Error("run-backed session has no runId");
+    const source = session === null ? { from: "none" as const } : rowSource(session);
+    if (source.from === "none") {
+      return { page: [], isDone: true, continueCursor: "" };
     }
-    // The cutover is one row-level switch. Both indexes return the same
-    // transcript shape and newest-first order, so every page consumer keeps
-    // working while the finalized-row authority changes underneath it.
-    const page = session?.rowsFrom === "runs"
+    const page = source.from === "run"
       ? await ctx.db
           .query("claudeMessages")
-          .withIndex("by_run_seq", (q) => q.eq("runId", session.runId!))
+          .withIndex("by_run_seq", (q) => q.eq("runId", source.runId))
           .order("desc")
           .paginate(paginationOpts)
       : await ctx.db
@@ -417,18 +423,60 @@ export const getStreamBuf = query({
   },
 });
 
-// Pending inbound rows double as the optimistic echo of not-yet-delivered
-// user turns; the client renders them at the transcript's end.
+// What the page shows after the rows: Tom's words from the moment he sends
+// them until a row records them. Pending rows are the echo of commands not yet
+// delivered. A session whose rows come from the agent file records a turn only
+// when the sweep lands the file at the turn's end, so the turn of Tom's the
+// daemon has delivered (or finished) rides along too, until a user row naming
+// it by its `inbound row:` line is in the run's rows. Without it his words
+// would vanish from the page for the whole turn the agent spends on them.
+const RECORDED_SCAN = 20;
+
+async function unrecordedTomTurn(
+  ctx: QueryCtx,
+  session: Doc<"claudeSessions">,
+): Promise<Doc<"claudeInbound"> | null> {
+  const newestOf = async (status: "delivered" | "done") =>
+    await ctx.db
+      .query("claudeInbound")
+      .withIndex("by_session_status", (q) =>
+        q.eq("sessionId", session._id).eq("status", status),
+      )
+      .order("desc")
+      .take(RECORDED_SCAN);
+  // Only a turn Tom typed carries the id line a row can be matched on.
+  const turn = [...(await newestOf("delivered")), ...(await newestOf("done"))]
+    .filter((row) => row.kind === "user-turn" && row.author === "tom")
+    .sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (turn === undefined) return null;
+  const source = rowSource(session);
+  if (source.from === "run") {
+    const userRows = await ctx.db
+      .query("claudeMessages")
+      .withIndex("by_run_kind", (q) => q.eq("runId", source.runId).eq("kind", "user"))
+      .order("desc")
+      .take(RECORDED_SCAN);
+    if (userRows.some((row) => inboundRowIdOf(row.content) === turn._id)) return null;
+  }
+  return turn;
+}
+
 export const getPendingInbound = query({
   args: { sessionId: v.id("claudeSessions") },
   handler: async (ctx, { sessionId }) => {
     await requireTomId(ctx);
-    return await ctx.db
+    const pending = await ctx.db
       .query("claudeInbound")
       .withIndex("by_session_status", (q) =>
         q.eq("sessionId", sessionId).eq("status", "pending"),
       )
       .collect(); // bounded: pending commands are transient and few
+    const session = await ctx.db.get(sessionId);
+    // A session from before the cutover: the daemon wrote the user row in the
+    // same flush that marked the turn delivered, so nothing is unrecorded.
+    if (session === null || rowSource(session).from === "daemon") return pending;
+    const unrecorded = await unrecordedTomTurn(ctx, session);
+    return unrecorded === null ? pending : [unrecorded, ...pending];
   },
 });
 
@@ -789,11 +837,16 @@ export const internalListLive = internalQuery({
 });
 
 /**
- * One page of a session's finalized transcript, seq-ascending — what the
- * daemon reads to write .tts-transcript.md for a fork (forkSessionAs). It is
- * an internalQuery behind the key-authed GET /sessions/transcript route
- * (convex/http.ts): getMessages next to it is Tom-gated and pages newest-first
- * for the browser, and the daemon holds no identity and needs oldest-first.
+ * One page of a session's rows, seq-ascending — what the daemon reads to
+ * write .tts-transcript.md for a fork (forkSessionAs). It is an internalQuery
+ * behind the key-authed GET /sessions/transcript route (convex/http.ts):
+ * getMessages next to it is Tom-gated and pages newest-first for the browser,
+ * and the daemon holds no identity and needs oldest-first.
+ *
+ * The rows are the ones getMessages shows, from the same switch
+ * (convex/sessionRows.ts rowSource): the agent file's by runId since the
+ * cutover, so a row's content is in the parser's shape (a tool call's `name`,
+ * `id` and `input`), and the daemon's by sessionId before it.
  *
  * Paged rather than collected on purpose: a long session's transcript is
  * thousands of rows, which is exactly the unbounded read the collect rule
@@ -807,11 +860,21 @@ export const internalTranscriptPage = internalQuery({
     cursor: v.optional(v.string()),
   },
   handler: async (ctx, { sessionId, cursor }) => {
-    const page = await ctx.db
-      .query("claudeMessages")
-      .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
-      .order("asc")
-      .paginate({ numItems: TRANSCRIPT_PAGE_SIZE, cursor: cursor ?? null });
+    const session = await ctx.db.get(sessionId);
+    const source = session === null ? { from: "none" as const } : rowSource(session);
+    if (source.from === "none") return { rows: [], nextCursor: null };
+    const paging = { numItems: TRANSCRIPT_PAGE_SIZE, cursor: cursor ?? null };
+    const page = source.from === "run"
+      ? await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_run_seq", (q) => q.eq("runId", source.runId))
+          .order("asc")
+          .paginate(paging)
+      : await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
+          .order("asc")
+          .paginate(paging);
     return {
       rows: page.page.map((m) => ({
         seq: m.seq,
@@ -821,7 +884,7 @@ export const internalTranscriptPage = internalQuery({
         parentToolUseId: m.parentToolUseId,
         // Metadata only, as on the browser's rows: the fork's transcript file
         // renders the cut, and this says what the cut hid and how to ask for
-        // it (claudeMessageOverflow under this sessionId + seq).
+        // it (claudeMessageOverflow under the row's sessionId or runId + seq).
         overflow: m.overflow,
         createdAt: m.createdAt,
       })),
@@ -1430,6 +1493,20 @@ export const forceClose = mutation({
 // is small (a handful of sessions, pending rows only) and idempotent pulls
 // make daemon restarts a non-event (the no-state rule).
 
+async function newestRunRow(
+  ctx: QueryCtx,
+  session: Doc<"claudeSessions">,
+): Promise<{ seq: number; turn: number; createdAt: number } | undefined> {
+  const source = rowSource(session);
+  if (source.from !== "run") return undefined;
+  const row = await ctx.db
+    .query("claudeMessages")
+    .withIndex("by_run_seq", (q) => q.eq("runId", source.runId))
+    .order("desc")
+    .first();
+  return row === null ? undefined : { seq: row.seq, turn: row.turn, createdAt: row.createdAt };
+}
+
 export const internalPoll = internalMutation({
   args: {
     version: v.string(),
@@ -1592,6 +1669,11 @@ export const internalPoll = internalMutation({
           reopenedAt: s.reopenedAt,
           reopenEpoch: s.reopenEpoch ?? 0,
           pendingInbound,
+          // The newest row the agent file has landed for this session (its
+          // seq, turn and line time), absent before the run has any. The
+          // daemon clears its live tail when the turn's rows have landed, not
+          // at the turn's result, and this is how it sees them land.
+          newestRow: await newestRunRow(ctx, s),
           ...(hosted ?? {}),
         });
       }
@@ -1671,8 +1753,9 @@ export const internalIngest = internalMutation({
     sdkSessionId: v.optional(v.string()),
     // Set once the daemon knows the CLI id; never replace an existing join.
     runId: v.optional(v.string()),
-    // The daemon sends true only under ROWS_FROM_FILES. False and absent keep
-    // the legacy finalized-row writer authoritative.
+    // True: this session's rows come from its agent file (rowsFrom "runs"),
+    // and every reader of them honours that (convex/sessionRows.ts). Never
+    // unset once set.
     rowsFromFiles: v.optional(v.boolean()),
     cwd: v.optional(v.string()),
     lastSdkEventAt: v.optional(v.number()),
@@ -2265,258 +2348,6 @@ export const internalRecordOutcome = internalMutation({
         summary: summary.trim(),
       });
     }
-  },
-});
-
-// ── Open tool work (the subagent fold's live half) ──────────────────────────
-// What is this session's model DOING right now? Derived entirely from the
-// finalized tool-call / tool-result rows — the transcript is the only source;
-// nothing here is invented state. A Task call with no result is a running
-// subagent; a background Bash call is a long-running command whose latest
-// BashOutput/KillShell check is its freshest known state.
-
-const PREVIEW_CHARS = 200;
-// Evidence texts (launch results, latest checks) carry the FULL content text,
-// hard-capped — this query promises verbatim evidence bounded by scroll, not a
-// preview.
-const EVIDENCE_CHARS = 2000;
-
-// This answers about CURRENT work, so the reads are bounded newest-first
-// windows via by_session_kind: a Task or launch older than the window is out
-// of scope by construction — the transcript remains the full record.
-// This keeps read cost constant for the life of a session.
-const TOOL_CALL_WINDOW = 500;
-const TOOL_RESULT_WINDOW = 800;
-
-// Tool-call/tool-result content is daemon-written v.any(); read it loosely.
-type ToolCallContent = {
-  toolName?: string;
-  toolUseId?: string;
-  input?: unknown;
-};
-type ToolResultContent = {
-  toolUseId?: string;
-  content?: unknown;
-  isError?: boolean;
-};
-
-// Flatten a tool-result content payload (a string, or an array of typed
-// blocks) to plain text for previews and id matching. Lockstep with
-// app/agents/lib.ts contentToText (the client's renderer of the same
-// daemon-written shapes — the client bundle cannot import this server module).
-function contentText(x: unknown): string {
-  if (typeof x === "string") return x;
-  if (Array.isArray(x)) {
-    return x
-      .map((b) =>
-        typeof (b as { text?: unknown })?.text === "string"
-          ? (b as { text: string }).text
-          : JSON.stringify(b),
-      )
-      .join("\n");
-  }
-  return x === undefined ? "" : JSON.stringify(x);
-}
-
-// Lockstep with app/agents/lib.ts previewLine (the client's one-line
-// truncation of the same content).
-function previewText(x: unknown): string {
-  const s = contentText(x);
-  return s.length > PREVIEW_CHARS ? s.slice(0, PREVIEW_CHARS) + "…" : s;
-}
-
-// Full-text evidence, capped at EVIDENCE_CHARS — never the 200-char preview.
-function evidenceText(x: unknown): string {
-  const s = contentText(x);
-  return s.length > EVIDENCE_CHARS ? s.slice(0, EVIDENCE_CHARS) + "…" : s;
-}
-
-// A background launch's result text names the shell id (bash_N / shell_N);
-// checks are matched ONLY by exact equality of that id against the check
-// input's id-valued fields — substring containment mismatched bash_1 against
-// bash_12.
-const SHELL_ID_RE = /\b(bash_\d+|shell_\d+)\b/;
-
-export const getOpenToolWork = query({
-  args: { sessionId: v.id("claudeSessions") },
-  handler: async (ctx, { sessionId }) => {
-    await requireTomId(ctx);
-    const session = await ctx.db.get(sessionId);
-    // A terminal session has no OPEN work by definition — nothing to say.
-    if (!session || !isLive(session.status)) {
-      return { agents: [], commands: [], finished: [] };
-    }
-    // Kind-scoped index reads, bounded newest-first (TOOL_*_WINDOW above),
-    // reversed so downstream logic stays seq-ascending ("last wins" = newest).
-    const calls = (
-      await ctx.db
-        .query("claudeMessages")
-        .withIndex("by_session_kind", (q) =>
-          q.eq("sessionId", sessionId).eq("kind", "tool-call"),
-        )
-        .order("desc")
-        .take(TOOL_CALL_WINDOW)
-    ).reverse();
-    const results = (
-      await ctx.db
-        .query("claudeMessages")
-        .withIndex("by_session_kind", (q) =>
-          q.eq("sessionId", sessionId).eq("kind", "tool-result"),
-        )
-        .order("desc")
-        .take(TOOL_RESULT_WINDOW)
-    ).reverse();
-    const resultById = new Map<string, Doc<"claudeMessages">>();
-    for (const r of results) {
-      const id = (r.content as ToolResultContent)?.toolUseId;
-      if (typeof id === "string") resultById.set(id, r);
-    }
-    // Newest tool-call per parent Task (calls are seq-ascending: last wins) —
-    // "what is this subagent doing right now".
-    const newestChildByParent = new Map<string, Doc<"claudeMessages">>();
-    for (const call of calls) {
-      if (call.parentToolUseId !== undefined) {
-        newestChildByParent.set(call.parentToolUseId, call);
-      }
-    }
-
-    // ONE name per fact — this is the canonical field list, and the client
-    // reads exactly these names (no aliases on either side). The reader is
-    // the transcript's subagent fold (app/agents/components/transcript.tsx):
-    // it takes `agents` — the running ones, with their type, description,
-    // startedAt and current call — for its summary line, because those are
-    // facts about a live subagent that are not rows in the transcript. The
-    // agent panel this query was written for is gone (the lifeos update, phase
-    // 7); `finished` and `commands` are what it read and the fold does not,
-    // and docs/lifeos-retirement.md names them as the two losses.
-    type AgentEntry = {
-      toolUseId: string;
-      subagentType: string;
-      description: string;
-      startedAt: number;
-      running: boolean;
-      current?: { toolName: string; inputPreview: string };
-    };
-    type FinishedAgentEntry = {
-      toolUseId: string;
-      subagentType: string;
-      startedAt: number;
-      durationMs: number;
-      isError: boolean;
-      resultPreview: string;
-    };
-    type CommandEntry = {
-      toolUseId: string;
-      command: string;
-      startedAt: number;
-      launchResultText?: string;
-      latestCheck?: { toolName: string; resultText: string; at: number };
-    };
-    const agents: AgentEntry[] = [];
-    const finished: FinishedAgentEntry[] = [];
-    const commands: CommandEntry[] = [];
-
-    // Background-command checks: BashOutput/KillShell calls, seq-ascending.
-    const checks = calls.filter((call) => {
-      const name = (call.content as ToolCallContent)?.toolName;
-      return name === "BashOutput" || name === "KillShell";
-    });
-
-    for (const call of calls) {
-      const c = call.content as ToolCallContent;
-      if (typeof c?.toolUseId !== "string") continue;
-      const input = (c.input ?? {}) as Record<string, unknown>;
-      const result = resultById.get(c.toolUseId);
-
-      if (c.toolName === "Task") {
-        if (result === undefined) {
-          const entry: AgentEntry = {
-            toolUseId: c.toolUseId,
-            subagentType:
-              typeof input.subagent_type === "string"
-                ? input.subagent_type
-                : "",
-            description:
-              typeof input.description === "string" ? input.description : "",
-            startedAt: call.createdAt,
-            running: true,
-          };
-          const child = newestChildByParent.get(c.toolUseId);
-          if (child) {
-            const cc = child.content as ToolCallContent;
-            entry.current = {
-              toolName: cc?.toolName ?? "",
-              inputPreview: previewText(cc?.input),
-            };
-          }
-          agents.push(entry);
-        } else {
-          finished.push({
-            toolUseId: c.toolUseId,
-            subagentType:
-              typeof input.subagent_type === "string"
-                ? input.subagent_type
-                : "",
-            startedAt: call.createdAt,
-            durationMs: result.createdAt - call.createdAt,
-            isError: (result.content as ToolResultContent)?.isError === true,
-            resultPreview: previewText(
-              (result.content as ToolResultContent)?.content,
-            ),
-          });
-        }
-      } else if (c.toolName === "Bash" && input.run_in_background === true) {
-        const entry: CommandEntry = {
-          toolUseId: c.toolUseId,
-          command: typeof input.command === "string" ? input.command : "",
-          startedAt: call.createdAt,
-        };
-        if (result !== undefined) {
-          // The launch result names the shell id (SHELL_ID_RE); a check
-          // belongs to this launch ONLY when one of its id-valued input
-          // fields EQUALS that id — substring containment matched bash_1
-          // against bash_12. Invent no state: no id in the text, no checks.
-          const launchContent = (result.content as ToolResultContent)?.content;
-          entry.launchResultText = evidenceText(launchContent);
-          const shellId = contentText(launchContent).match(SHELL_ID_RE)?.[1];
-          for (const check of checks) {
-            if (shellId === undefined) break;
-            if (check.createdAt < call.createdAt) continue; // predates launch
-            const checkContent = check.content as ToolCallContent;
-            const checkInput = (checkContent?.input ?? {}) as Record<
-              string,
-              unknown
-            >;
-            const matches = Object.entries(checkInput).some(
-              ([key, value]) => /id/i.test(key) && value === shellId,
-            );
-            if (!matches) continue;
-            const checkResult =
-              typeof checkContent?.toolUseId === "string"
-                ? resultById.get(checkContent.toolUseId)
-                : undefined;
-            // checks are seq-ascending, so the last match is the newest.
-            entry.latestCheck = {
-              toolName: checkContent?.toolName ?? "",
-              resultText: evidenceText(
-                (checkResult?.content as ToolResultContent)?.content,
-              ),
-              at: checkResult?.createdAt ?? check.createdAt,
-            };
-          }
-        }
-        commands.push(entry);
-      }
-    }
-
-    // History caps: newest 10 finished agents and newest 10 launches, newest
-    // last (both lists are call-order; end order matches closely enough for a
-    // tail).
-    return {
-      agents,
-      commands: commands.slice(-10),
-      finished: finished.slice(-10),
-    };
   },
 });
 

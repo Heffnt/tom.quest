@@ -1338,8 +1338,11 @@ export default defineSchema({
     // the forked session's run after a "reopen as". The run the ingest records
     // for this session takes it as its own continuesRunId.
     continuesRunId: v.optional(v.string()),
-    // The finalized-row source is switched per session only after its shadow
-    // comparison is clean. Absent is the legacy daemon path.
+    // Where this session's rows come from. "runs": the agent file, read by
+    // the session's runId; the daemon sets it (rowsFromFiles on the ingest)
+    // and every reader of a session's rows honours it through
+    // convex/sessionRows.ts rowSource. Absent or "daemon": the rows the
+    // session daemon wrote before the cutover, read by sessionId.
     rowsFrom: v.optional(
       v.union(v.literal("daemon"), v.literal("runs")),
     ),
@@ -1462,7 +1465,12 @@ export default defineSchema({
     .index("by_session_kind", ["sessionId", "kind", "seq"])
     // A run is ordered by its source cursor (file version, line, block); in
     // phase 2 seq is that cursor's sortable projection.
-    .index("by_run_seq", ["runId", "seq"]),
+    .index("by_run_seq", ["runId", "seq"])
+    // Kind-scoped reads of a run's rows: the nightly learning's reply context
+    // (assistant text around Tom's turn) and the page's check that a turn Tom
+    // typed has landed as a user row. The run twin of by_session_kind, for
+    // the sessions whose rows come from the agent file (rowsFrom "runs").
+    .index("by_run_kind", ["runId", "kind", "seq"]),
 
   // The complete payload behind a cut message row, in ordered chunks of ≤256KB
   // (OVERFLOW_CHUNK_BYTES in worker/session-host/overflow.mjs). Keyed by

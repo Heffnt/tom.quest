@@ -369,6 +369,17 @@ export const internalIngest = internalMutation({
         if (session) run = { ...run, sessionId: session._id };
       }
     }
+    // A box Codex root is linked by the session row that names its run: the
+    // daemon reports the rollout's id as the session's runId, and the
+    // session's sdkSessionId is a Codex thread id rather than a Claude one, so
+    // the Claude join above cannot find it.
+    if (run.sessionId === undefined && run.cli === "codex" && run.host === "box" && run.depth === 0) {
+      const session = await ctx.db
+        .query("claudeSessions")
+        .withIndex("by_run_id", (q) => q.eq("runId", run.runId))
+        .first();
+      if (session) run = { ...run, sessionId: session._id };
+    }
     // A reopened or forked session names the run it continues. Its next run
     // takes that link; the run it names never does, so a late page of the old
     // run cannot link to itself.
@@ -1230,14 +1241,26 @@ export const internalAnswerMaterialize = internalMutation({
 // Rows for runs outside the window and not opened inside it are removed nightly.
 // The run index is never removed, a label is never removed, and the store is
 // never touched — nothing here destroys a byte the store does not already hold.
+// A run a session names is exempt until its session has been ended for the
+// row window (evictRefusal): its rows are that session's transcript.
 
-/** Why this run keeps its rows tonight, or null when it may lose them. */
+/**
+ * Why this run keeps its rows tonight, or null when it may lose them.
+ *
+ * A RUN A SESSION NAMES KEEPS ITS ROWS while the session is live and for the
+ * row window (30 days unless the deployment says otherwise) after it ended.
+ * Those rows are the session's whole transcript — the agent file is the only
+ * source of a session's rows — and a session Tom can still reopen or scroll
+ * back through is read by its session, which neither opens the run nor moves
+ * its window, so the run's own last-line clock would evict it under him.
+ */
 async function evictRefusal(ctx: MutationCtx, run: Doc<"runs">, now: number) {
   if (run.status === "running") return "running";
   if (run.lastLineAt > now - rowWindowMs()) return "inside the window";
   if (run.sessionId) {
     const session = await ctx.db.get(run.sessionId);
     if (session && (LIVE_STATUSES as readonly string[]).includes(session.status)) return "live session";
+    if (session && session.statusChangedAt > now - rowWindowMs()) return "session ended inside the window";
   }
   return null;
 }

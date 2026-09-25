@@ -52,6 +52,16 @@ export const SESSION_REPOS = /** @type {const} */ ({
   Jarvis: "Heffnt/Jarvis",
 });
 
+/**
+ * The label on the last line of every turn Tom typed, as the model receives
+ * it: his text, a blank line, then `inbound row: <claudeInbound id>`. The
+ * daemon appends it (worker/session-host/session.mjs deliveredTurnText), the
+ * ruling pen's prompt names it (app/lib/tts-session-prompt.ts), and the record
+ * reads it back off the agent file's user row to know which of Tom's turns
+ * that row is (convex/sessionRows.ts inboundRowIdOf).
+ */
+export const INBOUND_ROW_LABEL = "inbound row:";
+
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
  * Written into claudeSessions.repo when a session holds no repos at all. */
 export const NO_REPO = "none";
