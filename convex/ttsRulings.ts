@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type ObjectType } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -774,24 +774,30 @@ export const internalPendingRulings = internalQuery({
 // Apply callback: the worker reports what it did (commit sha / PR url) or how
 // it failed (error text) — either way the ruling is consumed (appliedAt set),
 // with the outcome on record in applyResult.
-export const internalMarkRulingApplied = internalMutation({
-  args: { id: v.string(), result: v.string() },
-  handler: async (ctx, { id, result }) => {
-    // The worker sends plain strings over HTTP; normalizeId is the proper
-    // reject-with-a-name path for malformed/wrong-table ids.
-    const normalized = await resolveId(ctx, "rulings", id);
-    if (!normalized) throw new Error(`Unknown ruling id: ${id}`);
-    const ruling = await ctx.db.get(normalized);
-    if (!ruling) throw new Error(`Unknown ruling id: ${id}`);
-    await ctx.db.patch(normalized, { appliedAt: Date.now(), applyResult: result });
-    await logEvent(ctx, "ruling-applied", todoRef(ruling.todoId), {
-      verdict: ruling.verdict,
-      repo: ruling.repo,
-      externalId: ruling.externalId,
-      result,
-    });
-  },
-});
+const MARK_RULING_APPLIED_ARGS = { id: v.string(), result: v.string() };
+
+/** internalMarkRulingApplied's body, run by the mutation below and by a record hook that
+ *  does the same thing inside its own mutation (convex/jarvis/). */
+export async function markRulingApplied(
+  ctx: MutationCtx,
+  { id, result }: ObjectType<typeof MARK_RULING_APPLIED_ARGS>,
+) {
+  // The worker sends plain strings over HTTP; normalizeId is the proper
+  // reject-with-a-name path for malformed/wrong-table ids.
+  const normalized = await resolveId(ctx, "rulings", id);
+  if (!normalized) throw new Error(`Unknown ruling id: ${id}`);
+  const ruling = await ctx.db.get(normalized);
+  if (!ruling) throw new Error(`Unknown ruling id: ${id}`);
+  await ctx.db.patch(normalized, { appliedAt: Date.now(), applyResult: result });
+  await logEvent(ctx, "ruling-applied", todoRef(ruling.todoId), {
+    verdict: ruling.verdict,
+    repo: ruling.repo,
+    externalId: ruling.externalId,
+    result,
+  });
+}
+
+export const internalMarkRulingApplied = internalMutation({ args: MARK_RULING_APPLIED_ARGS, handler: markRulingApplied });
 
 // Digest input: how many briefed code todos await a ruling. A brief awaits
 // when its live ruling is missing OR NOT NEWER than the brief — a re-brief

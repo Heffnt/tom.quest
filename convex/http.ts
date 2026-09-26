@@ -359,6 +359,31 @@ http.route({ path: "/tts/search/sessions", method: "GET", handler: ttsSearchSess
 http.route({ path: "/tts/search/events", method: "GET", handler: ttsSearchEvents });
 http.route({ path: "/tts/search/todos", method: "GET", handler: ttsSearchTodos });
 
+/**
+ * An old /tts/ pen, answered as the event its body now is: the one write
+ * (convex/jarvis/events.ts record) inserts it and runs the kind's hook
+ * (convex/jarvis/todos.ts), which does what the pen's own handler did. Each
+ * of these routes goes once the box's last caller posts the event itself.
+ */
+async function penAsEvent(
+  ctx: ActionCtx,
+  kind: string,
+  subject: string | undefined,
+  data: Record<string, unknown>,
+): Promise<{ ok: true; result: unknown } | { ok: false; response: Response }> {
+  try {
+    const { result } = await ctx.runMutation(internal.jarvis.events.record, {
+      kind,
+      provenance: {},
+      ...(subject === undefined ? {} : { subject }),
+      data,
+    });
+    return { ok: true, result };
+  } catch (e) {
+    return { ok: false, response: jsonResponse(400, { error: e instanceof Error ? e.message : String(e) }) };
+  }
+}
+
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
 // item. Body: { statement, source?, provenance?, needsTomToday?, why? }.
 // `needsTomToday: true` is a poller's triage judging the item to need Tom
@@ -375,24 +400,9 @@ const ttsCapture = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "invalid JSON body" });
   }
   const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
-    return jsonResponse(400, { error: "statement (non-empty string) required" });
-  }
-  const id = await ctx.runMutation(internal.tts.internalCapture, {
-    statement: b.statement,
-    source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
-    provenance: typeof b.provenance === "string" ? b.provenance : undefined,
-    // The Slack coordinates, when the caller is a Slack producer. They are
-    // what the threaded reply is addressed to and what the push route dedupes
-    // on; a caller that has none simply omits them.
-    slackChannel: typeof b.slackChannel === "string" ? b.slackChannel : undefined,
-    slackTs: typeof b.slackTs === "string" ? b.slackTs : undefined,
-    needsTomToday:
-      b.needsTomToday === true
-        ? { why: typeof b.why === "string" ? b.why.trim() : "" }
-        : undefined,
-  });
-  return jsonResponse(200, { ok: true, id });
+  const posted = await penAsEvent(ctx, "todo-captured", undefined, b);
+  if (!posted.ok) return posted.response;
+  return jsonResponse(200, { ok: true, id: (posted.result as { todoId: string }).todoId });
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
@@ -1117,80 +1127,9 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (typeof b.id !== "string" || b.id.length === 0) {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
-  // "prepared" (ruling 18) is the one value; the retired spellings are
-  // refused since the narrow (the lifeos update, phase 7). The literal
-  // "unprepared" is refused too (an agent never erases a write-up).
-  if (b.readiness !== undefined && b.readiness !== "prepared") {
-    return jsonResponse(400, {
-      error: 'readiness must be "prepared"',
-    });
-  }
-  if (
-    b.dateKind !== undefined &&
-    b.dateKind !== "external" &&
-    b.dateKind !== "self-imposed"
-  ) {
-    return jsonResponse(400, {
-      error: 'dateKind must be "external" or "self-imposed"',
-    });
-  }
-  if (b.dueAt !== undefined && typeof b.dueAt !== "number") {
-    return jsonResponse(400, { error: "dueAt must be a number (epoch ms)" });
-  }
-  // The worker's completion value: "done" is the only status this pen
-  // accepts, and only with the todo's evidence recorded and on a row Tom has
-  // not ruled on — the mutation is the real gate and refuses by name.
-  if (b.status !== undefined && b.status !== "done") {
-    return jsonResponse(400, { error: 'status must be "done"' });
-  }
-  // The run that wrote this write-up, stamped on the row so a ruling on it
-  // later finds the run that produced the text Tom read (convex/agentLabels.ts
-  // agentForToken). A DOOR THAT RECEIVES NO TOKEN STORES NONE: absent is a
-  // supported value and is never inferred, because the alternative — guessing
-  // the newest run that touched this todo — is wrong on the ordinary case (a
-  // prepare pass, a repair pass and a planner pass can all touch one todo in
-  // an hour) and a wrong edge poisons the eval corpus silently.
-  const oldToken = oldSpelling(b, { runToken: "agentToken" });
-  if (oldToken) return jsonResponse(400, { error: oldToken });
-  const agentToken = b.agentToken;
-  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
-    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
-  }
-  // The door check's complaints, when the write-up was refused twice. A pass
-  // that got through sends no key at all and the event carries none — absence
-  // is the clean answer, so there is nothing to clear.
-  let doorFaults: string[] | undefined;
-  if (b.doorFaults !== undefined) {
-    const parsed = parseDoorFaults(b.doorFaults, "doorFaults");
-    if ("error" in parsed) return jsonResponse(400, parsed);
-    doorFaults = parsed.faults;
-  }
-  const str = (x: unknown) => (typeof x === "string" ? x : undefined);
-  try {
-    await ctx.runMutation(internal.tts.internalPrepareTodo, {
-      id: b.id,
-      brief: str(b.brief),
-      entryAction: str(b.entryAction),
-      workDescription: str(b.workDescription),
-      readiness: b.readiness as "prepared" | undefined,
-      // The date the STATEMENT states, when it states one. The mutation is
-      // the real gate: a first date only, never over an existing one.
-      dueAt: b.dueAt as number | undefined,
-      dateKind: b.dateKind as "external" | "self-imposed" | undefined,
-      // The graph worker's three: the artifact that shows the work happened,
-      // the self-contained "more" layer, and the completion itself.
-      evidence: str(b.evidence),
-      groundUpExplanation: str(b.groundUpExplanation),
-      status: b.status as "done" | undefined,
-      runToken: str(agentToken),
-      doorFaults,
-    });
-    return jsonResponse(200, { ok: true });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
+  const { id, ...data } = b;
+  const posted = await penAsEvent(ctx, "todo-prepared", id, data);
+  return posted.ok ? jsonResponse(200, { ok: true }) : posted.response;
 });
 
 http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo });
@@ -1326,41 +1265,9 @@ const ttsApplyTimeNote = httpAction(async (ctx, request) => {
   if (typeof b.id !== "string" || b.id.length === 0) {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
-  if (b.status !== "applied" && b.status !== "needs-session") {
-    return jsonResponse(400, {
-      error: 'status must be "applied" or "needs-session"',
-    });
-  }
-  if (typeof b.result !== "string" || b.result.trim().length === 0) {
-    return jsonResponse(400, { error: "result (non-empty string) required" });
-  }
-  if (Array.isArray(b.actions) && b.actions.length > TIME_NOTE_ACTIONS_MAX) {
-    return jsonResponse(400, {
-      error: `at most ${TIME_NOTE_ACTIONS_MAX} actions per time note — got ${b.actions.length}`,
-    });
-  }
-  // The retired sleep vocabulary, named here rather than left to the union
-  // validator's error. Until worker/setup.sh had rolled out these were
-  // DECLARED and did nothing, so a box that had not caught up still landed its
-  // whole flush; setup.sh has since run at main 6825608, so a note still
-  // carrying one comes from code nobody runs and says so plainly.
-  const retired = retiredTimeNoteAction(b.actions);
-  if (retired) return jsonResponse(400, { error: retired });
-  try {
-    const outcome = await ctx.runMutation(internal.tts.internalApplyTimeNote, {
-      id: b.id,
-      status: b.status,
-      result: b.result,
-      actions: Array.isArray(b.actions)
-        ? (b.actions as TimeNoteActions)
-        : undefined,
-    });
-    return jsonResponse(200, outcome);
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
+  const { id, ...data } = b;
+  const posted = await penAsEvent(ctx, "time-note-applied", id, data);
+  return posted.ok ? jsonResponse(200, posted.result) : posted.response;
 });
 
 http.route({
@@ -1415,20 +1322,8 @@ const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
   if (typeof b.id !== "string" || b.id.length === 0) {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
-  if (typeof b.result !== "string" || b.result.length === 0) {
-    return jsonResponse(400, { error: "result (non-empty string) required" });
-  }
-  try {
-    await ctx.runMutation(internal.ttsRulings.internalMarkRulingApplied, {
-      id: b.id,
-      result: b.result,
-    });
-    return jsonResponse(200, { ok: true });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
+  const posted = await penAsEvent(ctx, "ruling-applied", b.id, { result: b.result });
+  return posted.ok ? jsonResponse(200, { ok: true }) : posted.response;
 });
 
 http.route({
@@ -3209,26 +3104,8 @@ const ttsSessionOutcome = httpAction(async (ctx, request) => {
   if (typeof b.sessionId !== "string" || b.sessionId === "") {
     return jsonResponse(400, { error: "sessionId required" });
   }
-  if (b.outcome !== "completed" && b.outcome !== "errored") {
-    return jsonResponse(400, {
-      error: 'outcome must be "completed" or "errored"',
-    });
-  }
-  // (The wrong-edge channel, `planRepair`, went with the plan pass that read
-  // it. A worker opened before that still sends the field; it is not read, so
-  // the outcome still lands.)
-  try {
-    await ctx.runMutation(internal.claudeSessions.internalRecordOutcome, {
-      id: b.sessionId,
-      outcome: b.outcome,
-      summary: typeof b.summary === "string" ? b.summary : "",
-    });
-    return jsonResponse(200, { ok: true });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
+  const posted = await penAsEvent(ctx, "session-ended", b.sessionId, { outcome: b.outcome, summary: b.summary });
+  return posted.ok ? jsonResponse(200, { ok: true }) : posted.response;
 });
 
 http.route({

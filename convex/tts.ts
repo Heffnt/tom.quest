@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type ObjectType } from "convex/values";
 import { composeCaptured, renderSlack } from "./ttsCompose";
 import {
   internalMutation,
@@ -869,7 +869,7 @@ export const deleteTimeNote = mutation({
 
 // The actions a time note may ask for. Every one of them is validated again
 // below against the same helpers the equivalent Tom-gated mutation uses.
-const TIME_NOTE_ACTION = v.union(
+export const TIME_NOTE_ACTION = v.union(
   v.object({
     kind: v.literal("set-due"),
     dueAt: v.number(),
@@ -1019,195 +1019,201 @@ export const internalPendingTimeNotes = internalQuery({
 // calendar — so the agent's reading of Tom's sentence is a PROPOSAL, never an
 // authority. Any rejection throws, the whole mutation rolls back (note left
 // pending), and the job re-submits it as "needs-session" with the reason.
-export const internalApplyTimeNote = internalMutation({
-  args: {
+export const APPLY_TIME_NOTE_ARGS = {
     id: v.string(),
     status: v.union(v.literal("applied"), v.literal("needs-session")),
     result: v.string(),
     actions: v.optional(v.array(TIME_NOTE_ACTION)),
-  },
-  handler: async (ctx, { id, status, result, actions }) => {
-    const normalized = ctx.db.normalizeId("timeNotes", id);
-    if (!normalized) throw new Error(`Unknown time note id: ${id}`);
-    const note = await ctx.db.get(normalized);
-    if (!note) throw new Error(`Unknown time note id: ${id}`);
-    if (note.status !== "pending") {
-      throw new Error(`Time note is already ${note.status}`);
-    }
-    if (result.trim() === "") throw new Error("result (one sentence) required");
-    const list = actions ?? [];
-    if (status === "needs-session" && list.length > 0) {
-      throw new Error("A needs-session time note carries no actions");
-    }
+  };
 
-    const now = Date.now();
-    // The todo the note is about — the only subject a todo-scoped action may
-    // touch (a day/block note has none, so those actions are refused). RE-READ
-    // per action, never hoisted: one note may carry a sequence ("I missed
-    // Tuesday, do it Friday"), and a Convex read sees this mutation's own
-    // earlier writes, so action N validates against action N−1's RESULT rather
-    // than against a snapshot from before the loop.
-    const requireSubject = async (kind: string) => {
-      const subject = note.todoId ? await ctx.db.get(todoRef(note.todoId)) : null;
-      if (!subject) {
-        throw new Error(`${kind} needs a time note written on a todo`);
+/** internalApplyTimeNote's body, run by the mutation below and by a record hook that
+ *  does the same thing inside its own mutation (convex/jarvis/). */
+export async function applyTimeNote(
+  ctx: MutationCtx,
+  { id, status, result, actions }: ObjectType<typeof APPLY_TIME_NOTE_ARGS>,
+) {
+  const normalized = ctx.db.normalizeId("timeNotes", id);
+  if (!normalized) throw new Error(`Unknown time note id: ${id}`);
+  const note = await ctx.db.get(normalized);
+  if (!note) throw new Error(`Unknown time note id: ${id}`);
+  if (note.status !== "pending") {
+    throw new Error(`Time note is already ${note.status}`);
+  }
+  if (result.trim() === "") throw new Error("result (one sentence) required");
+  const list = actions ?? [];
+  if (status === "needs-session" && list.length > 0) {
+    throw new Error("A needs-session time note carries no actions");
+  }
+
+  const now = Date.now();
+  // The todo the note is about — the only subject a todo-scoped action may
+  // touch (a day/block note has none, so those actions are refused). RE-READ
+  // per action, never hoisted: one note may carry a sequence ("I missed
+  // Tuesday, do it Friday"), and a Convex read sees this mutation's own
+  // earlier writes, so action N validates against action N−1's RESULT rather
+  // than against a snapshot from before the loop.
+  const requireSubject = async (kind: string) => {
+    const subject = note.todoId ? await ctx.db.get(todoRef(note.todoId)) : null;
+    if (!subject) {
+      throw new Error(`${kind} needs a time note written on a todo`);
+    }
+    return subject;
+  };
+  const getBlock = async (raw: string) => {
+    const blockId = ctx.db.normalizeId("blocks", raw);
+    const block = blockId && (await ctx.db.get(blockId));
+    if (!block) throw new Error(`Unknown block id: ${raw}`);
+    return block;
+  };
+  // A time note is Tom's own written instruction, so an action that lands
+  // through it is a Tom touch — stamped exactly where the equivalent public
+  // mutation stamps it (updateTodo and setStatus do; recordDateOutcome and
+  // the block mutations do not).
+  const touch = async (todoId: Id<"todos">) =>
+    ctx.db.patch(todoId, { tomTouchedAt: now });
+
+  for (const action of list) {
+    switch (action.kind) {
+      case "set-due": {
+        const todo = await requireSubject("set-due");
+        // First date is free; a second one is a renegotiation (kept dates).
+        if (todo.dueAt !== undefined) {
+          throw new Error(
+            "This todo already has a date — moving it is a renegotiation, not a new date (kept-dates rule)",
+          );
+        }
+        await ctx.db.patch(todo._id, {
+          dueAt: action.dueAt,
+          dateKind: action.dateKind ?? "self-imposed",
+          timingClass: "dated",
+          updatedAt: now,
+          tomTouchedAt: now,
+        });
+        await logEvent(ctx, "updated", todo._id, {
+          fields: ["dueAt"],
+          via: "time-note",
+        });
+        break;
       }
-      return subject;
-    };
-    const getBlock = async (raw: string) => {
-      const blockId = ctx.db.normalizeId("blocks", raw);
-      const block = blockId && (await ctx.db.get(blockId));
-      if (!block) throw new Error(`Unknown block id: ${raw}`);
-      return block;
-    };
-    // A time note is Tom's own written instruction, so an action that lands
-    // through it is a Tom touch — stamped exactly where the equivalent public
-    // mutation stamps it (updateTodo and setStatus do; recordDateOutcome and
-    // the block mutations do not).
-    const touch = async (todoId: Id<"todos">) =>
-      ctx.db.patch(todoId, { tomTouchedAt: now });
-
-    for (const action of list) {
-      switch (action.kind) {
-        case "set-due": {
-          const todo = await requireSubject("set-due");
-          // First date is free; a second one is a renegotiation (kept dates).
-          if (todo.dueAt !== undefined) {
-            throw new Error(
-              "This todo already has a date — moving it is a renegotiation, not a new date (kept-dates rule)",
-            );
-          }
-          await ctx.db.patch(todo._id, {
-            dueAt: action.dueAt,
-            dateKind: action.dateKind ?? "self-imposed",
-            timingClass: "dated",
-            updatedAt: now,
-            tomTouchedAt: now,
-          });
-          await logEvent(ctx, "updated", todo._id, {
-            fields: ["dueAt"],
-            via: "time-note",
-          });
-          break;
+      case "renegotiate": {
+        const todo = await requireSubject("renegotiate");
+        // applyDateOutcome enforces "before the date" — no silent slides,
+        // no post-hoc renegotiation.
+        await applyDateOutcome(ctx, todo, {
+          outcome: "renegotiated",
+          newDueAt: action.newDueAt,
+          note: action.note,
+        });
+        break;
+      }
+      case "record-missed": {
+        const todo = await requireSubject("record-missed");
+        if (todo.dueAt === undefined) {
+          throw new Error("Todo has no date to resolve");
         }
-        case "renegotiate": {
-          const todo = await requireSubject("renegotiate");
-          // applyDateOutcome enforces "before the date" — no silent slides,
-          // no post-hoc renegotiation.
-          await applyDateOutcome(ctx, todo, {
-            outcome: "renegotiated",
-            newDueAt: action.newDueAt,
-            note: action.note,
-          });
-          break;
+        if (now < todo.dueAt) {
+          throw new Error(
+            "The date has not arrived — a date that is still ahead is renegotiated, not missed",
+          );
         }
-        case "record-missed": {
-          const todo = await requireSubject("record-missed");
-          if (todo.dueAt === undefined) {
-            throw new Error("Todo has no date to resolve");
-          }
-          if (now < todo.dueAt) {
-            throw new Error(
-              "The date has not arrived — a date that is still ahead is renegotiated, not missed",
-            );
-          }
-          // With newDueAt the item stays dated on the replacement date; without
-          // it, it drops back to whenever — applyDateOutcome's own two branches,
-          // and the miss is on record either way.
-          await applyDateOutcome(ctx, todo, {
-            outcome: "missed",
-            newDueAt: action.newDueAt,
-            note: action.note,
-          });
-          break;
+        // With newDueAt the item stays dated on the replacement date; without
+        // it, it drops back to whenever — applyDateOutcome's own two branches,
+        // and the miss is on record either way.
+        await applyDateOutcome(ctx, todo, {
+          outcome: "missed",
+          newDueAt: action.newDueAt,
+          note: action.note,
+        });
+        break;
+      }
+      case "set-date-kind": {
+        const todo = await requireSubject("set-date-kind");
+        // Whose deadline it is only means anything while there IS one.
+        if (todo.dueAt === undefined) {
+          throw new Error("Todo has no date to describe");
         }
-        case "set-date-kind": {
-          const todo = await requireSubject("set-date-kind");
-          // Whose deadline it is only means anything while there IS one.
-          if (todo.dueAt === undefined) {
-            throw new Error("Todo has no date to describe");
-          }
-          await ctx.db.patch(todo._id, {
-            dateKind: action.dateKind,
-            updatedAt: now,
-            tomTouchedAt: now,
-          });
-          await logEvent(ctx, "updated", todo._id, {
-            fields: ["dateKind"],
-            via: "time-note",
-          });
-          break;
+        await ctx.db.patch(todo._id, {
+          dateKind: action.dateKind,
+          updatedAt: now,
+          tomTouchedAt: now,
+        });
+        await logEvent(ctx, "updated", todo._id, {
+          fields: ["dateKind"],
+          via: "time-note",
+        });
+        break;
+      }
+      case "set-waiting": {
+        const todo = await requireSubject("set-waiting");
+        // MERGE, don't replace: a note that only moves the wake DATE ("wait
+        // until the 15th instead") says nothing about the sleep it already
+        // had, and applyStatusChange writes wakeAt unconditionally — so an
+        // omitted field carries the stored value forward instead of erasing
+        // a fact Tom never asked to lose.
+        await applyStatusChange(ctx, todo, {
+          status: "waiting",
+          wakeAt: action.wakeAt ?? todo.wakeAt,
+          note: note.text,
+        });
+        await touch(todo._id);
+        break;
+      }
+      case "set-active": {
+        const todo = await requireSubject("set-active");
+        await applyStatusChange(ctx, todo, {
+          status: "active",
+          note: note.text,
+        });
+        await touch(todo._id);
+        break;
+      }
+      case "create-block": {
+        let blockTodoId: Id<"todos"> | undefined;
+        if (action.todoId !== undefined) {
+          const t = await resolveId(ctx, "todos", action.todoId);
+          if (!t) throw new Error(`Unknown todo id: ${action.todoId}`);
+          blockTodoId = t;
+        } else if (action.category === undefined && note.todoId) {
+          // A block asked for from a todo's own note defaults to that todo.
+          blockTodoId = todoRef(note.todoId);
         }
-        case "set-waiting": {
-          const todo = await requireSubject("set-waiting");
-          // MERGE, don't replace: a note that only moves the wake DATE ("wait
-          // until the 15th instead") says nothing about the sleep it already
-          // had, and applyStatusChange writes wakeAt unconditionally — so an
-          // omitted field carries the stored value forward instead of erasing
-          // a fact Tom never asked to lose.
-          await applyStatusChange(ctx, todo, {
-            status: "waiting",
-            wakeAt: action.wakeAt ?? todo.wakeAt,
-            note: note.text,
-          });
-          await touch(todo._id);
-          break;
-        }
-        case "set-active": {
-          const todo = await requireSubject("set-active");
-          await applyStatusChange(ctx, todo, {
-            status: "active",
-            note: note.text,
-          });
-          await touch(todo._id);
-          break;
-        }
-        case "create-block": {
-          let blockTodoId: Id<"todos"> | undefined;
-          if (action.todoId !== undefined) {
-            const t = await resolveId(ctx, "todos", action.todoId);
-            if (!t) throw new Error(`Unknown todo id: ${action.todoId}`);
-            blockTodoId = t;
-          } else if (action.category === undefined && note.todoId) {
-            // A block asked for from a todo's own note defaults to that todo.
-            blockTodoId = todoRef(note.todoId);
-          }
-          await insertBlock(ctx, {
-            start: action.start,
-            end: action.end,
-            todoId: blockTodoId,
-            category: action.category,
-          });
-          break;
-        }
-        case "update-block": {
-          const block = await getBlock(action.blockId);
-          await patchBlock(ctx, block, {
-            start: action.start,
-            end: action.end,
-          });
-          break;
-        }
-        case "delete-block": {
-          await removeBlock(ctx, await getBlock(action.blockId));
-          break;
-        }
+        await insertBlock(ctx, {
+          start: action.start,
+          end: action.end,
+          todoId: blockTodoId,
+          category: action.category,
+        });
+        break;
+      }
+      case "update-block": {
+        const block = await getBlock(action.blockId);
+        await patchBlock(ctx, block, {
+          start: action.start,
+          end: action.end,
+        });
+        break;
+      }
+      case "delete-block": {
+        await removeBlock(ctx, await getBlock(action.blockId));
+        break;
       }
     }
+  }
 
-    await ctx.db.patch(normalized, {
-      status,
-      result: result.trim(),
-      resolvedAt: now,
-    });
-    await logEvent(ctx, "time-note-resolved", todoRef(note.todoId), {
-      status,
-      result: result.trim(),
-      actions: list.map((a) => a.kind),
-    });
-    return { ok: true, applied: list.length };
-  },
-});
+  await ctx.db.patch(normalized, {
+    status,
+    result: result.trim(),
+    resolvedAt: now,
+  });
+  await logEvent(ctx, "time-note-resolved", todoRef(note.todoId), {
+    status,
+    result: result.trim(),
+    actions: list.map((a) => a.kind),
+  });
+  return { ok: true, applied: list.length };
+}
+
+export const internalApplyTimeNote = internalMutation({ args: APPLY_TIME_NOTE_ARGS, handler: applyTimeNote });
 
 // The server owns the clock (the /tts/state prepDay convention): the worker
 // never computes New York time itself, it repeats back what this returns.
@@ -1238,8 +1244,7 @@ export const recordEvent = mutation({
 
 // ── Internal: worker submissions (via key-authed http.ts routes) ─────────────
 
-export const internalCapture = internalMutation({
-  args: {
+export const CAPTURE_ARGS = {
     statement: v.string(),
     source: v.string(),
     provenance: v.optional(v.string()),
@@ -1250,70 +1255,74 @@ export const internalCapture = internalMutation({
     // A poller's triage judged it to need Tom today, and why. Recorded on the
     // row for the morning message and the hourly line; nothing opens a thread.
     needsTomToday: v.optional(v.object({ why: v.string() })),
-  },
-  handler: async (
-    ctx,
-    { statement, source, provenance, slackChannel, slackTs, needsTomToday },
-  ) => {
-    const now = Date.now();
-    // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
-    // #dump message — the Events push route (fast, at-least-once: Slack
-    // retries the same event) and poll-dump.mjs (the reconciliation backstop,
-    // which cannot know what the push route already took). Without this, every
-    // Slack retry and every overlap between the two would mint a duplicate
-    // todo. Returning the EXISTING id rather than throwing is what lets the
-    // push route answer 200 to a retry, which is what stops Slack retrying.
-    if (slackTs !== undefined) {
-      const existing = await ctx.db
-        .query("todos")
-        .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
-        .first();
-      if (existing) return existing._id;
-    }
-    // A RULING ABOUT AN INTEGRATION IS LABELLED WHERE IT IS WRITTEN. The
-    // statement `integration: outlook` is Tom turning a poller off
-    // (convex/ttsIntegrations.ts), and every poller asks which ones are off
-    // before it captures anything. A statement prefix cannot be indexed, so
-    // the shape is read once — here, at the one place a todo is born from a
-    // message — and recorded as the row's source; the pollers' read is then
-    // the handful of rows under that source rather than the whole archive.
-    const declaredSource =
-      integrationName(statement) === null ? source : INTEGRATION_SOURCE;
-    const id = await ctx.db.insert("todos", {
-      statement: statement.trim(),
-      readiness: "unprepared",
-      status: "active",
-      timingClass: "whenever",
-      source: declaredSource,
-      provenance,
-      slackChannel,
-      slackTs,
-      // The reason is a model's words about a mail and reaches Slack, so it
-      // passes the one redaction choke point here, where it is stored.
-      ...(needsTomToday !== undefined ? { needsTomToday: { why: redactSecrets(needsTomToday.why) } } : {}),
-      createdAt: now,
-      updatedAt: now,
+  };
+
+/** internalCapture's body, run by the mutation below and by a record hook that
+ *  does the same thing inside its own mutation (convex/jarvis/). */
+export async function captureTodo(
+  ctx: MutationCtx,
+  { statement, source, provenance, slackChannel, slackTs, needsTomToday }: ObjectType<typeof CAPTURE_ARGS>,
+) {
+  const now = Date.now();
+  // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
+  // #dump message — the Events push route (fast, at-least-once: Slack
+  // retries the same event) and poll-dump.mjs (the reconciliation backstop,
+  // which cannot know what the push route already took). Without this, every
+  // Slack retry and every overlap between the two would mint a duplicate
+  // todo. Returning the EXISTING id rather than throwing is what lets the
+  // push route answer 200 to a retry, which is what stops Slack retrying.
+  if (slackTs !== undefined) {
+    const existing = await ctx.db
+      .query("todos")
+      .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
+      .first();
+    if (existing) return existing._id;
+  }
+  // A RULING ABOUT AN INTEGRATION IS LABELLED WHERE IT IS WRITTEN. The
+  // statement `integration: outlook` is Tom turning a poller off
+  // (convex/ttsIntegrations.ts), and every poller asks which ones are off
+  // before it captures anything. A statement prefix cannot be indexed, so
+  // the shape is read once — here, at the one place a todo is born from a
+  // message — and recorded as the row's source; the pollers' read is then
+  // the handful of rows under that source rather than the whole archive.
+  const declaredSource =
+    integrationName(statement) === null ? source : INTEGRATION_SOURCE;
+  const id = await ctx.db.insert("todos", {
+    statement: statement.trim(),
+    readiness: "unprepared",
+    status: "active",
+    timingClass: "whenever",
+    source: declaredSource,
+    provenance,
+    slackChannel,
+    slackTs,
+    // The reason is a model's words about a mail and reaches Slack, so it
+    // passes the one redaction choke point here, where it is stored.
+    ...(needsTomToday !== undefined ? { needsTomToday: { why: redactSecrets(needsTomToday.why) } } : {}),
+    createdAt: now,
+    updatedAt: now,
+  });
+  await logEvent(ctx, "captured", id, { source: declaredSource });
+  // The one reply line at capture, in the thread of the #dump message this
+  // came from. Scheduled INSIDE the insert's transaction, after the dedupe
+  // above — so a Slack retry, which returns the existing id, never
+  // schedules a second one, and no reply exists for a capture that rolled
+  // back. The door (ttsSync.sendSlack) records the send and stamps
+  // slackReplyTs. This is the ONE reply a #dump message gets: no worker
+  // posts its own (a second sender reading a stale copy of the stamp is how
+  // a message got two replies), and a refused send is a recorded failure.
+  if (slackChannel !== undefined && slackTs !== undefined) {
+    await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+      channel: slackChannel,
+      threadTs: slackTs,
+      text: renderSlack(composeCaptured({ todoId: id, statement })),
+      subject: { kind: "todo", id },
     });
-    await logEvent(ctx, "captured", id, { source: declaredSource });
-    // The one reply line at capture, in the thread of the #dump message this
-    // came from. Scheduled INSIDE the insert's transaction, after the dedupe
-    // above — so a Slack retry, which returns the existing id, never
-    // schedules a second one, and no reply exists for a capture that rolled
-    // back. The door (ttsSync.sendSlack) records the send and stamps
-    // slackReplyTs. This is the ONE reply a #dump message gets: no worker
-    // posts its own (a second sender reading a stale copy of the stamp is how
-    // a message got two replies), and a refused send is a recorded failure.
-    if (slackChannel !== undefined && slackTs !== undefined) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-        channel: slackChannel,
-        threadTs: slackTs,
-        text: renderSlack(composeCaptured({ todoId: id, statement })),
-        subject: { kind: "todo", id },
-      });
-    }
-    return id;
-  },
-});
+  }
+  return id;
+}
+
+export const internalCapture = internalMutation({ args: CAPTURE_ARGS, handler: captureTodo });
 
 // The preparation path for LIFE todos (spec §15, swarm-lite): the worker's
 // preparer job advances an unprepared capture toward prepared by
@@ -1323,8 +1332,7 @@ export const internalCapture = internalMutation({
 // 2026-08-29 it may also set a FIRST dueAt, and only when the statement
 // itself states the date (the QuickAdd date input is gone): Tom's own words,
 // never an agent's guess, and never over an existing date.
-export const internalPrepareTodo = internalMutation({
-  args: {
+export const PREPARE_TODO_ARGS = {
     id: v.string(),
     brief: v.optional(v.string()),
     entryAction: v.optional(v.string()),
@@ -1379,124 +1387,128 @@ export const internalPrepareTodo = internalMutation({
     // the newest "prepared" row answers "was the last write-up refused" by
     // itself and there is nothing to clear.
     doorFaults: v.optional(v.array(v.string())),
-  },
-  handler: async (
-    ctx,
-    { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status, runToken, doorFaults },
-  ) => {
-    const normalized = await resolveId(ctx, "todos", id);
-    if (!normalized) throw new Error(`Unknown todo id: ${id}`);
-    const todo = await ctx.db.get(normalized);
-    if (!todo) throw new Error(`Unknown todo id: ${id}`);
-    const now = Date.now();
-    const patch: Record<string, unknown> = { updatedAt: now };
-    // Every field lands on every row. The batch gate that used to sit here —
-    // a row carrying `members` took only its plan, because the v1 batcher
-    // owned its brief — went with the v1 batch itself (the lifeos update,
-    // phase 7): there is no grouping brief for a single-todo preparer to
-    // overwrite any more, and a batch is its own `batches` row.
-    if (brief !== undefined) patch.brief = brief;
-    if (evidence !== undefined) patch.evidence = evidence;
-    if (groundUpExplanation !== undefined) {
-      patch.groundUpExplanation = groundUpExplanation;
+  };
+
+/** internalPrepareTodo's body, run by the mutation below and by a record hook that
+ *  does the same thing inside its own mutation (convex/jarvis/). */
+export async function prepareTodo(
+  ctx: MutationCtx,
+  { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status, runToken, doorFaults }: ObjectType<typeof PREPARE_TODO_ARGS>,
+) {
+  const normalized = await resolveId(ctx, "todos", id);
+  if (!normalized) throw new Error(`Unknown todo id: ${id}`);
+  const todo = await ctx.db.get(normalized);
+  if (!todo) throw new Error(`Unknown todo id: ${id}`);
+  const now = Date.now();
+  const patch: Record<string, unknown> = { updatedAt: now };
+  // Every field lands on every row. The batch gate that used to sit here —
+  // a row carrying `members` took only its plan, because the v1 batcher
+  // owned its brief — went with the v1 batch itself (the lifeos update,
+  // phase 7): there is no grouping brief for a single-todo preparer to
+  // overwrite any more, and a batch is its own `batches` row.
+  if (brief !== undefined) patch.brief = brief;
+  if (evidence !== undefined) patch.evidence = evidence;
+  if (groundUpExplanation !== undefined) {
+    patch.groundUpExplanation = groundUpExplanation;
+  }
+  if (entryAction !== undefined) patch.entryAction = entryAction;
+  if (workDescription !== undefined) patch.workDescription = workDescription;
+  if (readiness !== undefined) patch.readiness = readiness;
+  if (dueAt !== undefined) {
+    // Kept-dates rule (spec §8): a stored date moves only through
+    // recordDateOutcome / a time note. The preparer gets the FIRST date
+    // only — an existing one is never overwritten, and the skip is named.
+    // A RESOLVED date counts as a date: an item whose date was recorded
+    // missed or renegotiated has a dateOutcomes history, and letting a
+    // re-prep read the same statement and hand back the very date Tom just
+    // resolved would resurrect it behind his back.
+    if (todo.dueAt !== undefined || (todo.dateOutcomes ?? []).length > 0) {
+      await logEvent(ctx, "due-skipped", normalized, { dueAt });
+    } else {
+      patch.dueAt = dueAt;
+      patch.dateKind = dateKind ?? "self-imposed";
+      patch.timingClass = "dated";
     }
-    if (entryAction !== undefined) patch.entryAction = entryAction;
-    if (workDescription !== undefined) patch.workDescription = workDescription;
-    if (readiness !== undefined) patch.readiness = readiness;
-    if (dueAt !== undefined) {
-      // Kept-dates rule (spec §8): a stored date moves only through
-      // recordDateOutcome / a time note. The preparer gets the FIRST date
-      // only — an existing one is never overwritten, and the skip is named.
-      // A RESOLVED date counts as a date: an item whose date was recorded
-      // missed or renegotiated has a dateOutcomes history, and letting a
-      // re-prep read the same statement and hand back the very date Tom just
-      // resolved would resurrect it behind his back.
-      if (todo.dueAt !== undefined || (todo.dateOutcomes ?? []).length > 0) {
-        await logEvent(ctx, "due-skipped", normalized, { dueAt });
-      } else {
-        patch.dueAt = dueAt;
-        patch.dateKind = dateKind ?? "self-imposed";
-        patch.timingClass = "dated";
-      }
+  }
+  const written = [
+    patch.brief !== undefined && "brief",
+    patch.entryAction !== undefined && "entryAction",
+    patch.workDescription !== undefined && "workDescription",
+    patch.dueAt !== undefined && "dueAt",
+    patch.evidence !== undefined && "evidence",
+    patch.groundUpExplanation !== undefined && "groundUpExplanation",
+  ].filter(Boolean);
+  // THE STAMP FOLLOWS THE TEXT, and only the text. A call that wrote one of
+  // the prepared fields above produced what Tom reads on the page, and its
+  // run owns that text. A call that wrote NONE of them — the graph worker's
+  // bare `status: "done"`, which closes a row and says nothing — wrote no
+  // Tom-facing words, and stamping it would hand that run the credit (and
+  // the blame) for a write-up another run made: a ruling on the row would
+  // then be scored against the wrong output, which is the one failure the
+  // whole token mechanism exists to prevent.
+  if (runToken !== undefined && written.length > 0) {
+    patch.producedByRunToken = runToken;
+  }
+  await ctx.db.patch(normalized, patch);
+  await logEvent(ctx, "prepared", normalized, {
+    readiness: patch.readiness,
+    fields: written,
+    ...(doorFaults === undefined ? {} : { doorFaults }),
+  });
+  // Completion runs LAST and through the ONE transition implementation
+  // (applyStatusChange): a raw status patch would skip the kept-dates
+  // resolution on a dated row and emit no status-changed event. It reads the
+  // row as it stands AFTER the patch above, so the evidence written in the
+  // same call is already on it.
+  if (status === "done") {
+    const fresh = await ctx.db.get(normalized);
+    if (!fresh) return;
+    // THE THREE BARS, most specific first. Each is a NAMED refusal rather
+    // than a silent skip: a worker that thinks it closed a todo and did not
+    // would report work as landed that is still open, and only this row
+    // would say otherwise.
+    //
+    //   (a) evidence recorded. Tom ruled on 2026-09-24 to have no batches,
+    //       so agents move toward completing all todos, and any todo he has
+    //       not ruled on may be closed by an agent with its evidence
+    //       recorded. The bar that stood here before — only a todo inside a
+    //       batch could be completed by the pen — cannot stay: with no
+    //       batches it would let no agent complete anything, the opposite of
+    //       the ruling. The evidence bar replaces it as the thing that stops
+    //       a bare status write closing one of Tom's todos with nothing to
+    //       show for it.
+    //   (b) a goal's condition is a GOAL CONDITION — a sentence about the
+    //       world that is either true yet or not. A goal with no condition
+    //       and no code subject has nothing an agent can go and check, and
+    //       closing it would be closing Tom's todo for him. A todo with a
+    //       condition is closed only when the condition is met, which is what
+    //       its evidence has to show.
+    //   (c) not frozen, unless it is a checkable goal. tomTouchedAt is the
+    //       mark that Tom has ruled on the row, and every other agent write
+    //       in this file respects it. A CHECKABLE goal is the one exception,
+    //       and it is the design: its condition, not a judgment, decides it,
+    //       and checking the world and recording the answer is a goal's
+    //       whole contract.
+    const why =
+      (fresh.evidence ?? "").trim() === ""
+        ? "a todo is completed by the pen only with its evidence recorded"
+        : fresh.kind === "goal" && !goalCheckable(fresh)
+          ? "a goal is completed by the pen only when it has a checkable condition or a code subject"
+          : fresh.tomTouchedAt !== undefined && fresh.kind !== "goal"
+            ? "Tom-touched (frozen) — only he closes a row he has ruled on"
+            : null;
+    if (why !== null) {
+      await logEvent(ctx, "done-skipped", normalized, { why });
+    } else if (fresh.status !== "done") {
+      await applyStatusChange(ctx, fresh, {
+        status: "done",
+        note: "worker: task completed",
+      });
     }
-    const written = [
-      patch.brief !== undefined && "brief",
-      patch.entryAction !== undefined && "entryAction",
-      patch.workDescription !== undefined && "workDescription",
-      patch.dueAt !== undefined && "dueAt",
-      patch.evidence !== undefined && "evidence",
-      patch.groundUpExplanation !== undefined && "groundUpExplanation",
-    ].filter(Boolean);
-    // THE STAMP FOLLOWS THE TEXT, and only the text. A call that wrote one of
-    // the prepared fields above produced what Tom reads on the page, and its
-    // run owns that text. A call that wrote NONE of them — the graph worker's
-    // bare `status: "done"`, which closes a row and says nothing — wrote no
-    // Tom-facing words, and stamping it would hand that run the credit (and
-    // the blame) for a write-up another run made: a ruling on the row would
-    // then be scored against the wrong output, which is the one failure the
-    // whole token mechanism exists to prevent.
-    if (runToken !== undefined && written.length > 0) {
-      patch.producedByRunToken = runToken;
-    }
-    await ctx.db.patch(normalized, patch);
-    await logEvent(ctx, "prepared", normalized, {
-      readiness: patch.readiness,
-      fields: written,
-      ...(doorFaults === undefined ? {} : { doorFaults }),
-    });
-    // Completion runs LAST and through the ONE transition implementation
-    // (applyStatusChange): a raw status patch would skip the kept-dates
-    // resolution on a dated row and emit no status-changed event. It reads the
-    // row as it stands AFTER the patch above, so the evidence written in the
-    // same call is already on it.
-    if (status === "done") {
-      const fresh = await ctx.db.get(normalized);
-      if (!fresh) return;
-      // THE THREE BARS, most specific first. Each is a NAMED refusal rather
-      // than a silent skip: a worker that thinks it closed a todo and did not
-      // would report work as landed that is still open, and only this row
-      // would say otherwise.
-      //
-      //   (a) evidence recorded. Tom ruled on 2026-09-24 to have no batches,
-      //       so agents move toward completing all todos, and any todo he has
-      //       not ruled on may be closed by an agent with its evidence
-      //       recorded. The bar that stood here before — only a todo inside a
-      //       batch could be completed by the pen — cannot stay: with no
-      //       batches it would let no agent complete anything, the opposite of
-      //       the ruling. The evidence bar replaces it as the thing that stops
-      //       a bare status write closing one of Tom's todos with nothing to
-      //       show for it.
-      //   (b) a goal's condition is a GOAL CONDITION — a sentence about the
-      //       world that is either true yet or not. A goal with no condition
-      //       and no code subject has nothing an agent can go and check, and
-      //       closing it would be closing Tom's todo for him. A todo with a
-      //       condition is closed only when the condition is met, which is what
-      //       its evidence has to show.
-      //   (c) not frozen, unless it is a checkable goal. tomTouchedAt is the
-      //       mark that Tom has ruled on the row, and every other agent write
-      //       in this file respects it. A CHECKABLE goal is the one exception,
-      //       and it is the design: its condition, not a judgment, decides it,
-      //       and checking the world and recording the answer is a goal's
-      //       whole contract.
-      const why =
-        (fresh.evidence ?? "").trim() === ""
-          ? "a todo is completed by the pen only with its evidence recorded"
-          : fresh.kind === "goal" && !goalCheckable(fresh)
-            ? "a goal is completed by the pen only when it has a checkable condition or a code subject"
-            : fresh.tomTouchedAt !== undefined && fresh.kind !== "goal"
-              ? "Tom-touched (frozen) — only he closes a row he has ruled on"
-              : null;
-      if (why !== null) {
-        await logEvent(ctx, "done-skipped", normalized, { why });
-      } else if (fresh.status !== "done") {
-        await applyStatusChange(ctx, fresh, {
-          status: "done",
-          note: "worker: task completed",
-        });
-      }
-    }
-  },
-});
+  }
+}
+
+export const internalPrepareTodo = internalMutation({ args: PREPARE_TODO_ARGS, handler: prepareTodo });
 
 export const internalListTodos = internalQuery({
   args: {},

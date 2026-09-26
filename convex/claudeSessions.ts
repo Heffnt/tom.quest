@@ -1,5 +1,5 @@
 import { paginationOptsValidator } from "convex/server";
-import { v, type Infer } from "convex/values";
+import { v, type Infer, type ObjectType } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -1874,51 +1874,57 @@ export const internalIngest = internalMutation({
 // `npx convex run claudeSessions:internalRecordOutcome` at wrap-up — the same
 // pen pattern as tts.internalTriage; the daemon may also stamp "errored" on
 // failures it observes.
-export const internalRecordOutcome = internalMutation({
-  args: {
+const RECORD_OUTCOME_ARGS = {
     id: v.string(),
     outcome: v.union(v.literal("completed"), v.literal("errored")),
     summary: v.string(),
     // (The wrong-edge channel, `planRepair`, went with the plan pass that read
     // it: with no planner forming graphs, a "plan-repair" event had no reader.)
-  },
-  handler: async (ctx, { id, outcome, summary }) => {
-    const normalized = ctx.db.normalizeId("claudeSessions", id);
-    if (!normalized) throw new Error(`Unknown session id: ${id}`);
-    const session = await ctx.db.get(normalized);
-    if (!session) throw new Error(`Unknown session id: ${id}`);
-    // Read the PRE-patch value: unlike the daemon's stamp in internalIngest,
-    // this pen overwrites freely (the agent may re-record a sharper summary,
-    // or correct completed → errored after a late failure), so the row itself
-    // stops being an edge after the first write.
-    const firstRecord = session.outcome === undefined;
-    await ctx.db.patch(normalized, {
-      outcome,
-      outcomeSummary: summary.trim(),
-    });
-    // EDGE: only the first record notifies. A re-record still lands in the
-    // row — the surface always shows the agent's latest word — but Slack is
-    // told once, so an agent that revises its wording three times does not
-    // ping Tom three times.
-    if (firstRecord) {
-      if (outcome === "errored") {
-        await notifySessionFailed(
-          ctx,
-          normalized,
-          session.title,
-          summary.trim() === "" ? undefined : summary.trim(),
-        );
-      }
-      // Same edge, same reason, into the events table the hourly update reads.
-      await logEvent(ctx, "session-outcome", todoRef(session.todoId), {
-        sessionId: normalized,
-        title: session.title,
-        outcome,
-        summary: summary.trim(),
-      });
+  };
+
+/** internalRecordOutcome's body, run by the mutation below and by a record hook that
+ *  does the same thing inside its own mutation (convex/jarvis/). */
+export async function recordSessionOutcome(
+  ctx: MutationCtx,
+  { id, outcome, summary }: ObjectType<typeof RECORD_OUTCOME_ARGS>,
+) {
+  const normalized = ctx.db.normalizeId("claudeSessions", id);
+  if (!normalized) throw new Error(`Unknown session id: ${id}`);
+  const session = await ctx.db.get(normalized);
+  if (!session) throw new Error(`Unknown session id: ${id}`);
+  // Read the PRE-patch value: unlike the daemon's stamp in internalIngest,
+  // this pen overwrites freely (the agent may re-record a sharper summary,
+  // or correct completed → errored after a late failure), so the row itself
+  // stops being an edge after the first write.
+  const firstRecord = session.outcome === undefined;
+  await ctx.db.patch(normalized, {
+    outcome,
+    outcomeSummary: summary.trim(),
+  });
+  // EDGE: only the first record notifies. A re-record still lands in the
+  // row — the surface always shows the agent's latest word — but Slack is
+  // told once, so an agent that revises its wording three times does not
+  // ping Tom three times.
+  if (firstRecord) {
+    if (outcome === "errored") {
+      await notifySessionFailed(
+        ctx,
+        normalized,
+        session.title,
+        summary.trim() === "" ? undefined : summary.trim(),
+      );
     }
-  },
-});
+    // Same edge, same reason, into the events table the hourly update reads.
+    await logEvent(ctx, "session-outcome", todoRef(session.todoId), {
+      sessionId: normalized,
+      title: session.title,
+      outcome,
+      summary: summary.trim(),
+    });
+  }
+}
+
+export const internalRecordOutcome = internalMutation({ args: RECORD_OUTCOME_ARGS, handler: recordSessionOutcome });
 
 // ── Autonomous-fleet config (P3) ─────────────────────────────────────────────
 

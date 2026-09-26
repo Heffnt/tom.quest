@@ -45,6 +45,20 @@ export const EVENT_KINDS = [
   "digest-sent",
   "needs-you-opened",
   "needs-you-posted",
+  // Todos, rulings, sessions and time notes (convex/jarvis/todos.ts): what
+  // the box's pens wrote, each hook doing what its pen did. todo-captured
+  // makes the todo (data: statement, source, provenance, slackChannel,
+  // slackTs, needsTomToday, why; subject becomes the new todo's id);
+  // todo-prepared lands a write-up (subject: the todo); session-ended records
+  // a session's outcome (subject: the session; data: outcome, summary);
+  // ruling-applied consumes a ruling (subject: the ruling; data: result);
+  // time-note-applied resolves a time note (subject: the note; data: status,
+  // result, actions).
+  "todo-captured",
+  "todo-prepared",
+  "session-ended",
+  "ruling-applied",
+  "time-note-applied",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */

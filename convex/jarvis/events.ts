@@ -29,6 +29,7 @@ import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
 import { onBoxChange } from "../boxChanges";
 import { onDigestSent, onNeedsYouPosted } from "./digest";
+import { onRulingApplied, onSessionEnded, onTimeNoteApplied, onTodoCaptured, onTodoPrepared } from "./todos";
 
 /** What runs after a row of each kind lands, inside the same mutation. */
 const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Promise<unknown>> = {
@@ -37,6 +38,11 @@ const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Pro
   "box-change": onBoxChange,
   "digest-sent": onDigestSent,
   "needs-you-posted": onNeedsYouPosted,
+  "todo-captured": onTodoCaptured,
+  "todo-prepared": onTodoPrepared,
+  "session-ended": onSessionEnded,
+  "ruling-applied": onRulingApplied,
+  "time-note-applied": onTimeNoteApplied,
 };
 
 /** Insert one event and run its kind's hook. The hook's answer rides along. */
