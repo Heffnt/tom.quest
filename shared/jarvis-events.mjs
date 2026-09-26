@@ -55,6 +55,13 @@ export const EVENT_KINDS = [
   "digest-line",
 ];
 
+/**
+ * The kinds whose subject is their identity, refused without one: a
+ * decision's askId (settle, "revert <n>" and the digest find it there), a
+ * digest line's askId or job, an eval run's set.
+ */
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run"];
+
 /** The provenance fields an event may carry, and nothing else. */
 export const PROVENANCE_FIELDS = ["agentId", "job", "session", "user"];
 
@@ -89,6 +96,9 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   }
   if (subject !== undefined && !nonEmptyString(subject)) {
     return { ok: false, error: "subject, when given, is a non-empty string" };
+  }
+  if (subject === undefined && SUBJECT_REQUIRED.includes(kind)) {
+    return { ok: false, error: `a ${kind} event names its subject` };
   }
   if (text !== undefined && typeof text !== "string") {
     return { ok: false, error: "text, when given, is a string" };

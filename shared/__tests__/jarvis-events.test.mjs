@@ -36,6 +36,13 @@ describe("validateEvent", () => {
     expect(result).toMatchObject({ ok: true, event: { kind: "eval-run", subject: "wall", text: "wall: 3 of 3 pass" } });
   });
 
+  it("refuses a decision, a digest line or an eval run without its subject", () => {
+    for (const kind of ["decision", "digest-line", "eval-run"]) {
+      expect(validateEvent({ kind, data: {} })).toEqual({ ok: false, error: `a ${kind} event names its subject` });
+      expect(validateEvent({ kind, subject: "s", data: {} }).ok).toBe(true);
+    }
+  });
+
   it("lists every kind once", () => {
     expect(new Set(EVENT_KINDS).size).toBe(EVENT_KINDS.length);
   });

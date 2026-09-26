@@ -750,14 +750,17 @@ export async function gatherTodayFacts(
     .take(OBJECTION_SCAN);
   const setsRead = new Set<string>();
   for (const row of evalRuns) {
-    if (row.subject === undefined || setsRead.has(row.subject)) continue;
-    setsRead.add(row.subject);
+    // Every eval-run, decision and digest-line row names its subject: the
+    // record refuses one without (shared/jarvis-events.mjs SUBJECT_REQUIRED).
+    const set = row.subject as string;
+    if (setsRead.has(set)) continue;
+    setsRead.add(set);
     const d = (row.data ?? {}) as Record<string, unknown>;
     const failed = typeof d.failed === "number" ? d.failed : 0;
     if (failed === 0) continue;
     const total = typeof d.total === "number" ? d.total : failed;
     const f = failure(
-      `evals:${row.subject}`,
+      `evals:${set}`,
       `The ${row.subject} evals failed ${failed} of ${total} ${total === 1 ? "item" : "items"} in their newest run.`,
     );
     const first = (Array.isArray(d.items) ? d.items : []).find(
@@ -772,19 +775,17 @@ export async function gatherTodayFacts(
   //    Newest first before the cap, so a busy window drops its oldest rows.
   //    The askId is the row's subject, which is what the objection resolver
   //    (convex/ttsAsk.ts internalRecordDelegateObjection) and jarvis/intent
-  //    settle find it by; a row without one cannot be reverted and is not
-  //    numbered. The model's words go through safeStr like every other.
+  //    settle find it by. The model's words go through safeStr like every other.
   const decided = await ctx.db
     .query("events")
     .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
     .order("desc")
     .take(OBJECTION_SCAN);
   for (const row of decided) {
-    if (row.subject === undefined) continue;
     const d = (row.data ?? {}) as Record<string, unknown>;
     rawObjections.push({
       at: row.at,
-      askId: row.subject,
+      askId: row.subject as string,
       todoId: str(d.todoId),
       decision: safeStr(d.decision) ?? null,
       reason: safeStr(d.reason),
@@ -810,10 +811,9 @@ export async function gatherTodayFacts(
       continue;
     }
     // listForDigest writes the askId as the row's subject.
-    if (row.subject === undefined) continue;
     rawObjections.push({
       at: row.at,
-      askId: row.subject,
+      askId: row.subject as string,
       todoId: str(d.todoId),
       decision: safeStr(d.decision) ?? null,
       reason: safeStr(d.reason),

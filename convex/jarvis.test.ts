@@ -178,6 +178,12 @@ describe("the /jarvis/ prefix", () => {
     expect((await post(t, "/tts/event", { kind: "deploy", data: {} }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "wrong" })).status).toBe(401);
+    // A decision's key is its askId, the record row's subject: without one
+    // the legacy pen refuses it as POST /jarvis/event refuses it.
+    const before = (await rows(t, "events")).length;
+    expect((await post(t, "/tts/event", { kind: "decision", data: { question: "q" } }, { "X-TTS-Key": "k" })).status).toBe(400);
+    expect((await post(t, "/jarvis/event", { kind: "decision", data: { question: "q" } }, { "X-Jarvis-Key": "k" })).status).toBe(400);
+    expect((await rows(t, "events")).length).toBe(before);
   });
 });
 

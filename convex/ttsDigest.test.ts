@@ -972,9 +972,8 @@ describe("internalComposeToday", () => {
   });
 
   // witness: the record's decisions were read oldest first before the cap,
-  // their reasons unredacted, and a row with no subject was numbered under a
-  // spelling nothing resolves.
-  it("reads the record's decisions newest first, redacts the model's words, and numbers none without a subject", async () => {
+  // and their reasons went out unredacted.
+  it("reads the record's decisions newest first and redacts the model's words", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -994,16 +993,11 @@ describe("internalComposeToday", () => {
         kind: "decision", at: FIVE_AM - 60_000, provenance: { job: "decide" }, subject: "d-secret",
         data: { question: "q", decision: `used ${secret}`, reason: `because ${secret}`, refused: true, refusedBecause: `it holds ${secret}` },
       });
-      await ctx.db.insert("events", {
-        kind: "decision", at: FIVE_AM - 30_000, provenance: { job: "decide" },
-        data: { askId: "no-subject", question: "q", decision: "unnumbered", refused: false },
-      });
     });
     const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
     const askIds = facts.objections.map((o) => o.askId);
     expect(askIds).toContain("d-200");
     expect(askIds).not.toContain("d-0");
-    expect(askIds).not.toContain("no-subject");
     expect(JSON.stringify(facts.objections)).not.toContain(secret);
     expect(askIds).toContain("d-secret");
   });

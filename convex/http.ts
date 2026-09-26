@@ -36,6 +36,7 @@ import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly"
 // reads it, so it goes through the one redaction on the way in — the same
 // import convex/ttsMerge.ts makes for the same reason.
 import { redactSecrets } from "../shared/redact.mjs";
+import { SUBJECT_REQUIRED } from "../shared/jarvis-events.mjs";
 
 const http = httpRouter();
 
@@ -2494,6 +2495,12 @@ const ttsEvent = httpAction(async (ctx, request) => {
   }
   if (b.key !== undefined && (typeof b.key !== "string" || b.key === "")) {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
+  }
+  // The key becomes the record row's subject (jarvis/events copyFromDts), so a
+  // kind whose subject is its identity is refused without one here, as POST
+  // /jarvis/event refuses it (shared/jarvis-events.mjs SUBJECT_REQUIRED).
+  if (b.key === undefined && SUBJECT_REQUIRED.includes(b.kind)) {
+    return jsonResponse(400, { error: `a ${b.kind} event names its key` });
   }
   try {
     // A box change goes to the record's own write, not dtsEvents
