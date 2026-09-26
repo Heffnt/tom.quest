@@ -194,6 +194,9 @@ function threadOf(row: { data?: unknown } | undefined): Thread | null {
  * reply its number here, the next free one after the objection lines and the
  * replies already posted in the thread; the box writes it first ("<n> · …").
  */
+/** The most pending needs-you replies one read answers. */
+const PENDING_MAX = 200;
+
 export const pendingNeedsYou = internalQuery({
   args: {},
   handler: async (ctx): Promise<PendingNeedsYou> => {
@@ -202,16 +205,32 @@ export const pendingNeedsYou = internalQuery({
     const digests = await digestsSince(ctx, from - DAY_MS);
     const newest = digests[0];
     const thread = threadOf(newest);
-    const opened = await ctx.db
+    // THE PENDING ONES, OLDEST FIRST, however many were opened and posted
+    // before them: the openings are walked in order and each is looked up by
+    // its own subject (events.by_subject_at), so a posted one costs one read
+    // and never uses up the room a later opening needs.
+    const opened: Doc<"events">[] = [];
+    for await (const row of ctx.db
       .query("events")
       .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gte("at", from))
-      .order("asc")
-      .take(200);
-    const posted = await ctx.db
-      .query("events")
-      .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_POSTED).gte("at", from))
-      .take(500);
-    const done = new Set(posted.map((row) => row.subject));
+      .order("asc")) {
+      if (row.subject === undefined) continue;
+      const key = row.subject;
+      const sent = await ctx.db
+        .query("events")
+        .withIndex("by_subject_at", (q) => q.eq("subject", key))
+        .filter((q) => q.eq(q.field("kind"), NEEDS_YOU_POSTED))
+        .first();
+      if (sent !== null) continue;
+      opened.push(row);
+      if (opened.length >= PENDING_MAX) break;
+    }
+    const posted = thread === null
+      ? []
+      : await ctx.db
+        .query("events")
+        .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_POSTED).gte("at", from))
+        .take(500);
     const objectionLines = (newest?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
     const inThread = thread === null
       ? 0
@@ -223,18 +242,16 @@ export const pendingNeedsYou = internalQuery({
         const one = threadOf(row);
         return one === null ? [] : [one];
       }),
-      pending: opened
-        .filter((row) => row.subject !== undefined && !done.has(row.subject))
-        .map((row, index) => {
-          const d = (row.data ?? {}) as Record<string, unknown>;
-          return {
-            key: row.subject as string,
-            text: row.text ?? "",
-            n: first + index,
-            ...(typeof d.todoId === "string" ? { todoId: d.todoId } : {}),
-            ...(typeof d.job === "string" ? { job: d.job } : {}),
-          };
-        }),
+      pending: opened.map((row, index) => {
+        const d = (row.data ?? {}) as Record<string, unknown>;
+        return {
+          key: row.subject as string,
+          text: row.text ?? "",
+          n: first + index,
+          ...(typeof d.todoId === "string" ? { todoId: d.todoId } : {}),
+          ...(typeof d.job === "string" ? { job: d.job } : {}),
+        };
+      }),
     };
   },
 });

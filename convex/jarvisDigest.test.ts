@@ -154,6 +154,23 @@ const reply = (t: ReturnType<typeof convexTest>, eventId: string, text: string, 
   t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId, channel: CHANNEL, threadTs: THREAD_TS, ts, text, user: "UTOM" });
 
 describe("needs-you, a numbered reply under the digest", () => {
+  // witness: the read took the oldest 200 openings and filtered out the
+  // posted ones, so with 200 older ones posted a later opening was never
+  // offered to the box.
+  it("offers a pending opening however many older ones were opened and posted", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 210; n += 1) {
+        const key = `old-${n}`;
+        await ctx.db.insert("events", { kind: "needs-you-opened", at: MORNING - 3600_000 + n, provenance: {}, subject: key, data: { key }, text: key });
+        await ctx.db.insert("events", { kind: "needs-you-posted", at: MORNING - 1800_000 + n, provenance: {}, subject: key, data: { key, threadTs: "1.0" } });
+      }
+      await ctx.db.insert("events", { kind: "needs-you-opened", at: MORNING - 60_000, provenance: {}, subject: "late", data: { key: "late" }, text: "late" });
+    });
+    const pending = (await get(t, "/jarvis/digest/needs-you")).pending;
+    expect(pending.map((p: { key: string }) => p.key)).toEqual(["late"]);
+  }, 60_000);
+
   it("waits for a digest, is numbered after the objection lines, posted once, and an unnumbered reply goes to the one open item", async () => {
     const t = setup(MORNING);
     const todoId = await aTodo(t);
