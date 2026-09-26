@@ -45,6 +45,16 @@ describe("a tick task's outcome", () => {
     expect((await outcomes(t)).map((row) => row.kind)).toEqual(["job-failed"]);
   });
 
+  it("is job-failed when the pull-request mirror could not read a repository", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("GITHUB_MIRROR_TOKEN", "t");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("no", { status: 502 })));
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "pull-requests" })).toEqual({ ok: false });
+    const rows = await outcomes(t);
+    expect(rows.map((row) => row.kind)).toEqual(["job-failed"]);
+    expect(String((rows[0].data as { error?: unknown }).error)).toContain("pull requests could not be read (502)");
+  });
+
   it("is job-ok when the task returns no failure", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("TTS_ICS_FEEDS", "");

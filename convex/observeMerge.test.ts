@@ -171,7 +171,7 @@ describe("the mirror", () => {
         ]),
       ),
     );
-    expect(await t.action(internal.observeMerge.refreshOpenPulls, {})).toEqual({ open: 0 });
+    expect(await t.action(internal.observeMerge.refreshOpenPulls, {})).toEqual({ open: 0, failures: [] });
     expect(await tom.query(api.observe.changesWaiting, {})).toHaveLength(0);
   });
 });
