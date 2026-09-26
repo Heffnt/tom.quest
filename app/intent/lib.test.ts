@@ -8,6 +8,7 @@ import {
   evalItemsForLine,
   joinLines,
   linesRestedOn,
+  openDisagreements,
   passRate,
   segmentBullets,
   sourcesOf,
@@ -216,5 +217,25 @@ describe("evalItemsForLine", () => {
   it("sums the pass rate over the items naming the line, or answers null for none", () => {
     expect(passRate(evalItemsForLine(ruling, items))).toEqual({ passed: 1, runs: 3 });
     expect(passRate([])).toBeNull();
+  });
+});
+
+describe("openDisagreements", () => {
+  it("counts the vocabulary's disagreements beside the unsettled decisions and failing items", () => {
+    const decisions = [{ settled: null }, { settled: { verdict: "approve" } }];
+    const items = [
+      { pass: false, settled: null },
+      { pass: false, settled: { verdict: "revise" } },
+      { pass: true, settled: null },
+      { pass: null, settled: null },
+    ];
+    expect(openDisagreements(decisions, items, { disagreements: [1, 2, 3] })).toBe(5);
+    expect(openDisagreements(decisions, items, null)).toBe(2);
+  });
+
+  it("says nothing until every read has answered", () => {
+    expect(openDisagreements(undefined, [], null)).toBeNull();
+    expect(openDisagreements([], undefined, null)).toBeNull();
+    expect(openDisagreements([], [], undefined)).toBeNull();
   });
 });

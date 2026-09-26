@@ -8,9 +8,9 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { NO_FILTERS, type Filters, type IntentLine } from "./lib";
 
-export type IntentView = "agent" | "lines" | "rulings" | "vocabulary" | "disagreements";
+export type IntentView = "agent" | "lines" | "vocabulary" | "disagreements";
 
-export const INTENT_VIEWS: IntentView[] = ["agent", "lines", "rulings", "vocabulary", "disagreements"];
+export const INTENT_VIEWS: IntentView[] = ["agent", "lines", "vocabulary", "disagreements"];
 
 interface IntentStore {
   view: IntentView;
