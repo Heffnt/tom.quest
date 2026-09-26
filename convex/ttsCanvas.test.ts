@@ -498,6 +498,24 @@ describe("POST /tts/job-failed", () => {
     expect(await slackScheduled(t)).toEqual([]);
   });
 
+  // witness: the digest grouped failures by job, so two conditions of one
+  // job were one line, and the one that recovered made the line say the job
+  // ran clean again while the other still failed.
+  it("puts one digest line per condition, so a recovered one does not mask another of the same job", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
+    const t = convexTest({ schema, modules });
+    await report(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth", error: "Canvas rejected the token" });
+    vi.advanceTimersByTime(60_000);
+    await report(t, { job: "poll-canvas", key: "poll-canvas:feed", error: "the feed timed out" });
+    vi.advanceTimersByTime(60_000);
+    expect((await ok(t, { job: "poll-canvas", key: "poll-canvas:feed" })).status).toBe(200);
+    const broken = await digestBroken(t);
+    expect(broken).toHaveLength(2);
+    expect(broken.filter((b) => b.statement.includes("running clean again") || b.statement.includes("run clean again"))).toHaveLength(1);
+    expect(broken.find((b) => b.detail === "Canvas rejected the token")?.statement).not.toContain("clean again");
+  });
+
   it("refuses a blank key on either route, and an unnamed clean run", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });

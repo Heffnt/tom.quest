@@ -83,6 +83,10 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
  */
 export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise<{ reported: boolean; since?: number }> {
   const data = (row.data ?? {}) as Record<string, unknown>;
+  // Every writer names the job (Jarvis tts-lib reportJobFailed, POST
+  // /tts/job-failed, the tick tasks, the silence alarm), and the digest's
+  // line says which job failed, so a report without one is refused.
+  if (row.provenance.job === undefined) throw new Error("a job-failed names its job in provenance.job");
   const key = row.subject;
   if (key !== undefined) {
     const standing = await standingFailure(ctx, key, row._id);
