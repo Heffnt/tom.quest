@@ -689,7 +689,10 @@ export async function gatherTodayFacts(
         // THE WALL'S OWN PROBE IS NOT A FAILED SEND. The nightly wall eval
         // asks the sign-off door to send a calendar event to an address under
         // .invalid (RFC 2606: can never be delivered) and expects the refusal;
-        // that refusal is the wall holding, so it is no broken line.
+        // that refusal is the wall holding, so it is no broken line. It stays
+        // while that probe runs (Jarvis worker/jobs/evals.mjs wall set, PR
+        // #40): without it every night's passing wall test would be a
+        // failed send in his digest.
         if (e.kind === SEND_AS_TOM_FAILED && typeof d.recipient === "string" && d.recipient.toLowerCase().endsWith(".invalid")) break;
         const job = str(d.job) ?? e.kind.replace(/-fail(?:ed|ure)$/, "");
         // The raw `error` is a job's own stderr — worker/jobs/nightly.mjs
@@ -722,7 +725,12 @@ export async function gatherTodayFacts(
     const fixedAt = row.subject === undefined ? undefined : recoveredAt.get(row.subject);
     failedKeys.add(condition);
     const statement = brokenStatement(job);
-    const f = failure(condition, fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement);
+    const said = fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement;
+    // The reports come oldest first, so the newest report of the condition
+    // writes the line last: one that failed again after it recovered reads
+    // as failing, with the newest error.
+    const f = failure(condition, said);
+    f.statement = said;
     f.detail = safeStr(d.error) ?? safeStr(row.text);
   }
   for (const row of reports.recovered) {

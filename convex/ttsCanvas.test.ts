@@ -516,6 +516,23 @@ describe("POST /tts/job-failed", () => {
     expect(broken.find((b) => b.detail === "Canvas rejected the token")?.statement).not.toContain("clean again");
   });
 
+  // witness: the line kept the first report's statement, so a condition
+  // that failed, recovered and failed again read as running clean.
+  it("reads a condition that failed again after it recovered as failing", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
+    const t = convexTest({ schema, modules });
+    await report(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth", error: "first failure" });
+    vi.advanceTimersByTime(60_000);
+    expect((await ok(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth" })).status).toBe(200);
+    vi.advanceTimersByTime(60_000);
+    await report(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth", error: "second failure" });
+    const broken = await digestBroken(t);
+    expect(broken).toHaveLength(1);
+    expect(broken[0].statement).not.toContain("clean again");
+    expect(broken[0].detail).toBe("second failure");
+  });
+
   it("refuses a blank key on either route, and an unnamed clean run", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
