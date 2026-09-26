@@ -200,9 +200,19 @@ export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
   }
   const cut = trimmed.search(/[#:]/);
   if (cut === -1) return [];
-  const path = trimmed.slice(0, cut).replace("/evidence/", "/");
   const heading = trimmed.slice(cut + 1).trim();
   if (heading === "") return [];
+  // A repo's evidence file (`model-of-tom/evidence/repos/<Repo>.md:<file>#<heading>`)
+  // stands behind that repo's AGENTS.md rules, whose source is `<Repo> <file>`.
+  const repo = /^model-of-tom\/evidence\/repos\/([^/]+)\.md$/.exec(trimmed.slice(0, cut));
+  if (repo !== null) {
+    const inner = heading.indexOf("#");
+    if (inner === -1) return [];
+    const source = `${repo[1]} ${heading.slice(0, inner).trim()}`;
+    const wanted = heading.slice(inner + 1).trim().toLowerCase();
+    return lines.filter((line) => line.source === source && line.section.toLowerCase() === wanted);
+  }
+  const path = trimmed.slice(0, cut).replace("/evidence/", "/");
   if (/^\d+$/.test(heading)) return lines.filter((line) => line.id === `${path}#${heading}`);
   const wanted = heading.toLowerCase();
   return lines.filter((line) => line.source === path && line.section.toLowerCase() === wanted);

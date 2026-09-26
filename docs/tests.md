@@ -24,8 +24,8 @@ job and is not counted in any row.
 
 | Test or check | What it verifies | Where it runs | Wall time | Verifier |
 |---|---|---|---|---|
-| vitest, `convex/` — 42 files, 1,338 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
-| vitest, `app/` — 68 files, 1,042 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 18.5 s of CPU | checks |
+| vitest, `convex/` — 43 files, 1,343 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
+| vitest, `app/` — 68 files, 1,047 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 18.5 s of CPU | checks |
 | vitest, `scripts/` — 9 files, 128 tests | The guardrail scripts' own logic, the affected-tests decision, the tests and evals reports | CI `tests`; local | 1.2 s of CPU | checks |
 | vitest, `shared/__tests__/` — 10 files, 278 tests | The modules Convex, the site and the box share: the skills catalog and router, the graph, redaction, the session constants, and that each imports only its siblings | CI `tests`; local | 0.3 s of CPU | checks |
 | vitest, `vqc/` — 2 files, 9 tests | The shape of `vqc/todos.yaml` and the registries beside it | CI `tests`; local | 0.1 s of CPU | checks |
