@@ -92,8 +92,32 @@ describe("the repeats task", () => {
       await clean(t, "repeats", nyAt("04:31"));
       expect(await started(t, nyAt("04:45"))).not.toContain("repeats");
       expect(await started(t, nyAt("05:30"))).not.toContain("repeats");
-      await clean(t, "calendar", nyAt("04:30", "2026-09-29"));
-      expect(await started(t, nyAt("04:31", "2026-09-29"))).toContain("repeats");
+      // witness: a box down through the 4 a.m. hour skipped the day; the
+      // task is due at any hour after 4:30 until it has run clean that day.
+      await clean(t, "calendar", nyAt("07:00", "2026-09-29"));
+      expect(await started(t, nyAt("07:10", "2026-09-29"))).toContain("repeats");
+      await clean(t, "calendar", nyAt("04:30", "2026-09-30"));
+      expect(await started(t, nyAt("04:15", "2026-09-30"))).not.toContain("repeats");
+      expect(await started(t, nyAt("04:31", "2026-09-30"))).toContain("repeats");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("mints the day's instances when the task runs after the 4 a.m. hour", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      await t.run(async (ctx) => {
+        await ctx.db.insert("ttsRepeats", {
+          statement: "water the plants", daysOfWeek: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+          active: true, createdAt: 1, updatedAt: 1,
+        } as never);
+      });
+      vi.setSystemTime(nyAt("09:15"));
+      expect(await t.action(internal.jarvis.tick.runTask, { name: "repeats" })).toEqual({ ok: true });
+      const minted = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+      expect(minted.map((row) => row.statement)).toEqual(["water the plants"]);
     } finally {
       vi.useRealTimers();
     }

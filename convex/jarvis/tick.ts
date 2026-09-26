@@ -19,7 +19,8 @@
 //   code-mirror     tom.quest's vqc/todos.yaml beside the life todos: 6 h.
 //   repeats         the repeating todos, minted ONCE A DAY at 4:30 New York
 //                   (the old cron's minute), before the 5 a.m. digest reads
-//                   them: due from 4:30 until it has run clean that day, a
+//                   them: due from 4:30, at any hour after, until it has run
+//                   clean that New York day, a
 //                   failed run retried at the next tick, and never in the
 //                   same tick that starts the calendar refresh, whose rows its
 //                   skipWhenCalendarHas reads (it runs the minute after).
@@ -40,7 +41,7 @@ type Task = {
   when: { everyMs: number } | { dailyAt: { hour: number; minute: number }; after?: string };
   run:
     | { action: FunctionReference<"action", "internal", Record<string, unknown>> }
-    | { mutation: FunctionReference<"mutation", "internal", Record<string, unknown>> };
+    | { mutation: FunctionReference<"mutation", "internal", Record<string, unknown>>; args?: Record<string, unknown> };
 };
 
 /** The tasks by name. A cadence is a floor: the box ticks every minute, so a
@@ -52,7 +53,9 @@ const TICK_TASKS: Record<string, Task> = {
   "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, run: { action: internal.ttsSync.refreshMirror } },
   repeats: {
     when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 30 }, after: "calendar" },
-    run: { mutation: internal.ttsRepeats.internalGenerateRepeats },
+    // force: the tick decides when it is due (any hour from 4:30), so the
+    // mutation's own 4 a.m.-only guard, kept for its old cron pair, is passed.
+    run: { mutation: internal.ttsRepeats.internalGenerateRepeats, args: { force: true } },
   },
 };
 
@@ -93,12 +96,13 @@ export const due = internalMutation({
       if ("everyMs" in task.when) {
         if (now - last < task.when.everyMs - EARLY_MS) continue;
       } else {
-        // Once a day: in its hour, from its minute, until a clean run that
-        // New York day; a failed run is retried at the next tick; and not in
-        // the tick that starts the task it reads after.
+        // Once a day: from its New York time, at any hour after, until a
+        // clean run that New York day (a box down past the hour still runs
+        // it when it comes back); a failed run is retried at the next tick;
+        // and not in the tick that starts the task it reads after.
         const { hour, minute } = task.when.dailyAt;
         const [nowHour, nowMinute] = nyHhmm(now).split(":").map(Number);
-        if (nowHour !== hour || nowMinute < minute) continue;
+        if (nowHour * 60 + nowMinute < hour * 60 + minute) continue;
         if (ok !== null && nyCalendarDayKey(ok.at) === nyCalendarDayKey(now)) continue;
         if (failed !== null && now - failed.at < MINUTE - EARLY_MS) continue;
         if (task.when.after !== undefined && started.includes(task.when.after)) continue;
@@ -121,7 +125,7 @@ export const runTask = internalAction({
     try {
       const result: unknown = "action" in task.run
         ? await ctx.runAction(task.run.action, {})
-        : await ctx.runMutation(task.run.mutation, {});
+        : await ctx.runMutation(task.run.mutation, task.run.args ?? {});
       const failures = failuresOf(result);
       if (failures.length > 0) error = failures.join("; ");
     } catch (e) {
