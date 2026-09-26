@@ -181,9 +181,16 @@ type VqcEntry = {
 
 export const refreshMirror = internalAction({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx): Promise<{ failures: string[] }> => {
     const token = process.env.GITHUB_MIRROR_TOKEN;
-    if (!token) return;
+    if (!token) return { failures: [] };
+    // A repository that failed is a failure of the run (convex/jarvis/tick.ts
+    // failuresOf); the others are still mirrored.
+    const failures: string[] = [];
+    const fail = (message: string) => {
+      console.error(message);
+      failures.push(message);
+    };
     for (const { repo, branch } of MIRROR_SOURCES) {
       try {
         const res = await fetch(
@@ -198,12 +205,12 @@ export const refreshMirror = internalAction({
         );
         if (res.status === 404) continue; // repo has no vqc file (yet)
         if (!res.ok) {
-          console.error(`TTS mirror: ${repo} fetch failed (${res.status})`);
+          fail(`TTS mirror: ${repo} fetch failed (${res.status})`);
           continue;
         }
         const parsed = loadYaml(await res.text());
         if (!Array.isArray(parsed)) {
-          console.error(`TTS mirror: ${repo} vqc/todos.yaml is not a list`);
+          fail(`TTS mirror: ${repo} vqc/todos.yaml is not a list`);
           continue;
         }
         const url = `https://github.com/Heffnt/${repo}/blob/${branch}/${CODE_TODO_PATH}`;
@@ -230,17 +237,16 @@ export const refreshMirror = internalAction({
         // vanished — replacing would silently wipe the mirror. Keep the stale
         // mirror and complain instead.
         if (parsed.length > 0 && rows.length === 0) {
-          console.error(
+          fail(
             `TTS mirror: ${repo} vqc/todos.yaml parsed to 0 entries from ${parsed.length} list items — format change? Mirror left untouched.`,
           );
           continue;
         }
         await ctx.runMutation(internal.tts.internalReplaceMirror, { repo, rows });
       } catch (err) {
-        console.error(
-          `TTS mirror: ${repo} refresh error: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        fail(`TTS mirror: ${repo} refresh error: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    return { failures };
   },
 });
