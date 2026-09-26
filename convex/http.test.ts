@@ -869,7 +869,6 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       await ctx.db.insert("dtsEvents", {
         at: 1_757_000_000_000,
         kind: "digest-sent",
-        key: "2026-09-11",
         data: { day: "2026-09-11", slackTs: DIGEST_TS, writtenBy: "fable", runToken: TOKEN },
       });
       await ctx.db.insert("runs", {

@@ -229,13 +229,14 @@ describe("claude sessions", () => {
       title: "pasted whole opener",
       kind: "adhoc",
       repo: "none",
-      initialPrompt: `${prelude}\n\n${skills}\n\n${oldFacts}\n\ncarry on from here`,
+      initialPrompt: `${prelude}\n\n${skills}\n\n${oldFacts}\n\n${CONTEXT_END}\n\ncarry on from here`,
     });
     const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
     expect(text).not.toContain("the other todo's ruling");
     expect(text).not.toContain("the other repo's outcome");
     expect(text.split(skills)).toHaveLength(2); // one skills line
     expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2);
+    expect(text.split(CONTEXT_END)).toHaveLength(2);
     expect(text).toContain(`${skills}\n\n${CONTEXT_END}\n\ncarry on from here`);
   });
 
@@ -254,7 +255,7 @@ describe("claude sessions", () => {
     expect(text).toContain(`${CONTEXT_END}\n\n${mission}`);
   });
 
-  it("takes off exactly the span an opener marked, and an older grant-block opener by its own markers", async () => {
+  it("takes off exactly the span an opener marked", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate"]));
@@ -266,20 +267,28 @@ describe("claude sessions", () => {
     expect(one).not.toContain("the other todo's ruling");
     expect(one).not.toContain("an odd leftover line");
     expect(one.split(CONTEXT_END)).toHaveLength(2);
-    expect(one.endsWith("the mission") || one.includes(`${CONTEXT_END}\n\nthe mission`)).toBe(true);
-    // The grant-block format (before 2026-09-26): the block, then the facts.
-    const grants = "SKILLS (WikiTom commit testprelude)\ngranted: write, know-research\nLoad each granted skill before you act on what it covers. `tts-search skills` lists the rest.";
-    const old = `${prelude}\n\n${grants}\n\nRECENT SESSION OUTCOMES\n- 2026-09-02 completed: the other repo's outcome\n\nthe old mission`;
-    const second = await tom.mutation(api.claudeSessions.createSession, { title: "grant block", kind: "adhoc", repo: "none", initialPrompt: old });
-    const two = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId: second }))[0].text ?? "";
-    expect(two).not.toContain("SKILLS (WikiTom commit");
-    expect(two).not.toContain("the other repo's outcome");
-    expect(two).toContain(`${CONTEXT_END}\n\nthe old mission`);
+    expect(one).toContain(`${CONTEXT_END}\n\nthe mission`);
+  });
+
+  // An opener from before the end line is not parsed: after its base (one
+  // header), it is pasted as it was, and the new context goes in front once.
+  it("keeps an older opener as it was after its base, under the new context once", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate"]));
+    const older = "SKILLS (WikiTom commit testprelude)\ngranted: write\nLoad each granted skill before you act on what it covers.\n\nthe old mission";
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "older opener", kind: "adhoc", repo: "none", initialPrompt: `${prelude}\n\n${older}`,
+    });
+    const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
+    expect(text).toContain(`${CONTEXT_END}\n\n${older}`);
+    expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2);
+    expect(text.split(CONTEXT_END)).toHaveLength(2);
   });
 
   // witness: the facts block was cut at its first blank line, and a ruling
   // sentence with a blank line in it left its second paragraph in the new
-  // session's prompt.
+  // session's prompt. The end line makes the cut exact.
   it("takes off a pasted opener's facts whole when a ruling sentence has a blank line in it", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -294,12 +303,12 @@ describe("claude sessions", () => {
     );
     // The opener of a session on the other todo, as the record writes it.
     const context = await t.run(async (ctx) => assembleContext(ctx, { kind: "todo", todoId }, { reachesTom: true }));
-    expect(context.facts).toContain("first paragraph the other todo's second paragraph");
+    expect(context.facts).toContain("first paragraph\n\nthe other todo's second paragraph");
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "pasted opener with facts",
       kind: "adhoc",
       repo: "none",
-      initialPrompt: `${joinContext(context)}\n\ncarry on from here`,
+      initialPrompt: `${joinContext(context)}\n\n${CONTEXT_END}\n\ncarry on from here`,
     });
     const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
     expect(text).not.toContain("second paragraph");

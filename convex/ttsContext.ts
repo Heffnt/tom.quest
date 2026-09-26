@@ -77,9 +77,6 @@ type ContextRecord = {
   sessions: { outcome: string; outcomeSummary?: string; endedDay: string }[];
 };
 
-/** The facts block's two section headers, as renderFacts writes them. */
-const FACTS_HEADERS = ["RULINGS ON THIS SUBJECT", "RECENT SESSION OUTCOMES"] as const;
-
 function renderFacts(record: ContextRecord): string {
   const rulings = boundedFactText(
     [...record.rulings]
@@ -94,13 +91,9 @@ function renderFacts(record: ContextRecord): string {
     (session) => `${session.endedDay} ${session.outcome}${session.outcomeSummary ? `: ${session.outcomeSummary}` : ""}`,
   );
   if (rulings.length === 0 && outcomes.length === 0) return "";
-  // ONE LINE PER FACT: a sentence or summary written over several lines, or
-  // with a blank line in it, is joined into one, so the block is exactly its
-  // headers and its "- " lines and withoutPastedContext can walk it.
-  const bullet = (text: string) => `- ${text.replace(/\s*\n\s*/g, " ")}`;
   return [
-    ...(rulings.length === 0 ? [] : [FACTS_HEADERS[0], ...rulings.map(bullet)]),
-    ...(outcomes.length === 0 ? [] : [FACTS_HEADERS[1], ...outcomes.map(bullet)]),
+    ...(rulings.length === 0 ? [] : ["RULINGS ON THIS SUBJECT", ...rulings.map((ruling) => `- ${ruling}`)]),
+    ...(outcomes.length === 0 ? [] : ["RECENT SESSION OUTCOMES", ...outcomes.map((outcome) => `- ${outcome}`)]),
   ].join("\n");
 }
 
@@ -234,55 +227,22 @@ export function joinContext(context: AssembledContext): string {
  */
 export const CONTEXT_END = "── end of the context the record gave this run; the prompt follows ──";
 
-/** The older openers' grant block (before 2026-09-26, s7): its first line
- *  and the line that always closed it (shared/skills.mjs renderGrants). */
-const GRANT_BLOCK_FIRST = "SKILLS (WikiTom commit ";
-const GRANT_BLOCK_LAST = "Load each granted skill before you act on what it covers.";
-
 /**
- * A seed's prompt with a pasted opener's context taken off, by the markers
- * the opener wrote and nothing else, so the new context goes in front once
- * and no ruling or outcome of another subject rides along:
+ * A seed's prompt with a pasted opener's context taken off by what the
+ * opener marked, and nothing inferred:
  *   - the base, matched exactly (withoutModelOfTomPrelude, which refuses one
- *     read at another commit: null);
- *   - then, in this format, everything up to the CONTEXT_END line;
- *   - in the two older formats, which wrote no end line, their own markers:
- *     the grant block (GRANT_BLOCK_FIRST through GRANT_BLOCK_LAST), or the
- *     write pages and the skills line matched exactly; after either, the
- *     facts block's headers and "- " lines. A facts header right after a
- *     bare base is the prompt's own text and stays.
- * A prompt that does not begin with the header comes back as it was.
+ *     read at another commit: null), so the opener carries one header;
+ *   - then, when the opener wrote one, everything up to its CONTEXT_END line.
+ * An opener from before the end line (any older format) keeps everything
+ * after its base as it was: the new context goes in front of it once. A
+ * prompt that does not begin with the header comes back as it was.
  */
 export function withoutPastedContext(prompt: string, context: AssembledContext): string | null {
   const body = withoutModelOfTomPrelude(prompt, context.prefix);
   if (body === null || body === prompt) return body;
   const lines = body.split("\n");
   const end = lines.indexOf(CONTEXT_END);
-  if (end !== -1) return lines.slice(end + 1).join("\n").replace(/^\n+/, "");
-
-  let rest = body;
-  let closed = false;
-  if (rest.startsWith(GRANT_BLOCK_FIRST)) {
-    const at = rest.split("\n").findIndex((line) => line.startsWith(GRANT_BLOCK_LAST));
-    if (at !== -1) {
-      rest = rest.split("\n").slice(at + 1).join("\n").replace(/^\n+/, "");
-      closed = true;
-    }
-  } else {
-    if (context.write !== "" && rest.startsWith(context.write)) rest = rest.slice(context.write.length).replace(/^\n+/, "");
-    if (rest.startsWith(context.skills)) {
-      rest = rest.slice(context.skills.length).replace(/^\n+/, "");
-      closed = true;
-    }
-  }
-  if (!closed) return rest;
-  const facts = rest.split("\n");
-  let at = 0;
-  if ((FACTS_HEADERS as readonly string[]).includes(facts[0] ?? "")) {
-    while (at < facts.length && ((FACTS_HEADERS as readonly string[]).includes(facts[at]) || facts[at].startsWith("- "))) at += 1;
-    rest = facts.slice(at).join("\n").replace(/^\n+/, "");
-  }
-  return rest;
+  return end === -1 ? body : lines.slice(end + 1).join("\n").replace(/^\n+/, "");
 }
 
 /** The HTTP doors read here. They have no subject of their own, and each

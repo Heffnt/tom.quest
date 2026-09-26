@@ -609,7 +609,7 @@ async function seedDigestSent(
   // writing run's token. The resolver takes the newest rows of the kind and
   // finds the one posted at that ts.
   await t.run((ctx) =>
-    ctx.db.insert("dtsEvents", { at: 5_000, kind: "digest-sent", key: String(data.day ?? "day"), data }),
+    ctx.db.insert("dtsEvents", { at: 5_000, kind: "digest-sent", data }),
   );
 }
 
