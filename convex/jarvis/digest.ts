@@ -52,14 +52,14 @@ import {
   NEEDS_YOU_WINDOW_MS,
   digestFacts,
   lastDigest,
+  recentDigests,
 } from "./outbox";
 
 /**
  * POST /jarvis/digest's mutation: is a digest due, and if so, the digest.
  * Due from 5 a.m. New York when no digest-sent row names today's day — "at or
  * after", not "in the 5 a.m. hour", so a box that was down at 5 sends late
- * rather than skipping the day. `force` composes regardless (a test run; its
- * first line is the box's to mark).
+ * rather than skipping the day. `now` is for a test.
  */
 type ComposeAnswer =
   | { due: false; day: string; reason: string }
@@ -77,15 +77,15 @@ type ComposeAnswer =
     };
 
 export const compose = internalMutation({
-  args: { now: v.optional(v.number()), force: v.optional(v.boolean()) },
-  handler: async (ctx, { now: givenNow, force }): Promise<ComposeAnswer> => {
+  args: { now: v.optional(v.number()) },
+  handler: async (ctx, { now: givenNow }): Promise<ComposeAnswer> => {
     const now = givenNow ?? Date.now();
     const day = ttsDayKey(now);
     const last = digestFacts(await lastDigest(ctx));
-    if (!force && nyLocalHour(now) < TTS_DIGEST_NY_HOUR) {
+    if (nyLocalHour(now) < TTS_DIGEST_NY_HOUR) {
       return { due: false, day, reason: "before 5 a.m. New York" };
     }
-    if (!force && last.day === day) return { due: false, day, reason: `the digest for ${day} went out` };
+    if (last.day === day) return { due: false, day, reason: `the digest for ${day} went out` };
     const channel = outputChannel();
     if (channel === null) {
       // The box reports this as its job's failure; the silence alarm's
@@ -166,16 +166,33 @@ function needsYouSubject(ctx: MutationCtx, d: Record<string, unknown>): SlackSub
  * oldest first. No digest yet means nothing is posted: the reply waits for
  * the next one.
  */
+type Thread = { channel: string; ts: string; day: string | null };
+
 type PendingNeedsYou = {
-  thread: { channel: string; ts: string; day: string | null } | null;
-  pending: { key: string; text: string; todoId?: string; job?: string }[];
+  thread: Thread | null;
+  previousThread: Thread | null;
+  pending: { key: string; text: string; n: number; todoId?: string; job?: string }[];
 };
 
+function threadOf(row: { data?: unknown } | undefined): Thread | null {
+  const facts = digestFacts(row ?? null);
+  return facts.channel === null || facts.ts === null ? null : { channel: facts.channel, ts: facts.ts, day: facts.day };
+}
+
+/**
+ * ONE NUMBERING PER THREAD. The digest numbers its objection lines 1..k
+ * ("revert 2"); the needs-you replies under it go on from k + 1, in the order
+ * they are posted, so a number Tom types names one line of that thread and
+ * nothing else (convex/ttsSlack.ts routes it). The record gives each pending
+ * reply its number here, the next free one after the objection lines and the
+ * replies already posted in the thread; the box writes it first ("<n> · …").
+ */
 export const pendingNeedsYou = internalQuery({
   args: { now: v.optional(v.number()) },
   handler: async (ctx, { now: givenNow }): Promise<PendingNeedsYou> => {
     const now = givenNow ?? Date.now();
-    const thread = digestFacts(await lastDigest(ctx));
+    const [newest, previous] = await recentDigests(ctx, 2);
+    const thread = threadOf(newest);
     const from = now - NEEDS_YOU_WINDOW_MS;
     const opened = await ctx.db
       .query("events")
@@ -187,18 +204,22 @@ export const pendingNeedsYou = internalQuery({
       .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_POSTED).gte("at", from))
       .take(500);
     const done = new Set(posted.map((row) => row.subject));
+    const objectionLines = (newest?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
+    const inThread = thread === null
+      ? 0
+      : posted.filter((row) => (row.data as { threadTs?: unknown } | undefined)?.threadTs === thread.ts).length;
+    const first = (Array.isArray(objectionLines) ? objectionLines.length : 0) + inThread + 1;
     return {
-      thread:
-        thread.channel === null || thread.ts === null
-          ? null
-          : { channel: thread.channel, ts: thread.ts, day: thread.day },
+      thread,
+      previousThread: threadOf(previous),
       pending: opened
         .filter((row) => row.subject !== undefined && !done.has(row.subject))
-        .map((row) => {
+        .map((row, index) => {
           const d = (row.data ?? {}) as Record<string, unknown>;
           return {
             key: row.subject as string,
             text: row.text ?? "",
+            n: first + index,
             ...(typeof d.todoId === "string" ? { todoId: d.todoId } : {}),
             ...(typeof d.job === "string" ? { job: d.job } : {}),
           };
@@ -209,23 +230,11 @@ export const pendingNeedsYou = internalQuery({
 
 // ── The box's two doors ─────────────────────────────────────────────────────
 
-/** POST /jarvis/digest — body { force? }. Answers { ok, due, ... } as compose. */
+/** POST /jarvis/digest — no body. Answers { ok, due, ... } as compose. */
 export const digestRoute = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);
   if (denied) return denied;
-  let body: Record<string, unknown> = {};
-  try {
-    const text = await request.text();
-    if (text.trim() !== "") body = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  if (body.force !== undefined && typeof body.force !== "boolean") {
-    return jsonResponse(400, { error: "force, when given, is a boolean" });
-  }
-  const answer: ComposeAnswer = await ctx.runMutation(internal.jarvis.digest.compose, {
-    ...(body.force === true ? { force: true } : {}),
-  });
+  const answer: ComposeAnswer = await ctx.runMutation(internal.jarvis.digest.compose, {});
   return jsonResponse(200, { ok: true, ...answer });
 });
 

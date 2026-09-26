@@ -75,13 +75,12 @@ async function recordSent(t: ReturnType<typeof convexTest>, answer: Record<strin
 }
 
 describe("POST /jarvis/digest", () => {
-  it("is not due before 5 a.m. New York, and a forced run composes anyway", async () => {
+  it("is not due before 5 a.m. New York, and composes at a morning's clock", async () => {
     const t = setup(NIGHT);
     expect(await (await post(t, "/jarvis/digest", {})).json()).toMatchObject({ ok: true, due: false, reason: "before 5 a.m. New York" });
-    const forced = await (await post(t, "/jarvis/digest", { force: true })).json();
-    expect(forced).toMatchObject({ ok: true, due: true, channel: CHANNEL });
-    expect(typeof forced.text).toBe("string");
-    expect(forced.text.length).toBeGreaterThan(0);
+    const composed = await t.mutation(internal.jarvis.digest.compose, { now: MORNING });
+    expect(composed).toMatchObject({ due: true, channel: CHANNEL });
+    expect(composed.due && composed.text.length).toBeGreaterThan(0);
   });
 
   it("is due once per day: the digest-sent row closes the day, threads his replies and marks what it showed", async () => {
@@ -97,11 +96,10 @@ describe("POST /jarvis/digest", () => {
   it("starts the next window where the last one ended, and reads the previous generation's row until a first one lands", async () => {
     const t = setup(MORNING);
     await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", { at: MORNING - 3_600_000, kind: "digest-sent", data: { day: DAY, windowEnd: MORNING - 3_600_000 } });
+      await ctx.db.insert("dtsEvents", { at: MORNING - 3 * 3_600_000, kind: "digest-sent", data: { day: "2026-09-25", windowEnd: MORNING - 3 * 3_600_000 } });
     });
-    expect(await (await post(t, "/jarvis/digest", {})).json()).toMatchObject({ due: false });
-    const forced = await (await post(t, "/jarvis/digest", { force: true })).json();
-    expect(forced.since).toBe(MORNING - 3_600_000);
+    const answer = await (await post(t, "/jarvis/digest", {})).json();
+    expect(answer).toMatchObject({ due: true, since: MORNING - 3 * 3_600_000 });
   });
 
   it("says why when the output channel is not set", async () => {
@@ -112,8 +110,25 @@ describe("POST /jarvis/digest", () => {
   });
 });
 
-describe("needs-you, a reply under the digest", () => {
-  it("waits for a digest, is posted once, and his reply under it is that todo's next turn", async () => {
+const THREAD_TS = "1758882600.000100";
+
+/** What the box does for one pending needs-you: post it numbered, record it. */
+async function postNumbered(t: ReturnType<typeof convexTest>, item: { key: string; text: string; n: number; todoId?: string }, ts: string) {
+  const res = await post(t, "/jarvis/event", {
+    kind: "needs-you-posted",
+    provenance: { job: "write-slack" },
+    subject: item.key,
+    data: { key: item.key, channel: CHANNEL, threadTs: THREAD_TS, ts, n: item.n, ...(item.todoId ? { todoId: item.todoId } : {}) },
+    text: `${item.n} · ${item.text}`,
+  });
+  expect(res.status).toBe(200);
+}
+
+const reply = (t: ReturnType<typeof convexTest>, eventId: string, text: string, ts: string) =>
+  t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId, channel: CHANNEL, threadTs: THREAD_TS, ts, text, user: "UTOM" });
+
+describe("needs-you, a numbered reply under the digest", () => {
+  it("waits for a digest, is numbered after the objection lines, posted once, and an unnumbered reply goes to the one open item", async () => {
     const t = setup(MORNING);
     const todoId = await aTodo(t);
     await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { todoId, reason: "the landlord needs an answer today", key: "k1" });
@@ -124,47 +139,82 @@ describe("needs-you, a reply under the digest", () => {
     expect(pending.pending).toHaveLength(1);
 
     const answer = await (await post(t, "/jarvis/digest", {})).json();
-    await recordSent(t, answer, "1758882600.000100");
+    // Two objection lines printed: the needs-you numbering goes on from 3.
+    await recordSent(t, { ...answer, objectionAskIds: ["a1", "a2"] }, THREAD_TS);
     pending = await get(t, "/jarvis/digest/needs-you");
-    expect(pending.thread).toEqual({ channel: CHANNEL, ts: "1758882600.000100", day: DAY });
+    expect(pending.thread).toEqual({ channel: CHANNEL, ts: THREAD_TS, day: DAY });
+    expect(pending.previousThread).toBeNull();
     expect(pending.pending).toEqual([
-      expect.objectContaining({ key: "k1", todoId, text: expect.stringContaining("Only you can settle this: the landlord needs an answer today.") }),
+      expect.objectContaining({ key: "k1", n: 3, todoId, text: expect.stringContaining("Only you can settle this: the landlord needs an answer today.") }),
     ]);
-
-    const res = await post(t, "/jarvis/event", {
-      kind: "needs-you-posted",
-      provenance: { job: "write-slack" },
-      subject: "k1",
-      data: { key: "k1", channel: CHANNEL, threadTs: "1758882600.000100", ts: "1758882601.000200", todoId },
-      text: pending.pending[0].text,
-    });
-    expect(res.status).toBe(200);
+    await postNumbered(t, pending.pending[0], "1758882601.000200");
     expect((await get(t, "/jarvis/digest/needs-you")).pending).toHaveLength(0);
 
-    // A reply in the digest's thread, below the needs-you, naming nothing:
-    // "done" completes that todo.
-    const reply = await t.mutation(internal.ttsSlack.internalSlackThreadReply, {
-      eventId: "Ev1", channel: CHANNEL, threadTs: "1758882600.000100", ts: "1758882700.000300", text: "done", user: "UTOM",
-    });
-    expect(reply).toEqual({ outcome: "done", todoId });
+    expect(await reply(t, "Ev1", "done", "1758882700.000300")).toEqual({ outcome: "done", todoId });
     expect((await t.run(async (ctx) => ctx.db.get(todoId)))?.status).toBe("done");
   });
 
-  it("a reply above every needs-you is a note on the day, as before", async () => {
+  it("a reply that starts with a number goes to that item, whatever was posted after it; unnumbered with several open, the thread is asked which", async () => {
     const t = setup(MORNING);
-    const todoId = await aTodo(t);
+    const first = await aTodo(t, "Answer the landlord about the lease");
+    const second = await aTodo(t, "Book the dentist");
     const answer = await (await post(t, "/jarvis/digest", {})).json();
-    await recordSent(t, answer, "1758882600.000100");
-    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { todoId, reason: "it needs an answer", key: "k2" });
-    await post(t, "/jarvis/event", {
-      kind: "needs-you-posted",
-      subject: "k2",
-      data: { key: "k2", channel: CHANNEL, threadTs: "1758882600.000100", ts: "1758882900.000100", todoId },
-    });
-    const reply = await t.mutation(internal.ttsSlack.internalSlackThreadReply, {
-      eventId: "Ev2", channel: CHANNEL, threadTs: "1758882600.000100", ts: "1758882800.000100", text: "Looks right to me.", user: "UTOM",
-    });
-    expect(reply).toEqual({ outcome: "tom-note", subject: { kind: "today", day: DAY } });
+    await recordSent(t, answer, THREAD_TS);
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { todoId: first, reason: "the landlord needs a date", key: "k1" });
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { todoId: second, reason: "the slot closes today", key: "k2" });
+    const pending = (await get(t, "/jarvis/digest/needs-you")).pending;
+    expect(pending.map((p: { n: number }) => p.n)).toEqual([1, 2]);
+    await postNumbered(t, pending[0], "1758882601.000200");
+    await postNumbered(t, pending[1], "1758882602.000200");
+
+    // Unnumbered, two open: nothing is guessed.
+    expect(await reply(t, "Ev1", "Friday works", "1758882700.000100")).toEqual({ outcome: "asked-which", numbers: [1, 2] });
+    const asked = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    const line = asked.find((f) => f.name.includes("sendSlack"));
+    expect(line?.args[0]).toMatchObject({ channel: CHANNEL, threadTs: THREAD_TS, text: expect.stringContaining("1 or 2") });
+
+    // Numbered: the EARLIER item, though the later one sits directly above.
+    expect(await reply(t, "Ev2", "1 done", "1758882800.000100")).toEqual({ outcome: "done", todoId: first });
+    // Now one is open: an unnumbered reply is its turn.
+    const last = await reply(t, "Ev3", "Tuesday at 9", "1758882900.000100");
+    expect(last).toMatchObject({ outcome: "time-note" });
+    // A number that names nothing in the thread is a note on the day.
+    expect(await reply(t, "Ev4", "7 done", "1758883000.000100")).toEqual({ outcome: "tom-note", subject: { kind: "today", day: DAY } });
+  });
+
+  it("a thread with no needs-you keeps a reply as a note on the day", async () => {
+    const t = setup(MORNING);
+    const answer = await (await post(t, "/jarvis/digest", {})).json();
+    await recordSent(t, answer, THREAD_TS);
+    expect(await reply(t, "Ev1", "Looks right to me.", "1758882800.000100")).toEqual({ outcome: "tom-note", subject: { kind: "today", day: DAY } });
+  });
+
+  it("names the previous digest's thread, where a reply posted before the newest digest may sit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(MORNING - 86_400_000);
+    vi.stubEnv("JARVIS_KEY", "k");
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", CHANNEL);
+    const t = convexTest({ schema, modules });
+    const yesterday = await (await post(t, "/jarvis/digest", {})).json();
+    await recordSent(t, yesterday, "1758796200.000100");
+    vi.setSystemTime(MORNING);
+    const today = await (await post(t, "/jarvis/digest", {})).json();
+    await recordSent(t, today, THREAD_TS);
+    const answer = await get(t, "/jarvis/digest/needs-you");
+    expect(answer.thread.ts).toBe(THREAD_TS);
+    expect(answer.previousThread).toEqual({ channel: CHANNEL, ts: "1758796200.000100", day: "2026-09-25" });
+  });
+});
+
+describe("numberedReply", () => {
+  it("reads a leading number and what follows it, and nothing run into a word", async () => {
+    const { numberedReply } = await import("./ttsSlack");
+    expect(numberedReply("4 done")).toEqual({ n: 4, rest: "done" });
+    expect(numberedReply("4 · Friday")).toEqual({ n: 4, rest: "Friday" });
+    expect(numberedReply("4: call her first")).toEqual({ n: 4, rest: "call her first" });
+    expect(numberedReply("4")).toEqual({ n: 4, rest: "" });
+    expect(numberedReply("4pm works")).toBeNull();
+    expect(numberedReply("done")).toBeNull();
   });
 });
 

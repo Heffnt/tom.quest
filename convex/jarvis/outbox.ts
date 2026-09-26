@@ -43,6 +43,25 @@ export async function lastDigest(ctx: QueryCtx): Promise<{ data?: unknown; text?
     .first();
 }
 
+/** The newest `n` digest-sent rows in the record, newest first: the thread
+ *  needs-you replies go under, and the one before it, where a reply posted
+ *  just before a new digest went out may already sit. */
+export async function recentDigests(ctx: QueryCtx, n: number): Promise<{ data?: unknown }[]> {
+  return await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT))
+    .order("desc")
+    .take(n);
+}
+
+/** The number a needs-you reply was posted with: the box writes it first,
+ *  "<n> · …" (Jarvis worker/jobs/write-slack.mjs), from the number the
+ *  record gave it (convex/jarvis/digest.ts pendingNeedsYou). */
+export function needsYouNumber(text: unknown): number | null {
+  const hit = typeof text === "string" ? /^(\d{1,3}) · /.exec(text) : null;
+  return hit === null ? null : Number(hit[1]);
+}
+
 type DigestData = { day?: unknown; windowEnd?: unknown; channel?: unknown; ts?: unknown };
 
 export function digestFacts(row: { data?: unknown } | null): {
