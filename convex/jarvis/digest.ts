@@ -263,3 +263,18 @@ export const needsYouRoute = httpAction(async (ctx, request) => {
   const answer: PendingNeedsYou = await ctx.runQuery(internal.jarvis.digest.pendingNeedsYou, {});
   return jsonResponse(200, { ok: true, ...answer });
 });
+
+/**
+ * GET /jarvis/digest/channel — { ok, channel }: the output channel's id as the
+ * record posts to it (outputChannel(): SLACK_TTS_TODAY_CHANNEL_ID, then the
+ * older SLACK_TTS_CHANNEL_ID), or null when neither is set. The id lives in
+ * the record's env, not the box's; Jarvis `slack-setup` asks here, looks the
+ * channel up by this id (it is renamed #jarvis, and a name would miss it),
+ * and never creates one when the record names one.
+ */
+export const channelRoute = httpAction(async (_ctx, request) => {
+  const denied = jarvisAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, { ok: true, channel: outputChannel() });
+});
+

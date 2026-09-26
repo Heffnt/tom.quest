@@ -74,6 +74,17 @@ async function recordSent(t: ReturnType<typeof convexTest>, answer: Record<strin
   expect(res.status).toBe(200);
 }
 
+describe("GET /jarvis/digest/channel", () => {
+  it("answers the output channel's id from the record's env, and null when none is set", async () => {
+    const t = setup(MORNING);
+    expect(await get(t, "/jarvis/digest/channel")).toEqual({ ok: true, channel: CHANNEL });
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "");
+    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "");
+    expect(await get(t, "/jarvis/digest/channel")).toEqual({ ok: true, channel: null });
+    expect((await t.fetch("/jarvis/digest/channel")).status).toBe(401);
+  });
+});
+
 describe("POST /jarvis/digest", () => {
   it("is not due before 5 a.m. New York, and composes at a morning's clock", async () => {
     const t = setup(NIGHT);

@@ -22,7 +22,7 @@ import { jarvisAuth, jsonResponse } from "./auth";
 import { checkEvent } from "./record";
 import { register as registerContext } from "./context";
 import { postRuling } from "./rulings";
-import { digestRoute, needsYouRoute } from "./digest";
+import { channelRoute, digestRoute, needsYouRoute } from "./digest";
 import { tickRoute } from "./tick";
 
 export const postEvent = httpAction(async (ctx, request) => {
@@ -71,5 +71,6 @@ export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
   http.route({ path: "/jarvis/digest", method: "POST", handler: digestRoute });
   http.route({ path: "/jarvis/digest/needs-you", method: "GET", handler: needsYouRoute });
+  http.route({ path: "/jarvis/digest/channel", method: "GET", handler: channelRoute });
   http.route({ path: "/jarvis/tick", method: "POST", handler: tickRoute });
 }
