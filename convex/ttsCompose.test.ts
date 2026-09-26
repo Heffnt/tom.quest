@@ -21,9 +21,6 @@ import {
   objectionLine,
   objectionsLead,
   renderSlack,
-  runnerLine,
-  runnerTierWords,
-  runnersLead,
   sessionUrl,
   statement,
   verifyDraft,
@@ -35,10 +32,9 @@ import {
   type HourlyFacts,
   type Line,
   type Message,
-  type RunnerFact,
   type TodayFacts,
 } from "./ttsCompose";
-import { RUNNER_TIERS, ttsItemLink, ttsSessionLink, ttsTabLink } from "./ttsShared";
+import { ttsItemLink, ttsSessionLink, ttsTabLink } from "./ttsShared";
 
 // The composer is PURE and imports nothing (its header says why), so every
 // test here calls it with literals — no Convex harness, no clock, no network.
@@ -323,7 +319,6 @@ function sept9(overrides: Partial<TodayFacts> = {}): TodayFacts {
     calendarLead: "Your day is committed from 16:00 to 23:00.",
     objections: [],
     needsYou: [],
-    runners: [],
     overnightByTodo: [
       { todoId: "ph7crit", statement: "Walk the research critical path", sessionId: "k1", finished: 4, running: false },
       { todoId: "ph7veri", statement: "Answer the Veritasium BackerKit reward survey", sessionId: "k2", finished: 0, running: true },
@@ -374,7 +369,6 @@ describe("composeToday", () => {
           { askId: "a1", todoId: "ph79", decision: "moved the passport appointment to Thursday", reason: "the consulate shuts on Wednesdays this month" },
         ],
         needsYou: [{ todoId: "abc", statement: "Pay the lab deposit invoice", why: "the invoice is due tomorrow" }],
-        runners: [WAITING_RUNNER],
         broken: [
           {
             statement: "Nothing has been captured from email since 02:10.",
@@ -388,7 +382,7 @@ describe("composeToday", () => {
       { canReply: false },
     );
     const order = withAll.lines.filter((l) => l.role === "lead").map((l) => l.section);
-    expect(order).toEqual(["today", "objections", "needs-you-today", "runners", "calendar", "overnight", "broken", "box"]);
+    expect(order).toEqual(["today", "objections", "needs-you-today", "calendar", "overnight", "broken", "box"]);
     // The four ranked sections keep the design's order among themselves.
     expect(order.filter((s) => (SECTION_ORDER as readonly string[]).includes(s as string))).toEqual([
       ...SECTION_ORDER,
@@ -605,130 +599,6 @@ describe("objectionsLead", () => {
   });
 });
 
-// ── The runners run ─────────────────────────────────────────────────────────
-const RUNNING_RUNNER: RunnerFact = {
-  runnerId: "r1",
-  title: "The train25 campaign",
-  status: "running",
-  lastCheckIn: "14 of 20 jobs running, 212 of 400 results done",
-  openQuestion: false,
-};
-const WAITING_RUNNER: RunnerFact = {
-  runnerId: "r2",
-  title: "The seed-variance probe",
-  status: "waiting-on-tom",
-  lastCheckIn: "0 of 4 jobs running",
-  openQuestion: true,
-};
-
-describe("the runners run", () => {
-  it("says a running runner is running, with its last check-in's first line", () => {
-    expect(runnerLine(RUNNING_RUNNER)).toBe(
-      "The train25 campaign is running with no question open; its last check-in reads: 14 of 20 jobs running, 212 of 400 results done.",
-    );
-    expect(runnerLine({ ...RUNNING_RUNNER, openQuestion: true })).toContain(
-      "is running with a question open for you",
-    );
-  });
-
-  it("says a runner waiting on Tom is waiting on him, and names no tier or decision value", () => {
-    const line = runnerLine(WAITING_RUNNER);
-    expect(line).toBe(
-      "The seed-variance probe is waiting on your answer; its last check-in reads: 0 of 4 jobs running.",
-    );
-    for (const word of ["routine", "plan", "setup", "continue", "hand-off", "finish", "waiting-on-tom"]) {
-      expect(line).not.toContain(word);
-    }
-  });
-
-  it("cuts a long check-in at a word to fit, never leaving the clause empty", () => {
-    const long = runnerLine({ ...WAITING_RUNNER, lastCheckIn: "14 of 20 jobs are running and 212 of 400 results are done, with the rest of the queue due to drain by the morning" });
-    expect(long.length).toBeLessThanOrEqual(LINE_CHARS);
-    expect(long).toMatch(/its last check-in reads: 14 of 20 jobs are running and \d+ of \d+ results/);
-    const title = "A runner whose title alone takes up nearly all of the room one Slack line has on a phone";
-    const crowded = runnerLine({ ...WAITING_RUNNER, title });
-    expect(crowded.startsWith(`${title} is waiting on you`)).toBe(true);
-    expect(crowded).not.toContain("check-in");
-  });
-
-  it("invents no check-in for a runner that has never checked in", () => {
-    expect(runnerLine({ ...RUNNING_RUNNER, lastCheckIn: null })).toBe(
-      "The train25 campaign is running with no question open; it has not checked in yet.",
-    );
-  });
-
-  it("counts the live runners and the ones waiting on him", () => {
-    expect(runnersLead(1, 0)).toBe("One runner is live on the box.");
-    expect(runnersLead(1, 1)).toBe("One runner is live on the box, and it waits on you.");
-    expect(runnersLead(3, 1)).toBe("Three runners are live on the box, and one of them waits on you.");
-  });
-
-  it("prints the runners after the objection list and before the calendar, each linking the page", () => {
-    const message = composeToday(
-      sept9({
-        objections: [{ askId: "a1", decision: "moved the passport appointment to Thursday" }],
-        runners: [WAITING_RUNNER, RUNNING_RUNNER],
-      }),
-      { canReply: false },
-    );
-    const sections = message.lines.filter((l) => l.role === "lead").map((l) => l.section);
-    expect(sections.indexOf("runners")).toBe(sections.indexOf("objections") + 1);
-    expect(sections.indexOf("calendar")).toBe(sections.indexOf("runners") + 1);
-    const items = message.lines.filter((l) => l.section === "runners" && l.role === "item");
-    expect(items.map((l) => l.text)).toEqual([runnerLine(WAITING_RUNNER), runnerLine(RUNNING_RUNNER)]);
-    expect(items.every((l) => l.role === "item" && l.url === TAB_EVERYTHING)).toBe(true);
-    expect(message.lines.some((l) => l.section === "runners" && l.role === "note")).toBe(false);
-  });
-
-  it("prints no runners run and adds no fact on a day with no live runner", () => {
-    const message = composeToday(sept9(), { canReply: true });
-    expect(message.lines.some((l) => l.section === "runners")).toBe(false);
-    expect(todayFactsBlock(sept9(), true).facts.some((f) => f.id.startsWith("runner:"))).toBe(false);
-  });
-
-  it("offers one fact per live runner, after the objection facts", () => {
-    const block = todayFactsBlock(
-      sept9({ objections: [{ askId: "a1", decision: "moved it" }], runners: [RUNNING_RUNNER] }),
-      false,
-    );
-    const ids = block.facts.map((f) => f.id);
-    expect(ids.indexOf("runner:r1")).toBe(ids.indexOf("ask:a1") + 1);
-    const runner = block.facts.find((f) => f.id === "runner:r1");
-    expect(runner?.urls).toEqual([TAB_EVERYTHING]);
-    expect(runner?.numbers).toEqual(expect.arrayContaining(["14", "20", "212", "400"]));
-  });
-
-  it("has one tier-in-words phrase for every tier the record stores", () => {
-    expect(Object.keys(runnerTierWords).sort()).toEqual([...RUNNER_TIERS].sort());
-  });
-
-  const runnerBlock = todayFactsBlock(sept9({ runners: [RUNNING_RUNNER] }), false);
-  const runnerDraft = (sources: string[]): Draft => ({
-    firstLine: "Three things carry a date you have passed, the oldest by ten days.",
-    firstLineSources: ["today:count"],
-    lines: [
-      { role: "lead", section: "runners", text: "One runner is live on the box.", sources: [] },
-      {
-        role: "item",
-        section: "runners",
-        text: "The train25 campaign is running: 212 of 400 results are done.",
-        url: TAB_EVERYTHING,
-        sources,
-      },
-    ],
-  });
-
-  it("accepts a draft whose runner line cites its runner fact", () => {
-    expect(verifyDraft(runnerDraft(["runner:r1"]), runnerBlock)).toEqual([]);
-  });
-
-  it("refuses a draft that prints a runner with no cited fact", () => {
-    expect(verifyDraft(runnerDraft([]), runnerBlock).join(" ")).toContain(
-      "carries a link or a number and cites no fact",
-    );
-  });
-});
-
 describe("the needs-you-today run", () => {
   const ITEMS = [
     { todoId: "abc", statement: "Pay the lab deposit invoice", why: "the invoice is due tomorrow" },
@@ -871,7 +741,7 @@ describe("the needs-you-today run", () => {
 
 // ── The hourly line ─────────────────────────────────────────────────────────
 function hourly(overrides: Partial<HourlyFacts> = {}): HourlyFacts {
-  return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], todosWorked: [], changes: [], runners: [], ...overrides };
+  return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], todosWorked: [], changes: [], ...overrides };
 }
 
 describe("composeHourly", () => {

@@ -121,6 +121,8 @@ export const DAEMON_RESTART_ENDED_REASON = "daemon restarted mid-mission";
 
 /** What one runner launch may ask for when its row holds no ceiling: the fixed
  * ceiling every runner had before Tom ruled on 2026-09-21 that a ruling of his
- * may raise it. The record (convex/ttsShared.ts) stores and serves it, and the
- * box's sensor falls back to it when its cache holds none. */
+ * may raise it. The record's runners are gone (2026-09-26); this stays only
+ * because the box's worker/agents/runner-sensor.mjs imports it by name, and a
+ * missing named export breaks that module. Delete it with the box's runner
+ * files. */
 export const RUNNER_CEILING_DEFAULT = { gpus: 2, minutes: 240, memoryMb: 128000 };

@@ -18,7 +18,6 @@ import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
-import { liveRunnerFacts } from "./ttsRunners";
 import { DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
 import { failuresInWindow } from "./jarvis/jobs";
 import {
@@ -853,12 +852,7 @@ export async function gatherTodayFacts(
       ...(o.sentAsTom === true ? { sentAsTom: true } : {}),
     }));
 
-  // 7. Every live runner: what it is doing, whether a question of its is
-  //    open, and the first line of its last check-in. Status comes from
-  //    runnerStatus, the one home; nothing here counts or guesses a number.
-  const runners = await liveRunnerFacts(ctx);
-
-  // 8. What changed on the box (plan-root T1): the box-change rows and the
+  // 7. What changed on the box (plan-root T1): the box-change rows and the
   //    deploy job's own rows since the last digest, each read on its own
   //    kind's index so a busy night of other events cannot crowd them out.
   const deployRows = await ctx.db
@@ -904,7 +898,6 @@ export async function gatherTodayFacts(
       })
       .sort((a, b) => a.rank - b.rank)
       .map(({ n }) => n),
-    runners,
     overnightByTodo,
     broken: [...failures.values()],
     boxChanges,

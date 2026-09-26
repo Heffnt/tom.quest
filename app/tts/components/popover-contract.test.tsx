@@ -83,7 +83,6 @@ import OptionsRow from "./options-row";
 import RepeatDialog from "./repeat-dialog";
 import RepeatsStrip from "./repeats-strip";
 import RulingDialog from "./ruling-dialog";
-import RunnersBlock from "./runners-block";
 import SignoffBlock from "./signoff-block";
 import TimeNoteField from "./time-note-field";
 import TodoRow from "./todo-row";
@@ -330,48 +329,6 @@ const AUTO_CONFIG = {
   maxNewPerTick: 2,
 };
 
-const RUNNER = {
-  runnerId: "r1",
-  title: "TRAIN25 campaign",
-  type: "campaign",
-  experimentHost: "turing",
-  stepMs: 600_000,
-  nextStepAt: NOW + 300_000,
-  createdAt: NOW - 3_600_000,
-  endedAt: null,
-  status: "waiting-on-tom",
-  openBlockingAsks: 1,
-  lastCheckIn: { at: NOW - 600_000, line: "The sweep has 12 jobs running." },
-  stepAgentId: "claude:box:00000000-0000-4000-8000-000000000001",
-};
-
-const RUNNER_DETAIL = {
-  document: "# TRAIN25\n\n## Objective\n\nWatch the sweep.\n",
-  documentVersion: 2,
-  checkIns: [
-    {
-      id: "e1",
-      at: NOW - 600_000,
-      stepAgentId: RUNNER.stepAgentId,
-      decision: "ask",
-      verdict: "pass",
-      text: "The sweep has 12 jobs running.",
-    },
-  ],
-  asks: [
-    {
-      id: "e2",
-      at: NOW - 600_000,
-      stepAgentId: RUNNER.stepAgentId,
-      tier: "plan",
-      blocking: true,
-      answeredAt: null,
-      answerText: null,
-      text: "Should I skip pythia?",
-    },
-  ],
-};
-
 const PROPOSAL = {
   id: "p1",
   at: NOW - 60_000,
@@ -386,11 +343,6 @@ const PROPOSAL = {
 
 function load() {
   convex.data = {
-    [getFunctionName(api.ttsRunners.listRunners)]: [
-      RUNNER,
-      { ...RUNNER, runnerId: "r0", title: "An ended probe", endedAt: NOW - 86_400_000, status: "done", openBlockingAsks: 0 },
-    ],
-    [getFunctionName(api.ttsRunners.runnerDetail)]: RUNNER_DETAIL,
     [getFunctionName(api.claudeSessions.getSession)]: SESSION,
     [getFunctionName(api.claudeSessions.getAutoConfig)]: AUTO_CONFIG,
     [getFunctionName(api.claudeSessions.getDaemonHealth)]: null,
@@ -454,7 +406,6 @@ const CASES: { file: string; render: () => void }[] = [
     render: () => void render(<RepeatDialog rule={REPEAT as never} onClose={noop} />),
   },
   { file: "app/tts/components/repeats-strip.tsx", render: () => void render(<RepeatsStrip />) },
-  { file: "app/tts/components/runners-block.tsx", render: () => void render(<RunnersBlock now={NOW} />) },
   { file: "app/tts/components/signoff-block.tsx", render: () => void render(<SignoffBlock now={NOW} />) },
   {
     file: "app/tts/components/ruling-dialog.tsx",

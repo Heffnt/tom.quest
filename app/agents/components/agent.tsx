@@ -25,7 +25,6 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import Info from "@/app/tts/components/info";
-import { RUNNER_STATUS_WORDS } from "@/app/tts/lib";
 import type { SessionModel, TranscriptMessage } from "../lib";
 import { useAgentRows } from "../use-agent-rows";
 import {
@@ -621,10 +620,6 @@ function Lead({
   onOpenRun: (runId: string) => void;
   onOpenSession: (sessionId: Id<"claudeSessions">) => void;
 }) {
-  // A runner's step names the runner in its origin (`runner:<id>`), so the
-  // chain below reads as one experiment's steps rather than bare run ids.
-  const runnerId = run?.origin?.startsWith("runner:") ? run.origin.slice("runner:".length) : undefined;
-  const runner = useQuery(api.ttsRunners.runnerTitle, runnerId !== undefined ? { runnerId } : "skip");
   const outcome = run?.outcome;
   const errored = session?.outcome === "errored" || run?.status === "failed";
   const totals = outcome?.totals;
@@ -715,11 +710,6 @@ function Lead({
           >
             linked item
           </Link>
-        )}
-        {runner && (
-          <span className="text-text-muted">
-            a step of the runner {runner.title}, which is {RUNNER_STATUS_WORDS[runner.status]}
-          </span>
         )}
         {continues !== undefined && (
           <button

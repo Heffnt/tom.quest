@@ -28,13 +28,6 @@ type WindowRows = {
   runs: RunMark[];
   events: PointEvent[];
   rulings: RulingRow[];
-  runners: {
-    runnerId: string;
-    title: string;
-    experimentHost: "turing" | "box";
-    endedAt: number | null;
-    lastCheckInAt: number | null;
-  }[];
   waiting: { waiting: number; oldestAt: number | null; lastAt: number | null } | null;
   /** False while a walk still has pages to fetch. */
   complete: boolean;
@@ -54,7 +47,6 @@ export function useWindowRows(win: TimeWindow, on: boolean): WindowRows {
   const runs = usePaginatedQuery(api.observe.runsInWindow, args, { initialNumItems: PAGE });
   const events = usePaginatedQuery(api.observe.eventsInWindow, args, { initialNumItems: PAGE });
   const rulings = useQuery(api.observe.rulingsInWindow, args);
-  const runners = useQuery(api.observe.liveRunners, on ? {} : "skip");
   const waiting = useQuery(api.observe.waitingOnTom, on ? {} : "skip");
 
   const runsStatus = runs.status;
@@ -84,7 +76,6 @@ export function useWindowRows(win: TimeWindow, on: boolean): WindowRows {
     runs: runs.results as RunMark[],
     events: events.results as PointEvent[],
     rulings: (rulings ?? []) as RulingRow[],
-    runners: runners ?? [],
     waiting: waiting ?? null,
     complete,
     capped,

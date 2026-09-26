@@ -1,13 +1,13 @@
 "use client";
 
-// EVERYTHING tab — the default tab. On top, the box's runners, then the todos
+// EVERYTHING tab — the default tab. On top, the todos
 // awaiting Tom's ruling (app/tts/lib.ts selectNeedsMe, the rows the tab's
 // badge counts), then the rulings recorded and not yet applied. Under them one
 // unified filterable flat list of all life todos and all code-mirror rows.
 // Toolbar: text search, status chips, kind chips, category select, sort select
 // — counts on every chip. Rows carry their own state chips.
 //
-// The three sections on top were the batches tab's, under its batch cards;
+// The two sections on top were the batches tab's, under its batch cards;
 // with batches gone (Tom, 2026-09-24) they moved here unchanged.
 //
 // TWO FILTERS ARE GONE (the lifeos update, phase 7). The ready-for-tom toggle
@@ -29,7 +29,6 @@ import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
 import OptionsRow from "./options-row";
-import RunnersBlock from "./runners-block";
 import SignoffBlock from "./signoff-block";
 import SectionHeader from "./section-header";
 import TimeNoteField, {
@@ -232,8 +231,8 @@ export default function EverythingTab({
   const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
-  // The sections on top tick once a minute on their own — a runner's "next
-  // step in 3 min" has to move while nothing else re-renders the tab.
+  // The sections on top tick once a minute on their own — a "3 min ago" has
+  // to move while nothing else re-renders the tab.
   const coarseNow = useCoarseNow();
 
   // ── Filters ───────────────────────────────────────────────────────────────
@@ -471,7 +470,6 @@ export default function EverythingTab({
   return (
     <div className="space-y-6">
       <SignoffBlock now={coarseNow} />
-      <RunnersBlock now={coarseNow} />
 
       <section className="space-y-2">
         <SectionHeader

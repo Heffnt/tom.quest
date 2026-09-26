@@ -216,8 +216,8 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
   };
 }
 
-// `runner:<id>` is a runner's step run: the id is the runners row it belongs
-// to, which is how the agents page names the runner beside the chain.
+// `runner:<id>` is a runner's step run, as the box's launcher still writes it;
+// the record's runners are gone (2026-09-26), so nothing reads the id.
 // `desktop` is a box session no launcher started, which scripts/agent-hook.mjs
 // records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
 // REMOVAL CHECK: the list is the ingest's refusal of an origin nobody wrote on

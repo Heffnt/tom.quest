@@ -226,11 +226,6 @@ describe("the map's numbers", () => {
         quote: null,
       },
     ],
-    runners: [
-      { experimentHost: "turing", endedAt: null, lastCheckInAt: 800 },
-      { experimentHost: "turing", endedAt: 1, lastCheckInAt: 900 },
-      { experimentHost: "box", endedAt: null, lastCheckInAt: 950 },
-    ],
   };
 
   it("counts each lane off the rows it drew", () => {
@@ -251,10 +246,6 @@ describe("the map's numbers", () => {
     expect(tallyFor({ of: "models" }, data, 0).count).toBe(2);
     expect(tallyFor({ of: "wikitom" }, data, 0).count).toBe(1);
     expect(tallyFor({ of: "gate" }, data, 0).count).toBe(1);
-  });
-
-  it("counts only the live runners whose experiment is on the cluster", () => {
-    expect(tallyFor({ of: "turing" }, data, 0)).toEqual({ count: 1, lastAt: 800 });
   });
 
   it("counts everything the window returned under the record", () => {

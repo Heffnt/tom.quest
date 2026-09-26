@@ -33,8 +33,6 @@ export type Tally =
   | { of: "wikitom" }
   /** The gate head rows recorded in the window. */
   | { of: "gate" }
-  /** Runners whose experiment runs on the cluster. */
-  | { of: "turing" }
   /** Events of one kind in the window. */
   | { of: "events"; kind: string };
 
@@ -125,7 +123,6 @@ export const NODES = [
   // The resources, each under what reaches for it.
   { id: "wikitom", label: "WikiTom", unit: "commits", x: 440, y: ROW_FLOOR, shape: "store", tally: { of: "wikitom" }, opens: "/tts" },
   { id: "models", label: "the models", unit: "models", x: 625, y: ROW_FLOOR, shape: "outside", tally: { of: "models" }, opens: "/turing" },
-  { id: "turing", label: "Turing", unit: "runners", x: 810, y: ROW_FLOOR, shape: "machine", tally: { of: "turing" }, opens: "/turing" },
   { id: "github", label: "GitHub", unit: "merges", x: 995, y: ROW_FLOOR, shape: "outside", tally: { of: "lane", lane: "merges" }, filters: "merges" },
 ] as const satisfies readonly MapNode[];
 
@@ -142,7 +139,6 @@ export const EDGES: MapEdge[] = [
   { from: "box", to: "gate" },
   { from: "wikitom", to: "record", both: true },
   { from: "models", to: "box" },
-  { from: "turing", to: "runners", both: true },
   { from: "github", to: "gate", both: true },
 ];
 

@@ -100,14 +100,12 @@ export const READERS: Record<string, Reader> = {
   ask: async (ctx, params) => {
     const sessionId = nonempty(params.get("sessionId"));
     const job = nonempty(params.get("job"));
-    const runnerId = nonempty(params.get("runnerId"));
-    if ([sessionId, job, runnerId].filter((one) => one !== undefined).length !== 1) {
-      return jsonResponse(400, { error: "exactly one of sessionId, runnerId or job is required" });
+    if ((sessionId === undefined) === (job === undefined)) {
+      return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
     }
     const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
       sessionId,
       job,
-      runnerId,
       todoId: nonempty(params.get("todoId")),
     });
     return jsonResponse(200, context);

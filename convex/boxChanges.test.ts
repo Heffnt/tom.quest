@@ -223,7 +223,6 @@ describe("the digest's Box changes", () => {
       calendar: [],
       objections: [],
       needsYou: [],
-      runners: [],
       overnightByTodo: [],
       broken: [],
       boxChanges,
