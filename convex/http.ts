@@ -2660,81 +2660,11 @@ const ttsWeeklyDecisions = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/weekly-decisions", method: "POST", handler: ttsWeeklyDecisions });
 
-// GET /tts/prelude-delivery?since=<epoch ms>&until=<epoch ms> — the nightly
-// delivery check reads sessions against the commit that was published when
-// they began. It is worker-only: it exposes session titles and commit stamps.
-const ttsPreludeDelivery = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const until = params.has("until") ? Number(params.get("until")) : Date.now();
-  const sinceArg = params.has("since") ? Number(params.get("since")) : undefined;
-  if (!Number.isFinite(until) || until <= 0 || (sinceArg !== undefined && (!Number.isFinite(sinceArg) || sinceArg <= 0 || sinceArg >= until))) {
-    return jsonResponse(400, { error: "until must be an epoch ms instant; since, if given, before it" });
-  }
-  const since = sinceArg ?? (await ctx.runQuery(internal.ttsEvals.internalLatestPreludeDeliveryAt, {}) ?? until - DAY_MS);
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalPreludeDelivery, { since, until }));
-});
-
-http.route({ path: "/tts/prelude-delivery", method: "GET", handler: ttsPreludeDelivery });
-
-// GET /tts/golden-input?limitPerPartition=20 — deterministic, indexed input
-// for the exporter. Snapshot lookup stays on the machine with the WikiTom git
-// checkout; Convex returns only the ruled subjects and their resolution facts.
-const ttsGoldenInput = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const raw = new URL(request.url).searchParams.get("limitPerPartition");
-  const limitPerPartition = raw === null ? undefined : Number(raw);
-  if (limitPerPartition !== undefined && (!Number.isFinite(limitPerPartition) || limitPerPartition <= 0)) {
-    return jsonResponse(400, { error: "limitPerPartition must be a positive number" });
-  }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalGoldenInput, { limitPerPartition }));
-});
-
-http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput });
-
-// GET /tts/label-input?limitPerSource=20 — the other corpus the exporter
-// builds from: what Tom judged, with the run that wrote what he judged and the
-// transcript rows the judgment covers. Unlike golden-input, nothing here needs
-// the WikiTom checkout — the edge from his act to the run is an exact token,
-// so the bytes travel with it.
-const ttsLabelInput = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const raw = new URL(request.url).searchParams.get("limitPerSource");
-  const limitPerSource = raw === null ? undefined : Number(raw);
-  if (limitPerSource !== undefined && (!Number.isFinite(limitPerSource) || limitPerSource <= 0)) {
-    return jsonResponse(400, { error: "limitPerSource must be a positive number" });
-  }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalLabelInput, { limitPerSource }));
-});
-
-http.route({ path: "/tts/label-input", method: "GET", handler: ttsLabelInput });
-
 // A registration token is a UUID (worker/agents/registration.mjs mints it with
 // crypto.randomUUID), and the shape is CHECKED BEFORE THE LOOKUP. An
 // unvalidated string on an indexed read is a scan this deployment pays for on
 // behalf of whoever sent it; refusing the shape costs one regex.
 const RUN_TOKEN_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// GET /tts/run-by-token?token=… — one run's identity and totals, by the token
-// it stamped on what it wrote. This is how the evals harness reads a trial's
-// tokens and turns back from the record rather than counting them itself, the
-// only way the two cache columns are right. `null` is a normal answer and
-// means the sweeper has not seen the run's file yet, which is why the harness
-// polls with a short bounded wait; it is never an error.
-const ttsRunByToken = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const token = new URL(request.url).searchParams.get("token") ?? "";
-  if (!RUN_TOKEN_SHAPE.test(token)) {
-    return jsonResponse(400, { error: "token (a registration UUID) required" });
-  }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalRunByToken, { token }));
-});
-
-http.route({ path: "/tts/run-by-token", method: "GET", handler: ttsRunByToken });
 
 // GET /tts/agent-trace?token=… — the same token, the same agent, ITS TOOL CALLS.
 //
@@ -2765,133 +2695,6 @@ const ttsAgentTrace = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/agent-trace", method: "GET", handler: ttsAgentTrace });
 
-// EITHER KEY, the way POST /tts/tests takes either. CI holds the narrow evals
-// key, which can request and read evals and never write another TTS event. The
-// box holds the worker key and requests evals itself for a repository whose
-// pull requests it checks with no GitHub Actions (Heffnt/Jarvis). The worker
-// key is strictly the more privileged of the two, so accepting it widens
-// nothing.
-const evalsRequest = httpAction(async (ctx, request) => {
-  const denied = presentsJarvisKey(request)
-    ? ttsAuth(request)
-    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.repo !== "string" || b.repo === "" || typeof b.sha !== "string" || b.sha === "") {
-    return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
-  }
-  if (b.baseSha !== undefined && (typeof b.baseSha !== "string" || b.baseSha === "")) {
-    return jsonResponse(400, { error: "baseSha, when given, is a non-empty string" });
-  }
-  if (b.pr !== undefined && (!Number.isInteger(b.pr) || (b.pr as number) <= 0)) {
-    return jsonResponse(400, { error: "pr, when given, is a positive integer" });
-  }
-  // The workflow run's id — GitHub's own push order, which the queue reads to
-  // tell a pull request's live head from the shas behind it. OPTIONAL AND
-  // NEVER INFERRED: a check that does not send it supersedes nothing and is
-  // superseded by nothing, which is the safe answer for a request whose place
-  // in the push order is unknown.
-  if (b.runId !== undefined && (!Number.isInteger(b.runId) || (b.runId as number) <= 0)) {
-    return jsonResponse(400, { error: "runId, when given, is a positive integer" });
-  }
-  if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
-    return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
-  }
-  // `changed` and `unaffected` are diagnostics-only CI hints. The box computes
-  // the diff and coverage from its own worktrees; `prBody` only carries the
-  // optional no-item explanation for that box-computed diff.
-  if (b.changed !== undefined && (!Array.isArray(b.changed) || !b.changed.every((path) => typeof path === "string" && path !== ""))) {
-    return jsonResponse(400, { error: "changed, when given, is an array of non-empty strings" });
-  }
-  if (b.prBody !== undefined && typeof b.prBody !== "string") {
-    return jsonResponse(400, { error: "prBody, when given, is a string" });
-  }
-  // This is a client claim only. The box recomputes the diff and imports the
-  // base worktree's WATCHED_PATHS before it may write an unaffected run row.
-  if (b.unaffected !== undefined && typeof b.unaffected !== "boolean") {
-    return jsonResponse(400, { error: "unaffected, when given, is a boolean" });
-  }
-  const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
-    repo: b.repo,
-    sha: b.sha,
-    baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
-    pr: typeof b.pr === "number" ? b.pr : undefined,
-    runId: typeof b.runId === "number" ? b.runId : undefined,
-    paths: b.paths,
-    changed: Array.isArray(b.changed) ? (b.changed as string[]) : undefined,
-    prBody: typeof b.prBody === "string" ? b.prBody : undefined,
-    unaffected: b.unaffected === true ? true : undefined,
-  });
-  return jsonResponse(200, { ok: true, ...result });
-});
-
-http.route({ path: "/tts/evals-request", method: "POST", handler: evalsRequest });
-
-// Readable with EITHER key. CI holds the narrow evals key; the box holds the
-// worker key and must read this route too — it looks a run up before spending
-// eighty model calls repeating it, and reads the base run before comparing.
-// The worker key is strictly the more privileged of the two, so accepting it
-// here widens nothing.
-const evalsRun = httpAction(async (ctx, request) => {
-  const denied = presentsJarvisKey(request)
-    ? ttsAuth(request)
-    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
-  if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const repo = params.get("repo") ?? "";
-  const sha = params.get("sha") ?? "";
-  const baseSha = params.get("base") ?? undefined;
-  if (repo === "" || sha === "") return jsonResponse(400, { error: "repo and sha required" });
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalEvalsRun, { repo, sha, baseSha }));
-});
-
-http.route({ path: "/tts/evals-run", method: "GET", handler: evalsRun });
-
-// The box polls exactly one unanswered request per pass. This stays on the
-// worker key; an Action may request work but cannot observe another PR's queue.
-const ttsEvalsRequest = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const rawBoxEvalsVersion = params.get("boxEvalsVersion");
-  const boxEvalsVersion = rawBoxEvalsVersion === null ? undefined : Number(rawBoxEvalsVersion);
-  if (
-    boxEvalsVersion !== undefined &&
-    (!Number.isSafeInteger(boxEvalsVersion) || boxEvalsVersion <= 0)
-  ) {
-    return jsonResponse(400, { error: "boxEvalsVersion must be a positive integer" });
-  }
-  // A missing value is protocol 1: this is also the path the installed runner
-  // used before the protocol field existed, so the rollout remains observable
-  // while that copy is still polling.
-  const protocol = await ctx.runMutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {
-    boxEvalsVersion,
-  });
-  const repo = params.get("repo");
-  const sha = params.get("sha");
-  if (repo !== null || sha !== null) {
-    if (repo === null || repo === "" || sha === null || sha === "") {
-      return jsonResponse(400, { error: "repo and sha required together" });
-    }
-    return jsonResponse(200, {
-      request: await ctx.runQuery(internal.ttsEvals.internalEvalsRequest, { repo, sha }),
-      ...protocol,
-    });
-  }
-  return jsonResponse(200, {
-    request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}),
-    ...protocol,
-  });
-});
-
-http.route({ path: "/tts/evals-request", method: "GET", handler: ttsEvalsRequest });
-
 // Mission 3's read-only search family. `--failing` is projected from the run
 // row's failures array, never by a second event read.
 const ttsSearchEvals = httpAction(async (ctx, request) => {
@@ -2905,6 +2708,7 @@ const ttsSearchEvals = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "since must be an epoch ms instant; limit must be 1 to 200" });
   }
   return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalSearchEvals, {
+    set: params.get("set") ?? undefined,
     repo: params.get("repo") ?? undefined,
     sha: params.get("sha") ?? undefined,
     since,
@@ -3111,24 +2915,6 @@ const ttsEvent = httpAction(async (ctx, request) => {
     if (b.kind === "box-change") {
       const recorded = await ctx.runMutation(internal.ttsNightly.internalRecordBoxChange, { data: b.data, key: b.key as string | undefined });
       return jsonResponse(200, { ok: true, ...recorded });
-    }
-    if (b.kind === "evals-run") {
-      const data = (b.data ?? {}) as Record<string, unknown>;
-      const boxEvalsVersion = data.boxEvalsVersion;
-      if (
-        boxEvalsVersion !== undefined &&
-        (typeof boxEvalsVersion !== "number" ||
-          !Number.isSafeInteger(boxEvalsVersion) ||
-          boxEvalsVersion <= 0)
-      ) {
-        return jsonResponse(400, { error: "data.boxEvalsVersion must be a positive integer" });
-      }
-      // Every evals row is another observation of the installed runner. A
-      // pre-versioned row is protocol 1, the same legacy default as its queue
-      // reads, so the singleton always describes the newest box traffic.
-      await ctx.runMutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {
-        boxEvalsVersion: typeof boxEvalsVersion === "number" ? boxEvalsVersion : undefined,
-      });
     }
     const id = await ctx.runMutation(internal.ttsNightly.internalRecordWorkerEvent, {
       kind: b.kind,
