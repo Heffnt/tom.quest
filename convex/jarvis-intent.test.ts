@@ -95,6 +95,33 @@ describe("jarvis/intent", () => {
     await expect(t.withIdentity({ subject: stranger }).query(api.jarvis.intent.decisions, {})).rejects.toThrow();
   });
 
+  it("takes no accept on a refused or unanswered decision, and writes no ruling for one", async () => {
+    const t = convexTest({ schema, modules });
+    const todoId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "a todo",
+        status: "active",
+        readiness: "prepared",
+        timingClass: "whenever",
+        source: "tom",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    await event(t, "decision", "refused1", { ...DECISION, askId: "refused1", todoId, decision: null, refused: true, refusedBecause: "money" });
+    await event(t, "decision", "unanswered1", { ...DECISION, askId: "unanswered1", todoId, decision: null });
+    const tom = await asTom(t);
+    for (const askId of ["refused1", "unanswered1"]) {
+      await expect(tom.mutation(api.jarvis.intent.settle, { subject: `decision:${askId}`, verdict: "approve" })).rejects.toThrow(
+        "nothing to accept",
+      );
+    }
+    const objected = await tom.mutation(api.jarvis.intent.settle, { subject: "decision:refused1", verdict: "revise", sentence: "Ask me." });
+    expect(objected.rulingId).not.toBeNull();
+    const rulings = await t.run(async (ctx) => ctx.db.query("rulings").withIndex("by_todo", (q) => q.eq("todoId", todoId)).collect());
+    expect(rulings.map((row) => row.verdict)).toEqual(["revise"]);
+  });
+
   it("writes his ruling on the todo when the decision was about one", async () => {
     const t = convexTest({ schema, modules });
     const todoId = await t.run(async (ctx) =>
