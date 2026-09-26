@@ -176,7 +176,7 @@ describe("linesRestedOn", () => {
     line({ id: "model-of-tom/intent.md#9", section: "Directions" }),
     line({ id: "model-of-tom/agent-rules.md#3", kind: "standing-rule", source: "model-of-tom/agent-rules.md", section: "How you work" }),
     line({ id: "CMT AGENTS.md#4", kind: "standing-rule", source: "CMT AGENTS.md", section: "commands", voice: "unattributed" }),
-    line({ id: "dtsRulings/qs7abc758ddm40", kind: "ruling", source: "dtsRulings", section: "life", locator: "qs7abc758ddm40" }),
+    line({ id: "rulings/qs7abc758ddm40", kind: "ruling", source: "rulings", section: "life", locator: "qs7abc758ddm40" }),
   ];
 
   it("resolves a page section, whatever its case, to the lines under it", () => {
@@ -190,7 +190,7 @@ describe("linesRestedOn", () => {
   });
 
   it("resolves a ruling id and a line number, and nothing it cannot read", () => {
-    expect(linesRestedOn("ruling:qs7abc758ddm40", lines).map((l) => l.id)).toEqual(["dtsRulings/qs7abc758ddm40"]);
+    expect(linesRestedOn("ruling:qs7abc758ddm40", lines).map((l) => l.id)).toEqual(["rulings/qs7abc758ddm40"]);
     expect(linesRestedOn("model-of-tom/intent.md#9", lines).map((l) => l.id)).toEqual(["model-of-tom/intent.md#9"]);
     expect(linesRestedOn("model-of-tom/intent.md#Nowhere", lines)).toEqual([]);
     expect(linesRestedOn("just words", lines)).toEqual([]);
@@ -204,7 +204,7 @@ describe("evalItemsForLine", () => {
     { name: "rule/ruling-td8dkhd8", passed: 2, runs: 2 },
     { name: "wall/pre-push-clean", passed: 5, runs: 5 },
   ];
-  const ruling = line({ id: "dtsRulings/qs7abc758ddm40", kind: "ruling", source: "dtsRulings" });
+  const ruling = line({ id: "rulings/qs7abc758ddm40", kind: "ruling", source: "rulings" });
 
   it("names a ruling line by the last eight characters of its id, and no other kind of line", () => {
     expect(evalItemLineSuffix("rule/ruling-758ddm40")).toBe("758ddm40");

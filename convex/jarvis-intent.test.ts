@@ -112,7 +112,7 @@ describe("jarvis/intent", () => {
     const tom = await asTom(t);
     const answer = await tom.mutation(api.jarvis.intent.settle, { subject: "decision:aa11bb22", verdict: "revise", sentence: "Two, in worktrees." });
     expect(answer.rulingId).not.toBeNull();
-    const rulings = await t.run(async (ctx) => ctx.db.query("dtsRulings").withIndex("by_todo", (q) => q.eq("todoId", todoId)).collect());
+    const rulings = await t.run(async (ctx) => ctx.db.query("rulings").withIndex("by_todo", (q) => q.eq("todoId", todoId)).collect());
     expect(rulings).toHaveLength(1);
     expect(rulings[0].verdict).toBe("revise");
     expect(rulings[0].sentence).toBe("Two, in worktrees.");
