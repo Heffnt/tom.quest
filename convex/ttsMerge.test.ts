@@ -709,7 +709,7 @@ describe("a merge the gate allows", () => {
     const t = convex();
     await gated(t);
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      ctx.db.insert("todos", {
         statement: "the delegate lands",
         status: "active",
         readiness: "prepared",

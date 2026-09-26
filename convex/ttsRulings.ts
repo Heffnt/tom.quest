@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
-import { resolveId } from "./jarvis/tables";
+import { resolveId, todoRef } from "./jarvis/tables";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -22,7 +22,7 @@ import { resolveId } from "./jarvis/tables";
 //   session — this needs conversation
 //   archive — set aside
 // "defer" is not a verdict: not ruling IS deferring; timing changes are a
-// reschedule (dtsBlocks / a time note), not a ruling.
+// reschedule (blocks / a time note), not a ruling.
 //
 // SENTENCE ON ANY VERDICT (2026-08-29): all four verdicts accept the optional
 // `sentence`. Required only on revise; on archive it is the unarchive
@@ -56,7 +56,7 @@ import { resolveId } from "./jarvis/tables";
 // the same subject supersedes an older unapplied one (append-only, history
 // kept).
 //
-// TWO SUBJECT TYPES: life (a dtsTodos row) and code (repo + externalId). The
+// TWO SUBJECT TYPES: life (a todos row) and code (repo + externalId). The
 // third, a batch, went with batches (Tom's ruling of 2026-09-24: "I dont want
 // to have batches at all anymore"). The schema still declares subjectType
 // "batch" and batchId until the narrow, so a stored row can carry them; no
@@ -134,7 +134,7 @@ export async function insertRuling(
     unarchiveCondition,
     provenance,
   }: {
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     repo?: string;
     externalId?: string;
     verdict: RulingVerdict;
@@ -293,7 +293,7 @@ export async function insertRuling(
 async function ruledSubjectName(
   ctx: MutationCtx,
   subject: {
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     repo?: string;
     externalId?: string;
   },
@@ -309,7 +309,7 @@ async function ruledSubjectName(
 
 export const recordRuling = mutation({
   args: {
-    todoId: v.optional(v.id("dtsTodos")),
+    todoId: v.optional(v.id("todos")),
     repo: v.optional(v.string()),
     externalId: v.optional(v.string()),
     verdict: VERDICT,
@@ -339,9 +339,9 @@ export const internalRecordRuling = internalMutation({
     unarchiveCondition: v.optional(v.string()),
   },
   handler: async (ctx, { todoId, ...rest }) => {
-    let normalized: Id<"dtsTodos"> | undefined;
+    let normalized: Id<"todos"> | undefined;
     if (todoId !== undefined) {
-      const id = ctx.db.normalizeId("dtsTodos", todoId);
+      const id = await resolveId(ctx, "todos", todoId);
       if (!id) throw new Error(`Unknown todo id: ${todoId}`);
       normalized = id;
     }
@@ -372,7 +372,7 @@ export const internalRecordRuling = internalMutation({
 //      at least two words — a substring check with no floor let "ok" pass
 //      against almost any turn, which made the pen the agent's. Matching
 //      ignores the terminator; the STORED quote is the turn's own substring;
-//   4. the subject EXISTS: a dtsTodos row or a code todo that
+//   4. the subject EXISTS: a todos row or a code todo that
 //      is open in the mirror and has a brief — a well-formed id from another
 //      table, an unknown repo, or an unmirrored externalId is refused, so no
 //      ruling (and no execute-approved run) can name a subject Tom never saw;
@@ -466,12 +466,12 @@ async function resolveSubject(
   subjectType: "life" | "code",
   subjectId: string,
 ): Promise<{
-  todoId?: Id<"dtsTodos">;
+  todoId?: Id<"todos">;
   repo?: string;
   externalId?: string;
 }> {
   if (subjectType === "life") {
-    const todoId = ctx.db.normalizeId("dtsTodos", subjectId);
+    const todoId = await resolveId(ctx, "todos", subjectId);
     if (!todoId || !(await ctx.db.get(todoId))) {
       throw new Error(`Unknown todo id: ${subjectId}`);
     }
@@ -531,7 +531,7 @@ async function refuseUnlessSessionSubject(
   ctx: MutationCtx,
   session: Doc<"claudeSessions">,
   subjectType: "life" | "code",
-  subject: { todoId?: Id<"dtsTodos"> },
+  subject: { todoId?: Id<"todos"> },
 ): Promise<void> {
   let about = false;
   if (session.kind === "weekly") {
@@ -695,7 +695,7 @@ export function liveRulings(
  */
 export async function markLiveSessionRulingApplied(
   ctx: MutationCtx,
-  todoId: Id<"dtsTodos">,
+  todoId: Id<"todos">,
   sessionId: string,
 ): Promise<void> {
   const rulings = await ctx.db
@@ -784,7 +784,7 @@ export const internalMarkRulingApplied = internalMutation({
     const ruling = await ctx.db.get(normalized);
     if (!ruling) throw new Error(`Unknown ruling id: ${id}`);
     await ctx.db.patch(normalized, { appliedAt: Date.now(), applyResult: result });
-    await logEvent(ctx, "ruling-applied", ruling.todoId, {
+    await logEvent(ctx, "ruling-applied", todoRef(ruling.todoId), {
       verdict: ruling.verdict,
       repo: ruling.repo,
       externalId: ruling.externalId,

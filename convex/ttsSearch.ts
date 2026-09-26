@@ -282,13 +282,13 @@ export const todos = internalQuery({
     const limit = searchLimit(args.limit);
     const candidates = status === undefined
       ? args.since === undefined
-        ? ctx.db.query("dtsTodos").withIndex("by_updatedAt").order("desc")
+        ? ctx.db.query("todos").withIndex("by_updatedAt").order("desc")
         : ctx.db
-            .query("dtsTodos")
+            .query("todos")
             .withIndex("by_updatedAt", (q) => q.gte("updatedAt", args.since!))
             .order("desc")
       : ctx.db
-          .query("dtsTodos")
+          .query("todos")
           .withIndex("by_status", (q) =>
             args.since === undefined
               ? q.eq("status", status)

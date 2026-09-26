@@ -11,7 +11,7 @@ async function insertTodo(
   overrides: Partial<{ status: "active" | "waiting" | "archived" | "done"; category: string }> = {},
 ) {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    ctx.db.insert("todos", {
       statement,
       readiness: "unprepared",
       status: overrides.status ?? "active",

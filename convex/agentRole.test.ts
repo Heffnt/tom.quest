@@ -108,7 +108,7 @@ describe("TTS writes refuse agent", () => {
     // talking and not a "not found" from an invented id.
     const todoId = (await tom.mutation(api.tts.createTodo, {
       statement: "a real todo",
-    })) as Id<"dtsTodos">;
+    })) as Id<"todos">;
 
     const denied = /restricted to Tom/;
     await expect(

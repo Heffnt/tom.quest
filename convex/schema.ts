@@ -1056,7 +1056,7 @@ export default defineSchema({
   blocks: defineTable({
     start: v.number(), // epoch ms
     end: v.number(), // epoch ms, > start
-    todoId: v.optional(v.id("dtsTodos")),
+    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))),
     category: v.optional(v.string()),
     note: v.optional(v.string()),
     createdAt: v.number(),
@@ -1104,7 +1104,7 @@ export default defineSchema({
   // convex/jarvis/tables.ts has copied it, and then goes.
   timeNotes: defineTable({
     text: v.string(),
-    todoId: v.optional(v.id("dtsTodos")),
+    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))),
     blockId: v.optional(v.id("blocks")),
     day: v.optional(v.string()), // "YYYY-MM-DD", New York calendar date
     status: v.union(
@@ -1207,7 +1207,7 @@ export default defineSchema({
       v.literal("code"),
       v.literal("batch"),
     ),
-    todoId: v.optional(v.id("dtsTodos")), // life subjects
+    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))), // life subjects
     repo: v.optional(v.string()), // code subjects…
     externalId: v.optional(v.string()), // …(repo, externalId)
     // batch subjects (schema v2): a batch is its own row now, so Tom rules on
@@ -1278,7 +1278,7 @@ export default defineSchema({
   dtsEvents: defineTable({
     at: v.number(),
     kind: v.string(),
-    todoId: v.optional(v.id("dtsTodos")),
+    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))),
     data: v.optional(v.any()),
     // Set on the ONE event kind that was an instruction rather than a record:
     // "plan-repair" (a worker found a `needs` edge wrong). The planner read
@@ -1705,7 +1705,7 @@ export default defineSchema({
       // session owns the mental-health page itself.
       v.literal("therapy"),
     ),
-    todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
+    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))), // for gate / focus-item sessions
     // The BATCH subject (ledger graduation session-repos-need-batch-subject,
     // 2026-08-31). A batch is its own row, not a dtsTodos row, so a session
     // opened ON a batch could name no subject at all — and the repo resolver,
@@ -2047,7 +2047,7 @@ export default defineSchema({
     // Tool-result sidecars are pointers only in phase 2: their bytes stay on
     // the host until the phase-3 sweeper assigns them their own store objects.
     attachments: v.array(v.object({ file: v.string(), bytes: v.number(), sha256: v.string() })),
-    todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
     // The registration token from this run's envelope — the exact edge from a
     // row an agent wrote for Tom back to the run that wrote it.
     //
@@ -2149,7 +2149,7 @@ export default defineSchema({
     title: v.string(),
     type: RUNNER_TYPE,
     subject: v.optional(v.union(
-      v.object({ kind: v.literal("todo"), todoId: v.id("dtsTodos") }),
+      v.object({ kind: v.literal("todo"), todoId: v.union(v.id("todos"), v.id("dtsTodos")) }),
       v.object({ kind: v.literal("batch"), batchId: v.id("batches") }),
     )),
     // Where the experiment runs. The runner itself always runs on the box.

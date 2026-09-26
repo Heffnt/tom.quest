@@ -36,7 +36,7 @@ async function declineable(
   statement: string,
   status: "active" | "archived" = "archived",
 ) {
-  const id: Id<"dtsTodos"> = await t.mutation(internal.tts.internalCapture, {
+  const id: Id<"todos"> = await t.mutation(internal.tts.internalCapture, {
     statement,
     source: "slack-capture",
   });
@@ -48,7 +48,7 @@ async function declineable(
 
 async function rule(
   t: ReturnType<typeof convexTest>,
-  todoId: Id<"dtsTodos">,
+  todoId: Id<"todos">,
   verdict: "approve" | "revise" | "session" | "archive",
   { sentence, ruledAt = 1_000 }: { sentence?: string; ruledAt?: number } = {},
 ) {
@@ -121,7 +121,7 @@ describe("the source a ruling about an integration is captured under", () => {
 
   it("leaves every other capture's source exactly as its producer named it", async () => {
     const t = convexTest(schema, modules);
-    const id: Id<"dtsTodos"> = await t.mutation(internal.tts.internalCapture, {
+    const id: Id<"todos"> = await t.mutation(internal.tts.internalCapture, {
       statement: "the outlook integration keeps timing out",
       source: "slack-capture",
     });
@@ -136,7 +136,7 @@ describe("internalDeclinedIntegrations", () => {
     // cost of asking "is this integration off?" the size of Tom's history.
     const t = convexTest(schema, modules);
     for (let i = 0; i < 5; i++) {
-      const other: Id<"dtsTodos"> = await t.mutation(internal.tts.internalCapture, {
+      const other: Id<"todos"> = await t.mutation(internal.tts.internalCapture, {
         statement: `finished thing ${i}`,
         source: "slack-capture",
       });
@@ -147,7 +147,7 @@ describe("internalDeclinedIntegrations", () => {
 
     const rows = await t.run(async (ctx) =>
       ctx.db
-        .query("dtsTodos")
+        .query("todos")
         .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
         .collect(),
     );

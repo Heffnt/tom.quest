@@ -50,7 +50,7 @@ const ofKind = async (t: ReturnType<typeof convexTest>, table: "events" | "dtsEv
 
 async function aTodo(t: ReturnType<typeof convexTest>, statement = "Answer the landlord about the lease") {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    ctx.db.insert("todos", {
       statement,
       readiness: "unprepared",
       status: "active",

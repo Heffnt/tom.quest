@@ -69,7 +69,7 @@ export function useOpenSession() {
     title: string;
     kind: "gate" | "focus-item" | "weekly" | "adhoc" | "block" | "therapy";
     initialPrompt: string;
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     blockCategory?: string;
     /** Only when the caller genuinely knows — otherwise the server resolves. */
     repos?: string[];
@@ -122,9 +122,9 @@ export function useOpenTodoSession() {
   const { open: openSession, busy, error } = useOpenSession();
 
   const open = async (
-    todo: Doc<"dtsTodos">,
+    todo: Doc<"todos">,
     opts?: {
-      fireEngaged?: (id: Id<"dtsTodos">) => void;
+      fireEngaged?: (id: Id<"todos">) => void;
       // A tab the caller already reserved in its own click handler (e.g. the
       // session verdict, which records a ruling first). Omit it and open
       // reserves one itself — synchronously, before the mutation.

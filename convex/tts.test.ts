@@ -266,7 +266,7 @@ describe("TTS todos", () => {
       source: "slack-capture",
       provenance: "slack:#dump",
     });
-    const todos = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    const todos = await t.run(async (ctx) => ctx.db.query("todos").collect());
     expect(todos).toHaveLength(1);
     expect(todos[0].readiness).toBe("unprepared");
     expect(todos[0].source).toBe("slack-capture");
@@ -370,7 +370,7 @@ describe("TTS todos", () => {
       slackTs: "1787875674.496329",
     });
     expect(second).toBe(first);
-    const todos = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    const todos = await t.run(async (ctx) => ctx.db.query("todos").collect());
     expect(todos).toHaveLength(1);
     expect(todos[0].slackTs).toBe("1787875674.496329");
     expect(todos[0].slackChannel).toBe("C0DUMP");
@@ -385,7 +385,7 @@ describe("TTS todos", () => {
       statement: "something else",
       source: "prospecting",
     });
-    const after = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    const after = await t.run(async (ctx) => ctx.db.query("todos").collect());
     expect(after).toHaveLength(3);
   });
 
@@ -398,7 +398,7 @@ describe("TTS todos", () => {
       source: "slack-capture",
     });
     const [captured] = await t.run(async (ctx) =>
-      ctx.db.query("dtsTodos").collect(),
+      ctx.db.query("todos").collect(),
     );
     await t.mutation(internal.tts.internalPrepareTodo, {
       id: captured._id,
@@ -407,7 +407,7 @@ describe("TTS todos", () => {
       workDescription: "a two-minute errand",
       readiness: "prepared",
     });
-    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    const [todo] = await t.run(async (ctx) => ctx.db.query("todos").collect());
     expect(todo.readiness).toBe("prepared");
     expect(todo.entryAction).toBe("Open the retailer page");
     expect(todo.statement).toBe("buy climbing tape"); // intent untouched
@@ -434,11 +434,11 @@ describe("TTS todos", () => {
       source: "consolidation",
     });
     const [captured] = await t.run(async (ctx) =>
-      ctx.db.query("dtsTodos").collect(),
+      ctx.db.query("todos").collect(),
     );
     const due = Date.now() + 3 * 86_400_000;
     await t.mutation(internal.tts.internalTriage, { id: captured._id, dueAt: due });
-    let [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    let [todo] = await t.run(async (ctx) => ctx.db.query("todos").collect());
     expect(todo.timingClass).toBe("dated");
     expect(todo.dateKind).toBe("self-imposed");
     // A second date via triage is refused — dates move via recordDateOutcome.
@@ -450,7 +450,7 @@ describe("TTS todos", () => {
       status: "waiting",
       wakeAt: due,
     });
-    [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+    [todo] = await t.run(async (ctx) => ctx.db.query("todos").collect());
     expect(todo.status).toBe("waiting");
     expect(todo.wakeAt).toBe(due);
   });
@@ -991,7 +991,7 @@ describe("TTS time notes", () => {
     // Age the stale one past the window by hand (nothing deletes it — an
     // applied note is kept forever as instrumentation).
     await t.run(async (ctx) => {
-      const id = ctx.db.normalizeId("dtsTimeNotes", stale)!;
+      const id = ctx.db.normalizeId("timeNotes", stale)!;
       await ctx.db.patch(id, {
         status: "applied",
         result: "long ago",
@@ -1001,7 +1001,7 @@ describe("TTS time notes", () => {
     const listed = await tom.query(api.tts.listTimeNotes, {});
     expect(listed.map((n) => n.text).sort()).toEqual(["fresh", "sometime-ish"]);
     expect(
-      await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect()),
+      await t.run(async (ctx) => ctx.db.query("timeNotes").collect()),
     ).toHaveLength(3);
   });
 

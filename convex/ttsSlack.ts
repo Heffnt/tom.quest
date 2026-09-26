@@ -32,6 +32,7 @@ import {
 import { recordRunnerReply, agentLink } from "./ttsRunners";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 import { openNeedsYou } from "./jarvis/outbox";
+import { resolveId, todoRef } from "./jarvis/tables";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -193,7 +194,7 @@ export const internalClaimSlackItem = internalMutation({
       const by = (seen.data as { channel?: unknown } | undefined)?.channel;
       return { claimed: false, by: typeof by === "string" ? by : null };
     }
-    const todoId = ctx.db.normalizeId("dtsTodos", itemId);
+    const todoId = await resolveId(ctx, "todos", itemId);
     await ctx.db.insert("dtsEvents", {
       at: Date.now(),
       kind: SLACK_CLAIMED,
@@ -234,7 +235,7 @@ export const internalOpenNeedsTomThread = internalMutation({
     if (todoId === undefined) throw new Error("unreachable");
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
-    const id = ctx.db.normalizeId("dtsTodos", todoId);
+    const id = await resolveId(ctx, "todos", todoId);
     const todo = id === null ? null : await ctx.db.get(id);
     if (id === null || !todo) throw new Error(`Unknown todo id: ${todoId}`);
     const seen = await ctx.db
@@ -348,7 +349,7 @@ export function sourceUrlOf(provenance: string | undefined): string | null {
 // A reply on a todo thread that says ONLY "done" completes the todo through
 // applyStatusChange — the one status writer, so the kept-dates rule resolves
 // an open date the same way the page's button does. A reply that is ONLY a
-// date is a time note (dtsTimeNotes): worker/jobs/apply-time-notes.mjs reads
+// date is a time note (timeNotes): worker/jobs/apply-time-notes.mjs reads
 // Tom's words and moves the date through the kept-dates rules. Anything
 // longer is a fact. The recognised shapes are deliberately finite — a sentence
 // that happens to contain a date is still a sentence.
@@ -458,7 +459,7 @@ async function threadSubject(
       : sent.subject;
   if (subject !== undefined) return subject;
   const todo = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_slackTs", (q) => q.eq("slackTs", threadTs))
     .first();
   if (todo && (todo.slackChannel === undefined || todo.slackChannel === channel)) {
@@ -484,14 +485,14 @@ export type ThreadReplyOutcome =
       endedSessionId: Id<"claudeSessions">;
       sessionId: Id<"claudeSessions">;
     }
-  | { outcome: "done"; todoId: Id<"dtsTodos"> }
-  | { outcome: "time-note"; timeNoteId: Id<"dtsTimeNotes"> }
+  | { outcome: "done"; todoId: Id<"todos"> }
+  | { outcome: "time-note"; timeNoteId: Id<"timeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
   | { outcome: "runner-reply"; runnerId: Id<"runners"> }
-  | { outcome: "captured"; todoId: Id<"dtsTodos"> };
+  | { outcome: "captured"; todoId: Id<"todos"> };
 
 /**
  * One transaction per reply event. Dedupe first (Slack delivers at least
@@ -788,7 +789,7 @@ async function captureUnknown(
   ctx: MutationCtx,
   text: string,
   at: { channel: string; ts: string; threadTs: string },
-): Promise<{ outcome: "captured"; todoId: Id<"dtsTodos"> }> {
+): Promise<{ outcome: "captured"; todoId: Id<"todos"> }> {
   const todoId = await ctx.runMutation(internal.tts.internalCapture, {
     statement: text,
     source: "slack-reply",
@@ -962,11 +963,11 @@ async function namedObjection(
 async function namedTodo(
   ctx: MutationCtx,
   text: string,
-): Promise<{ todoId: Id<"dtsTodos">; rest: string } | undefined> {
+): Promise<{ todoId: Id<"todos">; rest: string } | undefined> {
   for (const token of text.split(/\s+/)) {
     const bare = token.replace(/^<|>$/g, "").split("|")[0];
     const candidate = /[?&]item=([A-Za-z0-9]+)/.exec(bare)?.[1] ?? bare.replace(/[.,;:!)]+$/, "");
-    const todoId = ctx.db.normalizeId("dtsTodos", candidate);
+    const todoId = await resolveId(ctx, "todos", candidate);
     if (todoId === null || !(await ctx.db.get(todoId))) continue;
     return { todoId, rest: text.replace(token, " ").replace(/\s+/g, " ").trim() };
   }
@@ -980,7 +981,7 @@ async function namedTodo(
  * read it off the reply with the todo's name taken out (namedTodo). */
 async function todoReply(
   ctx: MutationCtx,
-  todoId: Id<"dtsTodos">,
+  todoId: Id<"todos">,
   text: string,
   at: { channel: string; ts: string; threadTs: string },
   shape: ReplyShape = replyShape(text),
@@ -1049,7 +1050,7 @@ async function sessionReply(
       title: session.title,
       kind: session.kind,
       repos: session.repos ?? [session.repo],
-      todoId: session.todoId,
+      todoId: todoRef(session.todoId),
       blockCategory: session.blockCategory,
       model: session.model,
       initialPrompt: continuationPrompt(

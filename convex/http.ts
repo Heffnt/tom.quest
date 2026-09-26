@@ -3056,7 +3056,7 @@ const ttsRunner = httpAction(async (ctx, request) => {
       ...(b.specs !== undefined ? { specs: b.specs as string[] } : {}),
       ...(b.askOverrides !== undefined ? { askOverrides: b.askOverrides as never } : {}),
       ...(subject !== undefined
-        ? { subject: { kind: "todo" as const, todoId: subject.todoId as Id<"dtsTodos"> } }
+        ? { subject: { kind: "todo" as const, todoId: subject.todoId as Id<"todos"> } }
         : {}),
       from: from.kind === "handoff"
         ? { kind: "handoff" as const, runnerId: from.runnerId as Id<"runners"> }

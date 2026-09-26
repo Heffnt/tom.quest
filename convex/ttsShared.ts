@@ -361,7 +361,7 @@ export function weekdayWordOf(day: string): WeekdayWord {
  * UTC bounds [start, end) of a CALENDAR day in New York: local midnight to the
  * next local midnight. This is the window a /tts calendar COLUMN covers — the
  * day-scoped time note carries that column's YYYY-MM-DD label (schema:
- * dtsTimeNotes.day) and the server resolves it here, so browser-local ms and
+ * timeNotes.day) and the server resolves it here, so browser-local ms and
  * `day + DAY_MS` arithmetic never enter the picture.
  */
 export function nyCalendarDayBoundsUtc(day: string): {
@@ -491,8 +491,8 @@ export function isRecommendation(x: unknown): x is Recommendation {
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
 // THE ONE HOME for the graph rules — convex/ and app/ both import from here,
 // so the server's frontier and the page's frontier cannot drift. Structural
-// types (not Doc<"dtsTodos">) so this module stays importable from both sides
-// without dragging in the generated data model; Id<"dtsTodos"> is a string at
+// types (not Doc<"todos">) so this module stays importable from both sides
+// without dragging in the generated data model; Id<"todos"> is a string at
 // runtime and assignable to these.
 
 /** The bounded fan-in of one todo's `needs` (Convex unbounded-array rule). */
@@ -1080,7 +1080,7 @@ export const SLACK_SUBJECT = v.union(
   v.object({ kind: v.literal("today"), day: v.string() }),
   v.object({ kind: v.literal("digest"), day: v.string() }),
   v.object({ kind: v.literal("hourly"), hour: v.string() }),
-  v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
+  v.object({ kind: v.literal("todo"), id: v.id("todos") }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
   // ONE DELEGATED DECISION (an "ask"), posted to the decisions channel as it

@@ -75,7 +75,7 @@ export type ContextSubject =
   // `repos`: the repositories the run works in, as its caller named them (a
   // session's resolved repos). A todo declares none of its own since batches,
   // which declared them, went (Tom's ruling of 2026-09-24).
-  | { kind: "todo"; todoId: Id<"dtsTodos">; repos?: readonly string[] }
+  | { kind: "todo"; todoId: Id<"todos">; repos?: readonly string[] }
   | { kind: "repo"; repo: string; paths?: string[] }
   | { kind: "area"; area: string }
   | { kind: "none" };
@@ -199,7 +199,7 @@ type ContextRecord = {
   }[];
 };
 
-function todoRow(todo: Doc<"dtsTodos">, repos: string[]): ContextRecord["todos"][number] {
+function todoRow(todo: Doc<"todos">, repos: string[]): ContextRecord["todos"][number] {
   return {
     id: todo._id,
     category: todo.category,
@@ -258,7 +258,7 @@ async function readRecord(
   now: number,
 ): Promise<{ record: ContextRecord; repos: string[] }> {
   const record: ContextRecord = { today: nyCalendarDayKey(now), todos: [], rulings: [], sessions: [] };
-  let todoId: Id<"dtsTodos"> | null = null;
+  let todoId: Id<"todos"> | null = null;
   const repos = subject.kind === "repo"
     ? [subject.repo]
     : subject.kind === "todo"
@@ -331,7 +331,7 @@ async function readRecord(
  *                                                       area's categories: line
  *                                                       is readable)
  *   ttsSkills by_name                              ≤ 64 (the catalog's names)
- *   dtsTodos get                                   ≤  1
+ *   todos get                                   ≤  1
  *   rulings by_todo                             ≤  5
  *   claudeSessions by_status ×2, filtered in memory ≤ 60 (SESSION_SCAN_MAX)
  *

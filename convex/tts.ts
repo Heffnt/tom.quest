@@ -22,6 +22,7 @@ import {
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { insertEvent } from "./jarvis/record";
+import { resolveId, todoRef } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -71,7 +72,7 @@ function str(value: unknown): string | undefined {
 export async function logEvent(
   ctx: MutationCtx,
   kind: string,
-  todoId?: Id<"dtsTodos">,
+  todoId?: Id<"todos">,
   data?: unknown,
   // The indexed lookup key (schema: dtsEvents.key) — set on the kinds the
   // schema comment lists, and on no other.
@@ -131,7 +132,7 @@ export const listTodos = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgentId(ctx);
-    return await ctx.db.query("dtsTodos").collect();
+    return await ctx.db.query("todos").collect();
   },
 });
 
@@ -199,7 +200,7 @@ export const createTodo = mutation({
     await requireTomId(ctx);
     const now = Date.now();
     const timingClass = args.timingClass ?? (args.dueAt ? "dated" : "whenever");
-    const id = await ctx.db.insert("dtsTodos", {
+    const id = await ctx.db.insert("todos", {
       statement: args.statement.trim(),
       body: args.body,
       readiness: "unprepared",
@@ -224,7 +225,7 @@ export const createTodo = mutation({
 // bumps. Status transitions go through setStatus (they carry side effects).
 export const updateTodo = mutation({
   args: {
-    id: v.id("dtsTodos"),
+    id: v.id("todos"),
     statement: v.optional(v.string()),
     body: v.optional(v.string()),
     readiness: v.optional(READINESS),
@@ -288,7 +289,7 @@ export const updateTodo = mutation({
 // by setStatus(done) and recordDateOutcome(done) so the kept-dates side
 // effects cannot drift between the two paths (review finding).
 function resolveDateAsDone(
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   now: number,
   note: string | undefined,
   patch: Record<string, unknown>,
@@ -311,7 +312,7 @@ function resolveDateAsDone(
 // the only terminal states, both kept and visible.
 export async function applyStatusChange(
   ctx: MutationCtx,
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   args: {
     status: "active" | "waiting" | "archived" | "done";
     wakeAt?: number;
@@ -354,7 +355,7 @@ export async function applyStatusChange(
 
 export const setStatus = mutation({
   args: {
-    id: v.id("dtsTodos"),
+    id: v.id("todos"),
     status: STATUS,
     wakeAt: v.optional(v.number()),
     unarchiveCondition: v.optional(v.string()),
@@ -391,7 +392,7 @@ export const internalTriage = internalMutation({
     note: v.optional(v.string()),
   },
   handler: async (ctx, { id, status, dueAt, ...rest }) => {
-    const normalized = ctx.db.normalizeId("dtsTodos", id);
+    const normalized = await resolveId(ctx, "todos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
     const todo = await ctx.db.get(normalized);
     if (!todo) throw new Error(`Unknown todo id: ${id}`);
@@ -440,7 +441,7 @@ export const internalBulkUpdate = internalMutation({
   },
   handler: async (ctx, { updates }) => {
     for (const u of updates) {
-      const normalized = ctx.db.normalizeId("dtsTodos", u.id);
+      const normalized = await resolveId(ctx, "todos", u.id);
       if (!normalized) throw new Error(`Unknown todo id: ${u.id}`);
       const todo = await ctx.db.get(normalized);
       if (!todo) throw new Error(`Unknown todo id: ${u.id}`);
@@ -479,7 +480,7 @@ export const internalBulkUpdate = internalMutation({
 // whenever with the miss on record).
 export async function applyDateOutcome(
   ctx: MutationCtx,
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   {
     outcome,
     newDueAt,
@@ -536,7 +537,7 @@ export async function applyDateOutcome(
 // The outcome row itself is written in the one shape every reader knows.
 export async function recordMissedKeepingDate(
   ctx: MutationCtx,
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   note?: string,
 ) {
   if (todo.dueAt === undefined) throw new Error("Todo has no date to resolve");
@@ -560,7 +561,7 @@ export async function recordMissedKeepingDate(
 
 export const recordDateOutcome = mutation({
   args: {
-    id: v.id("dtsTodos"),
+    id: v.id("todos"),
     outcome: DATE_OUTCOME,
     newDueAt: v.optional(v.number()),
     note: v.optional(v.string()),
@@ -597,9 +598,9 @@ export const listBlocks = query({
     await requireTomOrAgentId(ctx);
     const rows =
       end === undefined
-        ? await ctx.db.query("dtsBlocks").collect()
+        ? await ctx.db.query("blocks").collect()
         : await ctx.db
-            .query("dtsBlocks")
+            .query("blocks")
             .withIndex("by_start", (q) => q.lt("start", end))
             .collect();
     return start === undefined ? rows : rows.filter((b) => b.end > start);
@@ -621,7 +622,7 @@ export async function insertBlock(
   }: {
     start: number;
     end: number;
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     category?: string;
     note?: string;
   },
@@ -635,7 +636,7 @@ export async function insertBlock(
     const todo = await ctx.db.get(todoId);
     if (!todo) throw new Error("TTS todo not found");
   }
-  const id = await ctx.db.insert("dtsBlocks", {
+  const id = await ctx.db.insert("blocks", {
     start,
     end,
     todoId,
@@ -653,7 +654,7 @@ export async function insertBlock(
 
 export async function patchBlock(
   ctx: MutationCtx,
-  block: Doc<"dtsBlocks">,
+  block: Doc<"blocks">,
   { start, end, note }: { start?: number; end?: number; note?: string | null },
 ) {
   const nextStart = start ?? block.start;
@@ -667,7 +668,7 @@ export async function patchBlock(
   // block-moved only when the span actually changed — a note-only edit is
   // not a move and must not fake one in the event stream.
   if (nextStart !== block.start || nextEnd !== block.end) {
-    await logEvent(ctx, "block-moved", block.todoId, {
+    await logEvent(ctx, "block-moved", todoRef(block.todoId), {
       from: { start: block.start, end: block.end },
       to: { start: nextStart, end: nextEnd },
       category: block.category,
@@ -675,9 +676,9 @@ export async function patchBlock(
   }
 }
 
-export async function removeBlock(ctx: MutationCtx, block: Doc<"dtsBlocks">) {
+export async function removeBlock(ctx: MutationCtx, block: Doc<"blocks">) {
   await ctx.db.delete(block._id);
-  await logEvent(ctx, "block-deleted", block.todoId, {
+  await logEvent(ctx, "block-deleted", todoRef(block.todoId), {
     start: block.start,
     end: block.end,
     category: block.category,
@@ -688,7 +689,7 @@ export const createBlock = mutation({
   args: {
     start: v.number(),
     end: v.number(),
-    todoId: v.optional(v.id("dtsTodos")),
+    todoId: v.optional(v.id("todos")),
     category: v.optional(v.string()),
     note: v.optional(v.string()),
   },
@@ -700,7 +701,7 @@ export const createBlock = mutation({
 
 export const updateBlock = mutation({
   args: {
-    id: v.id("dtsBlocks"),
+    id: v.id("blocks"),
     start: v.optional(v.number()),
     end: v.optional(v.number()),
     note: v.optional(v.union(v.string(), v.null())),
@@ -714,7 +715,7 @@ export const updateBlock = mutation({
 });
 
 export const deleteBlock = mutation({
-  args: { id: v.id("dtsBlocks") },
+  args: { id: v.id("blocks") },
   handler: async (ctx, { id }) => {
     await requireTomId(ctx);
     const block = await ctx.db.get(id);
@@ -765,7 +766,7 @@ export const listTimeNotes = query({
     await requireTomOrAgentId(ctx);
     const byStatus = (status: "pending" | "needs-session" | "applied") =>
       ctx.db
-        .query("dtsTimeNotes")
+        .query("timeNotes")
         .withIndex("by_status_and_resolvedAt", (q) => q.eq("status", status));
     // Applied notes are kept forever (instrumentation); only the last 24h of
     // them ride the page's subscription — hence resolvedAt in the index. The
@@ -776,7 +777,7 @@ export const listTimeNotes = query({
       byStatus("pending").take(TIME_NOTE_LIST_MAX),
       byStatus("needs-session").take(TIME_NOTE_LIST_MAX),
       ctx.db
-        .query("dtsTimeNotes")
+        .query("timeNotes")
         .withIndex("by_status_and_resolvedAt", (q) =>
           q.eq("status", "applied").gte("resolvedAt", cutoff),
         )
@@ -793,8 +794,8 @@ export const listTimeNotes = query({
 // browser enforces.
 const CREATE_TIME_NOTE_ARGS = {
   text: v.string(),
-  todoId: v.optional(v.id("dtsTodos")),
-  blockId: v.optional(v.id("dtsBlocks")),
+  todoId: v.optional(v.id("todos")),
+  blockId: v.optional(v.id("blocks")),
   day: v.optional(v.string()),
 };
 
@@ -807,11 +808,11 @@ async function createTimeNoteFrom(
     day,
   }: {
     text: string;
-    todoId?: Id<"dtsTodos">;
-    blockId?: Id<"dtsBlocks">;
+    todoId?: Id<"todos">;
+    blockId?: Id<"blocks">;
     day?: string;
   },
-): Promise<Id<"dtsTimeNotes">> {
+): Promise<Id<"timeNotes">> {
   const trimmed = text.trim();
   if (trimmed === "") throw new Error("A time note needs text");
   requireOneTimeNoteContext(todoId, blockId, day);
@@ -824,7 +825,7 @@ async function createTimeNoteFrom(
   if (blockId !== undefined && !(await ctx.db.get(blockId))) {
     throw new Error("Block not found");
   }
-  const id = await ctx.db.insert("dtsTimeNotes", {
+  const id = await ctx.db.insert("timeNotes", {
     text: trimmed,
     todoId,
     blockId,
@@ -853,7 +854,7 @@ export const internalCreateTimeNote = internalMutation({
 // deletable — it already changed the world, and its record is the only trace
 // of why (nothing-ever-lost applies to what happened, not to what is queued).
 export const deleteTimeNote = mutation({
-  args: { id: v.id("dtsTimeNotes") },
+  args: { id: v.id("timeNotes") },
   handler: async (ctx, { id }) => {
     await requireTomId(ctx);
     const note = await ctx.db.get(id);
@@ -862,7 +863,7 @@ export const deleteTimeNote = mutation({
       throw new Error("An applied time note is history — it is not deleted");
     }
     await ctx.db.delete(id);
-    await logEvent(ctx, "time-note-deleted", note.todoId, { text: note.text });
+    await logEvent(ctx, "time-note-deleted", todoRef(note.todoId), { text: note.text });
   },
 });
 
@@ -924,7 +925,7 @@ export const internalPendingTimeNotes = internalQuery({
   args: {},
   handler: async (ctx) => {
     const notes = await ctx.db
-      .query("dtsTimeNotes")
+      .query("timeNotes")
       .withIndex("by_status_and_resolvedAt", (q) => q.eq("status", "pending"))
       .take(TIME_NOTE_LIST_MAX);
     if (notes.length === 0) return [];
@@ -932,11 +933,11 @@ export const internalPendingTimeNotes = internalQuery({
     // one NY calendar day per note that needs one, memoized so N notes on the
     // same day cost one range query. "That day's blocks" = the blocks that
     // START that day — the same rule the day column paints by.
-    const blocksByDay = new Map<string, Doc<"dtsBlocks">[]>();
+    const blocksByDay = new Map<string, Doc<"blocks">[]>();
     const dayBlocks = async (dayKey: string) => {
       const cached = blocksByDay.get(dayKey);
       if (cached) return cached;
-      let rows: Doc<"dtsBlocks">[] = [];
+      let rows: Doc<"blocks">[] = [];
       // A key that is not a calendar date has no window. createTimeNote is the
       // only writer and validates the same shape, but this read serves the
       // whole worker queue every two minutes: one malformed row must not take
@@ -944,7 +945,7 @@ export const internalPendingTimeNotes = internalQuery({
       if (DAY_KEY_RE.test(dayKey)) {
         const { start, end } = nyCalendarDayBoundsUtc(dayKey);
         rows = await ctx.db
-          .query("dtsBlocks")
+          .query("blocks")
           .withIndex("by_start", (q) => q.gte("start", start).lt("start", end))
           .collect();
       }
@@ -953,10 +954,10 @@ export const internalPendingTimeNotes = internalQuery({
     };
     // The active list is the same for every day-scoped note, and most runs have
     // none at all — read it once, lazily.
-    let activeTodos: Doc<"dtsTodos">[] | null = null;
+    let activeTodos: Doc<"todos">[] | null = null;
     const activeOnce = async () => {
       activeTodos ??= await ctx.db
-        .query("dtsTodos")
+        .query("todos")
         .withIndex("by_status", (q) => q.eq("status", "active"))
         .collect();
       return activeTodos;
@@ -1026,7 +1027,7 @@ export const internalApplyTimeNote = internalMutation({
     actions: v.optional(v.array(TIME_NOTE_ACTION)),
   },
   handler: async (ctx, { id, status, result, actions }) => {
-    const normalized = ctx.db.normalizeId("dtsTimeNotes", id);
+    const normalized = ctx.db.normalizeId("timeNotes", id);
     if (!normalized) throw new Error(`Unknown time note id: ${id}`);
     const note = await ctx.db.get(normalized);
     if (!note) throw new Error(`Unknown time note id: ${id}`);
@@ -1047,14 +1048,14 @@ export const internalApplyTimeNote = internalMutation({
     // earlier writes, so action N validates against action N−1's RESULT rather
     // than against a snapshot from before the loop.
     const requireSubject = async (kind: string) => {
-      const subject = note.todoId ? await ctx.db.get(note.todoId) : null;
+      const subject = note.todoId ? await ctx.db.get(todoRef(note.todoId)) : null;
       if (!subject) {
         throw new Error(`${kind} needs a time note written on a todo`);
       }
       return subject;
     };
     const getBlock = async (raw: string) => {
-      const blockId = ctx.db.normalizeId("dtsBlocks", raw);
+      const blockId = ctx.db.normalizeId("blocks", raw);
       const block = blockId && (await ctx.db.get(blockId));
       if (!block) throw new Error(`Unknown block id: ${raw}`);
       return block;
@@ -1063,7 +1064,7 @@ export const internalApplyTimeNote = internalMutation({
     // through it is a Tom touch — stamped exactly where the equivalent public
     // mutation stamps it (updateTodo and setStatus do; recordDateOutcome and
     // the block mutations do not).
-    const touch = async (todoId: Id<"dtsTodos">) =>
+    const touch = async (todoId: Id<"todos">) =>
       ctx.db.patch(todoId, { tomTouchedAt: now });
 
     for (const action of list) {
@@ -1162,14 +1163,14 @@ export const internalApplyTimeNote = internalMutation({
           break;
         }
         case "create-block": {
-          let blockTodoId: Id<"dtsTodos"> | undefined;
+          let blockTodoId: Id<"todos"> | undefined;
           if (action.todoId !== undefined) {
-            const t = ctx.db.normalizeId("dtsTodos", action.todoId);
+            const t = await resolveId(ctx, "todos", action.todoId);
             if (!t) throw new Error(`Unknown todo id: ${action.todoId}`);
             blockTodoId = t;
           } else if (action.category === undefined && note.todoId) {
             // A block asked for from a todo's own note defaults to that todo.
-            blockTodoId = note.todoId;
+            blockTodoId = todoRef(note.todoId);
           }
           await insertBlock(ctx, {
             start: action.start,
@@ -1199,7 +1200,7 @@ export const internalApplyTimeNote = internalMutation({
       result: result.trim(),
       resolvedAt: now,
     });
-    await logEvent(ctx, "time-note-resolved", note.todoId, {
+    await logEvent(ctx, "time-note-resolved", todoRef(note.todoId), {
       status,
       result: result.trim(),
       actions: list.map((a) => a.kind),
@@ -1226,7 +1227,7 @@ export function nowContext(utcMs: number) {
 export const recordEvent = mutation({
   args: {
     kind: v.string(),
-    todoId: v.optional(v.id("dtsTodos")),
+    todoId: v.optional(v.id("todos")),
     data: v.optional(v.any()),
   },
   handler: async (ctx, { kind, todoId, data }) => {
@@ -1264,7 +1265,7 @@ export const internalCapture = internalMutation({
     // push route answer 200 to a retry, which is what stops Slack retrying.
     if (slackTs !== undefined) {
       const existing = await ctx.db
-        .query("dtsTodos")
+        .query("todos")
         .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
         .first();
       if (existing) return existing._id;
@@ -1278,7 +1279,7 @@ export const internalCapture = internalMutation({
     // the handful of rows under that source rather than the whole archive.
     const declaredSource =
       integrationName(statement) === null ? source : INTEGRATION_SOURCE;
-    const id = await ctx.db.insert("dtsTodos", {
+    const id = await ctx.db.insert("todos", {
       statement: statement.trim(),
       readiness: "unprepared",
       status: "active",
@@ -1383,7 +1384,7 @@ export const internalPrepareTodo = internalMutation({
     ctx,
     { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status, runToken, doorFaults },
   ) => {
-    const normalized = ctx.db.normalizeId("dtsTodos", id);
+    const normalized = await resolveId(ctx, "todos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
     const todo = await ctx.db.get(normalized);
     if (!todo) throw new Error(`Unknown todo id: ${id}`);
@@ -1500,7 +1501,7 @@ export const internalPrepareTodo = internalMutation({
 export const internalListTodos = internalQuery({
   args: {},
   handler: async (ctx) => {
-    return await ctx.db.query("dtsTodos").collect();
+    return await ctx.db.query("todos").collect();
   },
 });
 
@@ -1526,7 +1527,7 @@ export const internalScheduleAt = internalQuery({
   args: { at: v.number() },
   handler: async (ctx, { at }) => {
     const blocks = await ctx.db
-      .query("dtsBlocks")
+      .query("blocks")
       .withIndex("by_start", (q) => q.lte("start", at))
       .collect();
     const live = blocks.filter((b) => b.end > at);
@@ -1621,7 +1622,7 @@ export const internalMarkDigestSent = internalMutation({
   // new rows.
   args: {
     day: v.string(),
-    surfacedTodoIds: v.array(v.id("dtsTodos")),
+    surfacedTodoIds: v.array(v.id("todos")),
     // The askIds the objection list printed, in printed order — the digest's
     // own numbering, which is what a reply of "revert 2" names. Absent on a
     // resend and on a morning with no delegated decisions. `data` is v.any(),
@@ -1731,7 +1732,7 @@ export const internalReplaceMirror = internalMutation({
       rows.filter((r) => r.status === "closed").map((r) => r.externalId),
     );
     if (closed.size > 0) {
-      const all = await ctx.db.query("dtsTodos").collect();
+      const all = await ctx.db.query("todos").collect();
       for (const goal of all) {
         if (goal.kind !== "goal" || goal.status !== "active") continue;
         if (goal.codeRepo !== repo || goal.codeExternalId === undefined) continue;

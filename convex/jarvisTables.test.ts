@@ -22,6 +22,8 @@ const todo = (statement: string, updatedAt: number) => ({
   updatedAt,
 });
 
+const todo_ = (statement: string) => todo(statement, 1);
+
 /** Run a copy to the end, one page at a time, as the chained copy does. */
 async function copyAll(t: ReturnType<typeof convexTest>, table: "todos" | "rulings" | "blocks" | "timeNotes") {
   let cursor: string | null = null;
@@ -129,5 +131,40 @@ describe("the copy into the plain-named tables", () => {
       const ruling = await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
       expect(await resolveId(ctx, "todos", ruling as unknown as Id<"todos">)).toBeNull();
     });
+  });
+
+  it("points every stored reference to a todo at its copy", async () => {
+    const t = convexTest({ schema, modules });
+    const old = await t.run(async (ctx) => {
+      const todo = await ctx.db.insert("dtsTodos", todo_("referenced"));
+      await ctx.db.insert("dtsEvents", { at: 1, kind: "created", todoId: todo });
+      await ctx.db.insert("events", { kind: "job-ok", at: 1, provenance: {}, subject: todo, data: {} });
+      await ctx.db.insert("rulings", { subjectType: "life", todoId: todo, verdict: "archive", ruledAt: 1 });
+      await ctx.db.insert("timeNotes", { text: "friday", todoId: todo, status: "pending", createdAt: 1 });
+      await ctx.db.insert("claudeSessions", {
+        title: "friday", kind: "weekly", repo: "none", status: "running", statusChangedAt: 1, nextSeq: 0, createdAt: 1,
+        agendaDay: "2026-09-25", agendaSubjects: [todo, "not-a-todo"],
+      } as never);
+      return todo;
+    });
+    await copyAll(t, "todos");
+    await t.mutation(internal.jarvis.tables.remapTodoRefs, { chain: false });
+    await t.mutation(internal.jarvis.tables.remapTodoStragglers, { chain: false });
+    const rows = await t.run(async (ctx) => ({
+      todo: (await ctx.db.query("todos").collect())[0],
+      dts: (await ctx.db.query("dtsEvents").collect())[0],
+      event: (await ctx.db.query("events").collect())[0],
+      ruling: (await ctx.db.query("rulings").collect())[0],
+      note: (await ctx.db.query("timeNotes").collect())[0],
+      weekly: (await ctx.db.query("claudeSessions").collect())[0],
+    }));
+    expect(rows.todo.legacyId).toBe(old);
+    expect(rows.dts.todoId).toBe(rows.todo._id);
+    expect(rows.event.subject).toBe(rows.todo._id);
+    expect(rows.ruling.todoId).toBe(rows.todo._id);
+    expect(rows.note.todoId).toBe(rows.todo._id);
+    expect(rows.weekly.agendaSubjects).toEqual([rows.todo._id, "not-a-todo"]);
+    const left = await t.action(internal.jarvis.tables.leftToRemap, {});
+    expect(left).toEqual({ rulings: 0, claudeSessions: 0, runs: 0, blocks: 0, timeNotes: 0 });
   });
 });

@@ -49,6 +49,7 @@ import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
 // through the one choke point the rest of Convex uses (convex/ttsMerge.ts,
 // convex/ttsSearch.ts).
 import { redactSecrets } from "../shared/redact.mjs";
+import { todoRef } from "./jarvis/tables";
 
 export const WEEK_MS = 7 * DAY_MS;
 
@@ -526,7 +527,7 @@ const EVALUATION_KINDS = ["session-created", "session-outcome"] as const;
  */
 async function lastGoalEvaluation(
   ctx: QueryCtx,
-  goal: Doc<"dtsTodos">,
+  goal: Doc<"todos">,
   until: number,
 ): Promise<number | null> {
   for await (const e of ctx.db
@@ -542,8 +543,8 @@ export async function gatherWeeklyFacts(
   ctx: QueryCtx,
   { since, until }: { since: number; until: number },
 ): Promise<WeeklyFacts> {
-  const todoCache = new Map<string, Doc<"dtsTodos"> | null>();
-  const todoOf = async (id: Id<"dtsTodos"> | undefined) => {
+  const todoCache = new Map<string, Doc<"todos"> | null>();
+  const todoOf = async (id: Id<"todos"> | undefined) => {
     if (id === undefined) return null;
     const hit = todoCache.get(id);
     if (hit !== undefined) return hit;
@@ -570,7 +571,7 @@ export async function gatherWeeklyFacts(
   // by updatedAt, and a completion bumps it), kept where doneAt is inside.
   const completions: WeeklyFacts["completions"] = [];
   for (const t of await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_status", (q) => q.eq("status", "done").gte("updatedAt", since))
     .collect()) {
     const doneAt = t.doneAt ?? t.updatedAt;
@@ -587,7 +588,7 @@ export async function gatherWeeklyFacts(
   // 2. Captures by source: every row created in the window.
   const bySource = new Map<string, WeeklyFacts["captures"][number]>();
   for (const t of await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_creation_time", (q) =>
       q.gte("_creationTime", since).lt("_creationTime", until),
     )
@@ -609,7 +610,7 @@ export async function gatherWeeklyFacts(
     if (e.todoId === undefined) continue;
     dateOutcomes.push({
       todoId: e.todoId,
-      statement: (await todoOf(e.todoId))?.statement ?? "",
+      statement: (await todoOf(todoRef(e.todoId)))?.statement ?? "",
       outcome: str(d.outcome) ?? "",
       at: e.at,
       newDueAt: num(d.newDueAt),
@@ -620,13 +621,13 @@ export async function gatherWeeklyFacts(
   // 4. Surfaced three times and untouched: the digest's "surfaced" rows per
   // todo; touched = a later row on that todo of a kind Tom's own hand writes
   // (TOM_TOUCH_KINDS above) — the system's rows on it do not count.
-  const surfacings = new Map<Id<"dtsTodos">, { count: number; firstAt: number }>();
+  const surfacings = new Map<Id<"todos">, { count: number; firstAt: number }>();
   for (const e of await eventsOfKind("surfaced")) {
     if (e.todoId === undefined) continue;
-    const s = surfacings.get(e.todoId) ?? { count: 0, firstAt: e.at };
+    const s = surfacings.get(todoRef(e.todoId)) ?? { count: 0, firstAt: e.at };
     s.count++;
     s.firstAt = Math.min(s.firstAt, e.at);
-    surfacings.set(e.todoId, s);
+    surfacings.set(todoRef(e.todoId), s);
   }
   const surfacedUntouched: WeeklyFacts["surfacedUntouched"] = [];
   for (const [todoId, s] of surfacings) {
@@ -648,7 +649,7 @@ export async function gatherWeeklyFacts(
 
   // 6, 13: the active set, read once.
   const active = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_status", (q) => q.eq("status", "active"))
     .collect();
   const goalsNotEvaluated: WeeklyFacts["goalsNotEvaluated"] = [];
@@ -1065,7 +1066,7 @@ export async function gatherWeeklyFacts(
     const reply = later.find((r) => r.kind === "slack-event");
     threads.push({
       todoId: e.todoId,
-      statement: (await todoOf(e.todoId))?.statement ?? "",
+      statement: (await todoOf(todoRef(e.todoId)))?.statement ?? "",
       askedAt: e.at,
       repliedAt: reply?.at ?? null,
       replyMs: reply === undefined ? null : reply.at - e.at,

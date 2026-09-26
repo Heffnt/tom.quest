@@ -24,7 +24,7 @@ import {
 
 // The rows carry many fields the selector never reads; each factory writes the
 // ones it does read and casts, so a schema addition elsewhere cannot break
-// these cases. Convex row ids are branded strings (Id<"dtsTodos">, not
+// these cases. Convex row ids are branded strings (Id<"todos">, not
 // string), so the one id these cases share is cast once, here.
 const TODO_ID = "todo-1" as unknown as Todo["_id"];
 

@@ -123,7 +123,7 @@ export async function onDigestSent(ctx: MutationCtx, row: Doc<"events">): Promis
   const day = typeof d.day === "string" ? d.day : null;
   const surfaced = Array.isArray(d.surfacedTodoIds) ? d.surfacedTodoIds : [];
   for (const raw of surfaced) {
-    const todoId = typeof raw === "string" ? ctx.db.normalizeId("dtsTodos", raw) : null;
+    const todoId = typeof raw === "string" ? ctx.db.normalizeId("todos", raw) : null;
     if (todoId !== null) await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
   }
   const { channel, ts } = digestFacts(row);
@@ -152,7 +152,7 @@ export async function onNeedsYouPosted(ctx: MutationCtx, row: Doc<"events">): Pr
 }
 
 function needsYouSubject(ctx: MutationCtx, d: Record<string, unknown>): SlackSubject | null {
-  const todoId = typeof d.todoId === "string" ? ctx.db.normalizeId("dtsTodos", d.todoId) : null;
+  const todoId = typeof d.todoId === "string" ? ctx.db.normalizeId("todos", d.todoId) : null;
   if (todoId !== null) return { kind: "todo", id: todoId };
   const job = typeof d.job === "string" ? d.job : null;
   return job === null ? null : { kind: "job", id: job };

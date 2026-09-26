@@ -60,7 +60,7 @@ function grantBlock(granted: string[], refused: string[] = []): string {
 
 const NO_BODY = "no published body at this commit";
 
-type Ids = { todos: Record<string, Id<"dtsTodos">> };
+type Ids = { todos: Record<string, Id<"todos">> };
 
 /** The fixture as rows: the base publication (operate alone), one
  * modelOfTomFiles row per page, the catalog, the repo rules, and the record the
@@ -123,9 +123,9 @@ async function seed(
         syncedAt: COMMITTED_AT,
       });
     }
-    const todos: Record<string, Id<"dtsTodos">> = {};
+    const todos: Record<string, Id<"todos">> = {};
     for (const todo of record.todos) {
-      todos[todo.id] = await ctx.db.insert("dtsTodos", {
+      todos[todo.id] = await ctx.db.insert("todos", {
         statement: todo.id,
         readiness: "prepared",
         status: "active",
@@ -333,7 +333,7 @@ describe("assembleContext", () => {
     const t = convexTest({ schema, modules });
     await seed(t);
     await expect(assemble(t, { kind: "area", area: "nosuch" })).rejects.toThrow(/no area page named nosuch/);
-    await expect(assemble(t, { kind: "todo", todoId: "x".repeat(32) as Id<"dtsTodos"> })).rejects.toThrow();
+    await expect(assemble(t, { kind: "todo", todoId: "x".repeat(32) as Id<"todos"> })).rejects.toThrow();
     await expect(assemble(t, { kind: "none" }, "nobody")).rejects.toThrow(/unknown caller nobody/);
   });
 

@@ -19,7 +19,7 @@ import {
   scoredNothing,
   supersededFields,
 } from "../shared/evals-row.mjs";
-import { resolveId } from "./jarvis/tables";
+import { resolveId, todoRef } from "./jarvis/tables";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
@@ -313,20 +313,23 @@ export const internalGoldenInput = internalQuery({
     for (const ruling of rulings) {
       if (ruling.verdict !== "approve" && ruling.verdict !== "revise") continue;
       if (ruling.subjectType === "life" && ruling.todoId !== undefined) {
-        const todo = await ctx.db.get("dtsTodos", ruling.todoId);
+        const todo = await ctx.db.get("todos", todoRef(ruling.todoId));
         if (todo === null) continue;
+        // The ids the WikiTom snapshots know: a row copied into rulings and
+        // todos (2026-09-26) is named by the id it had, so a golden item's id
+        // and its snapshot row stay what they were before the rename.
         candidates.push({
-          rulingId: ruling._id,
+          rulingId: ruling.legacyId ?? ruling._id,
           ruledAt: ruling.ruledAt,
           appliedAt: ruling.appliedAt ?? null,
           verdict: ruling.verdict,
           sentence: ruling.sentence ?? null,
           job: "prepare",
           partition: partitionOf({ job: "prepare", category: todo.category }),
-          subject: { type: "life", todoId: ruling.todoId },
+          subject: { type: "life", todoId: todo.legacyId ?? todo._id },
           resolution: {
-            table: "dtsTodos",
-            rowId: todo._id,
+            table: "todos",
+            rowId: todo.legacyId ?? todo._id,
             input: {
               statement: todo.statement,
               source: todo.source,
@@ -351,7 +354,7 @@ export const internalGoldenInput = internalQuery({
         ]);
         if (brief === null || mirror === null) continue;
         candidates.push({
-          rulingId: ruling._id,
+          rulingId: ruling.legacyId ?? ruling._id,
           ruledAt: ruling.ruledAt,
           appliedAt: ruling.appliedAt ?? null,
           verdict: ruling.verdict,

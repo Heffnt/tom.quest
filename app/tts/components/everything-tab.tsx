@@ -429,7 +429,7 @@ export default function EverythingTab({
     if (!link || scrolledRef.current || todos === undefined) return;
     scrolledRef.current = true;
     setExpanded((prev) => new Set(prev).add(link.item));
-    const linkedId = link.item as Id<"dtsTodos">;
+    const linkedId = link.item as Id<"todos">;
     // isTom, not canRead: this is the ONE write on this page that fires
     // without a click, so a headless ?item= screenshot would otherwise record
     // engagement nobody performed — and, being a refused mutation for the

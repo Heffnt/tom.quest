@@ -31,9 +31,9 @@ async function events(t: ReturnType<typeof convexTest>, kind: string) {
 
 async function repeatingTodos(
   t: ReturnType<typeof convexTest>,
-): Promise<Doc<"dtsTodos">[]> {
+): Promise<Doc<"todos">[]> {
   return await t.run(async (ctx) =>
-    (await ctx.db.query("dtsTodos").collect()).filter(
+    (await ctx.db.query("todos").collect()).filter(
       (todo) => todo.source === "repeating",
     ),
   );

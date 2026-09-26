@@ -184,7 +184,7 @@ describe("internalGoldenInput", () => {
     const now = Date.now();
     await t.run(async (ctx) => {
       for (let partition = 0; partition < 6; partition++) {
-        const todoId = await ctx.db.insert("dtsTodos", {
+        const todoId = await ctx.db.insert("todos", {
           statement: `todo ${partition}`,
           category: `category-${partition}`,
           readiness: "unprepared",
@@ -225,7 +225,7 @@ describe("internalGoldenInput", () => {
     const t = convexTest({ schema, modules });
     const now = Date.now();
     await t.run(async (ctx) => {
-      const todoId = await ctx.db.insert("dtsTodos", {
+      const todoId = await ctx.db.insert("todos", {
         statement: "a todo", readiness: "unprepared", status: "active", timingClass: "whenever", source: "test", createdAt: now, updatedAt: now,
       });
       for (const verdict of ["session", "archive"] as const) {
@@ -260,7 +260,7 @@ describe("internalLabelInput", () => {
     const t = convexTest(schema, modules);
     const now = Date.now();
     const todoId = await t.run(async (ctx) => {
-      const id = await ctx.db.insert("dtsTodos", {
+      const id = await ctx.db.insert("todos", {
         statement: "a todo", readiness: "unprepared", status: "active",
         timingClass: "whenever", source: "test", createdAt: now, updatedAt: now,
       });

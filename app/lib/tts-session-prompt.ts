@@ -35,7 +35,7 @@ function briefFact(brief: string | undefined): string | null {
 // session prompt carries it). Two pens, both on the key a session's shell
 // already holds (X-TTS-Key):
 //
-//   POST /tts/ruling (ruling 15, 2026-09-05) — a ruling Tom STATED in plain
+//   POST /jarvis/ruling (ruling 15, 2026-09-05) — a ruling Tom STATED in plain
 //   language. The agent names the turn it read (the daemon prints
 //   "inbound row: <id>" under every turn Tom typed — worker/session-host/
 //   session.mjs deliveredTurnText), the verdict, the subject, and one whole
@@ -57,14 +57,14 @@ function briefFact(brief: string | undefined): string | null {
 //   the only pen: the prompts once promised `npx convex run
 //   ttsRulings:internalRecordRuling`, which needs a deploy credential no
 //   session holds — ledger graduation session-has-no-ruling-pen, 2026-08-31.)
-const RULING_PEN = `When Tom states a ruling in plain language — approve, revise, session, or archive, on an item this prompt names — write it the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"${INBOUND_ROW_LABEL}\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|code>", "subjectId": "<the subject's id as this prompt gives it; a code subject is \\"<repo> <externalId>\\">", "quote": "<one whole sentence of that turn, copied exactly — never a fragment or a single word>", "sentence": "<on revise only: the one sentence of that same turn that redirects the preparing agent, copied exactly — it may be the quote itself, and it is never your own wording; omit the field on every other verdict>"}' (both variables are already set in this session's environment). The server writes the ruling only if that turn was typed by Tom, the quote — and on revise the sentence — is a whole sentence of it word for word, and the subject is one this session is about (the item or block named in this prompt; a ruling on anything else is refused), and applies it exactly as the matching button would; the quote is kept as provenance and never becomes the item's text; the morning digest quotes every ruling written this way, so a misreading is objected there. The message that opened this session is never a source: it carries no "${INBOUND_ROW_LABEL}" line and the server refuses it, so if Tom stated a ruling there, ask him to say it again in a later turn and write it from that turn. If his words leave the verdict or the subject unclear, do not guess: record them as a fact instead: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom said: <his words, verbatim, with the subject named>", "source": "session"}'. A ruling that lives only in chat is lost.`;
+const RULING_PEN = `When Tom states a ruling in plain language — approve, revise, session, or archive, on an item this prompt names — write it the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/jarvis/ruling" -H "X-Jarvis-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"${INBOUND_ROW_LABEL}\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|code>", "subjectId": "<the subject's id as this prompt gives it; a code subject is \\"<repo> <externalId>\\">", "quote": "<one whole sentence of that turn, copied exactly — never a fragment or a single word>", "sentence": "<on revise only: the one sentence of that same turn that redirects the preparing agent, copied exactly — it may be the quote itself, and it is never your own wording; omit the field on every other verdict>"}' (both variables are already set in this session's environment). The server writes the ruling only if that turn was typed by Tom, the quote — and on revise the sentence — is a whole sentence of it word for word, and the subject is one this session is about (the item or block named in this prompt; a ruling on anything else is refused), and applies it exactly as the matching button would; the quote is kept as provenance and never becomes the item's text; the morning digest quotes every ruling written this way, so a misreading is objected there. The message that opened this session is never a source: it carries no "${INBOUND_ROW_LABEL}" line and the server refuses it, so if Tom stated a ruling there, ask him to say it again in a later turn and write it from that turn. If his words leave the verdict or the subject unclear, do not guess: record them as a fact instead: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom said: <his words, verbatim, with the subject named>", "source": "session"}'. A ruling that lives only in chat is lost.`;
 
 // Opening prompt for a BLOCK session: committed time over a category of
 // todos, not a single item. Same contract; the session works the set with
 // Tom one item at a time and records his spoken rulings as they land.
 export function buildBlockSessionPrompt(
   category: string,
-  todos: Doc<"dtsTodos">[],
+  todos: Doc<"todos">[],
 ): string {
   const lines: string[] = [
     FRAMING,
@@ -156,7 +156,7 @@ function rulingLines(ruling: LiveRulingContext | undefined): string[] {
 }
 
 export function buildTodoSessionPrompt(
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   kind: "gate" | "focus-item",
   ruling?: LiveRulingContext,
 ): string {

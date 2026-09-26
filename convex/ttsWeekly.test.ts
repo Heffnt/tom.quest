@@ -72,9 +72,9 @@ async function todo(
     createdAt: number;
     updatedAt: number;
   }> = {},
-): Promise<Id<"dtsTodos">> {
+): Promise<Id<"todos">> {
   const now = Date.now();
-  return await ctx.db.insert("dtsTodos", {
+  return await ctx.db.insert("todos", {
     statement: fields.statement ?? "a todo",
     status: fields.status ?? "active",
     readiness: fields.readiness ?? "unprepared",
@@ -91,7 +91,7 @@ async function event(
   ctx: MutationCtx,
   kind: string,
   at: number,
-  extra: { todoId?: Id<"dtsTodos">; key?: string; data?: unknown } = {},
+  extra: { todoId?: Id<"todos">; key?: string; data?: unknown } = {},
 ) {
   // A job's report lives in the record's events table (convex/jarvis/jobs.ts),
   // its condition as the subject; every other kind still in dtsEvents.
@@ -1065,7 +1065,7 @@ describe("POST /tts/area-reviewed", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].data).toEqual({ path: "model-of-tom/areas/research.md", reviewedOn: today });
     // The row wrote nothing else: no todo, no page body.
-    expect(await t.run(async (ctx) => (await ctx.db.query("dtsTodos").collect()).length)).toBe(0);
+    expect(await t.run(async (ctx) => (await ctx.db.query("todos").collect()).length)).toBe(0);
     const f = await gather(t);
     expect(f.areaPages[0]).toMatchObject({ reviewedOn: today, reviewedAgeDays: 0, pastWindow: false });
   });

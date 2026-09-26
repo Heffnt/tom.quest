@@ -8,6 +8,7 @@ import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { inboundRowIdOf } from "./sessionRows";
+import { resolveId } from "./jarvis/tables";
 
 const AGENT_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
@@ -84,7 +85,9 @@ const AGENT = v.object({
   mode: v.optional(AGENT_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
   // batchId stays accepted while a box that has not rolled out still sends it;
   // nothing reads it, and the schema narrow removes it.
-  todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  // A todo id as the registration spells it: a todos id, or the dtsTodos id a
+  // registration written before the rename carries (resolved in the ingest).
+  todoId: v.optional(v.string()), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
   regToken: v.optional(v.string()),
   envelopeKey: v.optional(v.string()), abandonedAt: v.optional(v.number()), file: FILE,
 });
@@ -411,7 +414,11 @@ export const internalIngest = internalMutation({
     // box run launched is depth 2 here and depth 1 in its own file, and the
     // check that refused a row at any other depth than its run's dead-lettered
     // six such children on 2026-09-19.
-    let linked = { ...args.run, rootRunId, depth };
+    // A registration written before the record's tables took their plain
+    // names (2026-09-26) names its todo by the dtsTodos id; the run is stored
+    // against todos, and an id that names no todo is left off.
+    const todoId = args.run.todoId === undefined ? undefined : (await resolveId(ctx, "todos", args.run.todoId)) ?? undefined;
+    let linked = { ...args.run, rootRunId, depth, todoId };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
     // itself without a second worker round trip.

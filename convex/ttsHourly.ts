@@ -11,6 +11,7 @@ import {
 } from "./ttsCompose";
 import { liveRunnerFacts } from "./ttsRunners";
 import { LIVE_STATUSES, ttsItemLink, ttsSessionLink } from "./ttsShared";
+import { todoRef } from "./jarvis/tables";
 
 // The hourly update's FACTS. The SEND lives in convex/ttsSync.ts (a Node
 // action: it does the network I/O, through the one Slack door) and the TEXT in
@@ -129,9 +130,9 @@ export const internalLastHourlyWindowEnd = internalQuery({
 async function subjectStatement(
   ctx: QueryCtx,
   s: Doc<"claudeSessions">,
-): Promise<{ statement: string | null; todoId: Id<"dtsTodos"> | null }> {
+): Promise<{ statement: string | null; todoId: Id<"todos"> | null }> {
   if (s.todoId !== undefined) {
-    const todo = await ctx.db.get(s.todoId);
+    const todo = await ctx.db.get(todoRef(s.todoId));
     return { statement: todo?.statement ?? null, todoId: todo === null ? null : todo._id };
   }
   return { statement: null, todoId: null };
@@ -257,8 +258,8 @@ export const internalChangedSince = internalQuery({
       .sort((a, b) => b.at - a.at)
       .slice(0, CHANGES_LIMIT)
       .reverse();
-    const todoCache = new Map<string, Doc<"dtsTodos"> | null>();
-    const todoOf = async (id: Id<"dtsTodos"> | undefined) => {
+    const todoCache = new Map<string, Doc<"todos"> | null>();
+    const todoOf = async (id: Id<"todos"> | undefined) => {
       if (id === undefined) return null;
       if (!todoCache.has(id)) todoCache.set(id, await ctx.db.get(id));
       return todoCache.get(id) ?? null;
@@ -290,7 +291,7 @@ export const internalChangedSince = internalQuery({
       }
       if (kind === null) continue;
 
-      const todo = await todoOf(e.todoId);
+      const todo = await todoOf(todoRef(e.todoId));
       const sessionId = str(data.sessionId);
       let text: string;
       let link: string | null;

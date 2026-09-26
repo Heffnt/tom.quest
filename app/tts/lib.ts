@@ -1,10 +1,10 @@
 // Shared types + date/age helpers for the /tts surface.
-// All persisted dates are epoch-ms numbers (convex/schema.ts dtsTodos).
+// All persisted dates are epoch-ms numbers (convex/schema.ts todos).
 
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { runnerStatus } from "@/convex/ttsRunners";
 
-export type Todo = Doc<"dtsTodos">;
+export type Todo = Doc<"todos">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
 // A ruling the page shows: on a todo or a code entry.

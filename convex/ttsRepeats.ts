@@ -1,10 +1,10 @@
 // Repeating todos (integrations round, 2026-08-29). A ttsRepeats row is a
 // standing rule ("core + antagonist training", monday+friday, 18:00); the
-// 4:30 a.m. generator mints that day's instances as REAL dtsTodos rows —
+// 4:30 a.m. generator mints that day's instances as REAL todos rows —
 // dated, self-imposed, source "repeating" — so every instance gets the full
 // kept-dates treatment: doing it records done, skipping it records a miss,
 // and the weekly session reads the honest record. The rule itself is
-// schedule mechanics (like dtsBlocks): editable and deletable freely, with
+// schedule mechanics (like blocks): editable and deletable freely, with
 // every change logged to dtsEvents.
 //
 // The generator runs at 4:30, BEFORE the 5 a.m. digest (crons.ts), so the
@@ -175,7 +175,7 @@ export const updateRepeat = mutation({
   },
 });
 
-// A rule is schedule mechanics, so hard delete is legal (the dtsBlocks
+// A rule is schedule mechanics, so hard delete is legal (the blocks
 // precedent) — but the full rule goes into the event record first, so the
 // deletion leaves a readable fact, and every already-minted instance is a
 // real todo that keeps living under nothing-ever-lost.
@@ -251,7 +251,7 @@ export const internalGenerateRepeats = internalMutation({
     const existing = new Set(
       (
         await ctx.db
-          .query("dtsTodos")
+          .query("todos")
           .withIndex("by_source", (q) => q.eq("source", "repeating"))
           .collect()
       ).map((t) => t.provenance),
@@ -286,7 +286,7 @@ export const internalGenerateRepeats = internalMutation({
         dueAt = nyTimeUtcMs(day, 12); // the noon storage convention
       }
 
-      const id = await ctx.db.insert("dtsTodos", {
+      const id = await ctx.db.insert("todos", {
         statement: rule.statement,
         body: rule.body,
         // Ready by construction: the rule already carries everything an

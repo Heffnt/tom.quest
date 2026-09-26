@@ -296,7 +296,7 @@ describe("TTS unified rulings", () => {
   it("life: approve ratifies, archive archives, revise hands back, session waits for Tom's session", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const ids: Record<string, Id<"dtsTodos">> = {};
+    const ids: Record<string, Id<"todos">> = {};
     for (const verdict of ["approve", "archive", "revise", "session"] as const) {
       ids[verdict] = await tom.mutation(api.tts.createTodo, { statement: verdict });
       await tom.mutation(api.ttsRulings.recordRuling, {
@@ -571,7 +571,7 @@ describe("TTS unified rulings", () => {
     expect(ruling.verdict).toBe("revise");
     expect(ruling.sentence).toBe("spoken in session");
     const todo = await t.run(async (ctx) =>
-      ctx.db.get((await ctx.db.query("dtsTodos").collect())[0]._id),
+      ctx.db.get((await ctx.db.query("todos").collect())[0]._id),
     );
     expect(todo?.readiness).toBe("unprepared");
     await expect(
@@ -1333,7 +1333,7 @@ describe("a ruling from Tom's words", () => {
     const { tom, todoId } = await sessionWithTurns(t, "adhoc");
     const { paperId, otherId } = await t.run(async (ctx) => {
       const now = Date.now();
-      const paperId = await ctx.db.insert("dtsTodos", {
+      const paperId = await ctx.db.insert("todos", {
         statement: "submit the paper",
         status: "active",
         readiness: "prepared",
@@ -1342,7 +1342,7 @@ describe("a ruling from Tom's words", () => {
         createdAt: now,
         updatedAt: now,
       });
-      const otherId = await ctx.db.insert("dtsTodos", {
+      const otherId = await ctx.db.insert("todos", {
         statement: "renew the passport",
         status: "active",
         readiness: "unprepared",

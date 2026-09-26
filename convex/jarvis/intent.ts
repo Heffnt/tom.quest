@@ -32,6 +32,7 @@ import type { Doc } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
 import { insertRuling } from "../ttsRulings";
 import { insertEvent } from "./record";
+import { resolveId } from "./tables";
 
 const SURFACE = "Intent";
 
@@ -218,7 +219,7 @@ export const settle = mutation({
         .first();
       if (decision === null) throw new Error(`no decision ${askId} in the record`);
       const data = (decision.data ?? {}) as { todoId?: unknown; decision?: unknown };
-      const todoId = typeof data.todoId === "string" ? ctx.db.normalizeId("dtsTodos", data.todoId) : null;
+      const todoId = typeof data.todoId === "string" ? await resolveId(ctx, "todos", data.todoId) : null;
       if (todoId !== null) {
         rulingId = await insertRuling(ctx, { todoId, verdict: args.verdict, ...(sentence === "" ? {} : { sentence }) });
       }

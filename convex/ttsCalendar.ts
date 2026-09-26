@@ -20,7 +20,7 @@ export const CALENDAR_EVENT_INPUT = v.object({
   location: v.optional(v.string()),
 });
 
-// Events the calendar tab shows for a visible range (the dtsBlocks
+// Events the calendar tab shows for a visible range (the blocks
 // listBlocks contract: [start, end) overlap).
 export const listCalendarEvents = query({
   args: { start: v.number(), end: v.number() },

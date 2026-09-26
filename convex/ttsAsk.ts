@@ -6,6 +6,7 @@ import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
+import { resolveId, todoRef } from "./jarvis/tables";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -128,7 +129,7 @@ export const internalRecordAsk = internalMutation({
       .first();
     if (existing) return { id: existing._id, existing: true, attended: false, capped: false };
 
-    const todoId = args.todoId === undefined ? undefined : ctx.db.normalizeId("dtsTodos", args.todoId);
+    const todoId = args.todoId === undefined ? undefined : await resolveId(ctx, "todos", args.todoId);
     if (args.todoId !== undefined && todoId === null) throw new Error(`Unknown todo id: ${args.todoId}`);
     let session: Doc<"claudeSessions"> | null = null;
     if (args.sessionId !== undefined) {
@@ -201,7 +202,7 @@ export const internalAskContext = internalQuery({
       .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
       .order("desc").take(200);
     const asked = recent.filter((event) => sameCaller(event.data, args)).length;
-    const todoId = args.todoId === undefined ? null : ctx.db.normalizeId("dtsTodos", args.todoId);
+    const todoId = args.todoId === undefined ? null : await resolveId(ctx, "todos", args.todoId);
     const priorObjections: { askId: string; at: number; revert: boolean; sentence: string | null; decision: string | null }[] = [];
     if (todoId !== null) {
       const events = await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", todoId)).order("desc").take(100);
@@ -276,7 +277,7 @@ export const internalRecordDelegateObjection = internalMutation({
         .withIndex("by_kind_key", (q) => q.eq("kind", REMOVAL_LOOP_PR).eq("key", args.askId))
         .first());
     if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
-    const eventId = await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
+    const eventId = await logEvent(ctx, DELEGATE_OBJECTION, todoRef(subject.todoId), args, args.askId);
     // AN OBJECTION IS A JUDGMENT ABOUT THE RUN THAT TOOK THE DECISION, and the
     // label writer resolves it the same way this handler just resolved the
     // subject: the decision row (or the merge row) carries the run's token.

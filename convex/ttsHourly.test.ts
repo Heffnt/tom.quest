@@ -40,7 +40,7 @@ function facts(over: Partial<HourlyFacts> = {}): HourlyFacts {
 
 async function insertTodo(t: ReturnType<typeof convexTest>, statement: string) {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    ctx.db.insert("todos", {
       statement,
       readiness: "unprepared",
       status: "active",
@@ -58,7 +58,7 @@ async function insertEvent(
   t: ReturnType<typeof convexTest>,
   at: number,
   kind: string,
-  todoId?: Id<"dtsTodos">,
+  todoId?: Id<"todos">,
   data?: unknown,
 ) {
   return await t.run(async (ctx) => ctx.db.insert("dtsEvents", { at, kind, todoId, data }));

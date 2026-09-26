@@ -15,7 +15,7 @@ const KEY = "worker-key";
 
 async function seedTodo(t: TestConvex<typeof schema>, statement: string) {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    ctx.db.insert("todos", {
       statement,
       status: "active",
       readiness: "prepared",

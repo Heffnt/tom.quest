@@ -73,7 +73,7 @@ export async function openNeedsYou(
     todoId,
     job,
     reason,
-  }: { key: string; text: string; todoId?: Id<"dtsTodos">; job?: string; reason?: string },
+  }: { key: string; text: string; todoId?: Id<"todos">; job?: string; reason?: string },
 ): Promise<{ opened: boolean; key: string }> {
   const seen = await ctx.db
     .query("events")

@@ -123,7 +123,7 @@ describe("the missed rollover", () => {
     // A legacy row carrying a date and no dateKind at all — the row the old
     // applyDateOutcome path silently relabelled "self-imposed".
     const unlabelled = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      ctx.db.insert("todos", {
         statement: "file the form",
         status: "active",
         readiness: "unprepared",
@@ -608,7 +608,7 @@ describe("internalComposeToday", () => {
     const t = convexTest(schema, modules);
     await withTom(t);
     const { todo, ended, live, loose } = await t.run(async (ctx) => {
-      const todo = await ctx.db.insert("dtsTodos", {
+      const todo = await ctx.db.insert("todos", {
         statement: "walk the research critical path",
         readiness: "unprepared",
         status: "active",
@@ -1480,7 +1480,7 @@ describe("sendToday", () => {
       "Rework the credential file helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output and a printed token is a leaked token forever afterwards.";
     await t.run(async (ctx) => {
       for (let i = 0; i < 60; i++) {
-        await ctx.db.insert("dtsTodos", {
+        await ctx.db.insert("todos", {
           statement: `${i}: ${long}`,
           entryAction: `open the file and read the helper before touching it, ${i}`,
           status: "active",
@@ -1493,7 +1493,7 @@ describe("sendToday", () => {
         });
       }
       for (let i = 0; i < 30; i++) {
-        await ctx.db.insert("dtsTodos", {
+        await ctx.db.insert("todos", {
           statement: `ready ${i}: ${long}`,
           status: "active",
           readiness: "prepared",

@@ -32,7 +32,7 @@ async function jobReports(t: ReturnType<typeof convexTest>) {
 
 async function aTodo(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    ctx.db.insert("todos", {
       statement: "Reply to Sarah Chen about the lab meeting time",
       readiness: "unprepared",
       status: "active",

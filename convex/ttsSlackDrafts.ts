@@ -59,7 +59,7 @@ export const MAX_DRAFT_ATTEMPTS = 2;
 const MARKS = v.object({
   day: v.string(),
   windowEnd: v.number(),
-  surfacedTodoIds: v.array(v.id("dtsTodos")),
+  surfacedTodoIds: v.array(v.id("todos")),
   truncated: v.boolean(),
   objectionAskIds: v.optional(v.array(v.string())),
 });
@@ -67,7 +67,7 @@ const MARKS = v.object({
 type Marks = {
   day: string;
   windowEnd: number;
-  surfacedTodoIds: Id<"dtsTodos">[];
+  surfacedTodoIds: Id<"todos">[];
   truncated: boolean;
   objectionAskIds?: string[];
 };
@@ -251,12 +251,12 @@ function printedTodos(
   ctx: MutationCtx,
   message: { lines: { role: string; url?: string }[] },
   block: FactsBlock,
-): Id<"dtsTodos">[] {
+): Id<"todos">[] {
   const urls = new Set(message.lines.filter((line) => line.role === "item").map((line) => line.url));
   const ids = block.facts
     .filter((f) => /^(todo|needs-you-today):/.test(f.id) && f.id !== "needs-you-today:count" && f.urls.some((url) => urls.has(url)))
-    .map((f) => ctx.db.normalizeId("dtsTodos", f.id.slice(f.id.indexOf(":") + 1)))
-    .filter((id): id is Id<"dtsTodos"> => id !== null);
+    .map((f) => ctx.db.normalizeId("todos", f.id.slice(f.id.indexOf(":") + 1)))
+    .filter((id): id is Id<"todos"> => id !== null);
   return [...new Set(ids)];
 }
 

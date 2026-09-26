@@ -70,9 +70,9 @@ async function seedRun(
 async function seedTodo(
   t: ReturnType<typeof convexTest>,
   over: Record<string, unknown> = {},
-): Promise<Id<"dtsTodos">> {
+): Promise<Id<"todos">> {
   return await t.run((ctx) =>
-    ctx.db.insert("dtsTodos", {
+    ctx.db.insert("todos", {
       statement: "renew the visa",
       readiness: "prepared",
       status: "active",

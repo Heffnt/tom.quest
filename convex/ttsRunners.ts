@@ -33,6 +33,7 @@ import {
   type RunnerTier,
   type SessionModel,
 } from "./ttsShared";
+import { todoRef } from "./jarvis/tables";
 
 // ── Runners ──────────────────────────────────────────────────────────────────
 // A runner watches one experiment through a chain of short step agents on the
@@ -212,7 +213,7 @@ export const internalKnownAway = internalQuery({
 
 // ── The create door ──────────────────────────────────────────────────────────
 
-const RUNNER_SUBJECT = v.object({ kind: v.literal("todo"), todoId: v.id("dtsTodos") });
+const RUNNER_SUBJECT = v.object({ kind: v.literal("todo"), todoId: v.id("todos") });
 
 const RUNNER_SOURCE = v.union(
   v.object({ kind: v.literal("prompt"), text: v.string() }),
@@ -742,7 +743,7 @@ async function buildRunnerStepPrompt(
 
   // A stored batch subject counts as no subject: the schema narrow removes it.
   const subject: ContextSubject = runner.subject?.kind === "todo"
-    ? { kind: "todo", todoId: runner.subject.todoId }
+    ? { kind: "todo", todoId: todoRef(runner.subject.todoId) }
     : runner.repo !== NO_REPO
       ? { kind: "repo", repo: runner.repo }
       : { kind: "none" };

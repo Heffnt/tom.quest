@@ -12,6 +12,7 @@ import {
 } from "./ttsEvals";
 import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
+import { resolveId } from "./jarvis/tables";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
 // Merging used to be Tom's gate: the box classifier denied `git merge` and
@@ -1087,7 +1088,7 @@ export const internalRecordMerge = internalMutation({
     const gate = await mergeGateFor(ctx, args.repo, args.sha);
     if (!gate.allowed) return { recorded: false, existing: false, gate };
     const todoId =
-      args.todoId === undefined ? undefined : ctx.db.normalizeId("dtsTodos", args.todoId);
+      args.todoId === undefined ? undefined : await resolveId(ctx, "todos", args.todoId);
     if (args.todoId !== undefined && todoId === null) {
       throw new Error(`Unknown todo id: ${args.todoId}`);
     }

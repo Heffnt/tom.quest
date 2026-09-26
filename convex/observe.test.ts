@@ -26,7 +26,7 @@ async function withUser(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({ subject: userId });
 }
 
-/** The fields dtsTodos requires, so a fixture names only what it is about. */
+/** The fields todos requires, so a fixture names only what it is about. */
 const todo = (statement: string) => ({
   statement,
   kind: "task" as const,
@@ -222,7 +222,7 @@ describe("the rulings", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.run(async (ctx) => {
-      const todoId = await ctx.db.insert("dtsTodos", todo("rename the observation page"));
+      const todoId = await ctx.db.insert("todos", todo("rename the observation page"));
       await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
@@ -242,8 +242,8 @@ describe("waiting on Tom", () => {
     const tom = await withTom(t);
     const now = Date.now();
     await t.run(async (ctx) => {
-      const answered = await ctx.db.insert("dtsTodos", todo("answered"));
-      const open = await ctx.db.insert("dtsTodos", todo("open"));
+      const answered = await ctx.db.insert("todos", todo("answered"));
+      const open = await ctx.db.insert("todos", todo("open"));
       await ctx.db.insert("dtsEvents", { at: now - 2_000, kind: "needs-tom", todoId: answered });
       await ctx.db.insert("dtsEvents", { at: now - 1_000, kind: "slack-event", todoId: answered });
       await ctx.db.insert("dtsEvents", { at: now - 3_000, kind: "needs-tom", todoId: open });

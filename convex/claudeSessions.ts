@@ -60,6 +60,7 @@ import {
   ttsSessionLink,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
+import { todoRef } from "./jarvis/tables";
 export { DAEMON_STALE_MS };
 
 async function getSessionOrThrow(
@@ -454,7 +455,7 @@ const SESSION_KIND = v.union(
  */
 function resolveSessionRepos(input: {
   explicit?: readonly string[] | string;
-  todo?: Doc<"dtsTodos"> | null;
+  todo?: Doc<"todos"> | null;
   extraText?: string;
 }): string[] {
   if (input.explicit !== undefined) {
@@ -490,7 +491,7 @@ type SessionSeed = {
   /** Already through resolveSessionRepos. Empty = the empty-scratch posture.
    * Kind "therapy" must name none: insertSession refuses it otherwise. */
   repos: string[];
-  todoId?: Id<"dtsTodos">;
+  todoId?: Id<"todos">;
   blockCategory?: string;
   /** The code todo a worker mission was admitted for (schema: codeRepo /
    * codeExternalId) — both or neither. */
@@ -842,7 +843,7 @@ const CREATE_SESSION_ARGS = {
   // saved link) keeps working; both go through the same resolver.
   repos: v.optional(v.array(v.string())),
   repo: v.optional(v.string()),
-  todoId: v.optional(v.id("dtsTodos")),
+  todoId: v.optional(v.id("todos")),
   blockCategory: v.optional(v.string()),
   // Tom picks the model for his own sessions (ratified 2026-09-04). Absent
   // takes DEFAULT_SESSION_MODEL, which insertSession supplies.
@@ -868,7 +869,7 @@ async function createSessionFrom(
     kind: Doc<"claudeSessions">["kind"];
     repos?: string[];
     repo?: string;
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     blockCategory?: string;
     model?: SessionModel;
     initialPrompt: string;
@@ -1231,7 +1232,7 @@ async function forkSessionAsFrom(
       title: `${session.title} (as ${model})`,
       kind: session.kind,
       repos: session.repos ?? (session.repo === NO_REPO ? [] : [session.repo]),
-      todoId: session.todoId,
+      todoId: todoRef(session.todoId),
       blockCategory: session.blockCategory,
       mode: "interactive",
       model,
@@ -1727,7 +1728,7 @@ export const internalIngest = internalMutation({
         // session per reopen (the guard is `!== session.status`), which is what
         // keeps the hourly update from reporting the same ending every hour.
         if (args.status === "ended" || args.status === "failed") {
-          await logEvent(ctx, "session-ended", session.todoId, {
+          await logEvent(ctx, "session-ended", todoRef(session.todoId), {
             sessionId: args.sessionId,
             title: session.title,
             status: args.status,
@@ -1778,7 +1779,7 @@ export const internalIngest = internalMutation({
           args.outcomeSummary ?? outcomeEventText(session.title, args.outcome, args.outcomeSummary),
         );
       }
-      await logEvent(ctx, "session-outcome", session.todoId, {
+      await logEvent(ctx, "session-outcome", todoRef(session.todoId), {
         sessionId: args.sessionId,
         title: session.title,
         outcome: args.outcome,
@@ -1909,7 +1910,7 @@ export const internalRecordOutcome = internalMutation({
         );
       }
       // Same edge, same reason, into the events table the hourly update reads.
-      await logEvent(ctx, "session-outcome", session.todoId, {
+      await logEvent(ctx, "session-outcome", todoRef(session.todoId), {
         sessionId: normalized,
         title: session.title,
         outcome,

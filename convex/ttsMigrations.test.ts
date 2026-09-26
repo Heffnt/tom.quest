@@ -68,7 +68,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // (convex/ttsMigrations.ts), which is what keeps a verification re-run
 // possible on a deployment whose validator has moved on.
 
-/** The retired importance object, on dtsTodos and dtsCodeBriefs alike. */
+/** The retired importance object, on todos and dtsCodeBriefs alike. */
 const RETIRED_IMPORTANCE = v.optional(
   v.object({
     level: v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
@@ -98,7 +98,7 @@ function carryIndexes<T>(rebuilt: T, source: Indexed): T {
 }
 
 const {
-  dtsTodos: schemaTodos,
+  todos: schemaTodos,
   batches: schemaBatches,
   claudeSessions: schemaSessions,
   dtsCodeBriefs: schemaBriefs,
@@ -107,7 +107,7 @@ const {
 
 const wideSchema = defineSchema({
   ...otherTables,
-  dtsTodos: carryIndexes(
+  todos: carryIndexes(
     defineTable(
       v.object({
         ...schemaTodos.validator.fields,
@@ -125,14 +125,14 @@ const wideSchema = defineSchema({
         wakeCondition: v.optional(v.string()),
         importance: RETIRED_IMPORTANCE,
         // The v1 batch pair, declared here for the same reason as the fields
-        // above: a dtsTodos row carrying `members` WAS a batch and `plan` was
+        // above: a todos row carrying `members` WAS a batch and `plan` was
         // its ordered steps, the graph migration has replaced both, and the
         // narrow drops the declarations — while rows on the deployment still
         // hold them until this walk has cleared them.
         members: v.optional(
           v.array(
             v.object({
-              todoId: v.optional(v.id("dtsTodos")),
+              todoId: v.optional(v.id("todos")),
               repo: v.optional(v.string()),
               externalId: v.optional(v.string()),
             }),
@@ -208,7 +208,7 @@ const wideSchema = defineSchema({
 // declares them: a row on the deployment keeps the fields the validator
 // dropped, and these fixtures and assertions are about exactly those fields.
 type WideModel = DataModelFromSchemaDefinition<typeof wideSchema>;
-type WideTodo = DocumentByName<WideModel, "dtsTodos">;
+type WideTodo = DocumentByName<WideModel, "todos">;
 type WideBatch = DocumentByName<WideModel, "batches">;
 type WideBrief = DocumentByName<WideModel, "dtsCodeBriefs">;
 type WideSession = DocumentByName<WideModel, "claudeSessions">;
@@ -221,7 +221,7 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
     const ids = [];
     for (const row of rows) {
       ids.push(
-        await ctx.db.insert("dtsTodos", {
+        await ctx.db.insert("todos", {
           readiness: "unprepared",
           status: "active",
           timingClass: "whenever",
@@ -241,7 +241,7 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
 // validator dropped, and these assertions are about exactly those fields.
 async function allTodos(t: ReturnType<typeof convexTest>): Promise<WideTodo[]> {
   return (await t.run(async (ctx) =>
-    ctx.db.query("dtsTodos").collect(),
+    ctx.db.query("todos").collect(),
   )) as unknown as WideTodo[];
 }
 
@@ -571,7 +571,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     // Both events, from the one write: the status change and the mapping,
     // whose `after` is the whole patch.
     const mapped = (await eventsOfKind(t, "timing-mapped")).find((e) => e.todoId === visa._id);
-    expect((mapped!.data as { after: Partial<Doc<"dtsTodos">> }).after).toEqual({
+    expect((mapped!.data as { after: Partial<Doc<"todos">> }).after).toEqual({
       status: "active",
       kind: "task",
       timingClass: "whenever",
@@ -856,7 +856,7 @@ describe("the harness schema", () => {
   // fields; the .index() chain lives on the table, not on the validator.
   it("rebuilds each widened table with the index chain the schema declares", () => {
     for (const name of [
-      "dtsTodos",
+      "todos",
       "batches",
       "claudeSessions",
       "dtsCodeBriefs",
@@ -883,7 +883,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
   const MUST_PATH = { name: "release", index: 1, edge: "must" as const };
   const HELPS_PATH = { name: "release", index: 2, edge: "helps" as const };
   const UNLINKED_PATH = { name: "paper", index: 0 };
-  // The v1 batch pair. `members` is what made a dtsTodos row a batch; `plan`
+  // The v1 batch pair. `members` is what made a todos row a batch; `plan`
   // was its ordered completion steps and was legal on any todo, batch or not.
   const V1_MEMBERS = [
     { repo: "ComplexMultiTrigger", externalId: "cmt-001" },
@@ -1008,7 +1008,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
   }
 
   const expectedTotals = {
-    "dtsTodos-scanned": 6,
+    "todos-scanned": 6,
     "batches-scanned": 4,
     "claudeSessions-scanned": 3,
     "dtsCodeBriefs-scanned": 2,
@@ -1063,7 +1063,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
   const wideRows = async (t: ReturnType<typeof convexTest>) =>
     await t.run(async (ctx) => ({
-      todos: await ctx.db.query("dtsTodos").collect(),
+      todos: await ctx.db.query("todos").collect(),
       batches: await ctx.db.query("batches").collect(),
       sessions: await ctx.db.query("claudeSessions").collect(),
       briefs: await ctx.db.query("dtsCodeBriefs").collect(),
@@ -1214,9 +1214,9 @@ describe("clearing walk (retired fields and the retired session status)", () => 
       { pageSize: 2, dryRun: true },
     );
     expect(first.done).toBe(false);
-    expect(first.table).toBe("dtsTodos");
-    expect(first.nextTable).toBe("dtsTodos");
-    expect(first.page["dtsTodos-scanned"]).toBe(2);
+    expect(first.table).toBe("todos");
+    expect(first.nextTable).toBe("todos");
+    expect(first.page["todos-scanned"]).toBe(2);
     expect(first.continueCursor).not.toBeNull();
     // The hand-driven continuation, which is what a crash and resume looks
     // like from the CLI: the same table from its cursor, carrying the totals.
@@ -1232,7 +1232,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     );
     expect(second.done).toBe(false);
     expect(second.nextTable).toBe("batches");
-    expect(second.totals["dtsTodos-scanned"]).toBe(6);
+    expect(second.totals["todos-scanned"]).toBe(6);
     expect(second.totals["latestSafeAt-cleared"]).toBe(2);
     expect(second.totals["members-cleared"]).toBe(1);
     expect(second.totals["plan-cleared"]).toBe(2);
@@ -1243,7 +1243,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     );
     expect(briefsOnly.done).toBe(true);
     expect(briefsOnly.totals["recommendation-normalized"]).toBe(1);
-    expect(briefsOnly.totals["dtsTodos-scanned"]).toBe(0);
+    expect(briefsOnly.totals["todos-scanned"]).toBe(0);
   }
 });
 
@@ -1269,7 +1269,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
     entry: string,
     batchId: Id<"batches">,
     createdAt: number,
-    extra: Partial<Doc<"dtsTodos">> = {},
+    extra: Partial<Doc<"todos">> = {},
   ): Seed => ({
     statement: closedUpstreamStatement(entry),
     condition: closedUpstreamStatement(entry),
@@ -1345,7 +1345,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   }
 
   const byId = async (t: ReturnType<typeof convexTest>) =>
-    new Map((await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).map((r) => [r._id, r]));
+    new Map((await t.run(async (ctx) => ctx.db.query("todos").collect())).map((r) => [r._id, r]));
 
   const firstRunCounts = {
     scanned: 12,
@@ -1612,9 +1612,9 @@ describe("batches removed (every todo stands alone)", () => {
       const paper = await batch("submit the paper");
       const todo = (
         statement: string,
-        over: Partial<Doc<"dtsTodos">>,
+        over: Partial<Doc<"todos">>,
       ) =>
-        ctx.db.insert("dtsTodos", {
+        ctx.db.insert("todos", {
           statement,
           source: "migration",
           status: "active",
@@ -1662,7 +1662,7 @@ describe("batches removed (every todo stands alone)", () => {
   type Ids = Awaited<ReturnType<typeof seed>>;
 
   const todos = async (t: T) =>
-    new Map((await t.run((ctx) => ctx.db.query("dtsTodos").collect())).map((row) => [row._id, row]));
+    new Map((await t.run((ctx) => ctx.db.query("todos").collect())).map((row) => [row._id, row]));
 
   async function runToEnd(t: T, args: { dryRun?: boolean } = {}) {
     vi.useFakeTimers();
@@ -1708,7 +1708,7 @@ describe("batches removed (every todo stands alone)", () => {
     await runToEnd(t);
     vi.useRealTimers();
     const rows = await todos(t);
-    const row = (id: Id<"dtsTodos">) => rows.get(id)!;
+    const row = (id: Id<"todos">) => rows.get(id)!;
 
     // No todo carries a batchId any more, and no row is deleted.
     expect(rows.size).toBe(9);

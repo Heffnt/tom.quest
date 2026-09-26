@@ -97,7 +97,7 @@ export async function declinedIntegrations(
   ctx: QueryCtx,
 ): Promise<DeclinedIntegration[]> {
   const rows = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
     .collect();
   const out: DeclinedIntegration[] = [];

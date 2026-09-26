@@ -36,7 +36,7 @@ describe("ttsShared graph rules", () => {
   const NOW = Date.UTC(2026, 8, 5, 12);
   const todo = (
     _id: string,
-    status: Doc<"dtsTodos">["status"],
+    status: Doc<"todos">["status"],
     needs?: string[],
     wakeAt?: number,
   ) => ({ _id, status, needs, wakeAt });
@@ -209,7 +209,7 @@ describe("TTS worker pen: closing a todo", () => {
     (await t.run(async (ctx) => ctx.db.query("dtsEvents").collect()))
       .filter((e) => e.kind === "done-skipped")
       .map((e) => (e.data as { why: string }).why);
-  const statusOf = async (t: ReturnType<typeof convexTest>, id: Id<"dtsTodos">) =>
+  const statusOf = async (t: ReturnType<typeof convexTest>, id: Id<"todos">) =>
     (await t.run(async (ctx) => ctx.db.get(id)))?.status;
 
   // witness: put back the bar "only a todo inside a batch may be completed by
@@ -353,7 +353,7 @@ describe("GET /tts/planner-context", () => {
     expect(prefix).toBe("published map + operate\n\noperate layer reaches the planner");
     expect(grants).toContain("granted:");
     expect(body.vocabulary).toBe(TTS_CLOSED_VOCABULARY);
-    expect(body.todos.map((todo: Doc<"dtsTodos">) => todo.statement)).toEqual(["sign the lease"]);
+    expect(body.todos.map((todo: Doc<"todos">) => todo.statement)).toEqual(["sign the lease"]);
     expect(Array.isArray(body.sessionRepos)).toBe(true);
     expect(typeof body.nyCalendarDay).toBe("string");
     expect(body).not.toHaveProperty("batches");

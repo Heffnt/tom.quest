@@ -1,7 +1,7 @@
 "use client";
 
 // TTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
-// stacks, in time order: committed blocks (dtsBlocks), due marks (dueAt),
+// stacks, in time order: committed blocks (blocks), due marks (dueAt),
 // wake marks (waiting todos' wakeAt), and — on today only — today's view,
 // COMPUTED from the same subscriptions (app/tts/lib.ts selectToday: overdue,
 // due, scheduled, ready, waking today; no stored queue since the lifeos
@@ -49,7 +49,7 @@ import TimeNoteField, {
 } from "./time-note-field";
 import { errMessage, isoDate, selectToday } from "../lib";
 
-type Block = Doc<"dtsBlocks">;
+type Block = Doc<"blocks">;
 
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
@@ -222,7 +222,7 @@ export default function CalendarTab({
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
   const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
-  // Only the visible week's blocks ride the subscription (dtsBlocks grows
+  // Only the visible week's blocks ride the subscription (blocks grows
   // forever; the by_start index serves the range).
   const blocks = useQuery(
     api.tts.listBlocks,
@@ -242,11 +242,11 @@ export default function CalendarTab({
   // error renders under the chip that fired it.
   const { open: openSession, error: sessionError } = useOpenSession();
   const [addDay, setAddDay] = useState<string | null>(null); // "YYYY-MM-DD"
-  const [sessionBusyId, setSessionBusyId] = useState<Id<"dtsBlocks"> | null>(
+  const [sessionBusyId, setSessionBusyId] = useState<Id<"blocks"> | null>(
     null,
   );
   const [sessionErrorBlockId, setSessionErrorBlockId] =
-    useState<Id<"dtsBlocks"> | null>(null);
+    useState<Id<"blocks"> | null>(null);
 
   const todosById = useMemo(
     () => new Map((todos ?? []).map((t) => [t._id as string, t])),

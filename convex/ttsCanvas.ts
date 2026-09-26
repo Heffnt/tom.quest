@@ -1,5 +1,5 @@
 // Canvas LMS assignments, the Convex half (spec §17 post-MVP priority 1).
-// ONE dtsTodos row per upcoming assignment — source "canvas", dated with the
+// ONE todos row per upcoming assignment — source "canvas", dated with the
 // assignment's real due time (dateKind "external"), provenance carrying the
 // assignment id + link.
 //
@@ -82,7 +82,7 @@ export function provenanceExternalId(provenance: string | undefined): string | n
  */
 async function reopenedSinceCompletion(
   ctx: MutationCtx,
-  todoId: Id<"dtsTodos">,
+  todoId: Id<"todos">,
 ): Promise<boolean> {
   const events = await ctx.db
     .query("dtsEvents")
@@ -116,7 +116,7 @@ export const internalSyncCanvasTodos = internalMutation({
   handler: async (ctx, { assignments }) => {
     const now = Date.now();
     const sourceRows = await ctx.db
-      .query("dtsTodos")
+      .query("todos")
       .withIndex("by_source", (q) => q.eq("source", ASSIGNMENT_SOURCE))
       .collect();
     // Narrowed to the ASSIGNMENT provenance shape, and the rows that fail that
@@ -150,7 +150,7 @@ export const internalSyncCanvasTodos = internalMutation({
         // Submitted-before-we-ever-saw-it needs no todo; nothing was lost
         // because nothing was ever tracked.
         if (a.submitted) continue;
-        const id = await ctx.db.insert("dtsTodos", {
+        const id = await ctx.db.insert("todos", {
           statement: `${a.courseCode}: ${a.name}`,
           readiness: "unprepared",
           status: "active",

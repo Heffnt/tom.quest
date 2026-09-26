@@ -52,7 +52,7 @@ import {
   type StoredRecommendation,
 } from "./ttsShared";
 
-/** Rows per transaction. dtsTodos is a few hundred rows; this keeps one page
+/** Rows per transaction. todos is a few hundred rows; this keeps one page
  * far inside Convex's per-transaction read and write limits. */
 export const PAGE_SIZE = 200;
 
@@ -92,7 +92,7 @@ type MigrationReport = {
 };
 
 /**
- * One page of a dtsTodos walk: map each row, add the page to the totals,
+ * One page of a todos walk: map each row, add the page to the totals,
  * then either record the finished totals as one event or schedule `self`
  * with the cursor and the totals.
  */
@@ -102,12 +102,12 @@ async function walkTodos(
   name: string,
   self: typeof internal.ttsMigrations.internalMigrateReadiness,
   page: Counts,
-  mapRow: (row: Doc<"dtsTodos">, dryRun: boolean) => Promise<void>,
+  mapRow: (row: Doc<"todos">, dryRun: boolean) => Promise<void>,
 ): Promise<MigrationReport> {
   const dryRun = args.dryRun ?? false;
   const pageSize = args.pageSize ?? PAGE_SIZE;
   const result = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
   for (const row of result.page) {
     page.scanned = (page.scanned ?? 0) + 1;
@@ -203,7 +203,7 @@ export const TIMING_MIGRATION = "timing";
 /** The retired shape, as a stored row still holds it. The validator no longer
  * declares these three (the lifeos update, phase 7), and Convex returns an
  * undeclared field on an existing row unchanged, so the walk reads them
- * through this view rather than through Doc<"dtsTodos"> — which is what keeps
+ * through this view rather than through Doc<"todos"> — which is what keeps
  * a verification re-run possible after the narrow. */
 type RetiredTiming = {
   timingClass: "dated" | "whenever" | "condition-bound";
@@ -246,7 +246,7 @@ export const internalMigrateTiming = internalMutation({
         // condition-bound; (a) and (b) each add to the same patch and the
         // same statement, so the second mapping cannot overwrite what the
         // first carried in, and one write lands both.
-        const patch: Partial<Doc<"dtsTodos">> = {};
+        const patch: Partial<Doc<"todos">> = {};
         const retired = row as unknown as RetiredTiming;
         const terminal = row.status === "done" || row.status === "archived";
         let statement = row.statement;
@@ -487,7 +487,7 @@ export const internalMigrateRecommendations = internalMutation({
 // the second step, for the seven shapes the narrow removes, and it is the
 // prerequisite of that pull request:
 //
-//   dtsTodos        latestSafeAt, wakeCondition, importance  → unset
+//   todos        latestSafeAt, wakeCondition, importance  → unset
 //                   members, plan (the v1 batch fields)      → unset
 //   batches         path                                     → unset
 //   claudeSessions  status "awaiting-permission"             → ended
@@ -519,15 +519,15 @@ export const CLEAR_PAGE_SIZE = 250;
  * pageSize larger than the biggest table walks all four and reports the whole
  * totals as one event. */
 export const CLEAR_TABLES = [
-  "dtsTodos",
+  "todos",
   "batches",
   "claudeSessions",
   "dtsCodeBriefs",
 ] as const;
 export type ClearTable = (typeof CLEAR_TABLES)[number];
 
-/** The retired fields on dtsTodos, cleared one event each carrying the whole
- * value. `members` and `plan` are the V1 BATCH pair: a dtsTodos row carrying
+/** The retired fields on todos, cleared one event each carrying the whole
+ * value. `members` and `plan` are the V1 BATCH pair: a todos row carrying
  * `members` WAS a batch, and `plan` was its ordered completion steps. The
  * graph migration (tts.internalMigrateToGraph) has already turned every one of
  * them into a `batches` row with its steps as task todos and its members bound
@@ -600,7 +600,7 @@ export const internalClearRetiredFields = internalMutation({
      * so a todo's history reads the clearing off by_todo like every other
      * event about it. */
     const record = async (
-      subject: { todoId?: Id<"dtsTodos"> } & Record<string, unknown>,
+      subject: { todoId?: Id<"todos"> } & Record<string, unknown>,
       field: string,
       value: unknown,
     ) => {
@@ -615,10 +615,10 @@ export const internalClearRetiredFields = internalMutation({
     let isDone: boolean;
     let continueCursor: string;
     switch (table) {
-      case "dtsTodos": {
-        const result = await ctx.db.query("dtsTodos").paginate(opts);
+      case "todos": {
+        const result = await ctx.db.query("todos").paginate(opts);
         for (const row of result.page) {
-          page["dtsTodos-scanned"]++;
+          page["todos-scanned"]++;
           const retired = row as unknown as RetiredFields;
           const patch: Record<string, undefined> = {};
           for (const field of RETIRED_TODO_FIELDS) {
@@ -630,7 +630,7 @@ export const internalClearRetiredFields = internalMutation({
             patch[field] = undefined;
           }
           if (Object.keys(patch).length > 0) {
-            await ctx.db.patch(row._id, patch as Partial<Doc<"dtsTodos">>);
+            await ctx.db.patch(row._id, patch as Partial<Doc<"todos">>);
           }
         }
         ({ isDone, continueCursor } = result);
@@ -973,7 +973,7 @@ export function duplicateArchiveReason(entry: string, keptId: string): string {
 /** One line of the event: what happened to one row. Keys are omitted rather
  * than set to undefined (an undefined member is not a storable Convex value). */
 type ClosedUpstreamChange = {
-  todoId: Id<"dtsTodos">;
+  todoId: Id<"todos">;
   entry: string;
   oldStatement: string;
 } & (
@@ -988,14 +988,14 @@ type ClosedUpstreamReport = {
   changes: ClosedUpstreamChange[];
 };
 
-const activeOrWaiting = (row: Doc<"dtsTodos">) =>
+const activeOrWaiting = (row: Doc<"todos">) =>
   row.status === "active" || row.status === "waiting";
 
 export const internalConvertClosedUpstreamGoals = internalMutation({
   args: { dryRun: v.optional(v.boolean()) },
   handler: async (ctx, { dryRun = false }): Promise<ClosedUpstreamReport> => {
     const rows = await ctx.db
-      .query("dtsTodos")
+      .query("todos")
       .withIndex("by_source", (q) => q.eq("source", "migration"))
       .collect();
     const counts: Counts = {
@@ -1014,7 +1014,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
 
     // Every goal still worded the old way, grouped by registry entry, oldest
     // first so "the first copy" is the same row on every run.
-    const byEntry = new Map<string, Doc<"dtsTodos">[]>();
+    const byEntry = new Map<string, Doc<"todos">[]>();
     for (const row of rows) {
       if (row.kind !== "goal") continue;
       const entry = CLOSED_UPSTREAM_PATTERN.exec(row.statement)?.[1];
@@ -1026,7 +1026,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
     }
 
     const archive = async (
-      row: Doc<"dtsTodos">,
+      row: Doc<"todos">,
       entry: string,
       reason: string,
       count: string,
@@ -1186,11 +1186,11 @@ const BATCH_REMOVAL_COUNT_KEYS = [
 
 /** The todo ids of one batch, grouped by what happened to each. */
 type BatchRemoval = {
-  goalsUnbound: Id<"dtsTodos">[];
-  migrationTasksMadeStandalone: Id<"dtsTodos">[];
-  otherTasksMadeStandalone: Id<"dtsTodos">[];
-  plannerTasksArchived: Id<"dtsTodos">[];
-  doneOrArchivedTasksCleared: Id<"dtsTodos">[];
+  goalsUnbound: Id<"todos">[];
+  migrationTasksMadeStandalone: Id<"todos">[];
+  otherTasksMadeStandalone: Id<"todos">[];
+  plannerTasksArchived: Id<"todos">[];
+  doneOrArchivedTasksCleared: Id<"todos">[];
 };
 
 type BatchRemovalReport = {
@@ -1226,7 +1226,7 @@ async function removeOneBatch(
     doneOrArchivedTasksCleared: [],
   };
   const rows = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_batch", (q) => q.eq("batchId", batch._id))
     .collect();
   page["batches-scanned"]++;
@@ -1371,13 +1371,13 @@ export const internalRemoveBatches = internalMutation({
       };
     }
     // The verification count: todos whose batchId is still set, counted up to
-    // STILL_BOUND_CAP (a dtsTodos row carries its whole write-up, so reading
+    // STILL_BOUND_CAP (a todos row carries its whole write-up, so reading
     // every bound row in one transaction would approach the read limit). A
     // finished real run counts zero; a dry run counts up to the cap, and its
     // per-case totals are the full count. Ids sort after an absent field in an
     // index, so every set batchId is at or above "".
     const stillBound = await ctx.db
-      .query("dtsTodos")
+      .query("todos")
       .withIndex("by_batch", (q) => q.gte("batchId", "" as Id<"batches">))
       .take(STILL_BOUND_CAP);
     await logEvent(
