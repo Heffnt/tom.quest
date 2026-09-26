@@ -8,7 +8,7 @@
 // TWO THINGS LIVE HERE. The first is the mirror of the changes that are
 // waiting: every open pull request, copied from GitHub so the page can show a
 // change before it lands. The second is the landing itself: an approved change
-// whose three gate rows are green is merged by the record, and the merge is
+// whose two gate rows (tests, audit) are green is merged by the record, and the merge is
 // written through convex/ttsMerge.ts internalRecordMerge — the same door the
 // box posts through — so the digest, the objection list and the page all see
 // one merge and not two.
@@ -21,7 +21,7 @@
 //
 // THE GATE IS NOT RE-IMPLEMENTED. mergeGateFor decides, exactly as it decides
 // for the box, and internalRecordMerge runs it again before it writes — so a
-// change landed without the three checks could not be recorded as a merge even
+// change landed without the two checks could not be recorded as a merge even
 // if this file were wrong.
 //
 // THE CREDENTIAL IS GITHUB_MIRROR_TOKEN, the one the record already uses to ask
