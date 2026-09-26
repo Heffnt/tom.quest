@@ -20,9 +20,12 @@ async function events(t: ReturnType<typeof convexTest>, kind: string) {
   );
 }
 
+/** The harness typed by the schema, so an index read type-checks. */
+const typedHarness = () => convexTest(schema, modules);
+
 /** A job's failure reports: events rows of kind job-failed that are not a
  *  standing condition's repeat (convex/jarvis/jobs.ts). */
-async function jobReports(t: ReturnType<typeof convexTest>) {
+async function jobReports(t: ReturnType<typeof typedHarness>) {
   return await t.run(async (ctx) =>
     (await ctx.db.query("events").collect()).filter(
       (row) => row.kind === "job-failed" && (row.data as { standingSince?: number }).standingSince === undefined,

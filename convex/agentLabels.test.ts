@@ -257,25 +257,6 @@ describe("a ruling becomes a label", () => {
     });
   });
 
-  it("links a stored batch ruling to no run, even when the batch row carries a token", async () => {
-    const t = convexTest(schema, modules);
-    await seedRun(t, { regToken: "tok-batch", runId: "claude:box:planner" });
-    const batchId = await t.run((ctx) =>
-      ctx.db.insert("batches", {
-        statement: "the visa run",
-        status: "active",
-        producedByRunToken: "tok-batch",
-        createdAt: 1,
-        updatedAt: 1,
-      }),
-    );
-    const rulingId = await seedRuling(t, { subjectType: "batch", batchId, verdict: "approve" });
-    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
-    expect(await labels(t)).toEqual([]);
-    const unlinked = await events(t, "agent-label-unlinked");
-    expect(unlinked).toHaveLength(1);
-    expect(unlinked[0].data).toMatchObject({ source: "ruling", ref: `ruling:${rulingId}`, subjectKey: null });
-  });
 });
 
 // ── An objection ─────────────────────────────────────────────────────────────

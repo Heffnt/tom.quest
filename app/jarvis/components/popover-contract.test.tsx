@@ -320,15 +320,6 @@ const RUN = {
   ingestedAt: NOW,
 };
 
-const AUTO_CONFIG = {
-  enabled: false,
-  defaultModel: "gpt-5.6-sol",
-  maxLoadPerCpu: 0.8,
-  minFreeMemMb: 1024,
-  maxLiveAutonomous: 8,
-  maxNewPerTick: 2,
-};
-
 const PROPOSAL = {
   id: "p1",
   at: NOW - 60_000,
@@ -344,7 +335,6 @@ const PROPOSAL = {
 function load() {
   convex.data = {
     [getFunctionName(api.claudeSessions.getSession)]: SESSION,
-    [getFunctionName(api.claudeSessions.getAutoConfig)]: AUTO_CONFIG,
     [getFunctionName(api.claudeSessions.getDaemonHealth)]: null,
     [getFunctionName(api.claudeSessions.getMessages)]: [],
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
