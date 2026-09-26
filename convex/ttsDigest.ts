@@ -19,7 +19,8 @@ import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { liveRunnerFacts } from "./ttsRunners";
-import { BOX_CHANGE, DEPLOY, boxChangeLines, boxChangeOf } from "./boxChanges";
+import { DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
+import { failuresInWindow } from "./jarvis/jobs";
 import {
   DAY_MS,
   LIVE_STATUSES,
@@ -762,6 +763,29 @@ export async function gatherTodayFacts(
     }
   }
 
+  // A box job's failures and recoveries, from the record (convex/jarvis/
+  //    jobs.ts): one line per condition reported in the window, not per
+  //    tick, saying whether it has since recovered; and one for a condition
+  //    reported before the window that recovered inside it.
+  const reports = await failuresInWindow(ctx, since, now);
+  const recoveredAt = new Map<string, number>();
+  for (const row of reports.recovered) if (row.subject !== undefined) recoveredAt.set(row.subject, row.at);
+  const failedKeys = new Set<string>();
+  for (const row of reports.failed) {
+    const d = (row.data ?? {}) as Record<string, unknown>;
+    const job = str(d.job) ?? row.provenance.job ?? "unknown";
+    const fixedAt = row.subject === undefined ? undefined : recoveredAt.get(row.subject);
+    if (row.subject !== undefined) failedKeys.add(row.subject);
+    const statement = brokenStatement(job);
+    const f = failure(job, fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement);
+    f.detail = safeStr(d.error) ?? safeStr(row.text);
+  }
+  for (const row of reports.recovered) {
+    if (row.subject === undefined || failedKeys.has(row.subject)) continue;
+    const job = str((row.data as Record<string, unknown> | undefined)?.job) ?? row.provenance.job ?? "unknown";
+    failure(`${job}:recovered`, `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`);
+  }
+
   // 5. Ready for Tom (not already dated) — ruling 18's computation
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
   //    so the scan is the prepared list itself. §4.3: the ready SECTION is
@@ -817,19 +841,12 @@ export async function gatherTodayFacts(
   // 8. What changed on the box (plan-root T1): the box-change rows and the
   //    deploy job's own rows since the last digest, each read on its own
   //    kind's index so a busy night of other events cannot crowd them out.
-  const boxRows = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).gte("at", since).lt("at", now))
-    .take(BOX_SCAN);
   const deployRows = await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_at", (q) => q.eq("kind", DEPLOY).gte("at", since).lt("at", now))
     .take(BOX_SCAN);
   const boxChanges = boxChangeLines(
-    boxRows.flatMap((row) => {
-      const change = boxChangeOf(row.data);
-      return change === null ? [] : [change];
-    }),
+    await boxChangesInWindow(ctx, since, now),
     deployRows.map((row) => {
       const d = (row.data ?? {}) as Record<string, unknown>;
       return { at: row.at, repo: str(d.repo), to: str(d.to), commits: d.commits };

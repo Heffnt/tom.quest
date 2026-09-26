@@ -286,6 +286,8 @@ describe("the silence alarm", () => {
 
   it("posts one line when a heartbeat is three intervals old, and writes the recovery when it beats again", async () => {
     const t = convexTest({ schema, modules });
+    // The alarm's line goes to the one output channel.
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
     vi.setSystemTime(AT);
     await ok(t, "box-watch");
     await ok(t, "box-state");
@@ -309,9 +311,9 @@ describe("the silence alarm", () => {
     expect(failed.filter((row) => row.kind === "job-failed").map((row) => row.subject)).toEqual(["box-watch:silent"]);
     const jobs = await scheduled(t);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toContain("sendBroken");
-    expect(jobs[0].args[0]).toMatchObject({ job: "box-watch:silent" });
-    expect(String((jobs[0].args[0] as { statement: string }).statement)).toContain("has not run clean for 6 minutes");
+    expect(jobs[0].name).toContain("sendSlack");
+    expect(jobs[0].args[0]).toMatchObject({ channel: "C0TODAY", subject: { kind: "job", id: "box-watch:silent" } });
+    expect(String((jobs[0].args[0] as { text: string }).text)).toContain("has not run clean for 6 minutes");
 
     await ok(t, "box-watch");
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: ["box-watch"] });
