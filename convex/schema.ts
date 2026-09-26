@@ -880,6 +880,10 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // A fingerprint of the old row as it was last copied (convex/jarvis/tables.ts),
+    // so a later copy takes the old row again only when it changed since, and
+    // never undoes an edit made to this row. Absent on rows written after it.
+    legacyVersion: v.optional(v.string()),
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
@@ -949,6 +953,10 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // A fingerprint of the old row as it was last copied (convex/jarvis/tables.ts),
+    // so a later copy takes the old row again only when it changed since, and
+    // never undoes an edit made to this row. Absent on rows written after it.
+    legacyVersion: v.optional(v.string()),
   })
     .index("by_start", ["start"])
     .index("by_feed", ["feed"])
@@ -1031,6 +1039,10 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // A fingerprint of the old row as it was last copied (convex/jarvis/tables.ts),
+    // so a later copy takes the old row again only when it changed since, and
+    // never undoes an edit made to this row. Absent on rows written after it.
+    legacyVersion: v.optional(v.string()),
   })
     .index("by_legacy", ["legacyId"]),
 
@@ -1064,6 +1076,10 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // A fingerprint of the old row as it was last copied (convex/jarvis/tables.ts),
+    // so a later copy takes the old row again only when it changed since, and
+    // never undoes an edit made to this row. Absent on rows written after it.
+    legacyVersion: v.optional(v.string()),
   }).index("by_start", ["start"])
     .index("by_legacy", ["legacyId"]),
 
@@ -1119,6 +1135,10 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // A fingerprint of the old row as it was last copied (convex/jarvis/tables.ts),
+    // so a later copy takes the old row again only when it changed since, and
+    // never undoes an edit made to this row. Absent on rows written after it.
+    legacyVersion: v.optional(v.string()),
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"])
     .index("by_legacy", ["legacyId"]),
 
@@ -1256,6 +1276,10 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // A fingerprint of the old row as it was last copied (convex/jarvis/tables.ts),
+    // so a later copy takes the old row again only when it changed since, and
+    // never undoes an edit made to this row. Absent on rows written after it.
+    legacyVersion: v.optional(v.string()),
   })
     .index("by_todo", ["todoId"])
     .index("by_repo_external", ["repo", "externalId"])
@@ -1677,6 +1701,10 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // A fingerprint of the old row as it was last copied (convex/jarvis/tables.ts),
+    // so a later copy takes the old row again only when it changed since, and
+    // never undoes an edit made to this row. Absent on rows written after it.
+    legacyVersion: v.optional(v.string()),
   }).index("by_key", ["key"])
     .index("by_legacy", ["legacyId"]),
 

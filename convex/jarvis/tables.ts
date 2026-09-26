@@ -6,15 +6,17 @@
 // evidence, a Slack thread, a box file, WikiTom's tts/snapshot) still finds
 // its row (resolveId below). The copy never deletes: the old table stays
 // whole until the copy counts are confirmed, then a later commit empties it
-// and drops it from the schema.
+// and drops it from the schema, and deletes the copy with it (a copy run
+// against an emptied old table would find nothing to take, and `prune`
+// refuses to read an empty old table as every row deleted).
 //
 // THE ORDER. Per table: (1) deploy the schema with both tables; (2) `copy`
 // the rows; (3) deploy the commit that points every reader and writer at the
 // new table; (4) `copy` again, which brings over what the old code wrote
 // between (2) and (3) and touches nothing written since; (5) `counts`. The
-// copy is an upsert on legacyId: a row already copied is patched only when
-// the old row is newer by the table's own clock (VERSION below), so a change
-// made through the new code is never overwritten by the old row.
+// copy is an upsert on legacyId that follows the old table's edits (by a
+// fingerprint of the old row, `legacyVersion`) and deletions (`prune`), and
+// never undoes a change made to a copy through the new code.
 //
 // REFERENCES. todos.needs names todos, so it is mapped after the whole table
 // is copied (`copy` chains the needs pass itself). A ruling's, block's or
@@ -48,18 +50,6 @@ const NEW_TABLE = v.union(
   v.literal("blocks"),
   v.literal("timeNotes"),
 );
-
-/** A row's own clock: the copy patches a copied row only when the old row is
- *  newer by it. Tables whose rows never change after insert use createdAt. */
-const VERSION: Record<NewTable, (row: Record<string, unknown>) => number> = {
-  todos: (r) => Number(r.updatedAt ?? 0),
-  rulings: (r) => Number(r.appliedAt ?? r.ruledAt ?? 0),
-  calendar: (r) => Number(r.syncedAt ?? 0),
-  repeats: (r) => Number(r.updatedAt ?? 0),
-  vocabulary: (r) => Number(r.generatedAt ?? 0),
-  blocks: (r) => Number(r.createdAt ?? 0),
-  timeNotes: (r) => Number(r.resolvedAt ?? r.createdAt ?? 0),
-};
 
 const DEFAULT_PAGE = 100;
 /** todos rows run to ~5 KB, so a page of 100 stays far under a mutation's
@@ -119,30 +109,91 @@ export function todoRef(id: Id<"todos"> | Id<"dtsTodos"> | undefined): Id<"todos
   return id as Id<"todos"> | undefined;
 }
 
+/** Object keys in one order at every depth, so equal rows print alike. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) out[key] = canonical((value as Record<string, unknown>)[key]);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * The old row's fingerprint: FNV-1a over its fields in canonical JSON, two
+ * 32-bit lanes. Change detection only (not security), so a clock is not
+ * needed: a block has none, and not every write to a todo moves updatedAt.
+ */
+export function fingerprint(row: Record<string, unknown>): string {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { _id, _creationTime, ...fields } = row;
+  const text = JSON.stringify(canonical(fields));
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x811c9dc5) >>> 0;
+  }
+  return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+}
+
+/** A todos copy whose needs still wait for copyNeeds carries this prefix on
+ *  its version: its other fields are the old row's, its needs not yet. */
+const NEEDS_PENDING = "needs-pending:";
+
 /** The old row as the new table stores it: every field, references mapped,
- *  needs left to the needs pass. */
+ *  needs left to the needs pass. A time note's block that has been deleted
+ *  leaves the note with no block (counted), as the old table holds it; a
+ *  block that exists but is not copied yet stops the copy. */
 async function fieldsFor(
   ctx: MutationCtx,
   table: NewTable,
   row: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+): Promise<{ fields: Record<string, unknown>; danglingBlock: boolean }> {
   // _creationTime is the old row's; the new row gets its own.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { _id, _creationTime, ...fields } = row;
-  const out: Record<string, unknown> = { ...fields, legacyId: String(_id) };
-  if (table === "todos") delete out.needs;
+  const version = fingerprint(row);
+  // Needs name todos, so a todo with any waits for copyNeeds; one with none
+  // (or an empty list) is whole now.
+  const pending = table === "todos" && Array.isArray(fields.needs) && fields.needs.length > 0;
+  const out: Record<string, unknown> = {
+    ...fields,
+    legacyId: String(_id),
+    legacyVersion: pending ? NEEDS_PENDING + version : version,
+  };
+  if (pending) delete out.needs;
+  let danglingBlock = false;
   if (table === "timeNotes" && typeof fields.blockId === "string") {
     const block = await copyOf(ctx, "blocks", fields.blockId);
-    if (block === null) throw new Error(`timeNotes: block ${fields.blockId} is not copied yet; copy blocks first`);
-    out.blockId = block._id;
+    if (block !== null) out.blockId = block._id;
+    else if ((await ctx.db.get(fields.blockId as Id<"dtsBlocks">)) === null) {
+      delete out.blockId;
+      danglingBlock = true;
+    } else {
+      throw new Error(`timeNotes: block ${fields.blockId} is not copied yet; copy blocks first`);
+    }
   }
-  return out;
+  return { fields: out, danglingBlock };
 }
+
+/** The version a copy was last taken at, with the needs marker stripped. */
+const takenAt = (copied: CopiedRow) =>
+  typeof copied.legacyVersion === "string" ? copied.legacyVersion.replace(NEEDS_PENDING, "") : undefined;
 
 /**
  * Copy one page of `table`'s old rows, and schedule the next page until the
- * old table is done; for todos, then the needs pass. Answers what this page
- * did. Re-running is safe: see the header.
+ * old table is done; then the prune (copies whose old row is gone), and for
+ * todos the needs pass. Answers what this page did.
+ *
+ * FAITHFUL BOTH WAYS. A copied row is taken again only when its old row's
+ * fingerprint differs from the one it was taken at, so an edit to the old
+ * row (the old code, before the switch) arrives, and an edit to the copy (the
+ * new code, after it) is never undone. A copy taken before fingerprints
+ * existed has none, and is taken again once: the old row is the truth until
+ * the table's switch, and every such copy was made before it.
  */
 export const copy = internalMutation({
   args: {
@@ -161,17 +212,28 @@ export const copy = internalMutation({
     let inserted = 0;
     let patched = 0;
     let unchanged = 0;
+    let danglingBlocks = 0;
     for (const old of page.page as Array<Record<string, unknown>>) {
-      const fields = await fieldsFor(ctx, table, old);
       const existing = await copyOf(ctx, table, String(old._id));
+      if (existing !== null && takenAt(existing) === fingerprint(old)) {
+        unchanged += 1;
+        continue;
+      }
+      const { fields, danglingBlock } = await fieldsFor(ctx, table, old);
+      if (danglingBlock) danglingBlocks += 1;
       if (existing === null) {
         await ctx.db.insert(table, fields as never);
         inserted += 1;
-      } else if (VERSION[table](old) > VERSION[table](existing)) {
+      } else {
+        // A field the old row no longer has is cleared on the copy too.
+        // (A todo's needs waiting for copyNeeds are left for it.)
+        const needsPending = String(fields.legacyVersion).startsWith(NEEDS_PENDING);
+        for (const key of Object.keys(existing)) {
+          if (key.startsWith("_") || key in fields || (key === "needs" && needsPending)) continue;
+          fields[key] = undefined;
+        }
         await ctx.db.patch(existing._id as Id<NewTable>, fields as never);
         patched += 1;
-      } else {
-        unchanged += 1;
       }
     }
     if (chain !== false) {
@@ -181,20 +243,58 @@ export const copy = internalMutation({
           cursor: page.continueCursor,
           pageSize: numItems,
         });
-      } else if (table === "todos") {
-        await ctx.scheduler.runAfter(0, internal.jarvis.tables.copyNeeds, { pageSize: numItems });
-      } else if (table === "rulings") {
-        await ctx.scheduler.runAfter(0, internal.jarvis.tables.remapRulingRefs, {});
+      } else {
+        await ctx.scheduler.runAfter(0, internal.jarvis.tables.prune, { table });
+        if (table === "todos") {
+          await ctx.scheduler.runAfter(0, internal.jarvis.tables.copyNeeds, { pageSize: numItems });
+        } else if (table === "rulings") {
+          await ctx.scheduler.runAfter(0, internal.jarvis.tables.remapRulingRefs, {});
+        }
       }
     }
-    return { table, inserted, patched, unchanged, isDone: page.isDone, continueCursor: page.continueCursor };
+    return { table, inserted, patched, unchanged, danglingBlocks, isDone: page.isDone, continueCursor: page.continueCursor };
   },
 });
 
 /**
- * todos.needs, mapped from each old row's needs once every todo is copied.
- * A copied row whose own clock has moved past the old row's (a change made
- * through the new code) keeps its needs.
+ * A copy whose old row is gone (a block or time note deleted through the old
+ * code after it was copied) is deleted too, so the copy holds what the old
+ * table holds. Only copies (rows with a legacyId) are read; a row the new
+ * code wrote has none. An EMPTY old table deletes nothing and says so: it
+ * reads as the table emptied after its switch, not as every row deleted, and
+ * a stale copy is safer than a wiped table.
+ */
+export const prune = internalMutation({
+  args: {
+    table: NEW_TABLE,
+    cursor: v.optional(v.union(v.string(), v.null())),
+    chain: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { table, cursor, chain }) => {
+    if ((await ctx.db.query(RENAMED[table] as TableNames).first()) === null) {
+      return { table, deleted: 0, skipped: `${RENAMED[table]} is empty; nothing pruned`, isDone: true, continueCursor: "" };
+    }
+    const page = await ctx.db.query(table).paginate({ cursor: cursor ?? null, numItems: 200 });
+    let deleted = 0;
+    for (const row of page.page as Array<Record<string, unknown> & { _id: string }>) {
+      if (typeof row.legacyId !== "string") continue;
+      const oldId = ctx.db.normalizeId(RENAMED[table] as TableNames, row.legacyId);
+      if (oldId !== null && (await ctx.db.get(oldId)) !== null) continue;
+      await ctx.db.delete(row._id as Id<NewTable>);
+      deleted += 1;
+    }
+    if (chain !== false && !page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.jarvis.tables.prune, { table, cursor: page.continueCursor });
+    }
+    return { table, deleted, isDone: page.isDone, continueCursor: page.continueCursor };
+  },
+});
+
+/**
+ * todos.needs, mapped from the old row's needs once every todo is copied, on
+ * each copy the copy pass marked pending (its old row was taken with needs);
+ * the mark goes with it. A copy not marked keeps the needs it has, so a
+ * change made through the new code stands.
  */
 export const copyNeeds = internalMutation({
   args: {
@@ -214,13 +314,9 @@ export const copyNeeds = internalMutation({
         missing.push(old._id);
         continue;
       }
-      if (Number(copied.updatedAt ?? 0) > old.updatedAt) continue;
-      if (old.needs === undefined) {
-        if (copied.needs !== undefined) await ctx.db.patch(copied._id as Id<"todos">, { needs: undefined });
-        continue;
-      }
+      if (typeof copied.legacyVersion !== "string" || !copied.legacyVersion.startsWith(NEEDS_PENDING)) continue;
       const needs: Id<"todos">[] = [];
-      for (const need of old.needs) {
+      for (const need of old.needs ?? []) {
         const target = await copyOf(ctx, "todos", need);
         if (target !== null) needs.push(target._id as Id<"todos">);
         // A need on a row that no longer exists names nothing in either
@@ -228,7 +324,10 @@ export const copyNeeds = internalMutation({
         else if ((await ctx.db.get(need)) === null) dangling += 1;
         else missing.push(need);
       }
-      await ctx.db.patch(copied._id as Id<"todos">, { needs });
+      await ctx.db.patch(copied._id as Id<"todos">, {
+        needs,
+        legacyVersion: copied.legacyVersion.slice(NEEDS_PENDING.length),
+      });
       mapped += 1;
     }
     if (missing.length > 0) {
@@ -621,7 +720,7 @@ async function blockBack(ctx: MutationCtx, id: string): Promise<Id<"dtsBlocks">>
 /** The new row as its old table stores it; todos' needs go in copyBackNeeds. */
 async function oldFieldsFor(ctx: MutationCtx, table: BackTable, row: Record<string, unknown>) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { _id, _creationTime, legacyId, ...fields } = row;
+  const { _id, _creationTime, legacyId, legacyVersion, ...fields } = row;
   const out: Record<string, unknown> = { ...fields };
   if (table === "todos") delete out.needs;
   if (table !== "todos" && typeof fields.todoId === "string") out.todoId = (await unmappedTodo(ctx, fields.todoId)) ?? fields.todoId;

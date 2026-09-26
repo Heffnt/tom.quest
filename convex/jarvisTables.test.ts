@@ -103,6 +103,70 @@ describe("the copy into the plain-named tables", () => {
     expect(label.ref).toBe(`ruling:${ruling._id}`);
   });
 
+  // witness: compare a block's createdAt instead of its fingerprint, or drop
+  // the prune; the moved block keeps its old times and the deleted one stays.
+  it("follows a block's edits and deletions, and never undoes an edit made to the copy", async () => {
+    const t = convexTest({ schema, modules });
+    const { moved, gone } = await t.run(async (ctx) => ({
+      moved: await ctx.db.insert("dtsBlocks", { start: 1, end: 2, createdAt: 1 }),
+      gone: await ctx.db.insert("dtsBlocks", { start: 3, end: 4, createdAt: 1, note: "cancelled" }),
+    }));
+    await t.mutation(internal.jarvis.tables.copy, { table: "blocks", chain: false });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(moved, { start: 10, end: 20 });
+      await ctx.db.delete(gone);
+    });
+    await t.mutation(internal.jarvis.tables.copy, { table: "blocks", chain: false });
+    expect(await t.mutation(internal.jarvis.tables.prune, { table: "blocks", chain: false })).toMatchObject({ deleted: 1 });
+    let blocks = await t.run(async (ctx) => await ctx.db.query("blocks").collect());
+    expect(blocks.map((b) => [b.legacyId, b.start, b.end])).toEqual([[moved, 10, 20]]);
+    // The new code moves the copy; the old row is unchanged, so a copy leaves it.
+    await t.run(async (ctx) => await ctx.db.patch(blocks[0]._id, { start: 100 }));
+    await t.mutation(internal.jarvis.tables.copy, { table: "blocks", chain: false });
+    blocks = await t.run(async (ctx) => await ctx.db.query("blocks").collect());
+    expect(blocks[0].start).toBe(100);
+    // An emptied old table is not read as every block deleted.
+    await t.run(async (ctx) => await ctx.db.delete(moved));
+    expect(await t.mutation(internal.jarvis.tables.prune, { table: "blocks", chain: false })).toMatchObject({ deleted: 0 });
+    expect(await t.run(async (ctx) => (await ctx.db.query("blocks").collect()).length)).toBe(1);
+  });
+
+  // witness: throw on a time note's missing block, as the copy did.
+  it("keeps a time note whose block was deleted, with no block", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      const block = await ctx.db.insert("dtsBlocks", { start: 1, end: 2, createdAt: 1 });
+      await ctx.db.insert("dtsTimeNotes", { text: "move it to friday", blockId: block, status: "pending", createdAt: 1 });
+      await ctx.db.delete(block);
+    });
+    await t.mutation(internal.jarvis.tables.copy, { table: "blocks", chain: false });
+    expect(await t.mutation(internal.jarvis.tables.copy, { table: "timeNotes", chain: false })).toMatchObject({ inserted: 1, danglingBlocks: 1 });
+    const [note] = await t.run(async (ctx) => await ctx.db.query("timeNotes").collect());
+    expect(note.text).toBe("move it to friday");
+    expect(note.blockId).toBeUndefined();
+  });
+
+  // witness: compare updatedAt instead of the fingerprint; the reply ts below
+  // is written without moving updatedAt and never arrives.
+  it("follows a todo's edits that leave updatedAt alone, and a need taken away", async () => {
+    const t = convexTest({ schema, modules });
+    const { a, b } = await t.run(async (ctx) => {
+      const a = await ctx.db.insert("dtsTodos", todo("a", 10));
+      const b = await ctx.db.insert("dtsTodos", { ...todo("b", 10), needs: [a] });
+      return { a, b };
+    });
+    await copyAll(t, "todos");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(a, { slackReplyTs: "1.5" });
+      await ctx.db.patch(b, { needs: undefined });
+    });
+    await copyAll(t, "todos");
+    const rows = await t.run(async (ctx) => await ctx.db.query("todos").collect());
+    expect(rows.find((r) => r.legacyId === a)!.slackReplyTs).toBe("1.5");
+    expect(rows.find((r) => r.legacyId === b)!.needs).toBeUndefined();
+    expect(rows.every((r) => !r.legacyVersion!.startsWith("needs-pending:"))).toBe(true);
+  });
+
   it("patches a copied row from a newer old row, never from an older one", async () => {
     const t = convexTest({ schema, modules });
     const a = await t.run(async (ctx) => await ctx.db.insert("dtsTodos", todo("first", 10)));
