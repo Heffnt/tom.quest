@@ -345,10 +345,18 @@ describe("an objection becomes a label", () => {
         source: "tom", createdAt: 1, updatedAt: 1,
       }),
     );
+    // The row as POST /jarvis/event stores a delegate's decision: the askId
+    // as the subject, the agent that decided as provenance.agentId, and the
+    // body Jarvis worker/jobs/delegate.mjs sends. No runToken: the record
+    // links a row to its run by the agent id.
     await t.run(async (ctx) =>
       ctx.db.insert("events", {
-        kind: "decision", at: 1_000, provenance: {}, subject: "rec-1",
-        data: { question: "Which day?", decision: "Thursday", todoId, runToken: "tok-decide" },
+        kind: "decision", at: 1_000, provenance: { agentId: "claude:box:decide-run", job: "delegate" }, subject: "rec-1",
+        data: {
+          question: "Which day?", options: ["Thursday", "Friday"], decision: "Thursday", reason: "His calendar is free.",
+          restedOn: [], wouldChange: null, refused: false, refusedBecause: null, caller: "job:prepare", askId: "rec-1",
+          todoId, model: "claude-opus-5", nearMissed: [],
+        },
       }),
     );
     const eventId = await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {

@@ -319,9 +319,12 @@ export const internalLabelFromObjection = internalMutation({
     const objection = await ctx.db.get(eventId);
     if (objection === null) return { wrote: false, why: "no objection row" };
     const data = (objection.data ?? {}) as { revert?: unknown; sentence?: unknown };
-    // The same two rows internalRecordDelegateObjection resolved: a delegate
-    // decision keyed by its askId, or a merge keyed by its own <repo>:<sha>.
-    const subject =
+    // The rows internalRecordDelegateObjection resolved: a delegate decision
+    // keyed by its askId, or a merge keyed by its own <repo>:<sha>, each
+    // carrying the run's registration token; else a decision only the record
+    // holds (convex/ttsAsk.ts recordedDecision), which names the agent that
+    // took it in provenance.agentId, the record's own link to a run.
+    const legacy =
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", askId))
@@ -329,21 +332,26 @@ export const internalLabelFromObjection = internalMutation({
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", askId))
-        .first()) ??
-      // A decision only the record holds (convex/ttsAsk.ts recordedDecision),
-      // which carries its runToken when its writer sent one.
-      (await recordedDecision(ctx, askId));
+        .first());
+    const recorded = legacy === null ? await recordedDecision(ctx, askId) : null;
     const ref = `objection:${eventId}`;
-    const token = (subject?.data as { runToken?: unknown } | undefined)?.runToken;
-    const run = await agentForToken(ctx, typeof token === "string" ? token : undefined);
+    const token = (legacy?.data as { runToken?: unknown } | undefined)?.runToken;
+    const agentId = recorded?.provenance.agentId;
+    const run = legacy !== null
+      ? await agentForToken(ctx, typeof token === "string" ? token : undefined)
+      : agentId === undefined
+        ? null
+        : await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", agentId)).first();
     if (run === null) {
       await unlinked(ctx, {
         source: "objection",
         ref,
         subjectKey: askId,
-        why: subject === null
+        why: legacy === null && recorded === null
           ? "no decision or merge row carries this askId"
-          : "the decision row carries no runToken, or no agent claimed it",
+          : legacy !== null
+            ? "the decision row carries no runToken, or no agent claimed it"
+            : "the record's decision names no agent, or no run has that id",
       });
       return { wrote: false, why: "unlinked" };
     }
