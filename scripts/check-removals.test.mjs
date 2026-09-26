@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { AST_GREP_VERSION, checkRemovals, movedAgainst } from "./check-removals.mjs";
-import { baselineText } from "./removal-sensor.mjs";
-import { hash8 } from "../shared/graph-hash.mjs";
+import { baselineText, hash8 } from "./removal-sensor.mjs";
 
 /** The fingerprint the sensor gives an exported name. */
 function hashOf(name = "lonely") {

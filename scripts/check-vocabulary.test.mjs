@@ -1,16 +1,12 @@
 // scripts/check-vocabulary.mjs, run against a fixture repository.
 //
-// Each case writes a small tree that PASSES all five in-repo checks, breaks one
+// Each case writes a small tree that PASSES all four in-repo checks, breaks one
 // thing in it, and asserts the named failure. The tree is a fixture rather than
 // this repository because a guardrail whose test can only run where the thing it
 // guards is already correct proves nothing on the day it is not.
 //
-// Checks 7 and 8 and the two render checks went to the Jarvis repository with
-// the graph's and the vocabulary's generators, and their cases with them.
-//
-// The refused words appear in this file, in the case that witnesses check 4;
-// it lies under scripts/, which check 4 does not scan, and check 3 exempts it
-// by name.
+// The render check is the Jarvis repository's, beside the vocabulary's
+// generator.
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -20,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { tempDir } from "../test/temp.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-vocabulary.mjs");
-const PASS_LINE = "check-vocabulary: the 5 in-repo checks passed; the render checks run in the nightly";
+const PASS_LINE = "check-vocabulary: the 4 in-repo checks passed; the render checks run in the nightly";
 const VERSION = "0123456789abcdef";
 
 const list = (values) => values.map((value) => `  ${JSON.stringify(value)},`).join("\n");
@@ -41,7 +37,7 @@ function sharedBlock({ version = VERSION } = {}) {
   ].join("\n");
 }
 
-/** A tree that passes all five. `files` replaces or adds paths on top of it. */
+/** A tree that passes all four. `files` replaces or adds paths on top of it. */
 function fixture(files = {}) {
   const dir = tempDir("check-vocabulary-");
   const base = {
@@ -53,7 +49,6 @@ function fixture(files = {}) {
     "convex/schema.ts":
       'import { defineSchema, defineTable } from "convex/server";\n'
       + `${Array.from({ length: 44 }, (_, i) => `  table${i}: defineTable({}),`).join("\n")}\n`,
-    "shared/skill-router.mjs": "export const CONTEXT_CALLERS = Object.freeze({ opener: {} });\n",
     "app/page.tsx": "export default function Page() { return null; }\n",
     "vqc/todos.ts": "export const TODOS = [];\n",
     ...files,
@@ -133,18 +128,6 @@ describe("check-vocabulary", () => {
     expect(result.stderr).toContain("outside the generated block in convex/ttsShared.ts");
   });
 
-  it("4: names a refused word, in a comment as much as in code", () => {
-    const result = run(
-      fixture({
-        "app/notes.ts": "// the ontology of a run\nexport const NOTES = [];\n",
-        "vqc/store.ts": 'export const KIND = "knowledge graph";\n',
-      }),
-    );
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('app/notes.ts:1: "ontology" is a refused word');
-    expect(result.stderr).toContain('vqc/store.ts:1: "knowledge graph" is a refused word');
-  });
-
   it("5: names an inline evals commit key", () => {
     const result = run(
       fixture({ "convex/ttsEvals.ts": "export const key = `${args.repo}@${args.sha}`;\n" }),
@@ -153,16 +136,10 @@ describe("check-vocabulary", () => {
     expect(result.stderr).toContain("convex/ttsEvals.ts:1: the commit key `${args.repo}@${args.sha}` is written inline");
   });
 
-  // THE TABLE-COUNT AND CONTEXT_CALLERS TESTS WENT WITH THEIR CHECKS. The first
-  // pinned convex/schema.ts at 44 tables, which failed every later branch that
-  // added one for any reason; the second asserted a single CONTEXT_CALLERS
-  // declaration that nothing parses and that was never duplicated. See the
-  // block in scripts/check-vocabulary.mjs where they used to be.
-
   it("exempts this script and its test from the word checks", () => {
-    // The fixture's own copy of the script's name carries both refused words and
-    // the closed sentence, and is not reported.
-    const text = `// ontology, knowledge graph, these words mean exactly this and nothing else\n`;
+    // The fixture's own copy of the script's name carries the closed sentence,
+    // and is not reported.
+    const text = `// these words mean exactly this and nothing else\n`;
     const result = run(
       fixture({ "scripts/check-vocabulary.mjs": text, "scripts/check-vocabulary.test.mjs": text }),
     );
