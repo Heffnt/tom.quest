@@ -1,11 +1,13 @@
 "use client";
 
-// THE OBSERVATION PAGE. Everything happening in Jarvis and everything that
-// happened, in one window of time: the map of the components with what each one
-// did in that window, the timeline of every run and every point, the rulings
-// and the changes.
+// THE /agents WINDOW VIEW (the observation page until 2026-09-26; /observe
+// redirects here as ?view=window). Everything that ran, in one window of
+// time: the map of the components with what each one did in that window, the
+// timeline of every run and every point, the rulings and the changes. The
+// agents list is the page's other view: what is running now and each agent's
+// chat; this one is what ran, by window.
 //
-// THIS PAGE ONLY OBSERVES. The one thing it writes is a ruling — Approve on a
+// THIS VIEW ONLY OBSERVES. The one thing it writes is a ruling — Approve on a
 // change, object on a ruling — so no panel that starts work belongs on it, and
 // no text the record did not write is rendered here.
 //
@@ -14,12 +16,11 @@
 // moved with the filters would be a different number every time a filter was
 // touched, and the map's whole job is to be the place where nothing is hidden.
 //
-// NOTHING ON THIS PAGE LEAVES THE SITE. Every press either opens more of what
-// the record holds, in place, or goes to another page of tom.quest.
+// NOTHING HERE LEAVES THE SITE. Every press either opens more of what the
+// record holds, in place, or goes to another page of tom.quest.
 
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/app/lib/auth";
-import TomGate from "@/app/components/tom-gate";
 import ChangesList from "./components/changes-list";
 import DefinitionDrawer from "./components/definition-drawer";
 import Map from "./components/map";
@@ -27,7 +28,6 @@ import RulingsList from "./components/rulings-list";
 import { TermsProvider } from "./components/terms";
 import Timeline from "./components/timeline";
 import type { Lane } from "./map-data";
-import { OBSERVE_SLUG } from "./slug";
 import {
   REPO_NAMES,
   WINDOW_KINDS,
@@ -42,7 +42,7 @@ type Environment = "all" | "session" | "worker" | "runner";
 
 const ENVIRONMENTS: Environment[] = ["all", "session", "worker", "runner"];
 
-export default function ObserveClient() {
+export default function WindowView() {
   const { isTom } = useAuth();
 
   const [kind, setKind] = useState<WindowKind>("day");
@@ -72,17 +72,8 @@ export default function ObserveClient() {
   const rows = useWindowRows(win, isTom);
 
   const data = useMemo(
-    () => ({
-      runs: rows.runs,
-      events: rows.events,
-      rulings: rows.rulings,
-      runners: rows.runners.map((runner) => ({
-        experimentHost: runner.experimentHost,
-        endedAt: runner.endedAt,
-        lastCheckInAt: runner.lastCheckInAt,
-      })),
-    }),
-    [rows.runs, rows.events, rows.rulings, rows.runners],
+    () => ({ runs: rows.runs, events: rows.events, rulings: rows.rulings }),
+    [rows.runs, rows.events, rows.rulings],
   );
 
   const shown = useMemo(
@@ -97,16 +88,14 @@ export default function ObserveClient() {
   );
 
   return (
-    <TomGate label="Observe">
       <TermsProvider onDefine={setDefining}>
-        <div className="w-full px-3 py-5 sm:px-5">
-          <header className="flex flex-wrap items-baseline justify-between gap-2">
-            <h1 className="text-2xl font-bold tracking-tight">{OBSERVE_SLUG}</h1>
+        <div className="w-full">
+          <div className="flex flex-wrap items-baseline justify-end gap-2">
             <span className="text-[11px] font-mono text-text-faint">
               {windowLabel(win)}
               {rows.capped ? " · capped" : rows.complete ? "" : " · loading"}
             </span>
-          </header>
+          </div>
 
           <div className="mt-3">
             <Map data={data} now={now} focus={focus} onFocus={setFocus} waiting={rows.waiting} />
@@ -188,7 +177,6 @@ export default function ObserveClient() {
         </div>
         <DefinitionDrawer term={defining} onClose={() => setDefining(null)} />
       </TermsProvider>
-    </TomGate>
   );
 }
 

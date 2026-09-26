@@ -32,7 +32,7 @@ import { api } from "@/convex/_generated/api";
 import { AGENT_VIEW_CALLERS } from "@/convex/intentParse";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import AgentText from "./components/agent-text";
 import Decisions from "./components/decisions";
 import LineDrawer from "./components/line-drawer";

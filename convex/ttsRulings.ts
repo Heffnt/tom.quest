@@ -91,7 +91,7 @@ export type TomWordsProvenance = {
 // spaces; the type prefix keeps life and code keys disjoint, and a
 // stored batch row — the schema declares one until the narrow — apart from
 // both). Client code derives live rulings with the same rule via
-// app/tts/lib.ts.
+// app/jarvis/lib.ts.
 export const subjectKey = (row: {
   subjectType: "life" | "code" | "batch";
   todoId?: string;
@@ -796,7 +796,7 @@ export const internalMarkRulingApplied = internalMutation({
 // Digest input: how many briefed code todos await a ruling. A brief awaits
 // when its live ruling is missing OR NOT NEWER than the brief — a re-brief
 // after a revise ruling puts the item back on Tom's plate (the fresh plan
-// needs a fresh ruling). The client-side needs-me selector (app/tts/lib.ts)
+// needs a fresh ruling). The client-side needs-me selector (app/jarvis/lib.ts)
 // mirrors this predicate.
 //
 // THE TIE IS DELIBERATE — DO NOT TIGHTEN `<=` BACK TO `<`. ruledAt (set at

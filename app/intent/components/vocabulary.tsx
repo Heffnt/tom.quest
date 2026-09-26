@@ -16,7 +16,7 @@
 
 import { useMemo } from "react";
 import type { Doc } from "@/convex/_generated/dataModel";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import TermRows from "./term-rows";
 import { kindsOf, termRows, versionRow } from "../vocabulary-lib";
 import { useVocabularyStore } from "../vocabulary-store";

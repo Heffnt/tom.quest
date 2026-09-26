@@ -858,9 +858,10 @@ export async function gatherTodayFacts(
   //    runnerStatus, the one home; nothing here counts or guesses a number.
   const runners = await liveRunnerFacts(ctx);
 
-  // 8. What changed on the box (plan-root T1): the box-change rows and the
-  //    deploy job's own rows since the last digest, each read on its own
-  //    kind's index so a busy night of other events cannot crowd them out.
+  // 8. What changed on the box (plan-root T1): the box changes since the
+  //    last digest, from the record's events table (convex/boxChanges.ts
+  //    boxChangesInWindow), and the deploy job's own rows, each read on its
+  //    own kind's index so a busy night of other events cannot crowd them out.
   const deployRows = await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_at", (q) => q.eq("kind", DEPLOY).gte("at", since).lt("at", now))

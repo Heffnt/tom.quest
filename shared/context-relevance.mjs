@@ -69,7 +69,7 @@ export const SUPPLEMENTAL_CAPS = Object.freeze({ brief: 8192, transcript: 24576 
 
 /** Where a truncated brief's rest is — one string, so both prompt builders
  * append the same sentence and cannot disagree about where to send the run. */
-export const BRIEF_SOURCE = "tom.quest/tts, or the record";
+export const BRIEF_SOURCE = "tom.quest/jarvis, or the record";
 
 /** A todo's brief as the prompt should carry it. THE ONE HOME both prompt
  * builders call, so the text that was cut and the line saying so agree. */

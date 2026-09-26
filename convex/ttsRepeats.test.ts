@@ -120,7 +120,7 @@ describe("ttsRepeats CRUD", () => {
     expect(listed.map((r) => r._id)).toEqual([id]);
   });
 
-  // The edit path (app/tts/components/repeat-dialog.tsx). Before it existed
+  // The edit path (app/jarvis/components/repeat-dialog.tsx). Before it existed
   // the only caller of updateRepeat sent { id, active }, so every one of these
   // arguments was unreachable from the running app and every repeat-updated
   // event recorded fields ["active"].

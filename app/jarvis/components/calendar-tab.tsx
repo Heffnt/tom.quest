@@ -3,7 +3,7 @@
 // TTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
 // stacks, in time order: committed blocks (dtsBlocks), due marks (dueAt),
 // wake marks (waiting todos' wakeAt), and — on today only — today's view,
-// COMPUTED from the same subscriptions (app/tts/lib.ts selectToday: overdue,
+// COMPUTED from the same subscriptions (app/jarvis/lib.ts selectToday: overdue,
 // due, scheduled, ready, waking today; no stored queue since the lifeos
 // update, phase 7). A category block can open a block session over its todos.
 //
@@ -16,7 +16,7 @@
 // that is the reason they survived the caption migration of 2026-08-31 while
 // the day's `+` did not. A caption names a MECHANISM — what pressing this does
 // on the backend — and every one of those is now the ⓘ popover with a
-// ground-up document behind it (app/tts/components/info.tsx). The five here
+// ground-up document behind it (app/jarvis/components/info.tsx). The five here
 // echo the row's OWN DATA, which the chip is too narrow to show in full: the
 // block's exact span, the calendar event's feed and location, the due or wake
 // moment, the todo's whole statement. Replacing them with ⓘ controls would put
@@ -370,7 +370,7 @@ export default function CalendarTab({
               )
               .sort((a, b) => (a.wakeAt ?? 0) - (b.wakeAt ?? 0));
             // Today's view, computed from the todos and blocks already held
-            // here — no stored queue (app/tts/lib.ts selectToday).
+            // here — no stored queue (app/jarvis/lib.ts selectToday).
             const todayEntries = isToday
               ? selectToday(todos, blocks, day, now).entries
               : [];

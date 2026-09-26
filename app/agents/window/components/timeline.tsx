@@ -188,7 +188,7 @@ export default function Timeline({
         start: event.at,
         end: event.at,
         detail: [`the ${row.job} job failed`, event.kind, dayAndClock(event.at)],
-        href: row.todoId === null ? null : `/tts?item=${row.todoId}`,
+        href: row.todoId === null ? null : `/jarvis?item=${row.todoId}`,
         hrefWords: row.todoId === null ? null : "open the todo",
         tone: "failed",
       });

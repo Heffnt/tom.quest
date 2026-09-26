@@ -33,10 +33,10 @@ describe("page registry", () => {
   // IS the definition of what a session may look at, so it is asserted whole
   // and exactly — an extra slug appearing here is a widening nobody asked for.
   describe("the agent role", () => {
-    it("sees turing and tts and nothing else", () => {
+    it("sees turing and jarvis and nothing else", () => {
       expect(
         PAGES.filter((entry) => canSeePage("agent", entry)).map((entry) => entry.slug),
-      ).toEqual(["turing", "tts"]);
+      ).toEqual(["turing", "jarvis"]);
     });
 
     // Named individually because each is a specific thing a session must not

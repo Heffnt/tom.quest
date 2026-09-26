@@ -16,8 +16,8 @@
 
 import { useState } from "react";
 import type { Decision, EvalItem } from "@/convex/jarvis/intent";
-import Info from "@/app/tts/components/info";
-import RulingDialog from "@/app/tts/components/ruling-dialog";
+import Info from "@/app/jarvis/components/info";
+import RulingDialog from "@/app/jarvis/components/ruling-dialog";
 import { evalItemLineSuffix, linesRestedOn, type IntentLine } from "../lib";
 
 type Verdict = "approve" | "revise";

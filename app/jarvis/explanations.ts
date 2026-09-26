@@ -1,7 +1,7 @@
 // GROUND-UP EXPLANATIONS FOR THE INFO CAPTIONS.
 //
 // Every caption in the TTS screens is the small circled i beside a control,
-// which opens a popover (app/tts/components/info.tsx) on a tap. The popover
+// which opens a popover (app/jarvis/components/info.tsx) on a tap. The popover
 // carries two things: one or two sentences of display text, and — when the
 // mechanism the caption names needs teaching rather than naming — a "more"
 // control that opens one of the documents in this file fullscreen.

@@ -12,7 +12,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import { useOpenSession } from "@/app/lib/use-open-todo-session";
 import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 import type { Session, SessionModel } from "../lib";

@@ -512,7 +512,7 @@ export type GraphTodo = {
  * The ids that count as DONE for readiness. "archived" counts alongside "done":
  * a need that was set aside is not going to happen, and leaving it blocking
  * would strand the whole rest of the graph forever. Same rule memberProgress
- * (app/tts/lib.ts) already reads a batch member's completion by.
+ * (app/jarvis/lib.ts) already reads a batch member's completion by.
  */
 export function buildDoneSet(todos: readonly GraphTodo[]): Set<string> {
   const done = new Set<string>();
@@ -1047,7 +1047,7 @@ export function isLive(status: string): boolean {
 /** Deep link to one item on the /tts page (Everything tab), optionally
  * carrying an intent the page confirms before acting (state changes only on
  * the confirmed click — Slack's link-preview crawler fetches URLs, spec §7).
- * The single producer of the ?item=&intent= vocabulary consumed by app/tts.
+ * The single producer of the ?item=&intent= vocabulary consumed by app/jarvis.
  * Old /inventory links redirect to /tts with params preserved. */
 export type TtsLinkIntent = "done" | "archive" | "engage";
 export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
@@ -1242,7 +1242,7 @@ export function feedIsPrivate(feed: string | undefined, privateFeeds: Set<string
 }
 
 /** A tab of the /tts page that a Slack message may link, in the page's own
- * `?tab=` vocabulary (app/tts/tts-client.tsx): the calendar or everything. The
+ * `?tab=` vocabulary (app/jarvis/jarvis-client.tsx): the calendar or everything. The
  * one spelling of a tab link, for every Slack message that sends Tom to the
  * page for the rest of a list. The retired spellings older posts carry
  * (batches, needs-me, by-individual) open the everything tab: the page reads

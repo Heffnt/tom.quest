@@ -24,8 +24,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
-import Info from "@/app/tts/components/info";
-import { RUNNER_STATUS_WORDS } from "@/app/tts/lib";
+import Info from "@/app/jarvis/components/info";
+import { RUNNER_STATUS_WORDS } from "@/app/jarvis/lib";
 import type { SessionModel, TranscriptMessage } from "../lib";
 import { useAgentRows } from "../use-agent-rows";
 import {
@@ -702,7 +702,7 @@ function Lead({
       <div className="flex flex-wrap gap-x-3 text-text-faint">
         {run?.todoId !== undefined && (
           <Link
-            href={`/tts?item=${run.todoId}`}
+            href={`/jarvis?item=${run.todoId}`}
             className="text-accent underline underline-offset-2 hover:text-text"
           >
             linked item
@@ -710,7 +710,7 @@ function Lead({
         )}
         {session?.todoId !== undefined && run?.todoId === undefined && (
           <Link
-            href={`/tts?item=${session.todoId}`}
+            href={`/jarvis?item=${session.todoId}`}
             className="text-accent underline underline-offset-2 hover:text-text"
           >
             linked item

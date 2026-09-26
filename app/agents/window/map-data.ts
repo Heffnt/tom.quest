@@ -33,8 +33,6 @@ export type Tally =
   | { of: "wikitom" }
   /** The gate head rows recorded in the window. */
   | { of: "gate" }
-  /** Runners whose experiment runs on the cluster. */
-  | { of: "turing" }
   /** Events of one kind in the window. */
   | { of: "events"; kind: string };
 
@@ -123,9 +121,9 @@ export const NODES = [
   { id: "gate", label: "the merge gate", unit: "head rows", x: 995, y: ROW_MID, shape: "machine", tally: { of: "gate" }, filters: "merges" },
 
   // The resources, each under what reaches for it.
-  { id: "wikitom", label: "WikiTom", unit: "commits", x: 440, y: ROW_FLOOR, shape: "store", tally: { of: "wikitom" }, opens: "/tts" },
+  { id: "wikitom", label: "WikiTom", unit: "commits", x: 440, y: ROW_FLOOR, shape: "store", tally: { of: "wikitom" }, opens: "/jarvis" },
   { id: "models", label: "the models", unit: "models", x: 625, y: ROW_FLOOR, shape: "outside", tally: { of: "models" }, opens: "/turing" },
-  { id: "turing", label: "Turing", unit: "runners", x: 810, y: ROW_FLOOR, shape: "machine", tally: { of: "turing" }, opens: "/turing" },
+  { id: "turing", label: "Turing", unit: "runner agents", x: 810, y: ROW_FLOOR, shape: "machine", tally: { of: "lane", lane: "runners" }, opens: "/turing" },
   { id: "github", label: "GitHub", unit: "merges", x: 995, y: ROW_FLOOR, shape: "outside", tally: { of: "lane", lane: "merges" }, filters: "merges" },
 ] as const satisfies readonly MapNode[];
 

@@ -86,6 +86,13 @@ dead-export	app/forge/options.ts	2cb4810b
 dead-export	app/forge/options.ts	7df15adb
 dead-export	app/forge/options.ts	a6cce4d4
 dead-export	app/forge/options.ts	d630883c
+dead-export	app/jarvis/components/options-row.tsx	fecdc78a
+dead-export	app/jarvis/components/verdict-buttons.tsx	150e4842
+dead-export	app/jarvis/components/verdict-buttons.tsx	f4a9c40e
+dead-export	app/jarvis/lib.ts	01e61d07
+dead-export	app/jarvis/lib.ts	7138da83
+dead-export	app/jarvis/lib.ts	72307922
+dead-export	app/jarvis/lib.ts	a0bb65bc
 dead-export	app/lib/auth.tsx	1e1cea02
 dead-export	app/lib/convex-server.ts	2efc8f2f
 dead-export	app/lib/convex-server.ts	33276ded
@@ -170,13 +177,6 @@ dead-export	app/thmm/thcc.ts	f99ef5b7
 dead-export	app/transformer/lib/trace.ts	076e88c3
 dead-export	app/transformer/lib/trace.ts	d78a823e
 dead-export	app/transformer/state.ts	62fe385b
-dead-export	app/tts/components/options-row.tsx	fecdc78a
-dead-export	app/tts/components/verdict-buttons.tsx	150e4842
-dead-export	app/tts/components/verdict-buttons.tsx	f4a9c40e
-dead-export	app/tts/lib.ts	01e61d07
-dead-export	app/tts/lib.ts	7138da83
-dead-export	app/tts/lib.ts	72307922
-dead-export	app/tts/lib.ts	a0bb65bc
 dead-export	app/turing/lib/terminal-session.ts	3b5eb195
 dead-export	app/turing/lib/terminal-session.ts	6848b1b5
 dead-export	app/turing/lib/terminal-session.ts	7d0d9b6d
