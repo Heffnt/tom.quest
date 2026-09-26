@@ -5,7 +5,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
+import { LIVE_STATUSES, SESSION_MODEL } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { inboundRowIdOf } from "./sessionRows";
 
@@ -1136,10 +1136,6 @@ export const internalEvictTick = internalMutation({
     deferred: v.optional(v.number()),
     steps: v.optional(v.number()),
     pendingRunId: v.optional(v.string()),
-    // The record-tick task (convex/jarvis/tick.ts "evict") decides when a day's
-    // run is due, at any hour from 4:15 New York, and passes force; the
-    // 4 a.m. guard below stays for a caller that does not.
-    force: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     // OFF by default. Turning it on is the caller's action, after the S3
@@ -1154,14 +1150,8 @@ export const internalEvictTick = internalMutation({
       return { ok: true as const, disabled: true };
     }
 
-    const steps = args.steps ?? 0;
     const now = Date.now();
-    // The house DST pattern: a cron pair fires at both possible UTC times and
-    // this guard lets exactly one through. A CONTINUATION does not re-check, so
-    // a long eviction is not cut in half at the hour boundary.
-    if (steps === 0 && args.pendingRunId === undefined && args.force !== true && nyLocalHour(now) !== 4) {
-      return { ok: true as const, skipped: "not the eviction hour" };
-    }
+    const steps = args.steps ?? 0;
 
     let runsEvicted = args.runs ?? 0;
     let rowsDeleted = args.rowsDeleted ?? 0;

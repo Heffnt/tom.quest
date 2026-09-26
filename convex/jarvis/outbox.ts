@@ -7,7 +7,7 @@
 
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
-import { DAY_MS } from "../ttsShared";
+import { DAY_MS, nyCalendarDayBoundsUtc, nyCalendarDayKey } from "../ttsShared";
 import { insertEvent } from "./record";
 
 export const DIGEST_SENT = "digest-sent";
@@ -47,11 +47,32 @@ export async function lastDigest(ctx: QueryCtx): Promise<{ data?: unknown; text?
  *  threads needs-you replies went under in that time. A day's digest is one
  *  row, so a few days is a handful. */
 export async function digestsSince(ctx: QueryCtx, from: number): Promise<{ data?: unknown }[]> {
-  return await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT).gte("at", from))
-    .order("desc")
-    .take(50);
+  const [record, legacy] = await Promise.all([
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT).gte("at", from))
+      .order("desc")
+      .take(50),
+    // A digest sent through the previous pen can still be today's newest
+    // thread during the cutover, before the first record-native one lands.
+    ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT).gte("at", from))
+      .order("desc")
+      .take(50),
+  ]);
+  const seenThreads = new Set<string>();
+  return [...record, ...legacy]
+    .sort((left, right) => right.at - left.at || right._creationTime - left._creationTime)
+    .filter((row) => {
+      const facts = digestFacts(row);
+      if (facts.channel === null || facts.ts === null) return true;
+      const key = `${facts.channel}:${facts.ts}`;
+      if (seenThreads.has(key)) return false;
+      seenThreads.add(key);
+      return true;
+    })
+    .slice(0, 50);
 }
 
 /** The number a needs-you reply was posted with: the box writes it first,
@@ -143,9 +164,11 @@ export async function listForDigest(ctx: MutationCtx, line: DigestLine): Promise
   // ONCE A DAY PER SUBJECT, as the channel's per-day claim was: a rerun that
   // offers the same decision again (a Friday job's --overwrite), or a job that
   // fails on every run, is one line, not one per offer.
+  const now = Date.now();
+  const { start, end } = nyCalendarDayBoundsUtc(nyCalendarDayKey(now));
   const seen = await ctx.db
     .query("events")
-    .withIndex("by_subject_at", (q) => q.eq("subject", subject).gte("at", Date.now() - DAY_MS))
+    .withIndex("by_subject_at", (q) => q.eq("subject", subject).gte("at", start).lt("at", end))
     .filter((q) => q.eq(q.field("kind"), DIGEST_LINE))
     .first();
   if (seen !== null) return { listed: false };

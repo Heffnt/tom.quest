@@ -62,6 +62,21 @@ function useWalk(walk: Walk, cap: number, beside = 0): { done: boolean; capped: 
   return { done: status === "Exhausted" || capped, capped };
 }
 
+/** Walk one half of the time merge until it has reached the current cap
+ * boundary. A source already beyond the boundary cannot hide an earlier row;
+ * a source still before it must keep paging even when the merged count is
+ * already at the cap. */
+function useEventWalk(walk: Walk, boundary: number | null): { done: boolean } {
+  const { status, loadMore } = walk;
+  const last = walk.results.at(-1) as { at?: unknown } | undefined;
+  const lastAt = typeof last?.at === "number" ? last.at : null;
+  const covered = boundary !== null && lastAt !== null && lastAt >= boundary;
+  useEffect(() => {
+    if (status === "CanLoadMore" && !covered) loadMore(PAGE);
+  }, [status, covered, loadMore]);
+  return { done: status === "Exhausted" || (status === "CanLoadMore" && covered) };
+}
+
 /**
  * `on` is the caller's `isTom`: every query below is gated on requireTom, so a
  * signed-in stranger asking for them is a thrown error in the middle of the
@@ -77,12 +92,6 @@ export function useWindowRows(win: TimeWindow, on: boolean): WindowRows {
   const waiting = useQuery(api.observe.waitingOnTom, on ? {} : "skip");
 
   const runsWalk = useWalk(runs, RUNS_CAP);
-  // ONE CAP FOR THE MERGED POINT EVENTS: the two walks share EVENTS_CAP, and
-  // the merged window draws at most that many, saying it was capped when the
-  // two together held more.
-  const recordWalk = useWalk(record, EVENTS_CAP, older.results.length);
-  const olderWalk = useWalk(older, EVENTS_CAP, record.results.length);
-
   const merged = useMemo(
     () =>
       [...(record.results as PointEvent[]), ...(older.results as PointEvent[])].sort(
@@ -90,9 +99,17 @@ export function useWindowRows(win: TimeWindow, on: boolean): WindowRows {
       ),
     [record.results, older.results],
   );
+  const boundary = merged.length < EVENTS_CAP ? null : merged[EVENTS_CAP - 1].at;
+  // ONE TIME BOUNDARY FOR BOTH SOURCES. Each walk reaches the merged 4,000th
+  // row's time (or exhausts); only then can neither hide an earlier row.
+  const recordWalk = useEventWalk(record, boundary);
+  const olderWalk = useEventWalk(older, boundary);
   const events = useMemo(() => merged.slice(0, EVENTS_CAP), [merged]);
 
-  const capped = runsWalk.capped || recordWalk.capped || olderWalk.capped || merged.length > EVENTS_CAP;
+  const eventsCapped = boundary !== null && (
+    merged.length > EVENTS_CAP || record.status !== "Exhausted" || older.status !== "Exhausted"
+  );
+  const capped = runsWalk.capped || eventsCapped;
   const complete = runsWalk.done && recordWalk.done && olderWalk.done && rulings !== undefined;
 
   return {

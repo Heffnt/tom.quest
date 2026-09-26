@@ -456,6 +456,7 @@ export async function gatherTodayFacts(
   // ONE sentence about that todo. A session on no todo, or on a todo that is
   // gone, joins the one tail row, printed last.
   const byTodo = new Map<string, TodoOutcome>();
+  const finishedSessions = new Set<string>();
   const todoOutcomeFor = async (
     todoId: Id<"dtsTodos"> | undefined,
     sessionId: string | undefined,
@@ -530,7 +531,13 @@ export async function gatherTodayFacts(
         const sessionId = str(d.sessionId);
         const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
         const session = rowId ? await ctx.db.get(rowId) : null;
-        (await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId)).finished += 1;
+        const todoOutcome = await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId);
+        // A completed → errored correction is a second outcome event for the
+        // same session, not a second session that ended.
+        if (sessionId === undefined || !finishedSessions.has(sessionId)) {
+          todoOutcome.finished += 1;
+          if (sessionId !== undefined) finishedSessions.add(sessionId);
+        }
         if (d.outcome === "errored") {
           sessionFailure(
             sessionId,
@@ -568,8 +575,7 @@ export async function gatherTodayFacts(
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
           decision: safeStr(d.decision) ?? null,
           reason: safeStr(d.reason),
-          // A capped ask is refused however its row was written (rows from
-          // before the cap was stamped as a refusal carry capped alone).
+          // Rows written before the cap became a refusal carry `capped` alone.
           refused: d.refused === true || d.capped === true,
           refusedBecause: d.capped === true ? CAP_REFUSAL : safeStr(d.refusedBecause),
           fallback: safeStr(d.fallback),

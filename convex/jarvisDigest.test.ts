@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { listForDigest } from "./jarvis/outbox";
 
 // The digest area (convex/jarvis/digest.ts): the box asks whether a digest is
 // due, posts it, records digest-sent; a needs-you is opened here and posted by
@@ -136,6 +137,20 @@ describe("POST /jarvis/digest", () => {
   });
 });
 
+describe("the digest outbox", () => {
+  it("lists one subject once per New York calendar day, not once per rolling 24 hours", async () => {
+    const beforeMidnight = Date.parse("2026-09-26T03:59:00Z"); // 23:59 New York
+    const t = setup(beforeMidnight);
+    const line = { section: "broken" as const, job: "calendar", statement: "The calendar failed." };
+    expect(await t.run(async (ctx) => listForDigest(ctx, line))).toEqual({ listed: true });
+    vi.setSystemTime(beforeMidnight + 30_000);
+    expect(await t.run(async (ctx) => listForDigest(ctx, line))).toEqual({ listed: false });
+    vi.setSystemTime(beforeMidnight + 2 * 60_000);
+    expect(await t.run(async (ctx) => listForDigest(ctx, line))).toEqual({ listed: true });
+    expect(await ofKind(t, "events", "digest-line")).toHaveLength(2);
+  });
+});
+
 const THREAD_TS = "1758882600.000100";
 
 /** What the box does for one pending needs-you: post it numbered, record it. */
@@ -154,6 +169,29 @@ const reply = (t: ReturnType<typeof convexTest>, eventId: string, text: string, 
   t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId, channel: CHANNEL, threadTs: THREAD_TS, ts, text, user: "UTOM" });
 
 describe("needs-you, a numbered reply under the digest", () => {
+  it("finds today's digest thread while it still lives in dtsEvents", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: MORNING - 60_000,
+        kind: "digest-sent",
+        data: { day: DAY, channel: CHANNEL, ts: THREAD_TS, windowEnd: MORNING - 60_000 },
+      });
+      await ctx.db.insert("events", {
+        at: MORNING,
+        kind: "needs-you-opened",
+        provenance: {},
+        subject: "legacy-thread-item",
+        data: { key: "legacy-thread-item" },
+        text: "Only you can settle this.",
+      });
+    });
+    const pending = await get(t, "/jarvis/digest/needs-you");
+    expect(pending.thread).toEqual({ channel: CHANNEL, ts: THREAD_TS, day: DAY });
+    expect(pending.searchThreads).toEqual([{ channel: CHANNEL, ts: THREAD_TS, day: DAY }]);
+    expect(pending.pending.map((item: { key: string }) => item.key)).toEqual(["legacy-thread-item"]);
+  });
+
   // witness: the read took the oldest 200 openings and filtered out the
   // posted ones, so with 200 older ones posted a later opening was never
   // offered to the box.

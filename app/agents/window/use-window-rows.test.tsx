@@ -14,7 +14,10 @@ const rows = (n: number, offset: number) =>
 let walks: Record<string, { results: unknown[]; status: string }> = {};
 
 vi.mock("convex/react", () => ({
-  usePaginatedQuery: (fn: unknown) => ({ ...walks[getFunctionName(fn as never)], loadMore }),
+  usePaginatedQuery: (fn: unknown) => {
+    const name = getFunctionName(fn as never);
+    return { ...walks[name], loadMore: (n: number) => loadMore(name, n) };
+  },
   useQuery: () => [],
 }));
 
@@ -26,17 +29,30 @@ afterEach(() => {
 });
 
 describe("useWindowRows", () => {
-  // witness: each walk had its own 4,000 cap, so the merged window could
-  // draw 8,000 rows and never say it was capped.
-  it("draws at most 4,000 merged point events, says it was capped, and loads no more", () => {
+  // witness: the walks stopped as soon as their combined row count reached
+  // 4,000, leaving later rows from one source in the window while earlier
+  // pages from the other source had not been fetched.
+  it("walks each source to one time boundary before capping the merge", () => {
     walks = {
       [getFunctionName(api.observe.runsInWindow)]: { results: [], status: "Exhausted" },
-      [getFunctionName(api.observe.recordInWindow)]: { results: rows(2500, 0), status: "CanLoadMore" },
-      [getFunctionName(api.observe.eventsInWindow)]: { results: rows(2500, 10_000), status: "CanLoadMore" },
+      [getFunctionName(api.observe.recordInWindow)]: { results: rows(2500, 10_000), status: "CanLoadMore" },
+      [getFunctionName(api.observe.eventsInWindow)]: { results: rows(2500, 0), status: "CanLoadMore" },
     };
-    const { result } = renderHook(() => useWindowRows({ from: 0, to: 1 } as never, true));
+    const { result, rerender } = renderHook(() => useWindowRows({ from: 0, to: 1 } as never, true));
+    expect(loadMore).toHaveBeenCalledWith(getFunctionName(api.observe.eventsInWindow), 400);
+    expect(loadMore).not.toHaveBeenCalledWith(getFunctionName(api.observe.recordInWindow), 400);
+    expect(result.current.complete).toBe(false);
+
+    loadMore.mockClear();
+    walks = {
+      ...walks,
+      [getFunctionName(api.observe.eventsInWindow)]: { results: rows(4000, 0), status: "CanLoadMore" },
+    };
+    rerender();
     expect(result.current.events).toHaveLength(4000);
     expect(result.current.events[0].at).toBe(0);
+    expect(result.current.events.at(-1)?.at).toBe(3999);
+    expect(result.current.complete).toBe(true);
     expect(result.current.capped).toBe(true);
     expect(loadMore).not.toHaveBeenCalled();
   });

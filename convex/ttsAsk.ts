@@ -143,6 +143,7 @@ export const internalRecordAsk = internalMutation({
     const cap = capFor(args);
     const attended = session !== null && session.mode !== "autonomous";
     const capped = callerCount >= cap;
+    // The cap is the delegate's spend wall: past it, no answer is acted on.
     // A CAPPED ASK TOOK NOTHING IN HIS NAME: the box does not act on the
     // delegate's answer past the cap and takes the caller's fallback, so the
     // row reads as refused, with the cap as its reason, like an attended one.

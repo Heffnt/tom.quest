@@ -1025,6 +1025,37 @@ describe("internalComposeToday", () => {
     ]);
   });
 
+  // witness: correcting completed to errored writes the failure event the
+  // digest needs, but the overnight count used to treat both outcome events
+  // as two sessions ending.
+  it("counts a corrected session once and keeps its one failure line", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "Check the source" });
+    const sessionId = await t.run(async (ctx) => ctx.db.insert("claudeSessions", {
+      title: "check the source", kind: "gate", todoId, repo: "none", repos: [],
+      status: "ended", nextSeq: 0, createdAt: FIVE_AM - 7200_000,
+      statusChangedAt: FIVE_AM - 3500_000,
+    }));
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3600_000, kind: "session-outcome", todoId, data: { sessionId, outcome: "completed", summary: "done" } });
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3500_000, kind: "session-outcome", todoId, data: { sessionId, outcome: "errored", summary: "the source was unavailable" } });
+    });
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      since: FIVE_AM - 86_400_000,
+    }));
+    expect(facts.overnightByTodo).toEqual([
+      expect.objectContaining({ todoId, sessionId, finished: 1 }),
+    ]);
+    expect(facts.broken.filter((row) => row.url === ttsSessionLink(sessionId))).toEqual([
+      expect.objectContaining({ detail: "the source was unavailable", count: 1 }),
+    ]);
+  });
+
   // witness: the digest found /tts/ask decisions only among the newest 2,000
   // dtsEvents rows of every kind, so a busy night of other rows pushed a
   // decision taken in his name out before it was looked at.

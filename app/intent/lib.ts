@@ -198,6 +198,7 @@ export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
 export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
   const trimmed = ref.trim();
   if (trimmed.startsWith("ruling:")) {
+    // The delegate cites the ruling spelling its prompt prints.
     const id = `rulings/${trimmed.slice("ruling:".length)}`;
     return lines.filter((line) => line.id === id);
   }
@@ -209,12 +210,14 @@ export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
   // stands behind that repo's AGENTS.md rules, whose source is `<Repo> <file>`.
   const repo = /^model-of-tom\/evidence\/repos\/([^/]+)\.md$/.exec(trimmed.slice(0, cut));
   if (repo !== null) {
+    // The delegate cites the repository evidence spelling its prompt prints.
     const inner = heading.indexOf("#");
     if (inner === -1) return [];
     const source = `${repo[1]} ${heading.slice(0, inner).trim()}`;
     const wanted = heading.slice(inner + 1).trim().toLowerCase();
     return lines.filter((line) => line.source === source && line.section.toLowerCase() === wanted);
   }
+  // The delegate cites the page-section spelling its prompt prints.
   const path = trimmed.slice(0, cut).replace("/evidence/", "/");
   const wanted = heading.toLowerCase();
   return lines.filter((line) => line.source === path && line.section.toLowerCase() === wanted);
@@ -224,6 +227,7 @@ export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
  *  Eight characters because that is the name the rule set's writer gives an
  *  item (Jarvis worker/jobs/evals.mjs on night/s6: `ruling-<id.slice(-8)>`). */
 export function evalItemLineSuffix(name: string): string | null {
+  // The rule set's writer names items `ruling-<last 8 of the ruling id>`.
   const match = /^rule\/ruling-([a-z0-9]{8})$/.exec(name);
   return match === null ? null : match[1];
 }

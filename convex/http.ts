@@ -2494,7 +2494,7 @@ const ttsEvent = httpAction(async (ctx, request) => {
   if (typeof b.kind !== "string" || b.kind === "") {
     return jsonResponse(400, { error: "kind (non-empty string) required" });
   }
-  if (b.key !== undefined && (typeof b.key !== "string" || b.key === "")) {
+  if (b.key !== undefined && (typeof b.key !== "string" || b.key.trim() === "")) {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
   }
   // The key becomes the record row's subject (jarvis/events copyFromDts), so a

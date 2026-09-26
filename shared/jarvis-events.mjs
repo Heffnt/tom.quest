@@ -25,6 +25,9 @@ export const EVENT_KINDS = [
   "job-ok",
   "job-failed",
   "job-recovered",
+  // A record-tick task was queued. Its completion is the later job-ok or
+  // job-failed under the same subject (convex/jarvis/tick.ts).
+  "tick-started",
   // Box changes (convex/boxChanges.ts): every change to the Jarvis Box, as
   // the box-change reader (Jarvis worker/jobs/box-watch.mjs) folds it; data
   // is the fixed shape boxChanges.ts checks, `at` is when it happened on the

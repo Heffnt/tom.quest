@@ -34,14 +34,20 @@ import type { FunctionReference } from "convex/server";
 import { internal } from "../_generated/api";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { JOB_FAILED, JOB_OK } from "./jobs";
+import { insertEvent } from "./record";
 import { TTS_PREP_NY_HOUR, nyCalendarDayKey, nyHhmm } from "../ttsShared";
 
 const MINUTE = 60_000;
+const ACTION_LIMIT_MS = 10 * MINUTE;
+const MUTATION_LIMIT_MS = MINUTE;
+const TICK_STARTED = "tick-started";
 
 type Task = {
   /** The cadence; or, for a once-a-day task, the New York time it comes due
    *  (it is then due until a clean run that day). */
   when: { everyMs: number } | { dailyAt: { hour: number; minute: number }; after?: string };
+  /** A queued run older than this cannot still be alive and may be retried. */
+  timeoutMs: number;
   run:
     | { action: FunctionReference<"action", "internal", Record<string, unknown>> }
     | { mutation: FunctionReference<"mutation", "internal", Record<string, unknown>>; args?: Record<string, unknown> };
@@ -50,22 +56,22 @@ type Task = {
 /** The tasks by name. A cadence is a floor: the box ticks every minute, so a
  *  task runs within a minute of coming due. */
 const TICK_TASKS: Record<string, Task> = {
-  "turing-health": { when: { everyMs: MINUTE }, run: { action: internal.serverHealth.pollTuring } },
-  "pull-requests": { when: { everyMs: 5 * MINUTE }, run: { action: internal.observeMerge.refreshOpenPulls } },
-  calendar: { when: { everyMs: 60 * MINUTE }, run: { action: internal.ttsCalendarFetch.refreshFeeds } },
-  "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, run: { action: internal.ttsSync.refreshMirror } },
+  "turing-health": { when: { everyMs: MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.serverHealth.pollTuring } },
+  "pull-requests": { when: { everyMs: 5 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.observeMerge.refreshOpenPulls } },
+  calendar: { when: { everyMs: 60 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.ttsCalendarFetch.refreshFeeds } },
+  "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.ttsSync.refreshMirror } },
   // The row eviction switch (convex/agents.ts internalEvictTick; OFF unless
   // AGENTS_EVICTION_ENABLED, and then it says so in its event), once a day
   // from 4:15, before repeats and the digest.
   evict: {
     when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 15 } },
-    run: { mutation: internal.agents.internalEvictTick, args: { force: true } },
+    timeoutMs: MUTATION_LIMIT_MS,
+    run: { mutation: internal.agents.internalEvictTick },
   },
   repeats: {
     when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 30 }, after: "calendar" },
-    // force: the tick decides when it is due (any hour from 4:30), so the
-    // mutation's own 4 a.m.-only guard, kept for its old cron pair, is passed.
-    run: { mutation: internal.ttsRepeats.internalGenerateRepeats, args: { force: true } },
+    timeoutMs: MUTATION_LIMIT_MS,
+    run: { mutation: internal.ttsRepeats.internalGenerateRepeats },
   },
 };
 
@@ -102,7 +108,21 @@ export const due = internalMutation({
         .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_FAILED).eq("subject", job))
         .order("desc")
         .first();
-      const last = Math.max(ok?.at ?? 0, failed?.at ?? 0);
+      const finished = [ok, failed]
+        .filter((row): row is NonNullable<typeof row> => row !== null)
+        .sort((left, right) => right.at - left.at || right._creationTime - left._creationTime)[0];
+      const queued = await ctx.db
+        .query("events")
+        .withIndex("by_kind_subject_at", (q) => q.eq("kind", TICK_STARTED).eq("subject", job))
+        .order("desc")
+        .first();
+      const inFlight = queued !== null && (
+        finished === undefined ||
+        queued.at > finished.at ||
+        (queued.at === finished.at && queued._creationTime > finished._creationTime)
+      );
+      if (inFlight && now - queued.at <= task.timeoutMs) continue;
+      const last = finished?.at ?? 0;
       if ("everyMs" in task.when) {
         if (now - last < task.when.everyMs - EARLY_MS) continue;
       } else {
@@ -118,6 +138,13 @@ export const due = internalMutation({
         if (task.when.after !== undefined && started.includes(task.when.after)) continue;
       }
       await ctx.scheduler.runAfter(0, internal.jarvis.tick.runTask, { name });
+      await insertEvent(ctx, {
+        kind: TICK_STARTED,
+        at: now,
+        provenance: { job },
+        subject: job,
+        data: { task: name, timeoutMs: task.timeoutMs },
+      });
       started.push(name);
     }
     return { started };

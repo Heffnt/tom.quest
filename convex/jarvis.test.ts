@@ -182,6 +182,9 @@ describe("the /jarvis/ prefix", () => {
     // the legacy pen refuses it as POST /jarvis/event refuses it.
     const before = (await rows(t, "events")).length;
     expect((await post(t, "/tts/event", { kind: "decision", data: { question: "q" } }, { "X-TTS-Key": "k" })).status).toBe(400);
+    for (const kind of ["decision", "digest-line", "eval-run"]) {
+      expect((await post(t, "/tts/event", { kind, key: " \t ", data: {} }, { "X-TTS-Key": "k" })).status).toBe(400);
+    }
     expect((await post(t, "/jarvis/event", { kind: "decision", data: { question: "q" } }, { "X-Jarvis-Key": "k" })).status).toBe(400);
     expect((await rows(t, "events")).length).toBe(before);
   });

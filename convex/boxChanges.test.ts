@@ -16,6 +16,7 @@ import {
 } from "./ttsCompose";
 import {
   AGENTS_WINDOW_URL,
+  BOX_CHANGE_READER_DELAY_MS,
   boxChangeFaults,
   boxChangeLines,
   boxChangesInWindow,
@@ -167,9 +168,11 @@ describe("the box-change door", () => {
         }
       });
       await recordEvent(t, eventOf(change({ agentId: AGENT })));
-      // convex-test spaces the creation times of rows written in one
-      // millisecond, so the window's end has room past the clock.
-      const rows = await t.run(async (ctx) => boxChangesInWindow(ctx, AT, Date.now() + 60_000));
+      const rows = await t.run(async (ctx) => boxChangesInWindow(
+        ctx,
+        AT + BOX_CHANGE_READER_DELAY_MS,
+        Date.now() + BOX_CHANGE_READER_DELAY_MS + 60_000,
+      ));
       expect(rows).toHaveLength(1);
       expect(rows[0].command).toBe(change().command);
     } finally {
@@ -177,23 +180,29 @@ describe("the box-change door", () => {
     }
   }, 60_000);
 
-  // witness: the digest read changes by when they happened, so one that
-  // happened before a digest was composed and was recorded after it fell in
-  // neither digest's window.
-  it("gives the digest the changes recorded in its window, whenever they happened", async () => {
+  // witness: creation-time windows made the one-time history copies look new
+  // and put them in the next digest; a plain event-time window instead lost a
+  // live change that arrived just after its event-time window closed.
+  it("puts a delayed live change in exactly one digest and copied history in none", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
-      vi.setSystemTime(AT + 10 * 60_000);
-      const composedAt = Date.now();
-      vi.setSystemTime(composedAt + 60_000);
-      // Happened five minutes before the first digest was composed; the
-      // reader posted it a minute after.
-      await recordEvent(t, eventOf(change({ agentId: AGENT, at: composedAt - 5 * 60_000 })));
-      const first = await t.run(async (ctx) => boxChangesInWindow(ctx, 0, composedAt));
-      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, composedAt, Date.now() + 1));
+      const boundary = AT + 24 * 60 * 60_000;
+      vi.setSystemTime(boundary + 60_000);
+      // Written tonight like a history copy, but carrying the old time at
+      // which it happened. It belongs to neither new digest window.
+      await t.run(async (ctx) => {
+        const old = change({ at: AT - BOX_CHANGE_READER_DELAY_MS - 1 });
+        await ctx.db.insert("events", { ...eventOf(old), provenance: eventOf(old).provenance });
+      });
+      // Happened five minutes before the first digest boundary; the reader
+      // posted it a minute after. The lag leaves it for the next window.
+      await recordEvent(t, eventOf(change({ agentId: AGENT, at: boundary - 5 * 60_000 })));
+      const first = await t.run(async (ctx) => boxChangesInWindow(ctx, AT, boundary));
+      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, boundary, boundary + 24 * 60 * 60_000));
       expect(first).toHaveLength(0);
       expect(second).toHaveLength(1);
+      expect(second[0].agentId).toBe(AGENT);
     } finally {
       vi.useRealTimers();
     }

@@ -319,18 +319,23 @@ export const forAgent = query({
  * digest reads them (boxChangeLines takes these). Unredacted: boxChangeLines
  * redacts every line it writes.
  *
- * BY RECORDED TIME, NOT BY WHEN IT HAPPENED. The reader posts a change
- * minutes after it happened (every two minutes, later when its outbox
- * retries), so a change that happened before one digest was composed and was
- * recorded after it would fall in neither window if read by `at`. Recorded
- * time (_creationTime, on the kind's own index events.by_kind, so no other
- * kind's rows are read however long the window) partitions the changes
- * between consecutive digests exactly: each lands in one.
+ * BY WHEN IT HAPPENED, ONE READER-DELAY BEHIND. The one-time history copy
+ * kept each change's old `at` but gave it a recent `_creationTime`, so
+ * creation time would print that history again. The reader's state pass runs
+ * every ten minutes and its journal pass every two; holding the upper edge
+ * back fifteen minutes lets a live post arrive before its event-time window
+ * closes. Both edges move by the same amount, so consecutive digests still
+ * partition changes exactly.
  */
+export const BOX_CHANGE_READER_DELAY_MS = 15 * 60_000;
+
 export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
   const rows = await ctx.db
     .query("events")
-    .withIndex("by_kind", (q) => q.eq("kind", BOX_CHANGE).gte("_creationTime", from).lt("_creationTime", to))
+    .withIndex("by_kind_at", (q) => q
+      .eq("kind", BOX_CHANGE)
+      .gte("at", from - BOX_CHANGE_READER_DELAY_MS)
+      .lt("at", to - BOX_CHANGE_READER_DELAY_MS))
     .take(WINDOW_MAX);
   const out: BoxChange[] = [];
   for (const row of rows) {

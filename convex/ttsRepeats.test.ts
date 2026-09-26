@@ -1,12 +1,14 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import { repeatProvenance } from "./ttsRepeats";
-import { nyCalendarDayBoundsUtc, nyLocalHour, weekdayWordOf } from "./ttsShared";
+import { nyCalendarDayBoundsUtc, weekdayWordOf } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+afterEach(() => vi.useRealTimers());
 
 // Every expectation is pinned to an explicit UTC instant: CI runs in UTC and
 // the dev machine in US Eastern, and the whole point of these assertions is
@@ -295,7 +297,6 @@ describe("ttsRepeats CRUD", () => {
         timeOfDay: "12:00",
       });
       await t.mutation(internal.ttsRepeats.internalGenerateRepeats, {
-        force: true,
         day: DAY,
       });
 
@@ -354,7 +355,6 @@ describe("internalGenerateRepeats", () => {
     });
 
     const result = await t.mutation(internal.ttsRepeats.internalGenerateRepeats, {
-      force: true,
       day: DAY,
     });
     expect(result).toEqual({ day: DAY, created: 1 });
@@ -398,7 +398,6 @@ describe("internalGenerateRepeats", () => {
       daysOfWeek: ["monday"],
     });
     await t.mutation(internal.ttsRepeats.internalGenerateRepeats, {
-      force: true,
       day: DAY,
     });
     const minted = await repeatingTodos(t);
@@ -416,7 +415,7 @@ describe("internalGenerateRepeats", () => {
     });
     const result = await t.mutation(
       internal.ttsRepeats.internalGenerateRepeats,
-      { force: true, day: DAY },
+      { day: DAY },
     );
     // No rule matches the weekday: the generator short-circuits, still
     // naming the day it considered.
@@ -433,19 +432,17 @@ describe("internalGenerateRepeats", () => {
       timeOfDay: "18:30",
     });
     const first = await t.mutation(internal.ttsRepeats.internalGenerateRepeats, {
-      force: true,
       day: DAY,
     });
     const second = await t.mutation(
       internal.ttsRepeats.internalGenerateRepeats,
-      { force: true, day: DAY },
+      { day: DAY },
     );
     expect(first).toEqual({ day: DAY, created: 1 });
     expect(second).toEqual({ day: DAY, created: 0 });
     expect(await repeatingTodos(t)).toHaveLength(1);
     // The idempotence key is per-day, so the NEXT monday still mints.
     const next = await t.mutation(internal.ttsRepeats.internalGenerateRepeats, {
-      force: true,
       day: "2026-09-14",
     });
     expect(next).toEqual({ day: "2026-09-14", created: 1 });
@@ -467,7 +464,7 @@ describe("internalGenerateRepeats", () => {
 
     const result = await t.mutation(
       internal.ttsRepeats.internalGenerateRepeats,
-      { force: true, day: DAY },
+      { day: DAY },
     );
     // Paused rules are filtered out with the weekday mismatch, so the run
     // reports the same empty result.
@@ -477,7 +474,6 @@ describe("internalGenerateRepeats", () => {
     // Un-pausing brings the rule back without any other change.
     await tom.mutation(api.ttsRepeats.updateRepeat, { id, active: true });
     await t.mutation(internal.ttsRepeats.internalGenerateRepeats, {
-      force: true,
       day: DAY,
     });
     expect(await repeatingTodos(t)).toHaveLength(1);
@@ -502,7 +498,7 @@ describe("internalGenerateRepeats", () => {
 
     const result = await t.mutation(
       internal.ttsRepeats.internalGenerateRepeats,
-      { force: true, day: DAY },
+      { day: DAY },
     );
     expect(result).toEqual({ day: DAY, created: 1 });
 
@@ -542,13 +538,17 @@ describe("internalGenerateRepeats", () => {
     });
     const result = await t.mutation(
       internal.ttsRepeats.internalGenerateRepeats,
-      { force: true, day: DAY },
+      { day: DAY },
     );
     expect(result).toEqual({ day: DAY, created: 1 });
     expect(await events(t, "repeat-skipped")).toHaveLength(0);
   });
 
-  it("without force, runs only inside the 4 a.m. NY prep hour", async () => {
+  // witness: the old cron's local-hour guard survived after record-tick took
+  // ownership of the schedule, so a late daily run minted nothing.
+  it("runs when record-tick calls it outside the old prep hour", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 8, 7, 16, 0)); // noon New York
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await tom.mutation(api.ttsRepeats.createRepeat, {
@@ -557,18 +557,12 @@ describe("internalGenerateRepeats", () => {
         "saturday", "sunday"],
       timeOfDay: "18:30",
     });
-    // Date.now() in the test runner is real wall time, which is almost never
-    // 4 a.m. NY — so the DST guard must return before minting anything. (The
-    // one-in-24 window where it would fire is covered by the forced runs.)
-    if (nyLocalHour(Date.now()) !== 4) {
-      const result = await t.mutation(
-        internal.ttsRepeats.internalGenerateRepeats,
-        { day: DAY },
-      );
-      // The guard's bare `return` reaches the caller as null.
-      expect(result).toBeNull();
-      expect(await repeatingTodos(t)).toHaveLength(0);
-    }
+    const result = await t.mutation(
+      internal.ttsRepeats.internalGenerateRepeats,
+      { day: DAY },
+    );
+    expect(result).toEqual({ day: DAY, created: 1 });
+    expect(await repeatingTodos(t)).toHaveLength(1);
   });
 
   it("internalCreateRepeat (the pen) validates like createRepeat and logs via:pen", async () => {

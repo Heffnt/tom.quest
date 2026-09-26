@@ -87,6 +87,28 @@ describe("the daily tasks: repeats and eviction", () => {
     return answer;
   };
 
+  // witness: a task wrote no row until it finished, so the next minute's
+  // tick queued a second copy while the first scheduled action was still live.
+  it("keeps a slow task single across ticks, then retries its dead start", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      const first = nyAt("01:00");
+      expect(await started(t, first)).toContain("turing-health");
+      expect(await started(t, first + 60_000)).not.toContain("turing-health");
+      // An action cannot still be alive past its ten-minute execution limit.
+      expect(await started(t, first + 10 * 60_000 + 1)).toContain("turing-health");
+      const marks = await t.run(async (ctx) =>
+        (await ctx.db.query("events").collect()).filter(
+          (row) => row.kind === "tick-started" && row.subject === "tick:turing-health",
+        ),
+      );
+      expect(marks).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("comes due once a day at 4:30 New York, never in the tick that starts the calendar, and not again after a clean run", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -158,4 +180,3 @@ describe("the daily tasks: repeats and eviction", () => {
     }
   });
 });
-

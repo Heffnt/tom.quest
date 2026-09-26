@@ -907,15 +907,18 @@ describe("agents: eviction", () => {
     expect((await runRow(t, runId))?.rowsUntil).toBe(Date.now() - DAY_MS);
   });
 
-  it("leaves the record alone outside the eviction hour", async () => {
+  // witness: the old cron's local-hour guard survived after record-tick took
+  // ownership of the schedule, so a late daily run quietly did no eviction.
+  it("runs when record-tick calls it outside the old eviction hour", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.UTC(2026, 0, 15, 20, 0));
     vi.stubEnv("AGENTS_EVICTION_ENABLED", "1");
     const t = convexTest(schema, modules);
     const runId = await seedEvictable(t, Date.now(), 3);
-    expect(await t.mutation(internal.agents.internalEvictTick, {})).toEqual({ ok: true, skipped: "not the eviction hour" });
-    expect((await transcript(t, runId)).rows).toBe(3);
-    expect(await evictedEvents(t)).toEqual([]);
+    await t.mutation(internal.agents.internalEvictTick, {});
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await transcript(t, runId)).rows).toBe(0);
+    expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 1, rowsDeleted: 3 });
   });
 });
 
