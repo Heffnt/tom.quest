@@ -66,17 +66,27 @@ const DEFAULT_PAGE = 100;
  *  read and write limits; the smaller tables take the same page. */
 const MAX_PAGE = 500;
 
-/** The row's copy in `table`, found by the old _id it was copied from. */
+/** A copied row, as the copy reads it: any of the seven tables' fields. */
+type CopiedRow = Record<string, unknown> & { _id: string };
+
+/** The one index every renamed table declares, as the copy uses it. */
+type ByLegacy = {
+  withIndex(
+    name: "by_legacy",
+    range: (q: { eq(field: "legacyId", value: string): unknown }) => unknown,
+  ): { first(): Promise<CopiedRow | null> };
+};
+
+/** The row's copy in `table`, found by the old _id it was copied from. The
+ *  cast is the one place the seven tables are spoken of as one. */
 async function copyOf(
   ctx: QueryCtx | MutationCtx,
   table: NewTable,
   legacyId: string,
-): Promise<Record<string, unknown> & { _id: string } | null> {
-  // Every renamed table declares by_legacy; the cast is the one place the
-  // seven tables are spoken of as one.
-  return (await (ctx.db.query(table) as any)
-    .withIndex("by_legacy", (q: any) => q.eq("legacyId", legacyId))
-    .first()) as (Record<string, unknown> & { _id: string }) | null;
+): Promise<CopiedRow | null> {
+  return await (ctx.db.query(table) as unknown as ByLegacy)
+    .withIndex("by_legacy", (q) => q.eq("legacyId", legacyId))
+    .first();
 }
 
 /**
@@ -141,10 +151,10 @@ export const copy = internalMutation({
       const fields = await fieldsFor(ctx, table, old);
       const existing = await copyOf(ctx, table, String(old._id));
       if (existing === null) {
-        await ctx.db.insert(table, fields as any);
+        await ctx.db.insert(table, fields as never);
         inserted += 1;
       } else if (VERSION[table](old) > VERSION[table](existing)) {
-        await ctx.db.patch(existing._id as Id<NewTable>, fields as any);
+        await ctx.db.patch(existing._id as Id<NewTable>, fields as never);
         patched += 1;
       } else {
         unchanged += 1;
