@@ -1238,7 +1238,7 @@ describe("session failure rows", () => {
   // witness: drop the `firstRecord` guard from internalRecordOutcome in
   // convex/claudeSessions.ts and an errored re-record would write an errored
   // outcome row, a failure line per revision. A completed one is no failure.
-  it("records no failure when the agent records a completed outcome, and none when it revises it to errored", async () => {
+  it("records no failure for a completed outcome, and one when the agent corrects it to errored", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1252,21 +1252,30 @@ describe("session failure rows", () => {
     // overnight run, and nothing Tom does anything about.
     expect(await sessionFailureRows(t)).toHaveLength(0);
 
-    // The agent sharpens its wording (or corrects the verdict): the ROW takes
-    // the new word — the surface always shows the agent's latest — and no
-    // failure row is written, because only the FIRST record is an edge.
+    // The agent corrects the verdict to errored: the ROW takes the new word —
+    // the surface always shows the agent's latest — and the failure is
+    // written once, since the digest reads the event, not the row.
+    // witness: only the first record was an edge, so a completed → errored
+    // correction left the digest without a real failure.
     await t.mutation(internal.claudeSessions.internalRecordOutcome, {
       id: sessionId,
       outcome: "errored",
       summary: "the source turned out to be paywalled",
     });
-    expect(await sessionFailureRows(t)).toHaveLength(0);
+    expect(await sessionFailureRows(t)).toMatchObject([{ kind: "session-outcome", outcome: "errored", summary: "the source turned out to be paywalled" }]);
+    // A sharper wording of the same verdict writes nothing more.
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, {
+      id: sessionId,
+      outcome: "errored",
+      summary: "the source is paywalled; nothing was read",
+    });
+    expect(await sessionFailureRows(t)).toHaveLength(1);
     const session = await tom.query(api.claudeSessions.getSession, {
       id: sessionId,
     });
     expect(session?.outcome).toBe("errored");
     expect(session?.outcomeSummary).toBe(
-      "the source turned out to be paywalled",
+      "the source is paywalled; nothing was read",
     );
   });
 

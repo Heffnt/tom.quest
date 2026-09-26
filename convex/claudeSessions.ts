@@ -1777,6 +1777,11 @@ export const internalRecordOutcome = internalMutation({
     // or correct completed → errored after a late failure), so the row itself
     // stops being an edge after the first write.
     const firstRecord = session.outcome === undefined;
+    // A CORRECTION TO ERRORED is a failure the record has not said yet: the
+    // first errored word of a session is written as its own event even after
+    // a completed one, so the digest (which reads events, one line per
+    // session) sees it. Later rewordings of the same verdict write nothing.
+    const turnedErrored = outcome === "errored" && session.outcome !== undefined && session.outcome !== "errored";
     await ctx.db.patch(normalized, {
       outcome,
       outcomeSummary: summary.trim(),
@@ -1785,8 +1790,8 @@ export const internalRecordOutcome = internalMutation({
     // row — the surface always shows the agent's latest word — but Slack is
     // told once, so an agent that revises its wording three times does not
     // ping Tom three times.
-    if (firstRecord) {
-      // Same edge, same reason, into the events table the hourly update reads.
+    if (firstRecord || turnedErrored) {
+      // Same edge, same reason, into the events table the digest reads.
       await logEvent(ctx, "session-outcome", session.todoId, {
         sessionId: normalized,
         title: session.title,
