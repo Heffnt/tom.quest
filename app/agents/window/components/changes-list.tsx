@@ -2,13 +2,13 @@
 
 // CHANGES: first the ones that are waiting, every open pull request, then the
 // merges of the window. A waiting row shows the pull request's title, its
-// branch, the gate's three rows as they stand and one control, Approve. A
+// branch, the gate's rows as they stand and one control, Approve. A
 // merge row shows the merge's own sentence — the pull request's title, which by this repository's
 // commit rule states the world after the change rather than what was done to
 // the code. Every vocabulary word in it opens its definition.
 //
 // EVERY PRESS OPENS MORE AND NOTHING LEAVES THE SITE. The row opens to the
-// commit, the gate's three checks and the runs that did the work; each check
+// commit, the gate's checks and the runs that did the work; each check
 // opens to the sentence the gate wrote about it; the audit opens to the prose
 // it wrote about the diff; a run opens to its own page here. There is no link
 // to GitHub anywhere on this page.

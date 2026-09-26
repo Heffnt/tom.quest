@@ -169,9 +169,9 @@ export type SimplifyFacts = {
    *  recorded no node list is not a run that was given no nodes, and the job
    *  counts those separately rather than reading absence as zero. */
   sample: { agentId: string; startedAt: number; depth: number; tokens: string[]; graphNodes: string[] | undefined }[];
-  /** The three checks of the mechanical merge gate, by the names the deny
+  /** The two checks of the mechanical merge gate, by the names the deny
    *  message and the morning line already use. */
-  gate: { tests: SimplifyGateCheck; audit: SimplifyGateCheck; evals: SimplifyGateCheck };
+  gate: { tests: SimplifyGateCheck; audit: SimplifyGateCheck };
   evals: {
     runs: number;
     withAblation: number;
@@ -296,12 +296,6 @@ function failureWhy(kind: string, data: unknown): string {
   if (kind === AUDIT_VERDICT) {
     const verdict = str(d.verdict);
     return `the audit answered ${verdict === null ? "nothing readable" : verdict.toUpperCase()}`;
-  }
-  if (kind === EVALS_RUN) {
-    const regressions = num(d.regressions);
-    return regressions === null
-      ? "the evals reported no readable regression count"
-      : `the evals found ${regressions} regression${regressions === 1 ? "" : "s"}`;
   }
   return "the check did not pass";
 }
@@ -437,10 +431,9 @@ export const internalSimplifyInput = internalQuery({
       });
     }
 
-    const [tests, audit, evalsGate] = await Promise.all([
+    const [tests, audit] = await Promise.all([
       gateCheck(ctx, TESTS_RUN),
       gateCheck(ctx, AUDIT_VERDICT),
-      gateCheck(ctx, EVALS_RUN),
     ]);
 
     // The evals' ablation deltas, IN THE WINDOW — unlike the gate history,
@@ -523,7 +516,7 @@ export const internalSimplifyInput = internalQuery({
         { cwd: null, agents: cwdless },
       ],
       sample,
-      gate: { tests, audit, evals: evalsGate },
+      gate: { tests, audit },
       evals: { runs: evalRows.length, withAblation, ablation },
       priorProposals,
     };

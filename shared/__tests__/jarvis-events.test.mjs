@@ -31,6 +31,11 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "job-ok", text: 3 }).ok).toBe(false);
   });
 
+  it("takes an eval set's run, subject the set's name", () => {
+    const result = validateEvent({ kind: "eval-run", provenance: { job: "evals" }, subject: "wall", data: { set: "wall", passed: 3, total: 3 }, text: "wall: 3 of 3 pass" });
+    expect(result).toMatchObject({ ok: true, event: { kind: "eval-run", subject: "wall", text: "wall: 3 of 3 pass" } });
+  });
+
   it("lists every kind once", () => {
     expect(new Set(EVENT_KINDS).size).toBe(EVENT_KINDS.length);
   });

@@ -261,7 +261,6 @@ describe("the gate history", () => {
     await seedEvent(t, TESTS_RUN, NOW - 399 * DAY, { ok: false, detail: "one suite" }, red);
     await seedEvent(t, AUDIT_VERDICT, NOW - 398 * DAY, { verdict: "APPROVED" }, green);
     await seedEvent(t, AUDIT_VERDICT, NOW - 397 * DAY, { verdict: "REFUSED" }, refused);
-    await seedEvent(t, EVALS_RUN, NOW - 396 * DAY, { regressions: 0 }, green);
 
     const { gate } = await gather(t);
     // All time, not the window: every row above is more than a year old.
@@ -272,10 +271,6 @@ describe("the gate history", () => {
     expect(gate.audit).toMatchObject({ heads: 2, failed: 1 });
     expect(gate.audit.failures[0].key).toBe(refused);
     expect(gate.audit.failures[0].why).toContain("REFUSED");
-
-    // One head, one row, no failure — and the two shas that never reached an
-    // evals run are not heads here.
-    expect(gate.evals).toMatchObject({ heads: 1, failed: 0, failures: [] });
   });
 
   it("judges a re-recorded head on its newest row", async () => {

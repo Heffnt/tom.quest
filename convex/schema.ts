@@ -1328,12 +1328,9 @@ export default defineSchema({
     //   "delegate-objection"
     //                 — the SAME askId, so "what was decided, and did Tom
     //                   object" is two reads one index apart;
-    // Two are convex/ttsEvals.ts, keyed `<repo>@<sha>` — every fact about one
-    // COMMIT shares that spelling, so each is a point lookup:
-    //   "evals-request" — one request per head, so a re-run of the check does
-    //                   not queue the box a second time;
-    //   "evals-run"   — the run that scored that head, which is also the merge
-    //                   gate's third check.
+    // Two are historic convex/ttsEvals.ts kinds, keyed `<repo>@<sha>`, that
+    // nothing writes any more: "evals-request" and "evals-run" (the merge
+    // gate's former third check). Evals now land as `eval-run`, keyed by set.
     // Three are the MECHANICAL MERGE GATE (convex/ttsMerge.ts), two of them
     // under the same `<repo>@<sha>`:
     //   "tests-run"   — the Guardrails tests job's own result, recorded once

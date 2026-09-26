@@ -262,7 +262,7 @@ describe("the merge gate's state", () => {
       commits: [{ repo: "tom.quest", sha: "abcdef1234" }],
     });
     expect(gate.allowed).toBe(false);
-    expect(gate.checks.map((check) => check.name).sort()).toEqual(["audit", "evals", "tests"]);
+    expect(gate.checks.map((check) => check.name).sort()).toEqual(["audit", "tests"]);
     expect(gate.checks.every((check) => check.passed)).toBe(false);
   });
 });

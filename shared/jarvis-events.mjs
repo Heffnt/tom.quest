@@ -45,6 +45,9 @@ export const EVENT_KINDS = [
   "digest-sent",
   "needs-you-opened",
   "needs-you-posted",
+  // Evals (Jarvis worker/jobs/evals.mjs; convex/ttsEvals.ts reads them): one row per eval set per run;
+  // subject is the set name ("wall", "role/classify", ...), data the runner's runData() shape, text the one summary line.
+  "eval-run",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */

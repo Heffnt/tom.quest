@@ -762,12 +762,11 @@ const traceText = (value: string) => redactSecrets(value).slice(0, AGENT_TRACE_M
  * Without it the audit's "I read the whole change" is unverifiable, which is
  * the exact fault this round closes.
  *
- * `null` FOR AN UNKNOWN TOKEN IS A NORMAL ANSWER and never an error, exactly as
- * ttsEvals.internalRunByToken treats it: the sweeper needs a moment to see the
- * run's file, so the caller polls with a short bounded wait and a trace that
+ * `null` FOR AN UNKNOWN TOKEN IS A NORMAL ANSWER and never an error: the
+ * sweeper needs a moment to see the run's file, so the caller polls with a short bounded wait and a trace that
  * never arrives is a counted absence, not a failed audit.
  *
- * NARROW LIKE ITS SIBLING. A caller holding a token is owed this run's tool
+ * NARROW. A caller holding a token is owed this run's tool
  * NAMES AND PATHS — never its transcript, its tool results, or any other field
  * of a call's input.
  */
