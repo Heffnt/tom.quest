@@ -65,9 +65,9 @@ function failuresOf(result: unknown): string[] {
 
 /** POST /jarvis/tick's mutation: start every due task; answer their names. */
 export const due = internalMutation({
-  args: { now: v.optional(v.number()) },
-  handler: async (ctx, { now: givenNow }): Promise<{ started: string[] }> => {
-    const now = givenNow ?? Date.now();
+  args: {},
+  handler: async (ctx): Promise<{ started: string[] }> => {
+    const now = Date.now();
     const started: string[] = [];
     for (const [name, task] of Object.entries(TICK_TASKS)) {
       const job = jobOf(name);

@@ -29,7 +29,6 @@
 // reply directly above it, unless it names another todo or is an objection
 // (convex/ttsSlack.ts, digest case): his reply is the asker's next turn.
 
-import { v } from "convex/values";
 import { httpAction, internalMutation, internalQuery } from "../_generated/server";
 import type { MutationCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
@@ -80,9 +79,9 @@ type ComposeAnswer =
     };
 
 export const compose = internalMutation({
-  args: { now: v.optional(v.number()) },
-  handler: async (ctx, { now: givenNow }): Promise<ComposeAnswer> => {
-    const now = givenNow ?? Date.now();
+  args: {},
+  handler: async (ctx): Promise<ComposeAnswer> => {
+    const now = Date.now();
     const day = ttsDayKey(now);
     const last = digestFacts(await lastDigest(ctx));
     if (nyLocalHour(now) < TTS_DIGEST_NY_HOUR) {
@@ -192,9 +191,9 @@ function threadOf(row: { data?: unknown } | undefined): Thread | null {
  * replies already posted in the thread; the box writes it first ("<n> · …").
  */
 export const pendingNeedsYou = internalQuery({
-  args: { now: v.optional(v.number()) },
-  handler: async (ctx, { now: givenNow }): Promise<PendingNeedsYou> => {
-    const now = givenNow ?? Date.now();
+  args: {},
+  handler: async (ctx): Promise<PendingNeedsYou> => {
+    const now = Date.now();
     const [newest, previous] = await recentDigests(ctx, 2);
     const thread = threadOf(newest);
     const from = now - NEEDS_YOU_WINDOW_MS;

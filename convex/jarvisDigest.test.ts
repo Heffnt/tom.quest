@@ -78,7 +78,8 @@ describe("POST /jarvis/digest", () => {
   it("is not due before 5 a.m. New York, and composes at a morning's clock", async () => {
     const t = setup(NIGHT);
     expect(await (await post(t, "/jarvis/digest", {})).json()).toMatchObject({ ok: true, due: false, reason: "before 5 a.m. New York" });
-    const composed = await t.mutation(internal.jarvis.digest.compose, { now: MORNING });
+    vi.setSystemTime(MORNING);
+    const composed = await t.mutation(internal.jarvis.digest.compose, {});
     expect(composed).toMatchObject({ due: true, channel: CHANNEL });
     expect(composed.due && composed.text.length).toBeGreaterThan(0);
   });
