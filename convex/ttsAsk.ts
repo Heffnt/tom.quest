@@ -6,6 +6,7 @@ import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
+import { DIGEST_LINE } from "./jarvis/outbox";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -223,7 +224,15 @@ export const internalRecordDelegateObjection = internalMutation({
     // `simplify:<id>` key (convex/ttsNightly.ts). A removal-loop pull request
     // is the fourth: its #tts-simplify thread is keyed `loop:<number>`, and a
     // reply there is what the loop rewrites the branch from.
-    const subject =
+    //
+    // THE RECORD'S ROWS TOO. Every askId the digest numbers must resolve here,
+    // or "revert <n>" throws on a line he was offered: a `jarvis decide`
+    // decision is an events row of kind "decision" whose subject is its askId
+    // (convex/jarvis/intent.ts), and a line a producer put on the digest
+    // (ruling:, learning:, repo-proposal:, box-change:, golden:, ablation:)
+    // is an events row of kind "digest-line" whose subject is its askId
+    // (convex/jarvis/outbox.ts listForDigest).
+    const legacy =
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", args.askId))
@@ -240,8 +249,19 @@ export const internalRecordDelegateObjection = internalMutation({
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", REMOVAL_LOOP_PR).eq("key", args.askId))
         .first());
-    if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
-    const eventId = await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
+    let todoId = legacy?.todoId;
+    if (legacy === null) {
+      const recorded = await ctx.db
+        .query("events")
+        .withIndex("by_subject_at", (q) => q.eq("subject", args.askId))
+        .order("desc")
+        .filter((q) => q.or(q.eq(q.field("kind"), "decision"), q.eq(q.field("kind"), DIGEST_LINE)))
+        .first();
+      if (recorded === null) throw new Error(`Delegate decision not found: ${args.askId}`);
+      const named = (recorded.data as { todoId?: unknown } | undefined)?.todoId;
+      todoId = typeof named === "string" ? (ctx.db.normalizeId("dtsTodos", named) ?? undefined) : undefined;
+    }
+    const eventId = await logEvent(ctx, DELEGATE_OBJECTION, todoId, args, args.askId);
     // AN OBJECTION IS A JUDGMENT ABOUT THE RUN THAT TOOK THE DECISION, and the
     // label writer resolves it the same way this handler just resolved the
     // subject: the decision row (or the merge row) carries the run's token.
