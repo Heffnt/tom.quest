@@ -25,7 +25,7 @@ import {
   type NeedsYouFacts,
 } from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
-import { openNeedsYou } from "./jarvis/outbox";
+import { needsYouNumber, openNeedsYou } from "./jarvis/outbox";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -382,7 +382,7 @@ async function threadSubject(
   const key = slackThreadKey(channel, threadTs);
   // A DIGEST OWNS ITS THREAD. The needs-you replies under it are later sends
   // in the same thread, and newest-wins would hand the whole thread to the
-  // last of them; the digest case reads them itself (needsYouAbove).
+  // last of them; the digest case reads them itself (needsYouReply).
   const root = await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_key", (q) => q.eq("kind", "slack-sent").eq("key", key))
@@ -431,6 +431,7 @@ export type ThreadReplyOutcome =
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
+  | { outcome: "asked-which"; numbers: number[] }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -618,17 +619,14 @@ async function routeReply(
         return { outcome: "delegate-objection", id: objectedDecision };
       }
       if (objected !== undefined) return { outcome: "learning-objection", id: objected };
-      // A NEEDS-YOU REPLY ANSWERED. In the digest's thread, a reply that names
-      // no todo and is no objection answers the needs-you reply directly above
-      // it: that thing's asker takes it as its next turn — "done", a date or a
-      // fact on the todo, a note on the producer's job otherwise.
-      if (named === undefined) {
-        const above = await needsYouAbove(ctx, at);
-        if (above?.kind === "todo") return await todoReply(ctx, above.id, text, at);
-        if (above !== null) {
-          await logEvent(ctx, "tom-note", undefined, { text, ...at, subject: above });
-          return { outcome: "tom-note", subject: above };
-        }
+      // A NEEDS-YOU REPLY ANSWERED (convex/jarvis/digest.ts numbers them).
+      // In the digest's thread, a reply that names no todo and is no objection
+      // is the next turn of the needs-you it names by number; unnumbered, of
+      // the one needs-you still open; with several open, the thread is asked
+      // which (needsYouReply).
+      if (named === undefined && (subject.kind === "today" || subject.kind === "digest")) {
+        const answered = await needsYouReply(ctx, text, subject.day, at);
+        if (answered !== null) return answered;
       }
       await logEvent(ctx, "tom-note", named?.todoId, {
         text,
@@ -678,40 +676,110 @@ async function routeReply(
   }
 }
 
-/** Slack's ts, "<seconds>.<micro>", as a pair that compares exactly. */
-function tsOrder(ts: string): [number, number] {
-  const [sec, micro] = ts.split(".");
-  return [Number(sec) || 0, Number(micro) || 0];
-}
-function tsBefore(a: string, b: string): boolean {
-  const [as, am] = tsOrder(a);
-  const [bs, bm] = tsOrder(b);
-  return as < bs || (as === bs && am < bm);
+/** The row that says a reply of his was routed to one numbered needs-you
+ *  of one thread, which closes it for an unnumbered reply. */
+const NEEDS_YOU_ANSWERED = "needs-you-answered";
+
+/** A reply that begins with a number: the number, and what follows it
+ *  ("4 done", "4 · Friday", "4: call her first", or "4" alone). A number run
+ *  into a word ("4pm") is not one. Exported for its test. */
+export function numberedReply(text: string): { n: number; rest: string } | null {
+  const hit = /^(\d{1,3})(?:\s*[·.:)\-–—]\s*|\s+|$)([\s\S]*)$/.exec(text.trim());
+  return hit === null ? null : { n: Number(hit[1]), rest: hit[2].trim() };
 }
 
-/** The needs-you reply posted in this digest thread directly above Tom's
- *  reply: the newest reply-in-thread send before his ts whose subject is a
- *  todo or a producer's job (convex/jarvis/digest.ts onNeedsYouPosted). */
-async function needsYouAbove(
+type NeedsYouItem = { n: number; subject: SlackSubject; answeredKey: string };
+
+/** The needs-you replies posted in this digest's thread, each with the number
+ *  it was posted with (convex/jarvis/outbox.ts needsYouNumber) and its
+ *  subject: the todo, or the producer's job. */
+async function needsYouInThread(
   ctx: MutationCtx,
-  at: { channel: string; ts: string; threadTs: string },
-): Promise<SlackSubject | null> {
+  at: { channel: string; threadTs: string },
+): Promise<NeedsYouItem[]> {
+  const key = slackThreadKey(at.channel, at.threadTs);
   const rows = await ctx.db
     .query("dtsEvents")
-    .withIndex("by_kind_key", (q) =>
-      q.eq("kind", "slack-sent").eq("key", slackThreadKey(at.channel, at.threadTs)),
-    )
-    .order("desc")
-    .take(100);
-  let best: { ts: string; subject: SlackSubject } | null = null;
+    .withIndex("by_kind_key", (q) => q.eq("kind", "slack-sent").eq("key", key))
+    .take(200);
+  const items: NeedsYouItem[] = [];
   for (const row of rows) {
-    const d = (row.data ?? {}) as { ts?: unknown; threadTs?: unknown; subject?: SlackSubject };
-    if (typeof d.ts !== "string" || d.threadTs !== at.threadTs || d.subject === undefined) continue;
+    const d = (row.data ?? {}) as { threadTs?: unknown; subject?: SlackSubject; text?: unknown };
+    if (d.threadTs !== at.threadTs || d.subject === undefined) continue;
     if (d.subject.kind !== "todo" && d.subject.kind !== "job") continue;
-    if (!tsBefore(d.ts, at.ts)) continue;
-    if (best === null || tsBefore(best.ts, d.ts)) best = { ts: d.ts, subject: d.subject };
+    const n = needsYouNumber(d.text);
+    if (n === null) continue;
+    items.push({ n, subject: d.subject, answeredKey: `${key}#${n}` });
   }
-  return best?.subject ?? null;
+  return items;
+}
+
+/** Open: no reply of his has been routed to it, and its todo, if it has one,
+ *  is not done or archived. */
+async function isOpen(ctx: MutationCtx, item: NeedsYouItem): Promise<boolean> {
+  const answered = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_YOU_ANSWERED).eq("key", item.answeredKey))
+    .first();
+  if (answered !== null) return false;
+  if (item.subject.kind !== "todo") return true;
+  const todo = await ctx.db.get(item.subject.id);
+  return todo !== null && todo.status !== "done" && todo.status !== "archived";
+}
+
+/**
+ * The needs-you a reply in the digest's thread answers, and its answer — or
+ * null when the thread holds none, or the reply's number names none of them
+ * (a number that names an objection line was read before this).
+ *
+ * UNAMBIGUOUS BY CONSTRUCTION. A reply that starts with a number is that
+ * item's; one that does not goes to the one item still open; with several
+ * open, nothing is guessed: the thread gets one line asking which number,
+ * and the reply is kept as a note on the day.
+ */
+async function needsYouReply(
+  ctx: MutationCtx,
+  text: string,
+  day: string,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<ThreadReplyOutcome | null> {
+  const items = await needsYouInThread(ctx, at);
+  if (items.length === 0) return null;
+  const numbered = numberedReply(text);
+  let item: NeedsYouItem | undefined;
+  let said = text;
+  if (numbered !== null) {
+    item = items.find((one) => one.n === numbered.n);
+    if (item === undefined) return null;
+    said = numbered.rest;
+  } else {
+    const open: NeedsYouItem[] = [];
+    for (const one of items) if (await isOpen(ctx, one)) open.push(one);
+    if (open.length === 0) return null;
+    if (open.length > 1) {
+      const numbers = open.map((one) => one.n).sort((a, b) => a - b);
+      await logEvent(ctx, "tom-note", undefined, { text, ...at, subject: { kind: "today", day }, day, askedWhich: numbers });
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+        channel: at.channel,
+        threadTs: at.threadTs,
+        text: `Which one is that for? Start your reply with its number: ${numbers.slice(0, -1).join(", ")} or ${numbers[numbers.length - 1]}.`,
+        subject: { kind: "today", day },
+      });
+      return { outcome: "asked-which", numbers };
+    }
+    item = open[0];
+  }
+  await ctx.db.insert("dtsEvents", {
+    at: Date.now(),
+    kind: NEEDS_YOU_ANSWERED,
+    key: item.answeredKey,
+    data: { n: item.n, subject: item.subject, text, ...at },
+  });
+  // The number named the item; what follows it is the answer ("4 done").
+  const answer = numbered !== null && said !== "" ? said : text;
+  if (item.subject.kind === "todo") return await todoReply(ctx, item.subject.id, answer, at, replyShape(said));
+  await logEvent(ctx, "tom-note", undefined, { text, ...at, subject: item.subject });
+  return { outcome: "tom-note", subject: item.subject };
 }
 
 /** Nothing is lost: the reply becomes a todo whose provenance names the
