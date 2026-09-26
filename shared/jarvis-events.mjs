@@ -31,6 +31,14 @@ export const EVENT_KINDS = [
   // box, and provenance.agentId names the agent that ran it when the reader
   // matched one, so the /agents chat draws it on events.by_agent_at.
   "box-change",
+  // Intent (convex/jarvis/intent.ts, the /intent page): the delegate's
+  // decision (`jarvis decide`: question, options, decision, reason, restedOn,
+  // wouldChange, refused, refusedBecause, caller, askId, model; subject is
+  // the askId), and Tom's settlement of one disagreement on the page — a
+  // decision he accepts or objects to, or a failing eval item he rules on
+  // (data: subject, verdict, sentence, rulingId when a ruling was written).
+  "decision",
+  "disagreement-settled",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */

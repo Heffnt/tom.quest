@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Doc } from "@/convex/_generated/dataModel";
-import { kindsOf, termRows, versionRow, type Term } from "./lib";
+import { kindsOf, termRows, versionRow, type Term } from "./vocabulary-lib";
 
 function term(over: Partial<Term> = {}): Term {
   return {

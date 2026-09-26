@@ -12,7 +12,7 @@
 // writes no `tts/vocabulary.json`. No agent is shown them, so they are the
 // page's second view rather than part of what an agent reads.
 
-import type { Disagreement } from "../lib";
+import type { Disagreement } from "../vocabulary-lib";
 
 export default function Disagreements({ rows }: { rows: Disagreement[] }) {
   if (rows.length === 0) return null;

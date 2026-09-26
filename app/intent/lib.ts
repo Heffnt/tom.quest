@@ -182,3 +182,49 @@ export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
     return { kind: "bullet", text: part.text, line };
   });
 }
+
+// ── What the record says beside a line ──────────────────────────────────────
+//
+// A delegate decision's `restedOn` names what it rested on in the spellings
+// its prompt asks for: `ruling:<id>`, a page section `<path>#<Heading>`, an
+// evidence entry `<evidence path>:<heading>`. A rule eval item is named
+// `rule/ruling-<last 8 of the ruling id>`. Both resolve to lines of the list
+// here, in one place, so the page and its tests agree on what "beside" means.
+
+/** The lines one `restedOn` reference names; empty when it names none. */
+export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
+  const trimmed = ref.trim();
+  if (trimmed.startsWith("ruling:")) {
+    const id = `dtsRulings/${trimmed.slice("ruling:".length)}`;
+    return lines.filter((line) => line.id === id);
+  }
+  const cut = trimmed.search(/[#:]/);
+  if (cut === -1) return [];
+  const path = trimmed.slice(0, cut).replace("/evidence/", "/");
+  const heading = trimmed.slice(cut + 1).trim();
+  if (heading === "") return [];
+  if (/^\d+$/.test(heading)) return lines.filter((line) => line.id === `${path}#${heading}`);
+  const wanted = heading.toLowerCase();
+  return lines.filter((line) => line.source === path && line.section.toLowerCase() === wanted);
+}
+
+/** The ruling id suffix an eval item names, or null for an item that names no line. */
+export function evalItemLineSuffix(name: string): string | null {
+  const match = /^rule\/ruling-([a-z0-9]{8})$/.exec(name);
+  return match === null ? null : match[1];
+}
+
+/** Every eval item that names this line: rule items name a ruling by its id's last 8 characters. */
+export function evalItemsForLine<T extends { name: string }>(line: IntentLine, items: T[]): T[] {
+  if (line.kind !== "ruling") return [];
+  return items.filter((item) => {
+    const suffix = evalItemLineSuffix(item.name);
+    return suffix !== null && line.id.endsWith(suffix);
+  });
+}
+
+/** `passed/runs` over the runs read, or null for a line no eval item names. */
+export function passRate(items: { passed: number; runs: number }[]): { passed: number; runs: number } | null {
+  if (items.length === 0) return null;
+  return items.reduce((sum, item) => ({ passed: sum.passed + item.passed, runs: sum.runs + item.runs }), { passed: 0, runs: 0 });
+}
