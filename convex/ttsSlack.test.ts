@@ -1217,6 +1217,58 @@ describe("objecting to a delegate decision in the digest thread", () => {
     expect(rows[0].data).toMatchObject({ n: 2, revert: true, sentence: null, day: "2026-09-05" });
   });
 
+  // witness: the digest numbered `jarvis decide` decisions and producers'
+  // digest lines (ruling:, learning:, repo-proposal:, box-change:), but the
+  // objection resolver searched only dtsEvents, so "revert <n>" on one of
+  // them threw instead of recording his objection.
+  it("resolves every askId the digest numbers, from the record's decision and digest-line rows", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const day = "2026-09-05";
+    const todoId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "renew passport",
+        status: "active",
+        readiness: "prepared",
+        timingClass: "whenever",
+        source: "tom",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const at = Date.now() - 60_000;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "decision", at, provenance: { job: "decide" }, subject: "d1e2c3a4",
+        data: { askId: "d1e2c3a4", question: "Which day?", decision: "Thursday", todoId, refused: false },
+      });
+      for (const askId of ["ruling:r1", "learning:l1", "repo-proposal:p1", "box-change:b1"]) {
+        await ctx.db.insert("events", {
+          kind: "digest-line", at, provenance: {}, subject: askId,
+          data: { section: "decisions", askId, decision: `the line for ${askId}` },
+        });
+      }
+    });
+    const now = Date.now() + 1;
+    const composed = await t.query(internal.ttsDigest.internalComposeToday, { day, now, since: now - 86_400_000 });
+    expect([...composed.objectionAskIds].sort()).toEqual(["box-change:b1", "d1e2c3a4", "learning:l1", "repo-proposal:p1", "ruling:r1"]);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "digest-sent",
+        data: { day, windowEnd: now, objectionAskIds: composed.objectionAskIds },
+      });
+    });
+    await posted(t, "400.1", { kind: "digest", day }, "the morning");
+    for (const [index, askId] of composed.objectionAskIds.entries()) {
+      const result = await postEvent(t, { channel: TTS, ts: `400.${index + 2}`, thread_ts: "400.1", text: `revert ${index + 1}` });
+      expect(result).toMatchObject({ outcome: "delegate-objection", id: askId });
+    }
+    const rows = await events(t, DELEGATE_OBJECTION);
+    expect(rows.map((row) => row.key).sort()).toEqual([...composed.objectionAskIds].sort());
+    expect(rows.find((row) => row.key === "d1e2c3a4")?.todoId).toBe(todoId);
+  });
+
   it("keeps the sentence when he says what to do instead", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
