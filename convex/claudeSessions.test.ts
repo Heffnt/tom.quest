@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -119,6 +120,19 @@ async function heartbeat(
 }
 
 describe("claude sessions", () => {
+  // witness: name the delegate in app/lib/tts-session-prompt.ts's FRAMING. An
+  // ATTENDED session must never be told the delegate exists: its whole
+  // posture is "propose and wait", and the delegate answers only where nobody
+  // is watching. The route refuses an attended ask too (convex/ttsAsk.ts);
+  // this is the cheapest of the defences: it is never mentioned. (Kept when
+  // the autonomous suite it sat in went with the auto-session scheduler.)
+  it("the interactive framing never names the delegate", () => {
+    const framing = readFileSync("app/lib/tts-session-prompt.ts", "utf8");
+    expect(framing).not.toContain("tts-ask");
+    expect(framing).not.toContain("jarvis decide");
+    expect(framing).not.toContain("delegate");
+  });
+
   it("keeps the autonomous opener to the unattended-session boundary", () => {
     expect(WORKER_CONTRACT).toBe(
       "You are working inside TTS (Toms Todo System) as a WORKER — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
