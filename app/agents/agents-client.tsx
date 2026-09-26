@@ -21,7 +21,7 @@
 // the timeline, the rulings and the changes). ?view=window opens the second;
 // /observe redirects there.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -68,8 +68,6 @@ export default function AgentsClient() {
   const sessions = useQuery(api.claudeSessions.listSessions, isTom ? {} : "skip");
   const health = useQuery(api.claudeSessions.getDaemonHealth, isTom ? {} : "skip");
 
-  const [target, setTarget] = useState<Target>(null);
-  const [view, setView] = useState<View>("agents");
 
   // Staleness is derived at render; a 15s tick keeps ages honest.
   const [now, setNow] = useState(() => Date.now());
@@ -78,35 +76,28 @@ export default function AgentsClient() {
     return () => clearInterval(t);
   }, []);
 
-  // Follow the deep link whenever the query string changes, not only on
-  // mount: the window view's links (/agents?agent=...) move within this same
-  // page, so the component stays mounted while the URL changes under it.
+  // THE URL IS THE PAGE'S STATE: the view and the open agent are read from
+  // the query string on every render and changed only by changing it, so a
+  // link (the window view's included) and Back move one thing, never two.
   const search = useSearchParams().toString();
-  useEffect(() => {
-    const link = readDeepLink(new URLSearchParams(search));
-    setView(link.view);
-    setTarget(link.target);
-  }, [search]);
+  const { view, target } = useMemo(() => readDeepLink(new URLSearchParams(search)), [search]);
+  const viewParam = view === "window" ? "view=window&" : "";
 
   const openSession = (sessionId: Id<"claudeSessions">) => {
-    setTarget({ kind: "session", sessionId });
-    router.replace(`/agents?session=${sessionId}`, { scroll: false });
+    router.replace(`/agents?${viewParam}session=${sessionId}`, { scroll: false });
   };
 
   const openRun = (runId: string) => {
-    setTarget({ kind: "run", runId });
-    router.replace(`/agents?agent=${encodeURIComponent(runId)}`, {
+    router.replace(`/agents?${viewParam}agent=${encodeURIComponent(runId)}`, {
       scroll: false,
     });
   };
 
   const close = () => {
-    setTarget(null);
     router.replace(view === "window" ? "/agents?view=window" : "/agents", { scroll: false });
   };
 
   const selectView = (next: View) => {
-    setView(next);
     router.replace(next === "window" ? "/agents?view=window" : "/agents", { scroll: false });
   };
 

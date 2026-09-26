@@ -4,11 +4,12 @@
 // naming an agent and the page showing the window view.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 let search = new URLSearchParams();
+const replace = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: vi.fn() }),
+  useRouter: () => ({ replace }),
   useSearchParams: () => search,
 }));
 vi.mock("convex/react", () => ({ useQuery: () => undefined }));
@@ -19,7 +20,9 @@ vi.mock("@/app/components/tom-gate", () => ({
 vi.mock("./components/agent-list", () => ({ default: () => <p>the agents list</p> }));
 vi.mock("./window/window-view", () => ({ default: () => <p>the window view</p> }));
 vi.mock("./components/agent", () => ({
-  default: ({ runId, sessionId }: { runId?: string; sessionId?: string }) => <p>agent {runId ?? sessionId}</p>,
+  default: ({ runId, sessionId, onBack }: { runId?: string; sessionId?: string; onBack: () => void }) => (
+    <button type="button" onClick={onBack}>agent {runId ?? sessionId}</button>
+  ),
 }));
 
 import AgentsClient from "./agents-client";
@@ -27,6 +30,7 @@ import AgentsClient from "./agents-client";
 afterEach(() => {
   cleanup();
   search = new URLSearchParams();
+  replace.mockClear();
 });
 
 describe("AgentsClient's deep link", () => {
@@ -55,5 +59,14 @@ describe("AgentsClient's deep link", () => {
     search = new URLSearchParams("agent=nope");
     render(<AgentsClient />);
     expect(screen.getByText("the agents list")).toBeTruthy();
+  });
+
+  // witness: the window view's agent links left out view=window, so Back
+  // from an agent opened there went to the live list, not the window.
+  it("opens an agent from the window view and goes back to the window", () => {
+    search = new URLSearchParams(`view=window&agent=${encodeURIComponent("claude:box:0123456789abcdef")}`);
+    render(<AgentsClient />);
+    fireEvent.click(screen.getByText("agent claude:box:0123456789abcdef"));
+    expect(replace).toHaveBeenCalledWith("/agents?view=window", { scroll: false });
   });
 });

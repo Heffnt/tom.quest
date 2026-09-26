@@ -299,7 +299,8 @@ export function failureRowOf(event: PointEvent): FailureRow {
 
 /** The agent view, which reads ?agent= on arrival. */
 export function agentHref(agentId: string): string {
-  return `/agents?agent=${encodeURIComponent(agentId)}`;
+  // view=window rides along, so the agent's Back returns to this window.
+  return `/agents?view=window&agent=${encodeURIComponent(agentId)}`;
 }
 
 /** Where a ruling's subject is shown, or null where no page shows it. An item

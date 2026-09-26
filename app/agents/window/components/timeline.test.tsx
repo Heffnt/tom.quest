@@ -91,7 +91,7 @@ describe("the timeline", () => {
     fireEvent.click(bar);
     expect(container.textContent).toContain("2 turns");
     const link = container.querySelector("a") as HTMLElement;
-    expect(link.getAttribute("href")).toBe(`/agents?agent=${encodeURIComponent(RUN.runId)}`);
+    expect(link.getAttribute("href")).toBe(`/agents?view=window&agent=${encodeURIComponent(RUN.runId)}`);
   });
 
   it("places a bar across the window it covers", () => {
@@ -132,7 +132,7 @@ describe("the box lane", () => {
     expect(marks.length).toBe(2);
     fireEvent.click(marks[0]);
     expect(container.textContent).toContain("jarvis ran as root: /usr/bin/apt-get install -y jq");
-    expect(container.querySelector("a")?.getAttribute("href")).toBe("/agents?agent=claude%3Abox%3As1");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/agents?view=window&agent=claude%3Abox%3As1");
     fireEvent.click(within(container).getByRole("button", { name: "deployed Jarvis 888b43a" }));
     expect(container.textContent).toContain("from 1cdb2c2");
   });
