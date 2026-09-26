@@ -10,7 +10,7 @@
 // scripts/check-writing-standard.mjs already checks these same rules, but it
 // checks the explanations STORED IN PROD CONVEX: it reads them over the
 // network with a worker key CI does not hold, so it is a report run on demand,
-// never a gate. The constants in app/tts/explanations.ts are the other
+// never a gate. The constants in app/jarvis/explanations.ts are the other
 // population — written in the source tree, shipped in the bundle — and this
 // test is what holds them to the rule, one case per exported document, so a
 // new caption added by the migration cannot land unchecked.
@@ -121,7 +121,7 @@ describe("caption ground-up explanations", () => {
 // wrapper todo-row.tsx puts around it. Both are checked. info.tsx itself is
 // skipped — it DEFINES the prop — and so are the tests.
 
-/** Every .tsx under app/tts that is not a test and not the control itself. */
+/** Every .tsx under app/jarvis that is not a test and not the control itself. */
 function captionSources(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -205,7 +205,7 @@ function saysSomething(children: string): boolean {
 describe("every document is opened from a caption, and every caption explains", () => {
   const files = captionSources(join(__dirname));
   const sources = files.map((f) => ({
-    short: f.slice(f.indexOf("app/tts")).replace(/\\/g, "/"),
+    short: f.slice(f.indexOf("app/jarvis")).replace(/\\/g, "/"),
     src: readFileSync(f, "utf8"),
   }));
 

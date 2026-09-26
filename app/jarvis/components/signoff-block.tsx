@@ -3,7 +3,7 @@
 // TO SIGN — a message an agent proposes to send in Tom's name, shown verbatim
 // with the control that signs it beside it (Tom, 2026-09-25: agents "can also
 // send messages in my name after i have reviewed the content and explicitily
-// signed off"). At the top of the everything tab, above the runners, because
+// signed off"). At the top of the everything tab, because
 // nothing else on the page waits on him the way a person waiting on a reply
 // does. Absent when nothing waits.
 //
@@ -23,7 +23,7 @@ import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import Info from "./info";
 import SectionHeader from "./section-header";
-import { ageText, errMessage } from "@/app/tts/lib";
+import { ageText, errMessage } from "@/app/jarvis/lib";
 
 type Proposal = FunctionReturnType<typeof api.ttsSignoff.listProposals>[number];
 

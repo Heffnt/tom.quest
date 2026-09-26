@@ -1,6 +1,6 @@
 // The needs-me selector's timestamp comparisons, at the tie.
 //
-// selectNeedsMe (app/tts/lib.ts) decides what is in front of Tom by comparing
+// selectNeedsMe (app/jarvis/lib.ts) decides what is in front of Tom by comparing
 // the live ruling's ruledAt against the subject's own last-write stamp — a
 // life todo's updatedAt, a code brief's preparedAt. All three are
 // whole-millisecond Date.now() values written by separate Convex mutations, so
@@ -171,7 +171,7 @@ describe("selectNeedsMe: ruling-vs-subject timestamps", () => {
 });
 
 // One spelling for a ruling subject key. Two things can drift here and used to:
-// (1) inside app/tts/lib.ts, rulingSubjectKey once inlined the same strings the
+// (1) inside app/jarvis/lib.ts, rulingSubjectKey once inlined the same strings the
 // codeSubjectKey builder produces; (2) the client file as a
 // whole is a hand-kept mirror of convex/ttsRulings.ts subjectKey. Both are
 // asserted below, so a change to one spelling that misses the other fails here

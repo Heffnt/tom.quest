@@ -14,6 +14,12 @@
 //
 // The daemon banner that used to sit above the rows is gone: its two facts are
 // suffixes on the run's one header line, while they are true (§4).
+//
+// TWO VIEWS OF ONE PAGE (2026-09-26, when /agents absorbed /observe): the
+// agents list (what is running, each agent's chat) and the window view
+// (window/window-view.tsx: everything that ran in a stretch of time, the map,
+// the timeline, the rulings and the changes). ?view=window opens the second;
+// /observe redirects there.
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -24,6 +30,7 @@ import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import AgentList from "./components/agent-list";
 import Agent from "./components/agent";
+import WindowView from "./window/window-view";
 import { DAEMON_STALE_MS } from "./lib";
 
 // Shape of a Convex document id as it appears in a deep link. A malformed
@@ -40,6 +47,8 @@ type Target =
   | { kind: "run"; runId: string }
   | null;
 
+type View = "agents" | "window";
+
 export default function AgentsClient() {
   // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
   const { isTom } = useAuth();
@@ -48,6 +57,7 @@ export default function AgentsClient() {
   const health = useQuery(api.claudeSessions.getDaemonHealth, isTom ? {} : "skip");
 
   const [target, setTarget] = useState<Target>(null);
+  const [view, setView] = useState<View>("agents");
 
   // Staleness is derived at render; a 15s tick keeps ages honest.
   const [now, setNow] = useState(() => Date.now());
@@ -59,6 +69,7 @@ export default function AgentsClient() {
   // Read the deep link once on mount (GETs never change state).
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
+    if (sp.get("view") === "window") setView("window");
     const runId = sp.get("agent") ?? sp.get("run");
     if (runId && RUN_ID_SHAPE.test(runId)) {
       setTarget({ kind: "run", runId });
@@ -84,8 +95,34 @@ export default function AgentsClient() {
 
   const close = () => {
     setTarget(null);
-    router.replace("/agents", { scroll: false });
+    router.replace(view === "window" ? "/agents?view=window" : "/agents", { scroll: false });
   };
+
+  const selectView = (next: View) => {
+    setView(next);
+    router.replace(next === "window" ? "/agents?view=window" : "/agents", { scroll: false });
+  };
+
+  const header = (
+    <header className="flex flex-wrap items-baseline justify-between gap-2">
+      <h1 className="text-2xl font-bold tracking-tight">Agents</h1>
+      <div className="flex items-center gap-1 rounded-md border border-border bg-surface/40 p-0.5">
+        {(["agents", "window"] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={view === option}
+            onClick={() => selectView(option)}
+            className={`rounded px-2 py-0.5 text-[11px] ${
+              view === option ? "bg-accent-dim text-accent" : "text-text-muted hover:bg-surface-alt hover:text-text"
+            }`}
+          >
+            {option === "agents" ? "now" : "by window"}
+          </button>
+        ))}
+      </div>
+    </header>
+  );
 
   // health: undefined = query loading; null = the worker has never reported.
   const daemonStale =
@@ -110,12 +147,15 @@ export default function AgentsClient() {
         onOpenSession={openSession}
       />
     </div>
+  ) : view === "window" ? (
+    <div className="w-full px-3 py-5 sm:px-5 space-y-3">
+      {header}
+      <WindowView />
+    </div>
   ) : (
     <div className="max-w-3xl mx-auto w-full">
       <div className="px-3 sm:px-4 py-6 space-y-4">
-        <header>
-          <h1 className="text-2xl font-bold tracking-tight">Agents</h1>
-        </header>
+        {header}
         <AgentList
           sessions={sessions}
           now={now}

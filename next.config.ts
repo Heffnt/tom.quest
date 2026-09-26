@@ -14,8 +14,14 @@ const nextConfig: NextConfig = {
     // matches zero segments too, so each rule also sends its bare path to
     // /agents. The page reads ?run= as it reads ?agent=, so an old
     // /runs?run=<id> link opens the same agent.
+    // "tts" -> "jarvis" (2026-09-26, TTS dissolved into Jarvis): every
+    // ?item=, ?tab= and ?intent= link already sent to Slack names /tts. The
+    // observation page became the /agents window view the same night; its
+    // links (the digest's box and failure lines) land on that view.
     return [
-      { source: "/" + "dts", destination: "/tts", permanent: true },
+      { source: "/" + "dts", destination: "/jarvis", permanent: true },
+      { source: "/tts", destination: "/jarvis", permanent: true },
+      { source: "/observe", destination: "/agents?view=window", permanent: true },
       { source: "/sessions/:path*", destination: "/agents/:path*", permanent: true },
       { source: "/runs/:path*", destination: "/agents/:path*", permanent: true },
     ];

@@ -25,6 +25,12 @@ export const EVENT_KINDS = [
   "job-ok",
   "job-failed",
   "job-recovered",
+  // Box changes (convex/boxChanges.ts): every change to the Jarvis Box, as
+  // the box-change reader (Jarvis worker/jobs/box-watch.mjs) folds it; data
+  // is the fixed shape boxChanges.ts checks, `at` is when it happened on the
+  // box, and provenance.agentId names the agent that ran it when the reader
+  // matched one, so the /agents chat draws it on events.by_agent_at.
+  "box-change",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */

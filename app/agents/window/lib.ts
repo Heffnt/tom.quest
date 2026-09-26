@@ -76,6 +76,9 @@ export type PointEvent = {
   kind: string;
   key: string | null;
   todoId: string | null;
+  /** The agent the row names (events.provenance.agentId); null on a row
+   *  still read from dtsEvents, which names none. */
+  agentId?: string | null;
   data: unknown;
 };
 
@@ -307,10 +310,10 @@ export function agentHref(agentId: string): string {
  *  which this page draws and /tts does not, so it answers null and the row
  *  carries no link rather than one that opens a page without it. */
 export function rulingHref(ruling: RulingRow): string | null {
-  if (ruling.subjectType === "life" && ruling.todoId !== null) return `/tts?item=${ruling.todoId}`;
+  if (ruling.subjectType === "life" && ruling.todoId !== null) return `/jarvis?item=${ruling.todoId}`;
   if (ruling.subjectType === "batch") return null;
   if (ruling.externalId !== null && isChangeSubject(ruling.externalId)) return null;
-  return "/tts?tab=everything";
+  return "/jarvis?tab=everything";
 }
 
 // ── The map's numbers ────────────────────────────────────────────────────────
@@ -325,8 +328,6 @@ export type WindowData = {
   runs: RunMark[];
   events: PointEvent[];
   rulings: RulingRow[];
-  /** Live runners, from the runners table. */
-  runners: { experimentHost: "turing" | "box"; endedAt: number | null; lastCheckInAt: number | null }[];
 };
 
 /** Everything in the window that belongs to one lane, counted and dated. */
@@ -421,16 +422,6 @@ export function tallyFor(tally: Tally, data: WindowData, now: number): Tallied {
         if (!GATE_KINDS.has(event.kind)) continue;
         count += 1;
         lastAt = latest(lastAt, event.at);
-      }
-      return { count, lastAt };
-    }
-    case "turing": {
-      let count = 0;
-      let lastAt: number | null = null;
-      for (const runner of data.runners) {
-        if (runner.experimentHost !== "turing" || runner.endedAt !== null) continue;
-        count += 1;
-        if (runner.lastCheckInAt !== null) lastAt = latest(lastAt, runner.lastCheckInAt);
       }
       return { count, lastAt };
     }

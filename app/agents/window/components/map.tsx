@@ -1,6 +1,6 @@
 "use client";
 
-// THE MAP, LIVE. Every component of Jarvis, drawn from app/observe/map-data.ts,
+// THE MAP, LIVE. Every component of Jarvis, drawn from app/agents/window/map-data.ts,
 // each carrying the count the record holds for it in the selected window, the
 // word for what that count counts, and how long ago it last did anything.
 //
@@ -15,7 +15,7 @@
 // a page of this site. Nothing here leaves tom.quest.
 //
 // The arrows are lines between shape borders with an arrowhead POLYGON at each
-// arrow end, computed from the line's own angle (app/observe/lib.ts arrowHead).
+// arrow end, computed from the line's own angle (app/agents/window/lib.ts arrowHead).
 // No SVG marker element: a marker's orientation and colour are the renderer's
 // business, and the head has to be the colour of the line it ends.
 

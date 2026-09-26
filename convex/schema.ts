@@ -114,7 +114,12 @@ export default defineSchema({
     // every job's heartbeats to find one job's is what an index is for.
     .index("by_kind_job_at", ["kind", "provenance.job", "at"])
     // One agent's rows: the /agents chat draws them among the transcript.
-    .index("by_agent_at", ["provenance.agentId", "at"]),
+    .index("by_agent_at", ["provenance.agentId", "at"])
+    // One condition's rows of one kind: the jobs area's standing check (a
+    // job-failed not closed by a later job-recovered under the same subject)
+    // and the digest's read of one condition, without a scan of every job's
+    // failures (convex/jarvis/jobs.ts).
+    .index("by_kind_subject_at", ["kind", "subject", "at"]),
 
   // Declarative GPU pool: desired state ("keep N GPUs of type T running these
   // commands"). A Convex cron reconciles desired-vs-actual against the Turing
@@ -919,11 +924,15 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly sixteen kinds. One is convex/boxChanges.ts:
-    //   "box-change"  — the agentId the box matched to the change, so the
-    //                   /agents chat reads one agent's changes on one index;
-    //                   absent when the box matched none.
-    // The other fifteen: Five are convex/ttsSlack.ts:
+    // The lookup key, set on sixteen kinds. Three of them no longer arrive
+    // here (night/w4, 2026-09-26): their home is the `events` table, and the
+    // rows here are history, copied there once that night (the one-time
+    // convex/jarvis/history.ts, since deleted). They were:
+    //   "box-change"  — the agentId the box matched to the change (now
+    //                   events.provenance.agentId);
+    //   "job-failed", "job-recovered" — the condition a job report names (now
+    //                   events.subject), under "Two are convex/ttsJobs.ts" below.
+    // The others: Five are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;

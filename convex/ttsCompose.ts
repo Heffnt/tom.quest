@@ -1256,7 +1256,7 @@ type CheckInFacts = {
 
 /** A check-in's decision in words: the ONE home of that phrasing, read by the
  *  check-in's first line below and by the runners block on the page. */
-export const runnerDecisionWords: Record<CheckInFacts["decision"], string> = {
+const runnerDecisionWords: Record<CheckInFacts["decision"], string> = {
   continue: "it changed nothing",
   change: "it made one change",
   ask: "it asked a question",

@@ -349,8 +349,14 @@ describe("POST /tts/job-failed", () => {
     });
   }
 
+  // A job's reports live in the record's events table (convex/jarvis/jobs.ts):
+  // every post is a row, and a repeat of a standing condition carries
+  // data.standingSince. The reports are the rows without it.
+  const recordRows = (t: ReturnType<typeof convexTest>) => t.run(async (ctx) => ctx.db.query("events").collect());
   const failures = async (t: ReturnType<typeof convexTest>) =>
-    (await allEvents(t)).filter((e) => e.kind === "job-failed");
+    (await recordRows(t)).filter(
+      (e) => e.kind === "job-failed" && (e.data as { standingSince?: number }).standingSince === undefined,
+    );
 
   it("records the job and its plain message as a digest-readable failure", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
@@ -364,7 +370,7 @@ describe("POST /tts/job-failed", () => {
     // reads to put a row in the morning digest's failures section.
     expect(rows[0].kind.endsWith("-failed")).toBe(true);
     expect(rows[0].data).toEqual({ job: "poll-canvas", error });
-    expect(rows[0].key).toBeUndefined(); // an unkeyed report is per call
+    expect(rows[0].subject).toBeUndefined(); // an unkeyed report is per call
   });
 
   // A DEAD CREDENTIAL IS DEAD FOR DAYS, and the job reporting it runs every
@@ -372,7 +378,7 @@ describe("POST /tts/job-failed", () => {
   // morning digest listed each one and the hourly update repeated the same
   // sentence around the clock, burying the one fact Tom needed under its own
   // repetitions.
-  it("writes one row per condition, however many ticks report it", async () => {
+  it("reports once per condition, however many ticks post it", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const failure = {
@@ -388,7 +394,7 @@ describe("POST /tts/job-failed", () => {
     }
     const rows = await failures(t);
     expect(rows).toHaveLength(1);
-    expect(rows[0].key).toBe("poll-canvas:canvas-auth");
+    expect(rows[0].subject).toBe("poll-canvas:canvas-auth");
   });
 
   it("reports the next expiry, because the clean run in between closed the last", async () => {
@@ -406,9 +412,9 @@ describe("POST /tts/job-failed", () => {
     expect(await (await ok(t, { job: "poll-canvas", key })).json()).toMatchObject({
       recovered: false,
     });
-    const recovered = (await allEvents(t)).filter((e) => e.kind === "job-recovered");
+    const recovered = (await recordRows(t)).filter((e) => e.kind === "job-recovered");
     expect(recovered).toHaveLength(1);
-    expect(recovered[0].key).toBe(key);
+    expect(recovered[0].subject).toBe(key);
 
     // Months later the new token expires too, and that is a second fact.
     expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });

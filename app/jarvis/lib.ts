@@ -294,15 +294,3 @@ export function ageText(ms: number, now: number): string {
   return `${days} days ago`;
 }
 
-/** Descriptive time until: "due now", "in 7 min", "in 3 h", "in 2 days". The
- *  minute-grained counterpart of ageText, for a runner's next step; the
- *  day-grained countdownText would read "today" for every one of them. */
-export function untilText(ms: number, now: number): string {
-  const mins = Math.ceil((ms - now) / 60_000);
-  if (mins < 1) return "due now";
-  if (mins < 60) return `in ${mins} min`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `in ${hours} h`;
-  const days = Math.floor(hours / 24);
-  return days === 1 ? "in 1 day" : `in ${days} days`;
-}

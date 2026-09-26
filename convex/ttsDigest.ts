@@ -19,7 +19,7 @@ import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SENT_AS_TOM } from "./ttsSignoff";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { liveRunnerFacts } from "./ttsRunners";
-import { BOX_CHANGE, DEPLOY, boxChangeLines, boxChangeOf } from "./boxChanges";
+import { DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
 import {
   DAY_MS,
   LIVE_STATUSES,
@@ -815,22 +815,17 @@ export async function gatherTodayFacts(
   //    runnerStatus, the one home; nothing here counts or guesses a number.
   const runners = await liveRunnerFacts(ctx);
 
-  // 8. What changed on the box (plan-root T1): the box-change rows and the
-  //    deploy job's own rows since the last digest, each read on its own
-  //    kind's index so a busy night of other events cannot crowd them out.
-  const boxRows = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).gte("at", since).lt("at", now))
-    .take(BOX_SCAN);
+  // 8. What changed on the box (plan-root T1): the box changes since the
+  //    last digest, from the record's events table (convex/boxChanges.ts
+  //    boxChangesInWindow), and the deploy job's own rows, each read on its
+  //    own kind's index so a busy night of other events cannot crowd them out.
+  const boxRows = await boxChangesInWindow(ctx, since, now);
   const deployRows = await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_at", (q) => q.eq("kind", DEPLOY).gte("at", since).lt("at", now))
     .take(BOX_SCAN);
   const boxChanges = boxChangeLines(
-    boxRows.flatMap((row) => {
-      const change = boxChangeOf(row.data);
-      return change === null ? [] : [change];
-    }),
+    boxRows,
     deployRows.map((row) => {
       const d = (row.data ?? {}) as Record<string, unknown>;
       return { at: row.at, repo: str(d.repo), to: str(d.to), commits: d.commits };
