@@ -35,8 +35,7 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { redactSecrets } from "../../shared/redact.mjs";
-import { channelFor, nyLocalHour, ttsDayKey } from "../ttsShared";
+import { nyLocalHour, outputChannel, ttsDayKey } from "../ttsShared";
 import { digestFacts, lastDigest } from "./outbox";
 import { insertEvent } from "./record";
 
@@ -78,14 +77,12 @@ async function standingFailure(
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
 /**
- * The job-failed hook: the #tts-broken line, once per standing condition. A
- * post under a condition already standing is marked with the time of the
- * report it repeats. Returns whether this call was the first report.
+ * The job-failed hook: once per standing condition. A post under a condition
+ * already standing is marked with the time of the report it repeats, which is
+ * what keeps it off the digest. Returns whether this call was the first report.
  */
 export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise<{ reported: boolean; since?: number }> {
   const data = (row.data ?? {}) as Record<string, unknown>;
-  const job = str(data.job) ?? row.provenance.job ?? "unknown";
-  const error = str(data.error) ?? row.text ?? "";
   const key = row.subject;
   if (key !== undefined) {
     const standing = await standingFailure(ctx, key, row._id);
@@ -95,16 +92,8 @@ export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise
       return { reported: false, since: standing.at };
     }
   }
-  // Scheduled, not awaited: the post is network I/O and this is a mutation;
-  // it rides the transaction, so a rolled-back failure is never reported.
-  // THE RAW `error` IS A JOB'S OWN STDERR (git names its remote with the
-  // token in it), so it passes redactSecrets, the one choke point, first.
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
-    job,
-    statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
-    ...(error === "" ? {} : { detail: redactSecrets(error) }),
-    url: AGENTS_WINDOW_URL,
-  });
+  // No line of its own (one output channel): the digest's broken section
+  // reads the report (failuresInWindow), once per condition.
   return { reported: true };
 }
 
@@ -185,11 +174,14 @@ const SILENCE_WATCH = [
   // thing that writes to the output channel. The hourly update's idea — the
   // ABSENT message is the alarm — lives here now: when it stops, this says so.
   { job: "write-slack", everyMs: 2 * 60_000, feeds: "the digest and the needs-you replies" },
+  // The box's record-tick (Jarvis worker/jobs/record-tick.mjs), which starts
+  // the record's timed tasks now that Convex's crons are gone (tick.ts).
+  { job: "record-tick", everyMs: 60_000, feeds: "the record's timed work (calendar, pull requests, repeats)" },
 ] as const;
 
 /** The New York hour by which today's digest should be in the channel: an
  *  hour after it is due at 5, so a box that was briefly down is not an alarm. */
-export const DIGEST_LATE_NY_HOUR = 6;
+const DIGEST_LATE_NY_HOUR = 6;
 
 /** A condition the alarm raises: the row and one line in the output channel,
  *  through the one Slack door, once until it recovers. The row directly, not
@@ -197,7 +189,7 @@ export const DIGEST_LATE_NY_HOUR = 6;
  *  be a second. */
 async function raise(ctx: MutationCtx, job: string, key: string, error: string, now: number): Promise<void> {
   await insertEvent(ctx, { kind: JOB_FAILED, at: now, provenance: { job }, subject: key, data: { job, error }, text: error });
-  const channel = channelFor("today");
+  const channel = outputChannel();
   if (channel === null) return;
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel,

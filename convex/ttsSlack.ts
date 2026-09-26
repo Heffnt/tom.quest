@@ -21,7 +21,6 @@ import {
   composeCaptured,
   composeContinued,
   composeNeedsYou,
-  needsYouFactsBlock,
   renderSlack,
   type NeedsYouFacts,
 } from "./ttsCompose";
@@ -246,7 +245,7 @@ export const internalOpenNeedsTomThread = internalMutation({
       key,
       todoId: id,
       // The provenance the message does NOT print stays on the row.
-      data: { key, reason, provenance: todo.provenance, facts: needsYouFactsBlock(facts, day, canReply ?? false) },
+      data: { key, reason, provenance: todo.provenance },
     });
 
     // ONE APPEARANCE PER ITEM PER DAY. The morning message claims at 5 a.m.,

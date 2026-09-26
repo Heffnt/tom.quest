@@ -22,7 +22,6 @@
 // serves three facts.
 
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -48,6 +47,7 @@ import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
 // through the one choke point the rest of Convex uses (convex/ttsMerge.ts,
 // convex/ttsSearch.ts).
 import { redactSecrets } from "../shared/redact.mjs";
+import { listForDigest } from "./jarvis/outbox";
 
 export const WEEK_MS = 7 * DAY_MS;
 
@@ -69,7 +69,7 @@ export { AREA_REVIEWED };
 
 /** The failure kinds the gather groups by job. "job-failed" carries the job
  * in its data; the others name theirs by kind. */
-export const FAILURE_KINDS: readonly string[] = [
+const FAILURE_KINDS: readonly string[] = [
   JOB_FAILED,
   NIGHTLY_FAILURE,
   WEEKLY_FAILURE,
@@ -1201,18 +1201,20 @@ export const internalRecordWeeklyEvalsDecisions = internalMutation({
     if (isoWeek.trim() === "") throw new Error("isoWeek (non-empty) is what makes one week's ablation thread its own");
     let sent = 0;
     for (const item of graduated ?? []) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      const graduatedLine = await listForDigest(ctx, {
+        section: "decisions",
         askId: `golden:${item.id}`,
         decision: `a capability case graduated into the regression set: ${item.sentence}`,
         reason: "it passed every trial of the weekly run, so from now on a merge that breaks it is a regression",
       });
-      sent++;
+      if (graduatedLine.listed) sent++;
     }
     // Only the names that did NOT earn their tokens are a decision. A name
-    // whose cases need it is the system working, and #tts-decisions is for
+    // whose cases need it is the system working, and the objection list is for
     // what he might want reverted.
     for (const finding of (ablation ?? []).filter((f) => !f.earned)) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      const ablationLine = await listForDigest(ctx, {
+        section: "decisions",
         askId: `ablation:${finding.name}:${isoWeek}`,
         decision:
           `${finding.name} did not earn its tokens this week: ${finding.cases} cases, ` +
@@ -1221,7 +1223,7 @@ export const internalRecordWeeklyEvalsDecisions = internalMutation({
           "the weekly simplification pass reads this as a candidate to drop; it gates nothing, and a name the " +
           "golden set passes without may still be holding up a failure mode the set does not contain",
       });
-      sent++;
+      if (ablationLine.listed) sent++;
     }
     return { sent };
   },

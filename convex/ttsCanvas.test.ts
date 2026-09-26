@@ -9,6 +9,8 @@ import {
   canvasProvenance,
   provenanceExternalId,
 } from "./ttsCanvas";
+import { gatherTodayFacts } from "./ttsDigest";
+import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -318,8 +320,8 @@ describe("POST /tts/canvas-assignments", () => {
 // does not read. This route is how an expired Canvas token becomes a line in
 // the morning digest instead.
 describe("POST /tts/job-failed", () => {
-  // A report schedules its #tts-broken send. Fake timers hold it until a test
-  // runs it on purpose, so no send fires after its own test has ended.
+  // Fake timers, so a test can set the instant its reports land at and the
+  // window the digest reads them over.
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -431,19 +433,24 @@ describe("POST /tts/job-failed", () => {
     expect(await failures(t)).toHaveLength(4);
   });
 
-  // #TTS-BROKEN GETS A LINE PER DISTINCT FAILURE. This route once inserted its
-  // row beside logEvent rather than through it, so postBroken never ran and no
-  // box job's failure (agents-sweep, deploy, the needs-you drop) ever reached
-  // #tts-broken, while the comments here said the digest carried it there.
-  const brokenScheduled = async (t: ReturnType<typeof convexTest>) =>
+  // A job's failure reaches Tom as a line in the digest's broken section,
+  // read from its own row (convex/ttsDigest.ts gatherTodayFacts, through
+  // convex/jarvis/jobs.ts failuresInWindow). Nothing posts to Slack on a
+  // report: there is one output channel, and the digest is what it carries.
+  const slackScheduled = async (t: ReturnType<typeof convexTest>) =>
     await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect())
-        .filter((job) => job.name.includes("sendBroken"))
-        .map((job) => job.args[0] as { job: string; detail?: string }),
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("ttsSync")),
     );
+  const digestBroken = async (t: ReturnType<typeof convexTest>) =>
+    await t.run(async (ctx) => {
+      const now = Date.now() + 1;
+      const facts = await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY_MS });
+      return facts.broken;
+    });
 
-  it("schedules one #tts-broken line for a report, and none for a condition already standing", async () => {
+  it("puts one digest failure for a report, marks a condition already standing, and posts nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
     const t = convexTest({ schema, modules });
     const failure = {
       job: "agents-sweep",
@@ -451,48 +458,44 @@ describe("POST /tts/job-failed", () => {
       key: "agents-sweep:read",
     };
     expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
-    const first = await brokenScheduled(t);
-    expect(first).toHaveLength(1);
-    expect(first[0].job).toBe("agents-sweep");
-    expect(first[0].detail).toBe(failure.error);
+    expect(await digestBroken(t)).toEqual([
+      { statement: "The agents-sweep job failed overnight.", detail: failure.error, count: 1 },
+    ]);
 
-    // The same condition again the same day: suppressed as standing, so it
-    // schedules nothing at all.
+    // The same condition again the same day: its row is marked standing, and
+    // the digest still reads the one report.
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12, 30));
     expect(await (await report(t, failure)).json()).toMatchObject({ reported: false });
-    expect(await brokenScheduled(t)).toHaveLength(1);
+    const rows = (await recordRows(t)).filter((e) => e.kind === "job-failed").sort((a, b) => a.at - b.at);
+    expect(rows.map((e) => (e.data as { standingSince?: number }).standingSince)).toEqual([
+      undefined,
+      Date.UTC(2026, 8, 26, 12),
+    ]);
+    expect(await digestBroken(t)).toHaveLength(1);
+    expect((await digestBroken(t))[0].count).toBe(1);
+    expect(await slackScheduled(t)).toEqual([]);
   });
 
-  it("posts exactly one #tts-broken line per job per day, however many reports", async () => {
+  it("puts exactly one digest failure per job, however many reports, counting them", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
-    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "C0BROKEN");
-    const posts: { channel: string; text: string }[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: { body?: string }) => {
-        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
-        posts.push({ channel: body.channel, text: body.text });
-        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
-      }),
-    );
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
     const t = convexTest({ schema, modules });
     // Unkeyed, so each report is its own row; the line is still one per job.
-    // Each report's scheduled send runs before the next report arrives, as a
-    // poller's ticks would.
     for (const body of [
       { job: "deploy", error: "vercel build failed" },
       { job: "deploy", error: "vercel build failed again" },
       { job: "agents-sweep", error: "sweep failed" },
     ]) {
       await report(t, body);
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      vi.advanceTimersByTime(60_000);
     }
 
     expect(await failures(t)).toHaveLength(3);
-    const broken = posts.filter((p) => p.channel === "C0BROKEN");
+    const broken = await digestBroken(t);
     expect(broken).toHaveLength(2);
-    expect(broken.filter((p) => p.text.includes("deploy"))).toHaveLength(1);
-    expect(broken.filter((p) => p.text.includes("agents-sweep"))).toHaveLength(1);
+    expect(broken.filter((b) => b.statement.includes("deploy"))).toMatchObject([{ count: 2 }]);
+    expect(broken.filter((b) => b.statement.includes("agents-sweep"))).toMatchObject([{ count: 1 }]);
+    expect(await slackScheduled(t)).toEqual([]);
   });
 
   it("refuses a blank key on either route, and an unnamed clean run", async () => {

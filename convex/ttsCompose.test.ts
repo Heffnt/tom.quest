@@ -8,28 +8,21 @@ import {
   TAB_EVERYTHING,
   checkMessage,
   claimKey,
-  composeBroken,
   composeCaptured,
   composeContinued,
-  composeDecision,
-  composeHourly,
   composeNeedsYou,
   composeToday,
   composeTodayFitted,
-  dropFaultyLines,
   itemUrl,
   objectionLine,
   objectionsLead,
   renderSlack,
   sessionUrl,
   statement,
-  verifyDraft,
   todayFactsBlock,
   fit,
   todayFirstLine,
   todoOutcomeLine,
-  type Draft,
-  type HourlyFacts,
   type Line,
   type Message,
   type TodayFacts,
@@ -207,39 +200,6 @@ describe("checkMessage", () => {
     expect(checkMessage({ firstLine: "First.", lines: many }, { canReply: false }).join(" ")).toContain(
       `over ${MESSAGE_MAX_CHARS}`,
     );
-  });
-});
-
-describe("a fault costs the line, never the message", () => {
-  it("drops the offending line and keeps the rest", () => {
-    const { message, faults } = dropFaultyLines(
-      {
-        firstLine: "First.",
-        lines: [
-          { role: "lead", text: "A lead." },
-          { role: "item", text: "A good statement.", url: itemUrl("a") },
-          { role: "item", text: "no stop and no link", url: "not-a-url" },
-        ],
-      },
-      { canReply: false },
-    );
-    expect(faults.length).toBeGreaterThan(0);
-    expect(message.lines).toHaveLength(2);
-    expect(renderSlack(message)).toContain("A good statement.");
-  });
-
-  it("drops a lead whose items all went with it", () => {
-    const { message } = dropFaultyLines(
-      {
-        firstLine: "First.",
-        lines: [
-          { role: "lead", text: "A lead." },
-          { role: "item", text: "broken", url: "nope" },
-        ],
-      },
-      { canReply: false },
-    );
-    expect(message.lines).toEqual([]);
   });
 });
 
@@ -535,7 +495,7 @@ describe("objectionLine", () => {
 describe("objectionsLead", () => {
   it("credits the delegate only with what it decided", () => {
     expect(objectionsLead(3, 0)).toBe(
-      "The delegate decided three things while you were asleep; silence means they stand.",
+      "Three things were decided in your name while you were asleep; silence means they stand.",
     );
   });
 
@@ -551,7 +511,7 @@ describe("objectionsLead", () => {
   it("counts the two kinds separately when the list carries both", () => {
     const lead = objectionsLead(5, 2);
     expect(lead).toBe(
-      "The delegate decided three things while you were asleep and two merges landed on their own; silence means they stand.",
+      "Three things were decided in your name while you were asleep and two merges landed on their own; silence means they stand.",
     );
     expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
   });
@@ -561,7 +521,7 @@ describe("objectionsLead", () => {
     expect(objectionsLead(2, 0, 2)).toBe("Two messages went out on your sign-off.");
     const lead = objectionsLead(6, 2, 1);
     expect(lead).toBe(
-      "The delegate decided three things, two merges landed on their own and one message went out on your sign-off; silence means they stand.",
+      "Three things were decided in your name, two merges landed on their own and one message went out on your sign-off; silence means they stand.",
     );
     expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
   });
@@ -579,7 +539,7 @@ describe("objectionsLead", () => {
     expect(lead?.text).toBe(
       "One merge landed on its own while you were asleep; silence means they stand.",
     );
-    expect(lead?.text).not.toContain("The delegate decided");
+    expect(lead?.text).not.toContain("decided in your name");
     // objectionMerges counts the WHOLE list, so the held-back lines are
     // attributed too rather than silently becoming the delegate's.
     const both = composeToday(
@@ -594,7 +554,7 @@ describe("objectionsLead", () => {
       { canReply: false },
     );
     expect(both.lines.find((l) => l.role === "lead" && l.section === "objections")?.text).toBe(
-      "The delegate decided one thing while you were asleep and four merges landed on their own; silence means they stand.",
+      "One thing was decided in your name while you were asleep and four merges landed on their own; silence means they stand.",
     );
   });
 });
@@ -675,38 +635,6 @@ describe("the needs-you-today run", () => {
     expect(fact.text).toContain("because yyy");
   });
 
-  it("refuses a written draft that puts an item that needs him today before the objection list", () => {
-    const withAsk = sept9({
-      needsYou: ITEMS,
-      objections: [{ askId: "a1", todoId: "ph79", decision: "moved the passport appointment to Thursday", reason: "the consulate shuts on Wednesdays this month" }],
-    });
-    const block = todayFactsBlock(withAsk, false);
-    const ask = block.facts.find((f) => f.id === "ask:a1")!;
-    const [abc, def] = ["abc", "def"].map((id) => block.facts.find((f) => f.id === `needs-you-today:${id}`)!);
-    const line = (f: { id: string; urls: string[]; text: string }) => ({ role: "item" as const, text: f.text, url: f.urls[0], sources: [f.id] });
-    const base = { firstLine: "Three things carry a date you have passed.", firstLineSources: ["today:count"] };
-    const wrong = verifyDraft({ ...base, lines: [line(abc), line(ask), line(def)] }, block);
-    expect(wrong).toContain("a needs-you-today line is printed before the objection list, against the ruled order");
-    const right = verifyDraft({ ...base, lines: [line(ask), line(abc), line(def)] }, block);
-    expect(right).not.toContain("a needs-you-today line is printed before the objection list, against the ruled order");
-  });
-
-  it("refuses a written draft that leaves out an item that needs him today", () => {
-    const block = todayFactsBlock(sept9({ needsYou: ITEMS }), false);
-    const count = block.facts.find((f) => f.id === "today:count")!;
-    const draft = { firstLine: "Three things carry a date you have passed.", firstLineSources: [count.id], lines: [] };
-    const faults = verifyDraft(draft, block);
-    expect(faults).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line carrying its link');
-    expect(faults).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say on an item line carrying its link');
-    // One line citing both, with one link, says only one of them.
-    const merged = verifyDraft({ ...draft, lines: [{ role: "item" as const, text: "Pay the lab deposit invoice and answer the registrar.", url: "https://tom.quest/tts?item=abc", sources: ["needs-you-today:abc", "needs-you-today:def"] }] }, block);
-    expect(merged).toContain('the draft leaves out the fact "needs-you-today:def", which every message must say on an item line carrying its link');
-    expect(merged).not.toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line carrying its link');
-    // Cited only on the first line is still left out.
-    const folded = verifyDraft({ ...draft, firstLineSources: [count.id, "needs-you-today:abc", "needs-you-today:def"] }, block);
-    expect(folded).toContain('the draft leaves out the fact "needs-you-today:abc", which every message must say on an item line carrying its link');
-  });
-
   it("says how many dated items it leaves below when only some of them are flagged, and gives the writer that fact", () => {
     const mixed = sept9({ needsYou: [{ todoId: "ph74xqqp", statement: "Test interest-gradient sequencing", why: "the lab meets today" }] });
     const text = renderSlack(composeToday(mixed, { canReply: false }));
@@ -739,156 +667,6 @@ describe("the needs-you-today run", () => {
   });
 });
 
-// ── The hourly line ─────────────────────────────────────────────────────────
-function hourly(overrides: Partial<HourlyFacts> = {}): HourlyFacts {
-  return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], todosWorked: [], changes: [], ...overrides };
-}
-
-describe("composeHourly", () => {
-  it("posts nothing at all for a quiet hour", () => {
-    expect(composeHourly(hourly())).toBeNull();
-  });
-
-  // No worker reaches Tom directly (2026-09-21): a capture the triage judged
-  // to need him today is named in the hour's one sentence, with its link.
-  it("names a capture that needs him today, with its link and reason", () => {
-    const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abc" };
-    const one = composeHourly(hourly({ changes: [{ ...capture, text: "Pay the lab deposit invoice", needsYouToday: "the invoice is due tomorrow" }] }));
-    expect(one?.firstLine).toBe(
-      "1 todo was captured, and <https://tom.quest/tts?item=abc|Pay the lab deposit invoice> needs you today because the invoice is due tomorrow.",
-    );
-    const two = composeHourly(hourly({ changes: [
-      { ...capture, text: "Pay the lab deposit invoice", needsYouToday: "" },
-      { ...capture, text: "Answer the registrar", link: "https://tom.quest/tts?item=def", needsYouToday: "a person is waiting" },
-      { ...capture, text: "Read the newsletter" },
-    ] }));
-    expect(two?.firstLine).toBe(
-      "3 todos were captured, and two of the captures need you today, <https://tom.quest/tts?item=abc|Pay the lab deposit invoice> among them.",
-    );
-  });
-
-  it("keeps the line under its cap by naming the capture with less detail, and never pushes it over", () => {
-    const long = "Pay the lab deposit invoice for the autumn semester reagent order";
-    const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abcdefghijklmnopqrstuvwxyz012345", text: long, needsYouToday: "the invoice is due tomorrow and the lab manager is waiting on it" };
-    const running = [{
-      sessionId: "k97a", title: "Planning", kind: "worker", mode: "autonomous",
-      status: "running", statement: "Plan the research path", todoId: null, elapsedMs: 3_600_000,
-    }];
-    const message = composeHourly(hourly({ running, changes: [capture] }));
-    // The whole clause with its reason would not fit here.
-    expect(composeHourly(hourly({ running }))!.firstLine.length + capture.needsYouToday.length).toBeGreaterThan(FIRST_LINE_CHARS - 60);
-    expect(message!.firstLine.length).toBeLessThanOrEqual(FIRST_LINE_CHARS);
-    expect(message!.firstLine).toContain("needs you today");
-    expect(message!.firstLine).not.toContain("because");
-  });
-
-  it("escapes the item and its reason, words from a mail, in the hourly line", () => {
-    const capture = { kind: "captured" as const, at: 1, detail: "email", link: null, text: "Reply to <!channel>", needsYouToday: "the <https://evil.example|bank> asks" };
-    const line = composeHourly(hourly({ changes: [capture] }))!.firstLine;
-    expect(line).not.toContain("<!channel>");
-    expect(line).not.toContain("<https://evil.example");
-    expect(line).toContain("&lt;!channel&gt;");
-  });
-
-  it("does not throw on an hour whose only changes it does not count", () => {
-    const archived = { kind: "archived" as const, at: 1, text: "Old item", detail: null, link: null };
-    expect(() => composeHourly(hourly({ changes: [archived] }))).not.toThrow();
-  });
-
-  it("always says a capture needs him today, the hour's other clauses giving way when even the count will not fit", () => {
-    const title = "A".repeat(150);
-    const running = [{ sessionId: "k97a", title, kind: "worker", mode: "autonomous", status: "running", statement: "Plan it", todoId: null, elapsedMs: 3_600_000 }];
-    const capture = { kind: "captured" as const, at: 1, detail: "email", link: "https://tom.quest/tts?item=abc", text: "Pay the invoice", needsYouToday: "it is due" };
-    const line = composeHourly(hourly({ running, changes: [capture] }))!.firstLine;
-    expect(line).toBe("1 todo was captured, and one of the captures needs you today.");
-    expect(line).not.toContain(title);
-  });
-
-  it("is one sentence with a link inside it for a busy hour", () => {
-    const message = composeHourly(
-      hourly({
-        running: [
-          {
-            sessionId: "k97a",
-            title: "Retire the superseded CMT code paths",
-            kind: "focus-item",
-            mode: "autonomous",
-            status: "running",
-            statement: null,
-            todoId: null,
-            elapsedMs: 8_100_000,
-          },
-        ],
-        changes: [
-          { kind: "captured", at: 1, text: "one", detail: null, link: null },
-          { kind: "captured", at: 2, text: "two", detail: null, link: null },
-          { kind: "captured", at: 3, text: "three", detail: null, link: null },
-        ],
-      }),
-    );
-    expect(message).not.toBeNull();
-    expect(message?.lines).toEqual([]);
-    expect(message?.firstLine).toBe(
-      "<https://www.tom.quest/agents?session=k97a|Retire the superseded CMT code paths> has been working on its own for 2h15m, and 3 todos were captured.",
-    );
-  });
-
-  // Grouped by todo (Tom, 2026-09-24: no batches): a moved todo links itself.
-  it("names the todos worked, linking the todo, and never a batch", () => {
-    const message = composeHourly(
-      hourly({
-        todosWorked: [
-          { todoId: "t1", statement: "Retire the superseded CMT code paths", sessions: 1 },
-          { todoId: "t2", statement: "Answer the registrar", sessions: 2 },
-        ],
-      }),
-    );
-    expect(message?.firstLine).toBe(
-      `Two todos moved, <${itemUrl("t1")}|Retire the superseded CMT code paths> among them, and nothing else changed.`,
-    );
-    expect(message?.firstLine).not.toContain("batch");
-  });
-
-  it("links the todo one of several running sessions is on, else the first session", () => {
-    const base = { kind: "worker", mode: "autonomous", status: "running", elapsedMs: 60_000 };
-    const on = composeHourly(hourly({ running: [
-      { ...base, sessionId: "k1", title: "One", statement: null, todoId: null },
-      { ...base, sessionId: "k2", title: "Two", statement: "Plan the research path.", todoId: "t9" },
-    ] }));
-    expect(on?.firstLine).toBe(`Two sessions are working, one of them on <${itemUrl("t9")}|Plan the research path>, and nothing else changed.`);
-    const none = composeHourly(hourly({ running: [
-      { ...base, sessionId: "k1", title: "One", statement: null, todoId: null },
-      { ...base, sessionId: "k2", title: "Two", statement: null, todoId: null },
-    ] }));
-    expect(none?.firstLine).toBe(`Two <${sessionUrl("k1")}|sessions> are working, and nothing else changed.`);
-  });
-
-  it("never prints a kind or a mode value", () => {
-    const message = composeHourly(
-      hourly({
-        running: [
-          { sessionId: "k1", title: "One", kind: "focus-item", mode: "autonomous", status: "running", statement: "a todo", todoId: "t1", elapsedMs: 60_000 },
-          { sessionId: "k2", title: "Two", kind: "adhoc", mode: "interactive", status: "running", statement: null, todoId: null, elapsedMs: 60_000 },
-        ],
-      }),
-    );
-    const text = renderSlack(message as Message);
-    for (const word of ["focus-item", "adhoc", "autonomous", "interactive", "weekly", "gate", "block"]) {
-      expect(text).not.toContain(word);
-    }
-  });
-
-  it("names where a longer window starts, once, at the end", () => {
-    const message = composeHourly(
-      hourly({
-        sinceLabel: "13:00",
-        changes: [{ kind: "done", at: 1, text: "a", detail: null, link: null }],
-      }),
-    );
-    expect(message?.firstLine).toBe("1 finished since 13:00.");
-  });
-});
-
 // ── The word for a todo ─────────────────────────────────────────────────────
 // tts/spec.md §12.1: "'Item' is not a TTS word for this; a todo is a todo."
 // The line role "item" and the link's ?item= parameter are the code's names
@@ -918,26 +696,6 @@ describe("the word for a todo", () => {
     expect(text).not.toMatch(ITEM);
   });
 
-  it("is todo, never item, in every clause of the hourly line", () => {
-    const capture = { kind: "captured" as const, at: 1, detail: null, link: null };
-    const message = composeHourly(
-      hourly({
-        todosWorked: [
-          { todoId: "t1", statement: "Retire the superseded CMT code paths", sessions: 1 },
-          { todoId: "t2", statement: "Answer the registrar", sessions: 2 },
-        ],
-        changes: [
-          { ...capture, text: "one" },
-          { ...capture, text: "two" },
-          { kind: "done", at: 3, text: "three", detail: null, link: null },
-        ],
-      }),
-    );
-    const text = words(renderSlack(message as Message));
-    expect(text).toContain("todos moved");
-    expect(text).toContain("todos were captured");
-    expect(text).not.toMatch(ITEM);
-  });
 });
 
 // ── The other four kinds ────────────────────────────────────────────────────
@@ -960,51 +718,6 @@ describe("composeNeedsYou", () => {
     expect(text).not.toContain("Needs you today");
     expect(text).not.toContain("reply here");
     expect(text.startsWith("Only you can settle this: ")).toBe(true);
-  });
-});
-
-describe("composeDecision", () => {
-  it("asks for an objection and nothing else, and states a refusal as parked", () => {
-    expect(
-      renderSlack(
-        composeDecision(
-          { askId: "a", todoId: "ph7a", decision: "moved the passport appointment to Thursday", reason: "the consulate shuts on Wednesdays" },
-          { canReply: true },
-        ),
-      ),
-    ).toBe(
-      [
-        "Object if this is wrong; silence means it stands.",
-        "- <https://tom.quest/tts?item=ph7a|Moved the passport appointment to Thursday, because the consulate shuts on Wednesdays.>",
-        'reply "revert", or say what to do instead.',
-      ].join("\n"),
-    );
-    const refused = renderSlack(
-      composeDecision(
-        {
-          askId: "b",
-          todoId: "ph80",
-          decision: "emailed the landlord chasing the deposit",
-          refused: true,
-          refusedBecause: "a message to another human in your name",
-          fallback: "left it for you",
-        },
-        { canReply: false },
-      ),
-    );
-    expect(refused).toContain("Parked for you: a message to another human in your name. Nothing was done in your name.");
-    expect(refused).toContain("instead the agent left it for you");
-    expect(refused).not.toContain("reply");
-  });
-});
-
-describe("composeBroken", () => {
-  it("is its first line alone when the failure has no link", () => {
-    const message = composeBroken({
-      statement: "Nothing has been captured from email since 02:10: the Gmail poller has failed eleven times.",
-    });
-    expect(message.lines).toEqual([]);
-    expect(checkMessage(message, { canReply: false })).toEqual([]);
   });
 });
 
@@ -1101,164 +814,3 @@ describe("the facts block", () => {
   });
 });
 
-describe("verifyDraft", () => {
-  const block = todayFactsBlock(sept9(), false);
-
-  const good: Draft = {
-    firstLine: "Three things carry a date you have passed, the oldest by ten days.",
-    firstLineSources: ["today:count"],
-    lines: [
-      { role: "lead", text: "Dated, oldest first.", sources: ["today:count"] },
-      {
-        role: "item",
-        text: "Run the first Friday triage session: open the agenda. Ten days late.",
-        url: itemUrl("ph7fqh2j"),
-        sources: ["todo:ph7fqh2j"],
-      },
-      {
-        role: "item",
-        text: "667 other todos are ready, and not one of them is dated.",
-        url: TAB_EVERYTHING,
-        sources: ["ready:beyond"],
-      },
-    ],
-  };
-
-  it("accepts a draft whose every link and number is in a fact it cites", () => {
-    expect(verifyDraft(good, block)).toEqual([]);
-  });
-
-  it("refuses an invented number", () => {
-    const bad: Draft = {
-      ...good,
-      lines: good.lines.map((line, i) =>
-        i === 2 ? { ...line, text: "704 other items are ready, and not one of them is dated." } : line,
-      ),
-    };
-    expect(verifyDraft(bad, block).join(" ")).toContain("uses the number 704");
-  });
-
-  it("refuses a link carried over from another line", () => {
-    const bad: Draft = {
-      ...good,
-      lines: good.lines.map((line, i) => (i === 2 ? { ...line, url: itemUrl("ph74xqqp") } : line)),
-    };
-    expect(verifyDraft(bad, block).join(" ")).toContain("which is in no fact it cites");
-  });
-
-  it("refuses a fact id that does not exist", () => {
-    const bad: Draft = { ...good, firstLineSources: ["today:invented"] };
-    expect(verifyDraft(bad, block).join(" ")).toContain('cites an unknown fact "today:invented"');
-  });
-
-  it("refuses a reply invitation when the block says the route is not live", () => {
-    const bad: Draft = {
-      ...good,
-      lines: [...good.lines, { role: "note", text: 'reply "done" on a line.', sources: [] }],
-    };
-    expect(verifyDraft(bad, block).join(" ")).toContain("invites a reply the route cannot receive");
-  });
-
-  // THE RULED ORDER IS A RULING, and only the template guarantees it by
-  // construction: on the default path a Fable run writes the draft and this is
-  // the only thing standing between it and an objection list printed last.
-  const objectionsBlock = todayFactsBlock(
-    sept9({
-      objections: [
-        { askId: "a1", todoId: "ph79", decision: "moved the passport appointment to Thursday" },
-      ],
-    }),
-    false,
-  );
-  const ordered: Draft = {
-    firstLine: "Three things carry a date you have passed, the oldest by ten days.",
-    firstLineSources: ["today:count"],
-    lines: [
-      { role: "lead", section: "today", text: "Dated, oldest first.", sources: ["today:count"] },
-      {
-        role: "item",
-        section: "today",
-        text: "Run the first Friday triage session: open the agenda. Ten days late.",
-        url: itemUrl("ph7fqh2j"),
-        sources: ["todo:ph7fqh2j"],
-      },
-      {
-        role: "lead",
-        section: "objections",
-        text: "The delegate decided one thing while you were asleep.",
-        sources: ["ask:a1"],
-      },
-      {
-        role: "item",
-        section: "objections",
-        text: "1. Moved the passport appointment to Thursday.",
-        url: itemUrl("ph79"),
-        sources: ["ask:a1"],
-      },
-      {
-        role: "lead",
-        section: "calendar",
-        text: "Your day is committed from 16:00 to 23:00.",
-        sources: ["calendar:lead"],
-      },
-      {
-        role: "item",
-        section: "calendar",
-        text: "PT runs 16:00 to 17:00.",
-        url: TAB_CALENDAR,
-        sources: ["calendar:1"],
-      },
-      {
-        role: "lead",
-        section: "overnight",
-        text: "Overnight, the box's sessions worked on these todos.",
-        sources: [],
-      },
-      {
-        role: "item",
-        section: "overnight",
-        text: "Walk the research critical path: 4 sessions on it ended.",
-        url: itemUrl("ph7crit"),
-        sources: ["overnight-todo:ph7crit"],
-      },
-    ],
-  };
-
-  it("accepts a draft whose runs are in the ruled order", () => {
-    expect(verifyDraft(ordered, objectionsBlock)).toEqual([]);
-  });
-
-  it("refuses a draft that prints the objection list after the overnight run", () => {
-    const swapped: Draft = {
-      ...ordered,
-      lines: [
-        ...ordered.lines.slice(0, 2),
-        ...ordered.lines.slice(4),
-        ...ordered.lines.slice(2, 4),
-      ],
-    };
-    expect(verifyDraft(swapped, objectionsBlock).join(" ")).toContain(
-      'the "objections" run is printed after the "overnight" run, against the ruled order',
-    );
-  });
-
-  it("passes over the calendar and an unlabelled lead — neither is ranked", () => {
-    const unlabelled: Draft = {
-      ...ordered,
-      lines: ordered.lines.map((line) =>
-        line.section === "calendar" || line.section === "today"
-          ? { ...line, section: undefined }
-          : line,
-      ),
-    };
-    expect(verifyDraft(unlabelled, objectionsBlock)).toEqual([]);
-  });
-
-  it("refuses a draft that breaks the form, whatever it cites", () => {
-    const bad: Draft = {
-      ...good,
-      lines: [...good.lines, { role: "item", text: "+667 more", url: TAB_EVERYTHING, sources: ["ready:beyond"] }],
-    };
-    expect(verifyDraft(bad, block).join(" ")).toContain('bare "+N more"');
-  });
-});

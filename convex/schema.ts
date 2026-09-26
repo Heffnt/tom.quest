@@ -1248,8 +1248,7 @@ export default defineSchema({
     // pinned to undefined — which was exact only for as long as no row of that
     // kind had a key, and silently dropped every row of a kind that later grew
     // one ("job-failed" did). The digest's last "digest-sent" row
-    // (convex/ttsDigest.ts) and the hourly update's window, worker events and
-    // reported changes (convex/ttsHourly.ts) read here instead of taking N
+    // (convex/ttsDigest.ts) read here instead of taking N
     // rows off by_at and filtering: past N rows a by_at read silently answers
     // wrong.
     .index("by_kind_at", ["kind", "at"]),

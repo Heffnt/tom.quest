@@ -20,18 +20,16 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
-import { internal } from "./_generated/api";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
 import { clip } from "../shared/clip.mjs";
 import { rowSource, type RowSource } from "./sessionRows";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
-import { postBroken } from "./tts";
 import { BOX_CHANGE, boxChangeEvent, boxChangeFaults, type BoxChange } from "./boxChanges";
 import { recordEvent } from "./jarvis/events";
+import { listForDigest } from "./jarvis/outbox";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
-import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
 
 // ── The export ───────────────────────────────────────────────────────────────
@@ -638,113 +636,62 @@ export const internalRecordWorkerEvent = internalMutation({
     // (internalRecordBoxChange below; POST /tts/event hands it there).
     if (kind === BOX_CHANGE) throw new Error("a box change is recorded through POST /jarvis/event");
     const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
-    // The same broken line logEvent posts, because this is the other way a
-    // failure row is written: the nightly's and the weekly's failures arrive
-    // here, and #tts-broken is a line per distinct failure whichever door the
-    // row came through. Except where this handler writes the line itself,
-    // below, in the failure's own words — a second, generic line for the same
-    // row is the one thing "a line per distinct failure" forbids.
-    if (kind !== LEARNING_CHECK_FAILED) await postBroken(ctx, kind, data);
+    // A failure row written here (the nightly's, the weekly's) is a line in
+    // the digest's broken section, which reads every "-failed"/"-failure" row
+    // of its window (convex/ttsDigest.ts); the decisions below are lines on
+    // its objection list (convex/jarvis/outbox.ts listForDigest). One output
+    // channel: nothing here posts to Slack.
     if (kind === LEARNING_CHANGE) {
       const d = (data ?? {}) as Record<string, unknown>;
       const file = typeof d.file === "string" ? d.file : "a model-of-Tom page";
       const after = typeof d.after === "string" ? d.after : "";
       const before = typeof d.before === "string" ? d.before : "";
       const evidence = typeof d.evidence === "string" ? d.evidence : undefined;
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      // The id is printed so a reply naming it is an objection to this line
+      // (convex/ttsSlack.ts namedLearningChange), as "revert <n>" is.
+      const named = typeof d.id === "string" ? ` [${d.id}]` : "";
+      await listForDigest(ctx, {
+        section: "decisions",
         askId: typeof d.id === "string" ? `learning:${d.id}` : `learning:${id}`,
         decision:
           before === ""
-            ? `${file} now says ${after}`
-            : `${file} now says ${after} rather than ${before}`,
+            ? `${file} now says ${after}${named}`
+            : `${file} now says ${after} rather than ${before}${named}`,
         ...(evidence === undefined ? {} : { reason: `it was learned from ${evidence}` }),
       });
     }
     // A REPOSITORY-RULE PROPOSAL is the same act one directory over: the
     // repo-learning step read the night's sessions and wrote a line it means
-    // to put in a repository's own AGENTS.md. It reaches him the same way and
-    // for the same reason (slack-design.md §1.2) — as it is written, not in
-    // the morning — and "revert" in that thread is the objection, which POST
-    // /tts/repo-proposal-dropped applies before the line ever reaches the
-    // repository. The `[id]` prefix is not printed for the same reason
-    // LEARNING_CHANGE stopped printing it: in #tts-decisions the thread is the
-    // subject. The id path still exists for a reply on the MORNING thread
-    // (convex/ttsSlack.ts namedLearningChange), which names both sets.
+    // to put in a repository's own AGENTS.md. It reaches him the same way, on
+    // the digest's objection list, and an objection there (its number, or its
+    // printed id) is what POST /tts/repo-proposal-dropped applies before the
+    // line ever reaches the repository.
     if (kind === REPO_PROPOSAL) {
       const d = (data ?? {}) as Record<string, unknown>;
       const repo = typeof d.repo === "string" ? d.repo : "a repository";
       const file = typeof d.file === "string" ? d.file : "its rules";
       const line = typeof d.line === "string" ? d.line : "";
       const read = typeof d.read === "string" ? d.read : undefined;
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      await listForDigest(ctx, {
+        section: "decisions",
         askId: typeof d.id === "string" ? `repo-proposal:${d.id}` : `repo-proposal:${id}`,
-        decision: `${repo} ${file} is to say ${line}`,
+        decision: `${repo} ${file} is to say ${line}${typeof d.id === "string" ? ` [${d.id}]` : ""}`,
         ...(read === undefined ? {} : { reason: `last night's sessions ${read}` }),
       });
     }
-    // A SIMPLIFICATION PROPOSAL is the weekly pass's one output: a line it
-    // means to take out of a spec, a rule or a page. It reaches him through
-    // the door every producer of a decision shares — convex/ttsSync.ts
-    // sendDecision, composed by ttsCompose.composeDecision, claimed once a day
-    // per item — and a reply in its thread is an objection through the path
-    // that already exists. #tts-needs-you was the alternative and lost: that
-    // room wants a todo row per thread, and this job files no todo until the
-    // objection window has passed. One channel, one composer, no new door.
-    //
-    // A `needsHisWords` proposal takes the composer's REFUSED branch, which
-    // renders "Parked for you: … Nothing was done in your name". That is how
-    // it posts as a QUESTION rather than a decision: a removal that changes a
-    // line of the spec, or of an intent.md he has reviewed, is his to make and
-    // not his silence's.
-    //
-    // THE askId IS THE WHOLE `simplify:<id>` STRING and is also the event
-    // row's `key`, so the two ends are the same string and the objection door
-    // resolves a reply with one lookup. LEARNING_CHANGE and REPO_PROPOSAL
-    // write the bare id as the key and a prefixed id as the askId, so a reply
-    // in one of THOSE threads cannot resolve — a real bug, filed separately,
-    // deliberately not fixed here.
-    if (kind === SIMPLIFY_PROPOSAL) {
-      const d = (data ?? {}) as Record<string, unknown>;
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
-        askId: key ?? `simplify:${id}`,
-        decision: typeof d.sentence === "string" ? d.sentence : "a simplification",
-        ...(typeof d.evidence === "string" ? { reason: d.evidence } : {}),
-        ...(d.needsHisWords === true
-          ? {
-              refused: true,
-              refusedBecause: `needs-his-words — ${typeof d.sentence === "string" ? d.sentence : ""}`,
-            }
-          : {}),
-      });
-    }
-    // A REMOVAL-LOOP PULL REQUEST goes to #tts-simplify, its own room, as it
-    // is recorded: one message per round, keyed `loop:<number>` like the row,
-    // so a reply resolves to it (convex/ttsSync.ts sendRemoval). A dry run's
-    // row is a proof the path works and goes to nobody.
-    if (kind === REMOVAL_LOOP_PR) {
-      const d = (data ?? {}) as Record<string, unknown>;
-      if (d.dryRun !== true && typeof d.pr === "number" && typeof d.url === "string") {
-        await ctx.scheduler.runAfter(0, internal.ttsSync.sendRemoval, {
-          askId: key ?? `loop:${d.pr}`,
-          pr: d.pr,
-          url: d.url,
-          subject: typeof d.subject === "string" ? d.subject : "a removal",
-          ...(typeof d.ruleId === "string" && typeof d.path === "string"
-            ? { reason: `${d.ruleId} in ${d.path}` }
-            : {}),
-          ...(typeof d.round === "number" ? { round: d.round } : {}),
-        });
-      }
-    }
+    // A SIMPLIFICATION PROPOSAL and a REMOVAL-LOOP PULL REQUEST are read from
+    // their own rows by the digest's objection list (convex/ttsDigest.ts),
+    // keyed as they are here, so "revert <n>" in the digest's thread resolves
+    // the same row; a dry run's row goes to nobody.
     // THE NIGHT THAT UNDID ITSELF. Not a decision — nothing stands to object
     // to — and not a quiet night either, which is exactly the confusion a
-    // silent row would create. It goes to #tts-broken, where a job that
-    // stopped feeding him belongs, deduped for the day by the "learning" job
-    // name like every other broken line.
+    // silent row would create. A broken line in the digest, in its own words
+    // (the digest's generic line for the "-failed" row is skipped for it).
     if (kind === LEARNING_CHECK_FAILED) {
       const d = (data ?? {}) as Record<string, unknown>;
       const changes = typeof d.changes === "number" ? d.changes : typeof d.count === "number" ? d.count : 0;
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+      await listForDigest(ctx, {
+        section: "broken",
         job: "learning",
         statement:
           d.baseline === true

@@ -959,23 +959,21 @@ export const internalRecordMerge = internalMutation({
       ctx,
       MERGE,
       todoId ?? undefined,
-      { repo: args.repo, sha: args.sha, subject: args.subject, mainCheck: args.mainCheck },
+      {
+        repo: args.repo,
+        sha: args.sha,
+        subject: args.subject,
+        mainCheck: args.mainCheck,
+        // Why it merged, in the gate's own words (who audited, and on which
+        // model when Codex was capped; the evals it merged past): the digest's
+        // objection line for this merge prints it.
+        reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
+      },
       key,
     );
-    // ONE LINE IN #tts-decisions as it is recorded, through the one decisions
-    // door every producer shares (convex/ttsSync.ts sendDecision). The morning
-    // message's objection list is the second sighting, not the only one.
-    //
-    // Its askId is the merge's own key, so a reply in that thread objects to
-    // THIS merge: convex/ttsAsk.ts internalRecordDelegateObjection resolves a
-    // merge row as well as a delegate decision.
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
-      askId: key,
-      ...(todoId === undefined || todoId === null ? {} : { todoId: todoId as string }),
-      decision: `merged ${args.repo}@${args.sha.slice(0, 7)}: ${args.subject}`,
-      reason: [...gate.checks.map((check) => check.why), args.mainCheck].join("; "),
-      refused: false,
-    });
+    // The digest's objection list reads this merge row itself, under its key,
+    // so "revert <n>" in the digest's thread objects to THIS merge
+    // (convex/ttsAsk.ts internalRecordDelegateObjection resolves a merge row).
     return { recorded: true, id, existing: false, gate };
   },
 });

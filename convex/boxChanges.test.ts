@@ -1,5 +1,5 @@
 // Box changes on the record's side (plan-root T1 and T3): the shape the door
-// holds a box-change row to, the Slack lines a change earns, the /agents read,
+// holds a box-change row to, the digest lines a change earns, the /agents read,
 // the digest's "Box changes" section, the /agents window view's events read,
 // and the silence alarm over the box jobs' heartbeats.
 
@@ -12,7 +12,6 @@ import {
   composeToday,
   renderSlack,
   todayFactsBlock,
-  verifyDraft,
   type TodayFacts,
 } from "./ttsCompose";
 import {
@@ -57,6 +56,14 @@ async function postEvent(t: ReturnType<typeof convexTest>, body: unknown) {
 
 const scheduled = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+
+/** The rows the digest reads its decisions and broken lines from, oldest first. */
+const digestLines = (t: ReturnType<typeof convexTest>) =>
+  t.run(async (ctx) =>
+    (await ctx.db.query("events").collect())
+      .filter((row) => row.kind === "digest-line")
+      .sort((a, b) => a.at - b.at || a._creationTime - b._creationTime),
+  );
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -136,8 +143,8 @@ describe("the box-change door", () => {
   });
 });
 
-describe("the Slack lines a change earns", () => {
-  it("puts a change to who or what can act in #tts-decisions, and nothing else", () => {
+describe("the digest lines a change earns", () => {
+  it("puts a change to who or what can act on the digest's objection list, and nothing else", () => {
     expect(whoCanActLine(change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "sudoers", after: "/etc/sudoers.d/jarvis: jarvis ALL=(ALL) NOPASSWD: ALL" } })))
       .toBe("The box's sudo rules changed: now /etc/sudoers.d/jarvis: jarvis ALL=(ALL) NOPASSWD: ALL");
     expect(whoCanActLine(change({ source: "user", why: "state", command: undefined, user: "root", change: { what: "users", after: "useradd: new user: name=eve" } })))
@@ -150,20 +157,35 @@ describe("the Slack lines a change earns", () => {
     expect(whoCanActLine(change({ command: "read-only: cat ×2", count: 2 }))).toBeNull();
   });
 
-  it("schedules the decision line for a sudoers change and the broken line for a journal gap", async () => {
+  it("lists the decision line for a sudoers change and the broken line for a journal gap in the digest, and schedules no Slack post", async () => {
     const t = convexTest({ schema, modules });
     await postEvent(t, { kind: "box-change", data: change() });
-    expect(await scheduled(t)).toHaveLength(0);
+    expect(await digestLines(t)).toHaveLength(0);
     await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "sudoers", after: `token ${TOKEN}` } }) });
-    let jobs = await scheduled(t);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toContain("sendDecision");
-    expect(JSON.stringify(jobs[0].args)).not.toContain(TOKEN);
+    let lines = await digestLines(t);
+    expect(lines).toHaveLength(1);
+    const sudoers = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).find((row) => row.kind === "box-change" && (row.data as BoxChange).change?.what === "sudoers"),
+    );
+    expect(lines[0].subject).toBe(`box-change:${sudoers!._id}`);
+    expect(lines[0].data).toMatchObject({
+      section: "decisions",
+      askId: `box-change:${sudoers!._id}`,
+      reason: "it changes who or what can act on the Jarvis Box",
+    });
+    expect((lines[0].data as { decision: string }).decision).toMatch(/^The box's sudo rules changed: now token /);
+    expect(JSON.stringify(lines[0])).not.toContain(TOKEN);
     await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "journal-gap", before: "2026-09-25T05:08:34.000Z", after: "2026-09-25T06:08:34.000Z" } }) });
-    jobs = await scheduled(t);
-    expect(jobs).toHaveLength(2);
-    expect(jobs[1].name).toContain("sendBroken");
-    expect(jobs[1].args[0]).toMatchObject({ job: "box-watch:journal-gap" });
+    lines = await digestLines(t);
+    expect(lines).toHaveLength(2);
+    expect(lines[1].subject).toBe("box-watch:journal-gap");
+    expect(lines[1].data).toMatchObject({
+      section: "broken",
+      job: "box-watch:journal-gap",
+      statement: "The box's journal lost entries the box-change reader had not read, from 2026-09-25T05:08:34.000Z to 2026-09-25T06:08:34.000Z, so changes to the machine in that span are not in the record.",
+      url: AGENTS_WINDOW_URL,
+    });
+    expect((await scheduled(t)).filter((job) => job.name.includes("ttsSync"))).toEqual([]);
   });
 });
 
@@ -236,15 +258,6 @@ describe("the digest's Box changes", () => {
     const block = todayFactsBlock(facts, false);
     const agentFact = block.facts.find((fact) => fact.id === `box:agent:${AGENT}`);
     expect(agentFact?.numbers).toEqual(["5", "2"]);
-    const draft = {
-      firstLine: "Nothing is dated today and nothing is late.",
-      firstLineSources: [],
-      lines: [
-        { role: "lead" as const, text: "What ran as root on the box.", sources: [] },
-        { role: "item" as const, text: "An agent ran 5 root commands; 2 of them changed the machine.", url: agentFact!.urls[0], sources: [agentFact!.id] },
-      ],
-    };
-    expect(verifyDraft(draft, block).filter((fault) => fault.includes("box") || fault.includes("number") || fault.includes("link"))).toEqual([]);
   });
 });
 
@@ -279,6 +292,8 @@ describe("the silence alarm", () => {
 
   it("watches nothing until a job's first clean run", async () => {
     const t = convexTest({ schema, modules });
+    // Before 6 a.m. New York, so the late-digest line is not due either.
+    vi.setSystemTime(AT);
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: [] });
     expect(await scheduled(t)).toHaveLength(0);
   });

@@ -11,25 +11,12 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 /** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
 const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
 
-const TTS_TODAY = "C0TTS";
 const NEEDS_YOU = "C0NEEDSYOU";
+const TTS_TODAY = "C0TTS";
 
 async function events(t: ReturnType<typeof convexTest>, kind: string) {
   return await t.run(async (ctx) =>
     (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === kind),
-  );
-}
-
-/** The harness typed by the schema, so an index read type-checks. */
-const typedHarness = () => convexTest(schema, modules);
-
-/** A job's failure reports: events rows of kind job-failed that are not a
- *  standing condition's repeat (convex/jarvis/jobs.ts). */
-async function jobReports(t: ReturnType<typeof typedHarness>) {
-  return await t.run(async (ctx) =>
-    (await ctx.db.query("events").collect()).filter(
-      (row) => row.kind === "job-failed" && (row.data as { standingSince?: number }).standingSince === undefined,
-    ),
   );
 }
 

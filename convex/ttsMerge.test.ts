@@ -23,6 +23,8 @@ import {
   removalNotesOf,
   slowConditions,
 } from "./ttsMerge";
+import { gatherTodayFacts } from "./ttsDigest";
+import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -101,6 +103,21 @@ const mergeRows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
     ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", MERGE)).collect(),
   );
+
+/** Every Slack send a mutation scheduled. A merge posts none: its line is on
+ *  the digest's objection list, read from its MERGE row. */
+const slackScheduled = (t: TestConvex<typeof schema>) =>
+  t.run(async (ctx) =>
+    (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("ttsSync")),
+  );
+
+/** The digest's objection list over the last day (convex/ttsDigest.ts
+ *  gatherTodayFacts), which is where a merge reaches Tom. */
+const digestObjections = (t: TestConvex<typeof schema>) =>
+  t.run(async (ctx) => {
+    const now = Date.now() + 1;
+    return (await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY_MS })).objections;
+  });
 
 const testsRows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
@@ -356,26 +373,36 @@ describe("a merge the gate allows", () => {
     expect(written[0].todoId).toBe(todoId);
   });
 
-  it("posts ONE line to #tts-decisions, naming the merge and the two checks", async () => {
+  it("puts ONE line on the digest's objection list from the merge row, answers the two checks, and posts nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
     await gated(t);
-    expect((await mergeReport(t)).status).toBe(200);
-    const scheduled = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("sendDecision"),
-      ),
-    );
-    expect(scheduled).toHaveLength(1);
-    const args = scheduled[0].args[0] as { askId: string; decision: string; reason: string };
-    // The ask id is the merge's own key, so a reply in that thread objects to
-    // THIS merge.
-    expect(args.askId).toBe(`${REPO}:${SHA}`);
-    expect(args.decision).toContain(`merged ${REPO}@${SHA.slice(0, 7)}`);
-    expect(args.decision).toContain("the delegate and the objection list");
-    expect(args.reason).toContain("the tests are green");
-    expect(args.reason).toContain("the audit approved");
-    expect(args.reason).not.toContain("evals");
+    const response = await mergeReport(t);
+    expect(response.status).toBe(200);
+    // The route answers the two checks it merged on.
+    const whys = ((await response.json()).gate.checks as { why: string }[]).map((check) => check.why).join("; ");
+    expect(whys).toContain("the tests are green");
+    expect(whys).toContain("the audit approved");
+    expect(whys).not.toContain("evals");
+
+    // The merge's fact is its MERGE row, keyed by the merge itself.
+    const rows = await mergeRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe(`${REPO}:${SHA}`);
+    expect(rows[0].data).toMatchObject({ repo: REPO, sha: SHA, subject: "the delegate and the objection list" });
+
+    // The digest reads that row into ONE objection line whose ask id is the
+    // merge's own key, so "revert <n>" in the digest's thread objects to THIS
+    // merge.
+    const objections = await digestObjections(t);
+    expect(objections).toHaveLength(1);
+    expect(objections[0]).toMatchObject({
+      askId: `${REPO}:${SHA}`,
+      decision: `merged ${REPO}@${SHA.slice(0, 7)}: the delegate and the objection list`,
+      merged: true,
+      refused: false,
+    });
+    expect(await slackScheduled(t)).toEqual([]);
   });
 
   // witness: PR #196 was recorded at c4e73b5 on 2026-09-19 from a merge
@@ -805,7 +832,7 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(await auditRows(unavailable)).toHaveLength(1);
   });
 
-  it("says WHO audited when Codex was capped, in the gate and in the merge line", async () => {
+  it("says WHO audited when Codex was capped, in the gate, on the audit row and on the merge row the digest reads", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
     await greenTests(t);
@@ -821,22 +848,29 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(audit.passed).toBe(true);
     expect(audit.why).toContain("(audit by claude-opus-5, Codex at its cap)");
 
-    expect((await mergeReport(t)).status).toBe(200);
-    const scheduled = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("sendDecision"),
-      ),
-    );
-    // Tom reads the merge line in #tts-decisions; a same-family audit is a
-    // thing he can object to, so the line has to say it happened.
-    expect((scheduled[0].args[0] as { reason: string }).reason).toContain(
-      "(audit by claude-opus-5, Codex at its cap)",
-    );
+    // A same-family audit is a thing he can object to, so the record has to
+    // say it happened: the audit row the merge rests on names the model and
+    // why it stood in.
+    expect(await auditData(t)).toMatchObject({ verdict: "APPROVED", model: "claude-opus-5", fallback: "codex-cap" });
+
+    const merged = await mergeReport(t);
+    expect(merged.status).toBe(200);
+    const answered = (await merged.json()).gate.checks.find((c: { name: string }) => c.name === "audit");
+    expect(answered.why).toContain("(audit by claude-opus-5, Codex at its cap)");
+    // The MERGE row, which the digest's objection line is built from, carries
+    // the merge and the gate's own reasons, so WHO audited reaches Tom in the
+    // digest: its line is `merged <repo>@<sha7>: <subject>`, because <reason>.
+    const rows = await mergeRows(t);
+    expect(rows).toHaveLength(1);
+    expect(Object.keys(rows[0].data as Record<string, unknown>).sort()).toEqual(["mainCheck", "reason", "repo", "sha", "subject"]);
+    expect(rows[0].data).toMatchObject({ repo: REPO, sha: SHA, subject: "the delegate and the objection list" });
+    expect(String((rows[0].data as { reason?: unknown }).reason)).toContain("(audit by claude-opus-5, Codex at its cap)");
+    expect(await slackScheduled(t)).toEqual([]);
   });
 
   // worker/jobs/audit.mjs's third rung: Codex at its cap and Claude at its
-  // limit, so an OpenRouter model read the change. The gate's line and the
-  // merge line name it with both refusals.
+  // limit, so an OpenRouter model read the change. The gate's line names it
+  // with both refusals.
   it("says WHO audited when Codex and Claude were both out", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -1158,22 +1192,17 @@ describe("the chunk clause in the sentence Tom reads", () => {
     );
   });
 
-  it("carries the clause into the #tts-decisions merge line for free", async () => {
+  it("carries the clause into the gate the merge route answers for free", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
     await greenTests(t);
     await recordAudit(t, { chunks: WHOLE_DIFF });
-    expect((await mergeReport(t)).status).toBe(200);
-    const scheduled = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("sendDecision"),
-      ),
-    );
-    // internalRecordMerge joins the `why` strings into the decision's
-    // reason, so the coverage reaches Tom wherever the gate's answer does.
-    expect((scheduled[0].args[0] as { reason: string }).reason).toContain(
-      "12 of 12 chunks, 1.4 M of 1.4 M characters",
-    );
+    const merged = await mergeReport(t);
+    expect(merged.status).toBe(200);
+    // The route answers the gate it merged on, the audit's `why` with it, so
+    // the coverage reaches wherever the gate's answer does.
+    const audit = (await merged.json()).gate.checks.find((c: { name: string }) => c.name === "audit");
+    expect(audit.why).toContain("12 of 12 chunks, 1.4 M of 1.4 M characters");
   });
 });
 

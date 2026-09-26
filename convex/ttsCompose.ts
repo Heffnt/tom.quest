@@ -92,8 +92,7 @@ export const SECTION_CAPS = {
 // ── Display text ─────────────────────────────────────────────────────────────
 
 /** Slack mrkdwn reserves these three inside message text and link labels. The
- *  ONE copy: convex/ttsDigest.ts and convex/ttsHourlyText.ts each had their
- *  own, byte-identical (VQC C1). */
+ *  ONE copy (VQC C1). */
 export function slackEscape(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -226,29 +225,6 @@ function lineFaults(line: Line, index: number, opts: { canReply: boolean }): str
     faults.push(`${name} invites a reply the route cannot receive`);
   }
   return faults;
-}
-
-/** A FAULT COSTS THE LINE, NEVER THE MESSAGE. Every sender calls this before
- *  posting: each line that breaks the form on its own is dropped, a lead left
- *  with no item under it goes with them, and the faults come back for the
- *  caller to log. A message that is still over MESSAGE_MAX_CHARS afterwards is
- *  cut by `fit`; one that still breaks the form is posted anyway, because a
- *  malformed statement must not cost Tom the morning. */
-export function dropFaultyLines(
-  m: Message,
-  opts: { canReply: boolean },
-): { message: Message; faults: string[] } {
-  const faults = checkMessage(m, opts);
-  if (faults.length === 0) return { message: m, faults };
-  const kept = m.lines.filter((line, index) => lineFaults(line, index, opts).length === 0);
-  const pruned = kept.filter((line, index) => {
-    if (line.role !== "lead") return true;
-    for (let i = index + 1; i < kept.length && kept[i].role !== "lead"; i += 1) {
-      if (kept[i].role === "item") return true;
-    }
-    return false;
-  });
-  return { message: { ...m, lines: pruned }, faults };
 }
 
 // ── The renderer ─────────────────────────────────────────────────────────────
@@ -555,8 +531,6 @@ export type NeedsYouFacts = {
   sourceUrl?: string | null;
 };
 
-export type DecisionFact = ObjectionFact;
-
 export type CaptureFact = { todoId: string; statement: string };
 
 export type ContinuedFact = {
@@ -566,57 +540,6 @@ export type ContinuedFact = {
   status: string;
 };
 
-// ── The hourly facts (moved here from convex/ttsHourlyText.ts, unchanged) ────
-
-export type RunningSession = {
-  sessionId: string;
-  title: string;
-  kind: string;
-  mode: string;
-  status: string;
-  statement: string | null; // the todo it is on
-  /** The todo it is on; null when it is on none. */
-  todoId: string | null;
-  elapsedMs: number;
-};
-
-/** One todo worked in the window: the sessions on it that were live or ended
- *  inside it. */
-export type TodoWorked = {
-  todoId: string;
-  statement: string;
-  sessions: number;
-};
-
-export type ChangeKind =
-  | "captured"
-  | "done"
-  | "archived"
-  | "ruling"
-  | "date-outcome"
-  | "failure";
-
-export type Change = {
-  kind: ChangeKind;
-  at: number;
-  text: string; // the todo's statement, the session's title, or the failure
-  detail: string | null; // verdict, outcome, source, error
-  link: string | null;
-  /** On a capture the triage judged to need Tom today: its reason, "" when it
-   *  gave none. Absent on every other change. */
-  needsYouToday?: string;
-};
-
-export type HourlyFacts = {
-  now: number;
-  since: number;
-  /** "13:00", already spelled; absent when the window is the last hour. */
-  sinceLabel?: string;
-  running: RunningSession[];
-  todosWorked: TodoWorked[];
-  changes: Change[];
-};
-
 export function elapsedText(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 1) return "<1m";
@@ -624,10 +547,6 @@ export function elapsedText(ms: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}m`;
-}
-
-export function isQuietHour(f: HourlyFacts): boolean {
-  return f.running.length === 0 && f.todosWorked.length === 0 && f.changes.length === 0;
 }
 
 // ── Sentence builders ────────────────────────────────────────────────────────
@@ -759,12 +678,6 @@ const OVERNIGHT_LEAD = "Overnight, the box's sessions worked on these todos.";
 /** The box-changes run's lead (plan-root T1). */
 export const BOX_LEAD = "What ran as root and what changed on the Jarvis Box.";
 
-function joinClauses(parts: string[]): string {
-  if (parts.length <= 1) return parts.join("");
-  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
-  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-}
-
 /** WHAT IT MEANS FOR HIM FIRST, then the detail, then how many times — in one
  *  sentence, so `statement` cuts the detail before it cuts the meaning. */
 export function brokenLine(b: BrokenFact): string {
@@ -830,7 +743,8 @@ function objectionSentCount(f: TodayFacts): number {
 
 /**
  * The objection list's lead. TWO KINDS SHARE THE LIST and the lead names each
- * for what it is: the delegate DECIDED things in his name, and the box MERGED
+ * for what it is: things were DECIDED in his name (the delegate's decisions, a
+ * ruling read from his words, a model-of-Tom line the nightly wrote), and the box MERGED
  * things that passed three mechanical gates with nobody deciding anything. A
  * morning of merges credited to the delegate is a false statement about who
  * acted, which is the one thing this list exists to let him object to.
@@ -844,7 +758,7 @@ export function objectionsLead(all: number, merges: number, sent = 0): string {
   if (sent > 0) {
     const went = `${countWord(sent)} ${plural(sent, "message", "messages")} went out on your sign-off`;
     const others: string[] = [];
-    if (decided > 0) others.push(`the delegate decided ${countWord(decided)} ${plural(decided, "thing", "things")}`);
+    if (decided > 0) others.push(`${countWord(decided)} ${plural(decided, "thing was", "things were")} decided in your name`);
     if (merges > 0) {
       others.push(`${countWord(merges)} ${plural(merges, "merge", "merges")} landed on ${plural(merges, "its", "their")} own`);
     }
@@ -852,13 +766,13 @@ export function objectionsLead(all: number, merges: number, sent = 0): string {
     return `${capitalise(others.join(", "))} and ${went}; ${stand}.`;
   }
   if (merges === 0) {
-    return `The delegate decided ${countWord(all)} ${plural(all, "thing", "things")} while you were asleep; ${stand}.`;
+    return `${capitalise(countWord(all))} ${plural(all, "thing was", "things were")} decided in your name while you were asleep; ${stand}.`;
   }
   const landed = `${countWord(merges)} ${plural(merges, "merge", "merges")} landed on ${plural(merges, "its", "their")} own`;
   if (decided === 0) {
     return `${capitalise(landed)} while you were asleep; ${stand}.`;
   }
-  return `The delegate decided ${countWord(decided)} ${plural(decided, "thing", "things")} while you were asleep and ${landed}; ${stand}.`;
+  return `${capitalise(countWord(decided))} ${plural(decided, "thing was", "things were")} decided in your name while you were asleep and ${landed}; ${stand}.`;
 }
 
 // ── The seven kinds ──────────────────────────────────────────────────────────
@@ -1097,57 +1011,6 @@ export function composeNeedsYou(f: NeedsYouFacts, o: { canReply: boolean }): Mes
   };
 }
 
-/** The hourly line: one sentence, one link, no title, no sections — and NO
- *  MESSAGE AT ALL when nothing changed. The `kind` and `mode` enumerations
- *  (focus-item, adhoc, autonomous) are never printed; the only one that
- *  survives is the fact of being unattended, spelled "on its own". */
-export function composeHourly(f: HourlyFacts): Message | null {
-  if (isQuietHour(f)) return null;
-  const clauses: string[] = [];
-  if (f.running.length === 1) {
-    const s = f.running[0];
-    const alone = s.mode === "autonomous" ? " on its own" : "";
-    const on = s.statement === null ? "" : ` ${stripStop(s.statement)}`;
-    clauses.push(
-      `${linked(s.title, sessionUrl(s.sessionId))} has been working${on}${alone} for ${elapsedText(s.elapsedMs)}`,
-    );
-  } else if (f.running.length > 1) {
-    const on = f.running.find((s) => s.statement !== null);
-    const count = capitalise(countWord(f.running.length));
-    clauses.push(
-      on !== undefined
-        ? `${count} sessions are working, one of them on ${linked(stripStop(on.statement as string), on.todoId === null ? sessionUrl(on.sessionId) : itemUrl(on.todoId))}`
-        : `${count} ${linked("sessions", sessionUrl(f.running[0].sessionId))} are working`,
-    );
-  } else if (f.todosWorked.length > 0) {
-    const w = f.todosWorked[0];
-    clauses.push(
-      `${capitalise(countWord(f.todosWorked.length))} ${plural(f.todosWorked.length, "todo", "todos")} moved, ${linked(w.statement, itemUrl(w.todoId))} among them`,
-    );
-  }
-  const changed = changeClauses(f.changes);
-  const tail = changed.length > 0 ? joinClauses(changed) : clauses.length > 0 ? "nothing else changed" : null;
-  const since = f.sinceLabel ? ` since ${f.sinceLabel}` : "";
-  const line = (parts: string[]) =>
-    `${joinWithAnd(parts.map((part, i) => (i === 0 ? capitalise(part) : part)))}${since}.`;
-  const withTail = tail === null ? clauses : [...clauses, tail];
-  // A capture the triage judged to need him today is ALWAYS said: no worker
-  // raises it with him directly (Tom, 2026-09-21), so this line and the
-  // morning message are where he hears of it. The clause is tried from most
-  // to least detail; when even its count will not fit, the hour's other
-  // clauses (what ran, what moved) give way to it, and the
-  // counts of what changed stay beside it.
-  const needs = needsYouClauses(f.changes);
-  if (needs.length === 0) return { firstLine: line(withTail), lines: [] };
-  const fitted = needs.find((clause) => line([...withTail, clause]).length <= FIRST_LINE_CHARS);
-  return {
-    firstLine: fitted !== undefined
-      ? line([...withTail, fitted])
-      : line([...(tail === null ? [] : [tail]), needs[needs.length - 1]]),
-    lines: [],
-  };
-}
-
 /** A message an agent proposes to send in Tom's name (convex/ttsSignoff.ts):
  *  who it is for and where it goes, NEVER its text. He reads the text where he
  *  signs it, on /tts beside the two controls, so Slack holds no copy of a
@@ -1165,123 +1028,6 @@ export function composeProposalAsk(f: ProposalAskFacts): Message {
   return {
     firstLine: first.length <= FIRST_LINE_CHARS ? first : `An agent proposes ${what} in your name. ${hold}`,
     lines: [{ role: "item", text: "Open it to read the text, then sign or decline it.", url: TAB_EVERYTHING }],
-  };
-}
-
-/** The hourly line's needs-you-today clause, most detail first: the item by
- *  its first clause with its link and reason, then without the reason, then a
- *  bare count. Empty when no capture in the hour needs him today. */
-function needsYouClauses(changes: Change[]): string[] {
-  const needs = changes.filter((c) => c.needsYouToday !== undefined);
-  if (needs.length === 0) return [];
-  const first = needs[0];
-  // The first line is posted as Slack markup, and the item and its reason are
-  // words from a mail: escaped, so "<!channel>" or a forged link stays text.
-  const name = shortClause(first.text);
-  const what = first.link === null ? slackEscape(name) : linked(name, first.link);
-  const why = slackEscape(stripStop(first.needsYouToday ?? ""));
-  const count = needs.length === 1 ? "one of the captures needs you today" : `${countWord(needs.length)} of the captures need you today`;
-  if (needs.length > 1) return [`${count}, ${what} among them`, count];
-  return [...(why !== "" ? [`${what} needs you today because ${lowerFirst(why)}`] : []), `${what} needs you today`, count];
-}
-
-function joinWithAnd(parts: string[]): string {
-  return parts.length <= 1
-    ? parts.join("")
-    : `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
-}
-
-/** The raw labels captured:/done:/archived:/ruling:/date outcome:/failure: are
- *  gone; the counts are stated as sentences instead. */
-function changeClauses(changes: Change[]): string[] {
-  const count = (kind: ChangeKind) => changes.filter((c) => c.kind === kind).length;
-  const out: string[] = [];
-  const captured = count("captured");
-  const done = count("done");
-  const dates = count("date-outcome");
-  const failures = count("failure");
-  if (captured > 0) out.push(`${captured} ${plural(captured, "todo was", "todos were")} captured`);
-  if (done > 0) out.push(`${done} finished`);
-  if (dates > 0) out.push(`${dates} ${plural(dates, "date", "dates")} moved`);
-  if (failures > 0) out.push(`${failures} ${plural(failures, "job", "jobs")} failed`);
-  return out;
-}
-
-/** A decision the delegate took, the moment it took it. The default is
- *  silence, and silence is consent. */
-export function composeDecision(f: DecisionFact, o: { canReply: boolean }): Message {
-  const url = f.todoId ? itemUrl(f.todoId) : TAB_EVERYTHING;
-  if (f.refused) {
-    const lines: Line[] = [
-      {
-        role: "item",
-        section: "decision",
-        text: statement(
-          `It would have ${stripStop(f.decision)}${f.fallback ? `; instead the agent ${stripStop(f.fallback)}` : ""}`,
-        ),
-        url,
-      },
-    ];
-    note(lines, "decision", o.canReply, "reply with what to do, or leave it parked.");
-    return {
-      firstLine: `Parked for you: ${lowerFirst(
-        stripStop(f.refusedBecause ?? "it is not a decision an agent may take in your name"),
-      )}. Nothing was done in your name.`,
-      lines,
-    };
-  }
-  const lines: Line[] = [
-    {
-      role: "item",
-      section: "decision",
-      text: statement(
-        `${capitalise(stripStop(f.decision))}${f.reason ? `, because ${stripStop(f.reason)}` : ""}`,
-      ),
-      url,
-    },
-  ];
-  note(lines, "decision", o.canReply, 'reply "revert", or say what to do instead.');
-  return { firstLine: "Object if this is wrong; silence means it stands.", lines };
-}
-
-/** One removal-loop pull request, in #tts-simplify: the one thing it removes,
- *  a link to it, and what silence does. `round` counts the rewrites his
- *  replies have asked for; a rewritten pull request says so, because the
- *  message restarts the day he has to object. */
-export type RemovalFact = {
-  pr: number;
-  url: string;
-  subject: string;
-  reason?: string;
-  round?: number;
-};
-
-export function composeRemoval(f: RemovalFact, o: { canReply: boolean }): Message {
-  const lines: Line[] = [
-    {
-      role: "item",
-      section: "removal",
-      text: statement(`${capitalise(stripStop(f.subject))}${f.reason ? `, because ${stripStop(f.reason)}` : ""}`),
-      url: f.url,
-    },
-  ];
-  note(lines, "removal", o.canReply, 'reply "revert" to close it, or say what to change and the branch is rewritten.');
-  const firstLine =
-    (f.round ?? 0) > 0
-      ? `Pull request ${f.pr} was rewritten after your reply; it merges after the next digest unless you object again.`
-      : `Pull request ${f.pr} removes one thing; it merges after the next digest unless you object.`;
-  return { firstLine, lines };
-}
-
-/** A failure, in #tts-broken. A failure with no link is one line and no item
- *  lines — the single case where a message is its first line alone, which the
- *  form allows. */
-export function composeBroken(f: BrokenFact): Message {
-  const firstLine = statement(f.statement);
-  if (f.detail === undefined || f.url === undefined) return { firstLine, lines: [] };
-  return {
-    firstLine,
-    lines: [{ role: "item", section: "broken", text: brokenLine(f), url: f.url }],
   };
 }
 
@@ -1317,27 +1063,26 @@ export function composeContinued(f: ContinuedFact): Message {
   };
 }
 
-// ── The facts block (Tom 2026-09-09, amendment 2) ────────────────────────────
-// The composer's job for the two Fable-written kinds is to gather the day's
-// facts deterministically, each with an id, its link and its numbers, and to
-// store the block on the digest event so the transcript shows the inputs. The
-// Fable run receives the block and writes the message; the verifier below
-// checks every link and every number in what it wrote against the block.
+// ── The facts block ──────────────────────────────────────────────────────────
+// The day's facts, each with an id, its link and its numbers: the digest is
+// rendered from them (composeToday), and the record keeps them beside the
+// text, so what the digest said can be read as data and not only as prose.
+// No model writes from them any more (Tom, 2026-09-26: "A list of what ran is
+// more trustworthy than prose about it"), so nothing checks a draft against
+// them.
 
 export type Fact = {
-  /** A fact every written draft must cite on some line: verifyDraft refuses
-   *  a draft that leaves one out, and the plain template, which says it, posts
-   *  instead. Set on each item that needs Tom today, which no one else tells
-   *  him (Tom, 2026-09-21). */
+  /** A fact the digest prints on a line of its own: each item that needs
+   *  Tom today, which no one else tells him (Tom, 2026-09-21). */
   required?: true;
   id: string;
-  /** The deterministic sentence about this fact — what the writer writes FROM. */
+  /** The deterministic sentence about this fact. */
   text: string;
   urls: string[];
   numbers: string[];
 };
 
-export type FactsBlock = {
+type FactsBlock = {
   kind: "today" | "needs-you";
   day: string;
   canReply: boolean;
@@ -1420,153 +1165,4 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
   });
   for (const b of f.boxChanges ?? []) facts.push(fact(b.id, b.text, [b.url]));
   return { kind: "today", day: f.day, canReply, facts };
-}
-
-export function needsYouFactsBlock(
-  f: NeedsYouFacts,
-  day: string,
-  canReply: boolean,
-): FactsBlock {
-  const facts: Fact[] = [
-    fact(`todo:${f.todoId}`, f.statement, [itemUrl(f.todoId)]),
-    fact("reason", f.reason, []),
-  ];
-  if (f.entryAction) facts.push(fact("entry-action", f.entryAction, []));
-  if (f.sourceUrl) facts.push(fact("source", "Open the message it came from.", [f.sourceUrl]));
-  return { kind: "needs-you", day, canReply, facts };
-}
-
-/** What a Fable run hands back: the same Message shape, plus the fact ids each
- *  line was written from. The citations never reach Slack — they are what lets
- *  a mechanical verifier reject an invented link or an invented number without
- *  judging prose. */
-export type DraftLine = Line & { sources: string[] };
-export type Draft = {
-  firstLine: string;
-  firstLineSources: string[];
-  lines: DraftLine[];
-};
-
-export function draftMessage(draft: Draft): Message {
-  return {
-    firstLine: draft.firstLine,
-    lines: draft.lines.map((line) =>
-      line.role === "item"
-        ? { role: "item", text: line.text, url: line.url, section: line.section }
-        : { role: line.role, text: line.text, section: line.section },
-    ),
-  };
-}
-
-/** THE RULED ORDER, ENFORCED ON A WRITTEN DRAFT. `composeToday` prints the
- *  sections in SECTION_ORDER by construction; a Fable-written draft can put
- *  them in any order it likes, and "the objection list is second" is a ruling,
- *  not a preference. Every lead that names one of the ranked sections is read
- *  in printed order and must not run backwards. A lead naming the calendar (or
- *  naming no section at all — the other message kinds have one run and leave it
- *  undefined) is passed over: the calendar is his day, not a ranked list, and
- *  `fit` moves it in printed order like any other run. */
-function sectionOrderFaults(lines: { text: string; role: string; section?: string }[]): string[] {
-  const ranked = SECTION_ORDER as readonly string[];
-  const faults: string[] = [];
-  let highest = -1;
-  let highestName = "";
-  for (const line of lines) {
-    if (line.role !== "lead" || line.section === undefined) continue;
-    const rank = ranked.indexOf(line.section);
-    if (rank < 0) continue;
-    if (rank < highest) {
-      faults.push(
-        `the "${line.section}" run is printed after the "${highestName}" run, against the ruled order`,
-      );
-    } else {
-      highest = rank;
-      highestName = line.section;
-    }
-  }
-  return faults;
-}
-
-/**
- * THE VERIFIER. Every link and every number in the draft must exist in the
- * facts block, on a fact the LINE ITSELF cites; the sections must be in the
- * ruled order; and the draft must obey the form (checkMessage). Empty array =
- * it may be posted. On a fault the caller retries ONCE with the complaint,
- * then falls back to the plain template, and records which happened — the
- * morning is never silent.
- */
-export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
-  const byId = new Map(block.facts.map((f) => [f.id, f]));
-  const faults: string[] = [];
-  const lines = [
-    {
-      label: "the first line",
-      text: draft.firstLine,
-      url: undefined as string | undefined,
-      sources: draft.firstLineSources ?? [],
-      role: "first",
-    },
-    ...draft.lines.map((line, index) => ({
-      label: `line ${index + 1} ("${line.text.slice(0, 40)}")`,
-      text: line.text,
-      url: line.role === "item" ? line.url : undefined,
-      sources: line.sources ?? [],
-      role: line.role as string,
-    })),
-  ];
-  for (const line of lines) {
-    for (const id of line.sources) {
-      if (!byId.has(id)) faults.push(`${line.label} cites an unknown fact "${id}"`);
-    }
-    const cited = line.sources
-      .map((id) => byId.get(id))
-      .filter((f): f is Fact => f !== undefined);
-    const urls = [...urlTokens(line.text), ...(line.url ? [line.url] : [])];
-    const numbers = numberTokens(line.text);
-    // A note line is the form's own sentence, not a claim about the world: it
-    // carries neither a link nor a number and needs no source.
-    if (line.role === "note") {
-      if (urls.length > 0 || numbers.length > 0) {
-        faults.push(`${line.label} is a reply invitation carrying a link or a number`);
-      }
-      continue;
-    }
-    if (cited.length === 0 && (urls.length > 0 || numbers.length > 0)) {
-      faults.push(`${line.label} carries a link or a number and cites no fact`);
-    }
-    for (const url of urls) {
-      if (!cited.some((f) => f.urls.includes(url))) {
-        faults.push(`${line.label} uses the link ${url}, which is in no fact it cites`);
-      }
-    }
-    for (const number of numbers) {
-      if (!cited.some((f) => f.numbers.includes(number))) {
-        faults.push(`${line.label} uses the number ${number}, which is in no fact it cites`);
-      }
-    }
-  }
-  // A required fact is said on a line of its own: an item line that cites it
-  // AND carries its link, so one line cannot stand in for several items and
-  // the first line or a lead cannot stand in for any.
-  for (const f of block.facts) {
-    if (!f.required) continue;
-    const own = lines.some((line) => line.role === "item" && line.url !== undefined && f.urls.includes(line.url) && line.sources.includes(f.id));
-    if (!own) faults.push(`the draft leaves out the fact "${f.id}", which every message must say on an item line carrying its link`);
-  }
-  // THE OBJECTION LIST STAYS SECOND in a written draft too. A draft names no
-  // sections, so sectionOrderFaults cannot see its order; the lines are read
-  // by what they cite instead, and no needs-you-today line may come before a
-  // line of the objection list. Whether a draft prints the objection list at
-  // all is not checked here, as it never has been: only the needs-you items
-  // are required, above.
-  const lastObjection = lines.reduce((at, line, i) => (line.sources.some((id) => id.startsWith("ask:")) ? i : at), -1);
-  const firstNeeds = lines.findIndex((line) => line.role !== "first" && line.sources.some((id) => id.startsWith("needs-you-today:")));
-  if (firstNeeds >= 0 && firstNeeds < lastObjection) {
-    faults.push("a needs-you-today line is printed before the objection list, against the ruled order");
-  }
-  return [
-    ...faults,
-    ...sectionOrderFaults(draft.lines.map((line) => ({ ...line, role: line.role as string }))),
-    ...checkMessage(draftMessage(draft), { canReply: block.canReply }),
-  ];
 }

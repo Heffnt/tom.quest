@@ -76,7 +76,7 @@ describe("POST /jarvis/event", () => {
     expect(await rows(t, "events")).toHaveLength(1);
   });
 
-  it("runs the job hooks: one line per standing failure, a repeat marked, re-armed by the clean run, all in events", async () => {
+  it("runs the job hooks: one digest failure per standing condition, a repeat marked, re-armed by the clean run, all in events, no Slack post", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
     vi.useFakeTimers();
@@ -88,8 +88,15 @@ describe("POST /jarvis/event", () => {
     // Every accepted post is a row of the record; the repeat names the report it repeats.
     const failures = (await rows(t, "events")).filter((row) => row.kind === "job-failed").sort((a, b) => a.at - b.at);
     expect(failures.map((row) => (row.data as { standingSince?: number }).standingSince)).toEqual([undefined, 1_700_000_000_000]);
-    const lines = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(lines.filter((job) => job.name.includes("sendBroken"))).toHaveLength(1);
+    // The digest's broken section reads the first report and not the repeat;
+    // nothing posts to Slack on either.
+    const standing = await t.run(async (ctx) => {
+      const { failuresInWindow } = await import("./jarvis/jobs");
+      return await failuresInWindow(ctx, 1_700_000_000_000, 1_700_000_100_000);
+    });
+    expect(standing.failed.map((row) => row.at)).toEqual([1_700_000_000_000]);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((job) => job.name.includes("ttsSync"))).toEqual([]);
 
     vi.setSystemTime(1_700_000_120_000);
     const ok = { kind: "job-ok", provenance: { job: "poll-canvas" }, subject: "poll-canvas:canvas-auth" };

@@ -8,7 +8,6 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import {
   liveCodeSessionRulings,
@@ -18,7 +17,6 @@ import {
 import { logEvent } from "./tts";
 import { appendNotes, inboundRowIdOf, NOTES, rowSource } from "./sessionRows";
 import { isIsoDay } from "../shared/markdown-sections.mjs";
-import { redactSecrets } from "../shared/redact.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
@@ -56,7 +54,6 @@ import {
   isLive,
   modelFamily,
   normalizeSessionRepos,
-  ttsSessionLink,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 export { DAEMON_STALE_MS };
@@ -70,56 +67,10 @@ async function getSessionOrThrow(
   return session;
 }
 
-// ── A session that failed (slack-design.md §1.2) ─────────────────────────────
-// THE PER-SESSION EVENT LINE IS GONE. It was switched off from the day it was
-// written and it had no channel of its own: a session recording an outcome is
-// not something Tom does anything about, and it reaches him in the morning
-// message's overnight run. The one case that IS a message is a session that
-// FAILED, and that goes to #tts-broken.
-//
-// The Slack POST is an ACTION (network), so a mutation cannot await it — it is
-// scheduled at runAfter(0) and rides the transaction: if the mutation rolls
-// back, the message is never scheduled at all, so Slack never reports a
-// transition that did not happen.
-//
-// EDGE TRIGGERS ONLY. Every call site below sits on a transition that the
-// surrounding code makes unrepeatable (a live→terminal status patch, an
-// undefined→set outcome). The daemon polls and flushes continuously; a
-// level-triggered check would send one message per flush for the whole time
-// Tom is asleep. #tts-broken dedupes on the job as well, and a session's job
-// name is the session itself, so two failures of one session are one message.
-function notifySessionFailed(
-  ctx: MutationCtx,
-  sessionId: Id<"claudeSessions">,
-  title: string,
-  reason: string | undefined,
-): Promise<Id<"_scheduled_functions">> {
-  return ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
-    job: `session:${sessionId}`,
-    statement: `A session stopped without finishing what it was carrying, so nothing it was doing is done.`,
-    // THE REASON AND THE TITLE ARE FREE TEXT a session wrote about itself, so
-    // both go through the one credential filter (the same redactSecrets
-    // convex/ttsSearch.ts and worker/session-host use) before they can become
-    // a #tts-broken line: a run that printed a token can put it in either.
-    detail: redactSecrets(`${title} stopped: ${reason ?? "no reason was reported"}`),
-    url: ttsSessionLink(sessionId),
-  });
-}
-
-// ONE wording for an outcome event, shared by the daemon's stamp
-// (internalIngest) and the agent's pen (internalRecordOutcome) — the two
-// writers of the same fact must not describe it two ways. Descriptive, one
-// line, no exclamation marks.
-function outcomeEventText(
-  title: string,
-  outcome: "completed" | "errored",
-  summary: string | undefined,
-): string {
-  const said = (summary ?? "").trim();
-  return `session "${title}" recorded its outcome: ${outcome} — ${
-    said === "" ? "no summary reported" : said
-  }`;
-}
+// ── A session that failed ────────────────────────────────────────────────────
+// Not a message of its own (one output channel, 2026-09-26): a session that
+// errored or failed is a line in the digest's broken section, read from its
+// session-outcome / session-ended row (convex/ttsDigest.ts).
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
 
@@ -1723,16 +1674,8 @@ export const internalIngest = internalMutation({
     // EDGE: the outcome field went undefined → set, and it can only make that
     // crossing once (every later ingest reads a defined session.outcome and
     // skips the branch above). The daemon may re-send the same outcome on
-    // every flush of a closing session; only the first one notifies.
+    // every flush of a closing session; only the first one is recorded.
     if (outcomeNewlyApplied && args.outcome !== undefined) {
-      if (args.outcome === "errored") {
-        await notifySessionFailed(
-          ctx,
-          args.sessionId,
-          session.title,
-          args.outcomeSummary ?? outcomeEventText(session.title, args.outcome, args.outcomeSummary),
-        );
-      }
       await logEvent(ctx, "session-outcome", session.todoId, {
         sessionId: args.sessionId,
         title: session.title,
@@ -1775,31 +1718,16 @@ export const internalIngest = internalMutation({
       }
     }
 
-    // EDGE: a failure is reported once, on the live→terminal crossing.
-    // `becameTerminal` requires `!noState` (the session was live at the top of
-    // this transaction AND the payload is not a pre-reopen replay), and the
-    // patch above just made it terminal, so every later flush computes
-    // `terminal === true` and cannot re-fire. The `stale` half is what closes
-    // the reopen hole: a replayed failure flush arrives at a live row again,
-    // and without it Tom would be told twice about one failure.
-    if (becameTerminal && args.status === "failed") {
-      await notifySessionFailed(
-        ctx,
-        args.sessionId,
-        session.title,
-        args.endedReason ?? session.endedReason,
-      );
-    }
-
     // NOTE (review finding): there was a permission-REQUEST insert loop here,
     // with a Slack "waiting on a permission decision" message on the insert
     // edge. It was unreachable: the daemon's unified auto gate allows or denies
     // every tool call itself and has never had a producer for such a request,
     // so the loop could only ever run for a payload no code emits. Removed
-    // rather than left as a promise the system does not keep. The live
-    // needs-you edges are the failed ending above and the first outcome record;
-    // a genuine "this session needs Tom" signal has to be wired to a reachable
-    // edge (a turn that ends with a question), which is new work.
+    // rather than left as a promise the system does not keep. A session that
+    // fails or errors is a line in the digest's broken section (its
+    // session-ended / session-outcome row); a genuine "this session needs Tom"
+    // signal is a needs-you (POST /tts/needs-tom), wired to a reachable edge
+    // (a turn that ends with a question), which is new work.
     // The ack loop that stood here went with the permission table (the lifeos
     // update, phase 7).
 
@@ -1855,14 +1783,6 @@ export const internalRecordOutcome = internalMutation({
     // told once, so an agent that revises its wording three times does not
     // ping Tom three times.
     if (firstRecord) {
-      if (outcome === "errored") {
-        await notifySessionFailed(
-          ctx,
-          normalized,
-          session.title,
-          summary.trim() === "" ? undefined : summary.trim(),
-        );
-      }
       // Same edge, same reason, into the events table the hourly update reads.
       await logEvent(ctx, "session-outcome", session.todoId, {
         sessionId: normalized,
