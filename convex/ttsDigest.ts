@@ -295,7 +295,9 @@ function safeStr(value: unknown): string | undefined {
 /** The failure kinds that are NOT a broken line. "slack-send-failed" is the
  *  Slack door's own: reporting it in a Slack message is a loop. The learning
  *  night that took itself back is said in its own words, from the line the
- *  nightly put on the digest (convex/ttsNightly.ts). */
+ *  nightly put on the digest (convex/ttsNightly.ts). Its row stays, because
+ *  it is the record of the night (the box's output and the reverted changes,
+ *  read on /agents); excluded here, or the digest would say the night twice. */
 const NOT_A_FAILURE_LINE = new Set(["slack-send-failed", LEARNING_CHECK_FAILED]);
 
 export async function gatherTodayFacts(
@@ -473,7 +475,8 @@ export async function gatherTodayFacts(
   };
   // ONE LINE PER FAILED SESSION. A failed flush can write both a
   // session-ended (failed) and a session-outcome (errored) row for one
-  // session; they are one failure, and each session's line keeps its own
+  // session, and both writers stay (the status flush and the outcome stamp in
+  // convex/claudeSessions.ts are each read elsewhere); they are one failure, and each session's line keeps its own
   // link and detail. The first row read names it; a later one only fills a
   // detail the first lacked.
   const sessionFailure = (sessionId: string | undefined, statement: string, detail: string | undefined) => {

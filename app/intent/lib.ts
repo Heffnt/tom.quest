@@ -191,7 +191,10 @@ export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
 // `rule/ruling-<last 8 of the ruling id>`. Both resolve to lines of the list
 // here, in one place, so the page and its tests agree on what "beside" means.
 
-/** The lines one `restedOn` reference names; empty when it names none. */
+/** The lines one `restedOn` reference names; empty when it names none.
+ *  A parser, not an id lookup, because the delegate cites what its prompt
+ *  prints (Jarvis worker/jobs/delegate.mjs: `ruling:<id>`, `path:heading`, or
+ *  a page path and heading), and the /intent line ids are not in that prompt. */
 export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
   const trimmed = ref.trim();
   if (trimmed.startsWith("ruling:")) {
@@ -218,7 +221,9 @@ export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
   return lines.filter((line) => line.source === path && line.section.toLowerCase() === wanted);
 }
 
-/** The ruling id suffix an eval item names, or null for an item that names no line. */
+/** The ruling id suffix an eval item names, or null for an item that names no line.
+ *  Eight characters because that is the name the rule set's writer gives an
+ *  item (Jarvis worker/jobs/evals.mjs on night/s6: `ruling-<id.slice(-8)>`). */
 export function evalItemLineSuffix(name: string): string | null {
   const match = /^rule\/ruling-([a-z0-9]{8})$/.exec(name);
   return match === null ? null : match[1];

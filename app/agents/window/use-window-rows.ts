@@ -13,7 +13,10 @@
 // POINT EVENTS COME FROM TWO TABLES tonight (convex/observe.ts says which kind
 // lives where): the record's `events` (recordInWindow) and the previous
 // generation's dtsEvents (eventsInWindow). Each is walked on its own cursor
-// and the two are merged by time here; no row is in both.
+// and the two are merged by time here; no row is in both. The dtsEvents walk
+// is not for old rows alone: merges, the delegate's ask rows and objections,
+// and the other "-failed" kinds are still WRITTEN there (w4's history copy
+// moved only box changes and job reports), so it goes when their writers move.
 
 import { useEffect, useMemo } from "react";
 import { usePaginatedQuery, useQuery } from "convex/react";
