@@ -1150,25 +1150,35 @@ describe("GET /tts/weekly-input", () => {
 });
 
 // ── The week's two decisions ─────────────────────────────────────────────────
-// What is pinned here is that each finding becomes exactly ONE scheduled
-// sendDecision with the askId the thread is keyed on, that a name whose cases
-// need it is not a decision at all, and that the askId is the whole
-// idempotency key the door has — offered twice in one TTS day, it posts once.
+// What is pinned here is that each finding becomes exactly ONE digest-line
+// row on the digest's objection list, keyed on its askId, that a name whose
+// cases need it is not a decision at all, that nothing posts to Slack, and
+// that the askId is the whole idempotency key — offered twice in one day, it
+// is listed once.
 describe("internalRecordWeeklyEvalsDecisions", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
 
+  // The decisions a week's run put on the digest's objection list: its
+  // digest-line rows (convex/jarvis/outbox.ts listForDigest), oldest first.
+  // Nothing posts to Slack, so every read also checks no send was scheduled.
   function decisions(t: ReturnType<typeof convexTest>) {
-    return t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect())
-        .filter((job) => job.name.includes("sendDecision"))
-        .map((job) => job.args[0] as { askId: string; decision: string; reason?: string }),
-    );
+    return t.run(async (ctx) => {
+      const slack = (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("ttsSync"),
+      );
+      expect(slack).toEqual([]);
+      const rows = (await ctx.db.query("events").collect()).filter((row) => row.kind === "digest-line");
+      return rows.map((row) => {
+        expect(row.subject).toBe((row.data as { askId: string }).askId);
+        return row.data as { section: string; askId: string; decision: string; reason?: string };
+      });
+    });
   }
 
-  it("schedules one decision per graduation, naming the case and Tom's own sentence", async () => {
+  it("lists one decision per graduation in the digest, naming the case and Tom's own sentence", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
       isoWeek: "2026-W37",
@@ -1179,14 +1189,18 @@ describe("internalRecordWeeklyEvalsDecisions", () => {
     });
     const sent = await decisions(t);
     expect(sent).toHaveLength(2);
+    expect(sent.map((line) => line.section)).toEqual(["decisions", "decisions"]);
     expect(sent[0].askId).toBe("golden:run-ruling-8fb2d10a4c3e");
     expect(sent[0].decision).toBe(
       "a capability case graduated into the regression set: say what the batch is for before you list its tasks",
     );
+    expect(sent[0].reason).toBe(
+      "it passed every trial of the weekly run, so from now on a merge that breaks it is a regression",
+    );
     expect(sent[1].askId).toBe("golden:run-ruling-k97x2m4bq1zp");
   });
 
-  it("schedules a decision for a name that did not earn its tokens, and none for one that did", async () => {
+  it("lists a decision in the digest for a name that did not earn its tokens, and none for one that did", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
       isoWeek: "2026-W37",
@@ -1197,15 +1211,16 @@ describe("internalRecordWeeklyEvalsDecisions", () => {
     });
     const sent = await decisions(t);
     expect(sent).toHaveLength(1);
+    expect(sent[0].section).toBe("decisions");
     // The week is half the ask id: next week's finding about `know` is its own
-    // thread, not a reply to this one.
+    // line, not a repeat of this one.
     expect(sent[0].askId).toBe("ablation:know:2026-W37");
     expect(sent[0].decision).toBe("know did not earn its tokens this week: 7 cases, 5 pass with it, 6 without");
     expect(sent[0].reason).toContain("the weekly simplification pass");
     expect(sent[0].reason).toContain("gates nothing");
   });
 
-  it("schedules nothing when the week graduated nothing and every name earned its tokens", async () => {
+  it("lists nothing when the week graduated nothing and every name earned its tokens", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
       isoWeek: "2026-W37",
@@ -1222,28 +1237,23 @@ describe("internalRecordWeeklyEvalsDecisions", () => {
     ).rejects.toThrow(/isoWeek/);
   });
 
-  // THE askId IS THE IDEMPOTENCY KEY. sendDecision claims `object:<askId>` for
-  // the TTS day before it posts, so the second offer of one graduation on one
-  // day — a `--overwrite` rerun of the Friday job — posts nothing.
-  it("posts one message for a graduation offered twice in a day", async () => {
+  // THE askId IS THE IDEMPOTENCY KEY. A graduation offered twice in a day — a
+  // `--overwrite` rerun of the Friday job — is one line on the digest
+  // (convex/jarvis/outbox.ts listForDigest), and nothing is posted.
+  it("lists a graduation offered twice in a day once, and posts nothing", async () => {
     const t = convexTest(schema, modules);
-    await t.run(async (ctx) => ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }));
-    const posts: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: { body?: string }) => {
-        posts.push((JSON.parse(init?.body ?? "{}") as { text: string }).text);
-        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
-      }),
-    );
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
-    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "C0DECISIONS");
     const args = {
-      askId: "golden:run-ruling-8fb2d10a4c3e",
-      decision: "a capability case graduated into the regression set: name the cost of each side",
+      isoWeek: "2026-W39",
+      graduated: [{ id: "run-ruling-8fb2d10a4c3e", sentence: "name the cost of each side" }],
     };
-    expect(await t.action(internal.ttsSync.sendDecision, args)).toEqual({ sent: true });
-    expect(await t.action(internal.ttsSync.sendDecision, args)).toMatchObject({ sent: false });
-    expect(posts).toHaveLength(1);
+    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, args);
+    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, args);
+    const lines = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((row) => row.kind === "digest-line"),
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ subject: "golden:run-ruling-8fb2d10a4c3e", data: { section: "decisions" } });
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((job) => job.name.includes("ttsSync"))).toEqual([]);
   });
 });

@@ -483,71 +483,6 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
 
-// ── The Fable writer's two doors (Tom 2026-09-09, amendment 2) ──────────────
-// The morning message is written by a Fable run on the Jarvis Box, not filled
-// into a template. Convex cannot run a model, so the 5 a.m. cron opens a
-// DRAFT REQUEST carrying the deterministic facts block and returns; the box
-// job (worker/jobs/write-slack.mjs) reads the open requests here, writes the
-// message, and submits it. The verifier runs in the SUBMIT mutation, so a
-// draft that invents a link or a number is refused by Convex rather than by
-// the thing that wrote it.
-//
-// GET /tts/slack-drafts — the open requests, newest first. Each carries the
-// facts block, whether a reply invitation may be printed, and the complaints
-// from an earlier attempt (which is what the one repair turn is written
-// against).
-const ttsSlackDrafts = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const open = await ctx.runQuery(internal.ttsSlackDrafts.internalOpenDraftRequests, {});
-  return jsonResponse(200, { ok: true, requests: open });
-});
-
-http.route({ path: "/tts/slack-drafts", method: "GET", handler: ttsSlackDrafts });
-
-// POST /tts/slack-draft — one written draft. Body: { requestId, draft }, where
-// `draft` is { firstLine, firstLineSources, lines: [{ role, text, url?,
-// sources }] }. The answer says whether it was accepted and, when it was not,
-// every complaint the verifier made and whether this was the last attempt.
-const ttsSlackDraftSubmit = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.requestId !== "string" || b.requestId.trim().length === 0) {
-    return jsonResponse(400, { error: "requestId (non-empty string) required" });
-  }
-  if (b.draft === null || typeof b.draft !== "object") {
-    return jsonResponse(400, { error: "draft (object) required" });
-  }
-  // The token of the run that wrote this draft — the edge an emoji on the
-  // morning follows back to the run that earned it. The template path sends
-  // none and none is invented.
-  const oldToken = oldSpelling(b, { runToken: "agentToken" });
-  if (oldToken) return jsonResponse(400, { error: oldToken });
-  const agentToken = b.agentToken;
-  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
-    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
-  }
-  try {
-    const result = await ctx.runMutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
-      requestId: b.requestId,
-      draft: b.draft,
-      runToken: typeof agentToken === "string" ? agentToken : undefined,
-    });
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/slack-draft", method: "POST", handler: ttsSlackDraftSubmit });
-
 // POST /tts/canvas-assignments — the Canvas assignments worker/jobs/
 // poll-canvas.mjs read this run (the lifeos update, phase 6). Body:
 // { assignments: [{ externalId, courseCode, name, htmlUrl, dueAt, submitted }] }.
@@ -596,9 +531,7 @@ http.route({
 // (the lifeos update, phase 6). Body: { job, error, key? }.
 //
 // This is the channel convex/ttsDigest.ts already reads: every "-failed" event
-// kind becomes a line in the morning digest's job-failures section, and
-// convex/ttsHourly.ts names "job-failed" among the kinds the hourly update
-// reports. Until now nothing on the Jarvis Box could write one — a cron job's
+// kind becomes a line in the morning digest's job-failures section. Until now nothing on the Jarvis Box could write one — a cron job's
 // only voice was /var/log/tts, which Tom does not read. An expired Canvas
 // token is the first thing that speaks through here.
 //

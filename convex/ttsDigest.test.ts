@@ -9,18 +9,14 @@ import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DIGEST_SENT,
   ROLLOVER_NOTE,
-  SLACK_FAILED,
-  SLACK_SENT,
-  WIKITOM_UNREADABLE,
   calendarLeadText,
   isPassedWithoutOutcome,
   latenessText,
   objectionRank,
   stripNarrowListId,
-  todaySubject,
 } from "./ttsDigest";
 import { MESSAGE_MAX_CHARS, TAB_EVERYTHING } from "./ttsCompose";
-import { nyCalendarDayBoundsUtc, ttsDayKey, ttsItemLink, ttsSessionLink } from "./ttsShared";
+import { nyCalendarDayBoundsUtc, ttsItemLink, ttsSessionLink } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -508,8 +504,10 @@ describe("internalComposeToday", () => {
     }
     vi.setSystemTime(FIVE_AM);
     const first = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
-    await t.mutation(internal.tts.internalMarkDigestSent, {
-      day: DAY_KEY, surfacedTodoIds: first.surfacedTodoIds, windowEnd: FIVE_AM + 1, truncated: first.truncated,
+    // The box records the digest it posted; the hook marks what it showed.
+    await t.mutation(internal.jarvis.events.record, {
+      kind: "digest-sent",
+      data: { day: DAY_KEY, surfacedTodoIds: first.surfacedTodoIds, windowEnd: FIVE_AM + 1, truncated: first.truncated },
     });
     const shownFirst = ids.filter((id) => first.text.includes(ttsItemLink(id)));
     expect(shownFirst.length).toBeLessThan(40);
@@ -802,7 +800,7 @@ describe("internalComposeToday", () => {
 
   // A merge is reported for objection too, and its wording never assigns it to
   // the delegate: nothing was decided in Tom's name, three checks passed.
-  it("reports a mechanically gated merge in the same list, with no askId of its own", async () => {
+  it("reports a mechanically gated merge in the same list, under its own key", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -825,9 +823,9 @@ describe("internalComposeToday", () => {
       canReply: true,
     });
     expect(text).toContain("1. Merged tom.quest@a1b2c3d: the mechanical merge gate.");
-    // Its number names no askId: a merge is not a delegate decision, so a
-    // reply that types its number falls through to the ordinary paths.
-    expect(objectionAskIds).toEqual([""]);
+    // Its number names the merge's own key: "revert 1" objects to the merge,
+    // as a reply in its #tts-decisions thread did before there was one channel.
+    expect(objectionAskIds).toEqual(["tom.quest:a1b2c3d4e5f6"]);
   });
 
   // A MESSAGE SENT IN HIS NAME on his own sign-off (convex/ttsSignoff.ts) is
@@ -857,7 +855,7 @@ describe("internalComposeToday", () => {
     });
     expect(text).toContain("One message went out on your sign-off.");
     expect(text).toMatch(/1\. Sent as you to Sarah Chen on Slack C0SARAH01, signed at \d\d:\d\d\./);
-    expect(text).not.toContain("The delegate decided");
+    expect(text).not.toContain("decided in your name");
     expect(objectionAskIds).toEqual([""]);
   });
 
@@ -1132,7 +1130,7 @@ describe("internalComposeToday", () => {
       day: DAY_KEY,
       now: FIVE_AM,
     });
-    expect(text).not.toContain("The delegate decided");
+    expect(text).not.toContain("decided in your name");
     expect(objectionAskIds).toEqual([]);
   });
 
@@ -1293,826 +1291,51 @@ describe("internalComposeToday", () => {
   });
 });
 
-describe("sendToday", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
-    vi.useRealTimers();
-  });
+// ── What the channels carried is a section of the digest ─────────────────────
+// One output channel (Tom, 2026-09-26): a producer whose fact the digest reads
+// from a row of its own posts nothing; one whose fact it does not puts a line
+// on the next digest (convex/jarvis/outbox.ts listForDigest), and the digest
+// prints it in the objection list or the broken section.
+describe("the channels' lines, in the digest", () => {
+  const COMPOSE_AT = FIVE_AM + 60_000;
+  const compose = (t: ReturnType<typeof convexTest>) =>
+    t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: COMPOSE_AT, since: FIVE_AM - DAY });
 
-  type SlackReply = { ok: boolean; ts?: string; error?: string } | "throws";
-
-  // One fetch stub for both outbound reads: GitHub (the WikiTom readability
-  // check) and Slack. `github` unset means the deployment has no token that can
-  // see WikiTom — today's state.
-  //
-  // TTS_MORNING_WRITER=off by default here: these tests are about the SEND, and
-  // the Fable path is its own describe below. With the writer on, sendToday
-  // opens a draft request and returns, and nothing reaches Slack until the box
-  // answers or the five-minute timeout fires.
-  function stubSlack(
-    reply: SlackReply | SlackReply[],
-    github?: { status: number; body?: unknown },
-  ) {
-    // One reply, or one per call in order (the last one repeats).
-    const replies = Array.isArray(reply) ? [...reply] : null;
-    let current: SlackReply = Array.isArray(reply) ? reply[0] : reply;
-    const slack: { body: { channel: string; text: string } }[] = [];
-    const githubUrls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string, init?: { body?: string }) => {
-        if (typeof url === "string" && url.startsWith("https://api.github.com/")) {
-          githubUrls.push(url);
-          return {
-            ok: github!.status >= 200 && github!.status < 300,
-            status: github!.status,
-            json: async () => github!.body ?? [],
-          };
-        }
-        slack.push({ body: JSON.parse(init?.body ?? "{}") });
-        if (replies) {
-          const next = replies.shift();
-          if (next !== undefined) current = next;
-        }
-        if (current === "throws") throw new Error("network down");
-        const answer = current;
-        return { ok: true, status: 200, json: async () => answer };
-      }),
-    );
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
-    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "C0TTS");
-    vi.stubEnv("TTS_MORNING_WRITER", "off");
-    // Stubbed either way, so a token in the developer's own environment never
-    // turns a test into a real GitHub read.
-    vi.stubEnv("GITHUB_MIRROR_TOKEN", github ? "ghp-test" : undefined);
-    return { slack, githubUrls };
-  }
-
-  it("rolls, composes, posts to #tts-today, and records the send once per day", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM + 5 * 60_000); // 05:05 EDT: inside the 5 a.m. hour
+  it("a model-of-Tom line and a failed learning night are lines on the digest, and nothing is posted", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIVE_AM - 3_600_000);
     const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const passed = Date.UTC(2026, 8, 4, 16);
-    const late = await tom.mutation(api.tts.createTodo, { statement: "pay rent", dueAt: passed });
-    const { slack } = stubSlack({ ok: true, ts: "1757062800.000100" });
-
-    await t.action(internal.ttsSync.sendToday, {});
-    expect(slack).toHaveLength(1);
-    expect(slack[0].body.channel).toBe("C0TTS");
-    expect(slack[0].body.text).toContain("Pay rent");
-    // The WikiTom COMMIT LIST is not a section any more: a changelog is not a
-    // morning read. An unreadable WikiTom is a #tts-broken line instead, and
-    // #tts-broken has no channel here, so nothing is posted for it.
-    expect(slack[0].body.text).not.toContain(WIKITOM_UNREADABLE);
-
-    // The ONE door recorded the send, with the morning message's subject, so a
-    // threaded reply from Tom is routed back to it (convex/ttsSlack.ts).
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    const sent = events.filter((e) => e.kind === SLACK_SENT);
-    expect(sent).toHaveLength(1);
-    expect(sent[0].data).toMatchObject({
-      channel: "C0TTS",
-      ts: "1757062800.000100",
-      subject: todaySubject(ttsDayKey(Date.now())),
-    });
-    // The morning's own row carries the day, the window, which path wrote it,
-    // and THE FACTS BLOCK — the inputs, in the transcript, next to the output.
-    // The day's own row is in the record's events table (convex/jarvis/digest.ts).
-    const marked = await t.run(async (ctx) =>
-      (await ctx.db.query("events").collect()).filter((e) => e.kind === DIGEST_SENT),
-    );
-    expect(marked).toHaveLength(1);
-    expect(marked[0].data).toMatchObject({
-      day: DAY_KEY,
-      truncated: false,
-      writtenBy: "template",
-    });
-    expect((marked[0].data as { windowEnd: number }).windowEnd).toBe(Date.now());
-    expect((marked[0].data as { facts: { kind: string } }).facts.kind).toBe("today");
-    expect(events.some((e) => e.kind === "surfaced" && e.todoId === late)).toBe(true);
-
-    // The same day again: the digest-sent row is the dedupe key, nothing posts.
-    await t.action(internal.ttsSync.sendToday, {});
-    expect(slack).toHaveLength(1);
-  });
-
-  // The morning of 2026-09-06: about sixty due-and-overdue items, most of them
-  // code todos. Slack cut that digest into ten messages; it is one now, and the
-  // row says the runs were reduced to fit.
-  it("posts one message for a sixty-item morning and records the truncation", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const long =
-      "Rework the credential file helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output and a printed token is a leaked token forever afterwards.";
-    await t.run(async (ctx) => {
-      for (let i = 0; i < 60; i++) {
-        await ctx.db.insert("dtsTodos", {
-          statement: `${i}: ${long}`,
-          entryAction: `open the file and read the helper before touching it, ${i}`,
-          status: "active",
-          readiness: "unprepared",
-          timingClass: "dated",
-          source: "tom",
-          dueAt: FIVE_AM - (60 - i) * DAY,
-          createdAt: FIVE_AM - 90 * DAY,
-          updatedAt: FIVE_AM - 90 * DAY,
-        });
-      }
-      for (let i = 0; i < 30; i++) {
-        await ctx.db.insert("dtsTodos", {
-          statement: `ready ${i}: ${long}`,
-          status: "active",
-          readiness: "prepared",
-          timingClass: "whenever",
-          source: "tom",
-          createdAt: FIVE_AM - 90 * DAY,
-          updatedAt: FIVE_AM - 90 * DAY,
-        });
-      }
-    });
-    const { slack } = stubSlack({ ok: true, ts: "1" });
-
-    await t.action(internal.ttsSync.sendToday, {});
-
-    expect(slack).toHaveLength(1);
-    expect(slack[0].body.text.length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
-    // Nothing is cut mid-sentence, at any length.
-    expect(slack[0].body.text).not.toContain("…");
-    // The oldest date survives the cap: an item three weeks late is the one he
-    // needs named in the morning.
-    expect(slack[0].body.text).toContain("0: Rework the credential file helper");
-    const marked = await t.run(async (ctx) =>
-      (await ctx.db.query("events").collect()).filter((e) => e.kind === DIGEST_SENT),
-    );
-    expect(marked).toHaveLength(1);
-    expect(marked[0].data).toMatchObject({ day: DAY_KEY });
-  });
-
-  it("stays quiet before 5 a.m., when the day key still names yesterday", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.UTC(2026, 8, 5, 7)); // 03:00 EDT
-    const t = convexTest(schema, modules);
-    const { slack } = stubSlack({ ok: true, ts: "1" });
-    await t.action(internal.ttsSync.sendToday, {});
-    expect(slack).toHaveLength(0);
-  });
-
-  // Both cron ticks can miss the 5 a.m. hour — a deployment, a Convex delay.
-  // The day is sent late rather than skipped, and still only once.
-  it("sends late when both ticks missed the hour, and only once", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.UTC(2026, 8, 5, 16)); // noon EDT, same TTS day
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const { slack } = stubSlack({ ok: true, ts: "1" });
-
-    await t.action(internal.ttsSync.sendToday, {});
-    expect(slack).toHaveLength(1);
-
-    vi.setSystemTime(Date.UTC(2026, 8, 5, 20)); // 16:00 EDT, still today
-    await t.action(internal.ttsSync.sendToday, {});
-    expect(slack).toHaveLength(1);
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(events.filter((e) => e.kind === SLACK_SENT)).toHaveLength(1);
-  });
-
-  // WikiTom is still read, for ONE fact: whether it can be read at all. Its
-  // commits are not a section (a commit list is a changelog), and an
-  // unreadable repository is a #tts-broken line.
-  it("reads WikiTom over the window and prints none of its commits", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const { slack, githubUrls } = stubSlack({ ok: true, ts: "1" }, {
-      status: 200,
-      body: [
-        {
-          sha: "abc1234def",
-          html_url: "https://github.com/Heffnt/WikiTom/commit/abc1234def",
-          commit: { message: "areas: the health page\nsecond line", author: { name: "Tom" } },
-        },
-      ],
-    });
-    await t.action(internal.ttsSync.sendToday, {});
-    expect(githubUrls).toHaveLength(1);
-    expect(githubUrls[0]).toContain("/repos/Heffnt/WikiTom/commits");
-    expect(githubUrls[0]).toContain(`since=${new Date(FIVE_AM - DAY).toISOString()}`);
-    expect(slack[0].body.text).not.toContain("areas: the health page");
-    expect(slack[0].body.text).not.toContain("abc1234");
-  });
-
-  it("says nothing about WikiTom when GitHub refuses the read", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const { slack } = stubSlack({ ok: true, ts: "1" }, { status: 403 });
-    await t.action(internal.ttsSync.sendToday, {});
-    // The morning message is a morning read: an unreadable repository is a
-    // #tts-broken line, scheduled from the run, not a section here.
-    expect(slack[0].body.text).not.toContain(WIKITOM_UNREADABLE);
-    expect(slack[0].body.text).not.toContain("WikiTom");
-  });
-
-  // #tts-broken's own door, called the way the morning schedules it.
-  it("posts an unreadable WikiTom to #tts-broken, once for the day", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const { slack } = stubSlack({ ok: true, ts: "1" });
-    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "C0BROKEN");
-
-    const first = await t.action(internal.ttsSync.sendBroken, {
-      job: "wikitom-read",
-      statement: WIKITOM_UNREADABLE,
-    });
-    expect(first).toMatchObject({ sent: true });
-    expect(slack).toHaveLength(1);
-    expect(slack[0].body.channel).toBe("C0BROKEN");
-    expect(slack[0].body.text).toContain(WIKITOM_UNREADABLE);
-
-    // Deduped BY JOB for the TTS day: a poller failing every ten minutes posts
-    // once, and the morning message states the count.
-    const second = await t.action(internal.ttsSync.sendBroken, {
-      job: "wikitom-read",
-      statement: WIKITOM_UNREADABLE,
-    });
-    expect(second).toMatchObject({ sent: false });
-    expect(slack).toHaveLength(1);
-  });
-
-  it("posts nothing to #tts-broken while its channel is unset", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const { slack } = stubSlack({ ok: true, ts: "1" });
-    const result = await t.action(internal.ttsSync.sendBroken, {
-      job: "poll-gmail",
-      statement: "Nothing has been captured from email.",
-    });
-    expect(result).toMatchObject({ sent: false, reason: "not configured" });
-    expect(slack).toHaveLength(0);
-  });
-
-  // A blip that clears in seconds must not cost Tom the morning.
-  it("retries the post once in-run and records the send", async () => {
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const { slack } = stubSlack([
-      { ok: false, error: "ratelimited" },
-      { ok: true, ts: "1757062800.000100" },
-    ]);
-    await t.action(internal.ttsSync.sendToday, { force: true });
-    expect(slack).toHaveLength(2);
-    expect(slack[1].body.text).toBe(slack[0].body.text); // the same content
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(events.filter((e) => e.kind === SLACK_SENT)).toHaveLength(1);
-    expect(events.some((e) => e.kind === SLACK_FAILED)).toBe(false);
-  });
-
-  it("records a failed send with the text, and no sent row", async () => {
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const { slack } = stubSlack({ ok: false, error: "channel_not_found" });
-    await t.action(internal.ttsSync.sendToday, { force: true });
-    expect(slack).toHaveLength(2); // the retry failed too
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    const failed = events.filter((e) => e.kind === SLACK_FAILED);
-    expect(failed).toHaveLength(1);
-    expect(failed[0].data).toMatchObject({
-      channel: "C0TTS",
-      subject: todaySubject(ttsDayKey(Date.now())),
-      error: "channel_not_found",
-      attempts: 2,
-    });
-    expect((failed[0].data as { text: string }).text).toContain(
-      "Nothing is dated today and nothing is late.",
-    );
-    expect(events.some((e) => e.kind === SLACK_SENT)).toBe(false);
-    expect(events.some((e) => e.kind === DIGEST_SENT)).toBe(false);
-  });
-
-  // witness: drop `windowEnd` from sendToday's postSlack call and the row
-  // carries only its own `at` — the hourly tick's resend then marks the day at
-  // that later instant, and everything recorded while Slack was refusing is
-  // reported by no morning message.
-  it("records the composition boundary on the failed row, not the clock the failure was written at", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    // Every Slack call costs a minute of clock, so composing, the retry and
-    // the row are three distinct instants rather than one.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        vi.setSystemTime(Date.now() + 60_000);
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ ok: false, error: "channel_not_found" }),
-        };
-      }),
-    );
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
-    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "C0TTS");
-    vi.stubEnv("TTS_MORNING_WRITER", "off");
-    vi.stubEnv("GITHUB_MIRROR_TOKEN", undefined);
-
-    await t.action(internal.ttsSync.sendToday, {});
-
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    const failed = events.filter(
-      (e) =>
-        e.kind === SLACK_FAILED &&
-        (e.data as { subject?: { kind?: string } } | undefined)?.subject?.kind === "today",
-    );
-    expect(failed).toHaveLength(1);
-    expect(failed[0].at).toBeGreaterThan(FIVE_AM); // two calls later
-    expect((failed[0].data as { windowEnd: number }).windowEnd).toBe(FIVE_AM);
-  });
-
-  it("treats a network error as a failed send", async () => {
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    stubSlack("throws");
-    await t.action(internal.ttsSync.sendToday, { force: true });
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    const failed = events.filter((e) => e.kind === SLACK_FAILED);
-    expect(failed.length).toBeGreaterThanOrEqual(1);
-    expect((failed[0].data as { error: string }).error).toBe("network down");
-  });
-
-  it("falls back to SLACK_TTS_CHANNEL_ID when the today channel is unset", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const { slack } = stubSlack({ ok: true, ts: "1" });
-    await t.action(internal.ttsSync.sendToday, { force: true });
-    expect(slack[0].body.channel).toBe("C0TTS");
-  });
-
-  it("prefers the today channel when it is set", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const { slack } = stubSlack({ ok: true, ts: "1" });
-    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
-    await t.action(internal.ttsSync.sendToday, { force: true });
-    expect(slack[0].body.channel).toBe("C0TODAY");
-  });
-});
-
-// ── #tts-decisions (slack-design.md §3.4) ───────────────────────────────────
-// One action: revert. The default is silence, and silence is consent. This is
-// the channel the round exists for — without it Tom can only object at 5 a.m.
-// about a decision taken at 2 p.m., by which time the run that acted on it has
-// finished.
-describe("sendDecision", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
-    vi.useRealTimers();
-  });
-
-  function stub() {
-    const posts: { channel: string; text: string }[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: { body?: string }) => {
-        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
-        posts.push({ channel: body.channel, text: body.text });
-        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
-      }),
-    );
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
-    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "C0DECISIONS");
-    return posts;
-  }
-
-  it("asks for an objection, links the item, and invites no reply while the route is dead", async () => {
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew the passport" });
-    const posts = stub();
-
-    expect(
-      await t.action(internal.ttsSync.sendDecision, {
-        askId: "ask-1",
-        todoId,
-        decision: "moved the passport appointment to Thursday",
-        reason: "the consulate shuts on Wednesdays this month",
-      }),
-    ).toEqual({ sent: true });
-    expect(posts).toHaveLength(1);
-    expect(posts[0].channel).toBe("C0DECISIONS");
-    expect(posts[0].text).toBe(
-      [
-        "Object if this is wrong; silence means it stands.",
-        `- <${ttsItemLink(todoId)}|Moved the passport appointment to Thursday, because the consulate shuts on Wednesdays this month.>`,
-      ].join("\n"),
-    );
-    // The thread carries the ask as its subject, so a bare "revert" in it
-    // needs no number (convex/ttsSlack.ts routeReply, case "ask").
-    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
-    const sent = rows.filter((e) => e.kind === SLACK_SENT);
-    expect(sent).toHaveLength(1);
-    expect(sent[0].data).toMatchObject({ subject: { kind: "ask", id: "ask-1" } });
-  });
-
-  it("invites the reply when the route is live", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const posts = stub();
-    vi.stubEnv("SLACK_SIGNING_SECRET", "shhh");
-    vi.stubEnv("TOM_SLACK_USER_ID", "U0TOM");
-    await t.action(internal.ttsSync.sendDecision, {
-      askId: "ask-2",
-      decision: "left the MOT booked where it was",
-    });
-    expect(posts[0].text).toContain('reply "revert", or say what to do instead.');
-  });
-
-  it("says a refusal is parked, and that nothing was done in his name", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const posts = stub();
-    await t.action(internal.ttsSync.sendDecision, {
-      askId: "ask-3",
-      decision: "emailed the landlord chasing the deposit",
-      refused: true,
-      refusedBecause: "a message to another human in your name",
-      fallback: "left it for you",
-    });
-    expect(posts[0].text).toContain(
-      "Parked for you: a message to another human in your name. Nothing was done in your name.",
-    );
-    expect(posts[0].text).toContain("instead the agent left it for you");
-  });
-
-  // ONE APPEARANCE PER ITEM PER DAY. A decision about an item the morning has
-  // already claimed for "object" is not posted twice in one day — but the
-  // "act" claim is a different ask and does not suppress it, because
-  // suppressing it would silence the objection.
-  it("does not post twice about one item in one day, and is not blocked by the act claim", async () => {
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew the passport" });
-    const posts = stub();
-    await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
-      day: ttsDayKey(Date.now()),
-      ask: "act",
-      itemId: todoId,
-      channel: "today",
-    });
-    const args = { askId: "ask-4", todoId, decision: "moved the appointment" };
-    expect(await t.action(internal.ttsSync.sendDecision, args)).toEqual({ sent: true });
-    expect(await t.action(internal.ttsSync.sendDecision, { ...args, askId: "ask-5" })).toMatchObject(
-      { sent: false },
-    );
-    expect(posts).toHaveLength(1);
-  });
-
-  it("posts nothing while #tts-decisions has no id", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const posts = stub();
-    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "");
-    expect(
-      await t.action(internal.ttsSync.sendDecision, { askId: "ask-6", decision: "did a thing" }),
-    ).toMatchObject({ sent: false, reason: "not configured" });
-    expect(posts).toHaveLength(0);
-  });
-
-  // The two kinds that LEFT the morning message (§4.3) come here as they are
-  // written: a line the nightly job wrote about him, and a ruling an agent read
-  // out of his sentence, are both decisions taken in his name.
-  it("is scheduled by a model-of-Tom line the nightly job writes", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
     await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
       kind: "learning-change",
-      data: {
-        id: "lc-1",
-        file: "writing.md",
-        before: "a spread may be drawn as a figure",
-        after: "a spread is stated with its numbers",
-        evidence: "your correction on 09-07",
-      },
+      key: "not-a-key",
+      data: { id: "a1b2c3d4e5f6", file: "model-of-tom/week.md", before: "", after: "climbing is on Tuesdays", evidence: "his message of 09-20" },
     });
-    const scheduled = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("sendDecision"),
-      ),
-    );
-    expect(scheduled).toHaveLength(1);
-    const args = scheduled[0].args[0] as { askId: string; decision: string; reason?: string };
-    expect(args.askId).toBe("learning:lc-1");
-    expect(args.decision).toContain("writing.md now says a spread is stated with its numbers");
-    // The raw [change-id] prefix he was expected to type back is gone: in
-    // #tts-decisions the thread is the subject.
-    expect(args.decision).not.toContain("[lc-1]");
-  });
-
-  // A REPOSITORY-RULE PROPOSAL is the third kind that reaches him here. The
-  // repo-learning step reads the night's sessions and writes a line it means to
-  // put in a repository's own AGENTS.md; that is a decision taken in his name
-  // just as a model-of-Tom line is, and "revert" in the thread drops it before
-  // the line ever reaches the repository.
-  it("is scheduled by a repository-rule proposal the repo-learning step writes", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
-      kind: "repo-proposal",
-      key: "b71c",
-      data: {
-        id: "b71c",
-        repo: "tom.quest",
-        file: "worker/AGENTS.md",
-        section: "box",
-        line: "A worktree has no `.env.local`; copy it from the main checkout.",
-        read: "lost twenty minutes to a missing .env.local in a worktree",
-        evidence: "read: session 47f04bc9",
-        status: "open",
-      },
-    });
-    const scheduled = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("sendDecision"),
-      ),
-    );
-    expect(scheduled).toHaveLength(1);
-    const args = scheduled[0].args[0] as { askId: string; decision: string; reason?: string };
-    expect(args.askId).toBe("repo-proposal:b71c");
-    expect(args.decision).toContain("tom.quest worker/AGENTS.md is to say");
-    expect(args.decision).toContain("A worktree has no `.env.local`");
-    expect(args.reason).toContain("lost twenty minutes");
-    // Same reason as the line above: the thread is the subject, so no id is
-    // printed for him to type back.
-    expect(args.decision).not.toContain("[b71c]");
-  });
-
-  // THE WEEKLY SIMPLIFICATION PASS is the fourth producer at this door, and it
-  // uses BOTH of the composer's branches. An ordinary proposal is a decision:
-  // it stands unless he objects in the thread. A proposal whose removal
-  // changes a line of the spec or of an intent.md he has reviewed is marked
-  // needsHisWords and takes the REFUSED branch, which posts it as a question —
-  // that removal is his to make, not his silence's.
-  it("posts a simplification proposal as a decision, and a needs-his-words one as a question", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const posts = stub();
-    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
-      kind: "simplify-proposal",
-      key: "simplify:s1",
-      data: {
-        id: "s1",
-        sentence: "removed the three roll-out shims from convex/http.ts",
-        evidence: "nothing has posted to them in six weeks",
-      },
-    });
-    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
-      kind: "simplify-proposal",
-      key: "simplify:s2",
-      data: {
-        id: "s2",
-        sentence: "removed the batch members line from tts/spec.md",
-        evidence: "the field came out in phase 7",
-        needsHisWords: true,
-      },
-    });
-    const scheduled = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("sendDecision"),
-      ),
-    );
-    expect(scheduled).toHaveLength(2);
-    const args = scheduled
-      .map(
-        (job) =>
-          job.args[0] as {
-            askId: string;
-            decision: string;
-            reason?: string;
-            refused?: boolean;
-            refusedBecause?: string;
-          },
-      )
-      .sort((a, b) => a.askId.localeCompare(b.askId));
-    // The askId is the row's whole key, so the thread and the row are the same
-    // string (convex/ttsAsk.ts resolves the reply with one lookup).
-    expect(args.map((a) => a.askId)).toEqual(["simplify:s1", "simplify:s2"]);
-    for (const arg of args) await t.action(internal.ttsSync.sendDecision, arg);
-    expect(posts).toHaveLength(2);
-    expect(posts[0].text).toBe(
-      [
-        "Object if this is wrong; silence means it stands.",
-        `- <${TAB_EVERYTHING}|Removed the three roll-out shims from convex/http.ts, because nothing has posted to them in six weeks.>`,
-      ].join("\n"),
-    );
-    expect(posts[1].text).toBe(
-      [
-        "Parked for you: needs-his-words — removed the batch members line from tts/spec.md. Nothing was done in your name.",
-        `- <${TAB_EVERYTHING}|It would have removed the batch members line from tts/spec.md.>`,
-      ].join("\n"),
-    );
-  });
-
-  // A night that undid its own write is NOT a decision — nothing stands to
-  // object to — and it is not a quiet night either, which is the confusion a
-  // silent row would leave. It goes to #tts-broken.
-  it("sends the night that took its whole write back to #tts-broken, not here", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
     await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
       kind: "learning-check-failed",
-      // The step's own field is `changes`, not `count`.
-      data: { baseline: false, stage: "changes", changes: 3, output: "evidence: 2 lines unsupported" },
+      data: { baseline: false, changes: 2 },
     });
-    const jobs = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).map((job) => ({
-        name: job.name,
-        args: job.args[0] as { job?: string; statement?: string },
-      })),
-    );
-    expect(jobs.filter((j) => j.name.includes("sendDecision"))).toHaveLength(0);
-    const broken = jobs.filter((j) => j.name.includes("sendBroken"));
-    expect(broken).toHaveLength(1);
-    expect(broken[0].args.job).toBe("learning");
-    expect(broken[0].args.statement).toContain("took every one back");
-    expect(broken[0].args.statement).toContain("3 lines");
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((job) => job.name.includes("ttsSync"))).toEqual([]);
+
+    const { text, objectionAskIds } = await compose(t);
+    expect(text).toContain("odel-of-tom/week.md now says climbing is on Tuesdays [a1b2c3d4e5f6]");
+    expect(objectionAskIds).toContain("learning:a1b2c3d4e5f6");
+    expect(text).toContain("took every one back");
+    // The row's own generic failure line is not printed a second time.
+    expect(text).not.toContain("The learning-check job failed");
+    vi.useRealTimers();
   });
 
-  // The baseline case says something different: the check was ALREADY failing
-  // when the run started, so the step never wrote at all.
-  it("says the check was already failing when the night wrote nothing", async () => {
+  it("a removal-loop pull request posts nothing: the objection list reads its row", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIVE_AM - 3_600_000);
     const t = convexTest(schema, modules);
-    await withTom(t);
-    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
-      kind: "learning-check-failed",
-      data: { baseline: true, output: "evidence: 1 entry has no source" },
-    });
-    const broken = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("sendBroken"),
-      ),
-    );
-    expect(broken).toHaveLength(1);
-    expect((broken[0].args[0] as { statement: string }).statement).toContain(
-      "already failing its own check",
-    );
-  });
-
-  it("is scheduled by a ruling read out of Tom's own words, and not by a button ruling", async () => {
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const todoId = await tom.mutation(api.tts.createTodo, { statement: "read the BDDR paper" });
-    const scheduledFor = async () =>
-      await t.run(async (ctx) =>
-        (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-          job.name.includes("sendDecision"),
-        ),
-      );
-
-    // A button ruling is Tom's own act: nothing is taken in his name.
-    await tom.mutation(api.ttsRulings.recordRuling, {
-      todoId,
-      verdict: "revise",
-      sentence: "narrow it to the corpus confound",
-    });
-    expect(await scheduledFor()).toHaveLength(0);
-
-    // A ruling read out of a sentence he typed IS a decision taken for him.
-    // The words door only accepts a turn Tom actually authored, so the row is
-    // built the way the browser door and the Slack events route build it.
-    const sessionId = await t.run(async (ctx) =>
-      ctx.db.insert("claudeSessions", {
-        title: "a session about the paper",
-        kind: "focus-item",
-        repo: "tom.quest",
-        // The words door refuses a turn from a session about nothing: a ruling
-        // names only what Tom was actually talking about.
-        todoId,
-        status: "running",
-        nextSeq: 0,
-        createdAt: Date.now(),
-        statusChangedAt: Date.now(),
-      }),
-    );
-    const inboundId = await t.run(async (ctx) =>
-      ctx.db.insert("claudeInbound", {
-        sessionId,
-        kind: "user-turn",
-        author: "tom",
-        text: "the twin has to be matched, not resampled",
-        status: "delivered",
-        createdAt: Date.now(),
-      }),
-    );
-    await t.mutation(internal.ttsRulings.internalRecordRulingFromTomWords, {
-      inboundId,
-      verdict: "revise",
-      subjectType: "life",
-      subjectId: todoId,
-      quote: "the twin has to be matched, not resampled",
-      sentence: "the twin has to be matched, not resampled",
-    });
-    const scheduled = await scheduledFor();
-    expect(scheduled).toHaveLength(1);
-    const args = scheduled[0].args[0] as { decision: string; reason?: string; todoId?: string };
-    expect(args.todoId).toBe(todoId);
-    expect(args.decision).toBe("read the BDDR paper was ruled a revise from your own words");
-    expect(args.reason).toBe("the twin has to be matched, not resampled");
-  });
-});
-
-
-// #tts-simplify: the removal loop's one open pull request, a thread each.
-describe("sendRemoval", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
-  });
-
-  function stub() {
-    const posts: { channel: string; text: string }[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: { body?: string }) => {
-        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
-        posts.push({ channel: body.channel, text: body.text });
-        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
-      }),
-    );
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
-    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "C0SIMPLIFY");
-    return posts;
-  }
-
-  const pr = {
-    askId: "loop:7",
-    pr: 7,
-    url: "https://github.com/Heffnt/tom.quest/pull/7",
-    subject: "removals: the second copy of the tick formatter is gone",
-    reason: "duplicated-helper in app/boolback/components/plot-surface.tsx",
-  };
-
-  it("posts to #tts-simplify under the ask subject a reply resolves against", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const posts = stub();
-    expect(await t.action(internal.ttsSync.sendRemoval, pr)).toEqual({ sent: true });
-    expect(posts).toHaveLength(1);
-    expect(posts[0].channel).toBe("C0SIMPLIFY");
-    expect(posts[0].text).toBe(
-      [
-        "Pull request 7 removes one thing; it merges after the next digest unless you object.",
-        `- <${pr.url}|Removals: the second copy of the tick formatter is gone, because duplicated-helper in app/boolback/components/plot-surface.tsx.>`,
-      ].join("\n"),
-    );
-    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
-    const sent = rows.filter((e) => e.kind === SLACK_SENT);
-    expect(sent).toHaveLength(1);
-    expect(sent[0].data).toMatchObject({ subject: { kind: "ask", id: "loop:7" } });
-  });
-
-  it("posts a rewritten round again the same day, and one round only once", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const posts = stub();
-    await t.action(internal.ttsSync.sendRemoval, pr);
-    expect(await t.action(internal.ttsSync.sendRemoval, pr)).toMatchObject({ sent: false });
-    expect(await t.action(internal.ttsSync.sendRemoval, { ...pr, round: 1 })).toEqual({ sent: true });
-    expect(posts).toHaveLength(2);
-    expect(posts[1].text).toContain("was rewritten after your reply");
-  });
-
-  it("posts nothing while #tts-simplify has no id", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    const posts = stub();
-    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "");
-    expect(await t.action(internal.ttsSync.sendRemoval, pr)).toMatchObject({ sent: false, reason: "not configured" });
-    expect(posts).toHaveLength(0);
-  });
-});
-
-// The worker records the event; Convex sends the message. The hook is what
-// makes "the loop posted" and "the row exists" one fact.
-describe("a removal-loop pull request recorded", () => {
-  it("schedules one #tts-simplify message keyed like the row, and none for a dry run", async () => {
-    const t = convexTest(schema, modules);
-    await withTom(t);
     const pr = { pr: 7, url: "https://github.com/Heffnt/tom.quest/pull/7", subject: "removed a copy", ruleId: "dead-export", path: "app/a.ts" };
     await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, { kind: REMOVAL_LOOP_PR, key: "loop:7", data: { ...pr, round: 1 } });
-    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, { kind: REMOVAL_LOOP_PR, key: "loop:9", data: { ...pr, pr: 9, dryRun: true } });
-    const scheduled = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("sendRemoval")),
-    );
-    expect(scheduled.map((job) => job.args[0])).toEqual([
-      { askId: "loop:7", pr: 7, url: pr.url, subject: "removed a copy", reason: "dead-export in app/a.ts", round: 1 },
-    ]);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled).toEqual([]);
+    const { objectionAskIds } = await compose(t);
+    expect(objectionAskIds).toContain("loop:7");
+    vi.useRealTimers();
   });
 });
-

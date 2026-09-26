@@ -72,7 +72,7 @@ const ASK_ARGS = {
   // of Tom's in #tts-decisions can be scored against the output he objected to
   // (convex/agentLabels.ts internalLabelFromObjection reads it back off this
   // row's data). `data` is v.any(), so this is not a schema change, exactly as
-  // the objectionAskIds note on tts.internalMarkDigestSent says of its own
+  // the digest-sent row's objectionAskIds (convex/jarvis/digest.ts) say of their own
   // field. A caller that passes no token stores none: an unregistered
   // delegate call carries no run, and the absence is never inferred into one.
   runToken: v.optional(v.string()),
@@ -153,31 +153,8 @@ export const internalRecordAsk = internalMutation({
       capped,
     }, args.askId);
 
-    // Posted line by line as it is recorded, so a decision is observable the
-    // moment it is taken and not only at breakfast (Tom, 2026-09-09). It goes
-    // through ttsSync.sendDecision — the ONE #tts-decisions door, shared with
-    // the nightly job's model-of-Tom line and a ruling read out of Tom's
-    // words — so the wording of a decisions line has one home
-    // (ttsCompose.composeDecision) and the once-per-item-per-day claim is
-    // applied to all three producers alike. That action is quiet while
-    // SLACK_TTS_DECISIONS_CHANNEL_ID is unset, and the morning objection list
-    // is then the whole of it. Its subject is the ask itself, never the todo:
-    // a todo subject stamps slackReplyTs, which belongs to that todo's one
-    // #dump thread.
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
-      askId: args.askId,
-      ...(todoId === null || todoId === undefined ? {} : { todoId: todoId as string }),
-      // A no-answer is still a decision Tom may object to; it is spelled out
-      // rather than left null, because the composer prints one sentence.
-      decision:
-        attended || capped || args.decision === null
-          ? args.fallback
-          : args.decision,
-      reason: attended || capped ? refusedBecause ?? args.reason : args.reason,
-      refused: refused || capped,
-      ...(refused || capped ? { refusedBecause: refusedBecause ?? args.reason } : {}),
-      fallback: args.fallback,
-    });
+    // The digest's objection list reads this delegate-decision row itself
+    // (convex/ttsDigest.ts); there is no live line (one output channel).
     return { id, existing: false, attended, capped };
   },
 });

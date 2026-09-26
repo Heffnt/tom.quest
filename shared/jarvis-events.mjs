@@ -48,6 +48,11 @@ export const EVENT_KINDS = [
   // Evals (Jarvis worker/jobs/evals.mjs; convex/ttsEvals.ts reads them): one row per eval set per run;
   // subject is the set name ("wall", "role/classify", ...), data the runner's runData() shape, text the one summary line.
   "eval-run",
+  // A line a producer put on the next digest (convex/jarvis/outbox.ts
+  // listForDigest): a decision taken in his name, or a failure, whose fact the
+  // digest reads from no row of its own. What #tts-decisions and #tts-broken
+  // carried as it happened.
+  "digest-line",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */

@@ -25,13 +25,13 @@ import {
   LIVE_STATUSES,
   buildDoneSet,
   feedIsPrivate,
+  isFailureKind,
   isReadyForTom,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   nyHhmm,
   privateFeedNames,
   ttsSessionLink,
-  type SlackSubject,
 } from "./ttsShared";
 // THE ONE CHOKE POINT for a credential-shaped span, the same pure helper
 // convex/ttsSearch.ts and worker/session-host use — never a second copy of the
@@ -40,22 +40,22 @@ import {
 // worker/jobs/nightly.mjs reports git stderr verbatim, and git stderr can name
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
-import { digestFacts, lastDigest } from "./jarvis/outbox";
+import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
-// ttsCompose.ts's one job, and the send is convex/ttsSync.ts sendToday, which
-// runs the missed rollover, reads internalComposeToday, and posts to
-// #tts-today. This module is plain runtime (no "use node") so the gatherer is
-// a query and the composer beneath it is a pure function a test calls with
-// hand-built facts.
+// ttsCompose.ts's one job, and the send is the box's: POST /jarvis/digest
+// (convex/jarvis/digest.ts) runs the missed rollover and reads
+// internalComposeToday, and Jarvis worker/jobs/write-slack.mjs posts the text
+// to the one output channel. No model writes it. This module is plain runtime
+// (no "use node") so the gatherer is a query and the composer beneath it is a
+// pure function a test calls with hand-built facts.
 //
 // HIS WORD IS "THE DIGEST" (Tom's ruling). Every line Tom or a model can read
 // names this message "the digest"; "morning message" is a term for comments
 // like this one and appears in nothing that is printed. The code already
 // spells it that way throughout — `digest-sent`, `internalDigestWindow`,
-// `digestWindowStart` — and `todaySubject` keeps its name because the Slack
-// subject union member is `today`.
+// `digestWindowStart`.
 //
 // The runs, in this order; each omitted when empty except the first:
 //   1. today — dated or late, oldest date first, each line naming the first
@@ -74,35 +74,8 @@ import { digestFacts, lastDigest } from "./jarvis/outbox";
 // the "Captured from email" section (a capture that is ready is a thing to do
 // today; one that is not is a row, not a line).
 
-// ── The digest's own bookkeeping row (dtsEvents) ─────────────────────────────
-// TWO KINDS OF ROW come out of a sent digest, and they answer different
-// questions:
-//
-//   "slack-sent" / "slack-send-failed" belong to the ONE DOOR
-//   (convex/ttsSync.ts postSlack → convex/ttsSlack.ts). They are keyed by the
-//   Slack thread and carry the subject, so a threaded reply from Tom is routed
-//   back to what it answers, and a failure row carries the text a later resend
-//   posts unchanged. The digest does not write them and must not read them for
-//   its own bookkeeping — their key is a thread, not a day.
-//
-//   "digest-sent" (written by tts.internalMarkDigestSent) is the DIGEST's own
-//   row: data { day, windowEnd }. `day` is the once-a-day dedupe key; a rerun
-//   the same day finds it and stops. `windowEnd` is the `now` the digest was
-//   COMPOSED against, and it is where the NEXT digest's window starts. The
-//   row's own `at` is later — composing, posting to Slack and writing the row
-//   all take time — so starting the next window there would skip everything
-//   that happened in the gap. This mirrors the hourly update's marker row
-//   exactly (convex/ttsSync.ts HOURLY_UPDATE_SENT).
-export const SLACK_SENT = "slack-sent";
 export const SLACK_FAILED = "slack-send-failed";
 export const DIGEST_SENT = "digest-sent";
-
-/** The morning message's Slack subject. `today` supersedes the old `digest`
- *  member, which stays in the union so a reply in a thread posted before this
- *  deploy still routes (convex/ttsShared.ts SLACK_SUBJECT). */
-export function todaySubject(day: string): SlackSubject {
-  return { kind: "today", day };
-}
 
 // The delegate's rows (delegate-design.md §1.2), read by KIND if they are
 // there. The delegate itself is built on branch uac/delegate; until it lands
@@ -211,35 +184,10 @@ export const internalRollMissed = internalMutation({
   },
 });
 
-// ── WikiTom commits (plan §3: "every WikiTom commit made since the last
-// digest, with author") ──────────────────────────────────────────────────────
-// WikiTom is Tom's own repository, and the digest is where he sees what moved
-// in it overnight. GitHub is outside the Convex query runtime, so the SENDER
-// fetches (convex/ttsSync.ts, with the deployment's GITHUB_MIRROR_TOKEN) and
-// hands the result to the composer.
-//
-// That token is scoped to ComplexMultiTrigger and tom.quest today, so a
-// WikiTom read comes back 403/404 until Tom widens it. The section then says
-// exactly that instead of disappearing — an omitted section would read as "no
-// commits were made", which is a different fact.
-export type WikiTomCommit = {
-  sha: string;
-  message: string;
-  author: string;
-  url: string;
-};
-export const WIKITOM_UNREADABLE = "WikiTom commits: not readable (no credential)";
-const WIKITOM_COMMIT = v.object({
-  sha: v.string(),
-  message: v.string(),
-  author: v.string(),
-  url: v.string(),
-});
-
 // ── Gathering the day's facts ────────────────────────────────────────────────
 // Deterministic, from queries, no model call. What comes out is `TodayFacts`
-// (convex/ttsCompose.ts): the shape both the plain template and the Fable
-// writer on the box compose from, and the shape the FACTS BLOCK is built from.
+// (convex/ttsCompose.ts): the shape the digest is rendered from, and the shape
+// the facts block is built from.
 
 /** The objection list's order and the narrow-list-id strip both live in
  *  convex/ttsAsk.ts, which is the delegate's one home. This file used to carry
@@ -344,10 +292,11 @@ function safeStr(value: unknown): string | undefined {
   return text === undefined ? undefined : redactSecrets(text);
 }
 
-/** The failure kinds that are NOT a #tts-broken line. "slack-send-failed" is
- *  the Slack door's own: reporting it in a Slack message is the loop
- *  convex/ttsHourly.ts already warns about. */
-const NOT_A_FAILURE_LINE = new Set(["slack-send-failed"]);
+/** The failure kinds that are NOT a broken line. "slack-send-failed" is the
+ *  Slack door's own: reporting it in a Slack message is a loop. The learning
+ *  night that took itself back is said in its own words, from the line the
+ *  nightly put on the digest (convex/ttsNightly.ts). */
+const NOT_A_FAILURE_LINE = new Set(["slack-send-failed", LEARNING_CHECK_FAILED]);
 
 export async function gatherTodayFacts(
   ctx: QueryCtx,
@@ -602,9 +551,13 @@ export async function gatherTodayFacts(
         const sha = (str(d.sha) ?? "").slice(0, 7);
         rawObjections.push({
           at: e.at,
-          askId: "",
+          // The merge's own key: "revert <n>" reaches it as a reply in its
+          // #tts-decisions thread did (ttsAsk internalRecordDelegateObjection
+          // resolves a merge row).
+          askId: e.key ?? "",
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
           decision: `merged ${repo}@${sha}: ${str(d.subject) ?? "no subject"}`,
+          reason: safeStr(d.reason),
           refused: false,
           merged: true,
         });
@@ -747,13 +700,13 @@ export async function gatherTodayFacts(
         // Every job failure is a "-failed" kind (a box job reports its own
         // through POST /tts/job-failed). A Slack failure is the door's own and
         // is not a line.
-        if (!e.kind.endsWith("-failed") || NOT_A_FAILURE_LINE.has(e.kind)) break;
+        if (!isFailureKind(e.kind) || NOT_A_FAILURE_LINE.has(e.kind)) break;
         // THE WALL'S OWN PROBE IS NOT A FAILED SEND. The nightly wall eval
         // asks the sign-off door to send a calendar event to an address under
         // .invalid (RFC 2606: can never be delivered) and expects the refusal;
         // that refusal is the wall holding, so it is no broken line.
         if (e.kind === SEND_AS_TOM_FAILED && typeof d.recipient === "string" && d.recipient.toLowerCase().endsWith(".invalid")) break;
-        const job = str(d.job) ?? e.kind.replace(/-failed$/, "");
+        const job = str(d.job) ?? e.kind.replace(/-fail(?:ed|ure)$/, "");
         // The raw `error` is a job's own stderr — worker/jobs/nightly.mjs
         // reports git's verbatim, and git names its remote with the token in
         // it. It never reaches a line or the `broken:<n>` fact unredacted.
@@ -802,6 +755,32 @@ export async function gatherTodayFacts(
       reason: str(d.reason),
       refused: d.refused === true,
       refusedBecause: str(d.refusedBecause),
+    });
+  }
+
+  // The lines producers put on this digest (convex/jarvis/outbox.ts
+  //    listForDigest): a decision taken in his name joins the objection list,
+  //    a failure the broken section — what #tts-decisions and #tts-broken
+  //    carried as it happened, before there was one output channel.
+  const lines = await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_LINE).gte("at", since).lt("at", now))
+    .take(OBJECTION_SCAN);
+  for (const row of lines) {
+    const d = (row.data ?? {}) as Record<string, unknown>;
+    if (d.section === "broken") {
+      const job = str(d.job) ?? "a job";
+      failure(job, safeStr(d.statement) ?? brokenStatement(job), str(d.url)).detail = safeStr(d.detail);
+      continue;
+    }
+    rawObjections.push({
+      at: row.at,
+      askId: str(d.askId) ?? row.subject ?? "",
+      todoId: str(d.todoId),
+      decision: safeStr(d.decision) ?? null,
+      reason: safeStr(d.reason),
+      refused: d.refused === true,
+      refusedBecause: safeStr(d.refusedBecause),
     });
   }
 
@@ -924,7 +903,6 @@ function brokenStatement(job: string): string {
     "poll-canvas": "Canvas assignments have stopped reaching your list.",
     "poll-outlook": "Outlook mail has stopped reaching your list.",
     nightly: "The nightly job did not finish, so the model-of-Tom pages are yesterday's.",
-    "wikitom-read": WIKITOM_UNREADABLE,
   };
   return known[job] ?? `The ${job} job failed overnight.`;
 }
@@ -1034,8 +1012,8 @@ export const internalComposeToday = internalQuery({
       // plus one "N more lines are on the page" line, and a number resolved
       // against a list Tom never saw reverts something he never read.
       objectionAskIds: printedObjectionAskIds(message, facts),
-      // The deterministic inputs, each fact with an id, its link and its
-      // numbers. Stored on the digest event, and handed to the writer.
+      // The facts the text was rendered from, each with an id, its link and
+      // its numbers: the box keeps them on the digest-sent row.
       facts: todayFactsBlock(facts, reply),
     };
   },

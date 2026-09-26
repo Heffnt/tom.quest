@@ -37,13 +37,13 @@
 // that has not deployed the reader's redaction yet is still shown redacted.
 
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
 import { query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../shared/redact.mjs";
 import type { BoxChangeFact } from "./ttsCompose";
+import { listForDigest } from "./jarvis/outbox";
 
 export const BOX_CHANGE = "box-change";
 /** The deploy job's own row (Jarvis worker/jobs/deploy.mjs): data
@@ -203,10 +203,10 @@ function sameBody(left: unknown, right: unknown): boolean {
  * here and earns no Slack line. It cannot go without letting one change
  * print twice in an agent's chat and in the digest.
  *
- * Then the Slack lines one recorded change earns: a #tts-decisions line when
- * it changes who or what can act, and a #tts-broken line when the journal
- * lost entries the reader had not read (plan-root T3). Neither holds a
- * secret: the text is redacted first.
+ * Then the digest lines one recorded change earns (convex/jarvis/outbox.ts):
+ * one on the objection list when it changes who or what can act, and a
+ * broken line when the journal lost entries the reader had not read
+ * (plan-root T3). Neither holds a secret: the text is redacted first.
  */
 export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise<{ duplicate: boolean }> {
   const faults = boxChangeFaults(row.data);
@@ -226,7 +226,8 @@ export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise
   }
   const shown = redactedBoxChange(change);
   if (shown.change?.what === "journal-gap") {
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+    await listForDigest(ctx, {
+      section: "broken",
       job: "box-watch:journal-gap",
       statement: `The box's journal lost entries the box-change reader had not read${shown.change.before ? `, from ${shown.change.before}` : ""}${shown.change.after ? ` to ${shown.change.after}` : ""}, so changes to the machine in that span are not in the record.`,
       url: AGENTS_WINDOW_URL,
@@ -235,7 +236,8 @@ export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise
   }
   const decision = whoCanActLine(shown);
   if (decision === null) return { duplicate: false };
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+  await listForDigest(ctx, {
+    section: "decisions",
     askId: `box-change:${row._id}`,
     decision,
     reason: "it changes who or what can act on the Jarvis Box",

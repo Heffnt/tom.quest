@@ -15,13 +15,11 @@ import {
   CODE_TODO_REPOS,
   READINESS,
   goalCheckable,
-  isFailureKind,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
-import { insertEvent } from "./jarvis/record";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -59,15 +57,6 @@ const DATE_OUTCOME = v.union(
   v.literal("renegotiated"),
   v.literal("missed"),
 );
-// ── #tts-broken, from the one place failures are already written ─────────────
-// Rather than making each producer remember to post, the ONE event writer
-// schedules the broken line, on the shape convex/ttsShared.ts calls a failure
-// (isFailureKind, with its two load-bearing exclusions).
-
-function str(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
-}
-
 export async function logEvent(
   ctx: MutationCtx,
   kind: string,
@@ -77,10 +66,8 @@ export async function logEvent(
   // schema comment lists, and on no other.
   key?: string,
 ) {
-  // The id is answered to the caller (convex/ttsAsk.ts records one and reads it
-  // back), so the broken-line post below runs BEFORE the return rather than
-  // after it — the two halves arrived on different branches and the first
-  // straight merge left the post unreachable.
+  // A failure row (convex/ttsShared.ts isFailureKind) is a line in the
+  // digest's broken section, which reads its window; nothing posts here.
   const id = await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,
@@ -88,39 +75,7 @@ export async function logEvent(
     data: data === undefined ? undefined : data,
     key,
   });
-  await postBroken(ctx, kind, data);
   return id;
-}
-
-/**
- * THE #tts-broken LINE, from the one place a failure row is recognised. Called
- * by logEvent above and by convex/ttsNightly.ts internalRecordWorkerEvent, the
- * two ways a row reaches dtsEvents: the nightly's and the weekly's failures
- * come the second way, and while this lived inside logEvent they were the
- * failures Slack never heard about.
- */
-export async function postBroken(
-  ctx: MutationCtx,
-  kind: string,
-  data?: unknown,
-): Promise<void> {
-  if (!isFailureKind(kind)) return;
-  const d = (data ?? {}) as Record<string, unknown>;
-  const job = str(d.job) ?? kind.replace(/-fail(ed|ure)$/, "");
-  // Scheduled, not awaited: the post is network I/O and this is a mutation.
-  // It rides the transaction, so a rolled-back failure is never reported.
-  // The action itself dedupes by job for the TTS day.
-  // THE RAW `error` IS A JOB'S OWN STDERR and is never posted as it came:
-  // worker/jobs/nightly.mjs reports git's verbatim, and git names its remote
-  // with the token in it. redactSecrets is the one choke point (the same
-  // helper convex/ttsSearch.ts and worker/session-host use), and it runs
-  // before the string becomes a #tts-broken line.
-  const detail = str(d.error);
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
-    job,
-    statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
-    ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
-  });
 }
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
@@ -1545,135 +1500,10 @@ export const internalScheduleAt = internalQuery({
   },
 });
 
-/**
- * Everything dtsEvents recorded in [start, end). The window is what makes the
- * hourly update's "what happened since last time" EXACT rather than
- * approximate: the caller passes the timestamp of the last update it actually
- * sent, so a missed cron tick loses nothing — the next one simply covers a
- * longer window.
- *
- * Bounded by `limit` on top of the range, because dtsEvents is the system's
- * busy append-only instrumentation and a long outage would otherwise make this
- * read unbounded.
- */
-export const internalEventsInRange = internalQuery({
-  args: { start: v.number(), end: v.number(), limit: v.optional(v.number()) },
-  handler: async (ctx, { start, end, limit }) => {
-    return await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_at", (q) => q.gte("at", start).lt("at", end))
-      .order("desc")
-      .take(Math.min(limit ?? 500, 2000));
-  },
-});
-
-/**
- * When an event of `kind` last happened, or null. The hourly update's own
- * bookkeeping read: it writes an "hourly-update-sent" row after each send and
- * reads the newest one back before composing, so its window is [last sent,
- * now] and a MISSED cron tick loses nothing.
- *
- * Walks newest-first and stops at the first match. Bounded by HOURLY_SCAN
- * because dtsEvents is busy: if the kind has not occurred inside that many
- * rows, "never" is the honest answer and the caller falls back to its default
- * window rather than reading the whole table.
- */
-const EVENT_KIND_SCAN = 2000;
-export const internalLastEventAt = internalQuery({
-  args: { kind: v.string() },
-  handler: async (ctx, { kind }) => {
-    const rows = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_at")
-      .order("desc")
-      .take(EVENT_KIND_SCAN);
-    return rows.find((e) => e.kind === kind)?.at ?? null;
-  },
-});
-
-/**
- * The events pen for an ACTION. logEvent is a helper that needs a MutationCtx,
- * and an internalAction has none — so the hourly update, which is an action
- * (it does network I/O), records that it sent through here rather than
- * reaching for a second event-writing path.
- */
-export const internalLogEvent = internalMutation({
-  args: { kind: v.string(), data: v.optional(v.any()) },
-  handler: async (ctx, { kind, data }) => {
-    await logEvent(ctx, kind, undefined, data);
-  },
-});
-
 export const internalListMirror = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await liveMirrorRows(ctx);
-  },
-});
-
-export const internalMarkDigestSent = internalMutation({
-  // windowEnd: the instant the digest was composed against. It is the start of
-  // the NEXT digest's window (convex/ttsDigest.ts digestWindowStart), and the
-  // event's `day` is the once-a-day dedupe key — so the two facts a digest run
-  // needs from the last one live on one "digest-sent" event (ttsDigest
-  // lastDigestSent reads it). Nothing is written to dtsDailyQueues any more
-  // (the lifeos update, phase 7): the table stays until NARROW and gets no
-  // new rows.
-  args: {
-    day: v.string(),
-    surfacedTodoIds: v.array(v.id("dtsTodos")),
-    // The askIds the objection list printed, in printed order — the digest's
-    // own numbering, which is what a reply of "revert 2" names. Absent on a
-    // resend and on a morning with no delegated decisions. `data` is v.any(),
-    // so this is not a schema change.
-    objectionAskIds: v.optional(v.array(v.string())),
-    windowEnd: v.optional(v.number()),
-    // The morning message was reduced to fit one Slack message (ttsCompose
-    // MESSAGE_MAX_CHARS). Absent on a resend, which reposts a text already
-    // composed and whose row said so at the time.
-    truncated: v.optional(v.boolean()),
-    // Which path wrote the message: the Fable run on the box, or the plain
-    // template it falls back to (Tom 2026-09-09, amendment 2).
-    writtenBy: v.optional(v.string()),
-    // The deterministic inputs the message was written from — stored so the
-    // transcript shows what the writer was given, not only what it wrote.
-    facts: v.optional(v.any()),
-    // THE RUN THAT WROTE THE MORNING — the Fable run of
-    // worker/jobs/write-slack.mjs — and the ts of the message it was posted
-    // as. `data` is v.any(), so neither is a schema change, exactly as the
-    // objectionAskIds note above says of its own field.
-    //
-    // The pair is what makes a reaction on the morning scorable: `slackTs` is
-    // what a reaction event is resolved against (convex/agentLabels.ts
-    // internalLabelFromReaction), and `runToken` is the edge from this row to
-    // the run whose output the reaction judged.
-    //
-    // A MORNING THE MODEL PATH TIMED OUT has writtenBy "template" and NO
-    // token, and a reaction on it writes no label. That is right, not a gap:
-    // the plain template is not a run's output, and scoring the model on a
-    // message it did not write would be a lie in the corpus every future merge
-    // is measured against.
-    runToken: v.optional(v.string()),
-    slackTs: v.optional(v.string()),
-  },
-  handler: async (
-    ctx,
-    { day, surfacedTodoIds, windowEnd, truncated, objectionAskIds, writtenBy, facts, runToken, slackTs },
-  ) => {
-    for (const todoId of surfacedTodoIds) {
-      await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
-    }
-    // NO KEY on a "digest-sent" row, ever: ttsDigest.lastDigestSent reads
-    // by_kind_key with the kind pinned and every key empty, so within the kind
-    // the index order IS time order and .first() is the newest row. Keying
-    // these by day would silently break the window arithmetic of every future
-    // morning message.
-    // In the record's events table since the box writes the digest
-    // (convex/jarvis/digest.ts), where every reader of the kind now reads.
-    await insertEvent(ctx, {
-      kind: "digest-sent",
-      data: { day, windowEnd, truncated, objectionAskIds, writtenBy, facts, runToken, slackTs, ts: slackTs },
-    });
   },
 });
 

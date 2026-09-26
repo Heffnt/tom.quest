@@ -32,8 +32,8 @@
 // WHAT THE RECORD SHOWS. A delivered send is one dtsEvents row of kind
 // "sent-as-tom" { recipient, channel, sha256, signedAt }: /observe lists it
 // with the rulings and the morning message lists it with the decisions. A
-// refused or failed send is a "send-as-tom-failed" row, which is a #tts-broken
-// line (convex/tts.ts postBroken).
+// refused or failed send is a "send-as-tom-failed" row, which is a line in the
+// digest's broken section (convex/ttsDigest.ts).
 
 import { v } from "convex/values";
 import {

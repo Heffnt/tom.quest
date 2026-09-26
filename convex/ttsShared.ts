@@ -69,11 +69,11 @@ export function mergeKey(repo: string, sha: string): string {
  * A FAILURE IS A SHAPE AND NOT A KIND: a job failure is an event kind ending
  * in "-failed" or in "-failure" — the nightly and the weekly write the second
  * spelling ("nightly-failure", "weekly-failure"), and reading only the first
- * left their failures out of both the failures lane and #tts-broken. Two
+ * left their failures out of both the failures lane and the digest. Two
  * exclusions, both load-bearing:
- *   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
- *                        convex/ttsHourly.ts already warns about: a refused
- *                        post would write a row that schedules another post.
+ *   "slack-send-failed"  the Slack door's own. Posting it to Slack is a loop:
+ *                        a refused post would write a row that schedules
+ *                        another post.
  *   "learning-revert-failed"  not a job failure at all — it is an objection
  *                        the nightly job could not apply, and it belongs to
  *                        the model-of-Tom line it is about.
@@ -972,51 +972,20 @@ export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }
 
-// ── The seven channels (slack-design.md §1) ──────────────────────────────────
-// Seven rooms, each with one purpose and one cadence: #tts-today (the morning
-// message), #tts-decisions (object, or let it stand), #tts-needs-you (settle
-// it), #tts-hourly (glance), #tts-broken (the box is failing), #tts-simplify
-// (the removal loop's one open pull request, to object to), #dump (capture).
-// Tom's steps to create them and set these ids are slack-design.md §5.1.
+// ── The one output channel (Tom, 2026-09-26: "#dump in, one out") ─────────────
+// #dump is where his words come in; everything the record says to him goes to
+// one channel: the digest, the needs-you replies in its thread, the silence
+// alarm. It is #tts-today until the morning rename to #jarvis, which keeps the
+// id, so its variable keeps its name tonight. The rooms that were each one
+// purpose (#tts-decisions, #tts-needs-you, #tts-hourly, #tts-broken,
+// #tts-simplify, #tts-runners) are sections of the digest now.
 //
-// This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
-// because that file is "use node" and convex/http.ts — the route that opens a
-// needs-you thread — is a plain-runtime module that cannot import it.
-export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken" | "simplify";
+// Here rather than in convex/ttsSync.ts, which owns the Slack door, because
+// that file is "use node" and the plain-runtime record areas ask it too.
 
-const CHANNEL_ENV: Record<SlackChannelKind, string> = {
-  today: "SLACK_TTS_TODAY_CHANNEL_ID",
-  decisions: "SLACK_TTS_DECISIONS_CHANNEL_ID",
-  needsYou: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
-  hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
-  broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
-  simplify: "SLACK_TTS_SIMPLIFY_CHANNEL_ID",
-};
-
-/** Each channel, or null when its variable is unset. Missing = log once and do
- *  not post (ruling digest-env-missing-is-quiet) — EXCEPT the today channel,
- *  which falls back to SLACK_TTS_CHANNEL_ID, because a missing variable must
- *  not silence the morning. #tts renamed to #tts-today keeps its id, so that
- *  fallback is the same room under its old variable.
- *
- *  NO OTHER KIND FALLS BACK, and no caller may reproduce this lookup inline:
- *  postSlack's default target is SLACK_TTS_CHANNEL_ID, so a caller that omits
- *  `channel` when its own variable is unset posts into #tts-today — the one
- *  room the design says nothing but the morning message may write to. */
-/** The kind of the marker row every needs-you thread writes when it opens,
- *  keyed on the producer's own id for the thing that needs Tom. Here, beside
- *  channelFor, so an opener outside convex/ttsSlack.ts needs no import of it. */
+/** The kind of the marker row every needs-you writes when it opens, keyed on
+ *  the producer's own id for the thing that needs Tom. */
 export const NEEDS_TOM = "needs-tom";
-
-/** The one job-failed report for a needs-you thread dropped because its
- *  channel is unset. Keyed on the condition, so every opener writes the same
- *  standing row and #tts-broken says it once. */
-export const NEEDS_YOU_CHANNEL_MISSING = {
-  job: "tts/needs-tom",
-  error:
-    "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
-  key: "tts/needs-tom:needs-you-channel",
-};
 
 /** THE ONE CONFIG CHECK. A message says "reply here" only when a reply would
  *  actually reach TTS: POST /slack/events answers 503 without
@@ -1029,14 +998,16 @@ export function replyRouteLive(): boolean {
   return Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
 }
 
-export function channelFor(kind: SlackChannelKind): string | null {
-  const own = process.env[CHANNEL_ENV[kind]];
-  if (typeof own === "string" && own !== "") return own;
-  if (kind === "today") {
-    const legacy = process.env.SLACK_TTS_CHANNEL_ID;
-    if (typeof legacy === "string" && legacy !== "") return legacy;
+/** The output channel, or null when neither variable is set (logged, and
+ *  nothing is posted: ruling digest-env-missing-is-quiet; the box reports the
+ *  digest it could not post as its own failure). SLACK_TTS_CHANNEL_ID is the
+ *  room's older variable, read when the newer one is unset. */
+export function outputChannel(): string | null {
+  for (const name of ["SLACK_TTS_TODAY_CHANNEL_ID", "SLACK_TTS_CHANNEL_ID"]) {
+    const id = process.env[name];
+    if (typeof id === "string" && id !== "") return id;
   }
-  console.error(`TTS slack: ${CHANNEL_ENV[kind]} not configured — nothing posted to #tts-${kind}`);
+  console.error("slack: SLACK_TTS_TODAY_CHANNEL_ID not configured — nothing posted to the output channel");
   return null;
 }
 

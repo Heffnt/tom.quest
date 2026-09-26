@@ -269,43 +269,6 @@ describe("TTS todos", () => {
     expect(todos[0].source).toBe("slack-capture");
   });
 
-  // ── The hourly update's reads (Tom's ruling 2026-08-30) ──────────────────
-  // Each is the internal twin of a requireTomId-gated query, because the
-  // hourly update runs from a cron and a cron has no identity.
-
-  // witness: change internalLastEventAt to return the newest event of ANY kind
-  // and this goes red — the window would start at the last capture rather than
-  // the last SEND, and an hour with captures in it would report nothing.
-  it("reads the window back from the last send, not the last event", async () => {
-    const t = convexTest({ schema, modules });
-    expect(
-      await t.query(internal.tts.internalLastEventAt, {
-        kind: "hourly-update-sent",
-      }),
-    ).toBeNull(); // never sent — the caller falls back to its default window
-
-    await t.mutation(internal.tts.internalLogEvent, {
-      kind: "hourly-update-sent",
-      data: { windowStart: 1, windowEnd: 2 },
-    });
-    // Busier events land AFTER the marker and must not be mistaken for it.
-    await t.mutation(internal.tts.internalCapture, {
-      statement: "later than the marker",
-      source: "manual",
-    });
-    const sentAt = await t.query(internal.tts.internalLastEventAt, {
-      kind: "hourly-update-sent",
-    });
-    expect(sentAt).not.toBeNull();
-
-    // And the range read covers [marker, now) — the capture above is in it.
-    const inWindow = await t.query(internal.tts.internalEventsInRange, {
-      start: sentAt!,
-      end: Date.now() + 1,
-    });
-    expect(inWindow.some((e) => e.kind === "captured")).toBe(true);
-  });
-
   // witness: drop the `b.end > at` filter from internalScheduleAt and a block
   // that ended this morning reports as what Tom is doing right now.
   it("reports only the blocks actually spanning the moment asked about", async () => {

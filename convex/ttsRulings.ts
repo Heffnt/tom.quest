@@ -12,6 +12,7 @@ import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 import { resolveId } from "./jarvis/tables";
+import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -268,12 +269,12 @@ export async function insertRuling(
       rulingId: id,
     });
     // A RULING READ OUT OF HIS SENTENCE IS A DECISION TAKEN IN HIS NAME, so it
-    // goes to #tts-decisions the moment it is written rather than waiting for
-    // the morning (slack-design.md §1.2): the run that acts on a misread
-    // sentence will have finished by 5 a.m. Only the words door — a ruling he
-    // pressed a button for is not a decision anyone took for him.
+    // goes on the digest's objection list (convex/jarvis/outbox.ts), where
+    // "revert <n>" reaches it. Only the words door — a ruling he pressed a
+    // button for is not a decision anyone took for him.
     if (provenance !== undefined) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      await listForDigest(ctx, {
+        section: "decisions",
         askId: `ruling:${id}`,
         ...(todoId === undefined ? {} : { todoId }),
         decision: `${await ruledSubjectName(ctx, { todoId, repo, externalId })} was ruled a ${verdict} from your own words`,

@@ -70,22 +70,27 @@ async function createRunSession(
   return { sessionId, runId };
 }
 
-// THE PER-SESSION EVENT LINE IS GONE (slack-design.md §1.2). It had no channel
-// of its own and was switched off from the day it was written: a session
-// recording an outcome is not something Tom acts on, and it reaches him in the
-// morning message's overnight run. The one case that IS a message is a session
-// that FAILED, and that goes to #tts-broken.
-//
-// These read the broken lines a mutation scheduled, off the scheduler's own
-// system table — the observable effect without reaching into Slack. Rows
-// persist through their run (convex-test patches state, never deletes), so
-// counting is stable whether or not the job has fired yet.
-async function sessionEventMessages(t: ReturnType<typeof convexTest>) {
-  return await t.run(async (ctx) =>
-    (await ctx.db.system.query("_scheduled_functions").collect())
-      .filter((job) => job.name.includes("sendBroken"))
-      .map((job) => job.args[0] as { job: string; statement: string; detail?: string }),
-  );
+// A session's failure is not a message of its own (one output channel,
+// 2026-09-26): it is a line in the digest's broken section, read from the
+// session's own row (convex/ttsDigest.ts gatherTodayFacts) — a session-ended
+// row whose status is "failed", or a session-outcome row whose outcome is
+// "errored". These read those rows, and check on every call that no Slack
+// send was scheduled (convex-test keeps a scheduled row after it runs, so the
+// check holds whether or not a job has fired yet).
+async function sessionFailureRows(t: ReturnType<typeof convexTest>) {
+  return await t.run(async (ctx) => {
+    const slack = (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+      job.name.includes("ttsSync"),
+    );
+    expect(slack).toEqual([]);
+    return (await ctx.db.query("dtsEvents").collect())
+      .filter(
+        (row) =>
+          (row.kind === "session-ended" && (row.data as { status?: string }).status === "failed") ||
+          (row.kind === "session-outcome" && (row.data as { outcome?: string }).outcome === "errored"),
+      )
+      .map((row) => ({ kind: row.kind, ...(row.data as Record<string, unknown>) }));
+  });
 }
 
 // A box with plenty of headroom: 1/8 per-cpu load, 8GB free — every admission
@@ -988,8 +993,8 @@ describe("claude sessions", () => {
   // witness: replace `noState` with `terminal` at internalIngest's state gates
   // in convex/claudeSessions.ts and this test goes red — the daemon's blind
   // retry of an ending it already landed would end the session a second time,
-  // discard the turn Tom just sent, and report the failure to Slack twice.
-  it("a pre-reopen flush replay lands its notes but no state, and says nothing", async () => {
+  // discard the turn Tom just sent, and record the failure twice.
+  it("a pre-reopen flush replay lands its notes but no state, and records no second failure", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1003,7 +1008,7 @@ describe("claude sessions", () => {
       notes: [{ at: 1, text: "the end" }],
     };
     await t.mutation(internal.claudeSessions.internalIngest, endingFlush);
-    expect(await sessionEventMessages(t)).toHaveLength(1);
+    expect(await sessionFailureRows(t)).toHaveLength(1);
 
     await tom.mutation(api.claudeSessions.reopenSession, {
       sessionId,
@@ -1025,8 +1030,8 @@ describe("claude sessions", () => {
     });
     expect(inbound).toHaveLength(1);
     expect(inbound[0].text).toBe("what happened there?");
-    // Slack was told about the failure once, on the real crossing.
-    expect(await sessionEventMessages(t)).toHaveLength(1);
+    // The failure is in the record once, from the real crossing.
+    expect(await sessionFailureRows(t)).toHaveLength(1);
     // A stale payload's notes are still part of what happened.
     const notes = await tom.query(api.sessionRows.notes, { sessionId });
     expect(notes.map((note) => note.text)).toEqual([
@@ -1131,17 +1136,17 @@ describe("claude sessions", () => {
   });
 });
 
-// ── Needs-you Slack event messages (todo tts-session-needs-you-notify) ───────
-// Every send below is EDGE-triggered: the todo's completion condition is "one
-// message, not one per poll", and the daemon flushes several times a second
-// while a session is live. Each test therefore repeats the daemon's behavior
-// (a replayed flush, a re-record) and pins that the count does not move.
+// ── A session's failure rows (todo tts-session-needs-you-notify) ─────────────
+// Every row below is EDGE-triggered: "one line, not one per poll", and the
+// daemon flushes several times a second while a session is live. Each test
+// therefore repeats the daemon's behavior (a replayed flush, a re-record) and
+// pins that the count does not move.
 
-describe("session event messages", () => {
+describe("session failure rows", () => {
   // witness: drop the `firstRecord` guard from internalRecordOutcome in
-  // convex/claudeSessions.ts and an errored re-record would ping Tom once per
-  // revision. A completed one says nothing either way.
-  it("says nothing when the agent records an outcome, first time or after", async () => {
+  // convex/claudeSessions.ts and an errored re-record would write an errored
+  // outcome row, a failure line per revision. A completed one is no failure.
+  it("records no failure when the agent records a completed outcome, and none when it revises it to errored", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1151,19 +1156,19 @@ describe("session event messages", () => {
       outcome: "completed",
       summary: "brief written into the item",
     });
-    // A COMPLETED outcome is not a message at all now: it is a fact for the
-    // morning message's overnight run, and nothing Tom does anything about.
-    expect(await sessionEventMessages(t)).toHaveLength(0);
+    // A COMPLETED outcome is not a failure: it is a fact for the digest's
+    // overnight run, and nothing Tom does anything about.
+    expect(await sessionFailureRows(t)).toHaveLength(0);
 
     // The agent sharpens its wording (or corrects the verdict): the ROW takes
-    // the new word — the surface always shows the agent's latest — and Slack
-    // is still told nothing, because only the FIRST record is an edge.
+    // the new word — the surface always shows the agent's latest — and no
+    // failure row is written, because only the FIRST record is an edge.
     await t.mutation(internal.claudeSessions.internalRecordOutcome, {
       id: sessionId,
       outcome: "errored",
       summary: "the source turned out to be paywalled",
     });
-    expect(await sessionEventMessages(t)).toHaveLength(0);
+    expect(await sessionFailureRows(t)).toHaveLength(0);
     const session = await tom.query(api.claudeSessions.getSession, {
       id: sessionId,
     });
@@ -1179,10 +1184,10 @@ describe("session event messages", () => {
   // could not fire in production — the old test hand-built a payload no daemon
   // code emits, green-lighting dead code.
 
-  // witness: drop the `becameTerminal` conjunct from the failure branch of
-  // internalIngest (leaving `args.status === "failed"` alone) and this test
-  // goes red — every late flush naming the same failure would re-send it.
-  it("notifies once on the crossing into failed, and not on a normal ending", async () => {
+  // witness: drop the `args.status !== session.status` guard from the ending
+  // edge of internalIngest and this test goes red — every late flush naming
+  // the same failure would write another session-ended row.
+  it("records one failure row on the crossing into failed, and none on a normal ending", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const failed = await createBasicSession(tom);
@@ -1196,28 +1201,31 @@ describe("session event messages", () => {
       status: "failed",
       endedReason: "the SDK process exited without a final turn",
     });
-    const messages = await sessionEventMessages(t);
-    expect(messages).toHaveLength(1);
-    // #tts-broken dedupes on the JOB as well, and a session's job name is the
-    // session itself, so two failures of one session are one message.
-    expect(messages[0].job).toBe(`session:${failed}`);
-    expect(messages[0].statement).toContain("stopped without finishing what it was carrying");
-    expect(messages[0].detail).toContain("the SDK process exited without a final turn");
+    const rows = await sessionFailureRows(t);
+    expect(rows).toHaveLength(1);
+    // The row the digest's broken line is built from: which session, and the
+    // reason it gave (redacted when the digest reads it).
+    expect(rows[0]).toMatchObject({
+      kind: "session-ended",
+      sessionId: failed,
+      status: "failed",
+      endedReason: "the SDK process exited without a final turn",
+    });
 
-    // A session that simply ENDS is not a needs-you event: Tom stopped it, or
-    // it finished, and its outcome record is the thing worth a message.
+    // A session that simply ENDS is not a failure: Tom stopped it, or it
+    // finished, and its outcome record is the thing worth a line.
     const ended = await createBasicSession(tom);
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId: ended,
       status: "ended",
       endedReason: "stopped by Tom",
     });
-    expect(await sessionEventMessages(t)).toHaveLength(1);
+    expect(await sessionFailureRows(t)).toHaveLength(1);
   });
 
   // The daemon's cap-path stamp is the same fact as the agent's pen and takes
   // the same route — two writers, one description.
-  it("says nothing for a completed stamp, and one broken line for an errored one", async () => {
+  it("records no failure for a completed stamp, and one errored outcome row for an errored one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1228,16 +1236,16 @@ describe("session event messages", () => {
       outcome: "completed" as const,
       outcomeSummary: "daemon saw the final turn",
     });
-    // Completed: nothing is sent, on the stamp or on any flush after it.
-    expect(await sessionEventMessages(t)).toHaveLength(0);
+    // Completed: no failure, on the stamp or on any flush after it.
+    expect(await sessionFailureRows(t)).toHaveLength(0);
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       outcome: "completed" as const,
       outcomeSummary: "daemon saw the final turn",
     });
-    expect(await sessionEventMessages(t)).toHaveLength(0);
+    expect(await sessionFailureRows(t)).toHaveLength(0);
 
-    // An ERRORED outcome the daemon stamps IS a broken line, once.
+    // An ERRORED outcome the daemon stamps IS a failure row, once.
     const errored = await createBasicSession(tom);
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId: errored,
@@ -1246,9 +1254,19 @@ describe("session event messages", () => {
       outcome: "errored" as const,
       outcomeSummary: "the source turned out to be paywalled",
     });
-    const broken = await sessionEventMessages(t);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: errored,
+      outcome: "errored" as const,
+      outcomeSummary: "the source turned out to be paywalled",
+    });
+    const broken = await sessionFailureRows(t);
     expect(broken).toHaveLength(1);
-    expect(broken[0].job).toBe(`session:${errored}`);
+    expect(broken[0]).toMatchObject({
+      kind: "session-outcome",
+      sessionId: errored,
+      outcome: "errored",
+      summary: "the source turned out to be paywalled",
+    });
   });
 });
 

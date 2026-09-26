@@ -2,7 +2,7 @@
 // under it.
 //
 // ONE OUTPUT CHANNEL (Tom, 2026-09-26). #dump is where his words go in; the
-// output channel (channelFor("today"), #tts-today until it is renamed #jarvis,
+// output channel (outputChannel(), #tts-today until it is renamed #jarvis,
 // a rename that keeps the id) is where the record reaches him. What used to
 // have a room of its own is a section of the digest: the delegate's decisions
 // and the merges (the objection list), the failures and recoveries (broken),
@@ -39,7 +39,7 @@ import { recordSlackSent } from "../ttsSlack";
 import {
   DAY_MS,
   TTS_DIGEST_NY_HOUR,
-  channelFor,
+  outputChannel,
   nyLocalHour,
   replyRouteLive,
   ttsDayKey,
@@ -73,6 +73,7 @@ export type ComposeAnswer =
       truncated: boolean;
       surfacedTodoIds: string[];
       objectionAskIds: string[];
+      facts: unknown;
     };
 
 export const compose = internalMutation({
@@ -85,7 +86,7 @@ export const compose = internalMutation({
       return { due: false, day, reason: "before 5 a.m. New York" };
     }
     if (!force && last.day === day) return { due: false, day, reason: `the digest for ${day} went out` };
-    const channel = channelFor("today");
+    const channel = outputChannel();
     if (channel === null) {
       // The box reports this as its job's failure; the silence alarm's
       // missing-digest line is the one Tom sees.
@@ -93,7 +94,7 @@ export const compose = internalMutation({
     }
     await ctx.runMutation(internal.ttsDigest.internalRollMissed, { day });
     const since = last.windowEnd ?? now - DAY_MS;
-    const composed: { text: string; truncated: boolean; surfacedTodoIds: string[]; objectionAskIds: string[] } =
+    const composed: { text: string; truncated: boolean; surfacedTodoIds: string[]; objectionAskIds: string[]; facts: unknown } =
       await ctx.runQuery(internal.ttsDigest.internalComposeToday, {
       day,
       now,
@@ -110,6 +111,7 @@ export const compose = internalMutation({
       truncated: composed.truncated,
       surfacedTodoIds: composed.surfacedTodoIds,
       objectionAskIds: composed.objectionAskIds,
+      facts: composed.facts,
     };
   },
 });
@@ -164,7 +166,7 @@ function needsYouSubject(ctx: MutationCtx, d: Record<string, unknown>): SlackSub
  * oldest first. No digest yet means nothing is posted: the reply waits for
  * the next one.
  */
-export type PendingNeedsYou = {
+type PendingNeedsYou = {
   thread: { channel: string; ts: string; day: string | null } | null;
   pending: { key: string; text: string; todoId?: string; job?: string }[];
 };
