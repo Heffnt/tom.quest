@@ -11,6 +11,7 @@ import {
   MODEL_OF_TOM_HEADER,
 } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
+import { assembleContext, joinContext } from "./ttsContext";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -222,6 +223,35 @@ describe("claude sessions", () => {
     expect(text.split(skills)).toHaveLength(2); // one skills line
     expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2);
     expect(text).toContain(`${skills}\n\ncarry on from here`);
+  });
+
+  // witness: the facts block was cut at its first blank line, and a ruling
+  // sentence with a blank line in it left its second paragraph in the new
+  // session's prompt.
+  it("takes off a pasted opener's facts whole when a ruling sentence has a blank line in it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "the other todo", status: "active", readiness: "prepared", timingClass: "whenever",
+        source: "tom", createdAt: 1, updatedAt: 1,
+      }),
+    );
+    await t.run(async (ctx) =>
+      ctx.db.insert("rulings", { subjectType: "life", todoId, verdict: "revise", sentence: "first paragraph\n\nthe other todo's second paragraph", ruledAt: 1 }),
+    );
+    // The opener of a session on the other todo, as the record writes it.
+    const context = await t.run(async (ctx) => assembleContext(ctx, { kind: "todo", todoId }, { reachesTom: true }));
+    expect(context.facts).toContain("first paragraph the other todo's second paragraph");
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "pasted opener with facts",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: `${joinContext(context)}\n\ncarry on from here`,
+    });
+    const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
+    expect(text).not.toContain("second paragraph");
+    expect(text).toContain("carry on from here");
   });
 
   it("refuses a seed carrying a prelude from another commit, and inserts nothing", async () => {

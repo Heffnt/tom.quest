@@ -77,6 +77,9 @@ type ContextRecord = {
   sessions: { outcome: string; outcomeSummary?: string; endedDay: string }[];
 };
 
+/** The facts block's two section headers, as renderFacts writes them. */
+const FACTS_HEADERS = ["RULINGS ON THIS SUBJECT", "RECENT SESSION OUTCOMES"] as const;
+
 function renderFacts(record: ContextRecord): string {
   const rulings = boundedFactText(
     [...record.rulings]
@@ -91,9 +94,13 @@ function renderFacts(record: ContextRecord): string {
     (session) => `${session.endedDay} ${session.outcome}${session.outcomeSummary ? `: ${session.outcomeSummary}` : ""}`,
   );
   if (rulings.length === 0 && outcomes.length === 0) return "";
+  // ONE LINE PER FACT: a sentence or summary written over several lines, or
+  // with a blank line in it, is joined into one, so the block is exactly its
+  // headers and its "- " lines and withoutPastedContext can walk it.
+  const bullet = (text: string) => `- ${text.replace(/\s*\n\s*/g, " ")}`;
   return [
-    ...(rulings.length === 0 ? [] : ["RULINGS ON THIS SUBJECT", ...rulings.map((ruling) => `- ${ruling}`)]),
-    ...(outcomes.length === 0 ? [] : ["RECENT SESSION OUTCOMES", ...outcomes.map((outcome) => `- ${outcome}`)]),
+    ...(rulings.length === 0 ? [] : [FACTS_HEADERS[0], ...rulings.map(bullet)]),
+    ...(outcomes.length === 0 ? [] : [FACTS_HEADERS[1], ...outcomes.map(bullet)]),
   ].join("\n");
 }
 
@@ -222,8 +229,8 @@ export function joinContext(context: AssembledContext): string {
  * A seed's prompt with a pasted opener's whole context taken off: the base
  * (withoutModelOfTomPrelude, which refuses one read at another commit), then
  * the write pages and the skills line when they follow it, then the old
- * subject's facts block (RULINGS ON THIS SUBJECT / RECENT SESSION OUTCOMES, up
- * to the blank line that ends it). The opener then puts this subject's
+ * subject's facts block (its headers and their one-line "- " facts, as
+ * renderFacts writes them). The opener then puts this subject's
  * context in front, so no ruling or outcome of another subject rides along.
  * A prompt that does not begin with the header comes back as it was; null is
  * the refusal.
@@ -235,9 +242,15 @@ export function withoutPastedContext(prompt: string, context: AssembledContext):
   for (const part of [context.write, context.skills]) {
     if (part !== "" && rest.startsWith(part)) rest = rest.slice(part.length).replace(/^\n+/, "");
   }
-  if (/^(RULINGS ON THIS SUBJECT|RECENT SESSION OUTCOMES)\n/.test(rest)) {
-    const end = rest.indexOf("\n\n");
-    rest = end === -1 ? "" : rest.slice(end).replace(/^\n+/, "");
+  // The facts block by its structure (renderFacts): a header line, then its
+  // "- " lines, one fact each, for one or both headers. The walk stops at the
+  // first line that is neither, which is the blank line the opener put after
+  // the block.
+  const lines = rest.split("\n");
+  let at = 0;
+  if ((FACTS_HEADERS as readonly string[]).includes(lines[0] ?? "")) {
+    while (at < lines.length && ((FACTS_HEADERS as readonly string[]).includes(lines[at]) || lines[at].startsWith("- "))) at += 1;
+    rest = lines.slice(at).join("\n").replace(/^\n+/, "");
   }
   return rest;
 }
