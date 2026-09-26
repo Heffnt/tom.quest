@@ -11,10 +11,9 @@
 // when the box's last caller spells this route.
 //
 // The reader names are the box's word for what it is doing (planner,
-// capture, ask, learning, weekly, simplify);
-// the context assembler's caller ids ("planner-context", "capture-context",
-// "weekly-input", "simplify-input") are the assembler's own and stay as they
-// are inside each reader.
+// capture, ask, learning, weekly, simplify). The ones that carry the
+// model-of-tom context all read the same text (ttsContext
+// internalContextPrelude takes no caller name).
 
 import type { HttpRouter } from "convex/server";
 import { httpAction, type ActionCtx } from "../_generated/server";
@@ -46,7 +45,7 @@ async function plannerContext(ctx: ActionCtx) {
     ctx.runQuery(internal.tts.internalListMirror, {}),
     ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
     ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
-    ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "planner-context" }),
+    ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
     ctx.runQuery(internal.vocabulary.internalClosedVocabulary, {}),
   ]);
   return {
@@ -88,7 +87,7 @@ const READERS: Record<string, Reader> = {
     let declinedIntegrations;
     try {
       [writingStandard, declinedIntegrations] = await Promise.all([
-        ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "capture-context" }),
+        ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
         ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
       ]);
     } catch (error) {
@@ -135,7 +134,7 @@ const READERS: Record<string, Reader> = {
     try {
       [facts, writingStandard] = await Promise.all([
         ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
-        ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "weekly-input" }),
+        ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
       ]);
     } catch (error) {
       return modelOfTomErrorResponse(error);
@@ -155,7 +154,7 @@ const READERS: Record<string, Reader> = {
     try {
       [facts, writingStandard] = await Promise.all([
         ctx.runQuery(internal.ttsSimplify.internalSimplifyInput, { until }),
-        ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "simplify-input" }),
+        ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
       ]);
     } catch (error) {
       return modelOfTomErrorResponse(error);

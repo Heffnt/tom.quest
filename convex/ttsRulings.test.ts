@@ -4,6 +4,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -73,6 +74,7 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
         header: "MODEL-OF-TOM FILES (WikiTom commit rulings-session-test): operate",
       }],
     });
+    for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
   });
 }
 

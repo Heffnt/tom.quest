@@ -18,7 +18,7 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
-import { modelOfTomState, modelOfTomText, withoutModelOfTomPrelude } from "./ttsSkills";
+import { modelOfTomState, modelOfTomText, withoutModelOfTomPrelude, WRITE_PAGES } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
 
 /** What the run is about. `none` is every caller with no subject (the HTTP
@@ -29,18 +29,6 @@ export type ContextSubject =
   | { kind: "todo"; todoId: Id<"dtsTodos">; repos?: readonly string[] }
   | { kind: "repo"; repo: string }
   | { kind: "none" };
-
-/** The HTTP doors that read internalContextPrelude, each naming itself. */
-const CONTEXT_DOORS = [
-  "planner-context",
-  "capture-context",
-  "time-notes",
-  "weekly-input",
-  "simplify-input",
-] as const;
-
-/** The write pages, in prompt order. */
-const WRITE_PAGES = ["model-of-tom/writing.md", "model-of-tom/ground.md"] as const;
 
 /** The one line every prompt carries in place of a list of skills. */
 export const SKILLS_LINE = "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.";
@@ -179,14 +167,18 @@ async function subjectFacts(
 
 /** The write pages the last post stored, each rendered the way the prelude
  * renders every file: `── <path> ──` and the body. The post that stores the
- * base stores these in the same transaction, so a stored base comes with
- * them whenever the publisher sent them. */
+ * base refuses to store it without them (ttsSkills internalReplaceModelOfTom),
+ * so a missing one is a broken store and FAILS CLOSED, like a missing base: a
+ * run whose output reaches Tom never starts without his writing rules. */
 async function writePages(ctx: QueryCtx | MutationCtx): Promise<string> {
   const blocks: string[] = [];
   for (const path of WRITE_PAGES) {
     const name = path.slice("model-of-tom/".length).replace(/\.md$/, "");
     const row = await ctx.db.query("modelOfTomFiles").withIndex("by_name", (q) => q.eq("name", name)).first();
-    if (row !== null && row.sourcePath === path) blocks.push(`── ${path} ──\n${row.body}`);
+    if (row === null || row.sourcePath !== path) {
+      throw new Error(`${path} is not in the posted model-of-tom files; a run whose output reaches Tom needs it`);
+    }
+    blocks.push(`── ${path} ──\n${row.body}`);
   }
   return blocks.join("\n\n");
 }
@@ -251,13 +243,11 @@ export function withoutPastedContext(prompt: string, context: AssembledContext):
 }
 
 /** The HTTP doors read here. They have no subject of their own, and each
- * one's output reaches Tom. */
+ * one's output reaches Tom, so every one gets the same text: no caller name
+ * changes it, and none is asked for. */
 export const internalContextPrelude = internalQuery({
-  args: { caller: v.string() },
-  handler: async (ctx, args): Promise<string> => {
-    if (!(CONTEXT_DOORS as readonly string[]).includes(args.caller)) throw new Error(`unknown context caller ${args.caller}`);
-    return joinContext(await assembleContext(ctx, { kind: "none" }, { reachesTom: true }));
-  },
+  args: {},
+  handler: async (ctx): Promise<string> => joinContext(await assembleContext(ctx, { kind: "none" }, { reachesTom: true })),
 });
 
 // ── The repo layer's publication ─────────────────────────────────────────────

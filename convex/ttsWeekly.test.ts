@@ -31,6 +31,7 @@ import { INTEGRATION_SOURCE, integrationStatement } from "./ttsIntegrations";
 import { JOB_FAILED, JOB_RECOVERED } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM } from "./ttsSlack";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -57,6 +58,7 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
         operate: "operate layer",
         headers: [{ layers: ["operate"], header: "MODEL-OF-TOM FILES (test)" }],
     });
+    for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
   });
 }
 
@@ -1134,6 +1136,7 @@ describe("GET /tts/weekly-input", () => {
         operate: "operate layer",
         headers: [{ layers: ["operate"], header: "published map + operate" }],
       });
+      for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
     });
     const res = await get(t, `/tts/weekly-input?until=${until}`);
     expect(res.status).toBe(200);
@@ -1142,10 +1145,10 @@ describe("GET /tts/weekly-input", () => {
     expect(body.since).toBe(until - WEEK_MS);
     expect(body.readiness).toEqual({ prepared: 0, unprepared: 0 });
     expect(body.integrations.length).toBe(3);
-    // The door serves the ASSEMBLED CONTEXT: the base and the skills line
-    // (this fixture stores no write page), and nothing else. The assembler's
+    // The door serves the ASSEMBLED CONTEXT: the base, the write pages and the
+    // skills line, and nothing else. The assembler's
     // exact output is pinned in convex/ttsContext.test.ts.
-    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\n── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
   });
 });
 

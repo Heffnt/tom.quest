@@ -13,6 +13,7 @@ import {
   integrationName,
   integrationStatement,
 } from "./ttsIntegrations";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -24,6 +25,7 @@ async function publishWritingStandard(t: ReturnType<typeof convexTest>) {
       operate: "operate layer",
       headers: [{ layers: ["operate"], header: "published map + operate" }],
     });
+    for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
   });
 }
 
@@ -242,10 +244,10 @@ describe("GET /tts/capture-context declined integrations", () => {
         sentence: "not worth the credential",
       },
     ]);
-    // The door serves the ASSEMBLED CONTEXT: the base and the skills line
-    // (this fixture stores no write page). The assembler's exact output is
+    // The door serves the ASSEMBLED CONTEXT: the base, the write pages and the
+    // skills line. The assembler's exact output is
     // pinned in convex/ttsContext.test.ts.
-    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\n── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
     expect(body.writingStandard).not.toContain("write layer");
     expect(body.captureTriage).toBeUndefined();
     expect(body.source).toBeUndefined();

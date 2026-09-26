@@ -151,3 +151,21 @@ export function contextPublication(commit) {
   }));
   return { layers, headers, files };
 }
+
+/**
+ * The two write pages as modelOfTomFiles rows. A stored publication always
+ * comes with them (the post refuses one without), and a run whose output
+ * reaches Tom fails without them, so a Convex test that seeds a publication
+ * by hand seeds these beside it.
+ */
+export function writePageRows(commit = "test") {
+  return ["model-of-tom/writing.md", "model-of-tom/ground.md"].map((path) => ({
+    name: path.slice("model-of-tom/".length).replace(/\.md$/, ""),
+    body: CONTEXT_PAGES[path],
+    sourcePath: path,
+    bytes: CONTEXT_PAGES[path].length,
+    commit,
+    syncedAt: 1,
+    pushed: true,
+  }));
+}
