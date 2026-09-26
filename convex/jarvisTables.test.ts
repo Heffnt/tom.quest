@@ -165,6 +165,95 @@ describe("the copy into the plain-named tables", () => {
     expect(rows.note.todoId).toBe(rows.todo._id);
     expect(rows.weekly.agendaSubjects).toEqual([rows.todo._id, "not-a-todo"]);
     const left = await t.action(internal.jarvis.tables.leftToRemap, {});
-    expect(left).toEqual({ rulings: 0, claudeSessions: 0, runs: 0, blocks: 0, timeNotes: 0 });
+    expect(left).toEqual({ rulings: 0, claudeSessions: 0, runs: 0, blocks: 0, timeNotes: 0, runners: 0, dtsEvents: 0, events: 0 });
+  });
+
+  // witness: drop the dtsEvents or events lookups from leftOnIndexesPage; the
+  // counts before the remap then read 0 and the check proves nothing.
+  it("counts what still names a todo by its old id, on every table the remap walks", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      const todo = await ctx.db.insert("dtsTodos", todo_("referenced"));
+      await ctx.db.insert("dtsEvents", { at: 1, kind: "created", todoId: todo });
+      await ctx.db.insert("events", { kind: "job-ok", at: 1, provenance: {}, subject: todo, data: {} });
+      await ctx.db.insert("rulings", { subjectType: "life", todoId: todo, verdict: "archive", ruledAt: 1 });
+    });
+    await copyAll(t, "todos");
+    expect(await t.action(internal.jarvis.tables.leftToRemap, {})).toMatchObject({ rulings: 1, dtsEvents: 1, events: 1 });
+    await t.mutation(internal.jarvis.tables.remapTodoRefs, { chain: false });
+    expect(await t.action(internal.jarvis.tables.leftToRemap, {})).toMatchObject({ rulings: 0, dtsEvents: 0, events: 0 });
+  });
+
+  it("goes back: copyBack writes what the new code wrote into the old tables, and unmap points every reference at them", async () => {
+    const t = convexTest({ schema, modules });
+    const old = await t.run(async (ctx) => {
+      const a = await ctx.db.insert("dtsTodos", todo("a", 10));
+      const b = await ctx.db.insert("dtsTodos", todo("b", 10));
+      await ctx.db.insert("dtsEvents", { at: 1, kind: "created", todoId: a });
+      await ctx.db.insert("rulings", { subjectType: "life", todoId: a, verdict: "archive", ruledAt: 1 });
+      return { a, b };
+    });
+    await copyAll(t, "todos");
+    await t.mutation(internal.jarvis.tables.remapTodoRefs, { chain: false });
+    await t.mutation(internal.jarvis.tables.remapTodoStragglers, { chain: false });
+    // What the new code does after the switch: edits a, leaves b, makes c
+    // (needing a), a block and a time note on c, and a run naming c.
+    const made = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("todos").collect();
+      const a = rows.find((r) => r.statement === "a")!;
+      await ctx.db.patch(a._id, { statement: "a, edited", updatedAt: 20 });
+      const c = await ctx.db.insert("todos", { ...todo("c", 30), needs: [a._id] });
+      const block = await ctx.db.insert("blocks", { start: 1, end: 2, todoId: c, createdAt: 1 });
+      await ctx.db.insert("timeNotes", { text: "friday", todoId: c, blockId: block, status: "pending", createdAt: 1 });
+      await ctx.db.insert("events", { kind: "job-ok", at: 2, provenance: {}, subject: c, data: {} });
+      return { a: a._id, c };
+    });
+    const before = await t.action(internal.jarvis.tables.leftToUnmap, {});
+    expect(before).toMatchObject({ rulings: 1, blocks: 1, timeNotes: 1, dtsEvents: 1, events: 1, todosNotCopiedBack: 1 });
+    // An unmap before the copy back would leave c's references naming nothing.
+    await expect(t.mutation(internal.jarvis.tables.unmapTodoStragglers, { chain: false })).rejects.toThrow(/copyBack/);
+
+    const all = async (table: "todos" | "blocks" | "timeNotes") => {
+      let cursor: string | null = null;
+      for (;;) {
+        const page: { isDone: boolean; continueCursor: string } = await t.mutation(internal.jarvis.tables.copyBack, { table, cursor, pageSize: 2, chain: false });
+        if (page.isDone) break;
+        cursor = page.continueCursor;
+      }
+    };
+    await all("todos");
+    await t.mutation(internal.jarvis.tables.copyBackNeeds, { chain: false });
+    await all("blocks");
+    await all("timeNotes");
+    await t.mutation(internal.jarvis.tables.unmapTodoRefs, { chain: false });
+    await t.mutation(internal.jarvis.tables.unmapTodoStragglers, { chain: false });
+    await t.mutation(internal.jarvis.tables.unmapRunTodos, { chain: false });
+    expect(await t.action(internal.jarvis.tables.leftToUnmap, {})).toEqual({
+      rulings: 0, claudeSessions: 0, runs: 0, blocks: 0, timeNotes: 0, runners: 0, dtsEvents: 0, events: 0, todosNotCopiedBack: 0,
+    });
+
+    const back = await t.run(async (ctx) => ({
+      todos: await ctx.db.query("dtsTodos").collect(),
+      blocks: await ctx.db.query("dtsBlocks").collect(),
+      notes: await ctx.db.query("dtsTimeNotes").collect(),
+      ruling: (await ctx.db.query("rulings").collect())[0],
+      dts: (await ctx.db.query("dtsEvents").collect())[0],
+      events: await ctx.db.query("events").collect(),
+      c: await ctx.db.get(made.c),
+    }));
+    const byStatement = new Map(back.todos.map((r) => [r.statement, r]));
+    expect([...byStatement.keys()].sort()).toEqual(["a, edited", "b", "c"]);
+    expect(byStatement.get("a, edited")!._id).toBe(old.a);
+    const oldC = byStatement.get("c")!;
+    expect(back.c!.legacyId).toBe(oldC._id);
+    expect(oldC.needs).toEqual([old.a]);
+    expect(back.blocks[0].todoId).toBe(oldC._id);
+    expect(back.notes[0]).toMatchObject({ todoId: oldC._id, blockId: back.blocks[0]._id });
+    expect(back.ruling.todoId).toBe(old.a);
+    expect(back.dts.todoId).toBe(old.a);
+    expect(back.events.map((e) => e.subject)).toEqual([oldC._id]);
+    // A rerun changes nothing.
+    await all("todos");
+    expect(await t.run(async (ctx) => (await ctx.db.query("dtsTodos").collect()).length)).toBe(3);
   });
 });
