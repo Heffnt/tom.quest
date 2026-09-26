@@ -12,22 +12,11 @@ beforeAll(async () => {
   await t.fetch("/jarvis/events");
 }, 60_000);
 
-const todo = (statement: string, updatedAt: number) => ({
-  statement,
-  readiness: "unprepared" as const,
-  status: "active" as const,
-  timingClass: "whenever" as const,
-  source: "test",
-  createdAt: 1,
-  updatedAt,
-});
-
-/** Run a copy to the end, one page at a time, as the chained copy does. */
-async function copyAll(t: ReturnType<typeof convexTest>, table: "todos" | "rulings" | "blocks" | "timeNotes") {
+/** Run the copy to the end, one page at a time, as the chained copy does. */
+async function copyAll(t: ReturnType<typeof convexTest>) {
   let cursor: string | null = null;
   for (;;) {
     const page: { isDone: boolean; continueCursor: string } = await t.mutation(internal.jarvis.tables.copy, {
-      table,
       cursor,
       pageSize: 2,
       chain: false,
@@ -35,53 +24,35 @@ async function copyAll(t: ReturnType<typeof convexTest>, table: "todos" | "rulin
     if (page.isDone) break;
     cursor = page.continueCursor;
   }
-  if (table === "todos") {
-    cursor = null;
-    for (;;) {
-      const page: { isDone: boolean; continueCursor: string } = await t.mutation(internal.jarvis.tables.copyNeeds, {
-        cursor,
-        pageSize: 2,
-        chain: false,
-      });
-      if (page.isDone) break;
-      cursor = page.continueCursor;
-    }
-  }
 }
 
-describe("the copy into the plain-named tables", () => {
-  it("copies every field, keeps the old id, maps needs and a ruling's todo, and a second run changes nothing", async () => {
+const todo = {
+  statement: "a todo",
+  readiness: "unprepared" as const,
+  status: "active" as const,
+  timingClass: "whenever" as const,
+  source: "test",
+  createdAt: 1,
+  updatedAt: 1,
+};
+
+describe("the rulings copy", () => {
+  it("copies every field, keeps the old id and the todo it names, and a second run changes nothing", async () => {
     const t = convexTest({ schema, modules });
     const ids = await t.run(async (ctx) => {
-      const a = await ctx.db.insert("dtsTodos", todo("a", 10));
-      const b = await ctx.db.insert("dtsTodos", { ...todo("b", 10), needs: [a], brief: "the brief" });
-      const c = await ctx.db.insert("dtsTodos", { ...todo("c", 10), needs: [a, b] });
+      const b = await ctx.db.insert("dtsTodos", todo);
       const r = await ctx.db.insert("dtsRulings", { subjectType: "life", todoId: b, verdict: "archive", ruledAt: 5 });
-      return { a, b, c, r };
+      const s = await ctx.db.insert("dtsRulings", { subjectType: "code", repo: "tom.quest", externalId: "x", verdict: "approve", ruledAt: 6 });
+      const u = await ctx.db.insert("dtsRulings", { subjectType: "life", todoId: b, verdict: "revise", sentence: "later", ruledAt: 7 });
+      return { b, r, s, u };
     });
-    await copyAll(t, "todos");
-    await copyAll(t, "rulings");
-    await copyAll(t, "todos");
-    await copyAll(t, "rulings");
-    const { todos, rulings } = await t.run(async (ctx) => ({
-      todos: await ctx.db.query("todos").collect(),
-      rulings: await ctx.db.query("rulings").collect(),
-    }));
-    expect(todos.map((row) => row.statement)).toEqual(["a", "b", "c"]);
-    const byLegacy = new Map(todos.map((row) => [row.legacyId, row]));
-    const b = byLegacy.get(ids.b)!;
-    expect(b.brief).toBe("the brief");
-    expect(b.needs).toEqual([byLegacy.get(ids.a)!._id]);
-    expect(byLegacy.get(ids.c)!.needs).toEqual([byLegacy.get(ids.a)!._id, b._id]);
-    expect(rulings).toHaveLength(1);
+    await copyAll(t);
+    await copyAll(t);
+    const rulings = await t.run(async (ctx) => ctx.db.query("rulings").collect());
+    expect(rulings).toHaveLength(3);
     // The ruling names its todo as it did: rulings name dtsTodos until todos move.
-    expect(rulings[0]).toMatchObject({ legacyId: ids.r, todoId: ids.b, verdict: "archive", ruledAt: 5 });
-    const counts = await t.action(internal.jarvis.tables.counts, {});
-    expect(counts.todos).toEqual({ old: 3, new: 3, copied: 3, whole: true });
-    expect(counts.rulings).toEqual({ old: 1, new: 1, copied: 1, whole: true });
-    // The copy fills the four switched tables and no other (calendar,
-    // repeats and vocabulary move with their readers, in w5's switch).
-    expect(Object.keys(counts).sort()).toEqual(["blocks", "rulings", "timeNotes", "todos"]);
+    expect(rulings.find((row) => row.legacyId === ids.r)).toMatchObject({ todoId: ids.b, verdict: "archive", ruledAt: 5 });
+    expect(await t.action(internal.jarvis.tables.counts, {})).toEqual({ rulings: { old: 3, new: 3, copied: 3, whole: true } });
   });
 
   it("points a ruling's labels at its new id", async () => {
@@ -93,7 +64,7 @@ describe("the copy into the plain-named tables", () => {
       } as never);
       return r;
     });
-    await copyAll(t, "rulings");
+    await copyAll(t);
     expect(await t.mutation(internal.jarvis.tables.remapRulingRefs, {})).toEqual({ labels: 1 });
     const { ruling, label } = await t.run(async (ctx) => ({
       ruling: (await ctx.db.query("rulings").collect())[0],
@@ -103,33 +74,44 @@ describe("the copy into the plain-named tables", () => {
     expect(label.ref).toBe(`ruling:${ruling._id}`);
   });
 
-  it("patches a copied row from a newer old row, never from an older one", async () => {
+  it("patches a copied ruling from a newer old row, never from an older one", async () => {
     const t = convexTest({ schema, modules });
-    const a = await t.run(async (ctx) => await ctx.db.insert("dtsTodos", todo("first", 10)));
-    await copyAll(t, "todos");
-    // The old code wrote after the first copy: the second copy brings it.
-    await t.run(async (ctx) => await ctx.db.patch(a, { statement: "old code's edit", updatedAt: 20 }));
-    await copyAll(t, "todos");
-    const copied = await t.run(async (ctx) => (await ctx.db.query("todos").collect())[0]);
-    expect(copied.statement).toBe("old code's edit");
+    const r = await t.run(async (ctx) => ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "approve", ruledAt: 10 }));
+    await copyAll(t);
+    // The old code applied it after the first copy: the second copy brings it.
+    await t.run(async (ctx) => ctx.db.patch(r, { appliedAt: 20 }));
+    await copyAll(t);
+    const copied = await t.run(async (ctx) => (await ctx.db.query("rulings").collect())[0]);
+    expect(copied.appliedAt).toBe(20);
     // The new code wrote since: a later copy leaves it.
-    await t.run(async (ctx) => await ctx.db.patch(copied._id, { statement: "new code's edit", updatedAt: 30 }));
-    await copyAll(t, "todos");
-    const kept = await t.run(async (ctx) => (await ctx.db.query("todos").collect())[0]);
-    expect(kept.statement).toBe("new code's edit");
+    await t.run(async (ctx) => ctx.db.patch(copied._id, { sentence: "new code's note", appliedAt: 30 }));
+    await copyAll(t);
+    expect((await t.run(async (ctx) => (await ctx.db.query("rulings").collect())[0])).sentence).toBe("new code's note");
   });
 
-  it("resolves a row by its new id or the id it had before the rename", async () => {
+  it("resolves a ruling by its new id or the id it had before the rename", async () => {
     const t = convexTest({ schema, modules });
-    const old = await t.run(async (ctx) => await ctx.db.insert("dtsTodos", todo("x", 1)));
-    await copyAll(t, "todos");
+    const old = await t.run(async (ctx) => ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 }));
+    await copyAll(t);
     await t.run(async (ctx) => {
-      const copied = (await ctx.db.query("todos").collect())[0];
-      expect(await resolveId(ctx, "todos", old)).toBe(copied._id);
-      expect(await resolveId(ctx, "todos", copied._id)).toBe(copied._id);
-      expect(await resolveId(ctx, "todos", "not-an-id")).toBeNull();
-      const ruling = await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
-      expect(await resolveId(ctx, "todos", ruling as unknown as Id<"todos">)).toBeNull();
+      const copied = (await ctx.db.query("rulings").collect())[0];
+      expect(await resolveId(ctx, "rulings", old)).toBe(copied._id);
+      expect(await resolveId(ctx, "rulings", copied._id)).toBe(copied._id);
+      expect(await resolveId(ctx, "rulings", "not-an-id")).toBeNull();
+      const other = await ctx.db.insert("dtsTodos", todo);
+      expect(await resolveId(ctx, "rulings", other as unknown as Id<"rulings">)).toBeNull();
     });
+  });
+
+  // The todos, blocks and timeNotes switch is its own pull request with a
+  // faithful sync; this stack's copy takes no other table.
+  it("copies rulings and no other table", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsTodos", todo);
+    });
+    await copyAll(t);
+    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toEqual([]);
+    expect(Object.keys(await t.action(internal.jarvis.tables.counts, {}))).toEqual(["rulings"]);
   });
 });
