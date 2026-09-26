@@ -31,6 +31,9 @@ export const EVENT_KINDS = [
   // box, and provenance.agentId names the agent that ran it when the reader
   // matched one, so the /agents chat draws it on events.by_agent_at.
   "box-change",
+  // Evals (Jarvis worker/jobs/evals.mjs; convex/ttsEvals.ts reads them): one row per eval set per run;
+  // subject is the set name ("wall", "role/classify", ...), data the runner's runData() shape, text the one summary line.
+  "eval-run",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */

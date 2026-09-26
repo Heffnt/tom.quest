@@ -4,8 +4,6 @@ import { internal } from "./_generated/api";
 import {
   EVAL_RUN,
   EVALS_RUN,
-  answeredEvalsRun,
-  evalsRequestFor,
   latestEvalRunFor,
   passRateOf,
   type EvalRunData,
@@ -39,7 +37,14 @@ function run(set: string, passed: number, failed: number, at: number): EvalRunDa
 async function seed(t: ReturnType<typeof convexTest>, rows: EvalRunData[]) {
   await t.run(async (ctx) => {
     for (const data of rows) {
-      await ctx.db.insert("dtsEvents", { at: data.at, kind: EVAL_RUN, key: data.set, data });
+      await ctx.db.insert("events", {
+        at: data.at,
+        kind: EVAL_RUN,
+        provenance: { job: "evals" },
+        subject: data.set,
+        data,
+        text: `${data.set}: ${data.passed} of ${data.total} pass`,
+      });
     }
   });
 }
@@ -65,13 +70,13 @@ describe("latestEvalRunFor", () => {
 });
 
 describe("internalSearchEvals", () => {
-  it("answers the runner's lastRun: the newest row of one set as { id, at, data }", async () => {
+  it("answers one set's newest run as its events row, cited by id", async () => {
     const t = convexTest({ schema, modules });
     await seed(t, [run("wall", 1, 1, 10), run("role/read", 3, 0, 20), run("wall", 2, 0, 30)]);
     const rows = await t.query(internal.ttsEvals.internalSearchEvals, { set: "wall", limit: 1 });
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ at: 30, data: { set: "wall", passed: 2 } });
-    expect(typeof rows[0].id).toBe("string");
+    expect(rows[0]).toMatchObject({ at: 30, kind: EVAL_RUN, subject: "wall", data: { set: "wall", passed: 2 } });
+    expect(rows[0].id).toBe(rows[0]._id);
     expect(await t.query(internal.ttsEvals.internalSearchEvals, { set: "task" })).toEqual([]);
   });
 
@@ -79,7 +84,10 @@ describe("internalSearchEvals", () => {
     const t = convexTest({ schema, modules });
     await seed(t, [run("wall", 1, 1, 10), run("role/read", 3, 0, 20), run("wall", 2, 0, 30)]);
     await t.run(async (ctx) => {
+      // A historic evals-run row in the old table is not an eval-run.
       await ctx.db.insert("dtsEvents", { at: 40, kind: EVALS_RUN, key: "tom.quest@old", data: { repo: "tom.quest" } });
+      // Nor is another kind in the one record under a set's name.
+      await ctx.db.insert("events", { at: 50, kind: "job-ok", provenance: {}, subject: "wall", data: {} });
     });
     const all = await t.query(internal.ttsEvals.internalSearchEvals, {});
     expect(all.map((row) => row.at)).toEqual([30, 20, 10]);
@@ -87,19 +95,5 @@ describe("internalSearchEvals", () => {
     expect(since.map((row) => row.at)).toEqual([30, 20]);
     const failing = await t.query(internal.ttsEvals.internalSearchEvals, { failing: true });
     expect(failing.map((row) => row.at)).toEqual([10]);
-  });
-});
-
-describe("the historic evals-run rows", () => {
-  it("answers the newest row of a commit and never a standing request", async () => {
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", { at: 1, kind: EVALS_RUN, key: "tom.quest@aaaaaaa", data: { regressions: 1 } });
-      await ctx.db.insert("dtsEvents", { at: 2, kind: EVALS_RUN, key: "tom.quest@aaaaaaa", data: { regressions: 0 } });
-    });
-    const answered = await t.run((ctx) => answeredEvalsRun(ctx, "tom.quest", "aaaaaaa"));
-    expect(answered?.data).toEqual({ regressions: 0 });
-    expect(await t.run((ctx) => answeredEvalsRun(ctx, "tom.quest", "bbbbbbb"))).toBe(null);
-    expect(await t.run((ctx) => evalsRequestFor(ctx, "tom.quest", "aaaaaaa"))).toBe(null);
   });
 });

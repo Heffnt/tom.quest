@@ -1629,19 +1629,15 @@ const ttsAskContext = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
 // ── The mechanical merge gate's three doors (convex/ttsMerge.ts) ────────────
-// Three facts about the merged head are read: the tests are green, an audit
-// approved it, and the evals found no regression. A merge is allowed on the
-// first two alone while EVALS_REQUIRED_FOR_MERGE in convex/ttsMerge.ts is
-// false (Tom, 2026-09-24); the third is still read and reported. These routes
-// are where the first two are written, where all three are read, and where a
-// passed merge is recorded.
+// Two facts about the merged head are read: the tests are green, and an audit
+// approved it. These routes are where the two are written, where they are
+// read, and where a passed merge is recorded.
 
 // POST /tts/tests — the Guardrails run's own result, posted by the `report` job
 // once the other four have answered (scripts/tests-report.mjs). Body:
 // { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest? }.
 //
-// EITHER KEY, for the reason the evals-run read takes either: CI holds the
-// narrow evals key and this is a CI fact of the same class, while the box
+// EITHER KEY: CI holds the narrow evals key and posts this fact, while the box
 // holds the worker key and posts its own local runs. The worker key is
 // strictly the more privileged of the two, so accepting it widens nothing.
 /** `{ name: seconds }` when every value is a finite number, else null. The
@@ -2674,15 +2670,12 @@ const RUN_TOKEN_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 // it the audit's "I read the whole change" is unverifiable, which is the exact
 // fault this round closes.
 //
-// A SECOND DOOR AND NOT A WIDER FIRST ONE: /tts/run-by-token is deliberately
-// the run's identity and totals and never its transcript, and this is a
-// deliberately different answer — tool NAMES and PATHS, redacted and bounded,
-// still no text and no results. Widening the existing route would have made
-// every caller of it a caller of this.
+// NARROW ON PURPOSE: tool NAMES and PATHS, redacted and bounded, never the
+// transcript, its text or its results.
 //
 // Read-only, worker-keyed, and SHAPE-CHECKED BEFORE THE LOOKUP for the reason
 // stated at RUN_TOKEN_SHAPE. `null` for an unknown token is a normal answer,
-// exactly as it is next door: the sweeper needs a moment to see the run's file.
+// because the sweeper needs a moment to see the run's file.
 const ttsAgentTrace = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;

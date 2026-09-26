@@ -47,12 +47,11 @@ export const WORKER_CONTRACT =
 /**
  * ONE COMMIT KEY, and one home for it.
  *
- * `<repo>@<sha>` indexes the eval rows for a commit, and two spellings of it
- * index two different sets of rows. It used to live in convex/ttsMerge.ts,
- * where convex/ttsEvals.ts could not import it without making the two modules
- * a cycle — ttsMerge.ts imports EVALS_RUN from ttsEvals.ts — so ttsEvals.ts
- * wrote the template inline at three sites instead. Both modules already import
- * this one, so this is where it can be read from without a cycle.
+ * `<repo>@<sha>` indexes the merge gate's rows for a commit, and two spellings
+ * of it index two different sets of rows. It used to live in
+ * convex/ttsMerge.ts, where convex/ttsEvals.ts could not import it without a
+ * cycle, so ttsEvals.ts wrote the template inline instead; this module is the
+ * one home both could read.
  *
  * `mergeKey` travels with it because it is the same identity in the merge
  * event's older spelling, and splitting a pair like that across two files is

@@ -92,8 +92,8 @@ const PAGE_OPENED_KIND = "tts-opened";
  *  rulings: it is his decision too, made by pressing "sign and send". */
 const SENT_AS_TOM_KIND = "sent-as-tom";
 
-/** The three head rows the merge gate reads for one commit
- *  (convex/ttsMerge.ts). */
+/** The head rows the merge gate reads for one commit (convex/ttsMerge.ts),
+ *  and the historic evals-run rows it no longer reads, still counted, not drawn. */
 export const GATE_KINDS = ["tests-run", "audit-verdict", "evals-run"] as const;
 
 /** True for the event rows the failures lane draws: the one spelling of the
@@ -495,7 +495,7 @@ export const waitingOnTom = query({
 /**
  * What the merge gate says about each commit the changes list draws.
  *
- * THE GATE'S OWN ANSWER, not a second reading of its three head rows:
+ * THE GATE'S OWN ANSWER, not a second reading of its head rows:
  * convex/ttsMerge.ts mergeGateFor is what decided whether each of these merges
  * was allowed, and a page that recomputed "green" from the rows would be a
  * second definition of green that one edit could make disagree with the one
@@ -506,7 +506,7 @@ export const gateRows = query({
   handler: async (ctx, { commits }) => {
     await requireTom(ctx, SURFACE);
     // Forty is what the changes list draws; the sixty is the room above it,
-    // and it is here because each commit costs three indexed reads and the
+    // and it is here because each commit costs a few indexed reads and the
     // argument comes from the browser. Without it one call could ask for a
     // year of commits and the read would be the page's whole cost.
     if (commits.length > 60) throw new Error("gateRows takes at most 60 commits");
@@ -555,7 +555,7 @@ export const gateRows = query({
 
 /**
  * Every open pull request of the approvable repositories, newest first, each
- * with the gate's three rows as they stand, the ruling it carries and what
+ * with the gate's rows as they stand, the ruling it carries and what
  * the last landing attempt said.
  *
  * Read off the mirror convex/observeMerge.ts keeps, because a query cannot ask
