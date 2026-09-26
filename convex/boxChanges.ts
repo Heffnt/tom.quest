@@ -104,11 +104,6 @@ export function boxChangeFaults(data: unknown): string[] {
   return faults;
 }
 
-/** A stored row's data as a BoxChange, or null for a row that is not one. */
-export function boxChangeOf(data: unknown): BoxChange | null {
-  return boxChangeFaults(data).length === 0 ? (data as BoxChange) : null;
-}
-
 /** The change as it may leave the server: command and change text redacted. */
 export function redactedBoxChange(change: BoxChange): BoxChange {
   return {
@@ -305,12 +300,7 @@ export const forAgent = query({
       .order("asc")
       .filter((q) => q.eq(q.field("kind"), BOX_CHANGE))
       .take(AGENT_MAX);
-    const out: (BoxChange & { id: string })[] = [];
-    for (const row of rows) {
-      const change = boxChangeOf(row.data);
-      if (change !== null) out.push({ ...redactedBoxChange(change), id: row._id });
-    }
-    return out;
+    return rows.map((row) => ({ ...redactedBoxChange(row.data as BoxChange), id: row._id }));
   },
 });
 
@@ -319,30 +309,25 @@ export const forAgent = query({
  * digest reads them (boxChangeLines takes these). Unredacted: boxChangeLines
  * redacts every line it writes.
  *
- * BY WHEN IT HAPPENED, ONE READER-DELAY BEHIND. The one-time history copy
- * kept each change's old `at` but gave it a recent `_creationTime`, so
- * creation time would print that history again. The reader's state pass runs
- * every ten minutes and its journal pass every two; holding the upper edge
- * back fifteen minutes lets a live post arrive before its event-time window
- * closes. Both edges move by the same amount, so consecutive digests still
- * partition changes exactly.
+ * BY RECORDED TIME, AFTER THE HISTORY CUT. A live change can arrive after the
+ * digest whose event-time window held it; `_creationTime` puts it in the next
+ * digest instead. The one-time history copy created old rows on 2026-09-26,
+ * so only changes whose occurrence is at or after the copy's production cut
+ * enter this stream. Consecutive digest windows then partition every eligible
+ * row exactly once, however late it arrives.
  */
-export const BOX_CHANGE_READER_DELAY_MS = 15 * 60_000;
+/** The `before` boundary used by the production history copy. */
+export const BOX_CHANGE_HISTORY_CUT = Date.UTC(2026, 8, 26, 8, 38, 58);
 
 export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
   const rows = await ctx.db
     .query("events")
-    .withIndex("by_kind_at", (q) => q
-      .eq("kind", BOX_CHANGE)
-      .gte("at", from - BOX_CHANGE_READER_DELAY_MS)
-      .lt("at", to - BOX_CHANGE_READER_DELAY_MS))
+    .withIndex("by_kind", (q) => q.eq("kind", BOX_CHANGE).gte("_creationTime", from).lt("_creationTime", to))
     .take(WINDOW_MAX);
-  const out: BoxChange[] = [];
-  for (const row of rows) {
-    const change = boxChangeOf(row.data);
-    if (change !== null) out.push(change);
-  }
-  return out.sort((a, b) => a.at - b.at);
+  return rows
+    .map((row) => row.data as BoxChange)
+    .filter((change) => change.at >= BOX_CHANGE_HISTORY_CUT)
+    .sort((a, b) => a.at - b.at);
 }
 
 /** The most changes one digest window reads: a day of a busy box is a few

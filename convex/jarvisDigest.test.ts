@@ -175,7 +175,9 @@ describe("needs-you, a numbered reply under the digest", () => {
       await ctx.db.insert("dtsEvents", {
         at: MORNING - 60_000,
         kind: "digest-sent",
-        data: { day: DAY, channel: CHANNEL, ts: THREAD_TS, windowEnd: MORNING - 60_000 },
+        // The previous writer stored only slackTs; the record's configured
+        // output channel supplies the channel during the cutover.
+        data: { day: DAY, slackTs: THREAD_TS, windowEnd: MORNING - 60_000 },
       });
       await ctx.db.insert("events", {
         at: MORNING,

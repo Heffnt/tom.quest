@@ -19,13 +19,13 @@ import { dateLabel, type IntentLine } from "../lib";
 export default function LineDrawer({
   line,
   onClose,
-  evalItems = [],
-  decisions = [],
+  evalItems,
+  decisions,
 }: {
   line: IntentLine | null;
   onClose: () => void;
-  evalItems?: EvalItem[];
-  decisions?: Decision[];
+  evalItems: EvalItem[];
+  decisions: Decision[];
 }) {
   if (line === null) return null;
   return (

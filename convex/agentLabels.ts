@@ -525,8 +525,10 @@ export const internalLabelFromReaction = internalMutation({
         .order("desc")
         .take(DIGEST_OBJECTION_LOOKBACK)
     ).find((row) => {
-      const d = row.data as { ts?: unknown; slackTs?: unknown } | undefined;
-      return d?.ts === ts || d?.slackTs === ts;
+      // The retired model-written digest writer stored this as slackTs; the
+      // record-native deterministic writer uses ts in events, which is not read here.
+      const d = row.data as { slackTs?: unknown } | undefined;
+      return d?.slackTs === ts;
     });
     if (sent === undefined) return { wrote: false, why: "no digest was sent at that ts" };
     const mapped = REACTION_POLARITY[name];

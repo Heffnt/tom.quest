@@ -7,7 +7,7 @@
 
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
-import { DAY_MS, nyCalendarDayBoundsUtc, nyCalendarDayKey } from "../ttsShared";
+import { DAY_MS, nyCalendarDayBoundsUtc, nyCalendarDayKey, outputChannel } from "../ttsShared";
 import { insertEvent } from "./record";
 
 export const DIGEST_SENT = "digest-sent";
@@ -83,7 +83,7 @@ export function needsYouNumber(text: unknown): number | null {
   return hit === null ? null : Number(hit[1]);
 }
 
-type DigestData = { day?: unknown; windowEnd?: unknown; channel?: unknown; ts?: unknown };
+type DigestData = { day?: unknown; windowEnd?: unknown; channel?: unknown; ts?: unknown; slackTs?: unknown };
 
 export function digestFacts(row: { data?: unknown } | null): {
   day: string | null;
@@ -92,11 +92,12 @@ export function digestFacts(row: { data?: unknown } | null): {
   ts: string | null;
 } {
   const d = (row?.data ?? {}) as DigestData;
+  const legacyTs = typeof d.slackTs === "string" ? d.slackTs : null;
   return {
     day: typeof d.day === "string" ? d.day : null,
     windowEnd: typeof d.windowEnd === "number" ? d.windowEnd : null,
-    channel: typeof d.channel === "string" ? d.channel : null,
-    ts: typeof d.ts === "string" ? d.ts : null,
+    channel: typeof d.channel === "string" ? d.channel : legacyTs === null ? null : outputChannel(),
+    ts: typeof d.ts === "string" ? d.ts : legacyTs,
   };
 }
 

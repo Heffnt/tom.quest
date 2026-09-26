@@ -31,9 +31,9 @@ export default function LineList({
   selected: string | null;
   onSelect: (line: IntentLine) => void;
   /** Per line id: how often the eval items naming it passed, over the runs read. */
-  evals?: Map<string, { passed: number; runs: number }>;
+  evals: Map<string, { passed: number; runs: number }>;
   /** Per line id: how many delegate decisions rested on it. */
-  decisions?: Map<string, number>;
+  decisions: Map<string, number>;
 }) {
   return (
     <div className="space-y-4">
@@ -63,12 +63,12 @@ export default function LineList({
                     {line.section !== "" && <span>{line.section}</span>}
                     <span className={VOICE_CLASS[line.voice]}>{line.voice}</span>
                     {line.evidence.length > 0 && <span>{line.evidence.length} evidence</span>}
-                    {evals?.has(line.id) && (
+                    {evals.has(line.id) && (
                       <span className={evals.get(line.id)!.passed < evals.get(line.id)!.runs ? "text-error" : ""}>
                         evals {evals.get(line.id)!.passed}/{evals.get(line.id)!.runs}
                       </span>
                     )}
-                    {(decisions?.get(line.id) ?? 0) > 0 && <span>{decisions!.get(line.id)} decisions</span>}
+                    {(decisions.get(line.id) ?? 0) > 0 && <span>{decisions.get(line.id)} decisions</span>}
                   </span>
                 </button>
               </li>

@@ -10,7 +10,7 @@ import { api } from "@/convex/_generated/api";
 
 const loadMore = vi.fn();
 const rows = (n: number, offset: number) =>
-  Array.from({ length: n }, (_, i) => ({ id: `e${offset + i}`, at: offset + i, kind: "merge", key: null, todoId: null, agentId: null, data: null }));
+  Array.from({ length: n }, (_, i) => ({ id: `e${offset + i}`, at: offset + i, kind: "merge", key: null, todoId: null, agentId: null, job: null, data: null }));
 let walks: Record<string, { results: unknown[]; status: string }> = {};
 
 vi.mock("convex/react", () => ({

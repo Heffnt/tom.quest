@@ -5,6 +5,7 @@ import {
   barEnd,
   borderPoint,
   fractionOf,
+  failureRowOf,
   isFailure,
   laneOfRun,
   mergeRowOf,
@@ -111,6 +112,8 @@ describe("a merge row", () => {
     kind: "merge",
     key: "tom.quest:abc",
     todoId: null,
+    agentId: null,
+    job: null,
     data,
   });
 
@@ -135,6 +138,21 @@ describe("the job a worker run belongs to", () => {
     expect(jobOfRun(run({ origin: "daemon" }))).toBeNull();
     expect(jobOfRun(run({ origin: "cron:digest", depth: 1 }))).toBeNull();
     expect(jobOfRun(run({ origin: "cron:digest", parentRunId: "claude:box:parentaa" }))).toBeNull();
+  });
+});
+
+describe("a failure row", () => {
+  it("uses the record's provenance job when data does not duplicate it", () => {
+    expect(failureRowOf({
+      id: "e1",
+      at: 10,
+      kind: "job-failed",
+      key: "poll-canvas:read",
+      todoId: null,
+      agentId: null,
+      job: "poll-canvas",
+      data: {},
+    }).job).toBe("poll-canvas");
   });
 });
 
@@ -208,9 +226,9 @@ describe("the map's numbers", () => {
       run({ runId: "c", environment: "worker", host: "laptop", model: "sonnet", startedAt: 300, wikitomCommit: "deadbee" }),
     ],
     events: [
-      { id: "m", at: 400, kind: "merge", key: null, todoId: null, data: null },
-      { id: "f", at: 500, kind: "poll-gmail-failed", key: null, todoId: null, data: null },
-      { id: "g", at: 600, kind: "tests-run", key: null, todoId: null, data: null },
+      { id: "m", at: 400, kind: "merge", key: null, todoId: null, agentId: null, job: null, data: null },
+      { id: "f", at: 500, kind: "poll-gmail-failed", key: null, todoId: null, agentId: null, job: null, data: null },
+      { id: "g", at: 600, kind: "tests-run", key: null, todoId: null, agentId: null, job: null, data: null },
     ],
     rulings: [
       {

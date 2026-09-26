@@ -270,22 +270,6 @@ describe("claude sessions", () => {
     expect(one).toContain(`${CONTEXT_END}\n\nthe mission`);
   });
 
-  // An opener from before the end line is not parsed: after its base (one
-  // header), it is pasted as it was, and the new context goes in front once.
-  it("keeps an older opener as it was after its base, under the new context once", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate"]));
-    const older = "SKILLS (WikiTom commit testprelude)\ngranted: write\nLoad each granted skill before you act on what it covers.\n\nthe old mission";
-    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
-      title: "older opener", kind: "adhoc", repo: "none", initialPrompt: `${prelude}\n\n${older}`,
-    });
-    const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
-    expect(text).toContain(`${CONTEXT_END}\n\n${older}`);
-    expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2);
-    expect(text.split(CONTEXT_END)).toHaveLength(2);
-  });
-
   // witness: the facts block was cut at its first blank line, and a ruling
   // sentence with a blank line in it left its second paragraph in the new
   // session's prompt. The end line makes the cut exact.

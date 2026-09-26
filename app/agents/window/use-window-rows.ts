@@ -49,12 +49,10 @@ type Walk = {
   results: unknown[];
 };
 
-/** Keep one paginated walk going until it is exhausted or the rows it
- *  shares a cap with (`beside`, the other walk's rows) and its own reach the
- *  cap. */
-function useWalk(walk: Walk, cap: number, beside = 0): { done: boolean; capped: boolean } {
+/** Keep one paginated walk going until it is exhausted or reaches its cap. */
+function useWalk(walk: Walk, cap: number): { done: boolean; capped: boolean } {
   const { status, loadMore } = walk;
-  const count = walk.results.length + beside;
+  const count = walk.results.length;
   useEffect(() => {
     if (status === "CanLoadMore" && count < cap) loadMore(PAGE);
   }, [status, count, cap, loadMore]);

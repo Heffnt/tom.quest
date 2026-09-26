@@ -16,7 +16,7 @@ import {
 } from "./ttsCompose";
 import {
   AGENTS_WINDOW_URL,
-  BOX_CHANGE_READER_DELAY_MS,
+  BOX_CHANGE_HISTORY_CUT,
   boxChangeFaults,
   boxChangeLines,
   boxChangesInWindow,
@@ -161,18 +161,15 @@ describe("the box-change door", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
-      vi.setSystemTime(AT + 60_000);
+      const liveAt = BOX_CHANGE_HISTORY_CUT + 60 * 60_000;
+      vi.setSystemTime(liveAt + 60_000);
       await t.run(async (ctx) => {
         for (let n = 0; n < 2500; n += 1) {
-          await ctx.db.insert("events", { kind: "decision", at: AT, provenance: {}, subject: `d${n}`, data: {} });
+          await ctx.db.insert("events", { kind: "decision", at: liveAt, provenance: {}, subject: `d${n}`, data: {} });
         }
       });
-      await recordEvent(t, eventOf(change({ agentId: AGENT })));
-      const rows = await t.run(async (ctx) => boxChangesInWindow(
-        ctx,
-        AT + BOX_CHANGE_READER_DELAY_MS,
-        Date.now() + BOX_CHANGE_READER_DELAY_MS + 60_000,
-      ));
+      await recordEvent(t, eventOf(change({ agentId: AGENT, at: liveAt })));
+      const rows = await t.run(async (ctx) => boxChangesInWindow(ctx, liveAt, Date.now() + 60_000));
       expect(rows).toHaveLength(1);
       expect(rows[0].command).toBe(change().command);
     } finally {
@@ -180,25 +177,25 @@ describe("the box-change door", () => {
     }
   }, 60_000);
 
-  // witness: creation-time windows made the one-time history copies look new
-  // and put them in the next digest; a plain event-time window instead lost a
-  // live change that arrived just after its event-time window closed.
-  it("puts a delayed live change in exactly one digest and copied history in none", async () => {
+  // witness: an event-time window loses a change delivered after its window,
+  // while an unrestricted creation-time window repeats the one-time history
+  // copy. The occurrence cut and recorded-time partition avoid both.
+  it("puts a change delivered an hour late in exactly one digest and copied history in none", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
-      const boundary = AT + 24 * 60 * 60_000;
-      vi.setSystemTime(boundary + 60_000);
-      // Written tonight like a history copy, but carrying the old time at
-      // which it happened. It belongs to neither new digest window.
+      const boundary = BOX_CHANGE_HISTORY_CUT + 24 * 60 * 60_000;
+      const happenedAt = boundary - 5 * 60_000;
+      vi.setSystemTime(happenedAt + 59 * 60_000);
+      // The copied row was recorded during the second window, but occurred
+      // before the production cut and therefore belongs to no new digest.
       await t.run(async (ctx) => {
-        const old = change({ at: AT - BOX_CHANGE_READER_DELAY_MS - 1 });
+        const old = change({ at: BOX_CHANGE_HISTORY_CUT - 1 });
         await ctx.db.insert("events", { ...eventOf(old), provenance: eventOf(old).provenance });
       });
-      // Happened five minutes before the first digest boundary; the reader
-      // posted it a minute after. The lag leaves it for the next window.
-      await recordEvent(t, eventOf(change({ agentId: AGENT, at: boundary - 5 * 60_000 })));
-      const first = await t.run(async (ctx) => boxChangesInWindow(ctx, AT, boundary));
+      vi.setSystemTime(happenedAt + 60 * 60_000);
+      await recordEvent(t, eventOf(change({ agentId: AGENT, at: happenedAt })));
+      const first = await t.run(async (ctx) => boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_CUT, boundary));
       const second = await t.run(async (ctx) => boxChangesInWindow(ctx, boundary, boundary + 24 * 60 * 60_000));
       expect(first).toHaveLength(0);
       expect(second).toHaveLength(1);

@@ -122,10 +122,12 @@ describe("the box lane", () => {
         kind: "box-change",
         key: "claude:box:s1",
         todoId: null,
+        agentId: "claude:box:s1",
+        job: "box-watch",
         data: { source: "sudo", why: "ran-as-root", command: "/usr/bin/apt-get install -y jq", user: "jarvis", at: 300, agentId: "claude:box:s1" },
       },
-      { id: "e2", at: 600, kind: "deploy", key: "Jarvis:888b43a", todoId: null, data: { repo: "Jarvis", from: "1cdb2c2aaaa", to: "888b43a0000" } },
-      { id: "e3", at: 700, kind: "tts-opened", key: null, todoId: null, data: null },
+      { id: "e2", at: 600, kind: "deploy", key: "Jarvis:888b43a", todoId: null, agentId: null, job: null, data: { repo: "Jarvis", from: "1cdb2c2aaaa", to: "888b43a0000" } },
+      { id: "e3", at: 700, kind: "tts-opened", key: null, todoId: null, agentId: null, job: null, data: null },
     ];
     const { container } = render(<Timeline win={WIN} now={1000} runs={[]} events={events} rulings={[]} onlyLane="box" />);
     const marks = container.querySelectorAll("button[aria-expanded]");

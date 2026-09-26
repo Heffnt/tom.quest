@@ -206,6 +206,28 @@ describe("the point events", () => {
     expect(JSON.stringify(page)).not.toContain("ghp_SECRET");
   });
 
+  it("carries a record job from provenance when its data has no duplicate job", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        at: 120,
+        kind: "job-failed",
+        provenance: { job: "poll-canvas" },
+        subject: "poll-canvas:read",
+        data: { error: "failed" },
+      });
+    });
+    const page = await tom.query(api.observe.recordInWindow, {
+      from: 0,
+      to: 1_000,
+      paginationOpts: PAGE,
+    });
+    expect(page.page).toEqual([
+      expect.objectContaining({ kind: "job-failed", job: "poll-canvas", data: {} }),
+    ]);
+  });
+
   it("calls a failure both spellings of one, but not the two that are not broken lines", () => {
     expect(isFailureKind("poll-canvas-failed")).toBe(true);
     // The nightly and the weekly write the other spelling, and they are job

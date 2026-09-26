@@ -17,6 +17,8 @@ const SENT = {
   kind: "sent-as-tom",
   key: null,
   todoId: null,
+  agentId: null,
+  job: null,
   data: {
     recipient: "Sarah Chen",
     channel: "slack:C0SARAH01",

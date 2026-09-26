@@ -24,6 +24,7 @@ import { register as registerContext } from "./context";
 import { postRuling } from "./rulings";
 import { channelRoute, digestRoute, needsYouRoute } from "./digest";
 import { tickRoute } from "./tick";
+import { TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
 
 export const postEvent = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);
@@ -36,6 +37,9 @@ export const postEvent = httpAction(async (ctx, request) => {
   }
   const checked = checkEvent(body);
   if (!checked.ok) return jsonResponse(400, { error: checked.error });
+  if ((TOM_ONLY_KINDS as readonly string[]).includes(checked.event.kind)) {
+    return jsonResponse(403, { error: `${checked.event.kind} is Tom-only` });
+  }
   try {
     const { id, result } = await ctx.runMutation(internal.jarvis.events.record, checked.event);
     return jsonResponse(200, { ok: true, id, ...(typeof result === "object" && result !== null ? result : {}) });

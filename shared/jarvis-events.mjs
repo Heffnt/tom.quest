@@ -58,6 +58,12 @@ export const EVENT_KINDS = [
   "digest-line",
 ];
 
+/** Events that record an act only Tom can take. They remain in EVENT_KINDS so
+ *  Convex's Tom-only mutations can write them through the shared validator;
+ *  worker-key HTTP routes refuse them before any mutation runs. */
+/** @type {const} */
+export const TOM_ONLY_KINDS = ["disagreement-settled"];
+
 /**
  * The kinds whose subject is their identity, refused without one: a
  * decision's askId (settle, "revert <n>" and the digest find it there), a

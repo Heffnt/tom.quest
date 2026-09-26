@@ -40,7 +40,7 @@ import {
   pullRequestChange,
 } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
-import { BOX_CHANGE, DEPLOY, boxChangeOf, redactedBoxChange } from "./boxChanges";
+import { BOX_CHANGE, DEPLOY, redactedBoxChange, type BoxChange } from "./boxChanges";
 import { EVENT_KINDS } from "../shared/jarvis-events.mjs";
 
 /** The label every gate in this module names, so a denial says which surface. */
@@ -169,9 +169,8 @@ const DRAWN_FIELDS = [
 
 /** A box change's fields, all of them, with its command and change text sent
  *  through redactSecrets: the one field on this page that is a command line. */
-function boxDrawn(data: unknown): Record<string, unknown> | null {
-  const change = boxChangeOf(data);
-  return change === null ? null : (redactedBoxChange(change) as Record<string, unknown>);
+function boxDrawn(data: unknown): Record<string, unknown> {
+  return redactedBoxChange(data as BoxChange) as Record<string, unknown>;
 }
 
 /** The kinds a page of events counts but never draws, so their bodies stay on
@@ -302,6 +301,7 @@ export const eventsInWindow = query({
           key: event.key ?? null,
           todoId: (event.todoId ?? null) as string | null,
           agentId: null as string | null,
+          job: null as string | null,
           data: COUNTED_NOT_DRAWN.has(event.kind) ? null : drawnFields(event.data),
         })),
     };
@@ -318,9 +318,9 @@ function isRepeat(event: Doc<"events">): boolean {
 /**
  * The same point events from the record's `events` table: the kinds whose
  * home it is (shared/jarvis-events.mjs EVENT_KINDS), oldest first, in the
- * shape eventsInWindow answers, plus the agent a row names. A box change's
- * `at` is when it happened on the box; a job report's `key` is the condition
- * it names.
+ * shape eventsInWindow answers, plus the agent and job a row names. A box
+ * change's `at` is when it happened on the box; a job report's `key` is the
+ * condition it names.
  */
 export const recordInWindow = query({
   args: {
@@ -347,6 +347,7 @@ export const recordInWindow = query({
           key: event.subject ?? null,
           todoId: null as string | null,
           agentId: event.provenance.agentId ?? null,
+          job: event.provenance.job ?? null,
           data: COUNTED_NOT_DRAWN.has(event.kind)
             ? null
             : event.kind === BOX_CHANGE

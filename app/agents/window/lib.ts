@@ -78,7 +78,10 @@ export type PointEvent = {
   todoId: string | null;
   /** The agent the row names (events.provenance.agentId); null on a row
    *  still read from dtsEvents, which names none. */
-  agentId?: string | null;
+  agentId: string | null;
+  /** The job the record row names (events.provenance.job); null on a row
+   *  still read from dtsEvents, whose legacy data may carry it instead. */
+  job: string | null;
   data: unknown;
 };
 
@@ -287,10 +290,9 @@ export function failureRowOf(event: PointEvent): FailureRow {
   return {
     id: event.id,
     at: event.at,
-    // The job that broke, from the row where it is written and from the kind
-    // where it is not: dtsEvents.data is v.any(), so no schema makes a
-    // producer name its job, and the kind is the only other place the name is.
-    job: field(event.data, "job") ?? event.kind.replace(/-fail(ed|ure)$/, ""),
+    // The job that broke: a legacy row may name it in data; a record row names
+    // it in provenance; the kind is the final fallback for older producers.
+    job: field(event.data, "job") ?? event.job ?? event.kind.replace(/-fail(ed|ure)$/, ""),
     todoId: event.todoId,
   };
 }
