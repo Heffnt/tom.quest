@@ -79,7 +79,9 @@ describe("the copy into the plain-named tables", () => {
     const counts = await t.action(internal.jarvis.tables.counts, {});
     expect(counts.todos).toEqual({ old: 3, new: 3, copied: 3, whole: true });
     expect(counts.rulings).toEqual({ old: 1, new: 1, copied: 1, whole: true });
-    expect(counts.calendar.whole).toBe(true);
+    // The copy fills the four switched tables and no other (calendar,
+    // repeats and vocabulary move with their readers, in w5's switch).
+    expect(Object.keys(counts).sort()).toEqual(["blocks", "rulings", "timeNotes", "todos"]);
   });
 
   it("points a ruling's labels at its new id", async () => {

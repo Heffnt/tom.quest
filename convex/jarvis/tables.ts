@@ -27,13 +27,16 @@ import { internalAction, internalMutation, internalQuery } from "../_generated/s
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id, TableNames } from "../_generated/dataModel";
 
-/** Each plain-named table and the table its rows come from. */
+/** Each plain-named table the copy fills, and the table its rows come from.
+ *
+ * NOT calendar, repeats or vocabulary tonight. Their readers and writers are
+ * not switched, and the calendar's source rows are deleted and recreated on
+ * every feed refresh, which an upsert copy (it never deletes) cannot follow:
+ * the copy would leave stale duplicates. Their tables stay declared in the
+ * schema; the stream that switches them (w5) adds a faithful sync then. */
 const RENAMED = {
   todos: "dtsTodos",
   rulings: "dtsRulings",
-  calendar: "ttsCalendarEvents",
-  repeats: "ttsRepeats",
-  vocabulary: "ttsVocabulary",
   blocks: "dtsBlocks",
   timeNotes: "dtsTimeNotes",
 } as const;
@@ -42,9 +45,6 @@ type NewTable = keyof typeof RENAMED;
 const NEW_TABLE = v.union(
   v.literal("todos"),
   v.literal("rulings"),
-  v.literal("calendar"),
-  v.literal("repeats"),
-  v.literal("vocabulary"),
   v.literal("blocks"),
   v.literal("timeNotes"),
 );
@@ -54,9 +54,6 @@ const NEW_TABLE = v.union(
 const VERSION: Record<NewTable, (row: Record<string, unknown>) => number> = {
   todos: (r) => Number(r.updatedAt ?? 0),
   rulings: (r) => Number(r.appliedAt ?? r.ruledAt ?? 0),
-  calendar: (r) => Number(r.syncedAt ?? 0),
-  repeats: (r) => Number(r.updatedAt ?? 0),
-  vocabulary: (r) => Number(r.generatedAt ?? 0),
   blocks: (r) => Number(r.createdAt ?? 0),
   timeNotes: (r) => Number(r.resolvedAt ?? r.createdAt ?? 0),
 };
@@ -66,7 +63,7 @@ const DEFAULT_PAGE = 100;
  *  read and write limits; the smaller tables take the same page. */
 const MAX_PAGE = 500;
 
-/** A copied row, as the copy reads it: any of the seven tables' fields. */
+/** A copied row, as the copy reads it: any of the four tables' fields. */
 type CopiedRow = Record<string, unknown> & { _id: string };
 
 /** The one index every renamed table declares, as the copy uses it. */
@@ -78,7 +75,7 @@ type ByLegacy = {
 };
 
 /** The row's copy in `table`, found by the old _id it was copied from. The
- *  cast is the one place the seven tables are spoken of as one. */
+ *  cast is the one place the four tables are spoken of as one. */
 async function copyOf(
   ctx: QueryCtx | MutationCtx,
   table: NewTable,
