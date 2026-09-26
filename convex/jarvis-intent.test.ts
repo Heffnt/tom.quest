@@ -156,8 +156,27 @@ describe("jarvis/intent", () => {
     const byName = Object.fromEntries(items.map((item) => [item.name, item]));
     expect(byName["rule/ruling-758ddm40"]).toMatchObject({ pass: false, note: "expected archive, got session", passed: 1, runs: 2, at: 2, settled: null });
     expect(byName["rule/ruling-td8dkhd8"]).toMatchObject({ pass: null, passed: 1, runs: 1 });
-    await tom.mutation(api.jarvis.intent.settle, { subject: "eval:rule/ruling-758ddm40", verdict: "revise", sentence: "Archive it." });
+    const failing = byName["rule/ruling-758ddm40"];
+    await tom.mutation(api.jarvis.intent.settle, { subject: `eval:${failing.runId}:${failing.name}`, verdict: "revise", sentence: "Archive it." });
     const again = await tom.query(api.jarvis.intent.evalItems, {});
     expect(again.find((item) => item.name === "rule/ruling-758ddm40")?.settled).toMatchObject({ verdict: "revise", sentence: "Archive it." });
+
+    // witness: a settlement keyed by the item alone kept a later failure of
+    // the same item settled, so a recurrence could not be ruled on.
+    await run(3, [{ name: "rule/ruling-758ddm40", pass: false, note: "expected archive, got session" }]);
+    const recurred = (await tom.query(api.jarvis.intent.evalItems, {})).find((item) => item.name === "rule/ruling-758ddm40");
+    expect(recurred?.settled).toBeNull();
+    expect(recurred?.runId).not.toBe(failing.runId);
+    // A settlement names a run that reported the item, or none is written.
+    await expect(tom.mutation(api.jarvis.intent.settle, { subject: "eval:rule/ruling-758ddm40", verdict: "approve" })).rejects.toThrow();
+    await expect(tom.mutation(api.jarvis.intent.settle, { subject: `eval:${failing.runId}:rule/nope`, verdict: "approve" })).rejects.toThrow("no eval run");
+  });
+
+  it("files a decision under its row's subject and skips one without", async () => {
+    const t = convexTest({ schema, modules });
+    await event(t, "decision", "filed1", { ...DECISION, askId: "a-different-spelling" });
+    await t.run(async (ctx) => ctx.db.insert("events", { kind: "decision", at: 1, provenance: {}, data: { ...DECISION, askId: "unfiled" } }));
+    const tom = await asTom(t);
+    expect((await tom.query(api.jarvis.intent.decisions, {})).map((one) => one.askId)).toEqual(["filed1"]);
   });
 });

@@ -29,6 +29,7 @@ const DECISION: Decision = {
 
 const ITEM: EvalItem = {
   name: "rule/ruling-758ddm40",
+  runId: "run1",
   set: "rule",
   pass: null,
   note: "",

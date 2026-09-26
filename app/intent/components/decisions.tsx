@@ -123,7 +123,7 @@ export default function Decisions({
                   <p className="mt-0.5 text-[11px] text-text-faint">names no line of this page</p>
                 )}
                 <Settle
-                  subject={`eval:${item.name}`}
+                  subject={`eval:${item.runId}:${item.name}`}
                   settled={item.settled}
                   accept="stands"
                   object="rule"

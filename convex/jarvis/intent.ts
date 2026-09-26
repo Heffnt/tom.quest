@@ -67,6 +67,8 @@ type Settlement = {
 
 export type EvalItem = {
   name: string;
+  /** The newest eval-run that reported the item: what a settlement settles. */
+  runId: string;
   set: string;
   pass: boolean | null;
   note: string;
@@ -84,7 +86,9 @@ const strs = (value: unknown): string[] =>
 
 /** The subject spelling a settlement carries, one per thing settled. */
 const decisionSubject = (askId: string) => `decision:${askId}`;
-const evalSubject = (itemName: string) => `eval:${itemName}`;
+/** An eval item's settlement names the run it settled, so the same item
+ *  failing in a later run is open again. */
+const evalSubject = (runId: string, itemName: string) => `eval:${runId}:${itemName}`;
 
 async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
   const rows = await ctx.db
@@ -104,14 +108,18 @@ async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
 
 function decisionOf(row: Doc<"events">, settled: Map<string, Settlement>): Decision | null {
   const data = (row.data ?? {}) as Record<string, unknown>;
-  const askId = str(data.askId) ?? row.subject ?? null;
+  // The askId is the row's subject: every writer files the decision under
+  // it (Jarvis worker/jobs/delegate.mjs posts it as the key, which the record
+  // stores as the subject), and settle and the objection resolver find it
+  // there.
+  const askId = row.subject ?? null;
   const question = str(data.question);
   if (askId === null || question === null) return null;
   return {
     id: row._id,
     at: row.at,
     askId,
-    caller: str(data.caller) ?? row.provenance.job ?? row.provenance.session ?? "unknown",
+    caller: str(data.caller) ?? "unknown",
     question,
     options: strs(data.options),
     decision: str(data.decision),
@@ -157,8 +165,9 @@ export const evalItems = query({
     const items = new Map<string, EvalItem>();
     for (const run of runs) {
       const data = (run.data ?? {}) as { set?: unknown; model?: unknown; items?: unknown };
-      const set = str(data.set) ?? run.subject ?? "";
-      if (!Array.isArray(data.items)) continue;
+      // The set is the row's subject (Jarvis worker/jobs/evals.mjs posts it so).
+      const set = run.subject;
+      if (set === undefined || !Array.isArray(data.items)) continue;
       for (const raw of data.items) {
         const item = (raw ?? {}) as { name?: unknown; pass?: unknown; note?: unknown };
         const name = str(item.name);
@@ -168,6 +177,7 @@ export const evalItems = query({
         if (known === undefined) {
           items.set(name, {
             name,
+            runId: run._id,
             set,
             pass,
             note: str(item.note) ?? "",
@@ -175,7 +185,7 @@ export const evalItems = query({
             model: str(data.model),
             passed: pass === true ? 1 : 0,
             runs: pass === null ? 0 : 1,
-            settled: settled.get(evalSubject(name)) ?? null,
+            settled: settled.get(evalSubject(run._id, name)) ?? null,
           });
         } else if (pass !== null) {
           known.passed += pass ? 1 : 0;
@@ -203,9 +213,21 @@ export const settle = mutation({
     const sentence = args.sentence?.trim() ?? "";
     if (args.verdict === "revise" && sentence === "") throw new Error("revise needs his sentence");
     const askId = args.subject.startsWith("decision:") ? args.subject.slice("decision:".length) : null;
-    const item = args.subject.startsWith("eval:") ? args.subject.slice("eval:".length) : null;
+    // eval:<the eval-run's id>:<item name>. A Convex id holds no colon, so
+    // the first one ends it.
+    const evalRef = args.subject.startsWith("eval:") ? args.subject.slice("eval:".length) : null;
+    const colon = evalRef === null ? -1 : evalRef.indexOf(":");
+    const item = evalRef === null || colon <= 0 ? null : evalRef.slice(colon + 1);
     if ((askId === null || askId === "") && (item === null || item === "")) {
-      throw new Error("subject is decision:<askId> or eval:<item name>");
+      throw new Error("subject is decision:<askId> or eval:<eval-run id>:<item name>");
+    }
+    if (item !== null && evalRef !== null) {
+      const runId = ctx.db.normalizeId("events", evalRef.slice(0, colon));
+      const run = runId === null ? null : await ctx.db.get(runId);
+      const items = (run?.data as { items?: unknown } | undefined)?.items;
+      if (run === null || run.kind !== "eval-run" || !Array.isArray(items) || !items.some((one) => (one as { name?: unknown } | null)?.name === item)) {
+        throw new Error(`no eval run ${evalRef.slice(0, colon)} reporting ${item} in the record`);
+      }
     }
     let rulingId: string | null = null;
     let line: string;
