@@ -926,8 +926,8 @@ export default defineSchema({
     consumedAt: v.optional(v.number()),
     // The lookup key, set on sixteen kinds. Three of them no longer arrive
     // here (night/w4, 2026-09-26): their home is the `events` table, and the
-    // rows below are history, copied there by
-    // convex/boxChanges.ts internalCopyHistory. They were:
+    // rows here are history, copied there once that night (the one-time
+    // convex/jarvis/history.ts, since deleted). They were:
     //   "box-change"  — the agentId the box matched to the change (now
     //                   events.provenance.agentId);
     //   "job-failed", "job-recovered" — the condition a job report names (now
