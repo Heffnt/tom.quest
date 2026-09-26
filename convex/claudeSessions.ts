@@ -40,8 +40,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // declared here AND in app/agents/lib.ts). The model-of-tom context each opener carries is assembled for that
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
-import { withoutModelOfTomPrelude } from "./ttsSkills";
-import { assembleContext, joinContext, type ContextSubject } from "./ttsContext";
+import { assembleContext, joinContext, withoutPastedContext, type ContextSubject } from "./ttsContext";
 import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
 import {
   DAEMON_STALE_MS,
@@ -590,8 +589,10 @@ export async function insertSession(
   //
   // A seed whose prompt already begins with the header (a live opener copied
   // into the Create session box, a builder that pasted its own copy) has that
-  // copy TAKEN OFF and the live one put there instead
-  // (withoutModelOfTomPrelude), so the transcript's first line names one
+  // copy TAKEN OFF, with the write pages, the skills line and the old
+  // subject's facts that followed it (withoutPastedContext), and the live
+  // context put there instead, so no ruling of another subject rides along
+  // and the transcript's first line names one
   // commit: the one this deployment holds. A prefix read at some OTHER commit
   // is refused, because nothing in the text says where it stops and the
   // prompt starts. The refusal writes nothing: a Convex mutation is one
@@ -605,7 +606,7 @@ export async function insertSession(
         ? { kind: "repo", repo: repos[0] }
         : { kind: "none" };
   const context = await assembleContext(ctx, subject, { reachesTom: true });
-  const body = withoutModelOfTomPrelude(prompt, context.prefix);
+  const body = withoutPastedContext(prompt, context);
   if (body === null) {
     throw new Error(
       `the prompt begins with a model-of-tom prelude ("${MODEL_OF_TOM_HEADER}") read at another commit; the opener adds the live one, and where a prelude from another commit stops and the prompt starts is not written down anywhere in it`,

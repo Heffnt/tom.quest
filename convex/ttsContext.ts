@@ -18,7 +18,7 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
-import { modelOfTomState, modelOfTomText } from "./ttsSkills";
+import { modelOfTomState, modelOfTomText, withoutModelOfTomPrelude } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
 
 /** What the run is about. `none` is every caller with no subject (the HTTP
@@ -224,6 +224,30 @@ function byteLength(text: string): number {
 /** The parts as one string, in prompt order. */
 export function joinContext(context: AssembledContext): string {
   return [context.prefix, context.write, context.skills, context.facts].filter((part) => part !== "").join("\n\n");
+}
+
+/**
+ * A seed's prompt with a pasted opener's whole context taken off: the base
+ * (withoutModelOfTomPrelude, which refuses one read at another commit), then
+ * the write pages and the skills line when they follow it, then the old
+ * subject's facts block (RULINGS ON THIS SUBJECT / RECENT SESSION OUTCOMES, up
+ * to the blank line that ends it). The opener then puts this subject's
+ * context in front, so no ruling or outcome of another subject rides along.
+ * A prompt that does not begin with the header comes back as it was; null is
+ * the refusal.
+ */
+export function withoutPastedContext(prompt: string, context: AssembledContext): string | null {
+  const body = withoutModelOfTomPrelude(prompt, context.prefix);
+  if (body === null || body === prompt) return body;
+  let rest = body;
+  for (const part of [context.write, context.skills]) {
+    if (part !== "" && rest.startsWith(part)) rest = rest.slice(part.length).replace(/^\n+/, "");
+  }
+  if (/^(RULINGS ON THIS SUBJECT|RECENT SESSION OUTCOMES)\n/.test(rest)) {
+    const end = rest.indexOf("\n\n");
+    rest = end === -1 ? "" : rest.slice(end).replace(/^\n+/, "");
+  }
+  return rest;
 }
 
 /** The HTTP doors read here. They have no subject of their own, and each
