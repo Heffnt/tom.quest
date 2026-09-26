@@ -200,6 +200,28 @@ describe("claude sessions", () => {
     expect(text).toContain("carry on from here");
   });
 
+  // witness: only the base was taken off a pasted opener, so the old
+  // subject's rulings and outcomes stayed under the new subject's context.
+  it("takes a pasted opener's whole context off, the old subject's facts included", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate"]));
+    const skills = "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.";
+    const oldFacts = "RULINGS ON THIS SUBJECT\n- 2026-09-01 revise: the other todo's ruling\nRECENT SESSION OUTCOMES\n- 2026-09-02 completed: the other repo's outcome";
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "pasted whole opener",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: `${prelude}\n\n${skills}\n\n${oldFacts}\n\ncarry on from here`,
+    });
+    const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
+    expect(text).not.toContain("the other todo's ruling");
+    expect(text).not.toContain("the other repo's outcome");
+    expect(text.split(skills)).toHaveLength(2); // one skills line
+    expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2);
+    expect(text).toContain(`${skills}\n\ncarry on from here`);
+  });
+
   it("refuses a seed carrying a prelude from another commit, and inserts nothing", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
