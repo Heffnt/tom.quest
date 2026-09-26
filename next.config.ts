@@ -18,6 +18,9 @@ const nextConfig: NextConfig = {
       { source: "/" + "dts", destination: "/tts", permanent: true },
       { source: "/sessions/:path*", destination: "/agents/:path*", permanent: true },
       { source: "/runs/:path*", destination: "/agents/:path*", permanent: true },
+      // "vocabulary" -> "intent" (2026-09-26): the vocabulary is one view of
+      // the intent page; the fragment names that view.
+      { source: "/vocabulary", destination: "/intent#vocabulary", permanent: true },
     ];
   },
 };

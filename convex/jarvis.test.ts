@@ -76,22 +76,36 @@ describe("POST /jarvis/event", () => {
     expect(await rows(t, "events")).toHaveLength(1);
   });
 
-  it("runs the job hooks: one digest row and one line per standing failure, re-armed by the clean run", async () => {
+  it("runs the job hooks: one line per standing failure, a repeat marked, re-armed by the clean run, all in events", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
     const failed = { kind: "job-failed", provenance: { job: "poll-canvas" }, subject: "poll-canvas:canvas-auth", data: { job: "poll-canvas", error: "token expired" } };
     expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: true });
-    expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: false });
-    // Every accepted post is a row of the record; the digest's row is one.
-    expect((await rows(t, "events")).filter((row) => row.kind === "job-failed")).toHaveLength(2);
-    expect((await rows(t, "dtsEvents")).filter((row) => row.kind === "job-failed")).toHaveLength(1);
+    vi.setSystemTime(1_700_000_060_000);
+    expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: false, since: 1_700_000_000_000 });
+    // Every accepted post is a row of the record; the repeat names the report it repeats.
+    const failures = (await rows(t, "events")).filter((row) => row.kind === "job-failed").sort((a, b) => a.at - b.at);
+    expect(failures.map((row) => (row.data as { standingSince?: number }).standingSince)).toEqual([undefined, 1_700_000_000_000]);
+    const lines = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(lines.filter((job) => job.name.includes("sendBroken"))).toHaveLength(1);
 
+    vi.setSystemTime(1_700_000_120_000);
     const ok = { kind: "job-ok", provenance: { job: "poll-canvas" }, subject: "poll-canvas:canvas-auth" };
     expect(await (await post(t, "/jarvis/event", ok, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ recovered: true });
     expect((await rows(t, "events")).map((row) => row.kind).sort()).toEqual(["job-failed", "job-failed", "job-ok", "job-recovered"]);
-    expect((await rows(t, "dtsEvents")).map((row) => row.kind).sort()).toEqual(["job-failed", "job-recovered"]);
+    // Nothing of a job's report reaches the previous generation's table.
+    expect(await rows(t, "dtsEvents")).toEqual([]);
     // The next failure is news again.
+    vi.setSystemTime(1_700_000_180_000);
     expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: true });
+    const window = await t.run(async (ctx) => {
+      const { failuresInWindow } = await import("./jarvis/jobs");
+      return await failuresInWindow(ctx, 1_700_000_000_000, 1_700_000_200_000);
+    });
+    expect(window.failed.map((row) => row.at)).toEqual([1_700_000_000_000, 1_700_000_180_000]);
+    expect(window.recovered.map((row) => row.at)).toEqual([1_700_000_120_000]);
   });
 });
 

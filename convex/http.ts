@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { register as registerJarvisRoutes } from "./jarvis/routes";
+import { serveContext } from "./jarvis/context";
 import { jarvisAuth, presentsJarvisKey } from "./jarvis/auth";
 import type { FunctionArgs } from "convex/server";
 import { httpAction, type ActionCtx } from "./_generated/server";
@@ -18,15 +19,12 @@ import {
 import {
   DAY_MS,
   NARROW_LIST,
-  RECOMMENDATION_VALUES,
   NEEDS_YOU_CHANNEL_MISSING,
   SESSION_REPO_NAMES,
   channelFor,
-  isRecommendation,
   isSessionModel,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
-  type Recommendation,
   VOCABULARY_COUNT_NAMES,
 } from "./ttsShared";
 import { isNarrowListId } from "./ttsShared";
@@ -212,95 +210,6 @@ function keyAuth(
   }
   return null;
 }
-
-type PoolRequest = {
-  writer: string;
-  gpuType: string;
-  desiredCount: number;
-  enabled: boolean;
-  restart: "always" | "never";
-};
-
-// Validate the agent request body. The agent may scale/toggle/restart only — never a command,
-// projectDir, or resource limit — so those fields are not even accepted here (spec §7).
-function parsePoolRequest(body: unknown): PoolRequest | { error: string } {
-  if (typeof body !== "object" || body === null) {
-    return { error: "body must be a JSON object" };
-  }
-  const b = body as Record<string, unknown>;
-  if (typeof b.gpuType !== "string" || b.gpuType.length === 0) {
-    return { error: "gpuType (non-empty string) required" };
-  }
-  if (typeof b.desiredCount !== "number" || !Number.isFinite(b.desiredCount)) {
-    return { error: "desiredCount (finite number) required" };
-  }
-  if (typeof b.enabled !== "boolean") {
-    return { error: "enabled (boolean) required" };
-  }
-  if (b.restart !== "always" && b.restart !== "never") {
-    return { error: 'restart must be "always" or "never"' };
-  }
-  const writer =
-    typeof b.writer === "string" && b.writer.length > 0 ? b.writer : "agent";
-  return {
-    writer,
-    gpuType: b.gpuType,
-    desiredCount: b.desiredCount,
-    enabled: b.enabled,
-    restart: b.restart,
-  };
-}
-
-// Agent worker-pool scaling endpoint (spec §7). The narrow, key-authed path an agent uses to
-// scale / toggle / set the restart policy of a PRE-APPROVED (admin-authored) pool row. It may
-// write only desiredCount / enabled / restart via internal.gpuPool.agentScale, and never
-// authors a command — so arbitrary shell as the cluster user over the agent key is impossible
-// (that stays a Tom-only capability behind the admin path). The key is POOL_AGENT_KEY, stored
-// only in the Convex env and sharing nothing with TURING_API_KEY (the auth-clobber lesson).
-const pool = httpAction(async (ctx, request) => {
-  const denied = keyAuth(request, "POOL_AGENT_KEY", "X-Pool-Key");
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const parsed = parsePoolRequest(body);
-  if ("error" in parsed) {
-    return jsonResponse(400, parsed);
-  }
-  try {
-    const result = await ctx.runMutation(internal.gpuPool.agentScale, parsed);
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    // agentScale refuses (no insert) when no admin-authored row exists for the gpuType —
-    // surface that as 404, any other failure as 400. The command is never agent-writable.
-    const message = e instanceof Error ? e.message : String(e);
-    const status = message.includes("no admin-authored") ? 404 : 400;
-    return jsonResponse(status, { error: message });
-  }
-});
-
-http.route({ path: "/pool", method: "POST", handler: pool });
-
-// Agent worker-pool READ endpoint (spec §7) — the key-authed monitoring counterpart to POST /pool.
-// Lets a monitoring agent confirm pool desired-state, the last reconcile outcome, and the recent
-// agent-write audit WITHOUT an admin session or the deploy key. Read-only: same POOL_AGENT_KEY and
-// the same 503-then-401 guard order as the write path, but it never parses a body (a GET has none)
-// and reads only the projected/internal queries — never the requireAdmin status/list, which would
-// throw under the agent key. GET and POST coexist on "/pool" because the router keys on path+method.
-const poolRead = httpAction(async (ctx, request) => {
-  const denied = keyAuth(request, "POOL_AGENT_KEY", "X-Pool-Key");
-  if (denied) return denied;
-  return jsonResponse(200, {
-    configs: await ctx.runQuery(internal.gpuPool.publicConfigs, {}),
-    status: await ctx.runQuery(internal.gpuPool.prevStatus, {}),
-    recentAgentLog: await ctx.runQuery(internal.gpuPool.recentAgentLog, {}),
-  });
-});
-
-http.route({ path: "/pool", method: "GET", handler: poolRead });
 
 // ── TTS worker endpoints (spec: WikiTom tts/spec.md) ─────────────────────────
 // The Jarvis Box's narrow, key-authed path into TTS, mirroring the /pool
@@ -506,20 +415,7 @@ http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 const ttsCaptureContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  let writingStandard: string;
-  let declinedIntegrations;
-  try {
-    [writingStandard, declinedIntegrations] = await Promise.all([
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "capture-context" }),
-      ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, {
-    writingStandard,
-    declinedIntegrations,
-  });
+  return await serveContext(ctx, "capture", request);
 });
 
 http.route({
@@ -1500,117 +1396,10 @@ http.route({
 });
 
 // ── TTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
-// Same TTS_WORKER_KEY path: the worker posts ground-up briefs for open code
-// todos, reads back Tom's pending rulings, and reports each application. The
-// worker never rules — recordCodeRuling is Tom-gated in ttsCode.ts.
-
-// A brief's recommendation is one of the four verdict words and nothing else
-// (ttsShared is the one home). The three retired spellings were refused here
-// from the moment the box's own job stopped emitting them; now the validator
-// behind this route refuses them too.
-const CODE_EXEC_CLASSES = ["box", "needs-turing"] as const;
-
-type CodeBrief = {
-  repo: string;
-  externalId: string;
-  sourceHash: string;
-  brief: string;
-  recommendation: Recommendation;
-  execClass: (typeof CODE_EXEC_CLASSES)[number];
-  evidence?: string;
-  doorFaults?: string[];
-};
-
-// Validate one posted brief. Every field the schema requires must arrive as a
-// non-empty string / a known enum member — a malformed item rejects the whole
-// batch by index so the worker can fix its payload.
-function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string } {
-  if (typeof item !== "object" || item === null) {
-    return { error: `briefs[${i}] must be an object` };
-  }
-  const b = item as Record<string, unknown>;
-  for (const field of ["repo", "externalId", "sourceHash", "brief"] as const) {
-    if (typeof b[field] !== "string" || b[field].length === 0) {
-      return { error: `briefs[${i}].${field} (non-empty string) required` };
-    }
-  }
-  if (!isRecommendation(b.recommendation)) {
-    return {
-      error: `briefs[${i}].recommendation must be one of ${RECOMMENDATION_VALUES.join(" | ")}`,
-    };
-  }
-  if (
-    !CODE_EXEC_CLASSES.includes(b.execClass as (typeof CODE_EXEC_CLASSES)[number])
-  ) {
-    return {
-      error: `briefs[${i}].execClass must be one of ${CODE_EXEC_CLASSES.join(" | ")}`,
-    };
-  }
-  if (b.evidence !== undefined && typeof b.evidence !== "string") {
-    return { error: `briefs[${i}].evidence must be a string when present` };
-  }
-  // The door check's complaints, bounded and redacted the same way as at the
-  // prepare door. Absent is the clean answer and clears any mark the previous
-  // brief left (convex/ttsCode.ts writes the field on every upsert).
-  let doorFaults: string[] | undefined;
-  if (b.doorFaults !== undefined) {
-    const faults = parseDoorFaults(b.doorFaults, `briefs[${i}].doorFaults`);
-    if ("error" in faults) return faults;
-    doorFaults = faults.faults;
-  }
-  return {
-    repo: b.repo as string,
-    externalId: b.externalId as string,
-    sourceHash: b.sourceHash as string,
-    brief: b.brief as string,
-    recommendation: b.recommendation,
-    execClass: b.execClass as (typeof CODE_EXEC_CLASSES)[number],
-    evidence: b.evidence as string | undefined,
-    doorFaults,
-  };
-}
-
-// POST /tts/code-briefs — the worker's prepared briefs, upserted by
-// (repo, externalId). Body: { briefs: [{ repo, externalId, sourceHash, brief,
-// recommendation, execClass, evidence?, doorFaults? }] }.
-const ttsCodeBriefs = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (!Array.isArray(b.briefs)) {
-    return jsonResponse(400, { error: "briefs (array) required" });
-  }
-  const briefs: CodeBrief[] = [];
-  for (let i = 0; i < b.briefs.length; i++) {
-    const parsed = parseCodeBrief(b.briefs[i], i);
-    if ("error" in parsed) return jsonResponse(400, parsed);
-    briefs.push(parsed);
-  }
-  // The registration token of the run that WROTE these briefs — one brief pass
-  // is one run, so one token covers the batch. It becomes producedByRunToken on
-  // each row, which is the edge a ruling on a code subject follows back to the
-  // run whose text Tom judged (convex/agentLabels.ts). A caller that sends none
-  // stores none, and the field stays absent.
-  const oldToken = oldSpelling(b, { runToken: "agentToken" });
-  if (oldToken) return jsonResponse(400, { error: oldToken });
-  const agentToken = b.agentToken;
-  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
-    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
-  }
-  await ctx.runMutation(internal.ttsCode.internalStoreBriefs, {
-    briefs,
-    runToken: typeof agentToken === "string" ? agentToken : undefined,
-  });
-  return jsonResponse(200, { ok: true, count: briefs.length });
-});
-
-http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs });
+// Same TTS_WORKER_KEY path: the worker reads back Tom's pending rulings and
+// reports each application. The worker never rules — recordCodeRuling is
+// Tom-gated in ttsCode.ts. (POST /tts/code-briefs, the retired brief pass's
+// pen, went on 2026-09-26: no caller since the pass was retired 2026-09-22.)
 
 // GET /tts/rulings — the rulings a box job should act on (unapplied and not
 // superseded by a newer ruling on the same subject), from the unified
@@ -1618,8 +1407,8 @@ http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs })
 // subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
 // own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
 // pass — consuming only what it served. A
-// "code" approve or archive rides the feed too but is consumed by the
-// auto-session scheduler in Convex. Each row carries its _id, which the
+// "code" approve or archive rides the feed too, for the box's work-queue
+// job. Each row carries its _id, which the
 // planner echoes back to /tts/ruling-applied.
 const ttsRulingsFeed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -1668,15 +1457,8 @@ const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
   }
 });
 
-// Canonical path: /tts/ruling-applied (any subject type); old name aliased
-// for not-yet-redeployed workers.
 http.route({
   path: "/tts/ruling-applied",
-  method: "POST",
-  handler: ttsCodeRulingApplied,
-});
-http.route({
-  path: "/tts/code-ruling-applied",
   method: "POST",
   handler: ttsCodeRulingApplied,
 });
@@ -1768,18 +1550,12 @@ const ttsAsk = httpAction(async (ctx, request) => {
   const hasSession = nonempty(b.sessionId);
   const hasJob = nonempty(b.job);
   const hasRunner = nonempty(b.runnerId);
-  // An elevation's trade-off, asked by the orchestrator (convex/orchestrator.ts).
-  // Tom's ruling of 2026-09-21: it is shown to the delegate with NO
-  // recommendation, so this caller alone sends none and is refused one.
-  const hasElevation = nonempty(b.elevationId);
-  if ([hasSession, hasJob, hasRunner, hasElevation].filter(Boolean).length !== 1) return jsonResponse(400, { error: "exactly one of sessionId, runnerId, job or elevationId is required" });
+  if ([hasSession, hasJob, hasRunner].filter(Boolean).length !== 1) return jsonResponse(400, { error: "exactly one of sessionId, runnerId or job is required" });
   if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
   if (!nonempty(b.question) || (b.question as string).trim().length > 400) return jsonResponse(400, { error: "question (1-400 characters) required" });
   if (!Array.isArray(b.options) || b.options.length < 2 || b.options.length > 5 || !b.options.every(nonempty)) return jsonResponse(400, { error: "options must be 2-5 non-empty strings" });
   const options = b.options.map((option) => (option as string).trim());
-  if (hasElevation) {
-    if (b.recommendation !== undefined) return jsonResponse(400, { error: "an elevation's trade-off carries no recommendation" });
-  } else if (!nonempty(b.recommendation) || !options.includes((b.recommendation as string).trim())) return jsonResponse(400, { error: "recommendation must be one of options" });
+  if (!nonempty(b.recommendation) || !options.includes((b.recommendation as string).trim())) return jsonResponse(400, { error: "recommendation must be one of options" });
   if (!nonempty(b.fallback)) return jsonResponse(400, { error: "fallback (non-empty string) required" });
   if (b.decision !== null && !nonempty(b.decision)) return jsonResponse(400, { error: "decision must be a non-empty string or null" });
   if (!nonempty(b.reason) || (b.reason as string).trim().length > 400) return jsonResponse(400, { error: "reason (1-400 characters) required" });
@@ -1795,9 +1571,8 @@ const ttsAsk = httpAction(async (ctx, request) => {
       askId: b.askId as string, sessionId: hasSession ? b.sessionId as string : undefined,
       job: hasJob ? b.job as string : undefined, todoId: b.todoId as string | undefined,
       runnerId: hasRunner ? b.runnerId as string : undefined,
-      elevationId: hasElevation ? b.elevationId as string : undefined,
       question: (b.question as string).trim(), options,
-      recommendation: hasElevation ? undefined : (b.recommendation as string).trim(), fallback: (b.fallback as string).trim(),
+      recommendation: (b.recommendation as string).trim(), fallback: (b.fallback as string).trim(),
       decision: b.decision as string | null, reason: (b.reason as string).trim(),
       refused: b.refused, refusedBecause: b.refusedBecause as string | null,
       model: b.model as string, ms: b.ms, promptSha: b.promptSha as string,
@@ -1806,7 +1581,6 @@ const ttsAsk = httpAction(async (ctx, request) => {
       sessionId: hasSession ? b.sessionId as string : undefined,
       job: hasJob ? b.job as string : undefined,
       runnerId: hasRunner ? b.runnerId as string : undefined,
-      elevationId: hasElevation ? b.elevationId as string : undefined,
       todoId: b.todoId as string | undefined,
     });
     return jsonResponse(200, { ok: true, askId: b.askId, ...result, priorObjections: context.priorObjections });
@@ -1824,23 +1598,7 @@ http.route({ path: "/tts/ask", method: "POST", handler: ttsAsk });
 const ttsAskContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const nonempty = (value: string | null) => (value !== null && value.trim() !== "" ? value.trim() : undefined);
-  const sessionId = nonempty(params.get("sessionId"));
-  const job = nonempty(params.get("job"));
-  const runnerId = nonempty(params.get("runnerId"));
-  const elevationId = nonempty(params.get("elevationId"));
-  if ([sessionId, job, runnerId, elevationId].filter((one) => one !== undefined).length !== 1) {
-    return jsonResponse(400, { error: "exactly one of sessionId, runnerId, job or elevationId is required" });
-  }
-  const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
-    sessionId,
-    job,
-    runnerId,
-    elevationId,
-    todoId: nonempty(params.get("todoId")),
-  });
-  return jsonResponse(200, context);
+  return await serveContext(ctx, "ask", request);
 });
 http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
@@ -2114,45 +1872,11 @@ http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 // did not get is one line naming the command that gets it. THE FIELD NAME AND
 // TYPE DO NOT CHANGE: worker/jobs/plan-graphs.mjs treats a missing
 // `writingStandard` as fatal.
-async function plannerContext(ctx: ActionCtx) {
-  // Six independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, writingStandard, vocabulary] = await Promise.all([
-    ctx.runQuery(internal.tts.internalListTodos, {}),
-    ctx.runQuery(internal.tts.internalListMirror, {}),
-    ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
-    ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
-    ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "planner-context" }),
-    // The prompt's vocabulary words, rendered from the §12.1 entries the night
-    // posted (convex/vocabulary.ts), the constant only when none are posted.
-    ctx.runQuery(internal.vocabulary.internalClosedVocabulary, {}),
-  ]);
-  return {
-    todos,
-    mirror,
-    briefs,
-    recentRulings,
-    writingStandard,
-    vocabulary,
-    // The repo names. Served for the SAME reason as writingStandard above: the
-    // planner is Node ESM on a box that never loads TypeScript, so it cannot
-    // import SESSION_REPOS. Serving the one home's value is what stops a
-    // fourth hand-written copy of the repo list appearing in worker/ (VQC C1).
-    sessionRepos: SESSION_REPO_NAMES,
-    // The server's clock, the /tts/state convention: the planner's prepare
-    // pass resolves "sept 3" in a statement against nyCalendarDay and never
-    // computes a New York date of its own.
-    ...nowContext(Date.now()),
-  };
-}
 
 const ttsPlannerContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  try {
-    return jsonResponse(200, await plannerContext(ctx));
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
+  return await serveContext(ctx, "planner", request);
 });
 
 http.route({
@@ -2724,22 +2448,7 @@ http.route({ path: "/tts/export", method: "GET", handler: ttsExport });
 const ttsLearningInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const sinceRaw = params.get("since");
-  const untilRaw = params.get("until");
-  const since = sinceRaw === null ? undefined : Number(sinceRaw);
-  const until = untilRaw === null ? NaN : Number(untilRaw);
-  if (
-    !Number.isFinite(until) ||
-    (since !== undefined && (!Number.isFinite(since) || since >= until))
-  ) {
-    return jsonResponse(400, { error: "until (epoch ms) required; since, if given, before it" });
-  }
-  const input = await ctx.runQuery(internal.ttsNightly.internalLearningInput, {
-    since,
-    until,
-  });
-  return jsonResponse(200, input);
+  return await serveContext(ctx, "learning", request);
 });
 
 http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInput });
@@ -2751,22 +2460,7 @@ http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInp
 const ttsWeeklyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const until = params.has("until") ? Number(params.get("until")) : Date.now();
-  if (!Number.isFinite(until) || until <= 0) {
-    return jsonResponse(400, { error: "until must be an epoch ms instant" });
-  }
-  let facts;
-  let writingStandard: string;
-  try {
-    [facts, writingStandard] = await Promise.all([
-      ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "weekly-input" }),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, { ...facts, writingStandard });
+  return await serveContext(ctx, "weekly", request);
 });
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
@@ -2789,22 +2483,7 @@ http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput }
 const ttsSimplifyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const until = params.has("until") ? Number(params.get("until")) : Date.now();
-  if (!Number.isFinite(until) || until <= 0) {
-    return jsonResponse(400, { error: "until must be an epoch ms instant" });
-  }
-  let facts;
-  let writingStandard: string;
-  try {
-    [facts, writingStandard] = await Promise.all([
-      ctx.runQuery(internal.ttsSimplify.internalSimplifyInput, { until }),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "simplify-input" }),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, { ...facts, writingStandard });
+  return await serveContext(ctx, "simplify", request);
 });
 
 http.route({ path: "/tts/simplify-input", method: "GET", handler: ttsSimplifyInput });
@@ -2882,14 +2561,7 @@ http.route({ path: "/tts/weekly-decisions", method: "POST", handler: ttsWeeklyDe
 const ttsPreludeDelivery = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const until = params.has("until") ? Number(params.get("until")) : Date.now();
-  const sinceArg = params.has("since") ? Number(params.get("since")) : undefined;
-  if (!Number.isFinite(until) || until <= 0 || (sinceArg !== undefined && (!Number.isFinite(sinceArg) || sinceArg <= 0 || sinceArg >= until))) {
-    return jsonResponse(400, { error: "until must be an epoch ms instant; since, if given, before it" });
-  }
-  const since = sinceArg ?? (await ctx.runQuery(internal.ttsEvals.internalLatestPreludeDeliveryAt, {}) ?? until - DAY_MS);
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalPreludeDelivery, { since, until }));
+  return await serveContext(ctx, "prelude-delivery", request);
 });
 
 http.route({ path: "/tts/prelude-delivery", method: "GET", handler: ttsPreludeDelivery });
@@ -2900,12 +2572,7 @@ http.route({ path: "/tts/prelude-delivery", method: "GET", handler: ttsPreludeDe
 const ttsGoldenInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const raw = new URL(request.url).searchParams.get("limitPerPartition");
-  const limitPerPartition = raw === null ? undefined : Number(raw);
-  if (limitPerPartition !== undefined && (!Number.isFinite(limitPerPartition) || limitPerPartition <= 0)) {
-    return jsonResponse(400, { error: "limitPerPartition must be a positive number" });
-  }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalGoldenInput, { limitPerPartition }));
+  return await serveContext(ctx, "golden", request);
 });
 
 http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput });
@@ -2918,12 +2585,7 @@ http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput }
 const ttsLabelInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const raw = new URL(request.url).searchParams.get("limitPerSource");
-  const limitPerSource = raw === null ? undefined : Number(raw);
-  if (limitPerSource !== undefined && (!Number.isFinite(limitPerSource) || limitPerSource <= 0)) {
-    return jsonResponse(400, { error: "limitPerSource must be a positive number" });
-  }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalLabelInput, { limitPerSource }));
+  return await serveContext(ctx, "label", request);
 });
 
 http.route({ path: "/tts/label-input", method: "GET", handler: ttsLabelInput });
@@ -3321,6 +2983,13 @@ const ttsEvent = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
   }
   try {
+    // A box change goes to the record's own write, not dtsEvents
+    // (convex/ttsNightly.ts internalRecordBoxChange), for as long as a box
+    // still posts it here.
+    if (b.kind === "box-change") {
+      const recorded = await ctx.runMutation(internal.ttsNightly.internalRecordBoxChange, { data: b.data, key: b.key as string | undefined });
+      return jsonResponse(200, { ok: true, ...recorded });
+    }
     if (b.kind === "evals-run") {
       const data = (b.data ?? {}) as Record<string, unknown>;
       const boxEvalsVersion = data.boxEvalsVersion;
@@ -3655,110 +3324,6 @@ http.route({
   path: "/tts/session-outcome",
   method: "POST",
   handler: ttsSessionOutcome,
-});
-
-// ── The orchestrator's pens (Tom, 2026-09-21; convex/orchestrator.ts) ────────
-// Worker-key doors, like every pen a run on the box holds. Each names the
-// calling run's session id, and the mutation refuses a caller that is not the
-// orchestrator's live run (or, for a worker's pens, a live hosted worker): the
-// key says a run is on the box, the session id says which one it is. A
-// refusal is a 409 with the mutation's sentence, which the calling agent reads.
-
-/** Parse a pen's JSON body, run one mutation, answer with its result. */
-function orchestratorPen(
-  run: (ctx: ActionCtx, body: Record<string, unknown>) => Promise<unknown>,
-  oldKeys: Record<string, string> = {},
-) {
-  return httpAction(async (ctx, request) => {
-    const denied = ttsAuth(request);
-    if (denied) return denied;
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return jsonResponse(400, { error: "invalid JSON body" });
-    }
-    const b = (body ?? {}) as Record<string, unknown>;
-    const old = oldSpelling(b, oldKeys);
-    if (old) return jsonResponse(400, { error: old });
-    try {
-      return jsonResponse(200, { ok: true, ...((await run(ctx, b)) as object) });
-    } catch (e) {
-      return jsonResponse(409, { error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-}
-
-const str = (value: unknown): string => (typeof value === "string" ? value : "");
-const optionalStr = (value: unknown): string | undefined => (typeof value === "string" && value.trim() !== "" ? value : undefined);
-
-// GET /tts/orchestrator — its state: the row, live workers, unanswered
-// elevations. Read-only. Starting and stopping it is Tom's alone
-// (orchestrator.start / orchestrator.stop), never a worker-key pen.
-http.route({
-  path: "/tts/orchestrator",
-  method: "GET",
-  handler: httpAction(async (ctx, request) => {
-    const denied = ttsAuth(request);
-    if (denied) return denied;
-    return jsonResponse(200, await ctx.runQuery(internal.orchestrator.internalState, {}));
-  }),
-});
-http.route({
-  path: "/tts/orchestrator/document",
-  method: "POST",
-  handler: orchestratorPen(async (ctx, b) =>
-    await ctx.runMutation(internal.orchestrator.internalWriteDocument, { sessionId: str(b.sessionId), document: str(b.document) }),
-  ),
-});
-http.route({
-  path: "/tts/spawn-worker",
-  method: "POST",
-  handler: orchestratorPen(async (ctx, b) =>
-    await ctx.runMutation(internal.orchestrator.internalSpawnWorker, {
-      sessionId: str(b.sessionId),
-      title: str(b.title),
-      brief: str(b.brief),
-      repos: Array.isArray(b.repos) ? b.repos.filter((r): r is string => typeof r === "string") : undefined,
-      todoId: optionalStr(b.todoId),
-      model: optionalStr(b.model),
-    }),
-  ),
-});
-http.route({
-  path: "/tts/message",
-  method: "POST",
-  handler: orchestratorPen(async (ctx, b) =>
-    await ctx.runMutation(internal.orchestrator.internalSendMessage, { sessionId: str(b.sessionId), to: str(b.to), text: str(b.text) }),
-  ),
-});
-http.route({
-  path: "/tts/elevate",
-  method: "POST",
-  handler: orchestratorPen(async (ctx, b) =>
-    await ctx.runMutation(internal.orchestrator.internalElevate, {
-      sessionId: str(b.sessionId),
-      question: str(b.question),
-      sides: Array.isArray(b.sides) ? b.sides.map((side) => str(side)) : [],
-      todoId: optionalStr(b.todoId),
-      concernsRunId: optionalStr(b.agentId),
-    }),
-    { runId: "agentId" },
-  ),
-});
-http.route({
-  path: "/tts/answer",
-  method: "POST",
-  handler: orchestratorPen(async (ctx, b) =>
-    await ctx.runMutation(internal.orchestrator.internalAnswer, {
-      sessionId: str(b.sessionId),
-      elevationId: str(b.elevationId),
-      kind: str(b.kind),
-      answer: optionalStr(b.answer),
-      askId: optionalStr(b.askId),
-      recommendation: optionalStr(b.recommendation),
-    }),
-  ),
 });
 
 // ── Claude Code session-host endpoints ───────────────────────────────────────

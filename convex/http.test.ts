@@ -20,6 +20,16 @@ async function events(t: ReturnType<typeof convexTest>, kind: string) {
   );
 }
 
+/** A job's failure reports: events rows of kind job-failed that are not a
+ *  standing condition's repeat (convex/jarvis/jobs.ts). */
+async function jobReports(t: ReturnType<typeof convexTest>) {
+  return await t.run(async (ctx) =>
+    (await ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "job-failed")).collect()).filter(
+      (row) => (row.data as { standingSince?: number }).standingSince === undefined,
+    ),
+  );
+}
+
 async function aTodo(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
     ctx.db.insert("dtsTodos", {
@@ -120,11 +130,11 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
     const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
     expect(JSON.stringify(rows)).not.toContain(TTS_TODAY);
 
-    // And the drop is not silent: one job-failed row, the kind the digest and
-    // the hourly update carry to #tts-broken.
-    const failed = await events(t, "job-failed");
+    // And the drop is not silent: one job-failed report in the record's
+    // events table (convex/jarvis/jobs.ts), which carries it to #tts-broken.
+    const failed = await jobReports(t);
     expect(failed).toHaveLength(1);
-    expect(failed[0].key).toBe("tts/needs-tom:needs-you-channel");
+    expect(failed[0].subject).toBe("tts/needs-tom:needs-you-channel");
     expect(failed[0].data).toMatchObject({ job: "tts/needs-tom" });
     expect(String((failed[0].data as { error: string }).error)).toContain(
       "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
@@ -139,7 +149,7 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
     const t = convexTest(schema, modules);
     const id = await aTodo(t);
     for (let i = 0; i < 3; i += 1) await open(t, id);
-    expect(await events(t, "job-failed")).toHaveLength(1);
+    expect(await jobReports(t)).toHaveLength(1);
   });
 });
 
@@ -801,24 +811,6 @@ describe("the agent doors read the agent spelling only", () => {
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBeUndefined();
     expect((await post(t, "/sessions/ingest", { sessionId, agentId: "claude:box:spelling-session" })).status).toBe(200);
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBe("claude:box:spelling-session");
-  });
-
-  it("/tts/code-briefs stores agentToken and refuses runToken", async () => {
-    const token = "11111111-2222-4333-8444-555555555555";
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest(schema, modules);
-    const briefsPost = (field: string) => t.fetch("/tts/code-briefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-      body: JSON.stringify({
-        briefs: [{ repo: "tom.quest", externalId: "spelling", sourceHash: "h", brief: "Rename the page.", recommendation: "approve", execClass: "box" }],
-        [field]: token,
-      }),
-    });
-    await refusedAs(await briefsPost("runToken"), "runToken", "agentToken");
-    expect(await stored(t, "dtsCodeBriefs")).toEqual([]);
-    expect((await briefsPost("agentToken")).status).toBe(200);
-    expect((await stored(t, "dtsCodeBriefs")).map((row) => row.producedByRunToken)).toEqual([token]);
   });
 
   it("/tts/simplify-input answers agents, each sample's agentId, and .agents alone on tools, hooks and cwds", async () => {

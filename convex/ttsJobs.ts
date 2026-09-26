@@ -1,6 +1,6 @@
 // ttsJobs.ts — the previous generation's names for the jobs area, kept as
 // wrappers until their callers move (convex/ttsMerge.ts, convex/ttsSignoff.ts,
-// convex/orchestrator.ts, the /tts/job-failed and /tts/job-ok routes in
+// the /tts/job-failed and /tts/job-ok routes in
 // convex/http.ts, and the silence-alarm cron in convex/crons.ts). The area
 // itself is convex/jarvis/jobs.ts, and every report here is one row of the
 // `events` table through convex/jarvis/events.ts recordEvent, the same path

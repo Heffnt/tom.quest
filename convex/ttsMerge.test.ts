@@ -131,11 +131,14 @@ const testsRows = (t: TestConvex<typeof schema>) =>
       .collect(),
   );
 
-/** The timing warning's own rows, on the channel the digest and the hourly
- *  update already read (convex/ttsJobs.ts). */
+/** The timing warning's own reports, in the record's events table
+ *  (convex/jarvis/jobs.ts): a repeat of a standing condition carries
+ *  data.standingSince and is not a report. */
 const jobRows = (t: TestConvex<typeof schema>, kind: string) =>
   t.run(async (ctx) =>
-    ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", kind)).collect(),
+    (await ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", kind)).collect()).filter(
+      (row) => (row.data as { standingSince?: number }).standingSince === undefined,
+    ),
   );
 
 const auditRows = (t: TestConvex<typeof schema>) =>
@@ -968,7 +971,7 @@ describe("the timing warning — Tom's 2026-09-22 ruling", () => {
     await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}b`, ok: true, ...timing });
     const failures = await jobRows(t, "job-failed");
     expect(failures).toHaveLength(1);
-    expect(failures[0].key).toBe(TESTS_JOB_SLOW_KEY);
+    expect(failures[0].subject).toBe(TESTS_JOB_SLOW_KEY);
     expect((failures[0].data as { error: string }).error).toContain("420s");
     expect((failures[0].data as { error: string }).error).toContain("convex/runs.test.ts 41s");
   });
@@ -1002,7 +1005,7 @@ describe("the timing warning — Tom's 2026-09-22 ruling", () => {
     expect(again.existing).toBe(true);
     const failures = await jobRows(t, "job-failed");
     expect(failures).toHaveLength(1);
-    expect(failures[0].key).toBe(SUITE_SLOW_KEY);
+    expect(failures[0].subject).toBe(SUITE_SLOW_KEY);
     // And the row itself still carries the FIRST run's answer.
     expect((await testsRows(t))[0].data).toMatchObject({ durations: { tests: 60 } });
   });
@@ -1734,7 +1737,7 @@ describe("the gate posted as the tts-gate commit status", () => {
     await recordAudit(t, "APPROVED");
     await settle(t);
     const failed = await t.run((ctx) =>
-      ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", "job-failed").eq("key", "gate-status:tom.quest")).collect(),
+      ctx.db.query("events").withIndex("by_kind_subject_at", (q) => q.eq("kind", "job-failed").eq("subject", "gate-status:tom.quest")).collect(),
     );
     expect(failed).toHaveLength(1);
     expect((failed[0].data as { error: string }).error).toMatch(
@@ -1744,7 +1747,7 @@ describe("the gate posted as the tts-gate commit status", () => {
     statusesApi();
     await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA });
     const recovered = await t.run((ctx) =>
-      ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", "job-recovered").eq("key", "gate-status:tom.quest")).collect(),
+      ctx.db.query("events").withIndex("by_kind_subject_at", (q) => q.eq("kind", "job-recovered").eq("subject", "gate-status:tom.quest")).collect(),
     );
     expect(recovered).toHaveLength(1);
   });
