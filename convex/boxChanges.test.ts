@@ -18,6 +18,7 @@ import {
   AGENTS_WINDOW_URL,
   boxChangeFaults,
   boxChangeLines,
+  boxChangesInWindow,
   whoCanActLine,
   type BoxChange,
 } from "./boxChanges";
@@ -127,6 +128,51 @@ describe("the box-change door", () => {
     expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT })))).json()).toMatchObject({ duplicate: false });
     expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT })))).json()).toMatchObject({ duplicate: false });
     expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(4);
+  });
+
+  // witness: the resend check read only 50 rows of the millisecond, so a
+  // resend of the 51st same-millisecond change was recorded twice.
+  it("finds a resend by its id however many changes share its millisecond", async () => {
+    const t = convexTest({ schema, modules });
+    for (let n = 0; n < 60; n += 1) {
+      expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: `s=1;i=c${n}` })))).json()).toMatchObject({ duplicate: false });
+    }
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=c59" })))).json()).toMatchObject({ duplicate: true });
+    expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(60);
+  });
+
+  // witness: the legacy pen's translation labelled a journal gap posted with
+  // source "state" as box-state; the journal reader is box-watch.
+  it("files a journal gap under the journal reader, box-watch", async () => {
+    const t = convexTest({ schema, modules });
+    await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "journal-gap" } }) });
+    await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "sudoers" }, at: AT + 1 }) });
+    const rows = (await t.run(async (ctx) => ctx.db.query("events").collect()))
+      .filter((row) => row.kind === "box-change")
+      .sort((a, b) => a.at - b.at);
+    expect(rows.map((row) => row.provenance.job)).toEqual(["box-watch", "box-state"]);
+  });
+
+  // witness: the digest read changes by when they happened, so one that
+  // happened before a digest was composed and was recorded after it fell in
+  // neither digest's window.
+  it("gives the digest the changes recorded in its window, whenever they happened", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      vi.setSystemTime(AT + 10 * 60_000);
+      const composedAt = Date.now();
+      vi.setSystemTime(composedAt + 60_000);
+      // Happened five minutes before the first digest was composed; the
+      // reader posted it a minute after.
+      await recordEvent(t, eventOf(change({ agentId: AGENT, at: composedAt - 5 * 60_000 })));
+      const first = await t.run(async (ctx) => boxChangesInWindow(ctx, 0, composedAt));
+      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, composedAt, Date.now() + 1));
+      expect(first).toHaveLength(0);
+      expect(second).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses a body without the shape, a key or provenance that is not its agent, and an at that is not its own", async () => {

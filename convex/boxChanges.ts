@@ -90,6 +90,8 @@ export function boxChangeFaults(data: unknown): string[] {
   if (d.cwd !== undefined && typeof d.cwd !== "string") faults.push("data.cwd must be a string");
   if (d.agentId !== undefined && (typeof d.agentId !== "string" || d.agentId === "")) faults.push("data.agentId must be a non-empty string");
   if (d.commit !== undefined && (typeof d.commit !== "string" || !/^[0-9a-f]{7,40}$/.test(d.commit))) faults.push("data.commit must be a hex commit");
+  // Capped because the id becomes the row's indexed subject (onBoxChange); a
+  // journal cursor is about 150 characters.
   if (d.id !== undefined && (typeof d.id !== "string" || d.id === "" || d.id.length > ID_CHARS)) faults.push(`data.id must be a non-empty string of at most ${ID_CHARS} characters`);
   if (d.count !== undefined && (typeof d.count !== "number" || !Number.isSafeInteger(d.count) || d.count < 1)) faults.push("data.count must be a positive integer");
   if (d.change !== undefined) {
@@ -204,6 +206,11 @@ export function whoCanActLine(change: BoxChange): string | null {
  * broken line when the journal lost entries the reader had not read
  * (plan-root T3). Neither holds a secret: the text is redacted first.
  */
+/** The subject a box change with a reader id is filed under. */
+function boxChangeSubject(id: string): string {
+  return `box-change-id:${id}`;
+}
+
 export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise<{ duplicate: boolean }> {
   const faults = boxChangeFaults(row.data);
   if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
@@ -213,14 +220,19 @@ export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise
   }
   if (row.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
   if (change.id !== undefined) {
-    const sameTime = await ctx.db
+    // The id is the row's subject, so a resend is one point lookup on
+    // events.by_subject_at: no scan of the millisecond, nothing it can miss.
+    const subject = boxChangeSubject(change.id);
+    const earlier = await ctx.db
       .query("events")
-      .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).eq("at", row.at))
-      .take(50);
-    if (sameTime.some((other) => other._id !== row._id && (other.data as { id?: unknown } | null)?.id === change.id)) {
+      .withIndex("by_subject_at", (q) => q.eq("subject", subject))
+      .filter((q) => q.and(q.eq(q.field("kind"), BOX_CHANGE), q.neq(q.field("_id"), row._id)))
+      .first();
+    if (earlier !== null) {
       await ctx.db.delete(row._id);
       return { duplicate: true };
     }
+    if (row.subject !== subject) await ctx.db.patch(row._id, { subject });
   }
   const shown = redactedBoxChange(change);
   if (shown.change?.what === "journal-gap") {
@@ -256,7 +268,9 @@ export function boxChangeEvent(data: BoxChange) {
     kind: BOX_CHANGE,
     at: data.at,
     provenance: {
-      job: data.source === "state" ? "box-state" : "box-watch",
+      // A journal gap is the journal reader's (box-watch) whatever source the
+      // row names; older gap rows name "state".
+      job: data.source === "state" && data.change?.what !== "journal-gap" ? "box-state" : "box-watch",
       ...(data.agentId === undefined ? {} : { agentId: data.agentId }),
     },
     data,
@@ -293,22 +307,29 @@ export const forAgent = query({
 });
 
 /**
- * The window's box changes, oldest first, as the digest reads them
- * (boxChangeLines takes these). Unredacted: boxChangeLines redacts every line
- * it writes. The digest's read is the Slack stream's to switch to this.
+ * The box changes RECORDED in the window, in the order they happened, as the
+ * digest reads them (boxChangeLines takes these). Unredacted: boxChangeLines
+ * redacts every line it writes.
+ *
+ * BY RECORDED TIME, NOT BY WHEN IT HAPPENED. The reader posts a change
+ * minutes after it happened (every two minutes, later when its outbox
+ * retries), so a change that happened before one digest was composed and was
+ * recorded after it would fall in neither window if read by `at`. Recorded
+ * time (_creationTime, on the table's by_creation_time index) partitions the
+ * changes between consecutive digests exactly: each lands in one.
  */
 export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
   const rows = await ctx.db
     .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).gte("at", from).lt("at", to))
-    .order("asc")
+    .withIndex("by_creation_time", (q) => q.gte("_creationTime", from).lt("_creationTime", to))
+    .filter((q) => q.eq(q.field("kind"), BOX_CHANGE))
     .take(WINDOW_MAX);
   const out: BoxChange[] = [];
   for (const row of rows) {
     const change = boxChangeOf(row.data);
     if (change !== null) out.push(change);
   }
-  return out;
+  return out.sort((a, b) => a.at - b.at);
 }
 
 /** The most changes one digest window reads: a day of a busy box is a few
