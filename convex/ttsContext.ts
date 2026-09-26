@@ -226,7 +226,7 @@ function todoRow(todo: Doc<"dtsTodos">, repos: string[]): ContextRecord["todos"]
   };
 }
 
-function rulingRow(ruling: Doc<"dtsRulings">): ContextRecord["rulings"][number] {
+function rulingRow(ruling: Doc<"rulings">): ContextRecord["rulings"][number] {
   return {
     todoId: ruling.todoId,
     verdict: ruling.verdict,
@@ -277,7 +277,7 @@ async function readRecord(
   // His rulings on this todo.
   if (todoId !== null) {
     const own = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_todo", (q) => q.eq("todoId", todoId))
       .take(RULINGS_PER_SUBJECT);
     for (const ruling of own) record.rulings.push(rulingRow(ruling));
@@ -332,7 +332,7 @@ async function readRecord(
  *                                                       is readable)
  *   ttsSkills by_name                              ≤ 64 (the catalog's names)
  *   dtsTodos get                                   ≤  1
- *   dtsRulings by_todo                             ≤  5
+ *   rulings by_todo                             ≤  5
  *   claudeSessions by_status ×2, filtered in memory ≤ 60 (SESSION_SCAN_MAX)
  *
  * THE REPO RULES TABLE IS NO LONGER READ HERE. It was read to pre-expand the

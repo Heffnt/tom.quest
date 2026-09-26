@@ -233,7 +233,7 @@ describe("gatherWeeklyFacts", () => {
         status: "archived",
         source: INTEGRATION_SOURCE,
       });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId: declined,
         verdict: "archive",

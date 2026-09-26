@@ -245,7 +245,7 @@ function labelForVerdict(
 /** The row a ruling's subject names, and the token that row carries. */
 async function tokenForRulingSubject(
   ctx: MutationCtx,
-  ruling: Doc<"dtsRulings">,
+  ruling: Doc<"rulings">,
 ): Promise<string | undefined> {
   if (ruling.subjectType === "life" && ruling.todoId !== undefined) {
     return (await ctx.db.get(ruling.todoId))?.producedByRunToken;
@@ -267,7 +267,7 @@ async function tokenForRulingSubject(
 /** The subject's identity, in the one spelling ttsRulings.subjectKey defines.
  *  Duplicated as a local read rather than imported to keep this file free of a
  *  cycle through ttsRulings, which schedules into it. */
-function subjectKeyOf(ruling: Doc<"dtsRulings">): string | null {
+function subjectKeyOf(ruling: Doc<"rulings">): string | null {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
   // A stored ruling on a batch has no subject key: the schema narrow removes it.
   if (ruling.subjectType === "batch") return null;
@@ -275,7 +275,7 @@ function subjectKeyOf(ruling: Doc<"dtsRulings">): string | null {
 }
 
 export const internalLabelFromRuling = internalMutation({
-  args: { rulingId: v.id("dtsRulings") },
+  args: { rulingId: v.id("rulings") },
   handler: async (ctx, { rulingId }) => {
     const ruling = await ctx.db.get(rulingId);
     if (ruling === null) return { wrote: false, why: "no ruling" };

@@ -159,6 +159,8 @@ export const copy = internalMutation({
         });
       } else if (table === "todos") {
         await ctx.scheduler.runAfter(0, internal.jarvis.tables.copyNeeds, { pageSize: numItems });
+      } else if (table === "rulings") {
+        await ctx.scheduler.runAfter(0, internal.jarvis.tables.remapRulingRefs, {});
       }
     }
     return { table, inserted, patched, unchanged, isDone: page.isDone, continueCursor: page.continueCursor };
@@ -264,5 +266,30 @@ export const counts = internalAction({
       out[table] = { old: before.rows, new: after.rows, copied: after.copied, whole: after.copied === before.rows };
     }
     return out;
+  },
+});
+
+/**
+ * A label on a ruling names it as `ruling:<id>` (runLabels.ref, looked up on
+ * by_ref): each copied ruling's labels are pointed at its new id. The rulings
+ * table is append-only at Tom's pace (five rows on 2026-09-26), so one
+ * mutation takes every copied row.
+ */
+export const remapRulingRefs = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let labels = 0;
+    for (const ruling of await ctx.db.query("rulings").collect()) {
+      if (ruling.legacyId === undefined) continue;
+      const old = await ctx.db
+        .query("runLabels")
+        .withIndex("by_ref", (q) => q.eq("ref", `ruling:${ruling.legacyId}`))
+        .collect();
+      for (const label of old) {
+        await ctx.db.patch(label._id, { ref: `ruling:${ruling._id}` });
+        labels += 1;
+      }
+    }
+    return { labels };
   },
 });

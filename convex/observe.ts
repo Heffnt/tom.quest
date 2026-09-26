@@ -361,7 +361,7 @@ export const rulingsInWindow = query({
     await requireTom(ctx, SURFACE);
     assertWindow(from, to);
     const rulings = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_ruled", (q) => q.gte("ruledAt", from).lt("ruledAt", to))
       .order("asc")
       .take(RULINGS_MAX);
@@ -386,7 +386,7 @@ export const rulingsInWindow = query({
   },
 });
 
-async function subjectWords(ctx: QueryCtx, ruling: Doc<"dtsRulings">): Promise<string> {
+async function subjectWords(ctx: QueryCtx, ruling: Doc<"rulings">): Promise<string> {
   if (ruling.todoId !== undefined) {
     const todo = await ctx.db.get(ruling.todoId);
     return todo?.statement ?? "";

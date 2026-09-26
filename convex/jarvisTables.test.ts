@@ -82,6 +82,25 @@ describe("the copy into the plain-named tables", () => {
     expect(counts.calendar.whole).toBe(true);
   });
 
+  it("points a ruling's labels at its new id", async () => {
+    const t = convexTest({ schema, modules });
+    const old = await t.run(async (ctx) => {
+      const r = await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
+      await ctx.db.insert("runLabels", {
+        runId: "run", source: "ruling", actor: "tom", polarity: "good", meaning: "m", judgment: true, ref: `ruling:${r}`, at: 1,
+      } as never);
+      return r;
+    });
+    await copyAll(t, "rulings");
+    expect(await t.mutation(internal.jarvis.tables.remapRulingRefs, {})).toEqual({ labels: 1 });
+    const { ruling, label } = await t.run(async (ctx) => ({
+      ruling: (await ctx.db.query("rulings").collect())[0],
+      label: (await ctx.db.query("runLabels").collect())[0],
+    }));
+    expect(ruling.legacyId).toBe(old);
+    expect(label.ref).toBe(`ruling:${ruling._id}`);
+  });
+
   it("patches a copied row from a newer old row, never from an older one", async () => {
     const t = convexTest({ schema, modules });
     const a = await t.run(async (ctx) => await ctx.db.insert("dtsTodos", todo("first", 10)));

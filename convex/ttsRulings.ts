@@ -11,6 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
+import { resolveId } from "./jarvis/tables";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -79,7 +80,7 @@ const VERDICTS: readonly RulingVerdict[] = [
 export const isRulingVerdict = (x: unknown): x is RulingVerdict =>
   typeof x === "string" && (VERDICTS as readonly string[]).includes(x);
 
-// Where a ruling came from when it was NOT a button (schema: dtsRulings.provenance).
+// Where a ruling came from when it was NOT a button (schema: rulings.provenance).
 export type TomWordsProvenance = {
   from: "tom-words";
   inboundId: string;
@@ -111,7 +112,7 @@ export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    return await ctx.db.query("dtsRulings").collect();
+    return await ctx.db.query("rulings").collect();
   },
 });
 
@@ -237,7 +238,7 @@ export async function insertRuling(
           : `${verdict} recorded on the change`;
     }
 
-    const id = await ctx.db.insert("dtsRulings", {
+    const id = await ctx.db.insert("rulings", {
       subjectType: isLife ? "life" : "code",
       todoId,
       repo,
@@ -585,6 +586,12 @@ export const internalRecordRulingFromTomWords = internalMutation({
   ) => {
     // 1. the row
     const rowId = ctx.db.normalizeId("claudeInbound", inboundId);
+    if (rowId === null && ctx.db.normalizeId("claudeMessages", inboundId) !== null) {
+      throw new Error(
+        "refused: a claudeMessages row records no author (a turn Tom typed, a task notification and an " +
+          "agent's brief are stored alike), so it cannot back a ruling in his words; cite the claudeInbound row",
+      );
+    }
     const row = rowId === null ? null : await ctx.db.get(rowId);
     if (rowId === null || !row || row.kind !== "user-turn") {
       throw new Error(`Unknown inbound id: ${inboundId}`);
@@ -611,7 +618,7 @@ export const internalRecordRulingFromTomWords = internalMutation({
     // 6. one ruling per row per subject
     const key = subjectKey({ subjectType, ...subject });
     const prior = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_provenance_inboundId", (q) =>
         q.eq("provenance.inboundId", rowId),
       )
@@ -663,9 +670,9 @@ export const internalRecordRulingFromTomWords = internalMutation({
 
 /** Newest ruling per subject, from a full collect. */
 export function liveRulings(
-  all: Doc<"dtsRulings">[],
-): Map<string, Doc<"dtsRulings">> {
-  const newest = new Map<string, Doc<"dtsRulings">>();
+  all: Doc<"rulings">[],
+): Map<string, Doc<"rulings">> {
+  const newest = new Map<string, Doc<"rulings">>();
   for (const row of all) {
     const key = subjectKey(row);
     const prior = newest.get(key);
@@ -692,7 +699,7 @@ export async function markLiveSessionRulingApplied(
   sessionId: string,
 ): Promise<void> {
   const rulings = await ctx.db
-    .query("dtsRulings")
+    .query("rulings")
     .withIndex("by_todo", (q) => q.eq("todoId", todoId))
     .collect();
   const live = liveRulings(rulings).get(
@@ -721,8 +728,8 @@ export async function markLiveSessionRulingApplied(
  */
 export async function liveCodeSessionRulings(
   ctx: MutationCtx,
-): Promise<Doc<"dtsRulings">[]> {
-  const all = await ctx.db.query("dtsRulings").collect();
+): Promise<Doc<"rulings">[]> {
+  const all = await ctx.db.query("rulings").collect();
   return [...liveRulings(all).values()]
     .filter(
       (live) =>
@@ -735,7 +742,7 @@ export async function liveCodeSessionRulings(
 
 export async function markCodeSessionRulingsApplied(
   ctx: MutationCtx,
-  rulings: readonly Doc<"dtsRulings">[],
+  rulings: readonly Doc<"rulings">[],
   sessionId: string,
 ): Promise<void> {
   for (const ruling of rulings) {
@@ -754,7 +761,7 @@ export async function markCodeSessionRulingsApplied(
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const all = await ctx.db.query("dtsRulings").collect();
+    const all = await ctx.db.query("rulings").collect();
     const newest = liveRulings(all);
     return all.filter(
       (row) =>
@@ -772,7 +779,7 @@ export const internalMarkRulingApplied = internalMutation({
   handler: async (ctx, { id, result }) => {
     // The worker sends plain strings over HTTP; normalizeId is the proper
     // reject-with-a-name path for malformed/wrong-table ids.
-    const normalized = ctx.db.normalizeId("dtsRulings", id);
+    const normalized = await resolveId(ctx, "rulings", id);
     if (!normalized) throw new Error(`Unknown ruling id: ${id}`);
     const ruling = await ctx.db.get(normalized);
     if (!ruling) throw new Error(`Unknown ruling id: ${id}`);
@@ -804,7 +811,7 @@ export const internalMarkRulingApplied = internalMutation({
 // happen.
 export function briefAwaitsRuling(
   brief: { repo: string; externalId: string; preparedAt: number },
-  live: Map<string, Doc<"dtsRulings">>,
+  live: Map<string, Doc<"rulings">>,
 ): boolean {
   const ruling = live.get(
     subjectKey({
@@ -823,7 +830,7 @@ export const internalRecentRulings = internalQuery({
   handler: async (ctx, { limit }) => {
     // The planner reads these as Tom's recent rulings on its todos.
     return await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_ruled")
       .order("desc")
       .take(Math.min(limit ?? 200, 1000));
@@ -834,7 +841,7 @@ export const internalAwaitingRulingCount = internalQuery({
   args: {},
   handler: async (ctx) => {
     const briefs = await ctx.db.query("dtsCodeBriefs").collect();
-    const live = liveRulings(await ctx.db.query("dtsRulings").collect());
+    const live = liveRulings(await ctx.db.query("rulings").collect());
     return briefs.filter((b) => briefAwaitsRuling(b, live)).length;
   },
 });

@@ -2,13 +2,13 @@ import { httpRouter } from "convex/server";
 import { register as registerJarvisRoutes } from "./jarvis/routes";
 import { serveContext } from "./jarvis/context";
 import { jarvisAuth, presentsJarvisKey } from "./jarvis/auth";
+import { postRuling } from "./jarvis/rulings";
 import type { FunctionArgs } from "convex/server";
 import { httpAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import { nowContext } from "./tts";
-import { isRulingVerdict } from "./ttsRulings";
 import {
   DELEGATE_MAX_PER_JOB,
   DELEGATE_MAX_PER_RUNNER,
@@ -1463,72 +1463,9 @@ http.route({
   handler: ttsCodeRulingApplied,
 });
 
-// POST /tts/ruling — a ruling from Tom's own words (ruling 15, 2026-09-05).
-// Body: { inboundId, verdict, subjectType, subjectId, quote, sentence? }: the
-// claudeInbound row Tom typed, one of the four verdicts, "life" | "code", the
-// subject's id (a code subject is "<repo> <externalId>"), one
-// whole sentence of Tom's turn verbatim (provenance only), and — on revise
-// alone — the ruling's own sentence, the redirect, which is another (or the
-// same) whole sentence of that turn. Same key as every worker pen; the
-// checks that make it Tom's pen and not the agent's — the row is
-// Tom-authored, the quote and the redirect are whole sentences of it, the
-// subject exists and is what the turn's session was about, the row has not
-// ruled on this subject before — live in
-// ttsRulings.internalRecordRulingFromTomWords, and each refusal comes back
-// as a 400 with its reason.
-const ttsRuling = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.inboundId !== "string" || b.inboundId === "") {
-    return jsonResponse(400, { error: "inboundId (non-empty string) required" });
-  }
-  if (!isRulingVerdict(b.verdict)) {
-    return jsonResponse(400, {
-      error: "verdict must be one of approve, revise, session, archive",
-    });
-  }
-  if (b.subjectType !== "life" && b.subjectType !== "code") {
-    return jsonResponse(400, {
-      error: "subjectType must be one of life, code",
-    });
-  }
-  if (typeof b.subjectId !== "string" || b.subjectId === "") {
-    return jsonResponse(400, { error: "subjectId (non-empty string) required" });
-  }
-  if (typeof b.quote !== "string" || b.quote.trim() === "") {
-    return jsonResponse(400, { error: "quote (non-empty string) required" });
-  }
-  if (b.sentence !== undefined && typeof b.sentence !== "string") {
-    return jsonResponse(400, { error: "sentence must be a string when given" });
-  }
-  try {
-    const id = await ctx.runMutation(
-      internal.ttsRulings.internalRecordRulingFromTomWords,
-      {
-        inboundId: b.inboundId,
-        verdict: b.verdict,
-        subjectType: b.subjectType,
-        subjectId: b.subjectId,
-        quote: b.quote,
-        sentence: b.sentence,
-      },
-    );
-    return jsonResponse(200, { ok: true, id });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
+// POST /tts/ruling is POST /jarvis/ruling's old spelling (convex/jarvis/rulings.ts),
+// served until the box's callers spell the new one.
+http.route({ path: "/tts/ruling", method: "POST", handler: postRuling });
 
 // POST /tts/ask records a completed delegate call. It intentionally never
 // calls a model: Fable runs on the box where the caller already is, while this

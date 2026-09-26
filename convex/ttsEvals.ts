@@ -19,6 +19,7 @@ import {
   scoredNothing,
   supersededFields,
 } from "../shared/evals-row.mjs";
+import { resolveId } from "./jarvis/tables";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
@@ -303,7 +304,7 @@ export const internalGoldenInput = internalQuery({
       Math.max(1, Math.floor(Number.isFinite(limitPerPartition) ? limitPerPartition : GOLDEN_PER_VERDICT_MAX)),
     );
     const rulings = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_ruled", (q) => q)
       .order("desc")
       .take(GOLDEN_RULING_READ_LIMIT);
@@ -397,7 +398,7 @@ export const internalGoldenInput = internalQuery({
 
 // ── The label corpus: what Tom judged, with the run he judged ────────────────
 //
-// internalGoldenInput above mines RULED SUBJECTS out of dtsRulings and leaves
+// internalGoldenInput above mines RULED SUBJECTS out of rulings and leaves
 // the output Tom read to a WikiTom snapshot on the exporter's machine. This
 // reads the other corpus: convex/runLabels.ts rows, where the edge from Tom's
 // act to the run that wrote the text is an exact token rather than a snapshot
@@ -466,7 +467,7 @@ export type LabelItem = {
  *  defines. Read locally rather than imported for the reason runLabels gives:
  *  ttsRulings schedules into the label writer, and this file is on the other
  *  side of that edge. */
-function rulingSubjectKey(ruling: Doc<"dtsRulings">): string | null {
+function rulingSubjectKey(ruling: Doc<"rulings">): string | null {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
   // A stored ruling on a batch has no subject key: the schema narrow removes it.
   if (ruling.subjectType === "batch") return null;
@@ -512,7 +513,7 @@ async function linkOf(
   digestDays: Map<string, string>,
 ): Promise<{ todoId?: string; subjectKey: string | null }> {
   if (label.source === "ruling") {
-    const rulingId = ctx.db.normalizeId("dtsRulings", label.ref.slice("ruling:".length));
+    const rulingId = await resolveId(ctx, "rulings", label.ref.slice("ruling:".length));
     const ruling = rulingId === null ? null : await ctx.db.get(rulingId);
     if (ruling === null) return { subjectKey: null };
     return {

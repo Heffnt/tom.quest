@@ -9,7 +9,7 @@
 //                   written from his words, each with an evidence entry.
 //   standing-rule — model-of-tom/priorities.md and agent-rules.md, every
 //                   repository's AGENTS.md, and vqc/steering.yaml.
-//   ruling        — the dtsRulings table, and the dated notes of tts/spec.md
+//   ruling        — the rulings table, and the dated notes of tts/spec.md
 //                   and vqc/adoption.md that quote a ruling of his.
 //   label         — the runLabels table: what he said about a run's output.
 //
@@ -65,7 +65,7 @@ export function isIntentSourcePath(path: unknown): path is string {
     && !path.split("/").some((segment) => segment === "." || segment === "..");
 }
 
-/** The most rulings the page reads. dtsRulings is append-only at Tom's own
+/** The most rulings the page reads. rulings is append-only at Tom's own
  *  pace, so this is a year of them and not a window. */
 const RULINGS_MAX = 500;
 
@@ -239,16 +239,16 @@ export const lines = query({
 
     // HIS RULINGS. The line is the sentence he gave; a ruling recorded from a
     // button carries none, and its verdict is then the whole of what he said.
-    const rulings = await ctx.db.query("dtsRulings")
+    const rulings = await ctx.db.query("rulings")
       .withIndex("by_ruled").order("desc").take(RULINGS_MAX + 1);
     const rulingsCapped = rulings.length > RULINGS_MAX;
     const ruled: IntentLine[] = rulings.slice(0, RULINGS_MAX).map((row) => ({
-      id: `dtsRulings/${row._id}`,
+      id: `rulings/${row._id}`,
       kind: "ruling" as const,
       text: row.sentence ?? row.verdict,
       section: row.subjectType,
       voice: "his" as const,
-      source: "dtsRulings",
+      source: "rulings",
       locator: row._id,
       at: row.ruledAt,
       dateText: null,
@@ -258,7 +258,7 @@ export const lines = query({
         ? []
         : [{ form: "quote", text: row.provenance.quote, date: null }],
     }));
-    record("dtsRulings", "record", null, rulings[0]?.ruledAt ?? null, ruled);
+    record("rulings", "record", null, rulings[0]?.ruledAt ?? null, ruled);
 
     // HIS LABELS. The act is his — the writer refuses any actor but him — but
     // the LINE is not: `meaning` is an agent's present-tense wording of what he

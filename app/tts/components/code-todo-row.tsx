@@ -50,7 +50,7 @@ export default function CodeTodoRow({
   /** The prepared brief for this item, when one exists. */
   brief: Doc<"dtsCodeBriefs"> | undefined;
   /** The LIVE ruling (newest ruledAt for this repo+externalId), when one exists. */
-  ruling: Doc<"dtsRulings"> | undefined;
+  ruling: Doc<"rulings"> | undefined;
   now: number;
   expanded: boolean;
   onToggle: () => void;

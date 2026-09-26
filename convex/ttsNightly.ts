@@ -305,7 +305,7 @@ export const internalLearningInput = internalQuery({
     ).map((e) => ({ id: e._id, at: e.at, todoId: e.todoId, data: e.data }));
     const rulings = (
       await ctx.db
-        .query("dtsRulings")
+        .query("rulings")
         .withIndex("by_ruled", (q) => q.gte("ruledAt", since).lt("ruledAt", until))
         // A delegate ruling is the delegate's reading of Tom, not his words:
         // learning from it would teach the model of Tom its own guesses. Left

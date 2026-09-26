@@ -70,7 +70,7 @@ type Row =
       key: string;
       row: MirrorRow;
       brief: Doc<"dtsCodeBriefs"> | undefined;
-      ruling: Doc<"dtsRulings"> | undefined;
+      ruling: Doc<"rulings"> | undefined;
     };
 
 const MAX = Number.MAX_SAFE_INTEGER;

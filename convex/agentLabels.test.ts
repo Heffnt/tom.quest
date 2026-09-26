@@ -88,9 +88,9 @@ async function seedTodo(
 async function seedRuling(
   t: ReturnType<typeof convexTest>,
   over: Record<string, unknown>,
-): Promise<Id<"dtsRulings">> {
+): Promise<Id<"rulings">> {
   return await t.run((ctx) =>
-    ctx.db.insert("dtsRulings", {
+    ctx.db.insert("rulings", {
       subjectType: "life",
       verdict: "approve",
       ruledAt: 5_000,

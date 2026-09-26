@@ -223,7 +223,7 @@ describe("the rulings", () => {
     const tom = await withTom(t);
     await t.run(async (ctx) => {
       const todoId = await ctx.db.insert("dtsTodos", todo("rename the observation page"));
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "approve",

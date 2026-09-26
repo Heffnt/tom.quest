@@ -195,7 +195,7 @@ export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
 export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
   const trimmed = ref.trim();
   if (trimmed.startsWith("ruling:")) {
-    const id = `dtsRulings/${trimmed.slice("ruling:".length)}`;
+    const id = `rulings/${trimmed.slice("ruling:".length)}`;
     return lines.filter((line) => line.id === id);
   }
   const cut = trimmed.search(/[#:]/);

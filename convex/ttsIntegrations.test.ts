@@ -53,7 +53,7 @@ async function rule(
   { sentence, ruledAt = 1_000 }: { sentence?: string; ruledAt?: number } = {},
 ) {
   await t.run(async (ctx) =>
-    ctx.db.insert("dtsRulings", {
+    ctx.db.insert("rulings", {
       subjectType: "life",
       todoId,
       verdict,

@@ -745,7 +745,7 @@ describe("a question for Tom", () => {
     runner = await t.run((ctx) => ctx.db.get(runnerId));
     expect(runnerStatus({ runner: runner!, openBlockingAsks: 0 })).toBe("running");
     // It is not a ruling.
-    expect(await t.run((ctx) => ctx.db.query("dtsRulings").collect())).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("rulings").collect())).toEqual([]);
   });
 
   it("composes the question whole under a first line that says whether the runner is holding still", async () => {
