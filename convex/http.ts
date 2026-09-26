@@ -543,7 +543,8 @@ http.route({
 // A condition already reported and not since recovered is not reported again
 // (convex/ttsJobs.ts), because a dead credential is dead for days and a row a
 // tick would bury the one fact under its own repetitions. A report without a
-// key is unconditional: one row per call.
+// key is about the job itself: its condition is the job's name
+// (convex/jarvis/jobs.ts onJobFailed), cleared by the job's next clean run.
 const ttsJobFailed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;

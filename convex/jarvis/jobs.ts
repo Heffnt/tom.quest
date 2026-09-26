@@ -86,15 +86,19 @@ export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise
   // Every writer names the job (Jarvis tts-lib reportJobFailed, POST
   // /tts/job-failed, the tick tasks, the silence alarm), and the digest's
   // line says which job failed, so a report without one is refused.
-  if (row.provenance.job === undefined) throw new Error("a job-failed names its job in provenance.job");
-  const key = row.subject;
-  if (key !== undefined) {
-    const standing = await standingFailure(ctx, key, row._id);
-    // Already said, and still true. Saying it again adds no fact.
-    if (standing !== null) {
-      await ctx.db.patch(row._id, { data: { ...data, standingSince: standing.at } });
-      return { reported: false, since: standing.at };
-    }
+  const job = row.provenance.job;
+  if (job === undefined) throw new Error("a job-failed names its job in provenance.job");
+  // THE CONDITION DEFAULTS TO THE JOB. A report with no key (Jarvis tts-lib
+  // reportJobFailed and POST /tts/job-failed both allow one) is about the job
+  // itself: it is filed under the job's name, stands until the job next runs
+  // clean (onJobOk), and every reader keys on the subject alone.
+  const key = row.subject ?? job;
+  if (row.subject === undefined) await ctx.db.patch(row._id, { subject: key });
+  const standing = await standingFailure(ctx, key, row._id);
+  // Already said, and still true. Saying it again adds no fact.
+  if (standing !== null) {
+    await ctx.db.patch(row._id, { data: { ...data, standingSince: standing.at } });
+    return { reported: false, since: standing.at };
   }
   // No line of its own (one output channel): the digest's broken section
   // reads the report (failuresInWindow), once per condition.
@@ -152,12 +156,16 @@ export async function onJobOk(ctx: MutationCtx, row: Doc<"events">): Promise<{ r
       .collect();
     for (const previous of older) if (previous._id !== row._id) await ctx.db.delete(previous._id);
   }
-  const key = row.subject;
-  if (key === undefined) return { recovered: false };
-  const standing = await standingFailure(ctx, key);
-  if (standing === null) return { recovered: false };
-  await recover(ctx, job ?? str((row.data as Record<string, unknown> | undefined)?.job) ?? "unknown", key, standing.at, row.at);
-  return { recovered: true, since: standing.at };
+  // The clean run re-arms the condition it names and, when that is not the
+  // job itself, the job's own condition (a report filed without a key).
+  let answer: { recovered: boolean; since?: number } = { recovered: false };
+  for (const key of new Set([row.subject, job].filter((one): one is string => one !== undefined))) {
+    const standing = await standingFailure(ctx, key);
+    if (standing === null) continue;
+    await recover(ctx, job ?? str((row.data as Record<string, unknown> | undefined)?.job) ?? "unknown", key, standing.at, row.at);
+    if (key === row.subject || !answer.recovered) answer = { recovered: true, since: standing.at };
+  }
+  return answer;
 }
 
 /** The recovery row, which re-arms the condition's report. */

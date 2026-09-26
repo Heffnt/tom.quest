@@ -710,19 +710,17 @@ export async function gatherTodayFacts(
   //
   //    GROUPED BY CONDITION, the report's subject, not by job: two conditions
   //    of one job are two lines, and one recovering says nothing about the
-  //    other. A report with no subject is about a run, not a condition
-  //    (Jarvis tts-lib reportJobFailed and POST /tts/job-failed without a
-  //    key, both live): a job's unkeyed reports are one line, counted. Every
-  //    report names its job (provenance.job; onJobFailed refuses one without).
+  //    other. Every report names its job and its condition: onJobFailed
+  //    files a report sent without a key under the job's name.
   const reports = await failuresInWindow(ctx, since, now);
   const recoveredAt = new Map<string, number>();
-  for (const row of reports.recovered) if (row.subject !== undefined) recoveredAt.set(row.subject, row.at);
+  for (const row of reports.recovered) recoveredAt.set(row.subject as string, row.at);
   const failedKeys = new Set<string>();
   for (const row of reports.failed) {
     const d = (row.data ?? {}) as Record<string, unknown>;
     const job = row.provenance.job ?? "";
-    const condition = row.subject ?? `job:${job}`;
-    const fixedAt = row.subject === undefined ? undefined : recoveredAt.get(row.subject);
+    const condition = row.subject as string;
+    const fixedAt = recoveredAt.get(condition);
     failedKeys.add(condition);
     const statement = brokenStatement(job);
     const said = fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement;
@@ -734,7 +732,7 @@ export async function gatherTodayFacts(
     f.detail = safeStr(d.error) ?? safeStr(row.text);
   }
   for (const row of reports.recovered) {
-    if (row.subject === undefined || failedKeys.has(row.subject)) continue;
+    if (failedKeys.has(row.subject as string)) continue;
     const job = row.provenance.job ?? "";
     failure(`${row.subject}:recovered`, `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`);
   }

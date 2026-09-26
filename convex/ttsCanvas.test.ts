@@ -372,7 +372,8 @@ describe("POST /tts/job-failed", () => {
     // reads to put a row in the morning digest's failures section.
     expect(rows[0].kind.endsWith("-failed")).toBe(true);
     expect(rows[0].data).toEqual({ job: "poll-canvas", error });
-    expect(rows[0].subject).toBeUndefined(); // an unkeyed report is per call
+    // An unkeyed report is about the job itself: filed under its name.
+    expect(rows[0].subject).toBe("poll-canvas");
   });
 
   // A DEAD CREDENTIAL IS DEAD FOR DAYS, and the job reporting it runs every
@@ -423,14 +424,21 @@ describe("POST /tts/job-failed", () => {
     expect(await failures(t)).toHaveLength(2);
   });
 
-  it("keeps two conditions apart, and an unkeyed report out of both", async () => {
+  // witness: an unkeyed report had no condition, so every one was its own
+  // report and the digest needed a fallback key for them.
+  it("keeps two conditions apart, files unkeyed reports under the job, and a clean run of the job clears that", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     await report(t, { job: "poll-canvas", error: "HTTP 401", key: "a" });
     await report(t, { job: "poll-gmail", error: "no verdict", key: "b" });
-    await report(t, { job: "poll-canvas", error: "one bad run" });
-    await report(t, { job: "poll-canvas", error: "another bad run" });
-    expect(await failures(t)).toHaveLength(4);
+    expect(await (await report(t, { job: "poll-canvas", error: "one bad run" })).json()).toMatchObject({ reported: true });
+    expect(await (await report(t, { job: "poll-canvas", error: "another bad run" })).json()).toMatchObject({ reported: false });
+    expect((await failures(t)).map((row) => row.subject).sort()).toEqual(["a", "b", "poll-canvas"]);
+    // A clean run keyed on condition "a" is a clean run of the job, too.
+    expect(await (await ok(t, { job: "poll-canvas", key: "a" })).json()).toMatchObject({ recovered: true });
+    const recovered = (await recordRows(t)).filter((e) => e.kind === "job-recovered").map((e) => e.subject).sort();
+    expect(recovered).toEqual(["a", "poll-canvas"]);
+    expect(await (await report(t, { job: "poll-canvas", error: "a third bad run" })).json()).toMatchObject({ reported: true });
   });
 
   // A job's failure reaches Tom as a line in the digest's broken section,
@@ -476,11 +484,12 @@ describe("POST /tts/job-failed", () => {
     expect(await slackScheduled(t)).toEqual([]);
   });
 
-  it("puts exactly one digest failure per job, however many reports, counting them", async () => {
+  it("puts one digest failure per job for its unkeyed reports, the repeats standing under the first", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
     const t = convexTest({ schema, modules });
-    // Unkeyed, so each report is its own row; the line is still one per job.
+    // Unkeyed: each report's condition is its job, so a repeat stands under
+    // the first and the line is one per job.
     for (const body of [
       { job: "deploy", error: "vercel build failed" },
       { job: "deploy", error: "vercel build failed again" },
@@ -490,10 +499,10 @@ describe("POST /tts/job-failed", () => {
       vi.advanceTimersByTime(60_000);
     }
 
-    expect(await failures(t)).toHaveLength(3);
+    expect(await failures(t)).toHaveLength(2);
     const broken = await digestBroken(t);
     expect(broken).toHaveLength(2);
-    expect(broken.filter((b) => b.statement.includes("deploy"))).toMatchObject([{ count: 2 }]);
+    expect(broken.filter((b) => b.statement.includes("deploy"))).toMatchObject([{ count: 1, detail: "vercel build failed" }]);
     expect(broken.filter((b) => b.statement.includes("agents-sweep"))).toMatchObject([{ count: 1 }]);
     expect(await slackScheduled(t)).toEqual([]);
   });
