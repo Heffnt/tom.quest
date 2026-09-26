@@ -4,7 +4,7 @@
 // plain-named table beside it (convex/schema.ts), every field kept, and the
 // old row's _id kept as `legacyId` so an id cited outside the record (the
 // evidence, a Slack thread, a box file, WikiTom's tts/snapshot) still finds
-// its row (resolveTodoId below). The copy never deletes: the old table stays
+// its row (resolveId below). The copy never deletes: the old table stays
 // whole until the copy counts are confirmed, then a later commit empties it
 // and drops it from the schema.
 //
@@ -17,9 +17,9 @@
 // made through the new code is never overwritten by the old row.
 //
 // REFERENCES. todos.needs names todos, so it is mapped after the whole table
-// is copied (`copy` chains the needs pass itself). rulings, blocks and
-// timeNotes name a todo: the copy maps it when the todo has been copied and
-// keeps the old id otherwise (the field takes either until the narrow).
+// is copied (`copy` chains the needs pass itself). A ruling's, block's or
+// time note's todo is copied as the id it is: those tables name dtsTodos
+// until todos move, and the todos move maps every reference at once.
 
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
@@ -80,32 +80,21 @@ async function copyOf(
 }
 
 /**
- * A todo id as anything outside the record spells it — a todos id, or the
- * dtsTodos id a row had before the rename (the box's files, a Slack thread,
- * the evidence). The one reader of legacyId for todos; null when neither
- * names a row.
+ * An id as anything outside the record spells it: an id of the renamed
+ * table, or the id its row had before the rename (the box's files, a Slack
+ * thread, a label's ref, the evidence). The one reader of legacyId; null when
+ * neither names a row.
  */
-export async function resolveTodoId(
+export async function resolveId<T extends NewTable>(
   ctx: QueryCtx | MutationCtx,
+  table: T,
   id: string,
-): Promise<Id<"todos"> | null> {
-  const direct = ctx.db.normalizeId("todos", id);
+): Promise<Id<T> | null> {
+  const direct = ctx.db.normalizeId(table, id);
   if (direct !== null) return (await ctx.db.get(direct)) === null ? null : direct;
-  if (ctx.db.normalizeId("dtsTodos", id) === null) return null;
-  const copied = await copyOf(ctx, "todos", id);
-  return copied === null ? null : (copied._id as Id<"todos">);
-}
-
-/** The todo reference a copied row carries: the new id once that todo is
- *  copied, else the old one (the field takes both until the narrow). */
-async function mapTodoRef(
-  ctx: MutationCtx,
-  id: unknown,
-): Promise<unknown> {
-  if (typeof id !== "string") return id;
-  if (ctx.db.normalizeId("dtsTodos", id) === null) return id;
-  const copied = await copyOf(ctx, "todos", id);
-  return copied === null ? id : copied._id;
+  if (ctx.db.normalizeId(RENAMED[table], id) === null) return null;
+  const copied = await copyOf(ctx, table, id);
+  return copied === null ? null : (copied._id as Id<T>);
 }
 
 /** The old row as the new table stores it: every field, references mapped,
@@ -118,9 +107,6 @@ async function fieldsFor(
   const { _id, _creationTime, ...fields } = row;
   const out: Record<string, unknown> = { ...fields, legacyId: String(_id) };
   if (table === "todos") delete out.needs;
-  if ((table === "rulings" || table === "blocks" || table === "timeNotes") && fields.todoId !== undefined) {
-    out.todoId = await mapTodoRef(ctx, fields.todoId);
-  }
   if (table === "timeNotes" && typeof fields.blockId === "string") {
     const block = await copyOf(ctx, "blocks", fields.blockId);
     if (block === null) throw new Error(`timeNotes: block ${fields.blockId} is not copied yet; copy blocks first`);

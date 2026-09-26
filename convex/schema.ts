@@ -1059,7 +1059,7 @@ export default defineSchema({
   blocks: defineTable({
     start: v.number(), // epoch ms
     end: v.number(), // epoch ms, > start
-    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))),
+    todoId: v.optional(v.id("dtsTodos")),
     category: v.optional(v.string()),
     note: v.optional(v.string()),
     createdAt: v.number(),
@@ -1107,7 +1107,7 @@ export default defineSchema({
   // convex/jarvis/tables.ts has copied it, and then goes.
   timeNotes: defineTable({
     text: v.string(),
-    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))),
+    todoId: v.optional(v.id("dtsTodos")),
     blockId: v.optional(v.id("blocks")),
     day: v.optional(v.string()), // "YYYY-MM-DD", New York calendar date
     status: v.union(
@@ -1210,7 +1210,7 @@ export default defineSchema({
       v.literal("code"),
       v.literal("batch"),
     ),
-    todoId: v.optional(v.union(v.id("todos"), v.id("dtsTodos"))), // life subjects
+    todoId: v.optional(v.id("dtsTodos")), // life subjects
     repo: v.optional(v.string()), // code subjects…
     externalId: v.optional(v.string()), // …(repo, externalId)
     // batch subjects (schema v2): a batch is its own row now, so Tom rules on

@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { resolveTodoId } from "./jarvis/tables";
+import { resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -74,7 +74,8 @@ describe("the copy into the plain-named tables", () => {
     expect(b.needs).toEqual([byLegacy.get(ids.a)!._id]);
     expect(byLegacy.get(ids.c)!.needs).toEqual([byLegacy.get(ids.a)!._id, b._id]);
     expect(rulings).toHaveLength(1);
-    expect(rulings[0]).toMatchObject({ legacyId: ids.r, todoId: b._id, verdict: "archive", ruledAt: 5 });
+    // The ruling names its todo as it did: rulings name dtsTodos until todos move.
+    expect(rulings[0]).toMatchObject({ legacyId: ids.r, todoId: ids.b, verdict: "archive", ruledAt: 5 });
     const counts = await t.action(internal.jarvis.tables.counts, {});
     expect(counts.todos).toEqual({ old: 3, new: 3, copied: 3, whole: true });
     expect(counts.rulings).toEqual({ old: 1, new: 1, copied: 1, whole: true });
@@ -97,17 +98,17 @@ describe("the copy into the plain-named tables", () => {
     expect(kept.statement).toBe("new code's edit");
   });
 
-  it("resolves a todo by its new id or the id it had before the rename", async () => {
+  it("resolves a row by its new id or the id it had before the rename", async () => {
     const t = convexTest({ schema, modules });
     const old = await t.run(async (ctx) => await ctx.db.insert("dtsTodos", todo("x", 1)));
     await copyAll(t, "todos");
     await t.run(async (ctx) => {
       const copied = (await ctx.db.query("todos").collect())[0];
-      expect(await resolveTodoId(ctx, old)).toBe(copied._id);
-      expect(await resolveTodoId(ctx, copied._id)).toBe(copied._id);
-      expect(await resolveTodoId(ctx, "not-an-id")).toBeNull();
+      expect(await resolveId(ctx, "todos", old)).toBe(copied._id);
+      expect(await resolveId(ctx, "todos", copied._id)).toBe(copied._id);
+      expect(await resolveId(ctx, "todos", "not-an-id")).toBeNull();
       const ruling = await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
-      expect(await resolveTodoId(ctx, ruling as unknown as Id<"todos">)).toBeNull();
+      expect(await resolveId(ctx, "todos", ruling as unknown as Id<"todos">)).toBeNull();
     });
   });
 });
