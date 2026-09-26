@@ -102,11 +102,25 @@ describe("POST /jarvis/digest", () => {
     expect(answer).toMatchObject({ due: true, since: MORNING - 3 * 3_600_000 });
   });
 
-  it("says why when the output channel is not set", async () => {
+  it("answers an error, not \"not due\", when the digest is due and the output channel is not set", async () => {
     const t = setup(MORNING);
     vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "");
     vi.stubEnv("SLACK_TTS_CHANNEL_ID", "");
-    expect(await (await post(t, "/jarvis/digest", {})).json()).toMatchObject({ due: false, reason: "SLACK_TTS_TODAY_CHANNEL_ID is not set" });
+    const res = await post(t, "/jarvis/digest", {});
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ reason: "no-channel", error: expect.stringContaining("SLACK_TTS_TODAY_CHANNEL_ID") });
+    // Nothing marked the day: the next run, once the channel is set, is due.
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", CHANNEL);
+    expect(await (await post(t, "/jarvis/digest", {})).json()).toMatchObject({ due: true, channel: CHANNEL });
+  });
+
+  it("still answers a plain \"not due\" before 5 a.m. with no channel set", async () => {
+    const t = setup(NIGHT);
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "");
+    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "");
+    const res = await post(t, "/jarvis/digest", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ due: false, reason: "before 5 a.m. New York" });
   });
 });
 

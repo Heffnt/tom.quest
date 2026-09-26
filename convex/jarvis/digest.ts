@@ -61,6 +61,9 @@ import {
  * after", not "in the 5 a.m. hour", so a box that was down at 5 sends late
  * rather than skipping the day. `now` is for a test.
  */
+/** The one answer that is not "not due" but "cannot": no output channel. */
+const NO_CHANNEL = "no-channel";
+
 type ComposeAnswer =
   | { due: false; day: string; reason: string }
   | {
@@ -88,9 +91,10 @@ export const compose = internalMutation({
     if (last.day === day) return { due: false, day, reason: `the digest for ${day} went out` };
     const channel = outputChannel();
     if (channel === null) {
-      // The box reports this as its job's failure; the silence alarm's
-      // missing-digest line is the one Tom sees.
-      return { due: false, day, reason: "SLACK_TTS_TODAY_CHANNEL_ID is not set" };
+      // NOT "not due": the digest is due and cannot be written anywhere. The
+      // route answers this as an error, so the box's run is a failure and
+      // not a quiet one (Jarvis worker/jobs/write-slack.mjs).
+      return { due: false, day, reason: NO_CHANNEL };
     }
     await ctx.runMutation(internal.ttsDigest.internalRollMissed, { day });
     const since = last.windowEnd ?? now - DAY_MS;
@@ -235,6 +239,12 @@ export const digestRoute = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);
   if (denied) return denied;
   const answer: ComposeAnswer = await ctx.runMutation(internal.jarvis.digest.compose, {});
+  if (!answer.due && answer.reason === NO_CHANNEL) {
+    return jsonResponse(503, {
+      error: "the digest is due and has no channel: SLACK_TTS_TODAY_CHANNEL_ID (or SLACK_TTS_CHANNEL_ID) is not set",
+      reason: NO_CHANNEL,
+    });
+  }
   return jsonResponse(200, { ok: true, ...answer });
 });
 
