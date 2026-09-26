@@ -1,10 +1,8 @@
 # vqc/verifiers.md — the three verifiers
 
-There are three verifiers in this repository. They are the merge gate's three
-head rows, and nothing else is one. For now the gate opens on the first two
-alone: the evals row is still read and reported, but by Tom's ruling of
-2026-09-24 it is not required for merging (`EVALS_REQUIRED_FOR_MERGE` in
-`convex/ttsMerge.ts`).
+There are three verifiers, and nothing else is one. The merge gate reads two
+head rows, the tests and the audit (`convex/ttsMerge.ts`); the wall evals gate
+through the tests row, since they run in the Jarvis repository's test suite.
 
 **checks** are every deterministic check: a program answering by string, count,
 schema or regex. Cheap, exact, narrow.
@@ -23,7 +21,7 @@ several trials, the ablation arm, efficiency, golden coverage.
 | verifies | anything answerable by string, count, schema or regex | a change, before it merges | an output, against Tom's labels |
 | cost | seconds of CI; no model | one Codex run per head (Opus at the cap, then OpenRouter at Claude's limit) | one eval run per watched change; the judge model |
 | known failure mode | a producer edits the check instead of the code | it approves what it did not read; it drifts soft | the judge disagrees with Tom; a flaky item |
-| rows | the `tests-run` head row, or the write it refused | the `audit-verdict` head row, with `chunks` and `traceFindings` | the `evals-run` head row, golden coverage inside it |
+| rows | the `tests-run` head row, or the write it refused | the `audit-verdict` head row, with `chunks` and `traceFindings` | one `eval-run` event per set, posted by the Jarvis box's runner |
 
 The rule is one sentence: a new deterministic check is a test, a new judgment of
 a change is part of the audit's prompt, and a new judgment of an output is a

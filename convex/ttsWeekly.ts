@@ -32,13 +32,12 @@ import {
   declinedIntegrations,
   isCredentialKey,
 } from "./ttsIntegrations";
-import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
+import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
 import { isModelOfTomPath, modelOfTomFilesWithLegacyFallback, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
-import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
-import { scoredNothing } from "../shared/evals-row.mjs";
+import { EVALS_RUN, PRELUDE_DELIVERY, scoredNothing } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
@@ -477,13 +476,13 @@ export function areaPageState(
 
 /**
  * The standing credential failure of one job, or null: its "job-failed" rows
- * read on by_kind_key over the job's own key prefix (`<job>:` — every keyed
- * condition the job ever reported, and no other job's), newest first within
- * each key, stopping at the first credential key whose newest failure has no
- * "job-recovered" at or after it. NO TAKE LIMIT, on purpose: a limit is a cap
- * in the gather, and a standing failure older than a cap's worth of other
- * rows would vanish behind it. The read is bounded by the job's own keyed
- * failures, which are one row per condition per occurrence (convex/ttsJobs.ts).
+ * in the record's events table, read on by_kind_subject_at over the job's own
+ * condition prefix (`<job>:` — every condition the job ever reported, and no
+ * other job's), newest first within each condition, stopping at the first
+ * credential condition whose newest failure has no "job-recovered" at or
+ * after it. NO TAKE LIMIT, on purpose: a limit is a cap in the gather, and a
+ * standing failure older than a cap's worth of other rows would vanish behind
+ * it. The read is bounded by the job's own failures (convex/jarvis/jobs.ts).
  */
 async function standingCredentialFailure(
   ctx: QueryCtx,
@@ -492,24 +491,25 @@ async function standingCredentialFailure(
   const prefix = `${job}:`;
   const seen = new Set<string>();
   for await (const f of ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) =>
-      q.eq("kind", JOB_FAILED).gte("key", prefix).lt("key", `${prefix}\uffff`),
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) =>
+      q.eq("kind", JOB_FAILED).gte("subject", prefix).lt("subject", `${prefix}\uffff`),
     )
     .order("desc")) {
-    // Descending on (key, at): the first row seen under a key is that key's
-    // newest failure, and the older ones under it say nothing more.
-    if (f.key === undefined || seen.has(f.key)) continue;
-    seen.add(f.key);
-    if (!isCredentialKey(f.key)) continue;
+    // Descending on (subject, at): the first row seen under a condition is
+    // its newest failure, and the older ones under it say nothing more.
+    const key = f.subject;
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
+    if (!isCredentialKey(key)) continue;
     const recovered = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_key", (q) => q.eq("kind", JOB_RECOVERED).eq("key", f.key))
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_RECOVERED).eq("subject", key))
       .order("desc")
       .first();
     if (recovered !== null && recovered.at >= f.at) continue;
     const d = (f.data ?? {}) as Record<string, unknown>;
-    return { key: f.key, at: f.at, error: str(d.error) ?? "" };
+    return { key, at: f.at, error: str(d.error) ?? "" };
   }
   return null;
 }
@@ -1020,7 +1020,12 @@ export async function gatherWeeklyFacts(
   // 12. Job failures by job.
   const byJob = new Map<string, WeeklyFacts["jobFailures"][number]>();
   for (const kind of FAILURE_KINDS) {
-    for (const e of await eventsOfKind(kind)) {
+    // A job's failures live in the record's events table (convex/jarvis/jobs.ts
+    // failuresInWindow: the reports, not a standing condition's repeats); the
+    // other failure kinds still in dtsEvents.
+    const rows =
+      kind === JOB_FAILED ? (await failuresInWindow(ctx, since, until)).failed : await eventsOfKind(kind);
+    for (const e of rows) {
       const d = (e.data ?? {}) as Record<string, unknown>;
       const job =
         kind === JOB_FAILED

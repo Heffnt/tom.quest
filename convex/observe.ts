@@ -1,7 +1,8 @@
-// THE OBSERVATION SURFACE'S READS. One window of time, four sources, and
-// nothing derived here that the page can derive from what comes back: the map's
-// node counts are counts of these rows, so a second count computed on the
-// server would be a number the page could contradict.
+// THE /agents WINDOW VIEW'S READS (the observation page until night/w4,
+// 2026-09-26, when /agents absorbed /observe). One window of time, four
+// sources, and nothing derived here that the page can derive from what comes
+// back: the map's node counts are counts of these rows, so a second count
+// computed on the server would be a number the page could contradict.
 //
 // PAGED, NOT COLLECTED. The window moves back through all history — a month of
 // runs and a month of events are both unbounded reads — so runs and events come
@@ -9,6 +10,14 @@
 // window is exhausted or its own cap stops it. Rulings are the exception and
 // are taken whole under a cap: the table is append-only at Tom's pace and a
 // month of it is tens of rows.
+//
+// TWO HOMES FOR POINT EVENTS, ONE RULE FOR WHICH. A kind in
+// shared/jarvis-events.mjs EVENT_KINDS is posted to POST /jarvis/event and
+// lives in the record's `events` table (recordInWindow); every other kind
+// still lives in dtsEvents (eventsInWindow), whose copies in `events`
+// (copyFromDts) are not read. As an area adds its kinds to that list and
+// moves its writer, the page follows with no edit here, and eventsInWindow
+// goes when the list holds every kind the page draws.
 //
 // The gate is `requireTom`: every row here is a run's content, a merge, a
 // failure or a ruling, and the `agent` account reads none of it
@@ -32,9 +41,13 @@ import {
 } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
 import { BOX_CHANGE, DEPLOY, boxChangeOf, redactedBoxChange } from "./boxChanges";
+import { EVENT_KINDS } from "../shared/jarvis-events.mjs";
 
 /** The label every gate in this module names, so a denial says which surface. */
-const SURFACE = "Observe";
+const SURFACE = "Agents";
+
+/** The kinds whose home is the record's events table (see the header). */
+const RECORD_KINDS: ReadonlySet<string> = new Set(EVENT_KINDS);
 
 /** The widest window the page offers, in milliseconds: one month, plus the
  *  slack a 31-day month needs. A wider one is more pages, not a different
@@ -79,8 +92,8 @@ const PAGE_OPENED_KIND = "tts-opened";
  *  rulings: it is his decision too, made by pressing "sign and send". */
 const SENT_AS_TOM_KIND = "sent-as-tom";
 
-/** The three head rows the merge gate reads for one commit
- *  (convex/ttsMerge.ts). */
+/** The head rows the merge gate reads for one commit (convex/ttsMerge.ts),
+ *  and the historic evals-run rows it no longer reads, still counted, not drawn. */
 export const GATE_KINDS = ["tests-run", "audit-verdict", "evals-run"] as const;
 
 /** True for the event rows the failures lane draws: the one spelling of the
@@ -281,13 +294,52 @@ export const eventsInWindow = query({
     return {
       ...page,
       page: page.page
-        .filter((event) => wanted(event.kind))
+        .filter((event) => wanted(event.kind) && !RECORD_KINDS.has(event.kind))
         .map((event) => ({
           id: event._id as string,
           at: event.at,
           kind: event.kind,
           key: event.key ?? null,
           todoId: (event.todoId ?? null) as string | null,
+          agentId: null as string | null,
+          data: COUNTED_NOT_DRAWN.has(event.kind) ? null : drawnFields(event.data),
+        })),
+    };
+  },
+});
+
+/**
+ * The same point events from the record's `events` table: the kinds whose
+ * home it is (shared/jarvis-events.mjs EVENT_KINDS), oldest first, in the
+ * shape eventsInWindow answers, plus the agent a row names. A box change's
+ * `at` is when it happened on the box; a job report's `key` is the condition
+ * it names.
+ */
+export const recordInWindow = query({
+  args: {
+    from: v.number(),
+    to: v.number(),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, { from, to, paginationOpts }) => {
+    await requireTom(ctx, SURFACE);
+    assertWindow(from, to);
+    const page = await ctx.db
+      .query("events")
+      .withIndex("by_at", (q) => q.gte("at", from).lt("at", to))
+      .order("asc")
+      .paginate(paginationOpts);
+    return {
+      ...page,
+      page: page.page
+        .filter((event) => wanted(event.kind) && RECORD_KINDS.has(event.kind))
+        .map((event) => ({
+          id: event._id as string,
+          at: event.at,
+          kind: event.kind,
+          key: event.subject ?? null,
+          todoId: null as string | null,
+          agentId: event.provenance.agentId ?? null,
           data: COUNTED_NOT_DRAWN.has(event.kind)
             ? null
             : event.kind === BOX_CHANGE
@@ -443,7 +495,7 @@ export const waitingOnTom = query({
 /**
  * What the merge gate says about each commit the changes list draws.
  *
- * THE GATE'S OWN ANSWER, not a second reading of its three head rows:
+ * THE GATE'S OWN ANSWER, not a second reading of its head rows:
  * convex/ttsMerge.ts mergeGateFor is what decided whether each of these merges
  * was allowed, and a page that recomputed "green" from the rows would be a
  * second definition of green that one edit could make disagree with the one
@@ -454,7 +506,7 @@ export const gateRows = query({
   handler: async (ctx, { commits }) => {
     await requireTom(ctx, SURFACE);
     // Forty is what the changes list draws; the sixty is the room above it,
-    // and it is here because each commit costs three indexed reads and the
+    // and it is here because each commit costs a few indexed reads and the
     // argument comes from the browser. Without it one call could ask for a
     // year of commits and the read would be the page's whole cost.
     if (commits.length > 60) throw new Error("gateRows takes at most 60 commits");
@@ -503,7 +555,7 @@ export const gateRows = query({
 
 /**
  * Every open pull request of the approvable repositories, newest first, each
- * with the gate's three rows as they stand, the ruling it carries and what
+ * with the gate's rows as they stand, the ruling it carries and what
  * the last landing attempt said.
  *
  * Read off the mirror convex/observeMerge.ts keeps, because a query cannot ask

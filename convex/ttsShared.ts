@@ -47,12 +47,11 @@ export const WORKER_CONTRACT =
 /**
  * ONE COMMIT KEY, and one home for it.
  *
- * `<repo>@<sha>` indexes the eval rows for a commit, and two spellings of it
- * index two different sets of rows. It used to live in convex/ttsMerge.ts,
- * where convex/ttsEvals.ts could not import it without making the two modules
- * a cycle — ttsMerge.ts imports EVALS_RUN from ttsEvals.ts — so ttsEvals.ts
- * wrote the template inline at three sites instead. Both modules already import
- * this one, so this is where it can be read from without a cycle.
+ * `<repo>@<sha>` indexes the merge gate's rows for a commit, and two spellings
+ * of it index two different sets of rows. It used to live in
+ * convex/ttsMerge.ts, where convex/ttsEvals.ts could not import it without a
+ * cycle, so ttsEvals.ts wrote the template inline instead; this module is the
+ * one home both could read.
  *
  * `mergeKey` travels with it because it is the same identity in the merge
  * event's older spelling, and splitting a pair like that across two files is
@@ -910,20 +909,6 @@ export const SESSION_MODEL_NAMES = Object.keys(
 /** The strongest Codex model Tom has access to — the default for new
  * sessions and the fleet default's starting value. */
 export const DEFAULT_SESSION_MODEL: SessionModel = "gpt-5.6-sol";
-/** Where the fleet lands when Codex's weekly cap is hit and the todo named
- * no model of its own. */
-export const CODEX_FALLBACK_MODEL: SessionModel = "opus";
-export const CODEX_WEEKLY_CAP_PERCENT = 90;
-/**
- * How long a Codex usage reading stays believable. The daemon re-reads the
- * Codex CLI every few minutes and keeps sending its LAST SUCCESSFUL reading —
- * with that reading's original readAt — when a later read fails, so the age of
- * readAt is the whole staleness signal. Past this window the scheduler treats
- * the reading as UNKNOWN, exactly as if it were absent, and unknown ADMITS: a
- * CLI that stopped answering must not leave a months-old "90%" holding the
- * Codex door shut forever.
- */
-export const CODEX_USAGE_STALE_MS = 15 * 60_000;
 /**
  * Whether Fable answers on the box, as the session daemon reports it on its
  * heartbeat from worker/agents/models.mjs's availability file. While
@@ -1110,33 +1095,8 @@ export const SLACK_SUBJECT = v.union(
   // two above do; a reply in either thread is an answer to that runner's
   // newest open question.
   v.object({ kind: v.literal("runner"), id: v.id("runners") }),
-  // AN ELEVATION the orchestrator judged reserved (convex/orchestrator.ts):
-  // its #tts-needs-you thread. Tom's reply there is the answer, delivered into
-  // the worker that asked.
-  v.object({ kind: v.literal("elevation"), id: v.id("elevations") }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
-
-// ── The orchestrator (Tom, 2026-09-21) ───────────────────────────────────────
-// The three kinds of decision an agent meets. Obvious: one side is clearly
-// better, and the agent makes it and says so in one sentence. Trade-off: a
-// good reason either way; the delegate rules on it, shown no recommendation.
-// Reserved: only Tom decides (the four things the Never list keeps his), and
-// he is asked with a recommendation.
-export const DECISION_KIND = v.union(
-  v.literal("obvious"),
-  v.literal("trade-off"),
-  v.literal("reserved"),
-);
-export type DecisionKind = Infer<typeof DECISION_KIND>;
-/**
- * How many hosted workers may be live at once. Its own number, not the box
- * launcher's two slots: those bound the command line's runs, which each hold
- * a CPU-heavy CLI for their whole life, while a hosted worker spends most of
- * its life idle, waiting on an answer. Four is Tom's default in the brief of
- * 2026-09-21; the box's Codex usage, not its CPU, is what four spends.
- */
-export const HOSTED_WORKERS_MAX = 4;
 
 /** The lookup key of a Slack THREAD: the channel and the thread root's ts —
  * a message's own ts when it is a root, its thread_ts when it is a reply.

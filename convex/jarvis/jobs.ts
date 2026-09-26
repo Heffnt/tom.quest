@@ -14,13 +14,13 @@
 // Tom mints a new one, which is days. So a `job-failed` names the CONDITION
 // it is about in `subject` (`poll-canvas:canvas-auth`, not the run), and a
 // condition already reported and not since recovered gets no second Slack
-// line and no second digest row: the events row records that the job said it
-// again (every accepted post is one row), the dtsEvents row and the line are
-// written once. THE STANDING CHECK STILL READS dtsEvents tonight: the digest
-// (convex/ttsDigest.ts), the hourly update (convex/ttsHourly.ts) and
-// #tts-broken read failures there, and the Slack/digest stream moves those
-// readers and this check to `events` together (an index by kind, subject, at),
-// after which dtsEvents' job-failed and job-recovered rows go.
+// line: every accepted post is one row (the job said it again), and a row
+// posted while its condition stands carries `data.standingSince`, the time of
+// the report it repeats, so a reader of reports (the digest) reads the rows
+// without it. The standing check, the recovery and the rows are all `events`
+// (night/w4, 2026-09-26; before, a second home in dtsEvents): a condition is
+// standing when a job-failed under its subject is newer than its newest
+// job-recovered, one read each on events.by_kind_subject_at.
 //
 // THE SILENCE ALARM (plan-root T3). Guarantee G4 says every change to the box
 // is in the record within minutes. A reader that has stopped says nothing, so
@@ -33,40 +33,52 @@
 // cannot fire before the job is deployed.
 
 import { internal } from "../_generated/api";
-import type { Doc } from "../_generated/dataModel";
-import type { MutationCtx } from "../_generated/server";
-import { logEvent } from "../tts";
+import type { Doc, Id } from "../_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { redactSecrets } from "../../shared/redact.mjs";
 import { insertEvent } from "./record";
 
-/** The kind the digest and the hourly update read as a job failure. */
+/** The kind the digest reads as a job failure. */
 export const JOB_FAILED = "job-failed";
 /** The kind that closes one, written when the job next runs clean. */
 export const JOB_RECOVERED = "job-recovered";
 /** The kind a clean run writes: the heartbeat the silence alarm reads. */
 export const JOB_OK = "job-ok";
 
-/** The newest dtsEvents row of one kind under one key. */
-async function newest(ctx: MutationCtx, kind: string, key: string): Promise<Doc<"dtsEvents"> | null> {
-  return await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", kind).eq("key", key))
+/** Where a failure is read in time: the /agents page's window view. */
+const AGENTS_WINDOW_URL = "https://tom.quest/agents?view=window";
+
+/**
+ * The report standing under this condition: the first job-failed under the
+ * subject after its newest job-recovered, or null when it has recovered since
+ * (or never failed). `except` is the row being hooked, which is not its own
+ * standing report.
+ */
+async function standingFailure(
+  ctx: MutationCtx,
+  subject: string,
+  except?: Id<"events">,
+): Promise<Doc<"events"> | null> {
+  const recovered = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_RECOVERED).eq("subject", subject))
     .order("desc")
     .first();
-}
-
-/** The failure standing under this key: reported, and not recovered since. */
-async function standingFailure(ctx: MutationCtx, key: string): Promise<Doc<"dtsEvents"> | null> {
-  const failed = await newest(ctx, JOB_FAILED, key);
-  if (failed === null) return null;
-  const recovered = await newest(ctx, JOB_RECOVERED, key);
-  return recovered !== null && recovered.at >= failed.at ? null : failed;
+  const after = recovered?.at ?? -1;
+  const failed = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_FAILED).eq("subject", subject).gt("at", after))
+    .order("asc")
+    .take(2);
+  return failed.find((row) => row._id !== except) ?? null;
 }
 
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
 /**
- * The job-failed hook: the digest row and the #tts-broken line, once per
- * standing condition. Returns whether this call was the first report.
+ * The job-failed hook: the #tts-broken line, once per standing condition. A
+ * post under a condition already standing is marked with the time of the
+ * report it repeats. Returns whether this call was the first report.
  */
 export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise<{ reported: boolean; since?: number }> {
   const data = (row.data ?? {}) as Record<string, unknown>;
@@ -74,15 +86,52 @@ export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise
   const error = str(data.error) ?? row.text ?? "";
   const key = row.subject;
   if (key !== undefined) {
-    const standing = await standingFailure(ctx, key);
+    const standing = await standingFailure(ctx, key, row._id);
     // Already said, and still true. Saying it again adds no fact.
-    if (standing !== null) return { reported: false, since: standing.at };
+    if (standing !== null) {
+      await ctx.db.patch(row._id, { data: { ...data, standingSince: standing.at } });
+      return { reported: false, since: standing.at };
+    }
   }
-  // Through the previous generation's event writer, which also schedules the
-  // #tts-broken line. A suppressed report returned above, so it posts nothing.
-  await logEvent(ctx, JOB_FAILED, undefined, { job, error }, key);
+  // Scheduled, not awaited: the post is network I/O and this is a mutation;
+  // it rides the transaction, so a rolled-back failure is never reported.
+  // THE RAW `error` IS A JOB'S OWN STDERR (git names its remote with the
+  // token in it), so it passes redactSecrets, the one choke point, first.
+  await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+    job,
+    statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
+    ...(error === "" ? {} : { detail: redactSecrets(error) }),
+    url: AGENTS_WINDOW_URL,
+  });
   return { reported: true };
 }
+
+/**
+ * The window's reported failures and recoveries, oldest first: every
+ * job-failed that opened a condition (not a repeat of a standing one) and
+ * every job-recovered that closed one. The digest's read of failures; the
+ * Slack stream switches it to this.
+ */
+export async function failuresInWindow(
+  ctx: QueryCtx,
+  from: number,
+  to: number,
+): Promise<{ failed: Doc<"events">[]; recovered: Doc<"events">[] }> {
+  const read = async (kind: string) =>
+    await ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", from).lt("at", to))
+      .order("asc")
+      .take(WINDOW_MAX);
+  const failed = (await read(JOB_FAILED)).filter(
+    (row) => (row.data as Record<string, unknown> | undefined)?.standingSince === undefined,
+  );
+  return { failed, recovered: await read(JOB_RECOVERED) };
+}
+
+/** The most rows of one kind a window reads: a failing job posts every tick,
+ *  and a day of a two-minute job's repeats is 720 rows. */
+const WINDOW_MAX = 4000;
 
 /**
  * The job-ok hook: the row that just landed becomes the job's ONE job-ok row,
@@ -116,9 +165,8 @@ export async function onJobOk(ctx: MutationCtx, row: Doc<"events">): Promise<{ r
   return { recovered: true, since: standing.at };
 }
 
-/** The recovery, in both homes (see the header). */
+/** The recovery row, which re-arms the condition's report. */
 async function recover(ctx: MutationCtx, job: string, key: string, since: number, at: number): Promise<void> {
-  await ctx.db.insert("dtsEvents", { at, kind: JOB_RECOVERED, key, data: { job, key, since } });
   await insertEvent(ctx, { kind: JOB_RECOVERED, at, provenance: { job }, subject: key, data: { job, key, since } });
 }
 
@@ -168,14 +216,14 @@ export async function checkSilence(ctx: MutationCtx): Promise<{ silent: string[]
       silent.push(job);
       if (standing !== null) continue;
       const error = `The ${job} job has not run clean for ${minutesWord(quiet)} (it runs every ${minutesWord(everyMs)}), so ${feeds} after that are not reaching the record.`;
-      // The rows directly, not logEvent: its #tts-broken line is the one
-      // below, in the alarm's own words, and logEvent would post a second.
-      await ctx.db.insert("dtsEvents", { at: now, kind: JOB_FAILED, key, data: { job, error } });
+      // The row directly, not recordEvent: the #tts-broken line is the one
+      // below, in the alarm's own words, and the job-failed hook would post a
+      // second.
       await insertEvent(ctx, { kind: JOB_FAILED, at: now, provenance: { job }, subject: key, data: { job, error }, text: error });
       await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
         job: key,
         statement: error,
-        url: "https://tom.quest/observe",
+        url: AGENTS_WINDOW_URL,
       });
       continue;
     }

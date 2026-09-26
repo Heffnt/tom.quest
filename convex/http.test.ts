@@ -20,6 +20,16 @@ async function events(t: ReturnType<typeof convexTest>, kind: string) {
   );
 }
 
+/** A job's failure reports: events rows of kind job-failed that are not a
+ *  standing condition's repeat (convex/jarvis/jobs.ts). */
+async function jobReports(t: ReturnType<typeof convexTest>) {
+  return await t.run(async (ctx) =>
+    (await ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "job-failed")).collect()).filter(
+      (row) => (row.data as { standingSince?: number }).standingSince === undefined,
+    ),
+  );
+}
+
 async function aTodo(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
     ctx.db.insert("dtsTodos", {
@@ -120,11 +130,11 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
     const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
     expect(JSON.stringify(rows)).not.toContain(TTS_TODAY);
 
-    // And the drop is not silent: one job-failed row, the kind the digest and
-    // the hourly update carry to #tts-broken.
-    const failed = await events(t, "job-failed");
+    // And the drop is not silent: one job-failed report in the record's
+    // events table (convex/jarvis/jobs.ts), which carries it to #tts-broken.
+    const failed = await jobReports(t);
     expect(failed).toHaveLength(1);
-    expect(failed[0].key).toBe("tts/needs-tom:needs-you-channel");
+    expect(failed[0].subject).toBe("tts/needs-tom:needs-you-channel");
     expect(failed[0].data).toMatchObject({ job: "tts/needs-tom" });
     expect(String((failed[0].data as { error: string }).error)).toContain(
       "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
@@ -139,7 +149,7 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
     const t = convexTest(schema, modules);
     const id = await aTodo(t);
     for (let i = 0; i < 3; i += 1) await open(t, id);
-    expect(await events(t, "job-failed")).toHaveLength(1);
+    expect(await jobReports(t)).toHaveLength(1);
   });
 });
 
@@ -803,24 +813,6 @@ describe("the agent doors read the agent spelling only", () => {
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBe("claude:box:spelling-session");
   });
 
-  it("/tts/code-briefs stores agentToken and refuses runToken", async () => {
-    const token = "11111111-2222-4333-8444-555555555555";
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest(schema, modules);
-    const briefsPost = (field: string) => t.fetch("/tts/code-briefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-      body: JSON.stringify({
-        briefs: [{ repo: "tom.quest", externalId: "spelling", sourceHash: "h", brief: "Rename the page.", recommendation: "approve", execClass: "box" }],
-        [field]: token,
-      }),
-    });
-    await refusedAs(await briefsPost("runToken"), "runToken", "agentToken");
-    expect(await stored(t, "dtsCodeBriefs")).toEqual([]);
-    expect((await briefsPost("agentToken")).status).toBe(200);
-    expect((await stored(t, "dtsCodeBriefs")).map((row) => row.producedByRunToken)).toEqual([token]);
-  });
-
   it("/tts/simplify-input answers agents, each sample's agentId, and .agents alone on tools, hooks and cwds", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = await withRoot();
@@ -997,68 +989,6 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
     expect(await labels(t)).toEqual([]);
   });
 
-  // ── The two reads the exporter and the harness run on ──────────────────────
-  describe("GET /tts/label-input and /tts/run-by-token", () => {
-    const key = { "X-TTS-Key": "s3cret" };
-
-    it("builds an item from the label, the run and the rows the judgment covers", async () => {
-      reactionEnv();
-      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-      const t = convexTest(schema, modules);
-      await aMorning(t);
-      await react(t);
-      const res = await t.fetch("/tts/label-input", { headers: key });
-      expect(res.status).toBe(200);
-      const { items } = (await res.json()) as { items: { rows: { contextRow: unknown; spanRows: unknown[] } }[] };
-      expect(items).toHaveLength(1);
-      expect(items[0]).toMatchObject({
-        source: "digest-reaction",
-        polarity: "good",
-        run: { runId: RUN_ID, kind: "job", model: "claude-fable" },
-        link: { subjectKey: "digest:2026-09-11" },
-      });
-      expect(items[0].rows.contextRow).toMatchObject({ seq: 0, kind: "context" });
-      expect(items[0].rows.spanRows).toMatchObject([{ seq: 4, kind: "assistant-text" }]);
-    });
-
-    // The 30-day window is the store's, not the corpus's: a label outlives the
-    // run it names, and the exporter counts what it cannot build rather than
-    // fetching an evicted run back through a second reader.
-    it("returns a null run for a label whose run has been evicted", async () => {
-      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-      const t = convexTest(schema, modules);
-      await t.run(async (ctx) => {
-        await ctx.db.insert("runLabels", {
-          runId: "claude:box:evicted-run", source: "digest-reaction", actor: "tom",
-          polarity: "good", meaning: "Tom reacted with +1 to the morning digest", judgment: true,
-          ref: `reaction:${TTS_TODAY}:${DIGEST_TS}:+1`, at: 1_757_000_100_000,
-        });
-      });
-      const { items } = (await (await t.fetch("/tts/label-input", { headers: key })).json()) as
-        { items: Record<string, unknown>[] };
-      expect(items).toMatchObject([{ run: null, rows: { contextRow: null, spanRows: [] } }]);
-    });
-
-    it("answers a run by its token, null for one not swept yet, 400 for a non-token", async () => {
-      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-      const t = convexTest(schema, modules);
-      await aMorning(t);
-      const found = await t.fetch(`/tts/run-by-token?token=${TOKEN}`, { headers: key });
-      expect(found.status).toBe(200);
-      expect(await found.json()).toMatchObject({
-        runId: RUN_ID,
-        outcome: { turns: 1, totals: { totalTokens: 100 } },
-      });
-      const missing = await t.fetch(
-        "/tts/run-by-token?token=00000000-0000-4000-8000-000000000000",
-        { headers: key },
-      );
-      expect(missing.status).toBe(200);
-      expect(await missing.json()).toBeNull();
-      expect((await t.fetch("/tts/run-by-token?token=not-a-uuid", { headers: key })).status).toBe(400);
-      expect((await t.fetch("/tts/run-by-token", { headers: key })).status).toBe(400);
-    });
-  });
   // The two findings the Friday evals run makes without Tom reach
   // #tts-decisions through the door the job already posts to, so "revert" in
   // the thread is wired and the morning's objection list picks it up.
@@ -1125,49 +1055,5 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       });
       expect(res.status).toBe(401);
     });
-  });
-});
-
-// ── POST /tts/evals-request takes either key ─────────────────────────────────
-// CI posts with the narrow evals key. The box checks Heffnt/Jarvis's pull
-// requests itself, with no GitHub Actions, and posts with the worker key it
-// already holds, so the route takes that key the way POST /tts/tests does.
-describe("POST /tts/evals-request: either key", () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  const REQUEST = { repo: "Jarvis", sha: "abc1234", paths: ["jobs/evals.mjs"] };
-  function fresh() {
-    vi.stubEnv("TTS_WORKER_KEY", "worker-s3cret");
-    vi.stubEnv("EVALS_KEY", "evals-s3cret");
-    return convexTest(schema, modules);
-  }
-  const post = (t: ReturnType<typeof convexTest>, headers: Record<string, string>) =>
-    t.fetch("/tts/evals-request", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(REQUEST),
-    });
-
-  it("accepts the worker key and records the request", async () => {
-    const t = fresh();
-    const res = await post(t, { "X-TTS-Key": "worker-s3cret" });
-    expect(res.status).toBe(200);
-    const rows = await events(t, "evals-request");
-    expect(rows).toHaveLength(1);
-    expect(rows[0].data).toMatchObject({ repo: "Jarvis", sha: "abc1234" });
-  });
-
-  it("still accepts the evals key", async () => {
-    const t = fresh();
-    const res = await post(t, { "X-Evals-Key": "evals-s3cret" });
-    expect(res.status).toBe(200);
-    expect(await events(t, "evals-request")).toHaveLength(1);
-  });
-
-  it("refuses a request with neither key, or a wrong worker key, and records nothing", async () => {
-    const t = fresh();
-    expect((await post(t, {})).status).toBe(401);
-    expect((await post(t, { "X-TTS-Key": "evals-s3cret" })).status).toBe(401);
-    expect(await events(t, "evals-request")).toEqual([]);
   });
 });

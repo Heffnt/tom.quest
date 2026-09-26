@@ -8,7 +8,6 @@
     "./checkin-rules.mjs": "./checkin-rules.mjs",
     "./clip.mjs": "./clip.mjs",
     "./context-relevance.mjs": "./context-relevance.mjs",
-    "./evals-row.mjs": "./evals-row.mjs",
     "./graph-hash.mjs": "./graph-hash.mjs",
     "./graph.mjs": "./graph.mjs",
     "./jarvis-events.mjs": "./jarvis-events.mjs",

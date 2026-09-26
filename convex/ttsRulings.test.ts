@@ -84,6 +84,26 @@ async function withTom(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({ subject: tomId });
 }
 
+// Stores briefs the way the retired brief pass's pen did (an upsert by
+// repo and externalId, stamped preparedAt), for the tests below that need a
+// briefed code todo. The pen went on 2026-09-26; the 31 stored rows remain.
+async function storeBriefs(
+  t: ReturnType<typeof testDb>,
+  { briefs }: { briefs: ReturnType<typeof brief>[] },
+) {
+  await t.run(async (ctx) => {
+    for (const row of briefs) {
+      const existing = await ctx.db
+        .query("dtsCodeBriefs")
+        .withIndex("by_repo_external", (q) => q.eq("repo", row.repo).eq("externalId", row.externalId))
+        .first();
+      const stored = { ...row, preparedAt: Date.now() };
+      if (existing) await ctx.db.patch(existing._id, stored);
+      else await ctx.db.insert("dtsCodeBriefs", stored);
+    }
+  });
+}
+
 const brief = (over: Partial<{
   repo: string;
   externalId: string;
@@ -483,7 +503,7 @@ describe("TTS unified rulings", () => {
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cycle" })],
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -499,7 +519,7 @@ describe("TTS unified rulings", () => {
     ).toBe(0);
     // The worker re-briefs after applying the revise — the fresh brief's
     // preparedAt is newer than the ruling, so the item awaits a fresh ruling.
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cycle", sourceHash: "hash-b" })],
     });
     await setTimes(t, { preparedAt: 3000, ruledAt: 2000 });
@@ -515,7 +535,7 @@ describe("TTS unified rulings", () => {
   it("a ruling and a re-brief in the SAME millisecond keep the item on the pile", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "tie" })],
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -524,7 +544,7 @@ describe("TTS unified rulings", () => {
       verdict: "revise",
       sentence: "narrower scope",
     });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "tie", sourceHash: "hash-b" })],
     });
     // Both stamps are whole-millisecond Date.now() values written by two
@@ -651,7 +671,7 @@ describe("TTS unified rulings", () => {
   it("awaiting-ruling count covers briefed code items with no ruling at all", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [
         brief({ externalId: "ruled" }),
         brief({ externalId: "unruled-1" }),
@@ -1045,7 +1065,7 @@ describe("a ruling from Tom's words", () => {
         { externalId: "cmt-002", tier: "R", status: "open", statement: "s2", url: "u" },
       ],
     });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cmt-001" })],
     });
     const body = {
@@ -1173,7 +1193,7 @@ describe("a ruling from Tom's words", () => {
         { externalId: "cmt-001", tier: "R", status: "open", statement: "s1", url: "u" },
       ],
     });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cmt-001" }), brief({ externalId: "cmt-999" })],
     });
     const body = {

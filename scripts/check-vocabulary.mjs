@@ -248,11 +248,10 @@ if (block !== null) {
 }
 
 // REMOVAL CHECK for 5: cannot remove. The key is what the merge gate joins its
-// three rows on, so a second spelling does not fail — it silently reads a
+// two rows on, so a second spelling does not fail — it silently reads a
 // DIFFERENT row, and the gate then allows or refuses a merge on another
 // commit's checks. `commitKey` having one home is the fix; this is what keeps
-// the second spelling from coming back, and the cycle that caused it once
-// (ttsMerge imports EVALS_RUN from ttsEvals) is still there.
+// the second spelling from coming back.
 //
 // 5. The evals commit key has one home. An inline `${repo}@${sha}` template is a
 //    second spelling of the key rows are stored under, and a row written under

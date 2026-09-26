@@ -112,8 +112,7 @@ export function decideMode(changed, { base = null } = {}) {
  * answers there, but a mode chosen from a different file list than the one
  * vitest runs on is a mismatch that says nothing when it happens.
  *
- * THREE DOTS on the committed half, for the reason `git diff BASE...HEAD` is
- * spelled that way in scripts/evals-check.mjs: the diff against the MERGE BASE
+ * THREE DOTS on the committed half: the diff against the MERGE BASE
  * is what a pull request proposes, and two dots would call every file main
  * moved on since the branch opened a change of this branch's.
  */

@@ -38,11 +38,10 @@ import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 //            moment Tom opens an interactive session on the todo
 //            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
 //   code   — the repo is the system of record, so the effect is work in the
-//            repo: approve and archive are admitted by the auto-session
-//            scheduler as WORKER MISSIONS (claudeSessions.internalAutoSchedule
-//            — implement the plan into a pull request on a session/<id>
-//            branch, or close the entry in the repo's todo file the same
-//            way), and the ruling applies at admission with the session id;
+//            repo: approve and archive were admitted by the auto-session
+//            scheduler as worker missions until it was deleted (2026-09-26);
+//            the box's work-queue job is their consumer now, and until it
+//            takes them they stay pending on the feed;
 //            revise was consumed by the planner's brief pass, which is
 //            retired with ComplexMultiTrigger's registry (ruling 70) — a code
 //            ruling needs a brief and nothing writes one now; session applies
@@ -88,21 +87,19 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code and elevation keys disjoint, and a
+// spaces; the type prefix keeps life and code keys disjoint, and a
 // stored batch row — the schema declares one until the narrow — apart from
-// all three). Client code derives live rulings with the same rule via
+// both). Client code derives live rulings with the same rule via
 // app/tts/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch" | "elevation";
+  subjectType: "life" | "code" | "batch";
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
-  elevationId?: string;
 }) => {
   if (row.subjectType === "life") return `life ${row.todoId}`;
   if (row.subjectType === "batch") return `batch ${row.batchId}`;
-  if (row.subjectType === "elevation") return `elevation ${row.elevationId}`;
   return `code ${row.repo} ${row.externalId}`;
 };
 
@@ -114,11 +111,7 @@ export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    // An elevation's answer is about a worker's question, not a todo, batch
-    // or code entry the page shows, so the page is not sent it.
-    return (await ctx.db.query("dtsRulings").collect()).filter(
-      (r): r is typeof r & { subjectType: "life" | "code" | "batch" } => r.subjectType !== "elevation",
-    );
+    return await ctx.db.query("dtsRulings").collect();
   },
 });
 
@@ -231,9 +224,9 @@ export async function insertRuling(
     if (isCode && isChangeSubject(externalId!)) {
       // A RULING ON A CHANGE (a pull request or a merged commit, not a code
       // todo) is applied the moment it is written, because nothing else can
-      // ever apply it: the auto-session scheduler would read an unapplied
-      // approve as a worker mission and refuse it as "not open in the mirror",
-      // and the brief pass would wait forever on a revise. What an approve
+      // ever apply it: a consumer of the pending feed would read an unapplied
+      // approve as a code todo's, and the brief pass would wait forever on a
+      // revise. What an approve
       // sets in motion is read off this row by convex/observeMerge.ts, which
       // lands the change once its gate is green; a later ruling on the same
       // subject is newer and so withdraws it.
@@ -757,8 +750,7 @@ export async function markCodeSessionRulingsApplied(
 // (a newer ruling on the same subject makes the older one dead history). Every
 // subject type rides the same feed — the planner filters by kind (a life
 // revise → its prepare pass) and consumes only what it served. Code approve and archive
-// rulings ride it too, but their consumer is the auto-session scheduler in
-// Convex, not a box job.
+// rulings ride it too, for the box's work-queue job.
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {
@@ -829,13 +821,11 @@ export function briefAwaitsRuling(
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    // The planner reads these as Tom's recent rulings on its todos. An answer to a worker's elevation is about neither, and a
-    // delegate's answer is not his, so none is sent; left out before the cap.
+    // The planner reads these as Tom's recent rulings on its todos.
     return await ctx.db
       .query("dtsRulings")
       .withIndex("by_ruled")
       .order("desc")
-      .filter((q) => q.neq(q.field("subjectType"), "elevation"))
       .take(Math.min(limit ?? 200, 1000));
   },
 });

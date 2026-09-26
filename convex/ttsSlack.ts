@@ -30,7 +30,6 @@ import {
   type RunnerAskFacts,
 } from "./ttsCompose";
 import { recordRunnerReply, agentLink } from "./ttsRunners";
-import { onElevationThreadFailed, recordElevationReply } from "./orchestrator";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
@@ -135,9 +134,6 @@ export const internalRecordSlackFailed = internalMutation({
       subject.kind === "todo" ? subject.id : undefined,
       { channel, threadTs, subject, error, text, attempts, windowEnd },
     );
-    // A reserved elevation whose thread never posted is not waiting on Tom:
-    // it goes back to the orchestrator to put to him again.
-    if (subject.kind === "elevation") await onElevationThreadFailed(ctx, subject.id, error);
   },
 });
 
@@ -488,7 +484,6 @@ export type ThreadReplyOutcome =
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
   | { outcome: "runner-reply"; runnerId: Id<"runners"> }
-  | { outcome: "elevation-answer" | "elevation-note"; elevationId: Id<"elevations"> }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -563,9 +558,6 @@ export async function slackThreadReplyFrom(
       capturedAs: outcome.todoId,
     });
   }
-  // A reserved elevation's thread was opened on the elevation's todo, and the
-  // weekly gather matches a needs-you thread to its reply by that todo.
-  const elevationTodo = subject.kind === "elevation" ? (await ctx.db.get(subject.id))?.todoId : undefined;
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: "slack-event",
@@ -573,9 +565,7 @@ export async function slackThreadReplyFrom(
     todoId:
       subject.kind === "todo"
         ? subject.id
-        : subject.kind === "elevation"
-          ? elevationTodo
-          : outcome.outcome === "captured"
+        : outcome.outcome === "captured"
             ? outcome.todoId
             : undefined,
     data: {
@@ -729,10 +719,6 @@ async function routeReply(
       // step reads it whole, and it answers the newest open question. Not a
       // ruling — the rulings table is for todos.
       return await recordRunnerReply(ctx, subject.id, text, at);
-    case "elevation":
-      // A reserved decision's thread: his reply is the answer, recorded as
-      // his ruling on the elevation and delivered to the worker that asked.
-      return await recordElevationReply(ctx, subject.id, text, at);
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }
