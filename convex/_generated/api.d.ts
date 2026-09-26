@@ -26,6 +26,7 @@ import type * as intent from "../intent.js";
 import type * as intentParse from "../intentParse.js";
 import type * as jarvis_auth from "../jarvis/auth.js";
 import type * as jarvis_events from "../jarvis/events.js";
+import type * as jarvis_history from "../jarvis/history.js";
 import type * as jarvis_jobs from "../jarvis/jobs.js";
 import type * as jarvis_record from "../jarvis/record.js";
 import type * as jarvis_routes from "../jarvis/routes.js";
@@ -95,6 +96,7 @@ declare const fullApi: ApiFromModules<{
   intentParse: typeof intentParse;
   "jarvis/auth": typeof jarvis_auth;
   "jarvis/events": typeof jarvis_events;
+  "jarvis/history": typeof jarvis_history;
   "jarvis/jobs": typeof jarvis_jobs;
   "jarvis/record": typeof jarvis_record;
   "jarvis/routes": typeof jarvis_routes;

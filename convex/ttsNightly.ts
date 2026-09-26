@@ -28,7 +28,8 @@ import { rowSource, type RowSource } from "./sessionRows";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { postBroken } from "./tts";
-import { BOX_CHANGE, boxChangeFaults, onBoxChange } from "./boxChanges";
+import { BOX_CHANGE, boxChangeEvent, boxChangeFaults, type BoxChange } from "./boxChanges";
+import { recordEvent } from "./jarvis/events";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
@@ -605,6 +606,26 @@ export const NIGHTLY_FAILURE = "nightly-failure";
  *  subject, so a reply needs no id. */
 export const LEARNING_CHANGE = "learning-change";
 
+/**
+ * A box change posted through the legacy pen (POST /tts/event, body { kind:
+ * "box-change", data, key }), recorded as the `events` row POST /jarvis/event
+ * would write (convex/boxChanges.ts boxChangeEvent), hook and all. The pen's
+ * `key` was the agentId; it must still agree with data.agentId. Here only
+ * while a box that has not deployed Jarvis night/w4 still posts box changes
+ * through the pen; goes with the pen.
+ */
+export const internalRecordBoxChange = internalMutation({
+  args: { data: v.any(), key: v.optional(v.string()) },
+  handler: async (ctx, { data, key }) => {
+    const faults = boxChangeFaults(data);
+    if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
+    const change = data as BoxChange;
+    if (key !== change.agentId) throw new Error("a box change's key is its agentId, and it has none when the agentId is absent");
+    const { id, result } = await recordEvent(ctx, boxChangeEvent(change));
+    return { id: id as string, duplicate: (result as { duplicate?: boolean } | undefined)?.duplicate === true };
+  },
+});
+
 export const internalRecordWorkerEvent = internalMutation({
   // `key`: the indexed lookup key (schema dtsEvents.key) — the weekly job's
   // "weekly-run" row carries its day, so a rerun finds it on by_kind_key.
@@ -613,16 +634,10 @@ export const internalRecordWorkerEvent = internalMutation({
     if (!EVENT_KIND_PATTERN.test(kind) || RESERVED_EVENT_KINDS.has(kind)) {
       throw new Error(`not a worker event kind: ${kind}`);
     }
-    // A BOX CHANGE HAS ONE SHAPE (convex/boxChanges.ts), and its key is the
-    // agent it names: the /agents chat reads an agent's changes on that key.
-    if (kind === BOX_CHANGE) {
-      const faults = boxChangeFaults(data);
-      if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
-      const agentId = (data as { agentId?: string }).agentId;
-      if (key !== agentId) throw new Error("a box change's key is its agentId, and it has none when the agentId is absent");
-    }
+    // A box change is a row of the record's events table, not of this one
+    // (internalRecordBoxChange below; POST /tts/event hands it there).
+    if (kind === BOX_CHANGE) throw new Error("a box change is recorded through POST /jarvis/event");
     const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
-    if (kind === BOX_CHANGE) await onBoxChange(ctx, id, data);
     // The same broken line logEvent posts, because this is the other way a
     // failure row is written: the nightly's and the weekly's failures arrive
     // here, and #tts-broken is a line per distinct failure whichever door the
