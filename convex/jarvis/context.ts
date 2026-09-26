@@ -40,7 +40,7 @@ type Reader = (ctx: ActionCtx, params: URLSearchParams) => Promise<Response>;
  * checkout; Jarvis worker/jobs/plan-graphs.mjs treats a missing
  * `writingStandard` as fatal, so the field name and type do not change.
  */
-export async function plannerContext(ctx: ActionCtx) {
+async function plannerContext(ctx: ActionCtx) {
   const [todos, mirror, briefs, recentRulings, writingStandard, vocabulary] = await Promise.all([
     ctx.runQuery(internal.tts.internalListTodos, {}),
     ctx.runQuery(internal.tts.internalListMirror, {}),
@@ -73,7 +73,7 @@ function untilOf(params: URLSearchParams): number {
   return params.has("until") ? Number(params.get("until")) : Date.now();
 }
 
-export const READERS: Record<string, Reader> = {
+const READERS: Record<string, Reader> = {
   planner: async (ctx) => {
     try {
       return jsonResponse(200, await plannerContext(ctx));
@@ -164,7 +164,7 @@ export const READERS: Record<string, Reader> = {
   },
 };
 
-export const CONTEXT_FOR = Object.keys(READERS);
+const CONTEXT_FOR = Object.keys(READERS);
 
 /** One reader's answer for a request already past auth: the old /tts/ routes
  *  call this so both spellings serve the same bytes. */
