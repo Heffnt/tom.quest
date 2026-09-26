@@ -333,6 +333,33 @@ describe("an objection becomes a label", () => {
     expect(rows[0].source).toBe("objection");
   });
 
+  // witness: the label writer and the ask context read only the legacy
+  // dtsEvents rows, so a revert of a decision only the record holds was
+  // unlinked, and the next delegate asked about its todo saw no decision.
+  it("resolves a decision only the record holds, for the label and for the next ask's context", async () => {
+    const t = convexTest(schema, modules);
+    await seedRun(t, { regToken: "tok-decide", runId: "claude:box:decide-run" });
+    const todoId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "renew passport", status: "active", readiness: "prepared", timingClass: "whenever",
+        source: "tom", createdAt: 1, updatedAt: 1,
+      }),
+    );
+    await t.run(async (ctx) =>
+      ctx.db.insert("events", {
+        kind: "decision", at: 1_000, provenance: {}, subject: "rec-1",
+        data: { question: "Which day?", decision: "Thursday", todoId, runToken: "tok-decide" },
+      }),
+    );
+    const eventId = await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+      askId: "rec-1", text: "revert 1", revert: true, sentence: null, channel: "C", ts: "1.2", threadTs: "1.1",
+    });
+    await t.mutation(internal.agentLabels.internalLabelFromObjection, { eventId, askId: "rec-1" });
+    expect((await labels(t)).map((row) => row.runId)).toEqual(["claude:box:decide-run"]);
+    const context = await t.query(internal.ttsAsk.internalAskContext, { job: "prepare", todoId });
+    expect(context.priorObjections).toMatchObject([{ askId: "rec-1", revert: true, decision: "Thursday" }]);
+  });
+
   it("writes nothing and throws nothing when no decision row carries the askId", async () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-ask" });

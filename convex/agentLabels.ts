@@ -25,7 +25,7 @@ import { internalMutation } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { logEvent } from "./tts";
-import { DELEGATE_DECISION } from "./ttsAsk";
+import { DELEGATE_DECISION, recordedDecision } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { DIGEST_SENT } from "./ttsDigest";
 import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
@@ -329,7 +329,10 @@ export const internalLabelFromObjection = internalMutation({
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", askId))
-        .first());
+        .first()) ??
+      // A decision only the record holds (convex/ttsAsk.ts recordedDecision),
+      // which carries its runToken when its writer sent one.
+      (await recordedDecision(ctx, askId));
     const ref = `objection:${eventId}`;
     const token = (subject?.data as { runToken?: unknown } | undefined)?.runToken;
     const run = await agentForToken(ctx, typeof token === "string" ? token : undefined);

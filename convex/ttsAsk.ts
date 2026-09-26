@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
@@ -160,6 +161,22 @@ export const internalRecordAsk = internalMutation({
   },
 });
 
+/**
+ * The record's row for an askId the digest numbers: a `jarvis decide`
+ * decision (events kind "decision") or a line a producer put on the digest
+ * (kind "digest-line"), each filed under its askId as the subject. The one
+ * lookup the objection resolver, the ask context and the objection label
+ * share, so what one of them can find the others can.
+ */
+export async function recordedDecision(ctx: QueryCtx, askId: string): Promise<Doc<"events"> | null> {
+  return await ctx.db
+    .query("events")
+    .withIndex("by_subject_at", (q) => q.eq("subject", askId))
+    .order("desc")
+    .filter((q) => q.or(q.eq(q.field("kind"), "decision"), q.eq(q.field("kind"), DIGEST_LINE)))
+    .first();
+}
+
 export const internalAskContext = internalQuery({
   args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },
   handler: async (ctx, args) => {
@@ -176,7 +193,11 @@ export const internalAskContext = internalQuery({
         const data = (event.data ?? {}) as { askId?: unknown; revert?: unknown; sentence?: unknown };
         const askId = data.askId;
         if (typeof askId !== "string") continue;
-        const decision = await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", askId)).first();
+        // The ask row, else the record's decision row: a revert of a decision
+        // only the record holds must still tell the next delegate what it was.
+        const decision =
+          (await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", askId)).first()) ??
+          (await recordedDecision(ctx, askId));
         const decisionData = (decision?.data ?? {}) as { decision?: unknown };
         priorObjections.push({ askId, at: event.at, revert: data.revert === true, sentence: typeof data.sentence === "string" ? data.sentence : null, decision: typeof decisionData.decision === "string" ? decisionData.decision : null });
       }
@@ -251,12 +272,7 @@ export const internalRecordDelegateObjection = internalMutation({
         .first());
     let todoId = legacy?.todoId;
     if (legacy === null) {
-      const recorded = await ctx.db
-        .query("events")
-        .withIndex("by_subject_at", (q) => q.eq("subject", args.askId))
-        .order("desc")
-        .filter((q) => q.or(q.eq(q.field("kind"), "decision"), q.eq(q.field("kind"), DIGEST_LINE)))
-        .first();
+      const recorded = await recordedDecision(ctx, args.askId);
       if (recorded === null) throw new Error(`Delegate decision not found: ${args.askId}`);
       const named = (recorded.data as { todoId?: unknown } | undefined)?.todoId;
       todoId = typeof named === "string" ? (ctx.db.normalizeId("dtsTodos", named) ?? undefined) : undefined;
