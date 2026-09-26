@@ -11,7 +11,7 @@ import {
   MODEL_OF_TOM_HEADER,
 } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { assembleContext, joinContext } from "./ttsContext";
+import { assembleContext, CONTEXT_END, joinContext } from "./ttsContext";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -222,7 +222,45 @@ describe("claude sessions", () => {
     expect(text).not.toContain("the other repo's outcome");
     expect(text.split(skills)).toHaveLength(2); // one skills line
     expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2);
-    expect(text).toContain(`${skills}\n\ncarry on from here`);
+    expect(text).toContain(`${skills}\n\n${CONTEXT_END}\n\ncarry on from here`);
+  });
+
+  // witness: the stripper inferred the facts block from its shape, so a
+  // mission after a pasted bare base that began "RULINGS ON THIS SUBJECT"
+  // lost that heading and its bullets.
+  it("keeps a mission that begins with a facts heading after a pasted bare base", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate"]));
+    const mission = "RULINGS ON THIS SUBJECT\n- list every ruling you find in the repo";
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "a mission about rulings", kind: "adhoc", repo: "none", initialPrompt: `${prelude}\n\n${mission}`,
+    });
+    const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
+    expect(text).toContain(`${CONTEXT_END}\n\n${mission}`);
+  });
+
+  it("takes off exactly the span an opener marked, and an older grant-block opener by its own markers", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate"]));
+    const skills = "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.";
+    // This format: everything up to the end line goes, whatever it held.
+    const marked = `${prelude}\n\n${skills}\n\nRULINGS ON THIS SUBJECT\n- 2026-09-01 revise: the other todo's ruling\n\nan odd leftover line\n\n${CONTEXT_END}\n\nthe mission`;
+    const first = await tom.mutation(api.claudeSessions.createSession, { title: "marked", kind: "adhoc", repo: "none", initialPrompt: marked });
+    const one = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId: first }))[0].text ?? "";
+    expect(one).not.toContain("the other todo's ruling");
+    expect(one).not.toContain("an odd leftover line");
+    expect(one.split(CONTEXT_END)).toHaveLength(2);
+    expect(one.endsWith("the mission") || one.includes(`${CONTEXT_END}\n\nthe mission`)).toBe(true);
+    // The grant-block format (before 2026-09-26): the block, then the facts.
+    const grants = "SKILLS (WikiTom commit testprelude)\ngranted: write, know-research\nLoad each granted skill before you act on what it covers. `tts-search skills` lists the rest.";
+    const old = `${prelude}\n\n${grants}\n\nRECENT SESSION OUTCOMES\n- 2026-09-02 completed: the other repo's outcome\n\nthe old mission`;
+    const second = await tom.mutation(api.claudeSessions.createSession, { title: "grant block", kind: "adhoc", repo: "none", initialPrompt: old });
+    const two = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId: second }))[0].text ?? "";
+    expect(two).not.toContain("SKILLS (WikiTom commit");
+    expect(two).not.toContain("the other repo's outcome");
+    expect(two).toContain(`${CONTEXT_END}\n\nthe old mission`);
   });
 
   // witness: the facts block was cut at its first blank line, and a ruling

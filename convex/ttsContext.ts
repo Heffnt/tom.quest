@@ -226,31 +226,61 @@ export function joinContext(context: AssembledContext): string {
 }
 
 /**
- * A seed's prompt with a pasted opener's whole context taken off: the base
- * (withoutModelOfTomPrelude, which refuses one read at another commit), then
- * the write pages and the skills line when they follow it, then the old
- * subject's facts block (its headers and their one-line "- " facts, as
- * renderFacts writes them). The opener then puts this subject's
- * context in front, so no ruling or outcome of another subject rides along.
- * A prompt that does not begin with the header comes back as it was; null is
- * the refusal.
+ * The line the opener (convex/claudeSessions.ts insertSession) writes after
+ * everything it pastes (the base, the write pages, the skills line, the
+ * record facts) and before the prompt. The span it closes opens with the
+ * base's header line, which stays the opener's first line because the
+ * transcript's readers find the commit there (modelOfTomHeadOf).
+ */
+export const CONTEXT_END = "── end of the context the record gave this run; the prompt follows ──";
+
+/** The older openers' grant block (before 2026-09-26, s7): its first line
+ *  and the line that always closed it (shared/skills.mjs renderGrants). */
+const GRANT_BLOCK_FIRST = "SKILLS (WikiTom commit ";
+const GRANT_BLOCK_LAST = "Load each granted skill before you act on what it covers.";
+
+/**
+ * A seed's prompt with a pasted opener's context taken off, by the markers
+ * the opener wrote and nothing else, so the new context goes in front once
+ * and no ruling or outcome of another subject rides along:
+ *   - the base, matched exactly (withoutModelOfTomPrelude, which refuses one
+ *     read at another commit: null);
+ *   - then, in this format, everything up to the CONTEXT_END line;
+ *   - in the two older formats, which wrote no end line, their own markers:
+ *     the grant block (GRANT_BLOCK_FIRST through GRANT_BLOCK_LAST), or the
+ *     write pages and the skills line matched exactly; after either, the
+ *     facts block's headers and "- " lines. A facts header right after a
+ *     bare base is the prompt's own text and stays.
+ * A prompt that does not begin with the header comes back as it was.
  */
 export function withoutPastedContext(prompt: string, context: AssembledContext): string | null {
   const body = withoutModelOfTomPrelude(prompt, context.prefix);
   if (body === null || body === prompt) return body;
+  const lines = body.split("\n");
+  const end = lines.indexOf(CONTEXT_END);
+  if (end !== -1) return lines.slice(end + 1).join("\n").replace(/^\n+/, "");
+
   let rest = body;
-  for (const part of [context.write, context.skills]) {
-    if (part !== "" && rest.startsWith(part)) rest = rest.slice(part.length).replace(/^\n+/, "");
+  let closed = false;
+  if (rest.startsWith(GRANT_BLOCK_FIRST)) {
+    const at = rest.split("\n").findIndex((line) => line.startsWith(GRANT_BLOCK_LAST));
+    if (at !== -1) {
+      rest = rest.split("\n").slice(at + 1).join("\n").replace(/^\n+/, "");
+      closed = true;
+    }
+  } else {
+    if (context.write !== "" && rest.startsWith(context.write)) rest = rest.slice(context.write.length).replace(/^\n+/, "");
+    if (rest.startsWith(context.skills)) {
+      rest = rest.slice(context.skills.length).replace(/^\n+/, "");
+      closed = true;
+    }
   }
-  // The facts block by its structure (renderFacts): a header line, then its
-  // "- " lines, one fact each, for one or both headers. The walk stops at the
-  // first line that is neither, which is the blank line the opener put after
-  // the block.
-  const lines = rest.split("\n");
+  if (!closed) return rest;
+  const facts = rest.split("\n");
   let at = 0;
-  if ((FACTS_HEADERS as readonly string[]).includes(lines[0] ?? "")) {
-    while (at < lines.length && ((FACTS_HEADERS as readonly string[]).includes(lines[at]) || lines[at].startsWith("- "))) at += 1;
-    rest = lines.slice(at).join("\n").replace(/^\n+/, "");
+  if ((FACTS_HEADERS as readonly string[]).includes(facts[0] ?? "")) {
+    while (at < facts.length && ((FACTS_HEADERS as readonly string[]).includes(facts[at]) || facts[at].startsWith("- "))) at += 1;
+    rest = facts.slice(at).join("\n").replace(/^\n+/, "");
   }
   return rest;
 }

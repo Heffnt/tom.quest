@@ -40,7 +40,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // declared here AND in app/agents/lib.ts). The model-of-tom context each opener carries is assembled for that
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
-import { assembleContext, joinContext, withoutPastedContext, type ContextSubject } from "./ttsContext";
+import { assembleContext, CONTEXT_END, joinContext, withoutPastedContext, type ContextSubject } from "./ttsContext";
 import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
 import {
   DAEMON_STALE_MS,
@@ -614,6 +614,8 @@ export async function insertSession(
   }
   const text =
     joinContext(context) +
+    "\n\n" +
+    CONTEXT_END +
     "\n\n" +
     body +
     (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
