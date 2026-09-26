@@ -1,7 +1,7 @@
 "use client";
 
 // THE INTENT PAGE: his intent as an agent reads it, and everything that
-// stands beside it, in five views.
+// stands beside it, in four views.
 //
 // AS AN AGENT READS IT (the default). What an agent whose output reaches him
 // is given, in the order it reads it: the prompt assembleContext builds
@@ -15,7 +15,8 @@
 // words it is, the evidence behind it, and — for a ruling an eval item tests —
 // how often the judge answered as he did. Newest first, undated last.
 //
-// RULINGS. The rulings alone, the same rows, for reading what he settled.
+// His rulings are the same list with the kind picked (every line, "ruling"):
+// one filter, not a view of their own.
 //
 // VOCABULARY. Every word as `tts search` prints it (vocabulary.tsx). The
 // /vocabulary page was this view; its address redirects here.
@@ -45,6 +46,7 @@ import {
   filterLines,
   groupByKind,
   linesRestedOn,
+  openDisagreements,
   passRate,
   sourcesOf,
   KINDS,
@@ -56,7 +58,6 @@ import { INTENT_VIEWS, useIntentStore, type IntentView } from "./store";
 const VIEW_TITLE: Record<IntentView, string> = {
   agent: "as an agent reads it",
   lines: "every line",
-  rulings: "rulings",
   vocabulary: "vocabulary",
   disagreements: "disagreements",
 };
@@ -66,7 +67,8 @@ export default function IntentClient() {
   const { view, filters, selected, setView, setFilters, select } = useIntentStore();
   const answer = useQuery(api.intent.lines, isTom ? {} : "skip");
   const agent = useQuery(api.intent.agentView, isTom && view === "agent" ? {} : "skip");
-  const vocabulary = useQuery(api.vocabulary.current, isTom && (view === "vocabulary" || view === "disagreements") ? {} : "skip");
+  // Read on every view: the disagreements badge counts its disagreements.
+  const vocabulary = useQuery(api.vocabulary.current, isTom ? {} : "skip");
   const decisions = useQuery(api.jarvis.intent.decisions, isTom ? {} : "skip");
   const evalItems = useQuery(api.jarvis.intent.evalItems, isTom ? {} : "skip");
   const settle = useMutation(api.jarvis.intent.settle);
@@ -80,8 +82,8 @@ export default function IntentClient() {
 
   const lines = useMemo(() => answer?.lines ?? [], [answer]);
   const shown = useMemo(
-    () => (view === "rulings" ? lines.filter((line) => line.kind === "ruling") : filterLines(lines, filters)),
-    [lines, filters, view],
+    () => filterLines(lines, filters),
+    [lines, filters],
   );
   const groups = useMemo(() => groupByKind(shown), [shown]);
   const sources = useMemo(() => sourcesOf(lines), [lines]);
@@ -104,9 +106,7 @@ export default function IntentClient() {
     }
     return count;
   }, [lines, decisions]);
-  const open = decisions === undefined || evalItems === undefined
-    ? null
-    : decisions.filter((one) => one.settled === null).length + evalItems.filter((one) => one.pass === false && one.settled === null).length;
+  const open = openDisagreements(decisions, evalItems, vocabulary);
 
   return (
     <TomGate label="Intent">
@@ -190,9 +190,9 @@ export default function IntentClient() {
           {view === "agent" && agent != null && (
             <AgentText view={agent} lines={lines} selected={selected?.id ?? null} onSelect={select} />
           )}
-          {(view === "lines" || view === "rulings") && (
+          {view === "lines" && (
             <>
-              {view === "lines" && answer !== undefined && (
+              {answer !== undefined && (
                 <p className="mb-2 text-[10px] font-mono text-text-faint">
                   {answer.sources.map((source) => `${source.name} ${source.lines}`).join(" · ")}
                 </p>

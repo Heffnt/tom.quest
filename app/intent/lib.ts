@@ -238,3 +238,23 @@ export function passRate(items: { passed: number; runs: number }[]): { passed: n
   if (items.length === 0) return null;
   return items.reduce((sum, item) => ({ passed: sum.passed + item.passed, runs: sum.runs + item.runs }), { passed: 0, runs: 0 });
 }
+
+/**
+ * The disagreements still open, as the view's badge counts them: the delegate
+ * decisions he has not settled, the failing eval items he has not settled, and
+ * the vocabulary's disagreements (settled in the files, so every one listed is
+ * open). Null until all three reads have answered; a vocabulary with no row
+ * (null) has none.
+ */
+export function openDisagreements(
+  decisions: { settled: unknown }[] | undefined,
+  evalItems: { pass: boolean | null; settled: unknown }[] | undefined,
+  vocabulary: { disagreements: unknown[] } | null | undefined,
+): number | null {
+  if (decisions === undefined || evalItems === undefined || vocabulary === undefined) return null;
+  return (
+    decisions.filter((one) => one.settled === null).length +
+    evalItems.filter((one) => one.pass === false && one.settled === null).length +
+    (vocabulary?.disagreements.length ?? 0)
+  );
+}
