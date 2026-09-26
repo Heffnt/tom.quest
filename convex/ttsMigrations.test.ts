@@ -25,6 +25,7 @@ import {
   READINESS_MIGRATION,
   RECOMMENDATION_MIGRATION,
   RETIRED_FIELD_CLEARED,
+  RETIRED_ROWS_DELETED,
   RETIRED_STATUS_ENDED_REASON,
   TIMING_MIGRATION,
   carryCondition,
@@ -2015,5 +2016,36 @@ describe("internalScrubWorkerKeyRows (the worker key out of stored rows)", () =>
       vi.unstubAllEnvs();
     }
     expect(await eventsOfKind(t, `${WORKER_KEY_ROWS_SCRUBBED}-dry-run`)).toHaveLength(0);
+  });
+});
+
+describe("the retired tables' rows (2026-09-26)", () => {
+  // witness: drop the scheduler.runAfter continuation — jobHeartbeats' second
+  // page and every later table would be left holding rows, and the schema
+  // that drops them would fail to deploy.
+  it("empties every retired table page by page and counts what went", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest({ schema, modules });
+      await t.run(async (ctx) => {
+        for (let i = 0; i < 250; i++) await ctx.db.insert("jobHeartbeats", { job: `job-${i}`, lastOkAt: i });
+        await ctx.db.insert("gpuPoolAgentLog", { at: 1, writer: "setup-agent", gpuType: "h200", desiredCount: 0, enabled: false, restart: "never" });
+      });
+      const first = await t.mutation(internal.ttsMigrations.internalDeleteRetiredRows, {});
+      expect(first.done).toBe(false);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const left = await t.run(async (ctx) => ({
+        jobHeartbeats: (await ctx.db.query("jobHeartbeats").collect()).length,
+        gpuPoolAgentLog: (await ctx.db.query("gpuPoolAgentLog").collect()).length,
+        events: await ctx.db.query("dtsEvents").collect(),
+      }));
+      expect(left.jobHeartbeats).toBe(0);
+      expect(left.gpuPoolAgentLog).toBe(0);
+      const done = left.events.filter((e) => e.kind === RETIRED_ROWS_DELETED);
+      expect(done).toHaveLength(1);
+      expect(done[0].data).toEqual({ counts: { batches: 0, gpuPoolAgentLog: 1, jobHeartbeats: 250, claudeAutoConfig: 0 } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

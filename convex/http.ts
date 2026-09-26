@@ -18,15 +18,12 @@ import {
 import {
   DAY_MS,
   NARROW_LIST,
-  RECOMMENDATION_VALUES,
   NEEDS_YOU_CHANNEL_MISSING,
   SESSION_REPO_NAMES,
   channelFor,
-  isRecommendation,
   isSessionModel,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
-  type Recommendation,
   VOCABULARY_COUNT_NAMES,
 } from "./ttsShared";
 import { isNarrowListId } from "./ttsShared";
@@ -212,95 +209,6 @@ function keyAuth(
   }
   return null;
 }
-
-type PoolRequest = {
-  writer: string;
-  gpuType: string;
-  desiredCount: number;
-  enabled: boolean;
-  restart: "always" | "never";
-};
-
-// Validate the agent request body. The agent may scale/toggle/restart only — never a command,
-// projectDir, or resource limit — so those fields are not even accepted here (spec §7).
-function parsePoolRequest(body: unknown): PoolRequest | { error: string } {
-  if (typeof body !== "object" || body === null) {
-    return { error: "body must be a JSON object" };
-  }
-  const b = body as Record<string, unknown>;
-  if (typeof b.gpuType !== "string" || b.gpuType.length === 0) {
-    return { error: "gpuType (non-empty string) required" };
-  }
-  if (typeof b.desiredCount !== "number" || !Number.isFinite(b.desiredCount)) {
-    return { error: "desiredCount (finite number) required" };
-  }
-  if (typeof b.enabled !== "boolean") {
-    return { error: "enabled (boolean) required" };
-  }
-  if (b.restart !== "always" && b.restart !== "never") {
-    return { error: 'restart must be "always" or "never"' };
-  }
-  const writer =
-    typeof b.writer === "string" && b.writer.length > 0 ? b.writer : "agent";
-  return {
-    writer,
-    gpuType: b.gpuType,
-    desiredCount: b.desiredCount,
-    enabled: b.enabled,
-    restart: b.restart,
-  };
-}
-
-// Agent worker-pool scaling endpoint (spec §7). The narrow, key-authed path an agent uses to
-// scale / toggle / set the restart policy of a PRE-APPROVED (admin-authored) pool row. It may
-// write only desiredCount / enabled / restart via internal.gpuPool.agentScale, and never
-// authors a command — so arbitrary shell as the cluster user over the agent key is impossible
-// (that stays a Tom-only capability behind the admin path). The key is POOL_AGENT_KEY, stored
-// only in the Convex env and sharing nothing with TURING_API_KEY (the auth-clobber lesson).
-const pool = httpAction(async (ctx, request) => {
-  const denied = keyAuth(request, "POOL_AGENT_KEY", "X-Pool-Key");
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const parsed = parsePoolRequest(body);
-  if ("error" in parsed) {
-    return jsonResponse(400, parsed);
-  }
-  try {
-    const result = await ctx.runMutation(internal.gpuPool.agentScale, parsed);
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    // agentScale refuses (no insert) when no admin-authored row exists for the gpuType —
-    // surface that as 404, any other failure as 400. The command is never agent-writable.
-    const message = e instanceof Error ? e.message : String(e);
-    const status = message.includes("no admin-authored") ? 404 : 400;
-    return jsonResponse(status, { error: message });
-  }
-});
-
-http.route({ path: "/pool", method: "POST", handler: pool });
-
-// Agent worker-pool READ endpoint (spec §7) — the key-authed monitoring counterpart to POST /pool.
-// Lets a monitoring agent confirm pool desired-state, the last reconcile outcome, and the recent
-// agent-write audit WITHOUT an admin session or the deploy key. Read-only: same POOL_AGENT_KEY and
-// the same 503-then-401 guard order as the write path, but it never parses a body (a GET has none)
-// and reads only the projected/internal queries — never the requireAdmin status/list, which would
-// throw under the agent key. GET and POST coexist on "/pool" because the router keys on path+method.
-const poolRead = httpAction(async (ctx, request) => {
-  const denied = keyAuth(request, "POOL_AGENT_KEY", "X-Pool-Key");
-  if (denied) return denied;
-  return jsonResponse(200, {
-    configs: await ctx.runQuery(internal.gpuPool.publicConfigs, {}),
-    status: await ctx.runQuery(internal.gpuPool.prevStatus, {}),
-    recentAgentLog: await ctx.runQuery(internal.gpuPool.recentAgentLog, {}),
-  });
-});
-
-http.route({ path: "/pool", method: "GET", handler: poolRead });
 
 // ── TTS worker endpoints (spec: WikiTom tts/spec.md) ─────────────────────────
 // The Jarvis Box's narrow, key-authed path into TTS, mirroring the /pool
@@ -1500,117 +1408,10 @@ http.route({
 });
 
 // ── TTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
-// Same TTS_WORKER_KEY path: the worker posts ground-up briefs for open code
-// todos, reads back Tom's pending rulings, and reports each application. The
-// worker never rules — recordCodeRuling is Tom-gated in ttsCode.ts.
-
-// A brief's recommendation is one of the four verdict words and nothing else
-// (ttsShared is the one home). The three retired spellings were refused here
-// from the moment the box's own job stopped emitting them; now the validator
-// behind this route refuses them too.
-const CODE_EXEC_CLASSES = ["box", "needs-turing"] as const;
-
-type CodeBrief = {
-  repo: string;
-  externalId: string;
-  sourceHash: string;
-  brief: string;
-  recommendation: Recommendation;
-  execClass: (typeof CODE_EXEC_CLASSES)[number];
-  evidence?: string;
-  doorFaults?: string[];
-};
-
-// Validate one posted brief. Every field the schema requires must arrive as a
-// non-empty string / a known enum member — a malformed item rejects the whole
-// batch by index so the worker can fix its payload.
-function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string } {
-  if (typeof item !== "object" || item === null) {
-    return { error: `briefs[${i}] must be an object` };
-  }
-  const b = item as Record<string, unknown>;
-  for (const field of ["repo", "externalId", "sourceHash", "brief"] as const) {
-    if (typeof b[field] !== "string" || b[field].length === 0) {
-      return { error: `briefs[${i}].${field} (non-empty string) required` };
-    }
-  }
-  if (!isRecommendation(b.recommendation)) {
-    return {
-      error: `briefs[${i}].recommendation must be one of ${RECOMMENDATION_VALUES.join(" | ")}`,
-    };
-  }
-  if (
-    !CODE_EXEC_CLASSES.includes(b.execClass as (typeof CODE_EXEC_CLASSES)[number])
-  ) {
-    return {
-      error: `briefs[${i}].execClass must be one of ${CODE_EXEC_CLASSES.join(" | ")}`,
-    };
-  }
-  if (b.evidence !== undefined && typeof b.evidence !== "string") {
-    return { error: `briefs[${i}].evidence must be a string when present` };
-  }
-  // The door check's complaints, bounded and redacted the same way as at the
-  // prepare door. Absent is the clean answer and clears any mark the previous
-  // brief left (convex/ttsCode.ts writes the field on every upsert).
-  let doorFaults: string[] | undefined;
-  if (b.doorFaults !== undefined) {
-    const faults = parseDoorFaults(b.doorFaults, `briefs[${i}].doorFaults`);
-    if ("error" in faults) return faults;
-    doorFaults = faults.faults;
-  }
-  return {
-    repo: b.repo as string,
-    externalId: b.externalId as string,
-    sourceHash: b.sourceHash as string,
-    brief: b.brief as string,
-    recommendation: b.recommendation,
-    execClass: b.execClass as (typeof CODE_EXEC_CLASSES)[number],
-    evidence: b.evidence as string | undefined,
-    doorFaults,
-  };
-}
-
-// POST /tts/code-briefs — the worker's prepared briefs, upserted by
-// (repo, externalId). Body: { briefs: [{ repo, externalId, sourceHash, brief,
-// recommendation, execClass, evidence?, doorFaults? }] }.
-const ttsCodeBriefs = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (!Array.isArray(b.briefs)) {
-    return jsonResponse(400, { error: "briefs (array) required" });
-  }
-  const briefs: CodeBrief[] = [];
-  for (let i = 0; i < b.briefs.length; i++) {
-    const parsed = parseCodeBrief(b.briefs[i], i);
-    if ("error" in parsed) return jsonResponse(400, parsed);
-    briefs.push(parsed);
-  }
-  // The registration token of the run that WROTE these briefs — one brief pass
-  // is one run, so one token covers the batch. It becomes producedByRunToken on
-  // each row, which is the edge a ruling on a code subject follows back to the
-  // run whose text Tom judged (convex/agentLabels.ts). A caller that sends none
-  // stores none, and the field stays absent.
-  const oldToken = oldSpelling(b, { runToken: "agentToken" });
-  if (oldToken) return jsonResponse(400, { error: oldToken });
-  const agentToken = b.agentToken;
-  if (agentToken !== undefined && (typeof agentToken !== "string" || agentToken === "")) {
-    return jsonResponse(400, { error: "agentToken, when given, is a non-empty string" });
-  }
-  await ctx.runMutation(internal.ttsCode.internalStoreBriefs, {
-    briefs,
-    runToken: typeof agentToken === "string" ? agentToken : undefined,
-  });
-  return jsonResponse(200, { ok: true, count: briefs.length });
-});
-
-http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs });
+// Same TTS_WORKER_KEY path: the worker reads back Tom's pending rulings and
+// reports each application. The worker never rules — recordCodeRuling is
+// Tom-gated in ttsCode.ts. (POST /tts/code-briefs, the retired brief pass's
+// pen, went on 2026-09-26: no caller since the pass was retired 2026-09-22.)
 
 // GET /tts/rulings — the rulings a box job should act on (unapplied and not
 // superseded by a newer ruling on the same subject), from the unified
@@ -1618,8 +1419,8 @@ http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs })
 // subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
 // own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
 // pass — consuming only what it served. A
-// "code" approve or archive rides the feed too but is consumed by the
-// auto-session scheduler in Convex. Each row carries its _id, which the
+// "code" approve or archive rides the feed too, for the box's work-queue
+// job. Each row carries its _id, which the
 // planner echoes back to /tts/ruling-applied.
 const ttsRulingsFeed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -1668,15 +1469,8 @@ const ttsCodeRulingApplied = httpAction(async (ctx, request) => {
   }
 });
 
-// Canonical path: /tts/ruling-applied (any subject type); old name aliased
-// for not-yet-redeployed workers.
 http.route({
   path: "/tts/ruling-applied",
-  method: "POST",
-  handler: ttsCodeRulingApplied,
-});
-http.route({
-  path: "/tts/code-ruling-applied",
   method: "POST",
   handler: ttsCodeRulingApplied,
 });

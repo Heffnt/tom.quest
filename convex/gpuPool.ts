@@ -26,7 +26,7 @@ const MAX_ALLOCATION_COUNT = 16;
 const POOL_PREFIX = "gpupool:";
 
 // Two-layer clamp of desiredCount to [0, MAX] — applied at every write boundary (the admin
-// `set`, the agent `agentScale`) AND again at reconcile read-time, so no code path ever trusts
+// `set`) AND again at reconcile read-time, so no code path ever trusts
 // an out-of-range stored value (spec §4.1, §7).
 function clampDesired(n: number): number {
   return Math.min(MAX_ALLOCATION_COUNT, Math.max(0, n));
@@ -125,50 +125,6 @@ export const set = mutation({
   },
 });
 
-// Narrow agent-key write path (spec §7): may set ONLY desiredCount / enabled / restart, on an
-// EXISTING admin-authored row (looked up by gpuType). It refuses if no such row exists (no
-// insert) and never touches command / projectDir / resource limits — so the worker command
-// stays admin-only and arbitrary shell over the agent key is impossible. Shares clampDesired
-// with the admin path and records every write to the audit log. Called only by the /pool
-// httpAction (which authenticates the separate agent key); not exposed publicly.
-export const agentScale = internalMutation({
-  args: {
-    writer: v.string(),
-    gpuType: v.string(),
-    desiredCount: v.number(),
-    enabled: v.boolean(),
-    restart: v.union(v.literal("always"), v.literal("never")),
-  },
-  handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("gpuPool")
-      .withIndex("by_gpu_type", (q) => q.eq("gpuType", args.gpuType))
-      .unique();
-    if (!existing) {
-      // No insert over the agent key — only pre-approved (admin-authored) rows are scalable.
-      throw new Error(
-        `agentScale: no admin-authored pool row for gpuType "${args.gpuType}"`,
-      );
-    }
-    const desiredCount = clampDesired(args.desiredCount);
-    await ctx.db.patch(existing._id, {
-      desiredCount,
-      enabled: args.enabled,
-      restart: args.restart,
-      updatedAt: Date.now(),
-    });
-    await ctx.db.insert("gpuPoolAgentLog", {
-      at: Date.now(),
-      writer: args.writer,
-      gpuType: args.gpuType,
-      desiredCount,
-      enabled: args.enabled,
-      restart: args.restart,
-    });
-    return { gpuType: args.gpuType, desiredCount, enabled: args.enabled, restart: args.restart };
-  },
-});
-
 export const remove = mutation({
   args: { gpuType: v.string() },
   handler: async (ctx, { gpuType }) => {
@@ -203,27 +159,6 @@ export const allConfigs = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("gpuPool").collect();
-  },
-});
-
-// Projected, agent-readable view of the pool configs for the key-authed GET /pool monitor
-// (spec §7). Deliberately omits commands/projectDir/resource limits so the agent read key never
-// discloses the admin-authored worker command (the §7 "agent never sees the command" invariant);
-// exposes only the scaling/policy fields plus the derived fingerprint, which is already public in
-// the reserved job name gpupool:<gpuType>:<fp> and lets a monitor correlate desired rows with live
-// SLURM jobs. Never return raw gpuPool rows over the agent key.
-export const publicConfigs = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    const configs = await ctx.db.query("gpuPool").collect();
-    return configs.map((c) => ({
-      gpuType: c.gpuType,
-      desiredCount: c.desiredCount,
-      enabled: c.enabled,
-      restart: c.restart,
-      updatedAt: c.updatedAt,
-      fingerprint: fingerprint(c),
-    }));
   },
 });
 
@@ -300,20 +235,6 @@ export const prevStatus = internalQuery({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("gpuPoolStatus").first();
-  },
-});
-
-// The most recent agent-key writes (the gpuPoolAgentLog audit trail) for the GET /pool monitor
-// (spec §7). Bounded with take(N) over the by_at index so the payload can't grow without limit as
-// the append-only log accumulates. The log holds no secret (writer is an id, not the key).
-export const recentAgentLog = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    return await ctx.db
-      .query("gpuPoolAgentLog")
-      .withIndex("by_at")
-      .order("desc")
-      .take(50);
   },
 });
 

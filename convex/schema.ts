@@ -643,10 +643,7 @@ export default defineSchema({
     // tasks: who does it. Same meaning as the plan-step actor it succeeds.
     actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
     // STAYS DECLARED past the phase-7 narrow: the planner writes it
-    // (tts.internalStorePlanGraph) and the auto-session scheduler reads it
-    // (claudeSessions.resolveFleetModel), where a tagged task WAITS rather
-    // than falling back when the Codex door is shut. Dropping it would
-    // silently re-dispatch tagged work to the fleet default.
+    // (tts.internalStorePlanGraph), and the session a todo opens runs on it.
     //
     // The model an agent task needs, from the one union in ttsShared
     // (SESSION_MODELS: opus | sonnet | fable | gpt-5.6-sol | gpt-5.6-terra).
@@ -1718,9 +1715,8 @@ export default defineSchema({
     // from this id directly.
     batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
-    // The CODE subject (the lifeos update, phase 7): a worker mission the
-    // auto-session scheduler admits for Tom's approve or archive ruling on a
-    // code todo — an entry in a repo's vqc/todos.yaml, addressed by (repo,
+    // The CODE subject (the lifeos update, phase 7): a worker mission for
+    // Tom's approve or archive ruling on a code todo — an entry in a repo's vqc/todos.yaml, addressed by (repo,
     // externalId), never a dtsTodos row. Both set or neither. The index is the
     // per-subject session history the scheduler's ceiling reads, the way
     // by_todo is for a todo.
@@ -2397,8 +2393,9 @@ export default defineSchema({
     version: v.string(),
     activeAccount: v.optional(v.string()), // "gmail" | "wpi"
     lastIngestError: v.optional(v.string()),
-    // Jarvis Box load snapshot, reported with each heartbeat — the input to the
-    // scheduler's load-based admission (the primary throttle of P3).
+    // Jarvis Box load snapshot, reported with each heartbeat and shown on
+    // /agents. (The auto-session scheduler that admitted work on it is gone;
+    // its idea is the box's work-queue job.)
     load: v.optional(
       v.object({
         loadavg1: v.number(),
@@ -2409,18 +2406,12 @@ export default defineSchema({
       }),
     ),
     // Codex account usage, read off the Codex CLI by the daemon and reported
-    // with the heartbeat. The scheduler's weekly gate reads it: at or past
-    // CODEX_WEEKLY_CAP_PERCENT (ttsShared) the fleet starts no Codex session.
-    // The five-hour figure is recorded but NOT gated on (Tom, 2026-09-04) —
-    // that window refills by itself while the week does not — and it is
-    // absent when the account reports no five-hour window at all (codex-cli
-    // 0.153 on a "prolite" plan reports only the weekly one). `readAt` is the
-    // instant the reading was TAKEN, not the instant it was reported: the
-    // daemon keeps resending its last successful reading unchanged while later
-    // reads fail, so an old readAt means "nobody has managed to ask Codex for a
-    // while". Absent usage and usage older than CODEX_USAGE_STALE_MS
-    // (ttsShared) are both UNKNOWN, and unknown admits, so a daemon that cannot
-    // read the CLI never silently freezes the fleet.
+    // with the heartbeat; stored for the pages. The five-hour figure is absent
+    // when the account reports no five-hour window at all (codex-cli 0.153 on
+    // a "prolite" plan reports only the weekly one). `readAt` is the instant
+    // the reading was TAKEN, not the instant it was reported: the daemon keeps
+    // resending its last successful reading unchanged while later reads fail,
+    // so an old readAt means "nobody has managed to ask Codex for a while".
     codexUsage: v.optional(
       v.object({
         weeklyUsedPercent: v.number(),

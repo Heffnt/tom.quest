@@ -38,11 +38,10 @@ import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 //            moment Tom opens an interactive session on the todo
 //            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
 //   code   — the repo is the system of record, so the effect is work in the
-//            repo: approve and archive are admitted by the auto-session
-//            scheduler as WORKER MISSIONS (claudeSessions.internalAutoSchedule
-//            — implement the plan into a pull request on a session/<id>
-//            branch, or close the entry in the repo's todo file the same
-//            way), and the ruling applies at admission with the session id;
+//            repo: approve and archive were admitted by the auto-session
+//            scheduler as worker missions until it was deleted (2026-09-26);
+//            the box's work-queue job is their consumer now, and until it
+//            takes them they stay pending on the feed;
 //            revise was consumed by the planner's brief pass, which is
 //            retired with ComplexMultiTrigger's registry (ruling 70) — a code
 //            ruling needs a brief and nothing writes one now; session applies
@@ -225,9 +224,9 @@ export async function insertRuling(
     if (isCode && isChangeSubject(externalId!)) {
       // A RULING ON A CHANGE (a pull request or a merged commit, not a code
       // todo) is applied the moment it is written, because nothing else can
-      // ever apply it: the auto-session scheduler would read an unapplied
-      // approve as a worker mission and refuse it as "not open in the mirror",
-      // and the brief pass would wait forever on a revise. What an approve
+      // ever apply it: a consumer of the pending feed would read an unapplied
+      // approve as a code todo's, and the brief pass would wait forever on a
+      // revise. What an approve
       // sets in motion is read off this row by convex/observeMerge.ts, which
       // lands the change once its gate is green; a later ruling on the same
       // subject is newer and so withdraws it.
@@ -751,8 +750,7 @@ export async function markCodeSessionRulingsApplied(
 // (a newer ruling on the same subject makes the older one dead history). Every
 // subject type rides the same feed — the planner filters by kind (a life
 // revise → its prepare pass) and consumes only what it served. Code approve and archive
-// rulings ride it too, but their consumer is the auto-session scheduler in
-// Convex, not a box job.
+// rulings ride it too, for the box's work-queue job.
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {

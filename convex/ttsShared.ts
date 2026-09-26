@@ -910,20 +910,6 @@ export const SESSION_MODEL_NAMES = Object.keys(
 /** The strongest Codex model Tom has access to — the default for new
  * sessions and the fleet default's starting value. */
 export const DEFAULT_SESSION_MODEL: SessionModel = "gpt-5.6-sol";
-/** Where the fleet lands when Codex's weekly cap is hit and the todo named
- * no model of its own. */
-export const CODEX_FALLBACK_MODEL: SessionModel = "opus";
-export const CODEX_WEEKLY_CAP_PERCENT = 90;
-/**
- * How long a Codex usage reading stays believable. The daemon re-reads the
- * Codex CLI every few minutes and keeps sending its LAST SUCCESSFUL reading —
- * with that reading's original readAt — when a later read fails, so the age of
- * readAt is the whole staleness signal. Past this window the scheduler treats
- * the reading as UNKNOWN, exactly as if it were absent, and unknown ADMITS: a
- * CLI that stopped answering must not leave a months-old "90%" holding the
- * Codex door shut forever.
- */
-export const CODEX_USAGE_STALE_MS = 15 * 60_000;
 /**
  * Whether Fable answers on the box, as the session daemon reports it on its
  * heartbeat from worker/agents/models.mjs's availability file. While

@@ -104,15 +104,4 @@ crons.interval(
 crons.cron("runs evict (edt)", "15 8 * * *", internal.agents.internalEvictTick, {});
 crons.cron("runs evict (est)", "15 9 * * *", internal.agents.internalEvictTick, {});
 
-// ── TTS autonomous fleet (P3) ───────────────────────────────────────────────
-// Load-based admission of autonomous groundwork sessions. Off by default
-// (claudeAutoConfig.enabled, no row = false), so the interval is safe to ship
-// ahead of the enable pen.
-crons.interval(
-  "tts auto-session scheduler",
-  { minutes: 5 },
-  internal.claudeSessions.internalAutoSchedule,
-  {},
-);
-
 export default crons;

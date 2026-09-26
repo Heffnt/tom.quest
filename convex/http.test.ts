@@ -813,24 +813,6 @@ describe("the agent doors read the agent spelling only", () => {
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBe("claude:box:spelling-session");
   });
 
-  it("/tts/code-briefs stores agentToken and refuses runToken", async () => {
-    const token = "11111111-2222-4333-8444-555555555555";
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest(schema, modules);
-    const briefsPost = (field: string) => t.fetch("/tts/code-briefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-      body: JSON.stringify({
-        briefs: [{ repo: "tom.quest", externalId: "spelling", sourceHash: "h", brief: "Rename the page.", recommendation: "approve", execClass: "box" }],
-        [field]: token,
-      }),
-    });
-    await refusedAs(await briefsPost("runToken"), "runToken", "agentToken");
-    expect(await stored(t, "dtsCodeBriefs")).toEqual([]);
-    expect((await briefsPost("agentToken")).status).toBe(200);
-    expect((await stored(t, "dtsCodeBriefs")).map((row) => row.producedByRunToken)).toEqual([token]);
-  });
-
   it("/tts/simplify-input answers agents, each sample's agentId, and .agents alone on tools, hooks and cwds", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = await withRoot();
