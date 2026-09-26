@@ -1184,7 +1184,7 @@ const ttsTimeNotes = httpAction(async (ctx, request) => {
   try {
     [notes, writingStandard] = await Promise.all([
       ctx.runQuery(internal.tts.internalPendingTimeNotes, {}),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "time-notes" }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
     ]);
   } catch (error) {
     return modelOfTomErrorResponse(error);

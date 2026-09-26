@@ -152,6 +152,11 @@ export function isModelOfTomPath(path: unknown): path is string {
 
 // ── The base ─────────────────────────────────────────────────────────────────
 
+/** The write pages, in prompt order: every run whose output reaches Tom reads
+ *  both (convex/ttsContext.ts writePages), so a post without either is
+ *  refused and a store without either fails the read. */
+export const WRITE_PAGES = ["model-of-tom/writing.md", "model-of-tom/ground.md"] as const;
+
 export const internalReplaceModelOfTom = internalMutation({
   args: {
     commit: v.string(),
@@ -186,6 +191,9 @@ export const internalReplaceModelOfTom = internalMutation({
       if (file.body.trim() === "") throw new Error(`body for ${file.path} must be non-empty`);
       if (!Number.isSafeInteger(file.bytes) || file.bytes < 0) throw new Error(`bytes for ${file.path} must be a nonnegative integer`);
       paths.add(file.path);
+    }
+    for (const path of WRITE_PAGES) {
+      if (!paths.has(path)) throw new Error(`the post has no ${path}; every run whose output reaches Tom reads it — store left as it was`);
     }
     const current = await ctx.db.query("modelOfTomPublication")
       .withIndex("by_key", (q) => q.eq("key", "current")).unique();

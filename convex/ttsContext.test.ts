@@ -255,17 +255,27 @@ describe("assembleContext", () => {
 
   it("carries the write pages the last post stored", async () => {
     const t = convexTest({ schema, modules });
-    await seed(t, { without: ["model-of-tom/ground.md"] });
-    expect((await assemble(t, { kind: "none" })).write).toBe("── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n");
+    await seed(t);
+    expect((await assemble(t, { kind: "none" })).write).toBe(WRITE);
   });
 
-  it("serves the HTTP doors the prompt of a run that reaches Tom, and refuses a door nobody declared", async () => {
+  // witness: writePages skipped a missing page, so a store without
+  // writing.md gave every run that reaches Tom no writing rules, silently.
+  it("fails closed when a write page is missing, and a run that does not reach Tom does not read them", async () => {
+    for (const missing of ["model-of-tom/writing.md", "model-of-tom/ground.md"]) {
+      const t = convexTest({ schema, modules });
+      await seed(t, { without: [missing] });
+      await expect(assemble(t, { kind: "none" })).rejects.toThrow(`${missing} is not in the posted model-of-tom files`);
+      await expect(t.query(internal.ttsContext.internalContextPrelude, {})).rejects.toThrow(missing);
+      expect((await t.run(async (ctx) => assembleContext(ctx, { kind: "none" }, { reachesTom: false }))).write).toBe("");
+    }
+  });
+
+  it("serves the HTTP doors the prompt of a run that reaches Tom", async () => {
     const t = convexTest({ schema, modules });
     await seed(t);
-    expect(await t.query(internal.ttsContext.internalContextPrelude, { caller: "time-notes" }))
+    expect(await t.query(internal.ttsContext.internalContextPrelude, {}))
       .toBe(`${PREFIX}\n\n${WRITE}\n\n${SKILLS_LINE}`);
-    await expect(t.query(internal.ttsContext.internalContextPrelude, { caller: "nobody" }))
-      .rejects.toThrow(/unknown context caller nobody/);
   });
 });
 

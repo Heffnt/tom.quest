@@ -38,6 +38,7 @@ const SENTINEL_LAYERS = {
 const FILES = [
   { path: "model-of-tom/agent-rules.md", body: "source operate", bytes: 14 },
   { path: "model-of-tom/writing.md", body: "source write", bytes: 12 },
+  { path: "model-of-tom/ground.md", body: "source ground", bytes: 13 },
   { path: "model-of-tom/priorities.md", body: "source know", bytes: 11 },
 ];
 
@@ -50,9 +51,8 @@ const callerPrelude = (names: (keyof typeof SENTINEL_LAYERS)[]) =>
 
 async function insertSessionPrompt() {
   const t = convexTest({ schema, modules });
-  // The opener carries the write pages, so the post holds both.
-  const ground = { path: "model-of-tom/ground.md", body: "source ground", bytes: 13 };
-  await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: SENTINEL_LAYERS, files: [...FILES, ground] }));
+  // The opener carries the write pages; every post holds both.
+  await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: SENTINEL_LAYERS }));
   const tomId = await t.run(async (ctx) =>
     ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
   );
@@ -76,7 +76,7 @@ const publication = (t: ReturnType<typeof convexTest>) =>
 describe("model-of-tom publication", () => {
   it("stores the operate layer separately from the source file facts", async () => {
     const t = convexTest({ schema, modules });
-    expect(await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload())).toEqual({ files: 3, deleted: 0, forced: false });
+    expect(await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload())).toEqual({ files: 4, deleted: 0, forced: false });
     const rows = await facts(t);
     expect(rows).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "agent-rules", sourcePath: FILES[0].path, body: FILES[0].body, bytes: 14, commit: COMMIT, pushed: false }),
@@ -138,6 +138,13 @@ describe("model-of-tom publication", () => {
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace(COMMIT, "deadbeef".repeat(5)) }] }))).rejects.toThrow(/posted commit/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace("agent-rules.md", "../agent-rules.md") }] }))).rejects.toThrow(/parseable file list/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [] }))).rejects.toThrow(/no files posted/);
+    // A post without a write page is refused whole: every run whose output
+    // reaches Tom reads both, and the store is left as it was.
+    for (const missing of ["model-of-tom/writing.md", "model-of-tom/ground.md"]) {
+      await expect(
+        t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: FILES.filter((file) => file.path !== missing) })),
+      ).rejects.toThrow(`the post has no ${missing}`);
+    }
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [{ ...FILES[0], body: "  " }] }))).rejects.toThrow(/body .* non-empty/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [FILES[0], FILES[0]] }))).rejects.toThrow(/path posted twice/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [{ ...FILES[0], bytes: 1.5 }] }))).rejects.toThrow(/nonnegative integer/);
@@ -191,7 +198,7 @@ describe("POST /tts/model-of-tom", () => {
     const t = convexTest({ schema, modules });
     const response = await send(t, payload());
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, commit: COMMIT, files: 3, deleted: 0, forced: false });
+    expect(await response.json()).toEqual({ ok: true, commit: COMMIT, files: 4, deleted: 0, forced: false });
     expect((await publication(t))?.operate).toBe(LAYERS.operate);
   });
 

@@ -9,6 +9,7 @@ import { DELEGATE_DECISION, DELEGATE_OBJECTION } from "./ttsAsk";
 import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { slackHourKey, slackThreadKey, ttsDayKey } from "./ttsShared";
 import { composeCaptured, renderSlack } from "./ttsCompose";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 /** The one reply line at capture, as convex/ttsCompose.ts writes it. */
 const captureLine = (statement: string, todoId: string) =>
@@ -42,6 +43,7 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
         header: "MODEL-OF-TOM FILES (WikiTom commit slack-session-test): operate",
       }],
     });
+    for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
   });
 }
 

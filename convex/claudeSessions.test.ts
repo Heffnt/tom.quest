@@ -10,6 +10,7 @@ import {
   WORKER_CONTRACT,
   MODEL_OF_TOM_HEADER,
 } from "./ttsShared";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -45,6 +46,7 @@ async function withTom(t: ReturnType<typeof convexTest>) {
       ...TEST_PRELUDE_LAYERS,
       headers: TEST_PRELUDE_HEADERS,
     });
+    for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
   });
   return t.withIdentity({ subject: tomId });
 }
