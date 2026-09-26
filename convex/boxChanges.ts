@@ -323,14 +323,14 @@ export const forAgent = query({
  * minutes after it happened (every two minutes, later when its outbox
  * retries), so a change that happened before one digest was composed and was
  * recorded after it would fall in neither window if read by `at`. Recorded
- * time (_creationTime, on the table's by_creation_time index) partitions the
- * changes between consecutive digests exactly: each lands in one.
+ * time (_creationTime, on the kind's own index events.by_kind, so no other
+ * kind's rows are read however long the window) partitions the changes
+ * between consecutive digests exactly: each lands in one.
  */
 export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
   const rows = await ctx.db
     .query("events")
-    .withIndex("by_creation_time", (q) => q.gte("_creationTime", from).lt("_creationTime", to))
-    .filter((q) => q.eq(q.field("kind"), BOX_CHANGE))
+    .withIndex("by_kind", (q) => q.eq("kind", BOX_CHANGE).gte("_creationTime", from).lt("_creationTime", to))
     .take(WINDOW_MAX);
   const out: BoxChange[] = [];
   for (const row of rows) {

@@ -153,6 +153,30 @@ describe("the box-change door", () => {
     expect(rows.map((row) => row.provenance.job)).toEqual(["box-watch", "box-state"]);
   });
 
+  // witness: the read scanned every event recorded in the window and kept
+  // the box changes, so a long catch-up window of other rows could pass a
+  // query's read limit and stop every digest. It reads the kind's own index.
+  it("reads the window's box changes on their kind's index, past any number of other rows", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      vi.setSystemTime(AT + 60_000);
+      await t.run(async (ctx) => {
+        for (let n = 0; n < 2500; n += 1) {
+          await ctx.db.insert("events", { kind: "decision", at: AT, provenance: {}, subject: `d${n}`, data: {} });
+        }
+      });
+      await recordEvent(t, eventOf(change({ agentId: AGENT })));
+      // convex-test spaces the creation times of rows written in one
+      // millisecond, so the window's end has room past the clock.
+      const rows = await t.run(async (ctx) => boxChangesInWindow(ctx, AT, Date.now() + 60_000));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].command).toBe(change().command);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
   // witness: the digest read changes by when they happened, so one that
   // happened before a digest was composed and was recorded after it fell in
   // neither digest's window.

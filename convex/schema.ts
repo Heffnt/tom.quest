@@ -101,7 +101,11 @@ export default defineSchema({
     // job-failed not closed by a later job-recovered under the same subject)
     // and the digest's read of one condition, without a scan of every job's
     // failures (convex/jarvis/jobs.ts).
-    .index("by_kind_subject_at", ["kind", "subject", "at"]),
+    .index("by_kind_subject_at", ["kind", "subject", "at"])
+    // One kind's rows by when the record wrote them (_creationTime, which ends
+    // every index): the digest's read of the box changes RECORDED in its
+    // window, however long after they happened (convex/boxChanges.ts).
+    .index("by_kind", ["kind"]),
 
   // Declarative GPU pool: desired state ("keep N GPUs of type T running these
   // commands"). A Convex cron reconciles desired-vs-actual against the Turing
