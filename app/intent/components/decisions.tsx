@@ -41,6 +41,8 @@ export default function Decisions({
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const failing = evalItems.filter((item) => item.pass === false);
+  const scored = evalItems.filter((item) => item.pass !== null).length;
+  const skipped = evalItems.length - scored;
 
   return (
     <div className="space-y-5">
@@ -75,7 +77,9 @@ export default function Decisions({
               <Settle
                 subject={`decision:${decision.askId}`}
                 settled={decision.settled}
-                accept="accept"
+                // A refused or unanswered decision took nothing in his name, so
+                // there is nothing to accept; he can only give his sentence.
+                accept={decision.refused || decision.decision === null ? null : "accept"}
                 object="object"
                 statement={decision.decision ?? decision.question}
                 onAccept={(subject) => onSettle({ subject, verdict: "approve" })}
@@ -96,7 +100,9 @@ export default function Decisions({
             means the judge, reading the rules, answered another verdict than he did.
           </Info>
         </h2>
-        {failing.length === 0 && <p className="mt-2 text-[12px] text-text-muted">Every item of the newest runs passed.</p>}
+        {failing.length === 0 && (
+          <p className="mt-2 text-[12px] text-text-muted">{noFailureText(scored, skipped)}</p>
+        )}
         <ul>
           {failing.map((item) => {
             const suffix = evalItemLineSuffix(item.name);
@@ -146,6 +152,15 @@ export default function Decisions({
       )}
     </div>
   );
+}
+
+/** What the failing list says when nothing failed: a skipped item was not
+ *  scored, so a run whose items were all skipped passed nothing. */
+function noFailureText(scored: number, skipped: number): string {
+  if (scored === 0 && skipped === 0) return "No eval item in the newest runs.";
+  if (scored === 0) return `No item of the newest runs was scored: all ${skipped} were skipped.`;
+  if (skipped === 0) return "Every item of the newest runs passed.";
+  return `Every scored item of the newest runs passed; ${skipped} ${skipped === 1 ? "was" : "were"} skipped.`;
 }
 
 function RestedOn({
@@ -216,7 +231,8 @@ function Settle({
 }: {
   subject: string;
   settled: { at: number; verdict: Verdict; sentence: string | null } | null;
-  accept: string;
+  /** The accept button's word; null draws no accept button. */
+  accept: string | null;
   object: string;
   statement: string;
   onAccept: (subject: string) => Promise<unknown>;
@@ -234,17 +250,19 @@ function Settle({
   }
   return (
     <div className="mt-1 flex items-center gap-1.5">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => {
-          setBusy(true);
-          void onAccept(subject).finally(() => setBusy(false));
-        }}
-        className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
-      >
-        {accept}
-      </button>
+      {accept !== null && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void onAccept(subject).finally(() => setBusy(false));
+          }}
+          className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
+        >
+          {accept}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => onObject(subject, statement)}

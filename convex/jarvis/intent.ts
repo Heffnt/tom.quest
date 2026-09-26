@@ -217,7 +217,12 @@ export const settle = mutation({
         .filter((q) => q.eq(q.field("kind"), "decision"))
         .first();
       if (decision === null) throw new Error(`no decision ${askId} in the record`);
-      const data = (decision.data ?? {}) as { todoId?: unknown; decision?: unknown };
+      const data = (decision.data ?? {}) as { todoId?: unknown; decision?: unknown; refused?: unknown };
+      // A refused or unanswered decision took nothing in his name: accepting it
+      // would write an approve ruling that ratifies nothing he was shown.
+      if (args.verdict === "approve" && (data.refused === true || typeof data.decision !== "string")) {
+        throw new Error(`decision ${askId} was refused or not answered; there is nothing to accept`);
+      }
       const todoId = typeof data.todoId === "string" ? ctx.db.normalizeId("dtsTodos", data.todoId) : null;
       if (todoId !== null) {
         rulingId = await insertRuling(ctx, { todoId, verdict: args.verdict, ...(sentence === "" ? {} : { sentence }) });
