@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { register as registerJarvisRoutes } from "./jarvis/routes";
+import { serveContext } from "./jarvis/context";
 import { jarvisAuth, presentsJarvisKey } from "./jarvis/auth";
 import type { FunctionArgs } from "convex/server";
 import { httpAction, type ActionCtx } from "./_generated/server";
@@ -414,20 +415,7 @@ http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 const ttsCaptureContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  let writingStandard: string;
-  let declinedIntegrations;
-  try {
-    [writingStandard, declinedIntegrations] = await Promise.all([
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "capture-context" }),
-      ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, {
-    writingStandard,
-    declinedIntegrations,
-  });
+  return await serveContext(ctx, "capture", request);
 });
 
 http.route({
@@ -1610,21 +1598,7 @@ http.route({ path: "/tts/ask", method: "POST", handler: ttsAsk });
 const ttsAskContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const nonempty = (value: string | null) => (value !== null && value.trim() !== "" ? value.trim() : undefined);
-  const sessionId = nonempty(params.get("sessionId"));
-  const job = nonempty(params.get("job"));
-  const runnerId = nonempty(params.get("runnerId"));
-  if ([sessionId, job, runnerId].filter((one) => one !== undefined).length !== 1) {
-    return jsonResponse(400, { error: "exactly one of sessionId, runnerId or job is required" });
-  }
-  const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
-    sessionId,
-    job,
-    runnerId,
-    todoId: nonempty(params.get("todoId")),
-  });
-  return jsonResponse(200, context);
+  return await serveContext(ctx, "ask", request);
 });
 http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
@@ -1898,45 +1872,11 @@ http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 // did not get is one line naming the command that gets it. THE FIELD NAME AND
 // TYPE DO NOT CHANGE: worker/jobs/plan-graphs.mjs treats a missing
 // `writingStandard` as fatal.
-async function plannerContext(ctx: ActionCtx) {
-  // Six independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, writingStandard, vocabulary] = await Promise.all([
-    ctx.runQuery(internal.tts.internalListTodos, {}),
-    ctx.runQuery(internal.tts.internalListMirror, {}),
-    ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
-    ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
-    ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "planner-context" }),
-    // The prompt's vocabulary words, rendered from the §12.1 entries the night
-    // posted (convex/vocabulary.ts), the constant only when none are posted.
-    ctx.runQuery(internal.vocabulary.internalClosedVocabulary, {}),
-  ]);
-  return {
-    todos,
-    mirror,
-    briefs,
-    recentRulings,
-    writingStandard,
-    vocabulary,
-    // The repo names. Served for the SAME reason as writingStandard above: the
-    // planner is Node ESM on a box that never loads TypeScript, so it cannot
-    // import SESSION_REPOS. Serving the one home's value is what stops a
-    // fourth hand-written copy of the repo list appearing in worker/ (VQC C1).
-    sessionRepos: SESSION_REPO_NAMES,
-    // The server's clock, the /tts/state convention: the planner's prepare
-    // pass resolves "sept 3" in a statement against nyCalendarDay and never
-    // computes a New York date of its own.
-    ...nowContext(Date.now()),
-  };
-}
 
 const ttsPlannerContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  try {
-    return jsonResponse(200, await plannerContext(ctx));
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
+  return await serveContext(ctx, "planner", request);
 });
 
 http.route({
@@ -2508,22 +2448,7 @@ http.route({ path: "/tts/export", method: "GET", handler: ttsExport });
 const ttsLearningInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const sinceRaw = params.get("since");
-  const untilRaw = params.get("until");
-  const since = sinceRaw === null ? undefined : Number(sinceRaw);
-  const until = untilRaw === null ? NaN : Number(untilRaw);
-  if (
-    !Number.isFinite(until) ||
-    (since !== undefined && (!Number.isFinite(since) || since >= until))
-  ) {
-    return jsonResponse(400, { error: "until (epoch ms) required; since, if given, before it" });
-  }
-  const input = await ctx.runQuery(internal.ttsNightly.internalLearningInput, {
-    since,
-    until,
-  });
-  return jsonResponse(200, input);
+  return await serveContext(ctx, "learning", request);
 });
 
 http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInput });
@@ -2535,22 +2460,7 @@ http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInp
 const ttsWeeklyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const until = params.has("until") ? Number(params.get("until")) : Date.now();
-  if (!Number.isFinite(until) || until <= 0) {
-    return jsonResponse(400, { error: "until must be an epoch ms instant" });
-  }
-  let facts;
-  let writingStandard: string;
-  try {
-    [facts, writingStandard] = await Promise.all([
-      ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "weekly-input" }),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, { ...facts, writingStandard });
+  return await serveContext(ctx, "weekly", request);
 });
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
@@ -2573,22 +2483,7 @@ http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput }
 const ttsSimplifyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const until = params.has("until") ? Number(params.get("until")) : Date.now();
-  if (!Number.isFinite(until) || until <= 0) {
-    return jsonResponse(400, { error: "until must be an epoch ms instant" });
-  }
-  let facts;
-  let writingStandard: string;
-  try {
-    [facts, writingStandard] = await Promise.all([
-      ctx.runQuery(internal.ttsSimplify.internalSimplifyInput, { until }),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "simplify-input" }),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, { ...facts, writingStandard });
+  return await serveContext(ctx, "simplify", request);
 });
 
 http.route({ path: "/tts/simplify-input", method: "GET", handler: ttsSimplifyInput });
@@ -2666,14 +2561,7 @@ http.route({ path: "/tts/weekly-decisions", method: "POST", handler: ttsWeeklyDe
 const ttsPreludeDelivery = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const params = new URL(request.url).searchParams;
-  const until = params.has("until") ? Number(params.get("until")) : Date.now();
-  const sinceArg = params.has("since") ? Number(params.get("since")) : undefined;
-  if (!Number.isFinite(until) || until <= 0 || (sinceArg !== undefined && (!Number.isFinite(sinceArg) || sinceArg <= 0 || sinceArg >= until))) {
-    return jsonResponse(400, { error: "until must be an epoch ms instant; since, if given, before it" });
-  }
-  const since = sinceArg ?? (await ctx.runQuery(internal.ttsEvals.internalLatestPreludeDeliveryAt, {}) ?? until - DAY_MS);
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalPreludeDelivery, { since, until }));
+  return await serveContext(ctx, "prelude-delivery", request);
 });
 
 http.route({ path: "/tts/prelude-delivery", method: "GET", handler: ttsPreludeDelivery });
@@ -2684,12 +2572,7 @@ http.route({ path: "/tts/prelude-delivery", method: "GET", handler: ttsPreludeDe
 const ttsGoldenInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const raw = new URL(request.url).searchParams.get("limitPerPartition");
-  const limitPerPartition = raw === null ? undefined : Number(raw);
-  if (limitPerPartition !== undefined && (!Number.isFinite(limitPerPartition) || limitPerPartition <= 0)) {
-    return jsonResponse(400, { error: "limitPerPartition must be a positive number" });
-  }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalGoldenInput, { limitPerPartition }));
+  return await serveContext(ctx, "golden", request);
 });
 
 http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput });
@@ -2702,12 +2585,7 @@ http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput }
 const ttsLabelInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const raw = new URL(request.url).searchParams.get("limitPerSource");
-  const limitPerSource = raw === null ? undefined : Number(raw);
-  if (limitPerSource !== undefined && (!Number.isFinite(limitPerSource) || limitPerSource <= 0)) {
-    return jsonResponse(400, { error: "limitPerSource must be a positive number" });
-  }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalLabelInput, { limitPerSource }));
+  return await serveContext(ctx, "label", request);
 });
 
 http.route({ path: "/tts/label-input", method: "GET", handler: ttsLabelInput });
