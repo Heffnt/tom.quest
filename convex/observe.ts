@@ -129,7 +129,7 @@ function wanted(kind: string): boolean {
  * with the token in it. Every other surface that shows a failure sends that
  * string through redactSecrets first, which convex/tts.ts calls the one choke
  * point. Rather than add a second, this sends the browser the sixteen fields
- * app/observe reads and leaves the rest on the server, so there is nothing to
+ * app/agents/window reads and leaves the rest on the server, so there is nothing to
  * redact: a field added to a row is not on the wire until this list names it.
  */
 function drawnFields(data: unknown): Record<string, unknown> | null {
@@ -143,7 +143,7 @@ function drawnFields(data: unknown): Record<string, unknown> | null {
 }
 
 /** A merge row's four, a failure's job, the five a delegate decision is read
- *  from, the four a message sent in Tom's name is (app/observe/lib.ts and
+ *  from, the four a message sent in Tom's name is (app/agents/window/lib.ts and
  *  components/rulings-list.tsx), and a deploy's two commits. A sent message's
  *  text is not among them: the row carries its hash, and the text stays with
  *  his sign-off. A box change is drawn whole, redacted (boxDrawn). */
@@ -226,7 +226,7 @@ function mark(run: Doc<"runs">) {
     mergeKey: run.mergeKey ?? null,
     // The repository filter's value. A run names no repository field; what it
     // has is the working directory and the branch its launcher recorded, and
-    // the page turns the directory into a repository name (app/observe/lib.ts
+    // the page turns the directory into a repository name (app/agents/window/lib.ts
     // repoOfRun) rather than this module inventing a field the record does not
     // keep.
     cwd: run.context?.cwd ?? null,
@@ -308,6 +308,13 @@ export const eventsInWindow = query({
   },
 });
 
+/** A job's post under a condition already reported: a row of the record, not
+ *  a failure to draw (convex/jarvis/jobs.ts marks it data.standingSince). */
+function isRepeat(event: Doc<"events">): boolean {
+  const data = event.data as { standingSince?: unknown } | null | undefined;
+  return typeof data === "object" && data !== null && data.standingSince !== undefined;
+}
+
 /**
  * The same point events from the record's `events` table: the kinds whose
  * home it is (shared/jarvis-events.mjs EVENT_KINDS), oldest first, in the
@@ -332,7 +339,7 @@ export const recordInWindow = query({
     return {
       ...page,
       page: page.page
-        .filter((event) => wanted(event.kind) && RECORD_KINDS.has(event.kind))
+        .filter((event) => wanted(event.kind) && RECORD_KINDS.has(event.kind) && !isRepeat(event))
         .map((event) => ({
           id: event._id as string,
           at: event.at,
@@ -372,7 +379,7 @@ export const rulingsInWindow = query({
       sentence: ruling.sentence ?? null,
       subjectType: ruling.subjectType,
       todoId: (ruling.todoId ?? null) as string | null,
-      // Kept in the shape as null until app/observe stops reading it; the
+      // Kept in the shape as null until app/agents/window stops reading it; the
       // schema narrow removes it.
       batchId: null as string | null,
       repo: ruling.repo ?? null,

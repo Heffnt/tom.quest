@@ -5,7 +5,7 @@
 import type { Doc } from "@/convex/_generated/dataModel";
 
 // Age text is shared with the Inventory surface — one definition.
-export { ageText } from "../tts/lib";
+export { ageText } from "../jarvis/lib";
 
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
@@ -588,7 +588,8 @@ export function compactInput(toolName: string, input: unknown): string {
 
 // ── Box changes in an agent's chat (plan-root T1) ───────────────────────────
 // Every change the agent made to the Jarvis Box as root is a box-change row in
-// the record (convex/boxChanges.ts), keyed by the agent's id. The chat shows
+// the record's events table (convex/boxChanges.ts), under the agent's id as
+// provenance.agentId. The chat shows
 // each as a marked row: right after the tool call that ran it, whose own row
 // carries the outcome, or, when no loaded call ran it, at its time.
 

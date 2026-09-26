@@ -36,7 +36,7 @@
 //     which is what GroundUpView (./ground-up-view) already renders for a
 //     todo's own explanation — the same renderer, the same sandboxed iframe,
 //     reached here from the "more" control inside the popover.
-// MIGRATION COMPLETE (2026-08-31). Every caption in app/tts now passes both
+// MIGRATION COMPLETE (2026-08-31). Every caption in app/jarvis now passes both
 // registers, and the last two native `title=` captions — the repeats strip's
 // calendar-skip label and the calendar's per-day plus — were moved onto this
 // component in the same change. `explanation` stays optional because the type

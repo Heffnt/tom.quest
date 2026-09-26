@@ -5,7 +5,7 @@
 // the writing standard. This file holds the SURFACE to the rule, in three
 // directions:
 //
-//   1. RENDERED. Every component under app/tts/components AND
+//   1. RENDERED. Every component under app/jarvis/components AND
 //      app/agents/components that has controls is rendered here, and every
 //      control it puts on screen either carries a popover naming a call, or
 //      fires nothing on the backend — which is checked by pressing it and
@@ -29,7 +29,7 @@
 // verdict-buttons.tsx and every verdict surface reads that same text.
 //
 // What counts as fired: `useMutation(api.<module>.<function>)` in any .tsx
-// under app/tts or app/agents. What counts as named: the same
+// under app/jarvis or app/agents. What counts as named: the same
 // `<module>.<function>` opening a string literal — the `call=` of an Info, the
 // `call:` of an info table, a Caption's children — anywhere under those two.
 
@@ -83,7 +83,6 @@ import OptionsRow from "./options-row";
 import RepeatDialog from "./repeat-dialog";
 import RepeatsStrip from "./repeats-strip";
 import RulingDialog from "./ruling-dialog";
-import RunnersBlock from "./runners-block";
 import SignoffBlock from "./signoff-block";
 import TimeNoteField from "./time-note-field";
 import TodoRow from "./todo-row";
@@ -98,10 +97,10 @@ import AgentRow from "@/app/agents/components/agent-row";
 import AgentRows from "@/app/agents/components/agent-rows";
 
 const APP = join(__dirname, "..", "..");
-const TTS = join(APP, "tts");
+const JARVIS = join(APP, "jarvis");
 const AGENTS = join(APP, "agents");
 /** The two component directories the table of cases is closed against. */
-const COMPONENT_DIRS = [join(TTS, "components"), join(AGENTS, "components")];
+const COMPONENT_DIRS = [join(JARVIS, "components"), join(AGENTS, "components")];
 
 function sources(dir: string): string[] {
   const out: string[] = [];
@@ -116,7 +115,7 @@ function sources(dir: string): string[] {
 /** A file as this test names it: the path from `app/` down, forward slashes. */
 const shortOf = (f: string) => f.slice(f.indexOf("app")).replace(/\\/g, "/");
 
-const files = [...sources(TTS), ...sources(AGENTS)].map((f) => ({
+const files = [...sources(JARVIS), ...sources(AGENTS)].map((f) => ({
   short: shortOf(f),
   src: readFileSync(f, "utf8"),
 }));
@@ -419,9 +418,9 @@ const noop = () => {};
 
 /** One entry per component under either directory that renders controls. */
 const CASES: { file: string; render: () => void }[] = [
-  { file: "app/tts/components/calendar-tab.tsx", render: () => void render(<CalendarTab />) },
+  { file: "app/jarvis/components/calendar-tab.tsx", render: () => void render(<CalendarTab />) },
   {
-    file: "app/tts/components/code-todo-row.tsx",
+    file: "app/jarvis/components/code-todo-row.tsx",
     render: () =>
       void render(
         <CodeTodoRow
@@ -435,29 +434,28 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/tts/components/everything-tab.tsx",
+    file: "app/jarvis/components/everything-tab.tsx",
     render: () => void render(<EverythingTab link={null} onLinkCleared={noop} />),
   },
   {
-    file: "app/tts/components/ground-up-view.tsx",
+    file: "app/jarvis/components/ground-up-view.tsx",
     render: () =>
       void render(
         <GroundUpView title="t" content="<!DOCTYPE html><html></html>" onClose={noop} />,
       ),
   },
   {
-    file: "app/tts/components/options-row.tsx",
+    file: "app/jarvis/components/options-row.tsx",
     render: () => void render(<OptionsRow todo={TODO as never} rulable />),
   },
   {
-    file: "app/tts/components/repeat-dialog.tsx",
+    file: "app/jarvis/components/repeat-dialog.tsx",
     render: () => void render(<RepeatDialog rule={REPEAT as never} onClose={noop} />),
   },
-  { file: "app/tts/components/repeats-strip.tsx", render: () => void render(<RepeatsStrip />) },
-  { file: "app/tts/components/runners-block.tsx", render: () => void render(<RunnersBlock now={NOW} />) },
-  { file: "app/tts/components/signoff-block.tsx", render: () => void render(<SignoffBlock now={NOW} />) },
+  { file: "app/jarvis/components/repeats-strip.tsx", render: () => void render(<RepeatsStrip />) },
+  { file: "app/jarvis/components/signoff-block.tsx", render: () => void render(<SignoffBlock now={NOW} />) },
   {
-    file: "app/tts/components/ruling-dialog.tsx",
+    file: "app/jarvis/components/ruling-dialog.tsx",
     render: () =>
       void render(
         <RulingDialog
@@ -474,14 +472,14 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/tts/components/time-note-field.tsx",
+    file: "app/jarvis/components/time-note-field.tsx",
     render: () =>
       void render(
         <TimeNoteField todoId={TODO._id as never} notes={[NOTE as never]} />,
       ),
   },
   {
-    file: "app/tts/components/todo-row.tsx",
+    file: "app/jarvis/components/todo-row.tsx",
     render: () =>
       void render(
         <TodoRow
@@ -496,7 +494,7 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/tts/components/verdict-buttons.tsx",
+    file: "app/jarvis/components/verdict-buttons.tsx",
     render: () =>
       void render(<VerdictButtons subject="todo" statement="s" onRule={noop} />),
   },

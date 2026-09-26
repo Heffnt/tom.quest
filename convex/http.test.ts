@@ -24,8 +24,8 @@ async function events(t: ReturnType<typeof convexTest>, kind: string) {
  *  standing condition's repeat (convex/jarvis/jobs.ts). */
 async function jobReports(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
-    (await ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "job-failed")).collect()).filter(
-      (row) => (row.data as { standingSince?: number }).standingSince === undefined,
+    (await ctx.db.query("events").collect()).filter(
+      (row) => row.kind === "job-failed" && (row.data as { standingSince?: number }).standingSince === undefined,
     ),
   );
 }

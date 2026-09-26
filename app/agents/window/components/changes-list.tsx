@@ -29,7 +29,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import Terms from "./terms";
 import {
   dayAndClock,

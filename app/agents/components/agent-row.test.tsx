@@ -38,7 +38,7 @@ import type { TranscriptMessage } from "../lib";
 // ── The Convex stand-in ─────────────────────────────────────────────────────
 // The row pulls in OverflowExpand (the control over a cut payload), which calls
 // useQuery. Nothing here asks for a cut payload; the mock is what lets the row
-// mount at all. Same idiom as app/tts/components/popover-contract.test.tsx.
+// mount at all. Same idiom as app/jarvis/components/popover-contract.test.tsx.
 const convex = vi.hoisted(() => ({
   data: {} as Record<string, unknown>,
   calls: [] as string[],

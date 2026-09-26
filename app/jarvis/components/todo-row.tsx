@@ -7,7 +7,7 @@
 //
 // Timing FACTS are displayed all over this row (countdown, dueAt, dateKind,
 // latest safe, wake, date history); timing INPUT is one time note — the row
-// has no date picker at all, and an agent reads the note (app/tts/components/
+// has no date picker at all, and an agent reads the note (app/jarvis/components/
 // time-note-field.tsx).
 
 import { useEffect, useState } from "react";

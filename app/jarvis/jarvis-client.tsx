@@ -1,16 +1,21 @@
 "use client";
 
-// TTS (tts) — the one todo page: two tabs (calendar · everything), the active
-// tab below. Batches are gone (Tom, 2026-09-24): the runners, the todos
-// awaiting his ruling and the rulings still applying open the everything tab,
-// which is the default. Tab state rides ?tab=; ?item= (produced by
-// ttsItemLink) forces the everything tab and is handed to it as the link
-// prop. Each tab fetches its own data with useQuery — Convex dedupes
-// subscriptions, so the shell's badge-count queries are free.
+// JARVIS (/jarvis, the page that was /tts until 2026-09-26; next.config.ts
+// sends /tts there) — the one todo page: two tabs (calendar · everything), the
+// active tab below. Batches are gone (Tom, 2026-09-24): the todos awaiting his
+// ruling and the rulings still applying open the everything tab, which is the
+// default. Tab state rides ?tab=; ?item= (produced by ttsItemLink) forces the
+// everything tab and is handed to it as the link prop. Each tab fetches its
+// own data with useQuery — Convex dedupes subscriptions, so the shell's
+// badge-count queries are free.
 //
 // The page has no capture control (ruling 2026-09-05, "no capture bar"):
 // todos are captured from Slack through the events route, and this page is
-// where they are read and ruled on.
+// where they are read and ruled on. What ran is on /agents.
+//
+// THE SURFACE LABEL STAYS "TTS" (TomGate, canReadSurface): it is the name
+// convex/agentSurfaces.ts and every Convex read gate of this page share, not a
+// word on the page, and renaming it is one edit across both sides.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -31,7 +36,7 @@ const TABS: Array<{ value: Tab; label: string }> = [
   { value: "everything", label: "everything" },
 ];
 
-export default function TtsClient() {
+export default function JarvisClient() {
   // canRead gates the queries ("skip" idiom); TomGate owns the gate JSX.
   // isTom stays separate and gates the WRITES below — the read-only `agent`
   // role a TTS session browses as passes canRead and fails isTom.
@@ -73,7 +78,7 @@ export default function TtsClient() {
 
   const clearLink = () => {
     setLink(null);
-    router.replace("/tts", { scroll: false });
+    router.replace("/jarvis", { scroll: false });
   };
 
   // Instrumentation: one tts-opened per load, once data is here.
@@ -86,7 +91,7 @@ export default function TtsClient() {
   // recordEvent is a mutation and Convex refuses it for `agent` — and a
   // refused mutation prints a console error, which tts-browse reports under
   // its `console` line as a page failure. Left ungated this would be a false
-  // positive on every screenshot of /tts.
+  // positive on every screenshot of /jarvis.
   const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
   const openedRef = useRef(false);
   useEffect(() => {
@@ -96,7 +101,7 @@ export default function TtsClient() {
   }, [isTom, todos, recordEvent]);
 
   // The everything tab's badge: the awaiting count, from the SAME selector
-  // its awaiting section renders (app/tts/lib.ts selectNeedsMe) so the count
+  // its awaiting section renders (app/jarvis/lib.ts selectNeedsMe) so the count
   // and the rows cannot drift. Same subscriptions the tab holds — Convex
   // dedupes.
   const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");

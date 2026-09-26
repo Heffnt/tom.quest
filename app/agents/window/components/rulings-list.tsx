@@ -27,7 +27,7 @@ import Link from "next/link";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import RulingDialog from "@/app/tts/components/ruling-dialog";
+import RulingDialog from "@/app/jarvis/components/ruling-dialog";
 import Terms from "./terms";
 import { dayAndClock, rulingHref, type PointEvent, type RulingRow } from "../lib";
 
@@ -243,7 +243,7 @@ export default function RulingsList({
                       <div className="flex items-center gap-2">
                         {row.todoId !== null && (
                           <Link
-                            href={`/tts?item=${row.todoId}`}
+                            href={`/jarvis?item=${row.todoId}`}
                             className="text-[11px] text-text-muted underline hover:text-text"
                           >
                             open the subject
