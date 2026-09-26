@@ -1829,11 +1829,10 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   if (b.force !== undefined && (typeof b.force !== "string" || b.force.trim() === "")) {
     return jsonResponse(400, { error: "force, when given, is the reason (a non-empty string)" });
   }
-  // `operate` IS THE ONLY LAYER STORED from phase 6 on (convex/ttsSkills.ts):
-  // `write` and `know` became skills and go to POST /tts/skills. They are still
-  // ACCEPTED here, and dropped in the mutation, because the publisher renders
-  // all three at this commit and narrows on its own schedule — refusing a
-  // night's base over text nothing reads would cost the prefix for nothing.
+  // `operate` IS THE ONLY LAYER STORED (convex/ttsSkills.ts); the write pages
+  // come from modelOfTomFiles. `write` and `know` are still ACCEPTED here and
+  // dropped in the mutation, because the publisher renders all three —
+  // refusing a night's base over text nothing reads would cost the prefix.
   if (typeof b.layers !== "object" || b.layers === null) {
     return jsonResponse(400, { error: "layers ({ operate }) required" });
   }
@@ -2265,11 +2264,8 @@ http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput }
 //
 // The prelude rides along for the same reason it does on /tts/weekly-input:
 // the model's proposal sentences are written FOR TOM, so the run that writes
-// them is granted the `write` skill. It asks as its OWN caller,
-// "simplify-input" (shared/skill-router.mjs CONTEXT_CALLERS): the row
-// happens to hold the same three booleans weekly-input holds, and borrowing
-// that row would make this door change silently on the day the weekly job's
-// does.
+// them carries the write pages. It asks as its OWN caller, "simplify-input",
+// so this door never changes silently on the day the weekly job's does.
 const ttsSimplifyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
