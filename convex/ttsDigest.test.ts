@@ -1008,6 +1008,29 @@ describe("internalComposeToday", () => {
     expect(askIds).toContain("d-secret");
   });
 
+  // witness: a failed flush wrote session-ended (failed) and session-outcome
+  // (errored) for one session, and the digest grouped every session failure
+  // under one key: one failure counted twice, and one session's link beside
+  // another's detail.
+  it("gives each failed session one line with its own link and detail", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3600_000, kind: "session-ended", data: { sessionId: "sess-a", status: "failed", endedReason: "flush failed" } });
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3590_000, kind: "session-outcome", data: { sessionId: "sess-a", outcome: "errored", summary: "the flush broke" } });
+      await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3000_000, kind: "session-ended", data: { sessionId: "sess-b", status: "failed", endedReason: "out of memory" } });
+    });
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
+    const sessions = facts.broken.filter((row) => row.url?.includes("sess-"));
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((row) => [row.url, row.detail, row.count])).toEqual([
+      [ttsSessionLink("sess-a"), "flush failed", 1],
+      [ttsSessionLink("sess-b"), "out of memory", 1],
+    ]);
+  });
+
   // THE SAME INVARIANT, ON THE OTHER CUT. ttsCompose.fit reduces a whole run to
   // its lead plus one "N more lines are on the page" line when the message will
   // not fit, and the objection list is the second-to-last ranked run, so a busy

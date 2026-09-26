@@ -471,6 +471,20 @@ export async function gatherTodayFacts(
     row.count = (row.count ?? 0) + 1;
     return row;
   };
+  // ONE LINE PER FAILED SESSION. A failed flush can write both a
+  // session-ended (failed) and a session-outcome (errored) row for one
+  // session; they are one failure, and each session's line keeps its own
+  // link and detail. The first row read names it; a later one only fills a
+  // detail the first lacked.
+  const sessionFailure = (sessionId: string | undefined, statement: string, detail: string | undefined) => {
+    const key = sessionId === undefined ? "session" : `session:${sessionId}`;
+    const known = failures.get(key);
+    if (known !== undefined && sessionId !== undefined) {
+      known.detail = known.detail ?? detail;
+      return;
+    }
+    failure(key, statement, sessionId === undefined ? undefined : ttsSessionLink(sessionId)).detail = detail;
+  };
   const rawObjections: {
     at: number;
     // "" for a merge: a merge is REPORTED for objection, not decided by the
@@ -500,11 +514,11 @@ export async function gatherTodayFacts(
         const session = rowId ? await ctx.db.get(rowId) : null;
         (await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId)).finished += 1;
         if (d.outcome === "errored") {
-          failure(
-            "session",
+          sessionFailure(
+            sessionId,
             "A session ended in an error overnight, so whatever it was carrying is not done.",
-            str(d.sessionId) === undefined ? undefined : ttsSessionLink(str(d.sessionId) as string),
-          ).detail = safeStr(d.summary) ?? safeStr(d.title);
+            safeStr(d.summary) ?? safeStr(d.title),
+          );
         }
         break;
       }
@@ -519,12 +533,11 @@ export async function gatherTodayFacts(
       }
       case "session-ended": {
         if (d.status !== "failed") break;
-        const sessionId = str(d.sessionId);
-        failure(
-          "session",
+        sessionFailure(
+          str(d.sessionId),
           "A session failed overnight, so whatever it was carrying is not done.",
-          sessionId === undefined ? undefined : ttsSessionLink(sessionId),
-        ).detail = safeStr(d.endedReason) ?? safeStr(d.title);
+          safeStr(d.endedReason) ?? safeStr(d.title),
+        );
         break;
       }
       case DELEGATE_DECISION: {
