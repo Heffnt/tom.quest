@@ -88,6 +88,15 @@ export default function TtsClient() {
   // its `console` line as a page failure. Left ungated this would be a false
   // positive on every screenshot of /tts.
   const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
+
+  // A link written before the record's tables took their plain names
+  // (2026-09-26: a Slack line, a digest) carries the todo's old id; the row
+  // keeps it as legacyId, so the link still lands on its todo.
+  useEffect(() => {
+    if (link === null || todos === undefined) return;
+    const renamed = todos.find((t) => t.legacyId === link.item);
+    if (renamed !== undefined) setLink({ ...link, item: renamed._id });
+  }, [link, todos]);
   const openedRef = useRef(false);
   useEffect(() => {
     if (!isTom || openedRef.current || todos === undefined) return;
