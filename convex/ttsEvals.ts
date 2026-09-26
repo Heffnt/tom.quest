@@ -469,8 +469,6 @@ export type LabelItem = {
  *  side of that edge. */
 function rulingSubjectKey(ruling: Doc<"rulings">): string | null {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
-  // A stored ruling on a batch has no subject key: the schema narrow removes it.
-  if (ruling.subjectType === "batch") return null;
   return `code ${ruling.repo} ${ruling.externalId}`;
 }
 

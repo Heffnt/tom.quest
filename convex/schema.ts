@@ -52,17 +52,6 @@ export default defineSchema({
     error: v.optional(v.string()),
   }).index("by_server", ["serverName"]),
 
-  // THE BOX JOBS' HEARTBEATS — UNWRITTEN since night/s3 (2026-09-26). A clean
-  // run is now a `job-ok` row of `events` below, and the silence alarm
-  // (convex/jarvis/jobs.ts checkSilence) reads the newest one per job on
-  // by_kind_job_at. The table stays declared tonight because the schema is
-  // additive tonight; the deletion stream drops it (nothing reads or writes
-  // it any more). The idea it held, one time per job, is the index above.
-  jobHeartbeats: defineTable({
-    job: v.string(),
-    lastOkAt: v.number(),
-  }).index("by_job", ["job"]),
-
   // THE ONE RECORD (night/s3, 2026-09-26; the target shape of the 2026-09-26
   // program): every Jarvis row that is not a todo, a ruling, a calendar row, a
   // repeat, a vocabulary entry, a sign-off or a transcript row is an event
@@ -182,18 +171,6 @@ export default defineSchema({
       }),
     ),
   }),
-
-  // Append-only audit of agent-key writes to the worker pool (spec §7): the only audit
-  // trail for the narrow agentScale path. Kept separate from gpuPoolStatus because the
-  // reconciler replaces that singleton wholesale each cycle (it would clobber an audit field).
-  gpuPoolAgentLog: defineTable({
-    at: v.number(),
-    writer: v.string(), // a writer id (not the key); the agent identifies itself
-    gpuType: v.string(),
-    desiredCount: v.number(),
-    enabled: v.boolean(),
-    restart: v.union(v.literal("always"), v.literal("never")),
-  }).index("by_at", ["at"]),
 
   userSettings: defineTable({
     userId: v.id("users"),
@@ -445,64 +422,9 @@ export default defineSchema({
   // migration for zero behavioral value. Everything human-facing says TTS;
   // only these table names keep the old prefix.
 
-  // ── Batches, schema v2 (ratified 2026-08-29) ─────────────────────────────
-  // A BATCH IS NO LONGER A TODO. In v1 a batch was a dtsTodos row carrying
-  // `members`; here it is its own row and means one thing: the infrastructure
-  // holding HOW a set of todos gets completed. Its contents are dtsTodos rows
-  // pointing back at it (batchId) in two kinds — `task` (work to do) and
-  // `goal` (a checkable state of the world the batch is for).
-  //
-  // Vocabulary is Tom's and closed (UI = code): "needs" for dependencies
-  // between todos and equally between batches, "ready" for the todos whose
-  // needs are all done (the frontier — convex/ttsShared.ts owns the ONE
-  // implementation), kind "task"/"goal".
-  batches: defineTable({
-    statement: v.string(), // display text
-    groundUpExplanation: v.optional(v.string()), // the "more" layer
-    // Sequencing BETWEEN batches, the same word as between todos: this batch
-    // is worked only once every batch named here is done or archived
-    // (ttsShared.buildDoneSet's rule). This is the ONLY sequencing between
-    // batches (the lifeos update, phase 7): the retired `path` (a name, a
-    // position and a "must"/"helps" edge to the previous batch) was derived
-    // into it by ttsMigrations.internalMigrateBatchNeeds — a "must" edge
-    // became a need on the previous batch of the path; a "helps" edge became
-    // nothing, because "only makes this easier" is not a prerequisite and
-    // needs holds prerequisites only. Bounded at MAX_NEEDS; every id names a
-    // batch (enforced by the planner's pen).
-    needs: v.optional(v.array(v.id("batches"))),
-    status: v.union(
-      v.literal("active"),
-      v.literal("done"),
-      v.literal("archived"),
-    ),
-    // archived: the condition under which the batch should be proposed back —
-    // the dtsTodos field of the same name, same meaning. On an archive ruling
-    // the sentence IS this condition, so a batch set aside can come back.
-    unarchiveCondition: v.optional(v.string()),
-    // The repos this batch's work lives in — names from SESSION_REPOS
-    // (convex/ttsShared.ts). Tom's ruling 2026-08-30: A BATCH DECLARES ITS
-    // REPOS, set at batch formation, instead of the scheduler guessing them
-    // from a case-sensitive substring search over the batch's and todo's
-    // words. Every session opened for this batch or for a todo inside it
-    // checks out exactly this set. Absent (not empty) = never declared, and
-    // the resolver falls back to the legacy guess; an explicit [] means the
-    // batch genuinely needs no checkout.
-    repos: v.optional(v.array(v.string())),
-    // Stamped by the Tom doors (a ruling on the batch, the pens). Same freeze
-    // semantics as dtsTodos.tomTouchedAt: a batch with this set is FROZEN —
-    // the planner (tts.internalStorePlanGraph) may never rewrite it.
-    tomTouchedAt: v.optional(v.number()),
-    // The registration token of the run that last wrote this row's Tom-facing
-    // text (the planner's graph writer). ONE FIELD NAME on every table a run
-    // writes for Tom — dtsTodos and dtsCodeBriefs carry the same field with
-    // the same meaning, because three names for one fact would be three places
-    // to keep true. A door that receives no token stores none and the field
-    // stays absent; absent is a value and is never inferred.
-    // runs.regToken is the other end of the edge.
-    producedByRunToken: v.optional(v.string()),
-    createdAt: v.number(),
-    updatedAt: v.number(),
-  }).index("by_status", ["status", "updatedAt"]),
+  // ── Batches went on 2026-09-24 (Tom: "I dont want to have batches at all
+  // anymore") and their table on 2026-09-26; the 198 rows are in WikiTom
+  // tts/snapshot/batches.jsonl.
 
   dtsTodos: defineTable({
     statement: v.string(),
@@ -626,8 +548,6 @@ export default defineSchema({
     // a task. "task" = work someone does; "goal" = a state of the world the
     // batch is for, checkable via `condition` above.
     kind: v.optional(v.union(v.literal("task"), v.literal("goal"))),
-    // The batch this row belongs to (batches table). Absent = batch-less.
-    batchId: v.optional(v.id("batches")),
     // Dependency edges: this todo is READY only once every id here is done
     // (done or archived both count — ttsShared.buildDoneSet). Bounded at
     // MAX_NEEDS (ttsShared); every id must name a todo in the SAME batch (or a
@@ -683,7 +603,6 @@ export default defineSchema({
     // dated ones only.
     .index("by_status_and_due", ["status", "dueAt"])
     .index("by_readiness", ["readiness"])
-    .index("by_batch", ["batchId"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
     // generator find their own rows by source ("canvas" / "repeating") +
     // provenance match, without scanning the whole table. The source alone is
@@ -821,8 +740,6 @@ export default defineSchema({
     // a task. "task" = work someone does; "goal" = a state of the world the
     // batch is for, checkable via `condition` above.
     kind: v.optional(v.union(v.literal("task"), v.literal("goal"))),
-    // The batch this row belongs to (batches table). Absent = batch-less.
-    batchId: v.optional(v.id("batches")),
     // Dependency edges: this todo is READY only once every id here is done
     // (done or archived both count — ttsShared.buildDoneSet). Bounded at
     // MAX_NEEDS (ttsShared); every id must name a todo in the SAME batch (or a
@@ -885,7 +802,6 @@ export default defineSchema({
     // dated ones only.
     .index("by_status_and_due", ["status", "dueAt"])
     .index("by_readiness", ["readiness"])
-    .index("by_batch", ["batchId"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
     // generator find their own rows by source ("canvas" / "repeating") +
     // provenance match, without scanning the whole table. The source alone is
@@ -1132,15 +1048,10 @@ export default defineSchema({
     subjectType: v.union(
       v.literal("life"),
       v.literal("code"),
-      v.literal("batch"),
     ),
     todoId: v.optional(v.id("dtsTodos")), // life subjects
     repo: v.optional(v.string()), // code subjects…
     externalId: v.optional(v.string()), // …(repo, externalId)
-    // batch subjects (schema v2): a batch is its own row now, so Tom rules on
-    // the batch itself — exactly one of todoId / repo+externalId / batchId is
-    // set (enforced in ttsRulings.ts).
-    batchId: v.optional(v.id("batches")),
     verdict: v.union(
       v.literal("approve"),
       v.literal("revise"),
@@ -1182,12 +1093,6 @@ export default defineSchema({
   })
     .index("by_todo", ["todoId"])
     .index("by_repo_external", ["repo", "externalId"])
-    // The batch subject's own history, the way by_todo is a todo's. ADDED for
-    // the dynamic context assembler (convex/ttsContext.ts rule 10): a run on a
-    // todo is given his rulings on that todo AND on its batch, and a batch's
-    // rulings had no index — the only way to them was a scan of every ruling
-    // ever recorded, on the hot path of every session creation.
-    .index("by_batch", ["batchId"])
     .index("by_ruled", ["ruledAt"])
     .index("by_provenance_inboundId", ["provenance.inboundId"])
     .index("by_ask", ["askId"]),
@@ -1199,15 +1104,10 @@ export default defineSchema({
     subjectType: v.union(
       v.literal("life"),
       v.literal("code"),
-      v.literal("batch"),
     ),
     todoId: v.optional(v.id("dtsTodos")), // life subjects
     repo: v.optional(v.string()), // code subjects…
     externalId: v.optional(v.string()), // …(repo, externalId)
-    // batch subjects (schema v2): a batch is its own row now, so Tom rules on
-    // the batch itself — exactly one of todoId / repo+externalId / batchId is
-    // set (enforced in ttsRulings.ts).
-    batchId: v.optional(v.id("batches")),
     verdict: v.union(
       v.literal("approve"),
       v.literal("revise"),
@@ -1253,12 +1153,6 @@ export default defineSchema({
   })
     .index("by_todo", ["todoId"])
     .index("by_repo_external", ["repo", "externalId"])
-    // The batch subject's own history, the way by_todo is a todo's. ADDED for
-    // the dynamic context assembler (convex/ttsContext.ts rule 10): a run on a
-    // todo is given his rulings on that todo AND on its batch, and a batch's
-    // rulings had no index — the only way to them was a scan of every ruling
-    // ever recorded, on the hot path of every session creation.
-    .index("by_batch", ["batchId"])
     .index("by_ruled", ["ruledAt"])
     .index("by_provenance_inboundId", ["provenance.inboundId"])
     .index("by_ask", ["askId"])
@@ -1700,14 +1594,6 @@ export default defineSchema({
       v.literal("therapy"),
     ),
     todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
-    // The BATCH subject (ledger graduation session-repos-need-batch-subject,
-    // 2026-08-31). A batch is its own row, not a dtsTodos row, so a session
-    // opened ON a batch could name no subject at all — and the repo resolver,
-    // which reaches a batch only THROUGH a todo, could not see the batch's
-    // declared repos. The button most likely pressed on a multi-repo batch
-    // was the one that started with no checkout. createSession resolves repos
-    // from this id directly.
-    batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
     // The CODE subject (the lifeos update, phase 7): a worker mission for
     // Tom's approve or archive ruling on a code todo — an entry in a repo's vqc/todos.yaml, addressed by (repo,
@@ -1869,13 +1755,6 @@ export default defineSchema({
     // Per-code-subject session history: the scheduler's ceiling on how many
     // worker missions one code todo may draw.
     .index("by_code_subject", ["codeRepo", "codeExternalId"])
-    // Per-batch session history, newest first. ADDED for the dynamic context
-    // assembler (convex/ttsContext.ts rule 11): a run on a batch is given the
-    // last outcomes recorded on that batch, and `batchId` had no index — the
-    // repo half of the same rule still has none, because `repos` is an array
-    // and Convex does not index array membership (that half is a capped
-    // descending scan, SESSION_SCAN_MAX).
-    .index("by_batch", ["batchId", "statusChangedAt"])
     // Joins a live session row to its immutable `runs` record (§23). The
     // record round also wants `by_createdAt`, already declared above.
     .index("by_run_id", ["runId"])
@@ -2041,7 +1920,7 @@ export default defineSchema({
     // Tool-result sidecars are pointers only in phase 2: their bytes stay on
     // the host until the phase-3 sweeper assigns them their own store objects.
     attachments: v.array(v.object({ file: v.string(), bytes: v.number(), sha256: v.string() })),
-    todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+    todoId: v.optional(v.id("dtsTodos")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
     // The registration token from this run's envelope — the exact edge from a
     // row an agent wrote for Tom back to the run that wrote it.
     //
@@ -2294,41 +2173,6 @@ export default defineSchema({
     // The latest usage limit a Claude session hit that was not a Fable
     // refusal (ttsShared USAGE_LIMIT_REPORT), from the daemon's heartbeat.
     usageLimit: v.optional(USAGE_LIMIT_REPORT),
-  }),
-
-  // Autonomous-fleet admission config (P3, ratified 2026-08-28). Singleton via
-  // .first() (the gpuPoolStatus pattern). Load-based admission is the PRIMARY
-  // throttle (Tom's ruling: no scalar cap as primary) — maxLiveAutonomous is a
-  // runaway failsafe only, maxNewPerTick bounds a clone burst. When no row
-  // exists the scheduler uses defaults with enabled FALSE, so nothing runs
-  // until the switch is deliberately on.
-  //
-  // THE FOUR NUMBERS ARE CODE-OWNED (the lifeos update, phase 7): their values
-  // live in claudeSessions.AUTO_DEFAULTS, no door writes them any more (both
-  // pens copy the constants in), and getAutoConfig answers with the constants
-  // whatever the row holds.
-  //
-  // THE COLUMNS DID NOT NARROW WITH THE REST OF PHASE 7, and this is why: the
-  // SCHEDULER still reads the row's copies (`{ ...AUTO_DEFAULTS, ...row }` in
-  // internalAutoSchedule), so a row written before the numbers became
-  // code-owned still steers real admission until the switch is next pressed —
-  // while the page, reading the same config through getAutoConfig, shows the
-  // constants. That disagreement is a bug to settle on its own terms, not
-  // under cover of a schema narrow: closing it changes which sessions the
-  // fleet admits. It is also the lever ~35 scheduler tests use to steer
-  // admission (one clone per tick, one live session at a time), which is the
-  // coverage that would have to be rebuilt first.
-  claudeAutoConfig: defineTable({
-    enabled: v.boolean(),
-    maxLoadPerCpu: v.number(), // admit while loadavg1 / cpus <= this
-    minFreeMemMb: v.number(), // admit while freeMemMb >= this
-    maxLiveAutonomous: v.number(),
-    maxNewPerTick: v.number(),
-    // The fleet default model: what an autonomous session runs on when the
-    // todo it claimed named no model of its own. Absent reads as
-    // DEFAULT_SESSION_MODEL (ttsShared), which is the strongest Codex model.
-    defaultModel: v.optional(SESSION_MODEL),
-    updatedAt: v.number(),
   }),
 
   // The /secrets mailbox (convex/secrets.ts). One row per variable name. Tom

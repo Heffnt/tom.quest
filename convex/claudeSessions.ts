@@ -831,7 +831,7 @@ export const internalTranscriptPage = internalQuery({
 // The one argument shape and body behind BOTH doors below: Tom's browser
 // mutation (requireTomId) and the CLI pen (internalMutation, run with
 // `npx convex run claudeSessions:internalCreateSession '{…}'` against the
-// deployment — the same pattern as internalSetAutoConfig). One body, so the
+// deployment). One body, so the
 // two doors can never resolve repos or seed the row differently.
 const CREATE_SESSION_ARGS = {
   title: v.string(),
@@ -1911,112 +1911,6 @@ export const internalRecordOutcome = internalMutation({
         summary: summary.trim(),
       });
     }
-  },
-});
-
-// ── Autonomous-fleet config (P3) ─────────────────────────────────────────────
-
-// THE FOUR ADMISSION NUMBERS LIVE HERE, IN CODE (the lifeos update, phase 7).
-// They describe how hard the Jarvis Box may be pushed — the load and memory
-// ceilings admission is judged against, and the two runaway failsafes — and
-// they were set once and never touched again. A number nobody changes is not a
-// decision; it is mechanism, and mechanism belongs in code rather than in a
-// row Tom has to hold in his head to read the agents page. So NO DOOR WRITES
-// THEM any more: both pens below write these values verbatim, and Tom's own
-// door (setAutoConfig) takes `enabled` alone.
-//
-// The columns stay in the schema until NARROW, and the scheduler still reads
-// the row, so a value written before this change keeps working until the next
-// press of the switch copies the code values over it. At NARROW the columns go
-// and every reader takes them from here.
-//
-// enabled FALSE: the fleet runs nothing until the switch is deliberately on.
-export const AUTO_DEFAULTS = {
-  enabled: false,
-  maxLoadPerCpu: 0.8,
-  minFreeMemMb: 1024,
-  maxLiveAutonomous: 8,
-  maxNewPerTick: 2,
-  defaultModel: DEFAULT_SESSION_MODEL,
-} as const;
-
-/**
- * The one writer of the singleton row. It takes the two things that are still
- * decisions — whether the fleet runs, and which model it runs on — and writes
- * the four admission numbers from AUTO_DEFAULTS every time, which is what
- * makes those numbers code-owned while their columns are still in the schema.
- * An omitted `defaultModel` keeps whatever the row already holds (undefined is
- * never written), so a call that says nothing about the model cannot reset it.
- */
-async function upsertAutoConfig(
-  ctx: MutationCtx,
-  fields: { enabled: boolean; defaultModel?: SessionModel },
-): Promise<void> {
-  const existing = await ctx.db.query("claudeAutoConfig").first();
-  const { enabled, defaultModel } = fields;
-  const row = {
-    maxLoadPerCpu: AUTO_DEFAULTS.maxLoadPerCpu,
-    minFreeMemMb: AUTO_DEFAULTS.minFreeMemMb,
-    maxLiveAutonomous: AUTO_DEFAULTS.maxLiveAutonomous,
-    maxNewPerTick: AUTO_DEFAULTS.maxNewPerTick,
-    enabled,
-    ...(defaultModel !== undefined ? { defaultModel } : {}),
-    updatedAt: Date.now(),
-  };
-  if (existing) {
-    await ctx.db.patch(existing._id, row);
-  } else {
-    await ctx.db.insert("claudeAutoConfig", row);
-  }
-}
-
-// What the page reads. The four numbers come from the code, not from the row,
-// so the answer is what the scheduler will actually be admitting under once
-// the switch is next pressed — and so a row still carrying an older value
-// cannot show Tom a number nothing means to keep.
-export const getAutoConfig = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTomId(ctx);
-    const row = await ctx.db.query("claudeAutoConfig").first();
-    return {
-      ...AUTO_DEFAULTS,
-      ...(row === null
-        ? {}
-        : {
-            enabled: row.enabled,
-            // A row written before the field existed still has a default: the
-            // model named here is the one the scheduler would actually use.
-            defaultModel: row.defaultModel ?? DEFAULT_SESSION_MODEL,
-          }),
-      fromDefaults: row === null,
-    };
-  },
-});
-
-// Tom's door, and the whole of it: ON or OFF. See the fleet strip in
-// app/agents/components/session-list.tsx. The stored default model is
-// carried through untouched — a press of "stop" decides nothing about which
-// model the fleet runs on.
-export const setAutoConfig = mutation({
-  args: { enabled: v.boolean() },
-  handler: async (ctx, { enabled }) => {
-    await requireTomId(ctx);
-    await upsertAutoConfig(ctx, { enabled });
-  },
-});
-
-// The CLI pen for supervised enable at deploy:
-// `npx convex run claudeSessions:internalSetAutoConfig '{"enabled": true}'`
-// — same upsert as setAutoConfig (which needs Tom's browser identity the
-// Jarvis Box does not hold), plus the fleet's default model, which has no
-// browser control. Use only while supervising the first ticks. It no longer
-// takes the four admission numbers: they are code-owned (AUTO_DEFAULTS), and
-// a command line that names one is refused rather than quietly ignored.
-export const internalSetAutoConfig = internalMutation({
-  args: { enabled: v.boolean(), defaultModel: v.optional(SESSION_MODEL) },
-  handler: async (ctx, fields) => {
-    await upsertAutoConfig(ctx, fields);
   },
 });
 

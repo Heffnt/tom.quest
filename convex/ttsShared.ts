@@ -458,7 +458,7 @@ export function isPrepared(readiness: StoredReadiness): boolean {
 // for one more release — a page bundle built before this narrow can hold a
 // brief in memory in the old spelling — and then the retired map goes too.
 export const RECOMMENDATION_VALUES = ["approve", "revise", "session", "archive"] as const;
-export type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
+type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
 /** Read-only for one more release; the validator refuses all three. */
 export const RETIRED_RECOMMENDATION_MAP = {
   "stale-replan": "revise",
@@ -480,11 +480,6 @@ export function normalizeRecommendation(r: StoredRecommendation): Recommendation
   return r in RETIRED_RECOMMENDATION_MAP
     ? RETIRED_RECOMMENDATION_MAP[r as keyof typeof RETIRED_RECOMMENDATION_MAP]
     : (r as Recommendation);
-}
-export function isRecommendation(x: unknown): x is Recommendation {
-  return (
-    typeof x === "string" && (RECOMMENDATION_VALUES as readonly string[]).includes(x)
-  );
 }
 
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
@@ -733,17 +728,6 @@ export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
  * Written into claudeSessions.repo when a session holds no repos at all. */
 // ── The box's prompt sentences ──────────────────────────────────────────────
 // Read by the mission prompts in convex/claudeSessions.ts.
-
-// The box's two read-only commands, named in every autonomous mission prompt.
-// An installed command no prompt names is not access: tts-browse sat on the
-// box unmentioned while sessions that changed a page still ended by asking
-// Tom to go and look (found 2026-08-30, salvaged from unmerged commit
-// 703f526 when #33 superseded that branch).
-export const BOX_TOOLS_PARAGRAPH = [
-  "Two read-only commands exist on this box:",
-  "- `tts-browse <url> [--login] [--out /tmp/page.png]` opens a real browser on a page and prints its console errors and failed requests, then writes a screenshot you can read back. `--login` signs in with the agent account — every /turing and /tts page is role-gated, so an anonymous 200 can hide 401s underneath. LOOK at any page you changed instead of asking Tom to.",
-  "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key, and `tts-turing tree [path]|node [path]|read <path>` reads the experiment results tree (a path is relative to its root). It cannot allocate, cancel, run, or read files outside the results tree — those need Tom. A verb answering 401 means the read key is not installed yet, or turing-api has not been redeployed with the results tree on that key; record that in your outcome instead of retrying.",
-].join("\n");
 
 // The daemon that runs THIS session runs every other live session on the box
 // too, so an agent that restarts it to pick up its own change kills itself

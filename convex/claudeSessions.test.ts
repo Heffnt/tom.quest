@@ -8,7 +8,6 @@ import schema from "./schema";
 import { modelOfTomPrelude } from "./ttsSkills";
 import {
   WORKER_CONTRACT,
-  DEFAULT_SESSION_MODEL,
   MODEL_OF_TOM_HEADER,
 } from "./ttsShared";
 
@@ -484,15 +483,9 @@ describe("claude sessions", () => {
   it("refuses a session opened on a batch, at both doors, and writes no row", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    const batchId = await t.run(async (ctx) =>
-      ctx.db.insert("batches", {
-        statement: "The Turing pages",
-        repos: ["tom.quest", "WikiTom"],
-        status: "active" as const,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }),
-    );
+    // The batches table is gone (2026-09-26); an id-shaped string is enough,
+    // because the validator refuses the argument before it reads the value.
+    const batchId = "k570000000000000000000000000batch";
     // The argument itself is gone from both doors (the validator refuses it).
     const args = {
       title: "work the batch",
@@ -1262,132 +1255,6 @@ describe("session event messages", () => {
 });
 
 // ── P3: autonomous-fleet config + scheduler ──────────────────────────────────
-
-describe("autonomous fleet config", () => {
-  it("round-trips the config and keeps it a singleton", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const before = await tom.query(api.claudeSessions.getAutoConfig, {});
-    expect(before.fromDefaults).toBe(true);
-    expect(before.enabled).toBe(false); // nothing runs until deliberately on
-    expect(before.maxLoadPerCpu).toBe(0.8);
-    expect(before.minFreeMemMb).toBe(1024);
-    expect(before.maxLiveAutonomous).toBe(8);
-    expect(before.maxNewPerTick).toBe(2);
-
-    // Tom's door is ON or OFF and nothing else (the lifeos update, phase 7):
-    // the numbers are code-owned defaults, and the switch writes them.
-    await tom.mutation(api.claudeSessions.setAutoConfig, { enabled: true });
-    const after = await tom.query(api.claudeSessions.getAutoConfig, {});
-    expect(after.fromDefaults).toBe(false);
-    expect(after.enabled).toBe(true);
-    expect(after.maxLoadPerCpu).toBe(0.8);
-    expect(after.maxNewPerTick).toBe(2);
-
-    // The CLI pen writes the SAME row, never a second singleton.
-    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
-      enabled: false,
-    });
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudeAutoConfig").collect(),
-    );
-    expect(rows).toHaveLength(1);
-    const off = await tom.query(api.claudeSessions.getAutoConfig, {});
-    expect(off.enabled).toBe(false);
-  });
-
-  // witness: return the row's own numbers from getAutoConfig again — a row
-  // still carrying a value written before they became code-owned would show
-  // Tom a ceiling nothing means to keep, and the next press of the switch
-  // would change it under him.
-  it("answers with the code-owned numbers, whatever an older row still holds", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("claudeAutoConfig", {
-        enabled: true,
-        maxLoadPerCpu: 0.1,
-        minFreeMemMb: 99,
-        maxLiveAutonomous: 1,
-        maxNewPerTick: 1,
-        updatedAt: 1,
-      });
-    });
-    const config = await tom.query(api.claudeSessions.getAutoConfig, {});
-    expect(config.enabled).toBe(true); // the one thing the row decides
-    expect(config.maxLoadPerCpu).toBe(0.8);
-    expect(config.minFreeMemMb).toBe(1024);
-    expect(config.maxLiveAutonomous).toBe(8);
-    expect(config.maxNewPerTick).toBe(2);
-
-    // …and the next press of the switch copies the code values over the row.
-    await tom.mutation(api.claudeSessions.setAutoConfig, { enabled: false });
-    const row = await t.run(async (ctx) =>
-      ctx.db.query("claudeAutoConfig").first(),
-    );
-    expect(row?.maxLoadPerCpu).toBe(0.8);
-    expect(row?.maxNewPerTick).toBe(2);
-  });
-
-  // The fleet default model, which the four calls above never mentioned. It is
-  // OPTIONAL on the pen precisely so those calls keep working — and a row that
-  // never named one still reads as the built-in default, because the scheduler
-  // is going to use that default whether or not the row says so.
-  //
-  // witness: return `row.defaultModel` raw from getAutoConfig — the browser's
-  // picker would render empty on every config row written before 2026-09-04,
-  // while the fleet went on launching Codex sessions.
-  it("keeps the default model optional and reads an unset one as the built-in default", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
-      .toBe(DEFAULT_SESSION_MODEL);
-
-    // A pen call that says nothing about the model: the row is written, the
-    // field stays unset, and the read still answers.
-    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
-      enabled: true,
-    });
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudeAutoConfig").collect(),
-    );
-    expect(rows[0].defaultModel).toBeUndefined();
-    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
-      .toBe(DEFAULT_SESSION_MODEL);
-
-    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
-      enabled: true,
-      defaultModel: "opus",
-    });
-    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
-      .toBe("opus");
-
-    // …and Tom's switch does not reset it either. It writes the code-owned
-    // numbers and the one field it is about; the model the fleet runs on is
-    // not a thing a press of "stop" decides.
-    // witness: drop the defaultModel carry-over in setAutoConfig — flipping
-    // the switch would silently move the whole fleet back to the built-in
-    // default model.
-    await tom.mutation(api.claudeSessions.setAutoConfig, { enabled: false });
-    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
-      .toBe("opus");
-
-    // ...and an omitting call after that does NOT reset it: the knob is Tom's,
-    // and a hand-typed CLI command that forgot the field must not undo it.
-    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
-      enabled: true,
-    });
-    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
-      .toBe("opus");
-  });
-});
-
-// ── Choosing a model for a live session (ratified by Tom, 2026-09-04) ────────
-// Two mutations, and the line between them is the model FAMILY: within one
-// family the runner is the same process and the model id is a per-turn
-// argument, so the change is a patch; across families there is no shared
-// resume key at all, so the change is a new session that reads the old one's
-// transcript off disk.
 
 describe("session model changes", () => {
   const sessionRow = (t: ReturnType<typeof convexTest>, id: Id<"claudeSessions">) =>

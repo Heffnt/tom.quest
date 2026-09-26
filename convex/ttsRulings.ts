@@ -58,9 +58,8 @@ import { resolveId } from "./jarvis/tables";
 //
 // TWO SUBJECT TYPES: life (a dtsTodos row) and code (repo + externalId). The
 // third, a batch, went with batches (Tom's ruling of 2026-09-24: "I dont want
-// to have batches at all anymore"). The schema still declares subjectType
-// "batch" and batchId until the narrow, so a stored row can carry them; no
-// door takes one.
+// to have batches at all anymore"); its declaration went with the table on
+// 2026-09-26.
 
 const VERDICT = v.union(
   v.literal("approve"),
@@ -88,19 +87,16 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life and code keys disjoint, and a
-// stored batch row — the schema declares one until the narrow — apart from
-// both). Client code derives live rulings with the same rule via
+// spaces; the type prefix keeps life and code keys disjoint). Client code
+// derives live rulings with the same rule via
 // app/tts/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch";
+  subjectType: "life" | "code";
   todoId?: string;
   repo?: string;
   externalId?: string;
-  batchId?: string;
 }) => {
   if (row.subjectType === "life") return `life ${row.todoId}`;
-  if (row.subjectType === "batch") return `batch ${row.batchId}`;
   return `code ${row.repo} ${row.externalId}`;
 };
 

@@ -9,10 +9,9 @@ export type CodeBrief = Doc<"dtsCodeBriefs">;
 // A ruling the page shows: on a todo or a code entry.
 export type Ruling = Doc<"rulings"> & { subjectType: "life" | "code" };
 
-/** A ruling as listRulings returns it. A ruling on a batch can still come
- * back until the schema stops declaring that subject (Tom, 2026-09-24: no
- * batches); the record keeps it, no page shows its subject, and
- * liveRulingsByKey drops it. Once the schema narrows this is Ruling. */
+/** A ruling as listRulings returns it. The batch subject went with the
+ * batches table (2026-09-26), so every listed ruling is a Ruling; the guard
+ * below stays as the page's own check of what it shows. */
 type ListedRuling = Doc<"rulings"> & { subjectType: string };
 
 /** Whether a listed ruling is on a subject this page shows. */
