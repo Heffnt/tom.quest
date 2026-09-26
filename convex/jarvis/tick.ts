@@ -54,6 +54,15 @@ const EARLY_MS = 15_000;
 
 const jobOf = (name: string) => `tick:${name}`;
 
+/** What a task that caught its own failures says about them. A task that
+ *  keeps going past one bad source (a calendar feed, a mirrored repository)
+ *  returns `{ failures: [...] }` instead of throwing, so the other sources
+ *  still land; a non-empty list makes its run a job-failed row all the same. */
+function failuresOf(result: unknown): string[] {
+  const failures = (result as { failures?: unknown } | null | undefined)?.failures;
+  return Array.isArray(failures) ? failures.filter((one): one is string => typeof one === "string") : [];
+}
+
 /** POST /jarvis/tick's mutation: start every due task; answer their names. */
 export const due = internalMutation({
   args: { now: v.optional(v.number()) },
@@ -88,11 +97,17 @@ export const runTask = internalAction({
     const task = TICK_TASKS[name];
     if (task === undefined) throw new Error(`no tick task named ${name}`);
     const job = jobOf(name);
+    let error: string | null = null;
     try {
-      if ("action" in task.run) await ctx.runAction(task.run.action, {});
-      else await ctx.runMutation(task.run.mutation, {});
+      const result: unknown = "action" in task.run
+        ? await ctx.runAction(task.run.action, {})
+        : await ctx.runMutation(task.run.mutation, {});
+      const failures = failuresOf(result);
+      if (failures.length > 0) error = failures.join("; ");
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
+      error = e instanceof Error ? e.message : String(e);
+    }
+    if (error !== null) {
       await ctx.runMutation(internal.jarvis.events.record, {
         kind: JOB_FAILED,
         provenance: { job },
