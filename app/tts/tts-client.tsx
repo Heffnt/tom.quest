@@ -1,7 +1,7 @@
 "use client";
 
 // TTS (tts) — the one todo page: two tabs (calendar · everything), the active
-// tab below. Batches are gone (Tom, 2026-09-24): the runners, the todos
+// tab below. Batches are gone (Tom, 2026-09-24): the todos
 // awaiting his ruling and the rulings still applying open the everything tab,
 // which is the default. Tab state rides ?tab=; ?item= (produced by
 // ttsItemLink) forces the everything tab and is handed to it as the link

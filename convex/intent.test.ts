@@ -163,7 +163,7 @@ describe("intent.lines", () => {
         body: "# app\n\n## ui\n\n- No explainer text in product UI.\n",
         bytes: 1, commit: COMMIT, syncedAt: 10,
       });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "code", repo: "tom.quest", externalId: "x",
         verdict: "approve", sentence: "ship it", ruledAt: Date.UTC(2026, 8, 20),
       });
@@ -199,7 +199,7 @@ describe("intent.lines", () => {
     expect(lines[lines.length - 1].source).toBe("tom.quest app/AGENTS.md");
 
     expect(sources.map((row) => row.name)).toContain("vqc/steering.yaml");
-    expect(sources.find((row) => row.name === "dtsRulings")?.lines).toBe(1);
+    expect(sources.find((row) => row.name === "rulings")?.lines).toBe(1);
   });
 
   it("renders a page whose evidence file has not been posted, with nothing claimed about it", async () => {
@@ -221,7 +221,7 @@ describe("intent.lines", () => {
     const t = convexTest(schema, modules);
     const { lines, sources } = await (await asTom(t)).query(api.intent.lines, {});
     expect(lines).toEqual([]);
-    expect(sources.map((row) => row.name)).toEqual(["dtsRulings", "runLabels"]);
+    expect(sources.map((row) => row.name)).toEqual(["rulings", "runLabels"]);
   });
 });
 

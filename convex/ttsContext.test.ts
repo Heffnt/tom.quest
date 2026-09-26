@@ -139,7 +139,7 @@ async function seed(
       });
     }
     for (const ruling of record.rulings) {
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId: todos[ruling.todoId],
         verdict: ruling.verdict as "approve" | "revise" | "session" | "archive",
@@ -295,7 +295,7 @@ describe("assembleContext", () => {
     const ruling = `OVERLONG-RULING-${"r".repeat(RULINGS_BYTES)}`;
     const outcome = `OVERLONG-OUTCOME-${"o".repeat(OUTCOMES_BYTES)}`;
     await t.run(async (ctx) => {
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId: ids.todos[IDS.paths],
         verdict: "revise",

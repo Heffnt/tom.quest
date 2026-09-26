@@ -15,27 +15,6 @@ crons.interval(
   internal.gpuPool.reconcile,
 );
 
-// The runners' backstop (convex/ttsRunners.ts): opens a step for any runner
-// whose nextStepAt has passed with none waiting or running, and frees any lease
-// past its deadline. A runner's schedule is a field, not this cron; this is
-// what recovers a scheduled call that was lost.
-crons.interval(
-  "runner sweep",
-  { seconds: 60 },
-  internal.ttsRunners.internalRunnerSweep,
-);
-
-// The orchestrator's backstop (convex/orchestrator.ts): restarts its run from
-// the document when the live run has ended and its crash backoff has passed,
-// or when a claimed run's lease has run out. An ending schedules this itself;
-// the cron is what recovers a scheduled call that was lost. Nothing happens
-// while the orchestrator is stopped or has never been started.
-crons.interval(
-  "orchestrator sweep",
-  { seconds: 60 },
-  internal.orchestrator.internalSweep,
-);
-
 // ── TTS (spec: WikiTom tts/spec.md §7) ──────────────────────────────────────
 // The TTS day anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
 // each job fires at both possible UTC times (EDT/EST) and the handler's
@@ -114,16 +93,5 @@ crons.interval(
 // runs because a renamed cron loses its history.
 crons.cron("runs evict (edt)", "15 8 * * *", internal.agents.internalEvictTick, {});
 crons.cron("runs evict (est)", "15 9 * * *", internal.agents.internalEvictTick, {});
-
-// ── TTS autonomous fleet (P3) ───────────────────────────────────────────────
-// Load-based admission of autonomous groundwork sessions. Off by default
-// (claudeAutoConfig.enabled, no row = false), so the interval is safe to ship
-// ahead of the enable pen.
-crons.interval(
-  "tts auto-session scheduler",
-  { minutes: 5 },
-  internal.claudeSessions.internalAutoSchedule,
-  {},
-);
 
 export default crons;

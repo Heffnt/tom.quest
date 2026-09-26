@@ -76,13 +76,8 @@ export default function ObserveClient() {
       runs: rows.runs,
       events: rows.events,
       rulings: rows.rulings,
-      runners: rows.runners.map((runner) => ({
-        experimentHost: runner.experimentHost,
-        endedAt: runner.endedAt,
-        lastCheckInAt: runner.lastCheckInAt,
-      })),
     }),
-    [rows.runs, rows.events, rows.rulings, rows.runners],
+    [rows.runs, rows.events, rows.rulings],
   );
 
   const shown = useMemo(

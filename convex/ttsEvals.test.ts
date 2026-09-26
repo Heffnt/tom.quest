@@ -196,7 +196,7 @@ describe("internalGoldenInput", () => {
         });
         for (const verdict of ["approve", "revise"] as const) {
           for (let ordinal = 0; ordinal < 20; ordinal++) {
-            await ctx.db.insert("dtsRulings", {
+            await ctx.db.insert("rulings", {
               subjectType: "life",
               todoId,
               verdict,
@@ -229,18 +229,8 @@ describe("internalGoldenInput", () => {
         statement: "a todo", readiness: "unprepared", status: "active", timingClass: "whenever", source: "test", createdAt: now, updatedAt: now,
       });
       for (const verdict of ["session", "archive"] as const) {
-        await ctx.db.insert("dtsRulings", { subjectType: "life", todoId, verdict, ruledAt: now });
+        await ctx.db.insert("rulings", { subjectType: "life", todoId, verdict, ruledAt: now });
       }
-    });
-    expect((await t.query(internal.ttsEvals.internalGoldenInput, {})).items).toEqual([]);
-  });
-
-  it("takes no item from a stored ruling on a batch", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      const batchId = await ctx.db.insert("batches", { statement: "a batch", status: "active", createdAt: now, updatedAt: now });
-      await ctx.db.insert("dtsRulings", { subjectType: "batch", batchId, verdict: "approve", ruledAt: now });
     });
     expect((await t.query(internal.ttsEvals.internalGoldenInput, {})).items).toEqual([]);
   });
@@ -264,7 +254,7 @@ describe("internalLabelInput", () => {
         statement: "a todo", readiness: "unprepared", status: "active",
         timingClass: "whenever", source: "test", createdAt: now, updatedAt: now,
       });
-      const rulingId = await ctx.db.insert("dtsRulings", {
+      const rulingId = await ctx.db.insert("rulings", {
         subjectType: "life", todoId: id, verdict: "approve", ruledAt: now,
       });
       await ctx.db.insert("runLabels", {

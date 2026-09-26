@@ -88,9 +88,9 @@ async function seedTodo(
 async function seedRuling(
   t: ReturnType<typeof convexTest>,
   over: Record<string, unknown>,
-): Promise<Id<"dtsRulings">> {
+): Promise<Id<"rulings">> {
   return await t.run((ctx) =>
-    ctx.db.insert("dtsRulings", {
+    ctx.db.insert("rulings", {
       subjectType: "life",
       verdict: "approve",
       ruledAt: 5_000,
@@ -257,25 +257,6 @@ describe("a ruling becomes a label", () => {
     });
   });
 
-  it("links a stored batch ruling to no run, even when the batch row carries a token", async () => {
-    const t = convexTest(schema, modules);
-    await seedRun(t, { regToken: "tok-batch", runId: "claude:box:planner" });
-    const batchId = await t.run((ctx) =>
-      ctx.db.insert("batches", {
-        statement: "the visa run",
-        status: "active",
-        producedByRunToken: "tok-batch",
-        createdAt: 1,
-        updatedAt: 1,
-      }),
-    );
-    const rulingId = await seedRuling(t, { subjectType: "batch", batchId, verdict: "approve" });
-    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
-    expect(await labels(t)).toEqual([]);
-    const unlinked = await events(t, "agent-label-unlinked");
-    expect(unlinked).toHaveLength(1);
-    expect(unlinked[0].data).toMatchObject({ source: "ruling", ref: `ruling:${rulingId}`, subjectKey: null });
-  });
 });
 
 // ── An objection ─────────────────────────────────────────────────────────────
@@ -589,10 +570,10 @@ async function seedDigestSent(
   t: ReturnType<typeof convexTest>,
   data: Record<string, unknown>,
 ) {
-  // NO KEY, exactly as tts.internalMarkDigestSent writes it: the resolver
-  // takes the newest rows of the kind and finds the one posted at that ts.
+  // The record's digest-sent row: the resolver takes the newest rows of the
+  // kind and finds the one posted at that ts.
   await t.run((ctx) =>
-    ctx.db.insert("dtsEvents", { at: 5_000, kind: "digest-sent", data }),
+    ctx.db.insert("events", { at: 5_000, kind: "digest-sent", provenance: {}, data }),
   );
 }
 

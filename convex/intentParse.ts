@@ -59,8 +59,8 @@ export type IntentLine = {
 /**
  * The callers the agent view offers: the ones whose context is assembled with
  * no subject — the five HTTP doors that read internalContextPrelude, and the
- * laptop's session-start hook. Every other caller (the session opener, a
- * runner step) is granted skills off its subject, so a view of it with none
+ * laptop's session-start hook. Every other caller (the session opener) is
+ * granted skills off its subject, so a view of it with none
  * would show grants no run of it ever gets.
  *
  * Here, in the pure half, because the page offers the list the query accepts.

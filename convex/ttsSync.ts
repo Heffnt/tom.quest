@@ -11,6 +11,7 @@ import {
   SLACK_SUBJECT,
   TTS_DIGEST_NY_HOUR,
   channelFor,
+  replyRouteLive,
   slackHourKey,
   ttsDayBoundsUtc,
   ttsDayKey,
@@ -34,8 +35,6 @@ import {
   type RemovalFact,
   type HourlyFacts,
   type Message,
-  checkInBody,
-  composeCheckIn,
 } from "./ttsCompose";
 
 // TTS actions that reach outside Convex: the 5 a.m. Slack digest, the hourly
@@ -182,16 +181,9 @@ export const sendSlack = internalAction({
 export { channelFor };
 export type { SlackChannelKind } from "./ttsShared";
 
-/** THE ONE CONFIG CHECK. A message says "reply here" only when a reply would
- *  actually reach TTS: POST /slack/events answers 503 without
- *  SLACK_SIGNING_SECRET, and ignores every message without TOM_SLACK_USER_ID.
- *  Today the morning message prints "missed: reply done, or a new date" six
- *  times a day into a route that answers 503 — the only call to action in the
- *  whole system, and it is dead. A message that asks for something it cannot
- *  receive teaches him to ignore the ones that can. */
-export function replyRouteLive(): boolean {
-  return Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
-}
+// The one config check, replyRouteLive, lives in convex/ttsShared.ts so the
+// plain-runtime digest area (convex/jarvis/digest.ts) reads it too.
+export { replyRouteLive };
 
 /** Render a composed message for Slack, dropping any line that breaks the form
  *  and logging what was dropped. The message itself is never dropped. */
@@ -626,32 +618,6 @@ export const sendBroken = internalAction({
   },
 });
 
-// ── A runner's check-in (convex/ttsRunners.ts) ───────────────────────────────
-// One thread per runner in #tts-runners: the first check-in is the root and
-// every later one replies under it. The numbers go through the form like every
-// message; the step's own words follow verbatim, having passed their own form
-// rules and a judge. Quiet while SLACK_TTS_RUNNERS_CHANNEL_ID is unset, which
-// channelFor logs.
-export const sendRunnerCheckIn = internalAction({
-  args: { checkInId: v.id("runnerEvents") },
-  handler: async (ctx, { checkInId }): Promise<{ sent: boolean; reason?: string; error?: string }> => {
-    const read = await ctx.runQuery(internal.ttsRunners.internalCheckInFacts, { checkInId });
-    if (read === null) return { sent: false, reason: "no such check-in" };
-    const channel = channelFor("runners");
-    if (channel === null) return { sent: false, reason: "not configured" };
-    const text = `${renderChecked(composeCheckIn(read.facts), false, "runner check-in")}\n\n${checkInBody(read.facts)}`;
-    const posted = await postSlack(ctx, {
-      text,
-      subject: { kind: "runner", id: read.runnerId },
-      channel,
-      ...(read.threadTs !== undefined ? { threadTs: read.threadTs } : {}),
-    });
-    if (!posted.ok) return { sent: false, error: posted.error };
-    await ctx.runMutation(internal.ttsRunners.internalCheckInPosted, { checkInId, ts: posted.ts });
-    return { sent: true };
-  },
-});
-
 // ── The hourly update (Tom's ruling 2026-08-30; the lifeos update, phase 2) ──
 // Every hour, 24/7, in #tts-hourly (SLACK_TTS_HOURLY_CHANNEL_ID — its OWN
 // channel, not #tts): what the box is running now, which todos were worked
@@ -794,7 +760,6 @@ export const sendHourlyUpdate = internalAction({
         start: since,
         end: now,
       }),
-      runners: await ctx.runQuery(internal.ttsHourly.internalLiveRunners, {}),
     };
 
     // ── THE SILENCE RULE (slack-design.md §4.4) ─────────────────────────────

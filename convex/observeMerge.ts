@@ -109,7 +109,7 @@ export async function newestRuling(
   externalId: string,
 ) {
   const rulings = await ctx.db
-    .query("dtsRulings")
+    .query("rulings")
     .withIndex("by_repo_external", (q) =>
       q.eq("repo", repo).eq("externalId", externalId),
     )

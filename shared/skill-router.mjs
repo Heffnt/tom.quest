@@ -57,11 +57,6 @@ export const CONTEXT_CALLERS = Object.freeze({
   "simplify-input": Object.freeze({ judges: true, captures: false }),
   prepare: Object.freeze({ judges: true, captures: false }),
   triage: Object.freeze({ judges: false, captures: true }),
-  // One step of a runner (convex/ttsRunners.ts). `judges` because a step
-  // judges the tier of its own question on Tom's behalf; `captures` false
-  // because a step files no todo. The repository row grants its area and its
-  // repo skill, which is how a ComplexMultiTrigger runner gets his research.
-  "runner-step": Object.freeze({ judges: true, captures: false }),
   laptop: Object.freeze({ judges: false, captures: false }),
   cli: Object.freeze({ judges: false, captures: false }),
 });
@@ -82,12 +77,12 @@ export function callerRules(caller) {
  * The callers granted `know-intent` by name, beside the ones their row's
  * `judges` flag already grants it to.
  *
- * All five judge at this commit, so the list is redundant today. It is named
+ * All four judge at this commit, so the list is redundant today. It is named
  * rather than folded into `judges` because the routing table states both
  * conditions, and a caller whose `judges` flag is later turned off is a caller
  * that would otherwise lose his intent silently.
  */
-export const INTENT_CALLERS = Object.freeze(["opener", "planner", "prepare", "weekly-input", "runner-step"]);
+export const INTENT_CALLERS = Object.freeze(["opener", "planner", "prepare", "weekly-input"]);
 
 /**
  * The callers granted `know-week` without a dated subject: the runs that read

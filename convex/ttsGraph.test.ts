@@ -391,6 +391,5 @@ describe("GET /tts/planner-context", () => {
       });
       expect(res.status).toBe(404);
     }
-    expect(await t.run(async (ctx) => ctx.db.query("batches").collect())).toEqual([]);
   });
 });

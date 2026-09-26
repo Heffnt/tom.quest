@@ -34,14 +34,14 @@ describe("TTS search queries", () => {
     const todoId = await insertTodo(t, "Replace the cluster credential helper");
     const token = shapedGithubToken("A");
     await t.run(async (ctx) => {
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "revise",
         sentence: `older credential note ${token}`,
         ruledAt: 10,
       });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "approve",

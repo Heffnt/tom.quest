@@ -587,12 +587,12 @@ export const internalOpenProposals = internalQuery({
         keyedRow(ctx, DELEGATE_OBJECTION, askId),
       ]);
       if (admitted !== null || objected !== null) continue;
-      // "digest-sent" rows carry no key (convex/tts.ts internalMarkDigestSent
-      // depends on that), so the window's second half is a bounded range read
-      // on by_kind_at from the floor forward — one row is enough, because the
-      // question is whether ANY digest went out after it.
+      // The window's second half is a bounded range read on the record's
+      // by_kind_at from the floor forward (convex/jarvis/digest.ts writes the
+      // rows) — one row is enough, because the question is whether ANY digest
+      // went out after it.
       const sent = await ctx.db
-        .query("dtsEvents")
+        .query("events")
         .withIndex("by_kind_at", (q) =>
           q.eq("kind", DIGEST_SENT).gt("at", row.at + OBJECTION_FLOOR_MS),
         )
@@ -690,7 +690,7 @@ export const internalOpenRemovals = internalQuery({
       let windowClosed = false;
       if (objection === null) {
         const sent = await ctx.db
-          .query("dtsEvents")
+          .query("events")
           .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT).gt("at", row.at + OBJECTION_FLOOR_MS))
           .take(1);
         windowClosed = sent.length > 0 && now > row.at + OBJECTION_FLOOR_MS;

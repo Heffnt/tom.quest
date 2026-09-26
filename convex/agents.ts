@@ -82,9 +82,7 @@ const AGENT = v.object({
   environment: v.optional(AGENT_ENVIRONMENT),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: AGENT_KIND, status: AGENT_STATUS,
   mode: v.optional(AGENT_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
-  // batchId stays accepted while a box that has not rolled out still sends it;
-  // nothing reads it, and the schema narrow removes it.
-  todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  todoId: v.optional(v.id("dtsTodos")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
   regToken: v.optional(v.string()),
   envelopeKey: v.optional(v.string()), abandonedAt: v.optional(v.number()), file: FILE,
 });
@@ -216,8 +214,8 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
   };
 }
 
-// `runner:<id>` is a runner's step run: the id is the runners row it belongs
-// to, which is how the agents page names the runner beside the chain.
+// `runner:<id>` is a runner's step run, as the box's launcher still writes it;
+// the record's runners are gone (2026-09-26), so nothing reads the id.
 // `desktop` is a box session no launcher started, which scripts/agent-hook.mjs
 // records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
 // REMOVAL CHECK: the list is the ingest's refusal of an origin nobody wrote on
@@ -559,7 +557,7 @@ export const internalIngest = internalMutation({
       // the repair page is the only thing that can give it one. Without that
       // every label about a run whose first page beat its envelope would be
       // unlinked forever.
-      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "environment", "continuesRunId", "todoId", "batchId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
+      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "environment", "continuesRunId", "todoId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
       if (run.sessionId !== undefined && existing.sessionId === undefined) patch.sessionId = run.sessionId;
       if (existing.kind === "unknown") patch.kind = run.kind;
       if (existing.origin === "unknown") patch.origin = run.origin;

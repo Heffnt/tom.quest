@@ -245,7 +245,7 @@ function labelForVerdict(
 /** The row a ruling's subject names, and the token that row carries. */
 async function tokenForRulingSubject(
   ctx: MutationCtx,
-  ruling: Doc<"dtsRulings">,
+  ruling: Doc<"rulings">,
 ): Promise<string | undefined> {
   if (ruling.subjectType === "life" && ruling.todoId !== undefined) {
     return (await ctx.db.get(ruling.todoId))?.producedByRunToken;
@@ -267,15 +267,13 @@ async function tokenForRulingSubject(
 /** The subject's identity, in the one spelling ttsRulings.subjectKey defines.
  *  Duplicated as a local read rather than imported to keep this file free of a
  *  cycle through ttsRulings, which schedules into it. */
-function subjectKeyOf(ruling: Doc<"dtsRulings">): string | null {
+function subjectKeyOf(ruling: Doc<"rulings">): string | null {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
-  // A stored ruling on a batch has no subject key: the schema narrow removes it.
-  if (ruling.subjectType === "batch") return null;
   return `code ${ruling.repo} ${ruling.externalId}`;
 }
 
 export const internalLabelFromRuling = internalMutation({
-  args: { rulingId: v.id("dtsRulings") },
+  args: { rulingId: v.id("rulings") },
   handler: async (ctx, { rulingId }) => {
     const ruling = await ctx.db.get(rulingId);
     if (ruling === null) return { wrote: false, why: "no ruling" };
@@ -502,18 +500,19 @@ export const internalLabelFromReaction = internalMutation({
       if (existing !== null) await ctx.db.delete(existing._id);
       return { removed: existing !== null };
     }
-    // The digest this reaction sat on. Its rows carry NO key by construction
-    // (ttsDigest.lastDigestSent depends on that), so this is the same bounded
-    // newest-first take namedObjection uses, and for the same reason: Slack's
-    // three-second budget.
+    // The digest this reaction sat on: the same bounded newest-first take
+    // namedObjection uses on the record's digest-sent rows, and for the same
+    // reason: Slack's three-second budget. `ts` since the box posts it,
+    // `slackTs` on the rows written before.
     const recent = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT))
       .order("desc")
       .take(DIGEST_OBJECTION_LOOKBACK);
-    const sent = recent.find(
-      (row) => (row.data as { slackTs?: unknown } | undefined)?.slackTs === ts,
-    );
+    const sent = recent.find((row) => {
+      const d = row.data as { ts?: unknown; slackTs?: unknown } | undefined;
+      return d?.ts === ts || d?.slackTs === ts;
+    });
     if (sent === undefined) return { wrote: false, why: "no digest was sent at that ts" };
     const mapped = REACTION_POLARITY[name];
     if (mapped === undefined) {

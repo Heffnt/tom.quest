@@ -28,7 +28,7 @@ import { LEARNING_CHANGE } from "./ttsDigest";
 import { AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { INTEGRATION_SOURCE, integrationStatement } from "./ttsIntegrations";
-import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
+import { JOB_FAILED, JOB_RECOVERED } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM } from "./ttsSlack";
 
@@ -93,6 +93,18 @@ async function event(
   at: number,
   extra: { todoId?: Id<"dtsTodos">; key?: string; data?: unknown } = {},
 ) {
+  // A job's report lives in the record's events table (convex/jarvis/jobs.ts),
+  // its condition as the subject; every other kind still in dtsEvents.
+  if (kind === JOB_FAILED || kind === JOB_RECOVERED) {
+    const job = (extra.data as { job?: string } | undefined)?.job;
+    return await ctx.db.insert("events", {
+      kind,
+      at,
+      provenance: job === undefined ? {} : { job },
+      ...(extra.key === undefined ? {} : { subject: extra.key }),
+      data: extra.data ?? {},
+    });
+  }
   return await ctx.db.insert("dtsEvents", { at, kind, ...extra });
 }
 
@@ -221,7 +233,7 @@ describe("gatherWeeklyFacts", () => {
         status: "archived",
         source: INTEGRATION_SOURCE,
       });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId: declined,
         verdict: "archive",

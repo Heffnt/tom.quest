@@ -21,6 +21,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
+import { insertEvent } from "./jarvis/record";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -1667,15 +1668,11 @@ export const internalMarkDigestSent = internalMutation({
     // the index order IS time order and .first() is the newest row. Keying
     // these by day would silently break the window arithmetic of every future
     // morning message.
-    await logEvent(ctx, "digest-sent", undefined, {
-      day,
-      windowEnd,
-      truncated,
-      objectionAskIds,
-      writtenBy,
-      facts,
-      runToken,
-      slackTs,
+    // In the record's events table since the box writes the digest
+    // (convex/jarvis/digest.ts), where every reader of the kind now reads.
+    await insertEvent(ctx, {
+      kind: "digest-sent",
+      data: { day, windowEnd, truncated, objectionAskIds, writtenBy, facts, runToken, slackTs, ts: slackTs },
     });
   },
 });

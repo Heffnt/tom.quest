@@ -25,7 +25,6 @@ import {
   LEGACY_SESSION_MODEL,
   NARROW_LIST,
   NO_REPO,
-  RUNNER_CEILING_DEFAULT as SHARED_RUNNER_CEILING_DEFAULT,
   SESSION_MODELS,
   SESSION_REPOS,
 } from "../shared/session-constants.mjs";
@@ -459,7 +458,7 @@ export function isPrepared(readiness: StoredReadiness): boolean {
 // for one more release — a page bundle built before this narrow can hold a
 // brief in memory in the old spelling — and then the retired map goes too.
 export const RECOMMENDATION_VALUES = ["approve", "revise", "session", "archive"] as const;
-export type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
+type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
 /** Read-only for one more release; the validator refuses all three. */
 export const RETIRED_RECOMMENDATION_MAP = {
   "stale-replan": "revise",
@@ -481,11 +480,6 @@ export function normalizeRecommendation(r: StoredRecommendation): Recommendation
   return r in RETIRED_RECOMMENDATION_MAP
     ? RETIRED_RECOMMENDATION_MAP[r as keyof typeof RETIRED_RECOMMENDATION_MAP]
     : (r as Recommendation);
-}
-export function isRecommendation(x: unknown): x is Recommendation {
-  return (
-    typeof x === "string" && (RECOMMENDATION_VALUES as readonly string[]).includes(x)
-  );
 }
 
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
@@ -733,30 +727,7 @@ export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
  * Written into claudeSessions.repo when a session holds no repos at all. */
 // ── The box's prompt sentences ──────────────────────────────────────────────
-// Read by the mission prompts in convex/claudeSessions.ts and the runner's step
-// prompt in convex/ttsRunners.ts; here so neither module imports the other.
-
-// The box's two read-only commands, named in every autonomous mission prompt.
-// An installed command no prompt names is not access: tts-browse sat on the
-// box unmentioned while sessions that changed a page still ended by asking
-// Tom to go and look (found 2026-08-30, salvaged from unmerged commit
-// 703f526 when #33 superseded that branch).
-export const BOX_TOOLS_PARAGRAPH = [
-  "Two read-only commands exist on this box:",
-  "- `tts-browse <url> [--login] [--out /tmp/page.png]` opens a real browser on a page and prints its console errors and failed requests, then writes a screenshot you can read back. `--login` signs in with the agent account — every /turing and /tts page is role-gated, so an anonymous 200 can hide 401s underneath. LOOK at any page you changed instead of asking Tom to.",
-  "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key, and `tts-turing tree [path]|node [path]|read <path>` reads the experiment results tree (a path is relative to its root). It cannot allocate, cancel, run, or read files outside the results tree — those need Tom. A verb answering 401 means the read key is not installed yet, or turing-api has not been redeployed with the results tree on that key; record that in your outcome instead of retrying.",
-].join("\n");
-
-// What a runner step on a Turing experiment is told about acting on the
-// cluster. Only a runner step's process holds the runner key, so this is told
-// to runner steps alone; BOX_TOOLS_PARAGRAPH, what sessions are told, stays
-// true for them as written.
-export const RUNNER_ACT_PARAGRAPH = [
-  "One command acts on the cluster, and only a runner step has its key:",
-  "- `tts-turing-act launch --runner <runner id> --label <short label> --gpu-type <type> --minutes <n> --command '<command>' [--command ...] [--project-dir <dir in the CMT checkout>] [--count <n>] [--memory-mb <n>]` starts a job named for this runner. Every command must run a script file inside the CMT checkout on the cluster (`python <script>`, `bash <script>` or the script's own path), one plain command per line with no `;`, `&`, `|`, redirection or `$`. Relative paths are read from the project directory.",
-  "- `tts-turing-act cancel --runner <runner id> --job <job id>` cancels a job this runner launched. The cluster refuses any other job, the GPU pool's included, and that refusal is final: report it, do not retry it.",
-  "Before a launch the command checks the request against this runner's ceiling (GPUs, minutes and memory per request) and its GPU-hour budget against the hours already spent and booked. When it refuses (it exits 6 and says why), nothing was sent: raise a setup question for Tom saying what the launch was for and what it needs (GPU-hours for the budget; GPUs, time and memory for the ceiling, with the reply form it prints), and say what you will do if he does not answer. It exits 4 when the cluster started fewer jobs than asked for and says how many started; name that count in the check-in, since a partial launch is not the plan. It exits 3 when the box has no runner key yet; say so in the check-in and act on nothing. After a launch or cancel it reads the queue back and prints what it saw; that line is the verification you name in the check-in. Record every launch and cancel with the pen's `--act`.",
-].join("\n");
+// Read by the mission prompts in convex/claudeSessions.ts.
 
 // The daemon that runs THIS session runs every other live session on the box
 // too, so an agent that restarts it to pick up its own change kills itself
@@ -765,110 +736,6 @@ export const RUNNER_ACT_PARAGRAPH = [
 // one shape that goes unsaid is the one that does it.
 export const DAEMON_RESTART_SENTENCE =
   "Never restart, stop, or kill `tts-session-host` — it is the daemon running this session and every other live session on this box; if a change needs a restart, say so in your outcome and the supervisor restarts it.";
-
-// ── Runners (convex/ttsRunners.ts) ───────────────────────────────────────────
-// The stored vocabulary of a runner, here because the schema and the runner
-// module both need it and the schema cannot import a module with functions.
-//
-// `type` picks the column of the asking rubric: a campaign spends and waits on
-// Tom for its plan; a probe is small and asks the delegate. `tier` is the row:
-// routine (inside the plan), plan (changes what the experiment is), setup
-// (changes what it costs or where it runs).
-export const RUNNER_TYPE = v.union(v.literal("campaign"), v.literal("probe"));
-export const RUNNER_TIER = v.union(v.literal("routine"), v.literal("plan"), v.literal("setup"));
-export const RUNNER_ANSWERER = v.union(v.literal("tom"), v.literal("delegate"), v.literal("self"));
-export const RUNNER_DECISION = v.union(
-  v.literal("continue"), v.literal("change"), v.literal("ask"), v.literal("hand-off"), v.literal("finish"),
-);
-export const RUNNER_ENDED_REASON = v.union(v.literal("finish"), v.literal("hand-off"), v.literal("failed"));
-export type RunnerTier = Infer<typeof RUNNER_TIER>;
-export type RunnerAnswerer = Infer<typeof RUNNER_ANSWERER>;
-export const RUNNER_TIERS: readonly RunnerTier[] = ["routine", "plan", "setup"];
-
-// What one launch of a runner may ask for: GPUs, minutes and megabytes of
-// memory per request. Tom ruled on 2026-09-21 that his ruling may raise it up
-// to his full limit, so it lives on the runner row, and tts-turing-act on the
-// box enforces it from the sensor's cache. A row with no ceiling holds the
-// default, which is the fixed ceiling every runner had before that ruling.
-//
-// The maximum is where no ruling reaches. Sixteen GPUs is Tom's own cluster
-// limit, from his ruling. 1440 minutes is the 24-hour walltime of the `short`
-// partition every allocation lands on (turing-api/spec.md §1.4; no partition
-// is ever passed). 1536000 MB is the largest node in that partition, the
-// eight-GPU H200 node, as the cluster's GPU report gave it on 2026-09-21.
-// turing-api/runner_key.py holds the same three numbers, since it cannot see
-// the row. turing-api/spec.md §1.4 records a cap of 12 GPUs per account on
-// `short`, below Tom's 16; a launch above it starts fewer jobs, and
-// tts-turing-act fails that launch and says how many started.
-export const RUNNER_CEILING = v.object({ gpus: v.number(), minutes: v.number(), memoryMb: v.number() });
-export type RunnerCeiling = Infer<typeof RUNNER_CEILING>;
-// The default's one home is shared/session-constants.mjs, which the box's
-// sensor reads too.
-export const RUNNER_CEILING_DEFAULT: RunnerCeiling = SHARED_RUNNER_CEILING_DEFAULT;
-export const RUNNER_CEILING_MAX: RunnerCeiling = { gpus: 16, minutes: 1440, memoryMb: 1536000 };
-
-const CEILING_WORDS: Record<keyof RunnerCeiling, string> = { gpus: "GPUs", minutes: "minutes", memoryMb: "MB of memory" };
-
-/** A ceiling's faults, each a sentence, or an empty list: every number whole,
- *  at least one, and at most the maximum. */
-export function runnerCeilingFaults(ceiling: RunnerCeiling): string[] {
-  const faults: string[] = [];
-  for (const key of ["gpus", "minutes", "memoryMb"] as const) {
-    const n = ceiling[key];
-    if (!Number.isInteger(n) || n < 1) faults.push(`The ceiling's ${CEILING_WORDS[key]} must be a whole number, at least one.`);
-    else if (n > RUNNER_CEILING_MAX[key]) faults.push(`The ceiling's ${CEILING_WORDS[key]} may be at most ${RUNNER_CEILING_MAX[key]}, Tom's cluster maximum; no ruling reaches above it.`);
-  }
-  return faults;
-}
-
-/** A ceiling in words: "2 GPUs, 240 minutes and 128000 MB of memory per request". */
-export function runnerCeilingWords(ceiling: RunnerCeiling): string {
-  return `${ceiling.gpus} GPUs, ${ceiling.minutes} minutes and ${ceiling.memoryMb} MB of memory per request`;
-}
-
-/** The form of Tom's reply that sets a runner's ceiling, in words, for the
- *  step prompt and the docs. parseCeilingReply reads exactly this. */
-export const CEILING_REPLY_FORM =
-  'a reply in the runner\'s thread that starts with the word "ceiling" and says nothing but the numbers it changes, each once, such as "ceiling 8 GPUs, 12 hours, 256 GB"; a number it does not name stays as it was, hours are turned into minutes and GB into thousands of MB';
-
-/**
- * Tom's reply as a ceiling change, or null when the reply is not one. A reply
- * is one when its first word is "ceiling". It names numbers with their units:
- * GPUs; minutes or hours; MB or GB (a GB is 1000 MB, as 128 GB is the 128000
- * MB default). What it does not name keeps the current value. A reply that is
- * not exactly that form, or a number that breaks the rules, comes back with
- * its fault, and the ceiling does not change.
- */
-export function parseCeilingReply(text: string, current: RunnerCeiling): { ceiling: RunnerCeiling } | { fault: string } | null {
-  const body = text.trim();
-  if (!/^ceiling\b/i.test(body)) return null;
-  // THE WHOLE REPLY IS THE FORM OR IT CHANGES NOTHING. Only the word, then
-  // number-and-unit pairs joined by commas or "and", each quantity once: a
-  // reply that says anything else ("8 GPUs, not 16 GPUs", "-16 GPUs", "about
-  // 16 GPUs") is a sentence for Tom's reader, not a number for this one, and
-  // reading a number out of it could widen a runner past what he meant.
-  const pair = "(\\d+(?:\\.\\d+)?)\\s*(gpus?|minutes?|mins?|hours?|hrs?|gb|mb)";
-  const form = new RegExp(`^ceiling\\s*:?\\s*${pair}(?:\\s*(?:,|,?\\s+and)?\\s+${pair})*\\s*\\.?$`, "i");
-  if (!form.test(body)) return { fault: CEILING_REPLY_REFUSED };
-  const next = { ...current };
-  const seen = new Set<keyof RunnerCeiling>();
-  for (const match of body.matchAll(new RegExp(pair, "gi"))) {
-    const n = Number(match[1]);
-    const unit = match[2].toLowerCase();
-    const key: keyof RunnerCeiling = unit.startsWith("gpu") ? "gpus" : unit.endsWith("b") ? "memoryMb" : "minutes";
-    if (seen.has(key)) return { fault: CEILING_REPLY_REFUSED };
-    seen.add(key);
-    if (unit.startsWith("gpu") || unit === "mb" || unit.startsWith("min")) next[key] = n;
-    else if (unit === "gb") next.memoryMb = Math.round(n * 1000);
-    else next.minutes = Math.round(n * 60);
-  }
-  const faults = runnerCeilingFaults(next);
-  return faults.length > 0 ? { fault: faults.join(" ") } : { ceiling: next };
-}
-
-const CEILING_REPLY_REFUSED =
-  'A ceiling reply is only the word "ceiling" and the new numbers, each named once, such as "ceiling 8 GPUs, 12 hours, 256 GB".';
-
 
 /** Every repo name a session may hold, in declaration order. THE list — the
  * auto-scheduler, the prospecting lane and the browser's picker all read it
@@ -910,20 +777,6 @@ export const SESSION_MODEL_NAMES = Object.keys(
 /** The strongest Codex model Tom has access to — the default for new
  * sessions and the fleet default's starting value. */
 export const DEFAULT_SESSION_MODEL: SessionModel = "gpt-5.6-sol";
-/** Where the fleet lands when Codex's weekly cap is hit and the todo named
- * no model of its own. */
-export const CODEX_FALLBACK_MODEL: SessionModel = "opus";
-export const CODEX_WEEKLY_CAP_PERCENT = 90;
-/**
- * How long a Codex usage reading stays believable. The daemon re-reads the
- * Codex CLI every few minutes and keeps sending its LAST SUCCESSFUL reading —
- * with that reading's original readAt — when a later read fails, so the age of
- * readAt is the whole staleness signal. Past this window the scheduler treats
- * the reading as UNKNOWN, exactly as if it were absent, and unknown ADMITS: a
- * CLI that stopped answering must not leave a months-old "90%" holding the
- * Codex door shut forever.
- */
-export const CODEX_USAGE_STALE_MS = 15 * 60_000;
 /**
  * Whether Fable answers on the box, as the session daemon reports it on its
  * heartbeat from worker/agents/models.mjs's availability file. While
@@ -1105,38 +958,8 @@ export const SLACK_SUBJECT = v.union(
   // thread is an objection to that one decision.
   v.object({ kind: v.literal("ask"), id: v.string() }),
   v.object({ kind: v.literal("job"), id: v.string() }),
-  // A RUNNER (convex/ttsRunners.ts): its check-in thread in #tts-runners and
-  // its questions in #tts-needs-you. It names its producer for the reason the
-  // two above do; a reply in either thread is an answer to that runner's
-  // newest open question.
-  v.object({ kind: v.literal("runner"), id: v.id("runners") }),
-  // AN ELEVATION the orchestrator judged reserved (convex/orchestrator.ts):
-  // its #tts-needs-you thread. Tom's reply there is the answer, delivered into
-  // the worker that asked.
-  v.object({ kind: v.literal("elevation"), id: v.id("elevations") }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
-
-// ── The orchestrator (Tom, 2026-09-21) ───────────────────────────────────────
-// The three kinds of decision an agent meets. Obvious: one side is clearly
-// better, and the agent makes it and says so in one sentence. Trade-off: a
-// good reason either way; the delegate rules on it, shown no recommendation.
-// Reserved: only Tom decides (the four things the Never list keeps his), and
-// he is asked with a recommendation.
-export const DECISION_KIND = v.union(
-  v.literal("obvious"),
-  v.literal("trade-off"),
-  v.literal("reserved"),
-);
-export type DecisionKind = Infer<typeof DECISION_KIND>;
-/**
- * How many hosted workers may be live at once. Its own number, not the box
- * launcher's two slots: those bound the command line's runs, which each hold
- * a CPU-heavy CLI for their whole life, while a hosted worker spends most of
- * its life idle, waiting on an answer. Four is Tom's default in the brief of
- * 2026-09-21; the box's Codex usage, not its CPU, is what four spends.
- */
-export const HOSTED_WORKERS_MAX = 4;
 
 /** The lookup key of a Slack THREAD: the channel and the thread root's ts —
  * a message's own ts when it is a root, its thread_ts when it is a reply.
@@ -1150,19 +973,17 @@ export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }
 
-// ── The eight channels (slack-design.md §1) ──────────────────────────────────
-// Eight rooms, each with one purpose and one cadence: #tts-today (the morning
+// ── The seven channels (slack-design.md §1) ──────────────────────────────────
+// Seven rooms, each with one purpose and one cadence: #tts-today (the morning
 // message), #tts-decisions (object, or let it stand), #tts-needs-you (settle
 // it), #tts-hourly (glance), #tts-broken (the box is failing), #tts-simplify
 // (the removal loop's one open pull request, to object to), #dump (capture).
-// An eighth, #tts-runners, holds one thread per runner, its root the runner's
-// first check-in (convex/ttsRunners.ts).
 // Tom's steps to create them and set these ids are slack-design.md §5.1.
 //
 // This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
 // because that file is "use node" and convex/http.ts — the route that opens a
 // needs-you thread — is a plain-runtime module that cannot import it.
-export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken" | "simplify" | "runners";
+export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken" | "simplify";
 
 const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   today: "SLACK_TTS_TODAY_CHANNEL_ID",
@@ -1171,7 +992,6 @@ const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
   broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
   simplify: "SLACK_TTS_SIMPLIFY_CHANNEL_ID",
-  runners: "SLACK_TTS_RUNNERS_CHANNEL_ID",
 };
 
 /** Each channel, or null when its variable is unset. Missing = log once and do
@@ -1198,6 +1018,17 @@ export const NEEDS_YOU_CHANNEL_MISSING = {
     "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
   key: "tts/needs-tom:needs-you-channel",
 };
+
+/** THE ONE CONFIG CHECK. A message says "reply here" only when a reply would
+ *  actually reach TTS: POST /slack/events answers 503 without
+ *  SLACK_SIGNING_SECRET, and ignores every message without TOM_SLACK_USER_ID.
+ *  Today the morning message prints "missed: reply done, or a new date" six
+ *  times a day into a route that answers 503 — the only call to action in the
+ *  whole system, and it is dead. A message that asks for something it cannot
+ *  receive teaches him to ignore the ones that can. */
+export function replyRouteLive(): boolean {
+  return Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
+}
 
 export function channelFor(kind: SlackChannelKind): string | null {
   const own = process.env[CHANNEL_ENV[kind]];

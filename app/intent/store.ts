@@ -10,7 +10,9 @@ import { devtools } from "zustand/middleware";
 import type { AgentViewCaller } from "@/convex/intentParse";
 import { NO_FILTERS, type Filters, type IntentLine } from "./lib";
 
-type IntentView = "agent" | "lines";
+export type IntentView = "agent" | "lines" | "rulings" | "vocabulary" | "disagreements";
+
+export const INTENT_VIEWS: IntentView[] = ["agent", "lines", "rulings", "vocabulary", "disagreements"];
 
 interface IntentStore {
   view: IntentView;

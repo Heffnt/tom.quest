@@ -16,10 +16,10 @@ import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
-import { SENT_AS_TOM } from "./ttsSignoff";
+import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
-import { liveRunnerFacts } from "./ttsRunners";
-import { BOX_CHANGE, DEPLOY, boxChangeLines, boxChangeOf } from "./boxChanges";
+import { DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
+import { failuresInWindow } from "./jarvis/jobs";
 import {
   DAY_MS,
   LIVE_STATUSES,
@@ -40,6 +40,7 @@ import {
 // worker/jobs/nightly.mjs reports git stderr verbatim, and git stderr can name
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
+import { digestFacts, lastDigest } from "./jarvis/outbox";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -310,17 +311,10 @@ const OBJECTION_SCAN = 200;
 async function lastDigestSent(
   ctx: QueryCtx,
 ): Promise<{ day: string | null; windowEnd: number | null } | null> {
-  const row = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
-    .order("desc")
-    .first();
+  const row = await lastDigest(ctx);
   if (!row) return null;
-  const d = (row.data ?? {}) as { day?: unknown; windowEnd?: unknown };
-  return {
-    day: typeof d.day === "string" ? d.day : null,
-    windowEnd: typeof d.windowEnd === "number" ? d.windowEnd : null,
-  };
+  const { day, windowEnd } = digestFacts(row);
+  return { day, windowEnd };
 }
 
 /**
@@ -754,6 +748,11 @@ export async function gatherTodayFacts(
         // through POST /tts/job-failed). A Slack failure is the door's own and
         // is not a line.
         if (!e.kind.endsWith("-failed") || NOT_A_FAILURE_LINE.has(e.kind)) break;
+        // THE WALL'S OWN PROBE IS NOT A FAILED SEND. The nightly wall eval
+        // asks the sign-off door to send a calendar event to an address under
+        // .invalid (RFC 2606: can never be delivered) and expects the refusal;
+        // that refusal is the wall holding, so it is no broken line.
+        if (e.kind === SEND_AS_TOM_FAILED && typeof d.recipient === "string" && d.recipient.toLowerCase().endsWith(".invalid")) break;
         const job = str(d.job) ?? e.kind.replace(/-failed$/, "");
         // The raw `error` is a job's own stderr — worker/jobs/nightly.mjs
         // reports git's verbatim, and git names its remote with the token in
@@ -761,6 +760,49 @@ export async function gatherTodayFacts(
         failure(job, brokenStatement(job)).detail = safeStr(d.error);
       }
     }
+  }
+
+  // A box job's failures and recoveries, from the record (convex/jarvis/
+  //    jobs.ts): one line per condition reported in the window, not per
+  //    tick, saying whether it has since recovered; and one for a condition
+  //    reported before the window that recovered inside it.
+  const reports = await failuresInWindow(ctx, since, now);
+  const recoveredAt = new Map<string, number>();
+  for (const row of reports.recovered) if (row.subject !== undefined) recoveredAt.set(row.subject, row.at);
+  const failedKeys = new Set<string>();
+  for (const row of reports.failed) {
+    const d = (row.data ?? {}) as Record<string, unknown>;
+    const job = str(d.job) ?? row.provenance.job ?? "unknown";
+    const fixedAt = row.subject === undefined ? undefined : recoveredAt.get(row.subject);
+    if (row.subject !== undefined) failedKeys.add(row.subject);
+    const statement = brokenStatement(job);
+    const f = failure(job, fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement);
+    f.detail = safeStr(d.error) ?? safeStr(row.text);
+  }
+  for (const row of reports.recovered) {
+    if (row.subject === undefined || failedKeys.has(row.subject)) continue;
+    const job = str((row.data as Record<string, unknown> | undefined)?.job) ?? row.provenance.job ?? "unknown";
+    failure(`${job}:recovered`, `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`);
+  }
+
+  // The delegate's decisions recorded by `jarvis decide` (convex/jarvis/
+  //    intent.ts, kind "decision"): the same objection list as the older
+  //    delegate-decision rows above, numbered with them.
+  const decided = await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
+    .take(OBJECTION_SCAN);
+  for (const row of decided) {
+    const d = (row.data ?? {}) as Record<string, unknown>;
+    rawObjections.push({
+      at: row.at,
+      askId: str(d.askId) ?? row.subject ?? "",
+      todoId: str(d.todoId),
+      decision: str(d.decision) ?? null,
+      reason: str(d.reason),
+      refused: d.refused === true,
+      refusedBecause: str(d.refusedBecause),
+    });
   }
 
   // 5. Ready for Tom (not already dated) — ruling 18's computation
@@ -810,27 +852,15 @@ export async function gatherTodayFacts(
       ...(o.sentAsTom === true ? { sentAsTom: true } : {}),
     }));
 
-  // 7. Every live runner: what it is doing, whether a question of its is
-  //    open, and the first line of its last check-in. Status comes from
-  //    runnerStatus, the one home; nothing here counts or guesses a number.
-  const runners = await liveRunnerFacts(ctx);
-
-  // 8. What changed on the box (plan-root T1): the box-change rows and the
+  // 7. What changed on the box (plan-root T1): the box-change rows and the
   //    deploy job's own rows since the last digest, each read on its own
   //    kind's index so a busy night of other events cannot crowd them out.
-  const boxRows = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).gte("at", since).lt("at", now))
-    .take(BOX_SCAN);
   const deployRows = await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_at", (q) => q.eq("kind", DEPLOY).gte("at", since).lt("at", now))
     .take(BOX_SCAN);
   const boxChanges = boxChangeLines(
-    boxRows.flatMap((row) => {
-      const change = boxChangeOf(row.data);
-      return change === null ? [] : [change];
-    }),
+    await boxChangesInWindow(ctx, since, now),
     deployRows.map((row) => {
       const d = (row.data ?? {}) as Record<string, unknown>;
       return { at: row.at, repo: str(d.repo), to: str(d.to), commits: d.commits };
@@ -868,7 +898,6 @@ export async function gatherTodayFacts(
       })
       .sort((a, b) => a.rank - b.rank)
       .map(({ n }) => n),
-    runners,
     overnightByTodo,
     broken: [...failures.values()],
     boxChanges,

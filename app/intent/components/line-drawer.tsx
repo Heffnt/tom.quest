@@ -7,16 +7,25 @@
 // sentence of his the agent read as the ruling; an `AGENTS.md` rule has none,
 // and the drawer says that rather than drawing an empty panel.
 //
+// WHAT THE RECORD DID WITH THE LINE comes after the evidence: the eval items
+// that name it (a ruling given to the judge; each run's pass, and the note
+// on a fail) and the delegate decisions that rested on it.
+//
 // Fixed, so opening it moves nothing on the page behind it.
 
+import type { Decision, EvalItem } from "@/convex/jarvis/intent";
 import { dateLabel, type IntentLine } from "../lib";
 
 export default function LineDrawer({
   line,
   onClose,
+  evalItems = [],
+  decisions = [],
 }: {
   line: IntentLine | null;
   onClose: () => void;
+  evalItems?: EvalItem[];
+  decisions?: Decision[];
 }) {
   if (line === null) return null;
   return (
@@ -56,6 +65,39 @@ export default function LineDrawer({
               </li>
             ))}
           </ul>
+        )}
+        {evalItems.length > 0 && (
+          <section className="mt-4">
+            <h3 className="text-[10px] font-mono text-text-faint">eval items naming this line</h3>
+            <ul className="mt-1 space-y-1">
+              {evalItems.map((item) => (
+                <li key={item.name} className="text-[12px] leading-snug">
+                  <span className="font-mono text-[11px] text-text">{item.name}</span>
+                  <span className="ml-2 font-mono text-[10px] text-text-faint">
+                    {item.passed}/{item.runs} runs passed · newest {item.pass === true ? "pass" : item.pass === false ? "fail" : "skipped"}
+                  </span>
+                  {item.note !== "" && <p className="text-text-muted">{item.note}</p>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {decisions.length > 0 && (
+          <section className="mt-4">
+            <h3 className="text-[10px] font-mono text-text-faint">delegate decisions that rested on this line</h3>
+            <ul className="mt-1 space-y-2">
+              {decisions.map((decision) => (
+                <li key={decision.id} className="text-[12px] leading-snug">
+                  <p className="text-text">{decision.question}</p>
+                  <p className="text-accent">{decision.refused ? "refused" : decision.decision}</p>
+                  <p className="font-mono text-[10px] text-text-faint">
+                    {new Date(decision.at).toISOString().slice(0, 10)} · {decision.caller}
+                    {decision.settled !== null && ` · ${decision.settled.verdict === "approve" ? "stands" : "objected"}`}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
       </div>
     </aside>

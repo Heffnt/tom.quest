@@ -2,20 +2,17 @@
 // All persisted dates are epoch-ms numbers (convex/schema.ts dtsTodos).
 
 import type { Doc } from "@/convex/_generated/dataModel";
-import type { runnerStatus } from "@/convex/ttsRunners";
 
 export type Todo = Doc<"dtsTodos">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
-// A ruling the page shows: on a todo or a code entry. Answers to a worker's
-// elevation are rulings too, and listRulings leaves them out.
-export type Ruling = Doc<"dtsRulings"> & { subjectType: "life" | "code" };
+// A ruling the page shows: on a todo or a code entry.
+export type Ruling = Doc<"rulings"> & { subjectType: "life" | "code" };
 
-/** A ruling as listRulings returns it. A ruling on a batch can still come
- * back until the schema stops declaring that subject (Tom, 2026-09-24: no
- * batches); the record keeps it, no page shows its subject, and
- * liveRulingsByKey drops it. Once the schema narrows this is Ruling. */
-type ListedRuling = Doc<"dtsRulings"> & { subjectType: string };
+/** A ruling as listRulings returns it. The batch subject went with the
+ * batches table (2026-09-26), so every listed ruling is a Ruling; the guard
+ * below stays as the page's own check of what it shows. */
+type ListedRuling = Doc<"rulings"> & { subjectType: string };
 
 /** Whether a listed ruling is on a subject this page shows. */
 function isPageRuling(r: ListedRuling): r is Ruling {
@@ -246,15 +243,6 @@ export function selectToday(
   return { overdue, due, scheduled, ready, waking, entries };
 }
 
-/** A runner's status in words, the same on the everything tab and the run view. */
-export const RUNNER_STATUS_WORDS: Record<ReturnType<typeof runnerStatus>, string> = {
-  running: "running",
-  "waiting-on-tom": "waiting on Tom",
-  done: "done",
-  failed: "failed",
-  "handed-off": "handed off",
-};
-
 /** e.message for Errors, String(e) otherwise — the error line under a control. */
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -292,17 +280,4 @@ export function ageText(ms: number, now: number): string {
   const days = Math.floor(hours / 24);
   if (days === 1) return "1 day ago";
   return `${days} days ago`;
-}
-
-/** Descriptive time until: "due now", "in 7 min", "in 3 h", "in 2 days". The
- *  minute-grained counterpart of ageText, for a runner's next step; the
- *  day-grained countdownText would read "today" for every one of them. */
-export function untilText(ms: number, now: number): string {
-  const mins = Math.ceil((ms - now) / 60_000);
-  if (mins < 1) return "due now";
-  if (mins < 60) return `in ${mins} min`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `in ${hours} h`;
-  const days = Math.floor(hours / 24);
-  return days === 1 ? "in 1 day" : `in ${days} days`;
 }

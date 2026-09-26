@@ -14,7 +14,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-const EMPTY: WindowData = { runs: [], events: [], rulings: [], runners: [] };
+const EMPTY: WindowData = { runs: [], events: [], rulings: [] };
 
 const draw = (over: Partial<Parameters<typeof SystemMap>[0]> = {}) =>
   render(

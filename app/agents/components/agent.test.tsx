@@ -36,8 +36,6 @@ const convex = vi.hoisted(() => ({
   sessions: {} as Record<string, unknown>,
   /** The newest agents.materializeStatus answer, per agent. */
   requests: {} as Record<string, unknown>,
-  /** ttsRunners.runnerTitle, per runner id. */
-  runners: {} as Record<string, unknown>,
   seen: [] as string[],
   /** Every mutation the page fired, as "<fn>:<args json>". */
   mutations: [] as string[],
@@ -80,8 +78,6 @@ vi.mock("convex/react", async () => {
           };
         case "agents:materializeStatus":
           return convex.requests[a.agentId ?? ""] ?? null;
-        case "ttsRunners:runnerTitle":
-          return convex.runners[(args as { runnerId: string }).runnerId] ?? null;
         case "claudeSessions:getSession":
           return convex.sessions[a.id ?? ""] ?? null;
         case "claudeSessions:getStreamBuf":
@@ -354,7 +350,6 @@ beforeEach(() => {
   convex.children = {};
   convex.sessions = {};
   convex.requests = {};
-  convex.runners = {};
   convex.seen = [];
   convex.mutations = [];
   onOpenRun.mockReset();
@@ -615,13 +610,11 @@ describe("the edges of the recursion", () => {
   });
 });
 
-describe("a runner's step", () => {
-  it("names the runner beside the step it continues, and asks nothing for any other run", () => {
+describe("a run that continues another", () => {
+  it("opens the run it continues", () => {
     convex.runs = {
       "run-step": runDoc({
         runId: "run-step",
-        origin: "runner:k17runner",
-        kind: "runner-step",
         continuesRunId: "run-step-before",
         outcome: {
           totals: { inputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 1, thinkingTokens: 0, totalTokens: 2 },
@@ -630,26 +623,9 @@ describe("a runner's step", () => {
         },
       }),
     };
-    convex.runners = { k17runner: { title: "TRAIN25 campaign", status: "running" } };
     render(<Agent runId="run-step" depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />);
-    expect(body()).toContain("a step of the runner TRAIN25 campaign, which is running");
     fireEvent.click(screen.getByText("continues run-step-before"));
     expect(onOpenRun).toHaveBeenCalledWith("run-step-before");
-    expect(convex.seen).toContain('ttsRunners:runnerTitle:{"runnerId":"k17runner"}');
-  });
-
-  it("says a runner waiting on Tom in words, never the raw status", () => {
-    convex.runs = { "run-step": runDoc({ runId: "run-step", origin: "runner:k17runner", kind: "runner-step" }) };
-    convex.runners = { k17runner: { title: "TRAIN25 campaign", status: "waiting-on-tom" } };
-    render(<Agent runId="run-step" depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />);
-    expect(body()).toContain("a step of the runner TRAIN25 campaign, which is waiting on Tom");
-    expect(body()).not.toContain("waiting-on-tom");
-  });
-
-  it("does not ask for a runner on a run that is not a step", () => {
-    loadTree();
-    root();
-    expect(convex.seen.filter((call) => call.startsWith("ttsRunners:runnerTitle:"))).toEqual(["ttsRunners:runnerTitle:skip"]);
   });
 });
 

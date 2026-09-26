@@ -325,8 +325,6 @@ export type WindowData = {
   runs: RunMark[];
   events: PointEvent[];
   rulings: RulingRow[];
-  /** Live runners, from the runners table. */
-  runners: { experimentHost: "turing" | "box"; endedAt: number | null; lastCheckInAt: number | null }[];
 };
 
 /** Everything in the window that belongs to one lane, counted and dated. */
@@ -421,16 +419,6 @@ export function tallyFor(tally: Tally, data: WindowData, now: number): Tallied {
         if (!GATE_KINDS.has(event.kind)) continue;
         count += 1;
         lastAt = latest(lastAt, event.at);
-      }
-      return { count, lastAt };
-    }
-    case "turing": {
-      let count = 0;
-      let lastAt: number | null = null;
-      for (const runner of data.runners) {
-        if (runner.experimentHost !== "turing" || runner.endedAt !== null) continue;
-        count += 1;
-        if (runner.lastCheckInAt !== null) lastAt = latest(lastAt, runner.lastCheckInAt);
       }
       return { count, lastAt };
     }

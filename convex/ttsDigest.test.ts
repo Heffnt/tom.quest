@@ -652,14 +652,7 @@ describe("internalComposeToday", () => {
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
     await withTom(t);
-    const batchId = await t.run(async (ctx) =>
-      ctx.db.insert("batches", {
-        statement: "The research critical path",
-        status: "active",
-        createdAt: FIVE_AM - DAY,
-        updatedAt: FIVE_AM - DAY,
-      }),
-    );
+    const batchId = "k570000000000000000000000000batch";
     await t.run(async (ctx) => {
       for (const counts of [{ created: 3, retired: 1 }, {}, { created: 1 }, { updated: 2 }]) {
         await ctx.db.insert("dtsEvents", {
@@ -1132,69 +1125,6 @@ describe("internalComposeToday", () => {
     expect(text).toContain("prepare-chores-k17abc");
   });
 
-  // The runners run: every live runner, its status from runnerStatus, the
-  // first line of its newest check-in, and nothing for an ended one.
-  it("lists each live runner once, waiting on Tom first, and no ended runner", async () => {
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const runner = (title: string) =>
-      tom.mutation(api.ttsRunners.createRunner, {
-        title,
-        type: "campaign",
-        experimentHost: "turing",
-        repo: "ComplexMultiTrigger",
-        stepMs: 10 * 60_000,
-        from: { kind: "prompt", text: "Watch the sweep." },
-      });
-    const waiting = await runner("The train25 campaign");
-    const silent = await runner("The seed-variance probe");
-    const ended = await runner("The finished probe");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("runnerEvents", {
-        runnerId: waiting,
-        at: FIVE_AM - 20 * 60_000,
-        kind: "check-in",
-        text: "12 of 20 jobs are running.\n\nNothing else changed.",
-      });
-      await ctx.db.insert("runnerEvents", {
-        runnerId: waiting,
-        at: FIVE_AM - 10 * 60_000,
-        kind: "check-in",
-        text: "14 of 20 jobs are running and 212 of 400 results are done.\n\nThe queue is short.",
-      });
-      await ctx.db.insert("runnerEvents", {
-        runnerId: waiting,
-        at: FIVE_AM - 5 * 60_000,
-        kind: "ask",
-        text: "Should the sweep drop the 4-bit rows?",
-        tier: "plan",
-        blocking: true,
-      });
-      await ctx.db.patch(ended, { endedAt: FIVE_AM - DAY, endedReason: "finish" });
-    });
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
-      day: DAY_KEY,
-      now: FIVE_AM,
-    });
-    const ids = facts.facts.map((f: { id: string }) => f.id);
-    expect(ids).toContain(`runner:${waiting}`);
-    expect(ids).toContain(`runner:${silent}`);
-    expect(ids).not.toContain(`runner:${ended}`);
-    expect(text).toContain("Two runners are live on the box, and one of them waits on you.");
-    expect(text).toContain(
-      `- <${TAB_EVERYTHING}|The train25 campaign is waiting on your answer; its last check-in reads: 14 of 20 jobs are running and 212 of 400 results are done.>`,
-    );
-    // Never checked in: said so, and no number invented for it.
-    const silentFact = facts.facts.find((f: { id: string }) => f.id === `runner:${silent}`);
-    expect(silentFact?.text).toBe(
-      "The seed-variance probe is running with no question open; it has not checked in yet.",
-    );
-    expect(silentFact?.numbers).toEqual([]);
-    expect(text).not.toContain("The finished probe");
-    // Waiting on Tom first.
-    expect(text.indexOf("The train25 campaign")).toBeLessThan(text.indexOf("The seed-variance probe"));
-  });
-
   it("renders nothing at all when there are no delegate rows", async () => {
     const t = convexTest(schema, modules);
     await withTom(t);
@@ -1449,7 +1379,10 @@ describe("sendToday", () => {
     });
     // The morning's own row carries the day, the window, which path wrote it,
     // and THE FACTS BLOCK — the inputs, in the transcript, next to the output.
-    const marked = events.filter((e) => e.kind === DIGEST_SENT);
+    // The day's own row is in the record's events table (convex/jarvis/digest.ts).
+    const marked = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((e) => e.kind === DIGEST_SENT),
+    );
     expect(marked).toHaveLength(1);
     expect(marked[0].data).toMatchObject({
       day: DAY_KEY,
@@ -1512,8 +1445,9 @@ describe("sendToday", () => {
     // The oldest date survives the cap: an item three weeks late is the one he
     // needs named in the morning.
     expect(slack[0].body.text).toContain("0: Rework the credential file helper");
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    const marked = events.filter((e) => e.kind === DIGEST_SENT);
+    const marked = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((e) => e.kind === DIGEST_SENT),
+    );
     expect(marked).toHaveLength(1);
     expect(marked[0].data).toMatchObject({ day: DAY_KEY });
   });

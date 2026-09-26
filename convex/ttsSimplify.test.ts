@@ -114,6 +114,11 @@ async function seedEvent(
   key?: string,
 ) {
   await t.run(async (ctx) => {
+    // The digest's rows live in the record's events table (convex/jarvis/digest.ts).
+    if (kind === DIGEST_SENT) {
+      await ctx.db.insert("events", { at, kind, provenance: {}, data: data ?? {} });
+      return;
+    }
     await ctx.db.insert("dtsEvents", { at, kind, ...(key === undefined ? {} : { key }), data });
   });
 }
