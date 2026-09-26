@@ -140,7 +140,6 @@ export const EDGES: MapEdge[] = [
   { from: "box", to: "gate" },
   { from: "wikitom", to: "record", both: true },
   { from: "models", to: "box" },
-  { from: "turing", to: "runners", both: true },
   { from: "github", to: "gate", both: true },
 ];
 

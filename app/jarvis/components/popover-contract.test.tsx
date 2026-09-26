@@ -329,48 +329,6 @@ const AUTO_CONFIG = {
   maxNewPerTick: 2,
 };
 
-const RUNNER = {
-  runnerId: "r1",
-  title: "TRAIN25 campaign",
-  type: "campaign",
-  experimentHost: "turing",
-  stepMs: 600_000,
-  nextStepAt: NOW + 300_000,
-  createdAt: NOW - 3_600_000,
-  endedAt: null,
-  status: "waiting-on-tom",
-  openBlockingAsks: 1,
-  lastCheckIn: { at: NOW - 600_000, line: "The sweep has 12 jobs running." },
-  stepAgentId: "claude:box:00000000-0000-4000-8000-000000000001",
-};
-
-const RUNNER_DETAIL = {
-  document: "# TRAIN25\n\n## Objective\n\nWatch the sweep.\n",
-  documentVersion: 2,
-  checkIns: [
-    {
-      id: "e1",
-      at: NOW - 600_000,
-      stepAgentId: RUNNER.stepAgentId,
-      decision: "ask",
-      verdict: "pass",
-      text: "The sweep has 12 jobs running.",
-    },
-  ],
-  asks: [
-    {
-      id: "e2",
-      at: NOW - 600_000,
-      stepAgentId: RUNNER.stepAgentId,
-      tier: "plan",
-      blocking: true,
-      answeredAt: null,
-      answerText: null,
-      text: "Should I skip pythia?",
-    },
-  ],
-};
-
 const PROPOSAL = {
   id: "p1",
   at: NOW - 60_000,
@@ -385,11 +343,6 @@ const PROPOSAL = {
 
 function load() {
   convex.data = {
-    [getFunctionName(api.ttsRunners.listRunners)]: [
-      RUNNER,
-      { ...RUNNER, runnerId: "r0", title: "An ended probe", endedAt: NOW - 86_400_000, status: "done", openBlockingAsks: 0 },
-    ],
-    [getFunctionName(api.ttsRunners.runnerDetail)]: RUNNER_DETAIL,
     [getFunctionName(api.claudeSessions.getSession)]: SESSION,
     [getFunctionName(api.claudeSessions.getAutoConfig)]: AUTO_CONFIG,
     [getFunctionName(api.claudeSessions.getDaemonHealth)]: null,

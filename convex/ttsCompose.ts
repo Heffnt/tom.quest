@@ -70,22 +70,19 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *
  *  The needs-you run sits third: a captured item the email triage judged to
  *  need him today, which no worker may raise with him directly (Tom,
- *  2026-09-21), so this message says it. The runners run sits fourth: a live
- *  runner is the box at work now, nearer to him than what it left behind
- *  overnight. The objection list stays second.
+ *  2026-09-21), so this message says it. The objection list stays second.
  *
- *  The calendar run is printed between "runners" and "overnight" and is not
+ *  The calendar run is printed between "needs-you-today" and "overnight" and is not
  *  named here: it is his day, not a ranked list, and it has no page of its own
  *  to send him to. `fit` reduces it in printed order like any other run.
  */
-export const SECTION_ORDER = ["today", "objections", "needs-you-today", "runners", "overnight", "broken", "box"] as const;
+export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnight", "broken", "box"] as const;
 
 /** Per-section item caps, before the whole-message fit. Nearest him, most
  *  room. */
 export const SECTION_CAPS = {
   today: 12,
   objections: 12,
-  runners: 6,
   calendar: 12,
   overnight: 6,
   broken: 4,
@@ -500,17 +497,6 @@ export type CalendarSpan = {
   allDay: boolean;
 };
 
-/** One live runner, for the morning message. `lastCheckIn` is the first line
- *  of its newest check-in, already cut by the gatherer; null when it has never
- *  checked in. `openQuestion` is whether any ask of its is unanswered. */
-export type RunnerFact = {
-  runnerId: string;
-  title: string;
-  status: "running" | "waiting-on-tom";
-  lastCheckIn: string | null;
-  openQuestion: boolean;
-};
-
 /** One captured item a poller's triage judged to need Tom today. `why` is the
  *  triage's own few words, empty when it gave none. Workers never raise these
  *  with him; the morning message and the hourly line say them. */
@@ -548,8 +534,6 @@ export type TodayFacts = {
   /** Captured since the last morning message, still active, and judged by the
    *  triage to need him today; oldest first. */
   needsYou: NeedsYouTodayFact[];
-  /** Every live runner, the ones waiting on him first. */
-  runners: RunnerFact[];
   /** What sessions did overnight, one row per todo, the tail last. */
   overnightByTodo: TodoOutcome[];
   broken: BrokenFact[];
@@ -631,9 +615,6 @@ export type HourlyFacts = {
   running: RunningSession[];
   todosWorked: TodoWorked[];
   changes: Change[];
-  /** Every live runner. Named in an hour that already speaks; never what makes
-   *  an hour speak (isQuietHour). */
-  runners: RunnerFact[];
 };
 
 export function elapsedText(ms: number): string {
@@ -645,11 +626,6 @@ export function elapsedText(ms: number): string {
   return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}m`;
 }
 
-/** A LIVE RUNNER IS NOT ACTIVITY HERE. Its steps run every few minutes for as
- *  long as it lives, so counting it would make every hour speak and retire the
- *  silence rule without anyone deciding to. The runners are named inside an
- *  hour that speaks for another reason (composeHourly); an hour with nothing
- *  else is still silent. */
 export function isQuietHour(f: HourlyFacts): boolean {
   return f.running.length === 0 && f.todosWorked.length === 0 && f.changes.length === 0;
 }
@@ -708,46 +684,6 @@ export function objectionLine(o: ObjectionFact, n: number): { text: string; url:
   }
   const because = o.reason ? `, because ${stripStop(o.reason)}` : "";
   return { text: statement(`${n}. ${capitalise(stripStop(o.decision))}${because}`), url };
-}
-
-/** One live runner in one statement: its title, what it is doing, whether a
- *  question of its is open, and the first line of its last check-in. It names
- *  no tier and no decision value.
- *
- *  The check-in's words are what gives when the line is too long: they are cut
- *  at a word to fit, and dropped whole when too little room is left. A clause
- *  cut by `statement` would print "its last check-in reads." with nothing
- *  after it. */
-export function runnerLine(r: RunnerFact): string {
-  const doing =
-    r.status === "waiting-on-tom"
-      ? "is waiting on your answer"
-      : r.openQuestion
-        ? "is running with a question open for you"
-        : "is running with no question open";
-  const head = `${stripStop(r.title)} ${doing}`;
-  if (r.lastCheckIn === null) return statement(`${head}; it has not checked in yet`);
-  const lead = `${head}; its last check-in reads: `;
-  const room = LINE_CHARS - lead.length - 1;
-  let said = stripStop(r.lastCheckIn);
-  if (said.length > room) {
-    const cut = said.slice(0, Math.max(0, room));
-    said = stripStop(cut.slice(0, Math.max(0, cut.lastIndexOf(" "))).replace(/[\s,;:—-]+$/, ""));
-  }
-  // A check-in cut to a few words ("14 of 20") says nothing true on its own,
-  // so under MIN_SAID characters the line drops the quote and keeps the head.
-  return statement(said.length < MIN_SAID ? head : `${lead}${said}`);
-}
-
-/** The shortest cut check-in a runner line still quotes. */
-const MIN_SAID = 12;
-
-/** The runners run's lead: how many are live, and how many wait on him. */
-export function runnersLead(n: number, waiting: number): string {
-  const live = `${capitalise(countWord(n))} ${plural(n, "runner is", "runners are")} live on the box`;
-  if (waiting === 0) return `${live}.`;
-  if (waiting === n) return `${live}, and ${n === 1 ? "it waits" : "all of them wait"} on you.`;
-  return `${live}, and ${countWord(waiting)} of them ${plural(waiting, "waits", "wait")} on you.`;
 }
 
 /** One needs-you-today item: the todo's statement, then the triage's reason
@@ -928,7 +864,7 @@ export function objectionsLead(all: number, merges: number, sent = 0): string {
 // ── The seven kinds ──────────────────────────────────────────────────────────
 
 /**
- * The morning message. Runs today → objection list → runners → the calendar →
+ * The morning message. Runs today → objection list → the calendar →
  * done overnight → broken, fits one Slack message, and shrinks the sections
  * furthest from him first.
  *
@@ -1025,21 +961,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     f.needsYou.length,
   );
 
-  // 4. The box's live runners, one line each, the ones waiting on him first
-  //    (the gatherer's order). Nothing when no runner is live. No reply
-  //    invitation: a runner's question is answered in its own needs-you thread.
-  if (f.runners.length > 0) {
-    const waiting = f.runners.filter((r) => r.status === "waiting-on-tom").length;
-    pushRun(
-      lines,
-      "runners",
-      runnersLead(f.runners.length, waiting),
-      f.runners.map((r) => ({ text: runnerLine(r), url: TAB_EVERYTHING })),
-      SECTION_CAPS.runners,
-    );
-  }
-
-  // 5. The calendar. Rows from a feed marked private in TTS_ICS_FEEDS never
+  // 4. The calendar. Rows from a feed marked private in TTS_ICS_FEEDS never
   //    reach this list — the gatherer drops them (Tom 2026-09-09, amendment 1).
   if (f.calendar.length > 0) {
     pushRun(
@@ -1051,7 +973,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 6. What the box left behind overnight, one line per todo.
+  // 5. What the box left behind overnight, one line per todo.
   if (f.overnightByTodo.length > 0) {
     pushRun(
       lines,
@@ -1062,7 +984,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 7. What broke.
+  // 6. What broke.
   if (f.broken.length > 0) {
     const failures = f.broken.reduce((sum, b) => sum + (b.count ?? 1), 0);
     pushRun(
@@ -1074,7 +996,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 8. What changed on the box (plan-root T1, guarantee G4): the last run,
+  // 7. What changed on the box (plan-root T1, guarantee G4): the last run,
   //    so the first `fit` reduces. No reply invitation: a change is objected
   //    to where it happened, and a change to who can act already has its own
   //    #tts-decisions thread.
@@ -1203,10 +1125,6 @@ export function composeHourly(f: HourlyFacts): Message | null {
       `${capitalise(countWord(f.todosWorked.length))} ${plural(f.todosWorked.length, "todo", "todos")} moved, ${linked(w.statement, itemUrl(w.todoId))} among them`,
     );
   }
-  if (f.runners.length > 0) {
-    const clause = runnersClause(f.runners);
-    clauses.push(clauses.length === 0 ? capitalise(clause) : clause);
-  }
   const changed = changeClauses(f.changes);
   const tail = changed.length > 0 ? joinClauses(changed) : clauses.length > 0 ? "nothing else changed" : null;
   const since = f.sinceLabel ? ` since ${f.sinceLabel}` : "";
@@ -1217,7 +1135,7 @@ export function composeHourly(f: HourlyFacts): Message | null {
   // raises it with him directly (Tom, 2026-09-21), so this line and the
   // morning message are where he hears of it. The clause is tried from most
   // to least detail; when even its count will not fit, the hour's other
-  // clauses (what ran, what moved, the runners) give way to it, and the
+  // clauses (what ran, what moved) give way to it, and the
   // counts of what changed stay beside it.
   const needs = needsYouClauses(f.changes);
   if (needs.length === 0) return { firstLine: line(withTail), lines: [] };
@@ -1228,148 +1146,6 @@ export function composeHourly(f: HourlyFacts): Message | null {
       : line([...(tail === null ? [] : [tail]), needs[needs.length - 1]]),
     lines: [],
   };
-}
-
-/** One runner check-in, as the numbers the box read and the words the step
- *  wrote. `facts` is the sensor's block (worker/agents/runner-sensor.mjs), which
- *  may be absent or partial: a step whose box read nothing still checks in. */
-type CheckInFacts = {
-  title: string;
-  /** 1 for the runner's first check-in. */
-  number: number;
-  decision: "continue" | "change" | "ask" | "hand-off" | "finish";
-  facts: {
-    jobs?: { live?: number; running?: number; unavailable?: string };
-    frontier?: { size?: number; done?: number; remaining?: number; unchecked?: number; unavailable?: string };
-    gpuHours?: { spent?: number; budget?: number };
-  } | null;
-  /** Steps that failed, and steps skipped because the one before still ran,
-   *  since the last check-in. */
-  failures: number;
-  skipped: number;
-  asks: number;
-  /** The step's own words, already past the form rules and the judge. */
-  checkIn: string;
-  graded: { verdict: "pass" | "fail"; complaints: string[] };
-  agentUrl: string;
-};
-
-/** A check-in's decision in words: the ONE home of that phrasing, read by the
- *  check-in's first line below and by the runners block on the page. */
-const runnerDecisionWords: Record<CheckInFacts["decision"], string> = {
-  continue: "it changed nothing",
-  change: "it made one change",
-  ask: "it asked a question",
-  "hand-off": "it handed the runner on",
-  finish: "it finished the runner",
-};
-
-/** The first line: the numbers, in the same order every step, so one
- *  check-in reads against the last. */
-function checkInNumbers(f: CheckInFacts): string {
-  const parts: string[] = [];
-  const jobs = f.facts?.jobs;
-  if (jobs && jobs.unavailable === undefined && typeof jobs.live === "number") {
-    parts.push(`${jobs.running ?? 0} of ${jobs.live} ${plural(jobs.live, "job", "jobs")} running`);
-  } else {
-    parts.push("the jobs were not read");
-  }
-  const frontier = f.facts?.frontier;
-  if (frontier && frontier.unavailable === undefined && typeof frontier.size === "number") {
-    // A done count with nodes left unchecked is a floor, and says so.
-    const floor = (frontier.unchecked ?? 0) > 0 ? "at least " : "";
-    parts.push(`${floor}${frontier.done ?? 0} of ${frontier.size} results done`);
-  }
-  const hours = f.facts?.gpuHours;
-  if (hours && typeof hours.spent === "number") {
-    parts.push(typeof hours.budget === "number" ? `${hours.spent} of ${hours.budget} GPU-hours used` : `${hours.spent} GPU-hours used`);
-  }
-  if (f.failures > 0) parts.push(`${countWord(f.failures)} ${plural(f.failures, "step", "steps")} failed since the last check-in`);
-  if (f.skipped > 0) parts.push(`${countWord(f.skipped)} ${plural(f.skipped, "step was", "steps were")} skipped because the one before was still running`);
-  return `${f.title}, check-in ${f.number}: ${parts.join(", ")}; ${runnerDecisionWords[f.decision]}.`;
-}
-
-/** A runner check-in. NEVER NULL, unlike composeHourly: a step with nothing
- *  changed still posts, because the tick is what Tom relies on. The first line
- *  and the link go through the form like every message; the step's own words
- *  follow verbatim (checkInBody), since they passed their own form rules and
- *  a judge and their paragraphs are longer than one Slack line. */
-export function composeCheckIn(f: CheckInFacts): Message {
-  const first = checkInNumbers(f);
-  return {
-    firstLine: first.length <= FIRST_LINE_CHARS ? first : `${f.title}, check-in ${f.number}: ${runnerDecisionWords[f.decision]}.`,
-    lines: [{ role: "item", text: "Open the step that wrote this check-in.", url: f.agentUrl }],
-  };
-}
-
-/** A Markdown table's rows as lines, "first cell: the rest", because Slack
- *  renders no tables. The header row and the dashes under it are dropped: each
- *  line already names what was counted. Text outside a table is untouched. */
-function tablesAsLines(text: string): string {
-  const lines = text.split("\n");
-  const isRow = (line: string) => line.trim().startsWith("|");
-  const isRule = (line: string) => /^\|?[\s:|-]+\|?$/.test(line.trim()) && line.includes("-");
-  const cells = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
-  const out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!isRow(line)) {
-      out.push(line);
-      continue;
-    }
-    if (isRule(line)) continue;
-    if (i + 1 < lines.length && isRule(lines[i + 1])) continue;
-    const [what, ...found] = cells(line);
-    out.push(`${what}: ${found.join(", ")}`);
-  }
-  return out.join("\n");
-}
-
-/** The step's own words for Slack, its table as lines, and the mark when they
- *  did not pass the writing check. The record and the page keep the table. */
-export function checkInBody(f: CheckInFacts): string {
-  const body = tablesAsLines(f.checkIn.trim());
-  if (f.graded.verdict === "pass") return body;
-  const why = f.graded.complaints.length > 0 ? ` ${f.graded.complaints.join(" ")}` : "";
-  return `This check-in did not pass the writing check.${why}\n\n${body}`;
-}
-
-/** A runner's question for Tom, in #tts-needs-you. */
-export type RunnerAskFacts = {
-  title: string;
-  question: string;
-  tier: "routine" | "plan" | "setup";
-  /** Whether the runner's steps only observe until he answers. */
-  blocking: boolean;
-  stepUrl: string;
-};
-
-/** A question's tier in words: the ONE home of that phrasing, read by the
- *  needs-you message below and by the runners block on the page. */
-export const runnerTierWords: Record<RunnerAskFacts["tier"], string> = {
-  routine: "a question inside its plan",
-  plan: "a question about what the experiment is",
-  setup: "a question about what the experiment costs or where it runs",
-};
-
-/** The first line and the link go through the form; the question itself
- *  follows whole (runnerAskBody), because a question cut to one Slack line is
- *  a question he cannot answer. */
-export function composeRunnerAsk(f: RunnerAskFacts, o: { canReply: boolean }): Message {
-  const hold = f.blocking
-    ? "Its steps change nothing until you answer."
-    : "Its steps carry on while you decide.";
-  const lines: Line[] = [{ role: "item", text: "Open the step that asked.", url: f.stepUrl }];
-  note(lines, "needs-you", o.canReply, "reply here, and the runner's next step reads your answer whole.");
-  const first = `The runner ${f.title} has ${runnerTierWords[f.tier]} only you can settle. ${hold}`;
-  return {
-    firstLine: first.length <= FIRST_LINE_CHARS ? first : `A runner has ${runnerTierWords[f.tier]} only you can settle. ${hold}`,
-    lines,
-  };
-}
-
-export function runnerAskBody(f: RunnerAskFacts): string {
-  return f.question.trim();
 }
 
 /** A message an agent proposes to send in Tom's name (convex/ttsSignoff.ts):
@@ -1407,18 +1183,6 @@ function needsYouClauses(changes: Change[]): string[] {
   const count = needs.length === 1 ? "one of the captures needs you today" : `${countWord(needs.length)} of the captures need you today`;
   if (needs.length > 1) return [`${count}, ${what} among them`, count];
   return [...(why !== "" ? [`${what} needs you today because ${lowerFirst(why)}`] : []), `${what} needs you today`, count];
-}
-
-/** The hourly line's runners clause, linking the page where they are
- *  listed. */
-function runnersClause(runners: RunnerFact[]): string {
-  const waiting = runners.filter((r) => r.status === "waiting-on-tom").length;
-  if (runners.length === 1) {
-    const doing = waiting === 1 ? "is waiting on your answer" : "is running";
-    return `the runner ${linked(runners[0].title, TAB_EVERYTHING)} ${doing}`;
-  }
-  const on = waiting === 0 ? "" : `, ${countWord(waiting)} of them waiting on you`;
-  return `${countWord(runners.length)} ${linked("runners", TAB_EVERYTHING)} are live${on}`;
 }
 
 function joinWithAnd(parts: string[]): string {
@@ -1637,9 +1401,6 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
   }
   for (const n of f.needsYou) {
     facts.push({ ...fact(`needs-you-today:${n.todoId}`, needsYouTodayLine(n), [itemUrl(n.todoId)]), required: true });
-  }
-  for (const r of f.runners) {
-    facts.push(fact(`runner:${r.runnerId}`, runnerLine(r), [TAB_EVERYTHING]));
   }
   if (f.calendarLead) facts.push(fact("calendar:lead", f.calendarLead, [TAB_CALENDAR]));
   f.calendar.forEach((span, index) => {

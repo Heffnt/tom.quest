@@ -5,11 +5,9 @@ import type { QueryCtx } from "./_generated/server";
 import {
   type Change,
   type ChangeKind,
-  type RunnerFact,
   type RunningSession,
   type TodoWorked,
 } from "./ttsCompose";
-import { liveRunnerFacts } from "./ttsRunners";
 import { LIVE_STATUSES, ttsItemLink, ttsSessionLink } from "./ttsShared";
 
 // The hourly update's FACTS. The SEND lives in convex/ttsSync.ts (a Node
@@ -170,13 +168,6 @@ export const internalRunningNow = internalQuery({
       }),
     );
   },
-});
-
-/** Every live runner, for the hourly line. The same read the digest makes
- *  (liveRunnerFacts); the hourly names them only in an hour that speaks. */
-export const internalLiveRunners = internalQuery({
-  args: {},
-  handler: async (ctx): Promise<RunnerFact[]> => liveRunnerFacts(ctx),
 });
 
 // ── (2) Todos worked in the window ──────────────────────────────────────────

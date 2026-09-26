@@ -6,12 +6,12 @@
 // heading, which is the form his rulings are asked in. So these are a second
 // array, and BRIEF_RULES keep their meaning.
 //
-// DEPENDENCY-FREE ON PURPOSE. Three readers: check-writing-standard.mjs
-// re-exports these so its failuresFor reads them like every other rule set;
-// worker/bin/tts-runner-step runs them before the judge; and the Convex record
-// (convex/ttsRunners.ts) runs them again at the door, so a forged pass on a
-// malformed check-in is caught where it lands. Convex cannot import a module
-// that imports node builtins, which check-writing-standard.mjs does.
+// DEPENDENCY-FREE ON PURPOSE. Two readers, both in the Jarvis repository:
+// check-writing-standard.mjs re-exports these so its failuresFor reads them
+// like every other rule set, and worker/bin/tts-runner-step runs them before
+// the judge. The record's copy of the check (convex/ttsRunners.ts) went with
+// the record's runners on 2026-09-26; this file stays because Jarvis imports
+// it by name.
 //
 // Each rule has the { id, on, why, fails } shape of the rules beside BRIEF_RULES;
 // every one reads the whole trimmed text ("document").

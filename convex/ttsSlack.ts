@@ -9,7 +9,6 @@ import { DIGEST_SENT } from "./ttsDigest";
 import {
   NEEDS_TOM,
   SLACK_SUBJECT,
-  channelFor,
   isLive,
   slackThreadKey,
   ttsDayKey,
@@ -22,14 +21,10 @@ import {
   composeCaptured,
   composeContinued,
   composeNeedsYou,
-  composeRunnerAsk,
   needsYouFactsBlock,
   renderSlack,
-  runnerAskBody,
   type NeedsYouFacts,
-  type RunnerAskFacts,
 } from "./ttsCompose";
-import { recordRunnerReply, agentLink } from "./ttsRunners";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 import { openNeedsYou } from "./jarvis/outbox";
 
@@ -215,10 +210,7 @@ export const internalOpenNeedsTomThread = internalMutation({
   // carrying a worker's JSON, and this is where an unknown id becomes a named
   // refusal rather than a validator error (the internalPrepareTodo pattern).
   args: {
-    // Exactly one subject: a todo (every caller before runners), or a
-    // runner's question. The todo path below is the one it always was.
-    todoId: v.optional(v.string()),
-    runner: v.optional(v.object({ runnerId: v.id("runners"), askId: v.id("runnerEvents") })),
+    todoId: v.string(),
     // `verdict.why` from the triage — HALF A SENTENCE HE CAN READ, and the one
     // thing the old message never said.
     reason: v.string(),
@@ -227,11 +219,8 @@ export const internalOpenNeedsTomThread = internalMutation({
   },
   handler: async (
     ctx,
-    { todoId, runner, reason, key, canReply },
+    { todoId, reason, key, canReply },
   ): Promise<{ opened: boolean; key: string; reason?: string }> => {
-    if ((todoId === undefined) === (runner === undefined)) throw new Error("A needs-you thread names exactly one subject: a todo or a runner's question.");
-    if (runner !== undefined) return await openRunnerNeedsYou(ctx, runner, key);
-    if (todoId === undefined) throw new Error("unreachable");
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
     const id = ctx.db.normalizeId("dtsTodos", todoId);
@@ -286,53 +275,6 @@ export const internalOpenNeedsTomThread = internalMutation({
     return { opened: true, key };
   },
 });
-
-/**
- * A runner's question for Tom, opened as its own #tts-needs-you thread. Its
- * facts are the runner's title, the question, its tier and the link to the
- * step that asked. NO ONE-PER-DAY CLAIM: that claim keeps one todo from
- * appearing twice in a day across channels, and a runner asks about one
- * experiment; a second question in a day is a second question. The key still
- * dedupes a redelivered ask. Posted through the one door (sendSlack), whose
- * slack-sent row carries the runner subject, which is what routes his reply
- * back to the runner.
- */
-async function openRunnerNeedsYou(
-  ctx: MutationCtx,
-  { runnerId, askId }: { runnerId: Id<"runners">; askId: Id<"runnerEvents"> },
-  key: string,
-): Promise<{ opened: boolean; key: string; reason?: string }> {
-  const runner = await ctx.db.get(runnerId);
-  const ask = await ctx.db.get(askId);
-  if (!runner || !ask || ask.kind !== "ask" || ask.runnerId !== runnerId) throw new Error("Unknown runner question.");
-  const seen = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_TOM).eq("key", key))
-    .first();
-  if (seen) return { opened: false, key };
-  await ctx.db.insert("dtsEvents", {
-    at: Date.now(),
-    kind: NEEDS_TOM,
-    key,
-    data: { key, runnerId, askId, tier: ask.tier, blocking: ask.blocking === true },
-  });
-  const channel = channelFor("needsYou");
-  if (channel === null) return { opened: false, key, reason: "not configured" };
-  const canReply = Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
-  const facts: RunnerAskFacts = {
-    title: runner.title,
-    question: ask.text ?? "",
-    tier: ask.tier ?? "plan",
-    blocking: ask.blocking === true,
-    stepUrl: agentLink(ask.stepRunId ?? ""),
-  };
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-    channel,
-    text: `${renderSlack(composeRunnerAsk(facts, { canReply }))}\n\n${runnerAskBody(facts)}`,
-    subject: { kind: "runner", id: runnerId },
-  });
-  return { opened: true, key };
-}
 
 /** The message a capture came from, when its provenance carries one./** The message a capture came from, when its provenance carries one.
  *  worker/jobs/poll-gmail.mjs writes `gmail:message:<id> https://mail.google…`,
@@ -490,7 +432,6 @@ export type ThreadReplyOutcome =
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
-  | { outcome: "runner-reply"; runnerId: Id<"runners"> }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -733,11 +674,6 @@ async function routeReply(
       // the box's to fix, not a row with a status Tom can set.
       await logEvent(ctx, "tom-note", undefined, { text, ...at, subject, job: subject.id });
       return { outcome: "tom-note", subject };
-    case "runner":
-      // A reply in a runner's thread, its check-ins or its question: the next
-      // step reads it whole, and it answers the newest open question. Not a
-      // ruling — the rulings table is for todos.
-      return await recordRunnerReply(ctx, subject.id, text, at);
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }

@@ -1,6 +1,5 @@
 // THE RECORD'S CONTEXT FIXTURE. convex/ttsContext.test.ts assembles a run's
-// context from a seeded publication in convex-test, and convex/ttsRunners.test.ts
-// seeds a runner's step prompt from the same pages. The Jarvis repository's
+// context from a seeded publication in convex-test. The Jarvis repository's
 // scripts/prelude.test.mjs reads the same repo rules out of a git checkout from
 // its own copy of this file, which left with the box's code; nothing holds the
 // two copies equal.

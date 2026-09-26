@@ -13,9 +13,6 @@ export const DELEGATE_TIMEOUT_MS = 120_000;
 export const DELEGATE_MAX_TURNS = 6;
 export const DELEGATE_MAX_PER_SESSION = 5;
 export const DELEGATE_MAX_PER_JOB = 3;
-// A runner's cap is keyed on the RUNNER, not the step: a step lives ten
-// minutes, so a per-step cap is no cap at all.
-export const DELEGATE_MAX_PER_RUNNER = 5;
 export const DIGEST_OBJECTION_LOOKBACK = 14;
 
 export type ObjectionFact = {
@@ -59,7 +56,6 @@ const ASK_ARGS = {
   askId: v.string(),
   sessionId: v.optional(v.string()),
   job: v.optional(v.string()),
-  runnerId: v.optional(v.string()),
   todoId: v.optional(v.string()),
   question: v.string(),
   options: v.array(v.string()),
@@ -86,7 +82,6 @@ type AskData = {
   askId: string;
   sessionId?: string;
   job?: string;
-  runnerId?: string;
   todoId?: string;
   question: string;
   options: string[];
@@ -102,18 +97,16 @@ type AskData = {
   runToken?: string;
 };
 
-/** Who asked: a session, a runner or a job, exactly one. The
+/** Who asked: a session or a job, exactly one. The
  *  cap and the count are both per caller, and both read this. */
-function sameCaller(data: unknown, args: { sessionId?: string; job?: string; runnerId?: string }): boolean {
-  const row = (data ?? {}) as { sessionId?: unknown; job?: unknown; runnerId?: unknown };
+function sameCaller(data: unknown, args: { sessionId?: string; job?: string }): boolean {
+  const row = (data ?? {}) as { sessionId?: unknown; job?: unknown };
   if (args.sessionId !== undefined) return row.sessionId === args.sessionId;
-  if (args.runnerId !== undefined) return row.runnerId === args.runnerId;
   return row.job === args.job;
 }
 
-function capFor(args: { sessionId?: string; runnerId?: string }): number {
+function capFor(args: { sessionId?: string }): number {
   if (args.sessionId !== undefined) return DELEGATE_MAX_PER_SESSION;
-  if (args.runnerId !== undefined) return DELEGATE_MAX_PER_RUNNER;
   return DELEGATE_MAX_PER_JOB;
 }
 
@@ -141,10 +134,6 @@ export const internalRecordAsk = internalMutation({
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
       .take(200);
-    if (args.runnerId !== undefined) {
-      const runnerId = ctx.db.normalizeId("runners", args.runnerId);
-      if (runnerId === null || !(await ctx.db.get(runnerId))) throw new Error(`Unknown runner id: ${args.runnerId}`);
-    }
     const callerCount = recent.filter((event) => sameCaller(event.data, args)).length;
     const cap = capFor(args);
     const attended = session !== null && session.mode !== "autonomous";
@@ -157,7 +146,6 @@ export const internalRecordAsk = internalMutation({
       ...args,
       sessionId: args.sessionId ?? null,
       job: args.job ?? null,
-      runnerId: args.runnerId ?? null,
       todoId: todoId ?? null,
       refused,
       refusedBecause,
@@ -195,7 +183,7 @@ export const internalRecordAsk = internalMutation({
 });
 
 export const internalAskContext = internalQuery({
-  args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), runnerId: v.optional(v.string()), todoId: v.optional(v.string()) },
+  args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const recent = await ctx.db.query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))

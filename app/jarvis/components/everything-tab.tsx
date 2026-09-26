@@ -7,7 +7,7 @@
 // Toolbar: text search, status chips, kind chips, category select, sort select
 // — counts on every chip. Rows carry their own state chips.
 //
-// The three sections on top were the batches tab's, under its batch cards;
+// The two sections on top were the batches tab's, under its batch cards;
 // with batches gone (Tom, 2026-09-24) they moved here unchanged.
 //
 // TWO FILTERS ARE GONE (the lifeos update, phase 7). The ready-for-tom toggle
@@ -231,8 +231,8 @@ export default function EverythingTab({
   const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
-  // The sections on top tick once a minute on their own — a runner's "next
-  // step in 3 min" has to move while nothing else re-renders the tab.
+  // The sections on top tick once a minute on their own — a "3 min ago" has
+  // to move while nothing else re-renders the tab.
   const coarseNow = useCoarseNow();
 
   // ── Filters ───────────────────────────────────────────────────────────────

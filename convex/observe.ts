@@ -419,43 +419,6 @@ async function subjectWords(ctx: QueryCtx, ruling: Doc<"rulings">): Promise<stri
 }
 
 /**
- * EVERY LIVE RUNNER, which is what the map counts. The page used to read
- * api.ttsRunners.listRunners, the newest fifty runner rows ever created, so a
- * long-lived runner with fifty newer rows behind it left the map's count
- * quietly — a live runner the page said was not there. The live ones are their
- * own index (runners.by_ended, endedAt undefined), and there are a handful of
- * them, so they are read whole.
- */
-export const liveRunners = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTom(ctx, SURFACE);
-    const live = await ctx.db
-      .query("runners")
-      .withIndex("by_ended", (q) => q.eq("endedAt", undefined))
-      .collect();
-    return Promise.all(
-      live.map(async (runner) => {
-        const checkIn = await ctx.db
-          .query("runnerEvents")
-          .withIndex("by_runner_kind_at", (q) =>
-            q.eq("runnerId", runner._id).eq("kind", "check-in"),
-          )
-          .order("desc")
-          .first();
-        return {
-          runnerId: runner._id as string,
-          title: runner.title,
-          experimentHost: runner.experimentHost,
-          endedAt: null,
-          lastCheckInAt: checkIn?.at ?? null,
-        };
-      }),
-    );
-  },
-});
-
-/**
  * The needs-you threads still waiting on Tom, and when the oldest one opened.
  *
  * WAITING is the weekly job's own test (convex/ttsWeekly.ts, threads): a
