@@ -17,6 +17,7 @@
 import { useState } from "react";
 import type { Decision, EvalItem } from "@/convex/jarvis/intent";
 import Info from "@/app/jarvis/components/info";
+import { errMessage } from "@/app/jarvis/lib";
 import RulingDialog from "@/app/jarvis/components/ruling-dialog";
 import { evalItemLineSuffix, linesRestedOn, type IntentLine } from "../lib";
 
@@ -239,6 +240,7 @@ function Settle({
   onObject: (subject: string, statement: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   if (settled !== null) {
     return (
       <p className="mt-1 text-[11px] font-mono text-text-faint">
@@ -256,7 +258,12 @@ function Settle({
           disabled={busy}
           onClick={() => {
             setBusy(true);
-            void onAccept(subject).finally(() => setBusy(false));
+            setFailed(null);
+            // A refusal is shown under the controls: he must be able to tell
+            // that nothing was recorded.
+            void onAccept(subject)
+              .catch((error: unknown) => setFailed(errMessage(error)))
+              .finally(() => setBusy(false));
           }}
           className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
         >
@@ -270,10 +277,19 @@ function Settle({
       >
         {object}
       </button>
-      <Info call={`jarvis/intent.settle({ subject: "${subject}", verdict: "approve" })`} side="below">
-        Records that this stands, as an event of the record with his name on it; when a decision was about a todo,
-        writes his approve ruling on that todo too. The other button takes his sentence first.
+      <Info
+        call={
+          accept === null
+            ? `jarvis/intent.settle({ subject: "${subject}", verdict: "revise", sentence })`
+            : `jarvis/intent.settle({ subject: "${subject}", verdict: "approve" | "revise", sentence? })`
+        }
+        side="below"
+      >
+        {accept === null
+          ? `"${object}" takes his sentence and records it as an event of the record with his name on it; when a decision was about a todo, writes his revise ruling on that todo too. There is nothing to accept here: nothing was taken in his name.`
+          : `"${accept}" records that this stands, as an event of the record with his name on it, and "${object}" takes his sentence first and records it; when a decision was about a todo, each writes his ruling on that todo too (approve, or revise with his sentence).`}
       </Info>
+      {failed !== null && <p className="text-[11px] text-error">not recorded: {failed}</p>}
     </div>
   );
 }

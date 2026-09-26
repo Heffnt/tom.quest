@@ -3,7 +3,7 @@
 // skipped passed nothing.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Decision, EvalItem } from "@/convex/jarvis/intent";
 import Decisions from "./decisions";
 
@@ -40,7 +40,7 @@ const ITEM: EvalItem = {
   settled: null,
 };
 
-function draw(decisions: Decision[], evalItems: EvalItem[]) {
+function draw(decisions: Decision[], evalItems: EvalItem[], onSettle: () => Promise<unknown> = async () => {}) {
   render(
     <Decisions
       decisions={decisions}
@@ -48,7 +48,7 @@ function draw(decisions: Decision[], evalItems: EvalItem[]) {
       lines={[]}
       selected={null}
       onSelect={() => {}}
-      onSettle={async () => {}}
+      onSettle={onSettle}
     />,
   );
 }
@@ -70,5 +70,24 @@ describe("Decisions", () => {
     cleanup();
     draw([], [{ ...ITEM, pass: true }, { ...ITEM, name: "rule/b" }]);
     expect(screen.getByText("Every scored item of the newest runs passed; 1 was skipped.")).toBeTruthy();
+  });
+
+  // witness: a refused settle was an unhandled rejection with nothing on the
+  // page, so he could not tell whether it was recorded.
+  it("shows a settle the record refused, under the controls", async () => {
+    draw([DECISION], [], async () => {
+      throw new Error("decision 86f2f341 was refused or not answered; there is nothing to accept");
+    });
+    fireEvent.click(screen.getByText("accept"));
+    await waitFor(() => expect(screen.getByText(/^not recorded: /)).toBeTruthy());
+    expect((screen.getByText("accept") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("captions object as the revise it records, and names no approve where there is nothing to accept", () => {
+    draw([{ ...DECISION, decision: null, refused: true, refusedBecause: "money" }], []);
+    fireEvent.click(screen.getAllByLabelText("what this does")[1]);
+    expect(screen.getByText(/verdict: "revise", sentence \}\)/)).toBeTruthy();
+    expect(screen.getByText(/takes his sentence/).textContent).toContain("There is nothing to accept here");
+    expect(screen.queryByText(/verdict: "approve"/)).toBeNull();
   });
 });
