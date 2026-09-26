@@ -43,15 +43,15 @@ export async function lastDigest(ctx: QueryCtx): Promise<{ data?: unknown; text?
     .first();
 }
 
-/** The newest `n` digest-sent rows in the record, newest first: the thread
- *  needs-you replies go under, and the one before it, where a reply posted
- *  just before a new digest went out may already sit. */
-export async function recentDigests(ctx: QueryCtx, n: number): Promise<{ data?: unknown }[]> {
+/** Every digest-sent row in the record since `from`, newest first: the
+ *  threads needs-you replies went under in that time. A day's digest is one
+ *  row, so a few days is a handful. */
+export async function digestsSince(ctx: QueryCtx, from: number): Promise<{ data?: unknown }[]> {
   return await ctx.db
     .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT))
+    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT).gte("at", from))
     .order("desc")
-    .take(n);
+    .take(50);
 }
 
 /** The number a needs-you reply was posted with: the box writes it first,
