@@ -1025,6 +1025,29 @@ describe("internalComposeToday", () => {
     ]);
   });
 
+  // witness: the digest found /tts/ask decisions only among the newest 2,000
+  // dtsEvents rows of every kind, so a busy night of other rows pushed a
+  // decision taken in his name out before it was looked at.
+  it("numbers a /tts/ask decision however many other rows the night wrote after it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 6 * 3600_000,
+        kind: DELEGATE_DECISION,
+        key: "buried1",
+        data: { askId: "buried1", decision: "moved it to Thursday", refused: false },
+      });
+      for (let n = 0; n < 2100; n += 1) {
+        await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3 * 3600_000 + n, kind: "agents-ingest", data: {} });
+      }
+    });
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
+    expect(facts.objections.map((o) => o.askId)).toContain("buried1");
+  }, 60_000);
+
   // THE SAME INVARIANT, ON THE OTHER CUT. ttsCompose.fit reduces a whole run to
   // its lead plus one "N more lines are on the page" line when the message will
   // not fit, and the objection list is the second-to-last ranked run, so a busy

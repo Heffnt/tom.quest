@@ -428,13 +428,28 @@ export async function gatherTodayFacts(
 
   // 4. The night's events, oldest first: what the box left behind, what broke,
   //    and the delegate's decisions.
-  const events = (
-    await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_at", (q) => q.gte("at", since).lt("at", now))
-      .order("desc")
-      .take(EVENT_SCAN)
-  ).reverse();
+  //
+  //    THE OBJECTION LIST'S KINDS ARE READ ON THEIR OWN INDEX (by_kind_at),
+  //    not out of the newest EVENT_SCAN rows of every kind: a busy night of
+  //    instrumentation must not push a decision taken in his name (a /tts/ask
+  //    row), a merge or a message sent as him out of the window before the
+  //    kind is looked at. The scan keeps the rest.
+  const objectionKinds = new Set<string>([DELEGATE_DECISION, MERGE, SENT_AS_TOM, SIMPLIFY_PROPOSAL, REMOVAL_LOOP_PR]);
+  const byKind = await Promise.all(
+    [...objectionKinds].map(async (kind) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since).lt("at", now))
+        .order("desc")
+        .take(OBJECTION_SCAN),
+    ),
+  );
+  const scanned = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_at", (q) => q.gte("at", since).lt("at", now))
+    .order("desc")
+    .take(EVENT_SCAN);
+  const events = [...scanned.filter((e) => !objectionKinds.has(e.kind)), ...byKind.flat()].sort((a, b) => a.at - b.at);
 
   // OUTCOMES, NEVER LOGGED EVENTS. One line per TODO, from every session
   // event in the window that named it: a night of five sessions on one todo is
