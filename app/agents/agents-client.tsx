@@ -22,7 +22,7 @@
 // /observe redirects there.
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -33,6 +33,13 @@ import Agent from "./components/agent";
 import WindowView from "./window/window-view";
 import { DAEMON_STALE_MS } from "./lib";
 
+type Target =
+  | { kind: "session"; sessionId: Id<"claudeSessions"> }
+  | { kind: "run"; runId: string }
+  | null;
+
+type View = "agents" | "window";
+
 // Shape of a Convex document id as it appears in a deep link. A malformed
 // ?session= value passed straight into useQuery throws during render, so
 // anything not id-shaped is treated as absent (the list view shows instead).
@@ -42,12 +49,17 @@ const SESSION_ID_SHAPE = /^[a-z0-9]{20,40}$/;
 const RUN_ID_SHAPE =
   /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
 
-type Target =
-  | { kind: "session"; sessionId: Id<"claudeSessions"> }
-  | { kind: "run"; runId: string }
-  | null;
-
-type View = "agents" | "window";
+/** What the query string opens: the view, and the agent when it names one. */
+function readDeepLink(sp: URLSearchParams): { view: View; target: Target } {
+  const view: View = sp.get("view") === "window" ? "window" : "agents";
+  const runId = sp.get("agent") ?? sp.get("run");
+  if (runId && RUN_ID_SHAPE.test(runId)) return { view, target: { kind: "run", runId } };
+  const id = sp.get("session");
+  if (id && SESSION_ID_SHAPE.test(id)) {
+    return { view, target: { kind: "session", sessionId: id as Id<"claudeSessions"> } };
+  }
+  return { view, target: null };
+}
 
 export default function AgentsClient() {
   // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
@@ -66,20 +78,15 @@ export default function AgentsClient() {
     return () => clearInterval(t);
   }, []);
 
-  // Read the deep link once on mount (GETs never change state).
+  // Follow the deep link whenever the query string changes, not only on
+  // mount: the window view's links (/agents?agent=...) move within this same
+  // page, so the component stays mounted while the URL changes under it.
+  const search = useSearchParams().toString();
   useEffect(() => {
-    const sp = new URLSearchParams(window.location.search);
-    if (sp.get("view") === "window") setView("window");
-    const runId = sp.get("agent") ?? sp.get("run");
-    if (runId && RUN_ID_SHAPE.test(runId)) {
-      setTarget({ kind: "run", runId });
-      return;
-    }
-    const id = sp.get("session");
-    if (id && SESSION_ID_SHAPE.test(id)) {
-      setTarget({ kind: "session", sessionId: id as Id<"claudeSessions"> });
-    }
-  }, []);
+    const link = readDeepLink(new URLSearchParams(search));
+    setView(link.view);
+    setTarget(link.target);
+  }, [search]);
 
   const openSession = (sessionId: Id<"claudeSessions">) => {
     setTarget({ kind: "session", sessionId });
