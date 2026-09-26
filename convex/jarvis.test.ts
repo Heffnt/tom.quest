@@ -76,6 +76,15 @@ describe("POST /jarvis/event", () => {
     expect(await rows(t, "events")).toHaveLength(1);
   });
 
+  it("refuses a job-failed that names no job, and records nothing", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const res = await post(t, "/jarvis/event", { kind: "job-failed", provenance: {}, subject: "x:y", data: { error: "e" } }, { "X-Jarvis-Key": "k" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("provenance.job");
+    expect(await rows(t, "events")).toEqual([]);
+  });
+
   it("runs the job hooks: one digest failure per standing condition, a repeat marked, re-armed by the clean run, all in events, no Slack post", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");

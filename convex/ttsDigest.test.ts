@@ -5,11 +5,12 @@ import schema from "./schema";
 import { DELEGATE_DECISION } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
-import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
+import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DIGEST_SENT,
   ROLLOVER_NOTE,
   calendarLeadText,
+  gatherTodayFacts,
   isPassedWithoutOutcome,
   latenessText,
   objectionRank,
@@ -970,6 +971,43 @@ describe("internalComposeToday", () => {
     expect(text).toContain("3 more decisions are on the page.");
   });
 
+  // witness: the record's decisions were read oldest first before the cap,
+  // their reasons unredacted, and a row with no subject was numbered under a
+  // spelling nothing resolves.
+  it("reads the record's decisions newest first, redacts the model's words, and numbers none without a subject", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"; // gitleaks:allow
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 201; n += 1) {
+        await ctx.db.insert("events", {
+          kind: "decision",
+          at: FIVE_AM - 3 * 3600_000 + n * 1_000,
+          provenance: { job: "decide" },
+          subject: `d-${n}`,
+          data: { question: "q", decision: `took decision ${n}`, refused: false },
+        });
+      }
+      await ctx.db.insert("events", {
+        kind: "decision", at: FIVE_AM - 60_000, provenance: { job: "decide" }, subject: "d-secret",
+        data: { question: "q", decision: `used ${secret}`, reason: `because ${secret}`, refused: true, refusedBecause: `it holds ${secret}` },
+      });
+      await ctx.db.insert("events", {
+        kind: "decision", at: FIVE_AM - 30_000, provenance: { job: "decide" },
+        data: { askId: "no-subject", question: "q", decision: "unnumbered", refused: false },
+      });
+    });
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
+    const askIds = facts.objections.map((o) => o.askId);
+    expect(askIds).toContain("d-200");
+    expect(askIds).not.toContain("d-0");
+    expect(askIds).not.toContain("no-subject");
+    expect(JSON.stringify(facts.objections)).not.toContain(secret);
+    expect(askIds).toContain("d-secret");
+  });
+
   // THE SAME INVARIANT, ON THE OTHER CUT. ttsCompose.fit reduces a whole run to
   // its lead plus one "N more lines are on the page" line when the message will
   // not fit, and the objection list is the second-to-last ranked run, so a busy
@@ -1069,58 +1107,40 @@ describe("internalComposeToday", () => {
     expect(text).toContain("weekly agenda");
   });
 
-  it("reports an evals regression as broken, and says nothing about a clean run", async () => {
+  // witness: the digest read only the legacy evals-run rows in dtsEvents,
+  // and the runner writes eval-run rows to events, so a failed set never
+  // reached the broken section.
+  it("reports a set whose newest eval run failed items as broken, and says nothing about a clean set", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
-    const clean = convexTest(schema, modules);
-    await withTom(clean);
-    await clean.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: FIVE_AM - 3600_000,
-        kind: EVALS_RUN,
-        key: "tom.quest@a1b2c3d4",
-        data: { repo: "tom.quest", sha: "a1b2c3d4", items: 40, pass: 40, regressions: 0, stillFailing: 0, failures: [] },
-      });
+    const run = (at: number, set: string, items: { name: string; pass: boolean | null; note: string }[]) => ({
+      kind: EVAL_RUN,
+      at,
+      provenance: { job: "evals" },
+      subject: set,
+      data: {
+        set,
+        items,
+        passed: items.filter((item) => item.pass === true).length,
+        failed: items.filter((item) => item.pass === false).length,
+        skipped: items.filter((item) => item.pass === null).length,
+        total: items.filter((item) => item.pass !== null).length,
+      },
     });
-    const quiet = await clean.query(internal.ttsDigest.internalComposeToday, {
-      day: DAY_KEY,
-      now: FIVE_AM,
-    });
-    expect(quiet.text).not.toContain("evals");
-
     const t = convexTest(schema, modules);
     await withTom(t);
     await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: FIVE_AM - 3600_000,
-        kind: EVALS_RUN,
-        key: "tom.quest@a1b2c3d4",
-        data: {
-          repo: "tom.quest",
-          sha: "a1b2c3d4",
-          items: 40,
-          pass: 38,
-          regressions: 1,
-          stillFailing: 1,
-          failures: [
-            {
-              id: "prepare-chores-k17abc",
-              partition: "prepare/chores",
-              reason: "still restates the statement",
-              regression: true,
-            },
-          ],
-        },
-      });
+      await ctx.db.insert("events", run(FIVE_AM - 7200_000, "wall", [{ name: "wall/redaction", pass: false, note: "leaked" }]));
+      await ctx.db.insert("events", run(FIVE_AM - 3600_000, "wall", [{ name: "wall/redaction", pass: true, note: "" }]));
+      await ctx.db.insert("events", run(FIVE_AM - 3600_000, "rule", [
+        { name: "rule/ruling-758ddm40", pass: false, note: "expected archive, got session" },
+        { name: "rule/ruling-td8dkhd8", pass: true, note: "" },
+      ]));
     });
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
-      day: DAY_KEY,
-      now: FIVE_AM,
-    });
-    expect(text).toContain("The evals came back short at tom.quest a1b2c3d");
-    expect(text).toContain("1 regression");
-    expect(text).toContain("1 still failing");
-    expect(text).toContain("prepare-chores-k17abc");
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM });
+    expect(text).toContain("The rule evals failed 1 of 2 items in their newest run.");
+    expect(text).toContain("rule/ruling-758ddm40");
+    expect(text).not.toContain("The wall evals");
   });
 
   it("renders nothing at all when there are no delegate rows", async () => {

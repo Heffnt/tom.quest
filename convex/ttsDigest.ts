@@ -17,7 +17,7 @@ import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
-import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
+import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
 import { failuresInWindow } from "./jarvis/jobs";
 import {
@@ -99,7 +99,7 @@ export { MERGE } from "./ttsMerge";
 export const LEARNING_CHANGE = "learning-change";
 export const LEARNING_REVERTED = "learning-reverted";
 export const LEARNING_REVERT_FAILED = "learning-revert-failed";
-export { PRELUDE_DELIVERY, EVALS_RUN } from "./ttsEvals";
+export { PRELUDE_DELIVERY } from "./ttsEvals";
 
 // The night the learning step took its WHOLE write back: WikiTom's
 // scripts/check-evidence.mjs failed after the write, so every line the night
@@ -535,11 +535,11 @@ export async function gatherTodayFacts(
           at: e.at,
           askId: str(d.askId) ?? (e.key ?? ""),
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
-          decision: str(d.decision) ?? null,
-          reason: str(d.reason),
+          decision: safeStr(d.decision) ?? null,
+          reason: safeStr(d.reason),
           refused: d.refused === true,
-          refusedBecause: str(d.refusedBecause),
-          fallback: str(d.fallback),
+          refusedBecause: safeStr(d.refusedBecause),
+          fallback: safeStr(d.fallback),
         });
         break;
       }
@@ -668,34 +668,6 @@ export async function gatherTodayFacts(
         row.detail = safeStr(first?.title);
         break;
       }
-      case EVALS_RUN: {
-        // Same rule: a passing run is the weekly's fact, and a regression is
-        // his. `regressions` and `stillFailing` are the runner's own
-        // comparison against the base run; this never reimplements gate().
-        const regressions = typeof d.regressions === "number" ? d.regressions : 0;
-        const stillFailing = typeof d.stillFailing === "number" ? d.stillFailing : 0;
-        if (regressions === 0 && stillFailing === 0) break;
-        const clauses: string[] = [];
-        if (regressions > 0) {
-          clauses.push(`${regressions} ${regressions === 1 ? "regression" : "regressions"}`);
-        }
-        if (stillFailing > 0) clauses.push(`${stillFailing} still failing`);
-        const row = failure(
-          "evals",
-          `The evals came back short at ${str(d.repo) ?? "the repo"} ${(str(d.sha) ?? "").slice(0, 7)}: ${clauses.join(", ")}.`,
-        );
-        const firstRegression = (Array.isArray(d.failures) ? d.failures : []).flatMap((f) =>
-          f !== null && typeof f === "object" && (f as Record<string, unknown>).regression === true
-            ? [f as Record<string, unknown>]
-            : [],
-        )[0];
-        if (firstRegression !== undefined) {
-          // The id and the reason; the partition is on the run row and is
-          // one clause too many for a line that is already a sentence long.
-          row.detail = `${safeStr(firstRegression.id) ?? "an item"} — ${safeStr(firstRegression.reason) ?? ""}`;
-        }
-        break;
-      }
       default: {
         // Every job failure is a "-failed" kind (a box job reports its own
         // through POST /tts/job-failed). A Slack failure is the door's own and
@@ -719,42 +691,84 @@ export async function gatherTodayFacts(
   //    jobs.ts): one line per condition reported in the window, not per
   //    tick, saying whether it has since recovered; and one for a condition
   //    reported before the window that recovered inside it.
+  //
+  //    GROUPED BY CONDITION, the report's subject, not by job: two conditions
+  //    of one job are two lines, and one recovering says nothing about the
+  //    other. A report with no subject is about a run, not a condition
+  //    (Jarvis tts-lib reportJobFailed and POST /tts/job-failed without a
+  //    key, both live): a job's unkeyed reports are one line, counted. Every
+  //    report names its job (provenance.job; onJobFailed refuses one without).
   const reports = await failuresInWindow(ctx, since, now);
   const recoveredAt = new Map<string, number>();
   for (const row of reports.recovered) if (row.subject !== undefined) recoveredAt.set(row.subject, row.at);
   const failedKeys = new Set<string>();
   for (const row of reports.failed) {
     const d = (row.data ?? {}) as Record<string, unknown>;
-    const job = str(d.job) ?? row.provenance.job ?? "unknown";
+    const job = row.provenance.job ?? "";
+    const condition = row.subject ?? `job:${job}`;
     const fixedAt = row.subject === undefined ? undefined : recoveredAt.get(row.subject);
-    if (row.subject !== undefined) failedKeys.add(row.subject);
+    failedKeys.add(condition);
     const statement = brokenStatement(job);
-    const f = failure(job, fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement);
+    const f = failure(condition, fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement);
     f.detail = safeStr(d.error) ?? safeStr(row.text);
   }
   for (const row of reports.recovered) {
     if (row.subject === undefined || failedKeys.has(row.subject)) continue;
-    const job = str((row.data as Record<string, unknown> | undefined)?.job) ?? row.provenance.job ?? "unknown";
-    failure(`${job}:recovered`, `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`);
+    const job = row.provenance.job ?? "";
+    failure(`${row.subject}:recovered`, `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`);
+  }
+
+  // The evals (Jarvis worker/jobs/evals.mjs): one eval-run event per set per
+  //    run (convex/ttsEvals.ts EVAL_RUN, subject the set). A set whose newest
+  //    run in the window failed items is one broken line; a clean run is the
+  //    weekly's fact and /intent's pass rate, not a morning line.
+  const evalRuns = await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", EVAL_RUN).gte("at", since).lt("at", now))
+    .order("desc")
+    .take(OBJECTION_SCAN);
+  const setsRead = new Set<string>();
+  for (const row of evalRuns) {
+    if (row.subject === undefined || setsRead.has(row.subject)) continue;
+    setsRead.add(row.subject);
+    const d = (row.data ?? {}) as Record<string, unknown>;
+    const failed = typeof d.failed === "number" ? d.failed : 0;
+    if (failed === 0) continue;
+    const total = typeof d.total === "number" ? d.total : failed;
+    const f = failure(
+      `evals:${row.subject}`,
+      `The ${row.subject} evals failed ${failed} of ${total} ${total === 1 ? "item" : "items"} in their newest run.`,
+    );
+    const first = (Array.isArray(d.items) ? d.items : []).find(
+      (item): item is Record<string, unknown> => item !== null && typeof item === "object" && (item as Record<string, unknown>).pass === false,
+    );
+    if (first !== undefined) f.detail = `${safeStr(first.name) ?? "an item"} — ${safeStr(first.note) ?? ""}`;
   }
 
   // The delegate's decisions recorded by `jarvis decide` (convex/jarvis/
   //    intent.ts, kind "decision"): the same objection list as the older
   //    delegate-decision rows above, numbered with them.
+  //    Newest first before the cap, so a busy window drops its oldest rows.
+  //    The askId is the row's subject, which is what the objection resolver
+  //    (convex/ttsAsk.ts internalRecordDelegateObjection) and jarvis/intent
+  //    settle find it by; a row without one cannot be reverted and is not
+  //    numbered. The model's words go through safeStr like every other.
   const decided = await ctx.db
     .query("events")
     .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
+    .order("desc")
     .take(OBJECTION_SCAN);
   for (const row of decided) {
+    if (row.subject === undefined) continue;
     const d = (row.data ?? {}) as Record<string, unknown>;
     rawObjections.push({
       at: row.at,
-      askId: str(d.askId) ?? row.subject ?? "",
+      askId: row.subject,
       todoId: str(d.todoId),
-      decision: str(d.decision) ?? null,
-      reason: str(d.reason),
+      decision: safeStr(d.decision) ?? null,
+      reason: safeStr(d.reason),
       refused: d.refused === true,
-      refusedBecause: str(d.refusedBecause),
+      refusedBecause: safeStr(d.refusedBecause),
     });
   }
 
@@ -765,6 +779,7 @@ export async function gatherTodayFacts(
   const lines = await ctx.db
     .query("events")
     .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_LINE).gte("at", since).lt("at", now))
+    .order("desc")
     .take(OBJECTION_SCAN);
   for (const row of lines) {
     const d = (row.data ?? {}) as Record<string, unknown>;
@@ -773,9 +788,11 @@ export async function gatherTodayFacts(
       failure(job, safeStr(d.statement) ?? brokenStatement(job), str(d.url)).detail = safeStr(d.detail);
       continue;
     }
+    // listForDigest writes the askId as the row's subject.
+    if (row.subject === undefined) continue;
     rawObjections.push({
       at: row.at,
-      askId: str(d.askId) ?? row.subject ?? "",
+      askId: row.subject,
       todoId: str(d.todoId),
       decision: safeStr(d.decision) ?? null,
       reason: safeStr(d.reason),
@@ -812,6 +829,9 @@ export async function gatherTodayFacts(
   //    no decision — the rows may not exist yet: the delegate is built on
   //    branch uac/delegate and this reads by kind if present.
   const objections = rawObjections
+    // The newest OBJECTION_SCAN of every source together: the reads above
+    // come in different orders, so they are put in time order before the cut.
+    .sort((a, b) => a.at - b.at)
     .slice(-OBJECTION_SCAN)
     .sort(
       (a, b) =>
