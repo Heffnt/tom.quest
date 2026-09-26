@@ -59,17 +59,62 @@ export default defineSchema({
     error: v.optional(v.string()),
   }).index("by_server", ["serverName"]),
 
-  // THE BOX JOBS' HEARTBEATS: one row per job, the time of its last clean run,
-  // patched by POST /tts/job-ok (convex/ttsJobs.ts internalReportJobOk), the
-  // one door every box job already reports through. The silence alarm reads
-  // it (internalCheckSilence): a watched job whose last clean run is older
-  // than three of its intervals is a #tts-broken line (plan-root T3). Its own
-  // table, not a dtsEvents kind, because it is patched every two minutes and a
-  // row per clean run is exactly what job-ok was written never to make.
+  // THE BOX JOBS' HEARTBEATS — UNWRITTEN since night/s3 (2026-09-26). A clean
+  // run is now a `job-ok` row of `events` below, and the silence alarm
+  // (convex/jarvis/jobs.ts checkSilence) reads the newest one per job on
+  // by_kind_job_at. The table stays declared tonight because the schema is
+  // additive tonight; the deletion stream drops it (nothing reads or writes
+  // it any more). The idea it held, one time per job, is the index above.
   jobHeartbeats: defineTable({
     job: v.string(),
     lastOkAt: v.number(),
   }).index("by_job", ["job"]),
+
+  // THE ONE RECORD (night/s3, 2026-09-26; the target shape of the 2026-09-26
+  // program): every Jarvis row that is not a todo, a ruling, a calendar row, a
+  // repeat, a vocabulary entry, a sign-off or a transcript row is an event
+  // here. What happened (kind), when (at), who (provenance), about what
+  // (subject), the facts (data) and the digest's line (text). The kinds are
+  // the closed list in shared/jarvis-events.mjs; the writer is
+  // convex/jarvis/events.ts recordEvent, behind POST /jarvis/event and the
+  // Convex-internal reporters; the readers are GET /jarvis/events and the
+  // /agents page. dtsEvents (below) is the previous generation's table: the
+  // kinds it still owns are copied here as they arrive through POST
+  // /tts/event (copyFromDts), so this table shows one list, and each area
+  // moves its kinds to the new route in its own stream, after which dtsEvents
+  // goes.
+  //
+  // WHY `provenance` IS AN OBJECT AND `subject` A STRING: a reader asks two
+  // questions of the record, "what did THIS agent/job do" and "what happened
+  // to THIS thing", and each is one index below. `data` is v.any() and no
+  // index reaches it, so anything a reader filters on must be one of the
+  // fields here.
+  events: defineTable({
+    kind: v.string(),
+    at: v.number(),
+    provenance: v.object({
+      agentId: v.optional(v.string()),
+      job: v.optional(v.string()),
+      session: v.optional(v.string()),
+      user: v.optional(v.string()),
+    }),
+    // A todo id, `<repo>@<sha>`, a repo, a session id, or the condition a
+    // job report names (`poll-canvas:canvas-auth`).
+    subject: v.optional(v.string()),
+    data: v.any(),
+    // The one line the digest prints for this row; absent means the digest
+    // derives it from kind and data, or leaves the row out.
+    text: v.optional(v.string()),
+  })
+    .index("by_at", ["at"])
+    .index("by_kind_at", ["kind", "at"])
+    .index("by_subject_at", ["subject", "at"])
+    // One job's rows of one kind, newest first: the silence alarm's read of
+    // its last `job-ok`. Named separately from by_kind_at because a scan of
+    // every job's heartbeats to find one job's is what an index is for.
+    .index("by_kind_job_at", ["kind", "provenance.job", "at"])
+    // One agent's rows: the /agents chat draws them among the transcript.
+    .index("by_agent_at", ["provenance.agentId", "at"]),
 
   // Declarative GPU pool: desired state ("keep N GPUs of type T running these
   // commands"). A Convex cron reconciles desired-vs-actual against the Turing

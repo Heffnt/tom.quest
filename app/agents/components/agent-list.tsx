@@ -17,6 +17,7 @@ import { useOpenSession } from "@/app/lib/use-open-todo-session";
 import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 import type { Session, SessionModel } from "../lib";
 import ModelSelect from "./model-select";
+import RecordStrip from "./record-strip";
 import {
   DEFAULT_SESSION_MODEL,
   MODEL_CHIP_CLASS,
@@ -401,6 +402,7 @@ export default function AgentList({
             </button>
           ))}
       </div>
+      <RecordStrip />
       {source === "all roots" ? (
         <RootRuns onOpenRun={onOpenRun} />
       ) : ordered === undefined ? (

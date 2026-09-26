@@ -11,6 +11,7 @@
     "./evals-row.mjs": "./evals-row.mjs",
     "./graph-hash.mjs": "./graph-hash.mjs",
     "./graph.mjs": "./graph.mjs",
+    "./jarvis-events.mjs": "./jarvis-events.mjs",
     "./learning-change-names.mjs": "./learning-change-names.mjs",
     "./markdown-sections.mjs": "./markdown-sections.mjs",
     "./redact.mjs": "./redact.mjs",
@@ -20,5 +21,7 @@
     "./vocabulary-rows.mjs": "./vocabulary-rows.mjs",
     "./package.json": "./package.json"
   },
-  "files": ["*.mjs"]
+  "files": [
+    "*.mjs"
+  ]
 }

@@ -243,8 +243,12 @@ describe("the silence alarm", () => {
     vi.setSystemTime(AT);
     await ok(t, "box-watch");
     await ok(t, "box-state");
-    const beats = await t.run(async (ctx) => ctx.db.query("jobHeartbeats").collect());
-    expect(beats.map((beat) => [beat.job, beat.lastOkAt]).sort()).toEqual([["box-state", AT], ["box-watch", AT]]);
+    // The heartbeat is the job-ok row itself (convex/jarvis/jobs.ts lastOkAt).
+    const beats = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(beats.map((beat) => [beat.kind, beat.provenance.job, beat.at]).sort()).toEqual([
+      ["job-ok", "box-state", AT],
+      ["job-ok", "box-watch", AT],
+    ]);
 
     // Two intervals and a bit: quiet, not yet silent.
     vi.setSystemTime(AT + 2 * 2 * 60_000 + 30_000);
