@@ -14,7 +14,6 @@ import {
   RUNNER_TYPE,
   RUNNER_CEILING,
   SESSION_MODEL,
-  DECISION_KIND,
   FABLE_AVAILABILITY,
   USAGE_LIMIT_REPORT,
   VOCABULARY_COUNTS,
@@ -114,7 +113,12 @@ export default defineSchema({
     // every job's heartbeats to find one job's is what an index is for.
     .index("by_kind_job_at", ["kind", "provenance.job", "at"])
     // One agent's rows: the /agents chat draws them among the transcript.
-    .index("by_agent_at", ["provenance.agentId", "at"]),
+    .index("by_agent_at", ["provenance.agentId", "at"])
+    // One condition's rows of one kind: the jobs area's standing check (a
+    // job-failed not closed by a later job-recovered under the same subject)
+    // and the digest's read of one condition, without a scan of every job's
+    // failures (convex/jarvis/jobs.ts).
+    .index("by_kind_subject_at", ["kind", "subject", "at"]),
 
   // Declarative GPU pool: desired state ("keep N GPUs of type T running these
   // commands"). A Convex cron reconciles desired-vs-actual against the Turing
@@ -639,10 +643,7 @@ export default defineSchema({
     // tasks: who does it. Same meaning as the plan-step actor it succeeds.
     actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
     // STAYS DECLARED past the phase-7 narrow: the planner writes it
-    // (tts.internalStorePlanGraph) and the auto-session scheduler reads it
-    // (claudeSessions.resolveFleetModel), where a tagged task WAITS rather
-    // than falling back when the Codex door is shut. Dropping it would
-    // silently re-dispatch tagged work to the fleet default.
+    // (tts.internalStorePlanGraph), and the session a todo opens runs on it.
     //
     // The model an agent task needs, from the one union in ttsShared
     // (SESSION_MODELS: opus | sonnet | fable | gpt-5.6-sol | gpt-5.6-terra).
@@ -701,6 +702,209 @@ export default defineSchema({
     // read on the hot path of a route that must answer within 3 seconds.
     .index("by_slackTs", ["slackTs"]),
 
+  // todos: the plain-named home of dtsTodos's rows (the record's core tables,
+  // 2026-09-26). Same fields and indexes; dtsTodos above empties once
+  // convex/jarvis/tables.ts has copied it, and then goes.
+  todos: defineTable({
+    statement: v.string(),
+    body: v.optional(v.string()),
+    // Set at capture when a poller's triage judged the item to need Tom
+    // TODAY, with the triage's own few words (empty when it gave none). No
+    // worker raises it with him (Tom, 2026-09-21); the morning message and the
+    // hourly line read it here and say it. Its own field because nothing else
+    // on the row can hold it: `statement` is display text the preparer
+    // rewrites, `body` is the preparer's, and `provenance` is the source line
+    // Tom reads, where a judgement would pose as a fact about the source.
+    needsTomToday: v.optional(v.object({ why: v.string() })),
+    // NARROWED (the lifeos update, phase 7): two values, unprepared |
+    // prepared. The retired spellings were mapped by
+    // ttsMigrations.internalMigrateReadiness and verified gone on prod
+    // before the validator narrowed. Whether a prepared row is READY for
+    // Tom is computed, never stored (ttsShared.isReadyForTom).
+    readiness: READINESS,
+    status: v.union(
+      v.literal("active"),
+      v.literal("waiting"),
+      v.literal("archived"),
+      v.literal("done"),
+    ),
+    // NARROWED (the lifeos update, phase 7): two values, dated | whenever.
+    // ttsMigrations.internalMigrateTiming turned every condition-bound row
+    // into a task whose statement carries the condition sentence and whose
+    // sleep is wakeAt (latestSafeAt minus the 14-day window), and a second run
+    // counted zero, so no stored row carries the retired value.
+    timingClass: v.union(v.literal("dated"), v.literal("whenever")),
+    // dated: dueAt + dateKind. Every date resolves to a recorded outcome
+    // (kept-dates rule, spec §8) — history kept inline in dateOutcomes.
+    dueAt: v.optional(v.number()),
+    dateKind: v.optional(
+      v.union(v.literal("external"), v.literal("self-imposed")),
+    ),
+    dateOutcomes: v.optional(
+      v.array(
+        v.object({
+          dueAt: v.number(),
+          outcome: v.union(
+            v.literal("done"),
+            v.literal("renegotiated"),
+            v.literal("missed"),
+          ),
+          recordedAt: v.number(),
+          note: v.optional(v.string()),
+        }),
+      ),
+    ),
+    // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
+    // sentence about the world that says the goal is met ("the lease is
+    // signed", "cmt-014 is closed upstream"). One reading now: the trigger
+    // reading went with timingClass "condition-bound" (the lifeos update,
+    // phase 7), so a condition on a goal is a completion test and nothing
+    // else — which is what makes goalCheckable a one-line rule.
+    condition: v.optional(v.string()),
+    // waiting: a concrete wake time. The prose wake condition it used to sit
+    // beside is retired (the lifeos update, phase 7) — the migration carried
+    // every stored one into the row's own statement, so the sentence a reader
+    // needs is on the row and the sleep is a time.
+    wakeAt: v.optional(v.number()),
+    // archived: optional condition under which it should be proposed back.
+    // STAYS DECLARED past the phase-7 narrow: the archive verdict writes it
+    // (convex/ttsRulings.ts), Tom's archive control offers it, and
+    // tts.internalMigrateToGraph writes the GRAPH_SUPERSEDED pointer into it
+    // as its idempotence key — that migration is Tom's step and has not run.
+    unarchiveCondition: v.optional(v.string()),
+    // Category tag: lets one scheduled dtsBlocks row cover a set of todos
+    // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
+    category: v.optional(v.string()),
+    // (Batches v1, ratified 2026-08-28, is gone from here: `members` — the one
+    // field that made a dtsTodos row a batch — and `plan`, its ordered
+    // completion steps, were NARROWED out after
+    // ttsMigrations.internalClearRetiredFields took both off every row on prod
+    // and a second run reported zero. A batch is its own `batches` row now,
+    // and its contents are dtsTodos rows pointing back at it by batchId, kind
+    // "task" or "goal", ordered by `needs`. tts.internalMigrateToGraph, which
+    // moved all 61 of them across, still reads the pair through a loose view
+    // of the row, so it runs on a deployment whose validator has moved on.
+    // What each row SAID is on record as a `retired-field-cleared` dtsEvents
+    // row. The lifeos update, phase 7.)
+    // Stamped by the Tom doors (updateTodo, setStatus, the ruling life path,
+    // the pens). A row with this set is FROZEN: the planner
+    // (tts.internalStorePlanGraph) may never rewrite or retire it.
+    tomTouchedAt: v.optional(v.number()),
+    // "manual" | "slack-capture" | "consolidation" | "email" | "session-sweep"
+    // | "prospecting" | … Each name means ONE fact: the two Canvas producers
+    // are "canvas" (assignments, convex/ttsCanvas.ts) and "canvas-announcement"
+    // (worker/jobs/poll-canvas.mjs), never one shared name.
+    source: v.string(),
+    provenance: v.optional(v.string()), // link/descriptor of where it came from
+    // ── Slack coordinates of the #dump message this was captured from ────────
+    // Tom's ruling 2026-08-30: TTS replies ONCE, in thread, to every #dump
+    // message, saying how it processed that message. Answering "which message
+    // do I reply to?" needs the channel and the message ts as MACHINE fields.
+    //
+    // DELIBERATELY NOT overloaded into `provenance`: Tom reads provenance, it
+    // holds a permalink for him, and parsing a ts back out of a URL would make
+    // his field load-bearing for a machine.
+    //
+    // slackTs is also the DEDUPE key for the Slack Events push route (Slack
+    // retries deliver the same event more than once) — see by_slackTs below.
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
+    slackReplyTs: v.optional(v.string()), // ts of OUR reply, so it can be edited
+    slackRepliedAt: v.optional(v.number()), // the "replied once" guard
+    workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
+    entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
+    brief: v.optional(v.string()), // ground-up brief, markdown
+    // The registration token of the run that wrote the four prepared fields
+    // above. Same field name and same meaning as on batches and
+    // dtsCodeBriefs; see the note on batches.producedByRunToken.
+    producedByRunToken: v.optional(v.string()),
+    // ── Schema v2 graph fields (ratified 2026-08-29) ─────────────────────────
+    // ALL OPTIONAL, ALL ADDITIVE: prod is one deployment and nothing is ever
+    // destructive, so every v1 row stays legal exactly as written. A row with
+    // none of these is a legacy standalone todo and is treated as a task.
+    //
+    // What a row IS inside a batch. Absent = legacy standalone todo, read as
+    // a task. "task" = work someone does; "goal" = a state of the world the
+    // batch is for, checkable via `condition` above.
+    kind: v.optional(v.union(v.literal("task"), v.literal("goal"))),
+    // The batch this row belongs to (batches table). Absent = batch-less.
+    batchId: v.optional(v.id("batches")),
+    // Dependency edges: this todo is READY only once every id here is done
+    // (done or archived both count — ttsShared.buildDoneSet). Bounded at
+    // MAX_NEEDS (ttsShared); every id must name a todo in the SAME batch (or a
+    // batch-less one), and the graph within a batch must stay acyclic — both
+    // enforced on write (tts.internalStorePlanGraph).
+    needs: v.optional(v.array(v.id("todos"))),
+    // tasks: who does it. Same meaning as the plan-step actor it succeeds.
+    actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
+    // STAYS DECLARED past the phase-7 narrow: the planner writes it
+    // (tts.internalStorePlanGraph) and the auto-session scheduler reads it
+    // (claudeSessions.resolveFleetModel), where a tagged task WAITS rather
+    // than falling back when the Codex door is shut. Dropping it would
+    // silently re-dispatch tagged work to the fleet default.
+    //
+    // The model an agent task needs, from the one union in ttsShared
+    // (SESSION_MODELS: opus | sonnet | fable | gpt-5.6-sol | gpt-5.6-terra).
+    // ABSENT IS THE NORM: the scheduler falls back to the fleet default
+    // (claudeAutoConfig.defaultModel) for an untagged task, so the planner
+    // writes here only when THIS task needs a particular model. A closed union
+    // rather than a free string: an unrecognized name would be a silent
+    // mis-dispatch (the planner route drops one instead of carrying it).
+    model: v.optional(SESSION_MODEL),
+    // Completion evidence — the artifact that shows the work happened (branch,
+    // PR, brief). The plan-step field of the same name, per row.
+    evidence: v.optional(v.string()),
+    // GOALS ONLY (the lifeos update, phase 7): Tom's own line on what the
+    // work toward this goal must not break. In his words, written only by his
+    // door (tts.updateTodo refuses it on a task; ruling 13: never written by
+    // an agent on its own judgement), shown on the batch card under the goal,
+    // and injected into every worker and planner prompt where the goal's
+    // statement is.
+    mustNotBreak: v.optional(v.string()),
+    // The "more" layer, same as batches.groundUpExplanation.
+    groundUpExplanation: v.optional(v.string()),
+    // A goal may bind a CODE subject: "that upstream code todo is closed".
+    // Addressed exactly as a ruling/batch-member code subject is — by
+    // (repo, externalId), never by mirror-row _id (mirror rows are deleted on
+    // upstream close). Set together or not at all. Only a repo still on the
+    // mirror (ttsShared CODE_TODO_REPOS) can close one: the ComplexMultiTrigger
+    // goals lose both fields in ttsMigrations.internalConvertClosedUpstreamGoals
+    // (ruling 70).
+    codeRepo: v.optional(v.string()),
+    codeExternalId: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    doneAt: v.optional(v.number()),
+    archivedAt: v.optional(v.number()),
+    // The row's _id in dtsTodos before the rename (convex/jarvis/tables.ts
+    // copies it here), so an id cited in the evidence, a Slack thread or
+    // a box file still finds its row. Absent on rows written after it.
+    legacyId: v.optional(v.string()),
+  })
+    .index("by_status", ["status", "updatedAt"])
+    .index("by_updatedAt", ["updatedAt"])
+    // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
+    // before the new day") and the digest's due-and-overdue section ("active
+    // rows due by the end of today"). Both used to scan every active row, or
+    // the whole table, and filter in code. Undated rows sort BEFORE every
+    // number in the index, so a range starting at gte("dueAt", 0) reads the
+    // dated ones only.
+    .index("by_status_and_due", ["status", "dueAt"])
+    .index("by_readiness", ["readiness"])
+    .index("by_batch", ["batchId"])
+    // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
+    // generator find their own rows by source ("canvas" / "repeating") +
+    // provenance match, without scanning the whole table. The source alone is
+    // never the whole key — a reader that skips the provenance match adopts
+    // every other producer's rows under that name.
+    .index("by_source", ["source"])
+    // The Slack Events push route's dedupe read: Slack's delivery is
+    // at-least-once and its retries carry the same message ts, so a capture
+    // looks itself up by ts before inserting. A scan would be a full-table
+    // read on the hot path of a route that must answer within 3 seconds.
+    .index("by_slackTs", ["slackTs"])
+    .index("by_legacy", ["legacyId"]),
+
   // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
   // Read-only mirror of Tom's external calendars, ingested from ICS feeds
   // (Google Calendar's "secret address", Outlook's published-calendar link,
@@ -728,6 +932,27 @@ export default defineSchema({
   })
     .index("by_start", ["start"])
     .index("by_feed", ["feed"]),
+
+  // calendar: the plain-named home of ttsCalendarEvents's rows (the record's core tables,
+  // 2026-09-26). Same fields and indexes; ttsCalendarEvents above empties once
+  // convex/jarvis/tables.ts has copied it, and then goes.
+  calendar: defineTable({
+    feed: v.string(), // feed name from TTS_ICS_FEEDS ("google", "outlook", …)
+    uid: v.string(), // source event uid (shared by a recurrence's occurrences)
+    title: v.string(),
+    start: v.number(), // epoch ms
+    end: v.number(), // epoch ms, >= start
+    allDay: v.boolean(),
+    location: v.optional(v.string()),
+    syncedAt: v.number(),
+    // The row's _id in ttsCalendarEvents before the rename (convex/jarvis/tables.ts
+    // copies it here), so an id cited in the evidence, a Slack thread or
+    // a box file still finds its row. Absent on rows written after it.
+    legacyId: v.optional(v.string()),
+  })
+    .index("by_start", ["start"])
+    .index("by_feed", ["feed"])
+    .index("by_legacy", ["legacyId"]),
 
   // ── Repeating todos (integrations round, 2026-08-29) ─────────────────────
   // One row = one standing rule that mints a real dtsTodos row on each of its
@@ -769,6 +994,46 @@ export default defineSchema({
     updatedAt: v.number(),
   }),
 
+  // repeats: the plain-named home of ttsRepeats's rows (the record's core tables,
+  // 2026-09-26). Same fields and indexes; ttsRepeats above empties once
+  // convex/jarvis/tables.ts has copied it, and then goes.
+  repeats: defineTable({
+    statement: v.string(), // instance display text, copied verbatim
+    // Plain lowercase weekday words (naming rules: no abbreviations).
+    daysOfWeek: v.array(
+      v.union(
+        v.literal("monday"),
+        v.literal("tuesday"),
+        v.literal("wednesday"),
+        v.literal("thursday"),
+        v.literal("friday"),
+        v.literal("saturday"),
+        v.literal("sunday"),
+      ),
+    ),
+    // NY wall-clock time the instance is due, "HH:MM" 24h. Absent = noon
+    // (the dueAt storage convention, ttsShared.countdownText).
+    timeOfDay: v.optional(v.string()),
+    // Skip generating on a day whose calendar (ttsCalendarEvents) has an
+    // event whose title contains this substring, case-insensitive. This is
+    // how "train outside of practice" self-maintains: practice appears on
+    // the calendar → no training instance that day.
+    skipWhenCalendarHas: v.optional(v.string()),
+    category: v.optional(v.string()), // instance category (block sessions)
+    entryAction: v.optional(v.string()),
+    workDescription: v.optional(v.string()),
+    groundUpExplanation: v.optional(v.string()),
+    body: v.optional(v.string()),
+    active: v.boolean(), // false = paused; the rule stays visible
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    // The row's _id in ttsRepeats before the rename (convex/jarvis/tables.ts
+    // copies it here), so an id cited in the evidence, a Slack thread or
+    // a box file still finds its row. Absent on rows written after it.
+    legacyId: v.optional(v.string()),
+  })
+    .index("by_legacy", ["legacyId"]),
+
   // Committed time (ratified 2026-08-28): one row = one placed span of time on
   // Tom's calendar, targeting EITHER a single todo (a per-todo commitment —
   // "I will do this Tue 9–11") OR a category of todos ("Sat morning — chores";
@@ -784,6 +1049,23 @@ export default defineSchema({
     note: v.optional(v.string()),
     createdAt: v.number(),
   }).index("by_start", ["start"]),
+
+  // blocks: the plain-named home of dtsBlocks's rows (the record's core tables,
+  // 2026-09-26). Same fields and indexes; dtsBlocks above empties once
+  // convex/jarvis/tables.ts has copied it, and then goes.
+  blocks: defineTable({
+    start: v.number(), // epoch ms
+    end: v.number(), // epoch ms, > start
+    todoId: v.optional(v.id("dtsTodos")),
+    category: v.optional(v.string()),
+    note: v.optional(v.string()),
+    createdAt: v.number(),
+    // The row's _id in dtsBlocks before the rename (convex/jarvis/tables.ts
+    // copies it here), so an id cited in the evidence, a Slack thread or
+    // a box file still finds its row. Absent on rows written after it.
+    legacyId: v.optional(v.string()),
+  }).index("by_start", ["start"])
+    .index("by_legacy", ["legacyId"]),
 
   // Time notes (ratified 2026-08-29): the ONE input for anything about time.
   // Every native date/time picker is gone from the /dts page; instead Tom
@@ -817,6 +1099,29 @@ export default defineSchema({
     resolvedAt: v.optional(v.number()),
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
+  // timeNotes: the plain-named home of dtsTimeNotes's rows (the record's core tables,
+  // 2026-09-26). Same fields and indexes; dtsTimeNotes above empties once
+  // convex/jarvis/tables.ts has copied it, and then goes.
+  timeNotes: defineTable({
+    text: v.string(),
+    todoId: v.optional(v.id("dtsTodos")),
+    blockId: v.optional(v.id("blocks")),
+    day: v.optional(v.string()), // "YYYY-MM-DD", New York calendar date
+    status: v.union(
+      v.literal("pending"),
+      v.literal("applied"),
+      v.literal("needs-session"),
+    ),
+    result: v.optional(v.string()),
+    createdAt: v.number(),
+    resolvedAt: v.optional(v.number()),
+    // The row's _id in dtsTimeNotes before the rename (convex/jarvis/tables.ts
+    // copies it here), so an id cited in the evidence, a Slack thread or
+    // a box file still finds its row. Absent on rows written after it.
+    legacyId: v.optional(v.string()),
+  }).index("by_status_and_resolvedAt", ["status", "resolvedAt"])
+    .index("by_legacy", ["legacyId"]),
+
   // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
   // superseded the retired dtsCodeRulings). APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
@@ -834,9 +1139,6 @@ export default defineSchema({
       v.literal("life"),
       v.literal("code"),
       v.literal("batch"),
-      // An elevation a worker raised and the delegate (or Tom) answered
-      // (convex/orchestrator.ts). Its verdict is always "answer".
-      v.literal("elevation"),
     ),
     todoId: v.optional(v.id("dtsTodos")), // life subjects
     repo: v.optional(v.string()), // code subjects…
@@ -845,14 +1147,11 @@ export default defineSchema({
     // the batch itself — exactly one of todoId / repo+externalId / batchId is
     // set (enforced in ttsRulings.ts).
     batchId: v.optional(v.id("batches")),
-    elevationId: v.optional(v.id("elevations")),
     verdict: v.union(
       v.literal("approve"),
       v.literal("revise"),
       v.literal("session"),
       v.literal("archive"),
-      // The answer to an elevation, held in `sentence`.
-      v.literal("answer"),
     ),
     // Who ruled. Absent is Tom, as on every row written before the delegate
     // could rule. "delegate" marks a delegate ruling (Tom, 2026-09-21): every
@@ -897,8 +1196,79 @@ export default defineSchema({
     .index("by_batch", ["batchId"])
     .index("by_ruled", ["ruledAt"])
     .index("by_provenance_inboundId", ["provenance.inboundId"])
-    .index("by_elevation", ["elevationId"])
     .index("by_ask", ["askId"]),
+
+  // rulings: the plain-named home of dtsRulings's rows (the record's core tables,
+  // 2026-09-26). Same fields and indexes; dtsRulings above empties once
+  // convex/jarvis/tables.ts has copied it, and then goes.
+  rulings: defineTable({
+    subjectType: v.union(
+      v.literal("life"),
+      v.literal("code"),
+      v.literal("batch"),
+    ),
+    todoId: v.optional(v.id("dtsTodos")), // life subjects
+    repo: v.optional(v.string()), // code subjects…
+    externalId: v.optional(v.string()), // …(repo, externalId)
+    // batch subjects (schema v2): a batch is its own row now, so Tom rules on
+    // the batch itself — exactly one of todoId / repo+externalId / batchId is
+    // set (enforced in ttsRulings.ts).
+    batchId: v.optional(v.id("batches")),
+    verdict: v.union(
+      v.literal("approve"),
+      v.literal("revise"),
+      v.literal("session"),
+      v.literal("archive"),
+    ),
+    // Who ruled. Absent is Tom, as on every row written before the delegate
+    // could rule. "delegate" marks a delegate ruling (Tom, 2026-09-21): every
+    // run treats it as his, his objection reverts it, and nothing that learns
+    // about Tom from his rulings reads it as his words.
+    ruledBy: v.optional(v.union(v.literal("tom"), v.literal("delegate"))),
+    // The delegate's ask behind a delegate ruling (a "delegate-decision"
+    // event's key), so an objection to the ask finds the ruling.
+    askId: v.optional(v.string()),
+    // One optional written note, accepted on EVERY verdict (2026-08-29): the
+    // redirect for revise (required there, enforced in ttsRulings.ts), the
+    // unarchive condition for archive, a free steering note for
+    // approve/session — the worker prompts inject all four as context.
+    sentence: v.optional(v.string()),
+    ruledAt: v.number(),
+    appliedAt: v.optional(v.number()),
+    applyResult: v.optional(v.string()),
+    // Set when the ruling was written from Tom's own words in a session turn
+    // rather than from a button (ruling 15, 2026-09-05): `inboundId` is the
+    // claudeInbound row the words came from and `quote` is the one whole
+    // sentence or line of that row the agent read as the ruling. Provenance
+    // only: it is never copied into `sentence` above (the archive return
+    // condition the page shows, the revise redirect the worker reads).
+    // Absent on every ruling recorded through the UI. The digest quotes these
+    // so a misreading is objected; the same row never rules on the same
+    // subject twice (checked in ttsRulings.ts, by the index below).
+    provenance: v.optional(
+      v.object({
+        from: v.literal("tom-words"),
+        inboundId: v.string(),
+        quote: v.string(),
+      }),
+    ),
+    // The row's _id in dtsRulings before the rename (convex/jarvis/tables.ts
+    // copies it here), so an id cited in the evidence, a Slack thread or
+    // a box file still finds its row. Absent on rows written after it.
+    legacyId: v.optional(v.string()),
+  })
+    .index("by_todo", ["todoId"])
+    .index("by_repo_external", ["repo", "externalId"])
+    // The batch subject's own history, the way by_todo is a todo's. ADDED for
+    // the dynamic context assembler (convex/ttsContext.ts rule 10): a run on a
+    // todo is given his rulings on that todo AND on its batch, and a batch's
+    // rulings had no index — the only way to them was a scan of every ruling
+    // ever recorded, on the hot path of every session creation.
+    .index("by_batch", ["batchId"])
+    .index("by_ruled", ["ruledAt"])
+    .index("by_provenance_inboundId", ["provenance.inboundId"])
+    .index("by_ask", ["askId"])
+    .index("by_legacy", ["legacyId"]),
 
   // Append-only instrumentation (spec §10) — every surfacing, engagement,
   // queue cycle, status change, and date outcome, recorded from the first
@@ -919,11 +1289,15 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly sixteen kinds. One is convex/boxChanges.ts:
-    //   "box-change"  — the agentId the box matched to the change, so the
-    //                   /agents chat reads one agent's changes on one index;
-    //                   absent when the box matched none.
-    // The other fifteen: Five are convex/ttsSlack.ts:
+    // The lookup key, set on sixteen kinds. Three of them no longer arrive
+    // here (night/w4, 2026-09-26): their home is the `events` table, and the
+    // rows below are history, copied there by
+    // convex/boxChanges.ts internalCopyHistory. They were:
+    //   "box-change"  — the agentId the box matched to the change (now
+    //                   events.provenance.agentId);
+    //   "job-failed", "job-recovered" — the condition a job report names (now
+    //                   events.subject), under "Two are convex/ttsJobs.ts" below.
+    // The others: Five are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
@@ -1046,40 +1420,6 @@ export default defineSchema({
     doorFaults: v.optional(v.array(v.string())),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
-
-  // THE PUBLISHED SKILL CATALOG — one row per skill, which is what this table's
-  // name has said all along (the unified agent ecosystem, phase 6). Until this
-  // commit it held one row per model-of-tom FILE; those rows moved to
-  // modelOfTomFiles below with their shape untouched, and this table now holds
-  // what shared/skills.mjs builds: `write`, `know-intent`, `know-week`, one
-  // `know-<area>` per area page, and one `repo-<name>` per repository.
-  //
-  // A WIDEN-MIGRATE-NARROW TABLE REPLACEMENT. Existing production rows use the
-  // old per-file shape (`sourcePath`, optional `bytes`, no catalog fields), so
-  // every field belonging to either side alone remains optional during this
-  // deploy. Readers treat an old-shaped row as absent, and POST /tts/skills
-  // deletes an old row only after modelOfTomFiles carries its exact sourcePath.
-  // Dropping the old fields and requiring the catalog fields belongs in a later
-  // PR, after one clean nightly proves the whole replacement has run in prod.
-  ttsSkills: defineTable({
-    name: v.string(), // "know-research" — the bare name, never the `tom-` directory spelling
-    group: v.optional(v.union(v.literal("write"), v.literal("know"), v.literal("repo"))),
-    // At most DESCRIPTION_MAX_BYTES (200). A description is a prompt cost every
-    // run pays whether or not the skill is loaded, so the cap is checked at the
-    // door rather than trusted from the publisher.
-    description: v.optional(v.string()),
-    body: v.string(),
-    // The extra files a skill carries beside its body: ground.md under `write`,
-    // each nested AGENTS.md under a `repo-` skill.
-    references: v.optional(v.array(v.object({ name: v.string(), path: v.string(), body: v.string() }))),
-    sourcePaths: v.optional(v.array(v.string())), // the WikiTom (or repo) paths the body came from
-    commit: v.optional(v.string()), // WikiTom's commit, or the repository's own for a `repo-` skill
-    syncedAt: v.number(), // the commit's time, not the post's
-    pushed: v.optional(v.boolean()), // whether that commit had reached GitHub when it was posted
-    // OLD per-file fields. Kept only for the widening deploy described above.
-    sourcePath: v.optional(v.string()),
-    bytes: v.optional(v.number()),
-  }).index("by_name", ["name"]),
 
   // The per-file model-of-tom source facts, MOVED HERE from ttsSkills above
   // with their shape untouched: one row per WikiTom file the nightly job posts
@@ -1263,6 +1603,49 @@ export default defineSchema({
     })),
   }).index("by_key", ["key"]),
 
+  // vocabulary: the plain-named home of ttsVocabulary's rows (the record's core tables,
+  // 2026-09-26). Same fields and indexes; ttsVocabulary above empties once
+  // convex/jarvis/tables.ts has copied it, and then goes.
+  vocabulary: defineTable({
+    key: v.literal("current"),
+    version: v.string(), // the generator's own content hash of the render
+    commit: v.string(), // the WikiTom commit §12.1 was read at
+    committedAt: v.number(),
+    generatedAt: v.number(),
+    wrote: v.boolean(), // whether tts/vocabulary.json was written that night
+    // What `tts search vocabulary` prints beside the terms, posted from the
+    // Jarvis follow-up on (widen first: a row posted before it has none, and
+    // the page leaves out what the row does not carry). `section` is the spec
+    // section the vocabulary is fixed in, printed on every term's row;
+    // `counts` are the render's other sections; `tomQuestCommit` the tom.quest
+    // commit it was generated from.
+    section: v.optional(v.string()),
+    counts: v.optional(VOCABULARY_COUNTS),
+    tomQuestCommit: v.optional(v.string()),
+    terms: v.array(v.object({
+      term: v.string(),
+      kind: v.string(),
+      definition: v.string(),
+      specSection: v.optional(v.string()), // the §  the term is defined in
+      codeSymbol: v.optional(v.string()),
+      related: v.array(v.string()),
+      refusedFor: v.optional(v.string()), // the word this one is refused in favour of
+    })),
+    // One per thing the spec and the code do not both say. Each is Tom's to
+    // settle with one ruling, so the rows carry what each source says verbatim.
+    disagreements: v.array(v.object({
+      code: v.string(), // the generator's own class, e.g. "D5"
+      subject: v.string(),
+      fix: v.string(),
+      rows: v.array(v.object({ label: v.string(), where: v.string(), text: v.string() })),
+    })),
+    // The row's _id in ttsVocabulary before the rename (convex/jarvis/tables.ts
+    // copies it here), so an id cited in the evidence, a Slack thread or
+    // a box file still finds its row. Absent on rows written after it.
+    legacyId: v.optional(v.string()),
+  }).index("by_key", ["key"])
+    .index("by_legacy", ["legacyId"]),
+
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;
   // rendering + permission rulings 2026-08-29). These comments carry only what
@@ -1298,9 +1681,8 @@ export default defineSchema({
     // from this id directly.
     batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
-    // The CODE subject (the lifeos update, phase 7): a worker mission the
-    // auto-session scheduler admits for Tom's approve or archive ruling on a
-    // code todo — an entry in a repo's vqc/todos.yaml, addressed by (repo,
+    // The CODE subject (the lifeos update, phase 7): a worker mission for
+    // Tom's approve or archive ruling on a code todo — an entry in a repo's vqc/todos.yaml, addressed by (repo,
     // externalId), never a dtsTodos row. Both set or neither. The index is the
     // per-subject session history the scheduler's ceiling reads, the way
     // by_todo is for a todo.
@@ -1595,7 +1977,7 @@ export default defineSchema({
     startedAt: v.number(),
     lastLineAt: v.number(),
     context: v.optional(v.object({
-      wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
+      wikitomCommit: v.optional(v.string()), layersKnown: v.optional(v.boolean()), layersGiven: v.optional(v.array(v.string())), layersDenied: v.optional(v.array(v.string())), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
       registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
       // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls
       // its transcript holds, beside skillsGranted, which is what the prompt
@@ -1847,101 +2229,6 @@ export default defineSchema({
     .index("by_status_due", ["status", "dueAt"])
     .index("by_runner_due", ["runnerId", "dueAt"]),
 
-  // ── THE ORCHESTRATOR (Tom, 2026-09-21; convex/orchestrator.ts is the one
-  // writer of the four tables below) ─────────────────────────────────────────
-  //
-  // ONE ROW, keyed by the constant "jarvis". The orchestrator is a chain of
-  // long-lived hosted runs, each a claudeSessions row the daemon hosts; when
-  // one asks to compact, crashes or loses its lease, the next starts cold from
-  // `document`, naming the last as its continuesRunId. Nothing re-enters a
-  // dead run.
-  orchestrators: defineTable({
-    key: v.literal("jarvis"),
-    // The model of the live run, chosen at each start (orchestratorModel):
-    // Astra if the box's Codex CLI lists it, else gpt-5.6-sol, else Fable.
-    model: SESSION_MODEL,
-    // Why that model, in words, so the choice can be read later.
-    modelReason: v.string(),
-    // Markdown, versioned in orchestratorDocuments; never in a repository.
-    document: v.string(),
-    documentVersion: v.number(),
-    liveSessionId: v.optional(v.id("claudeSessions")),
-    // The live run's lease. The daemon renews it on every poll that says it
-    // holds the session; one past its deadline is a run that died unseen.
-    leaseDeadline: v.optional(v.number()),
-    startedAt: v.number(),
-    runStartedAt: v.number(),
-    // Consecutive crashes: the backoff exponent. A compaction clears it.
-    crashes: v.number(),
-    // When the next run may start after a crash; absent means now.
-    restartAt: v.optional(v.number()),
-    lastRestart: v.optional(v.object({ at: v.number(), reason: v.string(), fromSessionId: v.optional(v.id("claudeSessions")) })),
-    // The instruction Tom started it with, carried into every run of the chain
-    // until the next start replaces it: a run that crashes before writing its
-    // document must not lose what it was asked to do.
-    instruction: v.optional(v.string()),
-    // Messages for the orchestrator that arrived while its latest run was one
-    // Tom had reopened, so no run of its own could hold them; the next run's
-    // opener carries them and clears this.
-    mailbox: v.optional(v.array(v.string())),
-    // How many of the mailbox's messages the live run's opener carried; they
-    // leave the mailbox once that run finishes its opener.
-    carriedCount: v.optional(v.number()),
-    // Set by a stop: nothing restarts it until the next start.
-    stoppedAt: v.optional(v.number()),
-    stoppedReason: v.optional(v.string()),
-  }).index("by_key", ["key"]),
-
-  // Every rewrite of the orchestrator's document, so it is versioned in the
-  // record the way a runner's is.
-  orchestratorDocuments: defineTable({
-    version: v.number(),
-    text: v.string(),
-    sessionId: v.optional(v.id("claudeSessions")),
-    at: v.number(),
-  }).index("by_version", ["version"]),
-
-  // Which claudeSessions rows the daemon HOSTS as long-lived unattended runs,
-  // and as what: the orchestrator's runs and the workers it spawned. Its own
-  // table rather than a field on claudeSessions, whose lifecycle fields are
-  // aliases due for deletion (spec §24.1). The poll reads it to tell the
-  // daemon a row's environment.
-  hostedRuns: defineTable({
-    sessionId: v.id("claudeSessions"),
-    environment: v.union(v.literal("orchestrator"), v.literal("worker")),
-    // For a worker: the orchestrator run that spawned it.
-    spawnedBy: v.optional(v.id("claudeSessions")),
-    todoId: v.optional(v.id("dtsTodos")),
-    createdAt: v.number(),
-  })
-    .index("by_session", ["sessionId"]),
-
-  // A decision a hosted worker raised to the orchestrator: the question and
-  // its two sides, never a recommendation. The orchestrator judges its kind
-  // and answers; the answer is delivered into the worker as a message.
-  elevations: defineTable({
-    workerSessionId: v.id("claudeSessions"),
-    question: v.string(),
-    sides: v.array(v.string()),
-    todoId: v.optional(v.id("dtsTodos")),
-    // A run it concerns, when that is not the worker itself.
-    concernsRunId: v.optional(v.string()),
-    status: v.union(v.literal("open"), v.literal("waiting-on-tom"), v.literal("answered")),
-    kind: v.optional(DECISION_KIND),
-    answer: v.optional(v.string()),
-    answeredBy: v.optional(v.union(v.literal("orchestrator"), v.literal("delegate"), v.literal("tom"))),
-    answeredAt: v.optional(v.number()),
-    askId: v.optional(v.string()),
-    // The orchestrator's recommendation, on a reserved decision only.
-    recommendation: v.optional(v.string()),
-    createdAt: v.number(),
-  })
-    .index("by_worker_status", ["workerSessionId", "status"])
-    .index("by_status", ["status", "createdAt"])
-    // The elevation one delegate ask answered, for his objection to that ask
-    // when it closed on the fallback and wrote no ruling to look it up by.
-    .index("by_ask", ["askId"]),
-
   // Tom presses one control and a box job serves it: Convex holds no S3 reader
   // credential and no second request signer, so opening an old run is a
   // request the box picks up, not an action reading the bucket. THE QUEUE IS
@@ -2072,8 +2359,9 @@ export default defineSchema({
     version: v.string(),
     activeAccount: v.optional(v.string()), // "gmail" | "wpi"
     lastIngestError: v.optional(v.string()),
-    // Jarvis Box load snapshot, reported with each heartbeat — the input to the
-    // scheduler's load-based admission (the primary throttle of P3).
+    // Jarvis Box load snapshot, reported with each heartbeat and shown on
+    // /agents. (The auto-session scheduler that admitted work on it is gone;
+    // its idea is the box's work-queue job.)
     load: v.optional(
       v.object({
         loadavg1: v.number(),
@@ -2084,18 +2372,12 @@ export default defineSchema({
       }),
     ),
     // Codex account usage, read off the Codex CLI by the daemon and reported
-    // with the heartbeat. The scheduler's weekly gate reads it: at or past
-    // CODEX_WEEKLY_CAP_PERCENT (ttsShared) the fleet starts no Codex session.
-    // The five-hour figure is recorded but NOT gated on (Tom, 2026-09-04) —
-    // that window refills by itself while the week does not — and it is
-    // absent when the account reports no five-hour window at all (codex-cli
-    // 0.153 on a "prolite" plan reports only the weekly one). `readAt` is the
-    // instant the reading was TAKEN, not the instant it was reported: the
-    // daemon keeps resending its last successful reading unchanged while later
-    // reads fail, so an old readAt means "nobody has managed to ask Codex for a
-    // while". Absent usage and usage older than CODEX_USAGE_STALE_MS
-    // (ttsShared) are both UNKNOWN, and unknown admits, so a daemon that cannot
-    // read the CLI never silently freezes the fleet.
+    // with the heartbeat; stored for the pages. The five-hour figure is absent
+    // when the account reports no five-hour window at all (codex-cli 0.153 on
+    // a "prolite" plan reports only the weekly one). `readAt` is the instant
+    // the reading was TAKEN, not the instant it was reported: the daemon keeps
+    // resending its last successful reading unchanged while later reads fail,
+    // so an old readAt means "nobody has managed to ask Codex for a while".
     codexUsage: v.optional(
       v.object({
         weeklyUsedPercent: v.number(),
@@ -2105,8 +2387,7 @@ export default defineSchema({
       }),
     ),
     // The model slugs the box's Codex CLI lists (`codex debug models`),
-    // reported by the daemon. convex/orchestrator.ts picks the orchestrator's
-    // model from it; absent means no daemon has reported one.
+    // reported by the daemon; absent means no daemon has reported one.
     codexModels: v.optional(v.array(v.string())),
     // Whether Fable answers on the box, from the daemon's heartbeat
     // (ttsShared FABLE_AVAILABILITY): "Fable unavailable since <since>, last

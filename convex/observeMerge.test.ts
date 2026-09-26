@@ -90,7 +90,7 @@ describe("approveChange", () => {
     const second = await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
     expect(second).toEqual({ written: false, ruled: "approve" });
 
-    const rulings = await t.run((ctx) => ctx.db.query("dtsRulings").collect());
+    const rulings = await t.run((ctx) => ctx.db.query("rulings").collect());
     expect(rulings).toHaveLength(1);
     expect(rulings[0]).toMatchObject({
       subjectType: "code",
@@ -136,7 +136,7 @@ describe("approveChange", () => {
       }),
     );
     await tom.mutation(api.observe.approveChange, { repo: REPO, sha: SHA });
-    const [ruling] = await t.run((ctx) => ctx.db.query("dtsRulings").collect());
+    const [ruling] = await t.run((ctx) => ctx.db.query("rulings").collect());
     expect(ruling).toMatchObject({ externalId: `sha-${SHA}`, sentence: "Approve tts: the page has no capture bar" });
     const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((job) => job.name.includes("landApproved"))).toHaveLength(0);
@@ -298,8 +298,8 @@ describe("landing", () => {
     // later row wins on _creationTime, which is the only thing telling them
     // apart.
     await t.run(async (ctx) => {
-      const approve = await ctx.db.query("dtsRulings").first();
-      await ctx.db.insert("dtsRulings", {
+      const approve = await ctx.db.query("rulings").first();
+      await ctx.db.insert("rulings", {
         subjectType: "code",
         repo: REPO,
         externalId: "pr-212",

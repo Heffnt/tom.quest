@@ -30,8 +30,8 @@ import {
   type RunnerAskFacts,
 } from "./ttsCompose";
 import { recordRunnerReply, agentLink } from "./ttsRunners";
-import { onElevationThreadFailed, recordElevationReply } from "./orchestrator";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
+import { openNeedsYou } from "./jarvis/outbox";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -135,9 +135,6 @@ export const internalRecordSlackFailed = internalMutation({
       subject.kind === "todo" ? subject.id : undefined,
       { channel, threadTs, subject, error, text, attempts, windowEnd },
     );
-    // A reserved elevation whose thread never posted is not waiting on Tom:
-    // it goes back to the orchestrator to put to him again.
-    if (subject.kind === "elevation") await onElevationThreadFailed(ctx, subject.id, error);
   },
 });
 
@@ -227,11 +224,10 @@ export const internalOpenNeedsTomThread = internalMutation({
     reason: v.string(),
     key: v.string(),
     canReply: v.optional(v.boolean()),
-    channel: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { todoId, runner, reason, key, canReply, channel },
+    { todoId, runner, reason, key, canReply },
   ): Promise<{ opened: boolean; key: string; reason?: string }> => {
     if ((todoId === undefined) === (runner === undefined)) throw new Error("A needs-you thread names exactly one subject: a todo or a runner's question.");
     if (runner !== undefined) return await openRunnerNeedsYou(ctx, runner, key);
@@ -277,18 +273,15 @@ export const internalOpenNeedsTomThread = internalMutation({
     if (!claim.claimed) {
       return { opened: false, key, reason: `already claimed today by ${claim.by}` };
     }
-    // WRITTEN, NOT FILLED IN (Tom 2026-09-09, amendment 2) — the same route the
-    // morning message takes: the facts go to a draft request, the Fable run on
-    // the box writes it, the verifier checks every link and number against the
-    // facts, and the timeout posts this template if no accepted draft arrives.
-    await ctx.runMutation(internal.ttsSlackDrafts.internalOpenSlackDraft, {
-      requestId: `needs-you:${key}`,
-      kind: "needs-you",
-      subject: { kind: "todo", id },
-      ...(channel === undefined ? {} : { channel }),
-      facts: needsYouFactsBlock(facts, day, canReply ?? false),
-      canReply: canReply ?? false,
-      fallback: renderSlack(composeNeedsYou(facts, { canReply: canReply ?? false })),
+    // A REPLY UNDER THE DAY'S DIGEST (Tom, 2026-09-26: one output channel).
+    // Deterministic, no model: the box's digest job posts it in the newest
+    // digest's thread and records needs-you-posted, which routes his reply
+    // back to this todo (convex/jarvis/digest.ts).
+    await openNeedsYou(ctx, {
+      key,
+      todoId: id,
+      reason,
+      text: renderSlack(composeNeedsYou(facts, { canReply: canReply ?? false })),
     });
     return { opened: true, key };
   },
@@ -446,6 +439,16 @@ async function threadSubject(
   threadTs: string,
 ): Promise<ThreadSubject> {
   const key = slackThreadKey(channel, threadTs);
+  // A DIGEST OWNS ITS THREAD. The needs-you replies under it are later sends
+  // in the same thread, and newest-wins would hand the whole thread to the
+  // last of them; the digest case reads them itself (needsYouAbove).
+  const root = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", "slack-sent").eq("key", key))
+    .order("asc")
+    .first();
+  const rootSubject = (root?.data as { subject?: SlackSubject } | undefined)?.subject;
+  if (rootSubject?.kind === "today" || rootSubject?.kind === "digest") return rootSubject;
   const sent = await threadRow(ctx, "slack-sent", key);
   const claimed = await threadRow(ctx, SLACK_THREAD_CLAIMED, key);
   // Newest wins, so an ordinary later send in the thread still re-points it.
@@ -488,7 +491,6 @@ export type ThreadReplyOutcome =
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
   | { outcome: "runner-reply"; runnerId: Id<"runners"> }
-  | { outcome: "elevation-answer" | "elevation-note"; elevationId: Id<"elevations"> }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -563,9 +565,6 @@ export async function slackThreadReplyFrom(
       capturedAs: outcome.todoId,
     });
   }
-  // A reserved elevation's thread was opened on the elevation's todo, and the
-  // weekly gather matches a needs-you thread to its reply by that todo.
-  const elevationTodo = subject.kind === "elevation" ? (await ctx.db.get(subject.id))?.todoId : undefined;
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: "slack-event",
@@ -573,9 +572,7 @@ export async function slackThreadReplyFrom(
     todoId:
       subject.kind === "todo"
         ? subject.id
-        : subject.kind === "elevation"
-          ? elevationTodo
-          : outcome.outcome === "captured"
+        : outcome.outcome === "captured"
             ? outcome.todoId
             : undefined,
     data: {
@@ -681,6 +678,18 @@ async function routeReply(
         return { outcome: "delegate-objection", id: objectedDecision };
       }
       if (objected !== undefined) return { outcome: "learning-objection", id: objected };
+      // A NEEDS-YOU REPLY ANSWERED. In the digest's thread, a reply that names
+      // no todo and is no objection answers the needs-you reply directly above
+      // it: that thing's asker takes it as its next turn — "done", a date or a
+      // fact on the todo, a note on the producer's job otherwise.
+      if (named === undefined) {
+        const above = await needsYouAbove(ctx, at);
+        if (above?.kind === "todo") return await todoReply(ctx, above.id, text, at);
+        if (above !== null) {
+          await logEvent(ctx, "tom-note", undefined, { text, ...at, subject: above });
+          return { outcome: "tom-note", subject: above };
+        }
+      }
       await logEvent(ctx, "tom-note", named?.todoId, {
         text,
         ...at,
@@ -729,13 +738,45 @@ async function routeReply(
       // step reads it whole, and it answers the newest open question. Not a
       // ruling — the rulings table is for todos.
       return await recordRunnerReply(ctx, subject.id, text, at);
-    case "elevation":
-      // A reserved decision's thread: his reply is the answer, recorded as
-      // his ruling on the elevation and delivered to the worker that asked.
-      return await recordElevationReply(ctx, subject.id, text, at);
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }
+}
+
+/** Slack's ts, "<seconds>.<micro>", as a pair that compares exactly. */
+function tsOrder(ts: string): [number, number] {
+  const [sec, micro] = ts.split(".");
+  return [Number(sec) || 0, Number(micro) || 0];
+}
+function tsBefore(a: string, b: string): boolean {
+  const [as, am] = tsOrder(a);
+  const [bs, bm] = tsOrder(b);
+  return as < bs || (as === bs && am < bm);
+}
+
+/** The needs-you reply posted in this digest thread directly above Tom's
+ *  reply: the newest reply-in-thread send before his ts whose subject is a
+ *  todo or a producer's job (convex/jarvis/digest.ts onNeedsYouPosted). */
+async function needsYouAbove(
+  ctx: MutationCtx,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<SlackSubject | null> {
+  const rows = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) =>
+      q.eq("kind", "slack-sent").eq("key", slackThreadKey(at.channel, at.threadTs)),
+    )
+    .order("desc")
+    .take(100);
+  let best: { ts: string; subject: SlackSubject } | null = null;
+  for (const row of rows) {
+    const d = (row.data ?? {}) as { ts?: unknown; threadTs?: unknown; subject?: SlackSubject };
+    if (typeof d.ts !== "string" || d.threadTs !== at.threadTs || d.subject === undefined) continue;
+    if (d.subject.kind !== "todo" && d.subject.kind !== "job") continue;
+    if (!tsBefore(d.ts, at.ts)) continue;
+    if (best === null || tsBefore(best.ts, d.ts)) best = { ts: d.ts, subject: d.subject };
+  }
+  return best?.subject ?? null;
 }
 
 /** Nothing is lost: the reply becomes a todo whose provenance names the
@@ -880,18 +921,27 @@ async function namedObjection(
 ): Promise<string | undefined> {
   const parsed = parseObjectionReply(text);
   if (parsed === null) return undefined;
-  // DO NOT put `day` in the row's key to make this a point lookup.
-  // ttsDigest.lastDigestSent depends on "digest-sent" rows carrying NO key:
-  // with the kind pinned and every key empty, by_kind_key orders by time and
-  // .first() is the newest row. Keying them by day would silently break the
-  // window arithmetic of every future digest. So: a bounded newest-first take
-  // over two weeks of mornings, inside Slack's 3-second budget.
+  // The record's digest-sent rows (convex/jarvis/digest.ts), a bounded
+  // newest-first take over two weeks of mornings, inside Slack's 3-second
+  // budget.
   const recent = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT))
     .order("desc")
     .take(DIGEST_OBJECTION_LOOKBACK);
-  const sent = recent.find((row) => (row.data as { day?: unknown } | undefined)?.day === day);
+  const onDay = (row: { data?: unknown }) => (row.data as { day?: unknown } | undefined)?.day === day;
+  // A morning marked before the box wrote the digest has its row in dtsEvents
+  // (convex/jarvis/digest.ts lastDigest says why); its thread still takes
+  // "revert 2" for the two weeks this lookback covers, then this read goes.
+  const sent =
+    recent.find(onDay) ??
+    (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+        .order("desc")
+        .take(DIGEST_OBJECTION_LOOKBACK)
+    ).find(onDay);
   const printed = (sent?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
   const askId = Array.isArray(printed) ? printed[parsed.n - 1] : undefined;
   // A number that named no printed line is not an objection: fall through, and

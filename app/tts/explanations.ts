@@ -214,7 +214,7 @@ export const VERDICTS_EXPLANATION = page(
 
 ${WHAT_TTS_IS}
 
-<p>A <span class="term">ruling</span> is Tom's decision about one todo, stored as its own row in a table named <span class="mono">dtsRulings</span>. Rulings are append-only: ruling on the same item again writes a new row, and the one that counts is the newest. Every chip beside this caption calls one mutation, <span class="mono">recordRuling</span> in the file <span class="mono">convex/ttsRulings.ts</span>, with a verdict and an optional sentence typed into the box next to the chips.</p>
+<p>A <span class="term">ruling</span> is Tom's decision about one todo, stored as its own row in a table named <span class="mono">rulings</span>. Rulings are append-only: ruling on the same item again writes a new row, and the one that counts is the newest. Every chip beside this caption calls one mutation, <span class="mono">recordRuling</span> in the file <span class="mono">convex/ttsRulings.ts</span>, with a verdict and an optional sentence typed into the box next to the chips.</p>
 
 <p>There are four verdicts and they are fixed: <span class="mono">approve</span>, <span class="mono">revise</span>, <span class="mono">session</span>, <span class="mono">archive</span>. There is deliberately no "defer" — an item put down is archived with the condition that should bring it back, so putting something down is a recorded decision rather than the absence of one.</p>
 

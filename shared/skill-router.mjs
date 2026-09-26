@@ -1,3 +1,4 @@
+// REMOVAL CHECK: goes when Jarvis worker/jobs/evals.mjs stops importing it; nothing in tom.quest does.
 // THE ONE HOME for deciding WHICH SKILLS a run is granted.
 //
 // This is the routing half of shared/context-relevance.mjs, MOVED rather

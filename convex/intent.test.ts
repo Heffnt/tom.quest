@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { isIntentSourcePath } from "./intent";
-import { assembleContext } from "./ttsContext";
+import { assembleContext, joinContext } from "./ttsContext";
 import { contextPublication, expectedPrefix } from "../scripts/context-fixture.mjs";
 
 // EVERY FIXTURE HERE IS INVENTED. His pages are private to WikiTom and this
@@ -163,7 +163,7 @@ describe("intent.lines", () => {
         body: "# app\n\n## ui\n\n- No explainer text in product UI.\n",
         bytes: 1, commit: COMMIT, syncedAt: 10,
       });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "code", repo: "tom.quest", externalId: "x",
         verdict: "approve", sentence: "ship it", ruledAt: Date.UTC(2026, 8, 20),
       });
@@ -199,7 +199,7 @@ describe("intent.lines", () => {
     expect(lines[lines.length - 1].source).toBe("tom.quest app/AGENTS.md");
 
     expect(sources.map((row) => row.name)).toContain("vqc/steering.yaml");
-    expect(sources.find((row) => row.name === "dtsRulings")?.lines).toBe(1);
+    expect(sources.find((row) => row.name === "rulings")?.lines).toBe(1);
   });
 
   it("renders a page whose evidence file has not been posted, with nothing claimed about it", async () => {
@@ -221,55 +221,15 @@ describe("intent.lines", () => {
     const t = convexTest(schema, modules);
     const { lines, sources } = await (await asTom(t)).query(api.intent.lines, {});
     expect(lines).toEqual([]);
-    expect(sources.map((row) => row.name)).toEqual(["dtsRulings", "runLabels"]);
+    expect(sources.map((row) => row.name)).toEqual(["rulings", "runLabels"]);
   });
 });
 
 // ── intent.agentView ─────────────────────────────────────────────────────────
-// The base is scripts/context-fixture.mjs's invented pages. Every expected
-// grant block and skill block below is written out by hand: one rendered by
-// calling the renderer would assert only that the renderer is itself.
+// The base and the write pages are scripts/context-fixture.mjs's invented
+// pages; the expected prompt is written out by hand.
 
 const VIEW_COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
-const PROVENANCE = (paths: string) =>
-  `<!-- generated from WikiTom ${paths} at commit ${VIEW_COMMIT} — do not edit -->`;
-
-/** Four published skills, their bodies invented, as the skills door stores
- *  them. `know-intent` joins its two pages the way the publisher does. */
-const VIEW_SKILLS = [
-  {
-    name: "write",
-    group: "write" as const,
-    description: "Load before writing anything Tom reads.",
-    body: "# Writing\n\nBe plain.",
-    references: [{ name: "ground.md", path: "model-of-tom/ground.md", body: "# Ground" }],
-    sourcePaths: ["model-of-tom/writing.md"],
-  },
-  {
-    name: "know-intent",
-    group: "know" as const,
-    description: "What Tom wants to be true.",
-    body: "── model-of-tom/intent.md ──\n# Intent\n\n- Ship the fleet.\n\n── model-of-tom/priorities.md ──\n# Priorities\n\n- He rules.",
-    references: [],
-    sourcePaths: ["model-of-tom/intent.md", "model-of-tom/priorities.md"],
-  },
-  {
-    name: "know-week",
-    group: "know" as const,
-    description: "Tom's recurring week.",
-    body: "# Schedule\n\n- Monday — practice.",
-    references: [],
-    sourcePaths: ["model-of-tom/schedule.md"],
-  },
-  {
-    name: "know-research",
-    group: "know" as const,
-    description: "Tom's research.",
-    body: "# Research",
-    references: [],
-    sourcePaths: ["model-of-tom/areas/research.md"],
-  },
-];
 
 async function seedAgentView(t: ReturnType<typeof convexTest>) {
   const publication = contextPublication(VIEW_COMMIT);
@@ -284,80 +244,37 @@ async function seedAgentView(t: ReturnType<typeof convexTest>) {
         (header: { layers: string[] }) => header.layers.join(",") === "operate",
       ),
     });
-    for (const skill of VIEW_SKILLS) {
-      await ctx.db.insert("ttsSkills", { ...skill, commit: VIEW_COMMIT, syncedAt: 1, pushed: true });
+    for (const file of publication.files) {
+      await ctx.db.insert("modelOfTomFiles", {
+        name: file.path.slice("model-of-tom/".length).replace(/\.md$/, ""),
+        body: file.body, sourcePath: file.path, bytes: file.bytes, commit: VIEW_COMMIT, syncedAt: 1, pushed: true,
+      });
     }
   });
-}
-
-/** A skill block as `tts search skills <name>` heads it, over the SKILL.md
- *  body; `file` is the whole SKILL.md, frontmatter included, whose bytes the
- *  head counts. */
-function skillBlock(head: string, description: string, file: string, body: string): string {
-  return `${head} ${new TextEncoder().encode(file).length}B\ndescription="${description}"\n\n${body}`;
 }
 
 describe("intent.agentView", () => {
   it("is restricted to Tom", async () => {
     const t = convexTest(schema, modules);
-    await expect(t.query(api.intent.agentView, { caller: "planner-context" }))
-      .rejects.toThrow(/Authentication required/);
+    await expect(t.query(api.intent.agentView, {})).rejects.toThrow(/Authentication required/);
   });
 
-  it("gives planner-context the exact prefix and grants its prompt carries, then each granted body", async () => {
+  it("shows the exact prompt assembleContext builds: the base, the write pages, the skills line", async () => {
     const t = convexTest(schema, modules);
     await seedAgentView(t);
-    const view = await (await asTom(t)).query(api.intent.agentView, { caller: "planner-context" });
-    const assembled = await t.run(async (ctx) =>
-      assembleContext(ctx, { kind: "none" }, { reachesTom: true, caller: "planner-context" }));
-
-    expect(view?.prefix).toBe(assembled.prefix);
-    expect(view?.prefix).toBe(expectedPrefix(VIEW_COMMIT, { write: false }));
-    expect(view?.grants).toBe(assembled.grants);
-    expect(view?.grants).toBe([
-      `SKILLS (WikiTom commit ${VIEW_COMMIT})`,
-      "granted: write, know-intent",
-      "Load each granted skill before you act on what it covers. `tts-search skills` lists the rest.",
-    ].join("\n"));
-
-    expect(view?.listing).toBe([
-      "- tom-know-intent: What Tom wants to be true.",
-      "- tom-know-research: Tom's research.",
-      "- tom-know-week: Tom's recurring week.",
-      "- tom-write: Load before writing anything Tom reads.",
-    ].join("\n"));
-
-    const writeBody = `${PROVENANCE("model-of-tom/writing.md")}\n\n# Writing\n\nBe plain.\n\n## References\n\n`
-      + "The following files are beside this SKILL.md; read the ones relevant to the task:\n- `ground.md`";
-    const writeFile = `---\nname: tom-write\ndescription: "Load before writing anything Tom reads."\n---\n\n${writeBody}\n`;
-    const intentBody = `${PROVENANCE("model-of-tom/intent.md, model-of-tom/priorities.md")}\n\n`
-      + "── model-of-tom/intent.md ──\n# Intent\n\n- Ship the fleet.\n\n── model-of-tom/priorities.md ──\n# Priorities\n\n- He rules.";
-    const intentFile = `---\nname: tom-know-intent\ndescription: "What Tom wants to be true."\n---\n\n${intentBody}\n`;
-    expect(view?.skills).toEqual([
-      { name: "write", text: skillBlock("write [write]", "Load before writing anything Tom reads.", writeFile, writeBody) },
-      { name: "know-intent", text: skillBlock("know-intent [know]", "What Tom wants to be true.", intentFile, intentBody) },
-    ]);
-  });
-
-  it("gives each subjectless caller its own grants", async () => {
-    const t = convexTest(schema, modules);
-    await seedAgentView(t);
-    const tom = await asTom(t);
-    const names = async (caller: string) =>
-      (await tom.query(api.intent.agentView, { caller }))?.skills.map((skill) => skill.name);
-    expect(await names("time-notes")).toEqual(["write", "know-week"]);
-    expect(await names("laptop")).toEqual(["write"]);
-  });
-
-  it("refuses a caller that runs with a subject", async () => {
-    const t = convexTest(schema, modules);
-    await seedAgentView(t);
-    await expect((await asTom(t)).query(api.intent.agentView, { caller: "planner" }))
-      .rejects.toThrow(/not planner/);
+    const view = await (await asTom(t)).query(api.intent.agentView, {});
+    const assembled = await t.run(async (ctx) => assembleContext(ctx, { kind: "none" }, { reachesTom: true }));
+    expect(view?.prompt).toBe(joinContext(assembled));
+    expect(view?.prompt).toBe([
+      expectedPrefix(VIEW_COMMIT, { write: false }),
+      "── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n",
+      "── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n",
+      "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.",
+    ].join("\n\n"));
   });
 
   it("is null until a night has posted the base", async () => {
     const t = convexTest(schema, modules);
-    expect(await (await asTom(t)).query(api.intent.agentView, { caller: "laptop" })).toBeNull();
+    expect(await (await asTom(t)).query(api.intent.agentView, {})).toBeNull();
   });
 });

@@ -106,7 +106,7 @@ export async function declinedIntegrations(
     const name = integrationName(todo.statement);
     if (name === null) continue;
     const rulings = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_todo", (q) => q.eq("todoId", todo._id))
       .collect();
     // The newest ruling decides; it has to be the archive.

@@ -346,12 +346,10 @@ describe("GET /tts/planner-context", () => {
     const res = await get(t, "/tts/planner-context");
     expect(res.status).toBe(200);
     const body = await res.json();
-    // The door serves the ASSEMBLED CONTEXT: the stable prefix — the map and
-    // the operate rules — and the grant block naming what the planner may
-    // load. The assembler's exact output is pinned in convex/ttsContext.test.ts.
-    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
-    expect(prefix).toBe("published map + operate\n\noperate layer reaches the planner");
-    expect(grants).toContain("granted:");
+    // The door serves the ASSEMBLED CONTEXT: the base and the skills line
+    // (this fixture stores no write page). The assembler's exact output is
+    // pinned in convex/ttsContext.test.ts.
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer reaches the planner\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
     expect(body.vocabulary).toBe(TTS_CLOSED_VOCABULARY);
     expect(body.todos.map((todo: Doc<"dtsTodos">) => todo.statement)).toEqual(["sign the lease"]);
     expect(Array.isArray(body.sessionRepos)).toBe(true);

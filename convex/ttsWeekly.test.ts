@@ -28,7 +28,7 @@ import { LEARNING_CHANGE } from "./ttsDigest";
 import { AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { INTEGRATION_SOURCE, integrationStatement } from "./ttsIntegrations";
-import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
+import { JOB_FAILED, JOB_RECOVERED } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM } from "./ttsSlack";
 
@@ -93,6 +93,18 @@ async function event(
   at: number,
   extra: { todoId?: Id<"dtsTodos">; key?: string; data?: unknown } = {},
 ) {
+  // A job's report lives in the record's events table (convex/jarvis/jobs.ts),
+  // its condition as the subject; every other kind still in dtsEvents.
+  if (kind === JOB_FAILED || kind === JOB_RECOVERED) {
+    const job = (extra.data as { job?: string } | undefined)?.job;
+    return await ctx.db.insert("events", {
+      kind,
+      at,
+      provenance: job === undefined ? {} : { job },
+      ...(extra.key === undefined ? {} : { subject: extra.key }),
+      data: extra.data ?? {},
+    });
+  }
   return await ctx.db.insert("dtsEvents", { at, kind, ...extra });
 }
 
@@ -221,7 +233,7 @@ describe("gatherWeeklyFacts", () => {
         status: "archived",
         source: INTEGRATION_SOURCE,
       });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId: declined,
         verdict: "archive",
@@ -1028,11 +1040,11 @@ describe("POST /tts/area-reviewed", () => {
       body: JSON.stringify(body),
     });
 
-  it("keeps area pages and the review route working from old per-file rows before the clean nightly replacement", async () => {
+  it("records a review of a posted area page, and the gather reads it back", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
+      await ctx.db.insert("modelOfTomFiles", {
         name: "areas/research",
         body: AREA_BODY("2026-01-01"),
         sourcePath: "model-of-tom/areas/research.md",
@@ -1040,7 +1052,6 @@ describe("POST /tts/area-reviewed", () => {
         syncedAt: Date.now() - DAY,
       });
     });
-    expect(await t.run(async (ctx) => await ctx.db.query("modelOfTomFiles").collect())).toEqual([]);
     const today = new Date().toISOString().slice(0, 10);
     const res = await post(t, { path: "model-of-tom/areas/research.md", reviewedOn: today });
     expect(res.status).toBe(200);
@@ -1131,14 +1142,10 @@ describe("GET /tts/weekly-input", () => {
     expect(body.since).toBe(until - WEEK_MS);
     expect(body.readiness).toEqual({ prepared: 0, unprepared: 0 });
     expect(body.integrations.length).toBe(3);
-    // The door serves the ASSEMBLED CONTEXT now, not two whole layers: the
-    // stable prefix and the grant block, and nothing else. The assembler's
+    // The door serves the ASSEMBLED CONTEXT: the base and the skills line
+    // (this fixture stores no write page), and nothing else. The assembler's
     // exact output is pinned in convex/ttsContext.test.ts.
-    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
-    expect(prefix).toBe("published map + operate\n\noperate layer");
-    // Nothing is published as a skill in this fixture, so the caller's own
-    // grants are refused by name rather than silently dropped.
-    expect(grants).toContain("refused: write — no published body at this commit");
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
   });
 });
 

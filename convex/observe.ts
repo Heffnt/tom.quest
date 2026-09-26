@@ -1,7 +1,8 @@
-// THE OBSERVATION SURFACE'S READS. One window of time, four sources, and
-// nothing derived here that the page can derive from what comes back: the map's
-// node counts are counts of these rows, so a second count computed on the
-// server would be a number the page could contradict.
+// THE /agents WINDOW VIEW'S READS (the observation page until night/w4,
+// 2026-09-26, when /agents absorbed /observe). One window of time, four
+// sources, and nothing derived here that the page can derive from what comes
+// back: the map's node counts are counts of these rows, so a second count
+// computed on the server would be a number the page could contradict.
 //
 // PAGED, NOT COLLECTED. The window moves back through all history — a month of
 // runs and a month of events are both unbounded reads — so runs and events come
@@ -9,6 +10,14 @@
 // window is exhausted or its own cap stops it. Rulings are the exception and
 // are taken whole under a cap: the table is append-only at Tom's pace and a
 // month of it is tens of rows.
+//
+// TWO HOMES FOR POINT EVENTS, ONE RULE FOR WHICH. A kind in
+// shared/jarvis-events.mjs EVENT_KINDS is posted to POST /jarvis/event and
+// lives in the record's `events` table (recordInWindow); every other kind
+// still lives in dtsEvents (eventsInWindow), whose copies in `events`
+// (copyFromDts) are not read. As an area adds its kinds to that list and
+// moves its writer, the page follows with no edit here, and eventsInWindow
+// goes when the list holds every kind the page draws.
 //
 // The gate is `requireTom`: every row here is a run's content, a merge, a
 // failure or a ruling, and the `agent` account reads none of it
@@ -32,9 +41,13 @@ import {
 } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
 import { BOX_CHANGE, DEPLOY, boxChangeOf, redactedBoxChange } from "./boxChanges";
+import { EVENT_KINDS } from "../shared/jarvis-events.mjs";
 
 /** The label every gate in this module names, so a denial says which surface. */
-const SURFACE = "Observe";
+const SURFACE = "Agents";
+
+/** The kinds whose home is the record's events table (see the header). */
+const RECORD_KINDS: ReadonlySet<string> = new Set(EVENT_KINDS);
 
 /** The widest window the page offers, in milliseconds: one month, plus the
  *  slack a 31-day month needs. A wider one is more pages, not a different
@@ -281,13 +294,52 @@ export const eventsInWindow = query({
     return {
       ...page,
       page: page.page
-        .filter((event) => wanted(event.kind))
+        .filter((event) => wanted(event.kind) && !RECORD_KINDS.has(event.kind))
         .map((event) => ({
           id: event._id as string,
           at: event.at,
           kind: event.kind,
           key: event.key ?? null,
           todoId: (event.todoId ?? null) as string | null,
+          agentId: null as string | null,
+          data: COUNTED_NOT_DRAWN.has(event.kind) ? null : drawnFields(event.data),
+        })),
+    };
+  },
+});
+
+/**
+ * The same point events from the record's `events` table: the kinds whose
+ * home it is (shared/jarvis-events.mjs EVENT_KINDS), oldest first, in the
+ * shape eventsInWindow answers, plus the agent a row names. A box change's
+ * `at` is when it happened on the box; a job report's `key` is the condition
+ * it names.
+ */
+export const recordInWindow = query({
+  args: {
+    from: v.number(),
+    to: v.number(),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, { from, to, paginationOpts }) => {
+    await requireTom(ctx, SURFACE);
+    assertWindow(from, to);
+    const page = await ctx.db
+      .query("events")
+      .withIndex("by_at", (q) => q.gte("at", from).lt("at", to))
+      .order("asc")
+      .paginate(paginationOpts);
+    return {
+      ...page,
+      page: page.page
+        .filter((event) => wanted(event.kind) && RECORD_KINDS.has(event.kind))
+        .map((event) => ({
+          id: event._id as string,
+          at: event.at,
+          kind: event.kind,
+          key: event.subject ?? null,
+          todoId: null as string | null,
+          agentId: event.provenance.agentId ?? null,
           data: COUNTED_NOT_DRAWN.has(event.kind)
             ? null
             : event.kind === BOX_CHANGE
@@ -309,7 +361,7 @@ export const rulingsInWindow = query({
     await requireTom(ctx, SURFACE);
     assertWindow(from, to);
     const rulings = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_ruled", (q) => q.gte("ruledAt", from).lt("ruledAt", to))
       .order("asc")
       .take(RULINGS_MAX);
@@ -334,7 +386,7 @@ export const rulingsInWindow = query({
   },
 });
 
-async function subjectWords(ctx: QueryCtx, ruling: Doc<"dtsRulings">): Promise<string> {
+async function subjectWords(ctx: QueryCtx, ruling: Doc<"rulings">): Promise<string> {
   if (ruling.todoId !== undefined) {
     const todo = await ctx.db.get(ruling.todoId);
     return todo?.statement ?? "";
@@ -589,8 +641,8 @@ export const approveChange = mutation({
  * live in WikiTom `tts/vocabulary.json` and `tts search define` answers from
  * them on a box or a laptop with that checkout; tom.quest holds the term NAMES
  * alone (convex/ttsShared.ts VOCABULARY_TERMS says so in as many words). So
- * this reads the three published bodies the record DOES hold — the
- * model-of-Tom files, the skills and the repository rules — for the lines that
+ * this reads the two published bodies the record DOES hold — the
+ * model-of-Tom files and the repository rules — for the lines that
  * define the word, and answers with those lines and where each came from.
  *
  * A word the vocabulary names and none of those bodies define comes back with
@@ -608,21 +660,6 @@ export const define = query({
     // the record holds.
     if (word === "" || word.length > 80) throw new Error("a term is one to eighty characters");
     const found: { where: string; text: string }[] = [];
-
-    const skills = await ctx.db.query("ttsSkills").collect();
-    for (const skill of skills) {
-      if (skill.name.toLowerCase() === word.toLowerCase() && skill.description !== undefined) {
-        found.push({ where: `skill ${skill.name}`, text: skill.description });
-      }
-      for (const line of definingLines(skill.body, word)) {
-        found.push({ where: `skill ${skill.name}`, text: line });
-      }
-      for (const reference of skill.references ?? []) {
-        for (const line of definingLines(reference.body, word)) {
-          found.push({ where: reference.path, text: line });
-        }
-      }
-    }
 
     for (const file of await ctx.db.query("modelOfTomFiles").collect()) {
       for (const line of definingLines(file.body, word)) {

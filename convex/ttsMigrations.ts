@@ -1712,3 +1712,43 @@ export const internalScrubWorkerKeyRows = internalMutation({
     return await next({ agentIndex, phase: "chunks", cursor: null, afterSeq });
   },
 });
+
+// ── Retired tables: their rows go, so the schema can drop them (2026-09-26) ──
+//
+// The one walk in this file that DELETES. Tom approved deleting the previous
+// generation in chat on 2026-09-26 ("even if 0 lines of code stay, I want to
+// preserve all the ideas"), and Convex refuses a schema that drops a table
+// still holding documents, so the rows go first and the table second, in the
+// commit after this one. Every row deleted here is in WikiTom
+// tts/snapshot/<table>.jsonl (the table copy pushed off the box), checked
+// row for row before this was written: batches 198, gpuPoolAgentLog 4,
+// jobHeartbeats 8, claudeAutoConfig 1.
+//
+// One page of one table per call, then it schedules itself for the rest; the
+// finished walk writes one `retired-rows-deleted` event with the count per
+// table. Run once, with no arguments:
+//   npx convex run ttsMigrations:internalDeleteRetiredRows '{}'
+// This function goes with the tables in the next commit.
+export const RETIRED_ROWS_DELETED = "retired-rows-deleted";
+const RETIRED_ROW_TABLES = ["batches", "gpuPoolAgentLog", "jobHeartbeats", "claudeAutoConfig"] as const;
+export const internalDeleteRetiredRows = internalMutation({
+  args: {
+    index: v.optional(v.number()),
+    counts: v.optional(v.record(v.string(), v.number())),
+  },
+  handler: async (ctx, { index = 0, counts = {} }) => {
+    const table = RETIRED_ROW_TABLES[index];
+    if (table === undefined) {
+      await logEvent(ctx, RETIRED_ROWS_DELETED, undefined, { counts });
+      return { done: true, counts };
+    }
+    const page = await ctx.db.query(table).take(PAGE_SIZE);
+    for (const row of page) await ctx.db.delete(row._id);
+    const next = { ...counts, [table]: (counts[table] ?? 0) + page.length };
+    await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalDeleteRetiredRows, {
+      index: page.length < PAGE_SIZE ? index + 1 : index,
+      counts: next,
+    });
+    return { done: false, counts: next };
+  },
+});

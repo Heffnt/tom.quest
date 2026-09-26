@@ -369,9 +369,6 @@ describe("the step lease", () => {
 
 describe("the step prompt", () => {
   const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
-  // The research page names the repository, which is how a CMT runner's step
-  // is granted his research: the repository row, not a todo category.
-  const RESEARCH = "---\nupdated: 2026-09-09\ncategories: [study-one, study-two, complexmultitrigger]\n---\n\n# Research\n\n## Current state\n\n- The September campaign.\n";
 
   async function publish(t: TestConvex<typeof schema>) {
     const { contextPublication } = await import("../scripts/context-fixture.mjs");
@@ -383,18 +380,9 @@ describe("the step prompt", () => {
         headers: publication.headers.filter((header: { layers: string[] }) => header.layers.join(",") === "operate") as never,
       });
       for (const file of publication.files) {
-        const body = file.path === "model-of-tom/areas/research.md" ? RESEARCH : file.body;
         await ctx.db.insert("modelOfTomFiles", {
           name: file.path.slice("model-of-tom/".length).replace(/\.md$/, ""),
-          body, sourcePath: file.path, bytes: body.length, commit: COMMIT, syncedAt: 1, pushed: true,
-        });
-      }
-      for (const name of ["write", "know-intent", "know-week", "know-research", "know-admin", "repo-complexmultitrigger"]) {
-        await ctx.db.insert("ttsSkills", {
-          name,
-          group: name === "write" ? "write" : name.startsWith("repo-") ? "repo" : "know",
-          description: `what ${name} covers`, body: `the body of ${name}`, references: [],
-          sourcePaths: [`model-of-tom/${name}.md`], commit: COMMIT, syncedAt: 1, pushed: true,
+          body: file.body, sourcePath: file.path, bytes: file.bytes, commit: COMMIT, syncedAt: 1, pushed: true,
         });
       }
     });
@@ -408,7 +396,7 @@ describe("the step prompt", () => {
     return claimed;
   }
 
-  it("reads a stored batch subject as no subject, and grants by the repository", async () => {
+  it("reads a stored batch subject as no subject, and carries its repository's prior outcomes first", async () => {
     vi.useFakeTimers();
     const t = convexTest(schema, modules);
     await publish(t);
@@ -417,13 +405,17 @@ describe("the step prompt", () => {
     await t.run(async (ctx) => {
       const batchId = await ctx.db.insert("batches", { statement: "a batch", status: "active", createdAt: 1, updatedAt: 1 });
       await ctx.db.patch(runnerId, { subject: { kind: "batch", batchId } });
+      await ctx.db.insert("claudeSessions", {
+        title: "an earlier sweep", kind: "adhoc", repo: "ComplexMultiTrigger", repos: ["ComplexMultiTrigger"],
+        status: "ended", statusChangedAt: Date.parse("2026-09-08T16:00:00Z"), outcome: "completed",
+        outcomeSummary: "the sweep finished", nextSeq: 0, createdAt: 1,
+      });
     });
     const claimed = await claimedPrompt(t);
-    const grants = claimed.prompt.slice(0, claimed.prompt.indexOf("You are one step"));
-    expect(grants).toContain("repo-complexmultitrigger");
+    expect(claimed.prompt.startsWith("RECENT SESSION OUTCOMES\n- 2026-09-08 completed: the sweep finished\n\nYou are one step")).toBe(true);
   });
 
-  it("grants what the design says and carries the document, the rubric, the never list and the pen", async () => {
+  it("carries the document, the rubric, the never list and the pen, and no list of skills", async () => {
     vi.useFakeTimers();
     const t = convexTest(schema, modules);
     await publish(t);
@@ -431,9 +423,10 @@ describe("the step prompt", () => {
     const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 500 }) });
     const claimed = await claimedPrompt(t);
     const prompt = claimed.prompt;
-    const grants = prompt.slice(0, prompt.indexOf("You are one step"));
-    for (const name of ["write", "know-intent", "know-research", "repo-complexmultitrigger"]) expect(grants).toContain(name);
-    expect(grants).not.toContain("know-admin");
+    // The base, the write pages and the skills line come from the box's
+    // session-start hook; a runner with no prior outcomes starts at its task.
+    expect(prompt.startsWith("You are one step")).toBe(true);
+    expect(prompt).not.toContain("know-research");
     expect(prompt).toContain("Watch the sweep.");
     expect(prompt).toContain("@@RUNNER_FACTS@@");
     expect(prompt).toContain("DECIDE one of: continue, change, ask, hand-off or finish.");
@@ -745,7 +738,7 @@ describe("a question for Tom", () => {
     runner = await t.run((ctx) => ctx.db.get(runnerId));
     expect(runnerStatus({ runner: runner!, openBlockingAsks: 0 })).toBe("running");
     // It is not a ruling.
-    expect(await t.run((ctx) => ctx.db.query("dtsRulings").collect())).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("rulings").collect())).toEqual([]);
   });
 
   it("composes the question whole under a first line that says whether the runner is holding still", async () => {

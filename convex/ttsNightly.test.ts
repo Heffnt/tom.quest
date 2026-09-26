@@ -39,7 +39,7 @@ describe("EXPORT_TABLES", () => {
     expect(EXPORT_TABLES).toEqual(all.filter((n) => !n.startsWith("auth")).sort());
     expect(EXPORT_TABLES).toContain("dtsTodos");
     expect(EXPORT_TABLES).toContain("claudeMessages");
-    expect(EXPORT_TABLES).toContain("ttsSkills");
+    expect(EXPORT_TABLES).toContain("modelOfTomFiles");
     for (const name of EXPORT_TABLES) expect(name.startsWith("auth")).toBe(false);
   });
 });
@@ -321,7 +321,7 @@ describe("GET /tts/learning-input", () => {
         data: { text: "done", outcome: "completed" },
       });
       await ctx.db.insert("dtsEvents", { at: now, kind: "surfaced", todoId });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "revise",
@@ -330,7 +330,7 @@ describe("GET /tts/learning-input", () => {
         provenance: { from: "tom-words", inboundId: "x", quote: "ask for a shorter term" },
       });
       // Outside the window: yesterday's ruling belongs to yesterday's run.
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "approve",

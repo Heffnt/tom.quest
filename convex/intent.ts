@@ -9,7 +9,7 @@
 //                   written from his words, each with an evidence entry.
 //   standing-rule — model-of-tom/priorities.md and agent-rules.md, every
 //                   repository's AGENTS.md, and vqc/steering.yaml.
-//   ruling        — the dtsRulings table, and the dated notes of tts/spec.md
+//   ruling        — the rulings table, and the dated notes of tts/spec.md
 //                   and vqc/adoption.md that quote a ruling of his.
 //   label         — the runLabels table: what he said about a run's output.
 //
@@ -18,9 +18,8 @@
 // is the join: a line, its evidence, its date and where it is written.
 //
 // A SECOND READ, `agentView`, is the same intent the way an agent receives
-// it: the prompt prefix and grant block assembleContext builds for one caller,
-// then each granted skill's body as the agent loads it. The first read is where
-// his intent is written; the second is what reaches a run.
+// it: the prompt assembleContext builds. The first read is
+// where his intent is written; the second is what reaches a run.
 //
 // THE GATE IS `requireTom`. These are his own pages, his rulings and his
 // judgments; the `agent` account reads none of it (convex/agentSurfaces.ts
@@ -29,13 +28,9 @@
 import { v } from "convex/values";
 import { internalMutation, query } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { assembleContext } from "./ttsContext";
-import { isPublishedSkillRow, modelOfTomState, SKILLS_MAX } from "./ttsSkills";
-import { parseFrontmatter } from "../shared/markdown-sections.mjs";
-import { byteLength, renderSkillMd, skillDirName } from "../shared/skills.mjs";
-import { quoted } from "../shared/vocabulary-rows.mjs";
+import { assembleContext, joinContext } from "./ttsContext";
+import { modelOfTomState } from "./ttsSkills";
 import {
-  AGENT_VIEW_CALLERS,
   type IntentLine,
   MODEL_OF_TOM_PAGES,
   parseAdoptionRulings,
@@ -65,7 +60,7 @@ export function isIntentSourcePath(path: unknown): path is string {
     && !path.split("/").some((segment) => segment === "." || segment === "..");
 }
 
-/** The most rulings the page reads. dtsRulings is append-only at Tom's own
+/** The most rulings the page reads. rulings is append-only at Tom's own
  *  pace, so this is a year of them and not a window. */
 const RULINGS_MAX = 500;
 
@@ -239,16 +234,16 @@ export const lines = query({
 
     // HIS RULINGS. The line is the sentence he gave; a ruling recorded from a
     // button carries none, and its verdict is then the whole of what he said.
-    const rulings = await ctx.db.query("dtsRulings")
+    const rulings = await ctx.db.query("rulings")
       .withIndex("by_ruled").order("desc").take(RULINGS_MAX + 1);
     const rulingsCapped = rulings.length > RULINGS_MAX;
     const ruled: IntentLine[] = rulings.slice(0, RULINGS_MAX).map((row) => ({
-      id: `dtsRulings/${row._id}`,
+      id: `rulings/${row._id}`,
       kind: "ruling" as const,
       text: row.sentence ?? row.verdict,
       section: row.subjectType,
       voice: "his" as const,
-      source: "dtsRulings",
+      source: "rulings",
       locator: row._id,
       at: row.ruledAt,
       dateText: null,
@@ -258,7 +253,7 @@ export const lines = query({
         ? []
         : [{ form: "quote", text: row.provenance.quote, date: null }],
     }));
-    record("dtsRulings", "record", null, rulings[0]?.ruledAt ?? null, ruled);
+    record("rulings", "record", null, rulings[0]?.ruledAt ?? null, ruled);
 
     // HIS LABELS. The act is his — the writer refuses any actor but him — but
     // the LINE is not: `meaning` is an agent's present-tense wording of what he
@@ -303,70 +298,24 @@ export const lines = query({
 
 // ── The agent's view ─────────────────────────────────────────────────────────
 
-/** One granted skill as the agent loads it: `tts search skills <name>`'s
- *  head (name, group, bytes, description) over its SKILL.md body. */
-type AgentSkillBlock = { name: string; text: string };
-
 /**
- * What one caller's agent reads, in the order it reads it: the prefix (header
- * line, the map, the operate rules), the grant block, the harness's listing of
- * every skill it could load, and each granted skill's body.
+ * What an agent whose output reaches Tom is given, in the order it reads it:
+ * the base (header line, the map, the operate rules), the write pages, and
+ * the skills line. Every caller with no subject gets these same bytes.
  *
- * THE PREFIX AND GRANTS ARE assembleContext's OWN, not a second rendering of
- * them, so the page cannot show a prompt no run was given. The bodies are
- * renderSkillMd's, the same bytes the publisher writes to each SKILL.md, with
- * the frontmatter taken off the way `tts search skills` takes it off; `bytes`
- * is the whole file, which is what loading it costs.
+ * THE PROMPT IS assembleContext's OWN, not a second rendering of it, so the
+ * page cannot show a prompt no run was given.
  *
  * Null until a night has posted the base: the publication fails closed, and
  * an empty page says so without throwing.
  */
 export const agentView = query({
-  args: { caller: v.string() },
-  handler: async (ctx, { caller }): Promise<{
-    caller: string;
-    commit: string;
-    prefix: string;
-    grants: string;
-    listing: string;
-    skills: AgentSkillBlock[];
-  } | null> => {
+  args: {},
+  handler: async (ctx): Promise<{ commit: string; prompt: string } | null> => {
     await requireTom(ctx, SURFACE);
-    if (!(AGENT_VIEW_CALLERS as readonly string[]).includes(caller)) {
-      throw new Error(`the agent view offers ${AGENT_VIEW_CALLERS.join(", ")}, not ${caller}`);
-    }
     const state = await modelOfTomState(ctx);
     if (state.commit === null) return null;
-    const context = await assembleContext(ctx, { kind: "none" }, { reachesTom: true, caller });
-
-    const rows = await ctx.db.query("ttsSkills").withIndex("by_name").take(SKILLS_MAX);
-    const catalog = rows.filter(isPublishedSkillRow);
-    const byName = new Map(catalog.map((row) => [row.name, row]));
-
-    // The harness lists every installed skill by directory and description
-    // before the agent loads any, in directory order.
-    const listing = catalog
-      .map((row) => ({ dir: skillDirName(row.name), description: row.description }))
-      .sort((a, b) => a.dir.localeCompare(b.dir))
-      .map((entry) => `- ${entry.dir}: ${entry.description}`)
-      .join("\n");
-
-    const skills: AgentSkillBlock[] = [];
-    for (const name of context.granted) {
-      // assembleContext read this same catalog inside this query's transaction
-      // and grants only names it carries, so every granted name has a row.
-      const row = byName.get(name)!;
-      // A `repo-` skill's provenance names its repository, which the row does
-      // not store; none of AGENT_VIEW_CALLERS is granted one, so every body
-      // here is WikiTom's and renderSkillMd's default origin is the true one.
-      const file = renderSkillMd(row, row.commit);
-      const body = parseFrontmatter(file).body.trim();
-      skills.push({
-        name,
-        text: `${name} [${row.group}] ${byteLength(file)}B\ndescription=${quoted(row.description)}\n\n${body}`,
-      });
-    }
-
-    return { caller, commit: state.commit, prefix: context.prefix, grants: context.grants, listing, skills };
+    const context = await assembleContext(ctx, { kind: "none" }, { reachesTom: true });
+    return { commit: state.commit, prompt: joinContext(context) };
   },
 });

@@ -185,9 +185,6 @@ function compactOf(
           facts.model,
           facts.host,
           facts.cwd === undefined ? undefined : basename(facts.cwd),
-          facts.layersKnown
-            ? facts.layersGiven.join("+") || "no layers given"
-            : "layers not known",
           `${facts.skillsUsed.length} skills`,
           `${facts.tools.length} tools`,
         ].filter((fact): fact is string => fact !== undefined),

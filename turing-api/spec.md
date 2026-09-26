@@ -144,8 +144,8 @@ pieces carry over directly.
 - **Reserved-name guard** in two places: the Next proxy (authoritative,
   `route.ts:27`) and the allocate form (UX). All durable reconciler writes go through
   internalMutations (actions can't touch the DB).
-- `convex/http.ts` registers the auth routes plus the agent worker-pool endpoint — `POST /pool`
-  (scale/toggle/restart) and `GET /pool` (read desired-state/status/audit), both key-authed (§7).
+- `convex/http.ts` registers the auth routes. (The agent worker-pool endpoint `/pool` went on
+  2026-09-26; §7 says what it was.)
 
 ### 1.4 Verified Turing/SLURM facts that bind this design
 
@@ -343,35 +343,18 @@ payoff.
 
 ## 7. Control plane
 
-Desired state is the `gpuPool` table with **two authenticated writers**:
+Desired state is the `gpuPool` table with **one authenticated writer**: Tom (admin), via the
+dashboard — admin-session-gated Convex mutations (the `gpuPool` pattern: `requireAdmin`,
+two-layer clamp, upsert-whole-row). It is the only path that may author or change a row.
 
-- **Human (admin), via the dashboard** — admin-session-gated Convex mutations (the `gpuPool`
-  pattern: `requireAdmin`, two-layer clamp, upsert-whole-row). This is the **only** path that
-  may author or change a row's `command`, `partition`, or resource limits.
-- **Agent, via a key-authed Convex HTTP `/pool` endpoint** in `convex/http.ts`, two methods on
-  one path. `POST /pool` calls a narrow internal mutation (`agentScale`) that may write **only**
-  `desiredCount`, `enabled`, and `restart`, on an **existing admin-authored row** (looked up by
-  `gpuType`); it **refuses if no such row exists** (no insert) and never touches
-  `commands`/limits. It shares the human path's `clampDesired()` helper. `GET /pool` is the
-  read counterpart (§8.1): it returns the projected pool desired-state, the last reconcile
-  status, and the recent agent-write audit — read-only, never the worker command. Agents may
-  run anywhere (Turing, laptop, CI); both writers hit the same table, so they stay in sync and
-  the reconciler is still the only SLURM actor.
+An agent path existed until 2026-09-26: a key-authed `/pool` endpoint (`POST` scaled,
+`GET` read) under its own `POOL_AGENT_KEY`, through a narrow mutation that could write only
+`desiredCount`, `enabled` and `restart` on an existing admin-authored row, never a command,
+with every write logged to a `gpuPoolAgentLog` audit table. Its last write was 2026-06-20 and
+nothing on the box called it, so it was deleted. The idea it held (an agent may scale
+capacity Tom pre-approved but never author what runs on it) lives on in Jarvis's model-host
+job, which starts and stops a rented GPU for the model roles bound to it.
 
-Security of the agent path (the new attack surface — load-bearing):
-
-- **No command authoring over the agent key.** The `command` is admin-authored and never
-  agent-writable; the agent can only scale/toggle/restart pre-approved rows. Arbitrary shell
-  as `ntheffernan` on a GPU node therefore stays a **Tom-only** capability behind the existing
-  `isTom` gate. (This is why the worker command lives in the row, not in a free-form request.)
-- **Separate narrow key** (`POOL_AGENT_KEY`), stored **only in Convex env**
-  (`secrets/convex.env`), never in Vercel/`next.env` — it shares nothing with `TURING_API_KEY`
-  (the auth-clobber lesson). Constant-time compare. Authorizes the `agentScale` write **and**
-  the `GET /pool` read of pool desired-state/status/recent-audit (both key-gated; the read is
-  projected to never expose the worker command); no terminal, no `/allocate` passthrough. Every
-  write is **logged with a writer id + the resulting desired values** into the append-only
-  `gpuPoolAgentLog` table (the audit trail) — kept separate from the reconcile status singleton,
-  which the reconciler overwrites each cycle. Rotation via `pnpm secrets:sync`.
 - **Clamp at the boundary too**, not just at reconcile — a bad `desiredCount` (9999, −5) must
   be clamped where it is written, so no code path ever trusts an out-of-range stored value.
 

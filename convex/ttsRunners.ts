@@ -6,7 +6,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { redactSecrets } from "../shared/redact.mjs";
 import { CHECKIN_RULES, checkInFailures } from "../shared/checkin-rules.mjs";
-import { assembleContext, type ContextSubject } from "./ttsContext";
+import { subjectFacts, type ContextSubject } from "./ttsContext";
 import type { RunnerFact } from "./ttsCompose";
 import {
   BOX_TOOLS_PARAGRAPH,
@@ -746,15 +746,16 @@ async function buildRunnerStepPrompt(
     : runner.repo !== NO_REPO
       ? { kind: "repo", repo: runner.repo }
       : { kind: "none" };
-  // A step whose skills cannot be routed still runs, and says so, as the box's
-  // session-start hook does. assembleContext fails closed on an unposted
-  // publication, and a throw here would roll the claim back and leave the
-  // request to be claimed and refused on every poll.
-  let grants: string;
+  // The base, the write pages and the skills line reach the step through the
+  // box's session-start hook; the prompt adds the subject's record facts. A
+  // step whose subject todo is gone still runs and says so: a throw here would
+  // roll the claim back and leave the request to be claimed and refused on
+  // every poll.
+  let recordFacts: string;
   try {
-    grants = (await assembleContext(ctx, subject, { reachesTom: true, caller: "runner-step", now })).grants;
+    recordFacts = await subjectFacts(ctx, subject);
   } catch (error) {
-    grants = `SKILLS could not be routed: ${error instanceof Error ? error.message : String(error)}`;
+    recordFacts = `The subject's record facts could not be read: ${error instanceof Error ? error.message : String(error)}`;
   }
 
   const replies = since.replies.length === 0
@@ -787,7 +788,7 @@ async function buildRunnerStepPrompt(
   const facts = `${FACTS_PLACEHOLDER}\n(If the line above is the bare placeholder, the box did not read the facts for this step: say so in the check-in and read what you need with the commands below.)`;
 
   return [
-    grants,
+    recordFacts,
     `You are one step of the runner "${runner.title}" (runner ${runner._id}), which is ${status}. A runner watches one experiment through a chain of short steps: each starts cold, reads the document below as its whole memory, looks at the experiment, decides one thing, acts on it, checks in, rewrites the document for the step after it, and ends. Nothing is re-entered, and nothing you do not write into the document survives this step. Your step agent is ${stepAgentId}.`,
     `## The document (version ${runner.documentVersion})\n\n${runner.document}`,
     `## The facts, read by the box before you started\n\n${facts}`,

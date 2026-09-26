@@ -33,7 +33,7 @@ describe("filterLines", () => {
   const lines = [
     line(),
     line({ id: "b", kind: "standing-rule", voice: "unattributed", source: "tom.quest AGENTS.md" }),
-    line({ id: "c", kind: "ruling", voice: "his", source: "dtsRulings" }),
+    line({ id: "c", kind: "ruling", voice: "his", source: "rulings" }),
   ];
 
   it("shows everything when nothing is picked", () => {
@@ -41,7 +41,7 @@ describe("filterLines", () => {
   });
 
   it("narrows on each of the three at once", () => {
-    expect(filterLines(lines, { kind: "ruling", voice: "his", source: "dtsRulings" }).map((x) => x.id))
+    expect(filterLines(lines, { kind: "ruling", voice: "his", source: "rulings" }).map((x) => x.id))
       .toEqual(["c"]);
     expect(filterLines(lines, { kind: "ruling", voice: "his", source: "model-of-tom/intent.md" }))
       .toEqual([]);
@@ -84,8 +84,8 @@ describe("dateLabel", () => {
 
 describe("sourcesOf and countVoices", () => {
   it("lists each source once, sorted", () => {
-    expect(sourcesOf([line(), line({ source: "dtsRulings" }), line()]))
-      .toEqual(["dtsRulings", "model-of-tom/intent.md"]);
+    expect(sourcesOf([line(), line({ source: "rulings" }), line()]))
+      .toEqual(["model-of-tom/intent.md", "rulings"]);
   });
 
   it("counts the three voices", () => {
@@ -106,7 +106,7 @@ describe("segmentBullets", () => {
     "- Spend money,",
     "  or message anyone.",
     "",
-    "SKILLS (WikiTom commit abc)",
+    "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.",
   ].join("\n");
 
   it("cuts out each bullet of a tracked page, with the lines it wraps onto", () => {

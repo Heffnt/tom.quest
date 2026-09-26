@@ -53,7 +53,7 @@ async function rule(
   { sentence, ruledAt = 1_000 }: { sentence?: string; ruledAt?: number } = {},
 ) {
   await t.run(async (ctx) =>
-    ctx.db.insert("dtsRulings", {
+    ctx.db.insert("rulings", {
       subjectType: "life",
       todoId,
       verdict,
@@ -242,12 +242,10 @@ describe("GET /tts/capture-context declined integrations", () => {
         sentence: "not worth the credential",
       },
     ]);
-    // The door serves the ASSEMBLED CONTEXT now, not two whole layers: the
-    // stable prefix and the grant block. The assembler's exact output is
+    // The door serves the ASSEMBLED CONTEXT: the base and the skills line
+    // (this fixture stores no write page). The assembler's exact output is
     // pinned in convex/ttsContext.test.ts.
-    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
-    expect(prefix).toBe("published map + operate\n\noperate layer");
-    expect(grants).toContain("granted:");
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
     expect(body.writingStandard).not.toContain("write layer");
     expect(body.captureTriage).toBeUndefined();
     expect(body.source).toBeUndefined();

@@ -84,9 +84,8 @@ export const SESSION_MODELS = /** @type {const} */ ({
   fable: { family: "claude", id: "claude-fable-5-1", effort: null },
   "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
   "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
-  // OpenAI's Astra, the orchestrator's first choice (Tom, 2026-09-21). Listed
-  // by the box's Codex CLI as `gpt-6-astra`; convex/orchestrator.ts takes it
-  // only when the daemon's heartbeat says the CLI lists it.
+  // OpenAI's Astra (Tom, 2026-09-21). Listed by the box's Codex CLI as
+  // `gpt-6-astra` when the account has it.
   "gpt-6-astra": { family: "codex", id: "gpt-6-astra", effort: "xhigh" },
 });
 
@@ -117,19 +116,7 @@ export const DAEMON_STALE_MS = 3 * POLL_IDLE_MS;
  */
 export const USAGE_LIMIT_RE = /usage.?limit|limit reached|session limit|usage_limit_(reached|exceeded)|rate_limit_reached|hit your usage limit/i;
 
-/** The last line of the orchestrator's final message when it asks to be
- * restarted from its document. The daemon (worker/session-host/hosted.mjs in
- * the Jarvis repository) reads it off the run; the record
- * (convex/orchestrator.ts) restarts the run on it. */
-export const ORCHESTRATOR_COMPACT_WORD = "JARVIS-COMPACT";
-
-/** The endedReason a compaction ends with. The record reads it to tell a
- * compaction (restart now, crash count cleared) from a crash. */
-export const COMPACT_ENDED_REASON = "orchestrator compacted";
-
-/** The endedReason a restarted daemon ends a live unattended run with. The
- * record restarts the orchestrator at once on it and does not count it as a
- * crash. */
+/** The endedReason a restarted daemon ends a live unattended run with. */
 export const DAEMON_RESTART_ENDED_REASON = "daemon restarted mid-mission";
 
 /** What one runner launch may ask for when its row holds no ceiling: the fixed

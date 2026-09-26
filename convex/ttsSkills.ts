@@ -1,30 +1,18 @@
-// THE BASE PUBLICATION AND THE SKILL CATALOG — two stores, two doors, one file.
+// THE BASE PUBLICATION — what every prompt begins with.
 //
-// What a prompt begins with is now TWO THINGS, published by two independent
-// posts, and the split is the point:
+// modelOfTomPublication holds one `key: "current"` row: the verbatim `operate`
+// layer (header line 1, the map, the operate rules) and the header for the one
+// selection a reader may ask for. modelOfTomFiles holds one row per WikiTom
+// model-of-tom file, which is where the write pages (writing.md, ground.md)
+// and every other page are read from. Both are replaced whole by one post to
+// POST /tts/model-of-tom.
 //
-//   THE BASE — modelOfTomPublication, one `key: "current"` row, holding the
-//     verbatim `operate` layer (header line 1, the map, the operate rules) and
-//     the header for every canonical selection that remains. Posted to
-//     POST /tts/model-of-tom, with one modelOfTomFiles row per source file.
-//   THE CATALOG — one ttsSkills row per published skill: `write`,
-//     `know-intent`, `know-week`, one `know-<area>` per area page, one
-//     `repo-<name>` per repository. Posted to POST /tts/skills.
-//
-// TWO DOORS SO THEY FAIL SEPARATELY. A night that could render the base and not
-// the catalog still delivers a base, and every run that night carries the
-// operate rules with an empty grant line rather than no prompt at all.
-//
-// WHAT THE LAYERS BECAME. `write` and `know` were whole layers a caller
-// selected; they are skills now, and nothing selects them. The two fields stay
-// declared on the publication (a row written before this commit still carries
-// them) and go unwritten from here on, so `operate` is the only layer any
+// `write` and `know` stay declared on the publication (a row stored earlier
+// still carries them) and go unwritten, so `operate` is the only layer any
 // selection can name.
 import { v } from "convex/values";
-import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
-import { byteLength, DESCRIPTION_MAX_BYTES } from "../shared/skills.mjs";
 
 /** The layer names a POST may still name. `write` and `know` stay in the
  * vocabulary because the nightly publisher spells them until it is narrowed;
@@ -52,9 +40,6 @@ export type ModelOfTomState = {
   operate?: string;
   write?: string;
   know?: string;
-  /** The graph the same nightly generated from `commit`, so a reader of a run
-   * row and a reader of the publication name the same object. */
-  graphVersion?: string;
   headers?: StoredHeader[];
   files?: { path: string; body: string }[];
 };
@@ -118,7 +103,6 @@ export async function modelOfTomState(ctx: QueryCtx | MutationCtx): Promise<Mode
     operate: current.operate,
     write: current.write,
     know: current.know,
-    graphVersion: current.graphVersion,
     headers: current.headers,
   };
 }
@@ -180,12 +164,11 @@ export const internalReplaceModelOfTom = internalMutation({
     layers: v.object({ operate: v.string(), write: v.optional(v.string()), know: v.optional(v.string()) }),
     headers: v.array(v.object({ layers: v.array(layerValidator), header: v.string() })),
     files: v.array(v.object({ path: v.string(), body: v.string(), bytes: v.number() })),
-    // The graph generated from this same commit, by the same nightly step, so
-    // a reader of the publication and a reader of a run row name one object.
-    // Optional: a night whose graph step failed still posts a base worth having.
+    // Accepted and DROPPED. The box's nightly posts it until its own change
+    // lands the same day; refusing its post would cost the night's base.
     graphVersion: v.optional(v.string()),
   },
-  handler: async (ctx, { commit, committedAt, pushed, force, layers, headers, files, graphVersion }) => {
+  handler: async (ctx, { commit, committedAt, pushed, force, layers, headers, files }) => {
     if (commit.trim() === "") throw new Error("commit is required");
     if (!Number.isFinite(committedAt)) throw new Error("committedAt must be finite");
     for (const name of STORED_LAYER_NAMES) {
@@ -211,10 +194,6 @@ export const internalReplaceModelOfTom = internalMutation({
       throw new Error(`the post's commit ${commit.slice(0, 12)} (${new Date(committedAt).toISOString()}) is older than the stored one (${new Date(current.committedAt).toISOString()}) — store left as it was; post with force naming why to replace it`);
     }
     if (force !== undefined && !forced) throw new Error("force, when given, is the reason (a non-empty string)");
-    // THE SOURCE FACTS, not the catalog. This door stopped touching `ttsSkills`
-    // in phase 6: the base and the skill catalog are two stores with two posts,
-    // and a base post that emptied the catalog would take every grant down on a
-    // night the skills post never ran.
     const existingFacts = await ctx.db.query("modelOfTomFiles").collect();
     for (const fact of existingFacts) await ctx.db.delete(fact._id);
     for (const file of files) await ctx.db.insert("modelOfTomFiles", {
@@ -234,145 +213,10 @@ export const internalReplaceModelOfTom = internalMutation({
       committedAt,
       pushed,
       operate: layers.operate,
-      // Spread, so a post without one stores no key rather than an empty
-      // string — the same shape the run row's own graphVersion takes.
-      ...(graphVersion === undefined ? {} : { graphVersion }),
       headers: stored,
     };
     if (current === null) await ctx.db.insert("modelOfTomPublication", publication);
     else await ctx.db.replace("modelOfTomPublication", current._id, publication);
     return { files: files.length, deleted: existingFacts.length, forced };
-  },
-});
-
-// ── The catalog ──────────────────────────────────────────────────────────────
-
-/** The ceiling on one post — the same 64 the model-of-tom door caps its files
- * at, and named here rather than shared so the two doors stay independent:
- * fourteen skills today against sixty-four source files, and a post past either
- * is a publisher bug rather than a bigger WikiTom. */
-export const SKILLS_MAX = 64;
-
-const skillReference = v.object({ name: v.string(), path: v.string(), body: v.string() });
-const skillGroup = v.union(v.literal("write"), v.literal("know"), v.literal("repo"));
-
-export type PublishedSkillRow = Doc<"ttsSkills"> & {
-  group: "write" | "know" | "repo";
-  description: string;
-  references: { name: string; path: string; body: string }[];
-  sourcePaths: string[];
-  commit: string;
-  pushed: boolean;
-};
-
-export type ModelOfTomFileRow = Pick<Doc<"modelOfTomFiles">, "sourcePath" | "body" | "bytes">;
-
-/** Old per-file rows remain schema-valid for the widening deploy, but are not
- * catalog entries and must be invisible to catalog readers. */
-export function isPublishedSkillRow(row: Doc<"ttsSkills">): row is PublishedSkillRow {
-  return row.sourcePath === undefined &&
-    (row.group === "write" || row.group === "know" || row.group === "repo") &&
-    typeof row.description === "string" &&
-    Array.isArray(row.references) &&
-    Array.isArray(row.sourcePaths) &&
-    typeof row.commit === "string" &&
-    typeof row.pushed === "boolean";
-}
-
-/**
- * The first nightly post after this widening deploy moves every per-file row
- * from `ttsSkills` to `modelOfTomFiles`. Until then, a source page is read
- * from its old row only when the new table has no row for that exact path.
- * Delete this fallback after one clean nightly replaces old rows.
- */
-export function modelOfTomFilesWithLegacyFallback(
-  files: readonly ModelOfTomFileRow[],
-  skills: readonly Doc<"ttsSkills">[],
-): ModelOfTomFileRow[] {
-  const byPath = new Map(files.map((file) => [file.sourcePath, file]));
-  for (const row of skills) {
-    if (typeof row.sourcePath !== "string" || !isModelOfTomPath(row.sourcePath)) continue;
-    if (!byPath.has(row.sourcePath)) {
-      byPath.set(row.sourcePath, { sourcePath: row.sourcePath, body: row.body, bytes: row.bytes });
-    }
-  }
-  return [...byPath.values()];
-}
-
-/**
- * The catalog, replaced whole. Same shape of refusal as
- * `internalReplaceModelOfTom` and `internalReplaceRepoRules`: an empty post
- * leaves the store as it was, a duplicate name is a bug in the publisher, and a
- * blank body is not a skill.
- *
- * WHOLE, NOT PER SKILL: the publisher builds the set from one immutable commit,
- * and a skill that has left the set (an area page Tom deleted) must leave the
- * catalog with it, or the router would grant a name no page stands behind.
- */
-export const internalReplaceSkills = internalMutation({
-  args: {
-    commit: v.string(),
-    syncedAt: v.number(),
-    pushed: v.boolean(),
-    skills: v.array(v.object({
-      name: v.string(),
-      group: skillGroup,
-      description: v.string(),
-      body: v.string(),
-      references: v.array(skillReference),
-      sourcePaths: v.array(v.string()),
-    })),
-  },
-  handler: async (ctx, { commit, syncedAt, pushed, skills }) => {
-    if (commit.trim() === "") throw new Error("commit is required");
-    // This timestamp orders whole-catalog posts; commit hashes have no ordering
-    // relation, so deleting it would let a delayed publisher roll the catalog back.
-    if (!Number.isFinite(syncedAt)) throw new Error("syncedAt must be finite");
-    if (skills.length === 0) throw new Error("no skills posted — store left as it was");
-    if (skills.length > SKILLS_MAX) throw new Error(`at most ${SKILLS_MAX} skills per post — got ${skills.length}`);
-    const names = new Set<string>();
-    for (const skill of skills) {
-      if (skill.name.trim() === "") throw new Error("a skill needs a name");
-      if (names.has(skill.name)) throw new Error(`skill posted twice: ${skill.name}`);
-      if (skill.body.trim() === "") throw new Error(`body for ${skill.name} must be non-empty`);
-      if (skill.description.trim() === "") throw new Error(`description for ${skill.name} must be non-empty`);
-      const described = byteLength(skill.description);
-      if (described > DESCRIPTION_MAX_BYTES) {
-        throw new Error(`description for ${skill.name} is ${described} bytes, over the ${DESCRIPTION_MAX_BYTES}-byte cap`);
-      }
-      names.add(skill.name);
-    }
-    const existing = await ctx.db.query("ttsSkills").collect();
-    // Old per-file rows are migration input, not a catalog revision; their
-    // timestamps cannot veto the first post that replaces them.
-    const currentSyncedAt = existing.filter(isPublishedSkillRow).reduce<number | null>(
-      (latest, row) => latest === null || row.syncedAt > latest ? row.syncedAt : latest,
-      null,
-    );
-    if (currentSyncedAt !== null && syncedAt < currentSyncedAt) {
-      throw new Error(`the post's commit ${commit.slice(0, 12)} (${new Date(syncedAt).toISOString()}) is older than the stored catalog (${new Date(currentSyncedAt).toISOString()}) — store left as it was`);
-    }
-    const storedSourcePaths = new Set(
-      (await ctx.db.query("modelOfTomFiles").collect()).map((file) => file.sourcePath),
-    );
-    let deleted = 0;
-    for (const row of existing) {
-      if (isPublishedSkillRow(row)) {
-        await ctx.db.delete(row._id);
-        deleted += 1;
-        continue;
-      }
-      // Widen-migrate-narrow: a legacy per-file row becomes deletable only
-      // when modelOfTomFiles has a row for that exact sourcePath. That is the
-      // code-tested proof that the new store holds the page this row carries;
-      // before then it remains the reader's only source copy if the base post
-      // failed while the independent catalog post still succeeded.
-      if (typeof row.sourcePath === "string" && storedSourcePaths.has(row.sourcePath)) {
-        await ctx.db.delete(row._id);
-        deleted += 1;
-      }
-    }
-    for (const skill of skills) await ctx.db.insert("ttsSkills", { ...skill, commit, syncedAt, pushed });
-    return { skills: skills.length, deleted, commit };
   },
 });

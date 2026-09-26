@@ -1,10 +1,8 @@
 "use client";
 
-// HIS INTENT AS ONE AGENT READS IT, in the order it reads it: the prompt (the
-// header line, the map and the operate rules, then the grant block), the
-// harness's listing of every skill it could load, then each skill it was
-// granted, as `tts search skills` prints it. The text is the agent's own,
-// verbatim, in monospace.
+// HIS INTENT AS ONE AGENT READS IT: the prompt (the header line, the map and
+// the operate rules, the write pages when its output reaches him, and the
+// skills line). The text is the agent's own, verbatim, in monospace.
 //
 // A BULLET OF HIS PAGES IS A CONTROL. Every bullet of agent-rules.md,
 // intent.md and priorities.md is the line the "every line" view lists; pressing
@@ -14,12 +12,7 @@
 import { useMemo } from "react";
 import { joinLines, segmentBullets, VOICE_CLASS, type IntentLine } from "../lib";
 
-type AgentView = {
-  prefix: string;
-  grants: string;
-  listing: string;
-  skills: { name: string; text: string }[];
-};
+type AgentView = { prompt: string };
 
 /** A text run whose last line is blank ends in a newline the browser would
  *  not draw; one more keeps that blank line on screen. */
@@ -41,9 +34,7 @@ export default function AgentText({
   const blocks = useMemo(
     () =>
       [
-        { key: "prompt", label: "prompt", text: [view.prefix, view.grants].filter((part) => part !== "").join("\n\n") },
-        { key: "listing", label: "skill listing", text: view.listing },
-        ...view.skills.map((skill) => ({ key: `skill:${skill.name}`, label: "skill", text: skill.text })),
+        { key: "prompt", label: "prompt", text: view.prompt },
       ].map((block) => ({ ...block, rows: joinLines(segmentBullets(block.text), lines) })),
     [view, lines],
   );

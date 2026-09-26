@@ -84,6 +84,26 @@ async function withTom(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({ subject: tomId });
 }
 
+// Stores briefs the way the retired brief pass's pen did (an upsert by
+// repo and externalId, stamped preparedAt), for the tests below that need a
+// briefed code todo. The pen went on 2026-09-26; the 31 stored rows remain.
+async function storeBriefs(
+  t: ReturnType<typeof testDb>,
+  { briefs }: { briefs: ReturnType<typeof brief>[] },
+) {
+  await t.run(async (ctx) => {
+    for (const row of briefs) {
+      const existing = await ctx.db
+        .query("dtsCodeBriefs")
+        .withIndex("by_repo_external", (q) => q.eq("repo", row.repo).eq("externalId", row.externalId))
+        .first();
+      const stored = { ...row, preparedAt: Date.now() };
+      if (existing) await ctx.db.patch(existing._id, stored);
+      else await ctx.db.insert("dtsCodeBriefs", stored);
+    }
+  });
+}
+
 const brief = (over: Partial<{
   repo: string;
   externalId: string;
@@ -106,7 +126,7 @@ const brief = (over: Partial<{
 // Date.now() stamps written by different mutations, so a test that lets the
 // real clock set them is asserting how fast the machine ran, not what the
 // predicate says. Both fields are plain numbers on the row (convex/schema.ts
-// dtsCodeBriefs.preparedAt, dtsRulings.ruledAt), so writing them directly is
+// dtsCodeBriefs.preparedAt, rulings.ruledAt), so writing them directly is
 // the whole mechanism.
 async function setTimes(
   t: ReturnType<typeof convexTest>,
@@ -116,7 +136,7 @@ async function setTimes(
     for (const b of await ctx.db.query("dtsCodeBriefs").collect()) {
       await ctx.db.patch(b._id, { preparedAt });
     }
-    for (const r of await ctx.db.query("dtsRulings").collect()) {
+    for (const r of await ctx.db.query("rulings").collect()) {
       await ctx.db.patch(r._id, { ruledAt });
     }
   });
@@ -378,7 +398,7 @@ describe("TTS unified rulings", () => {
     await t.run(async (ctx) => {
       // Rulings on one subject must order by ruledAt; the fake clock can
       // give the two c-old rows the same millisecond.
-      const rows = await ctx.db.query("dtsRulings").collect();
+      const rows = await ctx.db.query("rulings").collect();
       for (const r of rows) {
         if (r.externalId === "c-old" && r.verdict === "approve") {
           await ctx.db.patch(r._id, { ruledAt: r.ruledAt + 1 });
@@ -483,7 +503,7 @@ describe("TTS unified rulings", () => {
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cycle" })],
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -499,7 +519,7 @@ describe("TTS unified rulings", () => {
     ).toBe(0);
     // The worker re-briefs after applying the revise — the fresh brief's
     // preparedAt is newer than the ruling, so the item awaits a fresh ruling.
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cycle", sourceHash: "hash-b" })],
     });
     await setTimes(t, { preparedAt: 3000, ruledAt: 2000 });
@@ -515,7 +535,7 @@ describe("TTS unified rulings", () => {
   it("a ruling and a re-brief in the SAME millisecond keep the item on the pile", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "tie" })],
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -524,7 +544,7 @@ describe("TTS unified rulings", () => {
       verdict: "revise",
       sentence: "narrower scope",
     });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "tie", sourceHash: "hash-b" })],
     });
     // Both stamps are whole-millisecond Date.now() values written by two
@@ -579,7 +599,7 @@ describe("TTS unified rulings", () => {
       applyResult?: string;
     }) =>
       t.run(async (ctx) =>
-        ctx.db.insert("dtsRulings", { verdict: "approve", ...row }),
+        ctx.db.insert("rulings", { verdict: "approve", ...row }),
       );
     // Life subject: older ruling superseded by a newer sibling.
     await insert({ subjectType: "life", todoId, ruledAt: base - 1000 });
@@ -651,7 +671,7 @@ describe("TTS unified rulings", () => {
   it("awaiting-ruling count covers briefed code items with no ruling at all", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [
         brief({ externalId: "ruled" }),
         brief({ externalId: "unruled-1" }),
@@ -680,7 +700,7 @@ describe("TTS unified rulings", () => {
     // the pens accept only repos on the code-todo list, and tom.quest is the
     // one left, so the other repo's ruling is one recorded before ruling 70.
     await t.run(async (ctx) =>
-      ctx.db.insert("dtsRulings", {
+      ctx.db.insert("rulings", {
         subjectType: "code",
         repo: "ComplexMultiTrigger",
         externalId: "unruled-1",
@@ -701,7 +721,7 @@ describe("TTS unified rulings", () => {
   });
 
   // witness: reject `sentence` on any verdict but revise in insertRuling
-  // (convex/dtsRulings.ts) and the approve/session assertions below go red.
+  // (convex/rulings.ts) and the approve/session assertions below go red.
   it("accepts a sentence on every verdict; revise still requires one", async () => {
     const t = testDb();
     const tom = await withTom(t);
@@ -819,9 +839,9 @@ describe("a ruling from Tom's words", () => {
   }
 
   const post = (t: ReturnType<typeof convexTest>, body: unknown) =>
-    t.fetch("/tts/ruling", {
+    t.fetch("/jarvis/ruling", {
       method: "POST",
-      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      headers: { "X-Jarvis-Key": "s3cret", "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
 
@@ -1045,7 +1065,7 @@ describe("a ruling from Tom's words", () => {
         { externalId: "cmt-002", tier: "R", status: "open", statement: "s2", url: "u" },
       ],
     });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cmt-001" })],
     });
     const body = {
@@ -1103,6 +1123,41 @@ describe("a ruling from Tom's words", () => {
       body: JSON.stringify(body),
     });
     expect(wrongKey.status).toBe(401);
+    // The old spelling is the same door until the box's callers move.
+    expect((await t.fetch("/tts/ruling", {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })).status).toBe(200);
+  });
+
+  // witness: delete the claudeMessages check in internalRecordRulingFromTomWords;
+  // the refusal then reads "Unknown inbound id" and names nothing to fix.
+  it("refuses a claudeMessages turn by name: the row records no author", async () => {
+    const t = testDb();
+    const { todoId } = await sessionWithTurns(t);
+    const messageId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeMessages", {
+        runId: "claude:box:laptop-session",
+        seq: 0,
+        turn: 0,
+        kind: "user",
+        content: { text: "archive the dentist one, I already went." },
+        provenance: { fileVersion: "v", file: "f.jsonl", lineStart: 0, lineEnd: 0, block: 0, parserVersion: "runs-parser-2", sourceKind: "user" },
+        depth: 0,
+        createdAt: 1,
+      }),
+    );
+    const res = await post(t, {
+      inboundId: messageId,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/claudeMessages row records no author/);
+    expect(await t.run((ctx) => ctx.db.query("rulings").collect())).toEqual([]);
   });
 
   // witness: change `row.author !== "tom"` to `row.author === "agent"` in
@@ -1173,7 +1228,7 @@ describe("a ruling from Tom's words", () => {
         { externalId: "cmt-001", tier: "R", status: "open", statement: "s1", url: "u" },
       ],
     });
-    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+    await storeBriefs(t, {
       briefs: [brief({ externalId: "cmt-001" }), brief({ externalId: "cmt-999" })],
     });
     const body = {

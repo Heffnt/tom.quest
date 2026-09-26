@@ -20,6 +20,9 @@ import { httpAction } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { checkEvent } from "./record";
+import { register as registerContext } from "./context";
+import { postRuling } from "./rulings";
+import { digestRoute, needsYouRoute } from "./digest";
 
 export const postEvent = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);
@@ -63,4 +66,8 @@ export const getEvents = httpAction(async (ctx, request) => {
 export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/event", method: "POST", handler: postEvent });
   http.route({ path: "/jarvis/events", method: "GET", handler: getEvents });
+  registerContext(http); // GET /jarvis/context?for=<caller> (context.ts)
+  http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
+  http.route({ path: "/jarvis/digest", method: "POST", handler: digestRoute });
+  http.route({ path: "/jarvis/digest/needs-you", method: "GET", handler: needsYouRoute });
 }

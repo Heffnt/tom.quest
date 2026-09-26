@@ -1449,7 +1449,10 @@ describe("sendToday", () => {
     });
     // The morning's own row carries the day, the window, which path wrote it,
     // and THE FACTS BLOCK — the inputs, in the transcript, next to the output.
-    const marked = events.filter((e) => e.kind === DIGEST_SENT);
+    // The day's own row is in the record's events table (convex/jarvis/digest.ts).
+    const marked = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((e) => e.kind === DIGEST_SENT),
+    );
     expect(marked).toHaveLength(1);
     expect(marked[0].data).toMatchObject({
       day: DAY_KEY,
@@ -1512,8 +1515,9 @@ describe("sendToday", () => {
     // The oldest date survives the cap: an item three weeks late is the one he
     // needs named in the morning.
     expect(slack[0].body.text).toContain("0: Rework the credential file helper");
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    const marked = events.filter((e) => e.kind === DIGEST_SENT);
+    const marked = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((e) => e.kind === DIGEST_SENT),
+    );
     expect(marked).toHaveLength(1);
     expect(marked[0].data).toMatchObject({ day: DAY_KEY });
   });
