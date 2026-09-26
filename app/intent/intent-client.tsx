@@ -3,11 +3,10 @@
 // THE INTENT PAGE: his intent as an agent reads it, and everything that
 // stands beside it, in five views.
 //
-// AS AN AGENT READS IT (the default). What one caller's agent is given, in
-// the order it reads it: the prompt prefix and grant block assembleContext
-// builds for that caller, the harness's skill listing, and each granted
-// skill's body (intent.agentView). Every bullet of his three model-of-tom pages
-// in that text opens the same evidence the list below shows for it.
+// AS AN AGENT READS IT (the default). What an agent whose output reaches him
+// is given, in the order it reads it: the prompt assembleContext builds
+// (intent.agentView). Every bullet of his model-of-tom pages in that text
+// opens the same evidence the list below shows for it.
 //
 // EVERY LINE. Every line of his intent, from all four of the places it is
 // written, in one list: his directions, the rules that stand, his rulings, and
@@ -29,7 +28,6 @@
 import { useEffect, useMemo } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { AGENT_VIEW_CALLERS } from "@/convex/intentParse";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import Info from "@/app/tts/components/info";
@@ -65,9 +63,9 @@ const VIEW_TITLE: Record<IntentView, string> = {
 
 export default function IntentClient() {
   const { isTom } = useAuth();
-  const { view, caller, filters, selected, setView, setCaller, setFilters, select } = useIntentStore();
+  const { view, filters, selected, setView, setFilters, select } = useIntentStore();
   const answer = useQuery(api.intent.lines, isTom ? {} : "skip");
-  const agent = useQuery(api.intent.agentView, isTom && view === "agent" ? { caller } : "skip");
+  const agent = useQuery(api.intent.agentView, isTom && view === "agent" ? {} : "skip");
   const vocabulary = useQuery(api.vocabulary.current, isTom && (view === "vocabulary" || view === "disagreements") ? {} : "skip");
   const decisions = useQuery(api.jarvis.intent.decisions, isTom ? {} : "skip");
   const evalItems = useQuery(api.jarvis.intent.evalItems, isTom ? {} : "skip");
@@ -121,7 +119,7 @@ export default function IntentClient() {
                 ? "…"
                 : agent === null
                   ? "no model-of-tom publication in the record"
-                  : `${caller} · ${agent.skills.length} skills granted · WikiTom ${agent.commit.slice(0, 12)}`
+                  : `WikiTom ${agent.commit.slice(0, 12)}`
               : view === "vocabulary" || view === "disagreements"
                 ? open === null
                   ? "…"
@@ -145,17 +143,10 @@ export default function IntentClient() {
           </Group>
           {view === "agent" && (
             <>
-              <Group>
-                {AGENT_VIEW_CALLERS.map((name) => (
-                  <Pick key={name} on={caller === name} onClick={() => setCaller(name)}>
-                    {name}
-                  </Pick>
-                ))}
-              </Group>
-              <Info call={`intent.agentView({ caller: "${caller}" })`} side="below">
-                Reads the prompt prefix and grant block assembleContext builds for this caller
-                {agent ? ` at WikiTom commit ${agent.commit.slice(0, 12)}` : ""}, then the body of each skill it
-                grants. A subagent gets agent-rules.md through the CLAUDE.md import instead, with no header line.
+              <Info call="intent.agentView({})" side="below">
+                Reads the prompt assembleContext builds for a run whose output reaches Tom
+                {agent ? ` at WikiTom commit ${agent.commit.slice(0, 12)}` : ""}: the base, the write pages and the
+                skills line. A subagent gets agent-rules.md through the CLAUDE.md import instead, with no header line.
               </Info>
             </>
           )}

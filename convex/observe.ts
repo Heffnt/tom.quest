@@ -641,8 +641,8 @@ export const approveChange = mutation({
  * live in WikiTom `tts/vocabulary.json` and `tts search define` answers from
  * them on a box or a laptop with that checkout; tom.quest holds the term NAMES
  * alone (convex/ttsShared.ts VOCABULARY_TERMS says so in as many words). So
- * this reads the three published bodies the record DOES hold — the
- * model-of-Tom files, the skills and the repository rules — for the lines that
+ * this reads the two published bodies the record DOES hold — the
+ * model-of-Tom files and the repository rules — for the lines that
  * define the word, and answers with those lines and where each came from.
  *
  * A word the vocabulary names and none of those bodies define comes back with
@@ -660,21 +660,6 @@ export const define = query({
     // the record holds.
     if (word === "" || word.length > 80) throw new Error("a term is one to eighty characters");
     const found: { where: string; text: string }[] = [];
-
-    const skills = await ctx.db.query("ttsSkills").collect();
-    for (const skill of skills) {
-      if (skill.name.toLowerCase() === word.toLowerCase() && skill.description !== undefined) {
-        found.push({ where: `skill ${skill.name}`, text: skill.description });
-      }
-      for (const line of definingLines(skill.body, word)) {
-        found.push({ where: `skill ${skill.name}`, text: line });
-      }
-      for (const reference of skill.references ?? []) {
-        for (const line of definingLines(reference.body, word)) {
-          found.push({ where: reference.path, text: line });
-        }
-      }
-    }
 
     for (const file of await ctx.db.query("modelOfTomFiles").collect()) {
       for (const line of definingLines(file.body, word)) {

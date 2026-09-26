@@ -1,25 +1,15 @@
 // THE RECORD'S CONTEXT FIXTURE. convex/ttsContext.test.ts assembles a run's
-// context from a seeded publication in convex-test, and convex/ttsRunners.test.ts
-// seeds a runner's step prompt from the same pages. The Jarvis repository's
-// scripts/prelude.test.mjs reads the same repo rules out of a git checkout from
-// its own copy of this file, which left with the box's code; nothing holds the
-// two copies equal.
+// context from a seeded publication in convex-test, and convex/intent.test.ts
+// and convex/ttsRunners.test.ts seed the same pages. The Jarvis repository's
+// scripts/prelude.test.mjs keeps its own copy of these pages; nothing holds
+// the two copies equal.
 //
-// WHAT IS HERE IS INPUT. The EXPECTED STRINGS this file used to carry — the
-// exact `expanded` and `fetchable` blocks for each of the nine cases — went
-// with the know-layer expansion that rendered them. A run is granted skill
-// NAMES now (shared/skill-router.mjs) and loads a body itself, and
-// convex/ttsContext.test.ts writes every grant block out by hand, because an
-// expectation rendered by calling the renderer asserts only that the renderer
-// is itself.
+// WHAT IS HERE IS INPUT. The tests write every expected prompt out by hand.
 
 const area = (name, title, categories, state) =>
   `---\nupdated: 2026-09-09\n${categories === null ? "" : `categories: ${categories}\n`}---\n\n# ${title}\n\n## Current state\n\n- ${state}\n`;
 
-/** The eight required area pages, plus the three know pages and the two stable
- * layers. `money` deliberately carries NO `categories:` line — the state every
- * area page in WikiTom is in today — so the fallback to the page's own name and
- * title is exercised by a real case rather than a hypothetical one.
+/** The base, the write pages, the three know pages and the eight area pages.
  *
  * EVERY `categories:` LINE HERE IS SYNTHETIC. The real ones are Tom's own
  * vocabulary and stay in WikiTom; this repository is public, and
@@ -57,15 +47,8 @@ export const CONTEXT_REPO_RULES = Object.freeze([
   { repo: "tom.quest", path: "worker/AGENTS.md", body: "# worker\n\n- Worker rule.\n" },
 ]);
 
-/** 2026-09-07 is a Monday and 2026-09-09 a Wednesday — pinned here rather than
- * computed, because a fixture that derives its own weekday cannot catch a
- * weekday bug. */
-export const CONTEXT_TODAY = "2026-09-09";
-export const MONDAY = "2026-09-07";
-
-export const AREA_NAMES = Object.freeze([
-  "admin", "agent-systems", "climbing", "health-and-food", "mental-health", "money", "research", "social",
-]);
+/** A Monday, pinned rather than computed. */
+const MONDAY = "2026-09-07";
 
 export const IDS = Object.freeze({
   climb: "t-climb",
@@ -80,11 +63,10 @@ export const IDS = Object.freeze({
 
 /**
  * The record a run's context is built against: the todos, rulings and session
- * outcomes the Convex side holds as rows and passes in memory.
+ * outcomes the Convex side holds as rows.
  */
 export function contextRecord() {
   return {
-    today: CONTEXT_TODAY,
     todos: [
       { id: IDS.climb, category: "climbing", timingClass: "dated", dueDay: MONDAY },
       {
@@ -95,8 +77,6 @@ export function contextRecord() {
         repos: ["tom.quest"],
         brief: "Rework `convex/tts.ts` and worker/jobs/x.mjs together.",
       },
-      // A brief past SUPPLEMENTAL_CAPS.brief: the prompt carries its head and
-      // the line saying where the rest is (worker/jobs/context-relevance.mjs).
       {
         id: IDS.nosuch,
         category: "nosuch",

@@ -221,8 +221,7 @@ describe("gate, continued", () => {
   });
 
   // A WATCHED PATH THAT CANNOT CHANGE WATCHES NOTHING. The box's code, the
-  // prelude, the skill publisher and the golden and task sets left for the
-  // Jarvis repository, which judges its own requests by its own list; this
+  // prelude and the golden and task sets are the Jarvis repository's, which judges its own requests by its own list; this
   // list serves tom.quest and WikiTom, and neither holds those paths.
   it("names none of the paths that left for the Jarvis repository", () => {
     for (const gone of [
@@ -230,7 +229,6 @@ describe("gate, continued", () => {
       "worker/jobs/nightly.mjs",
       "worker/bin/tts-ask",
       "scripts/prelude.mjs",
-      "scripts/publish-skills.mjs",
       "evals/golden/x.md",
       "evals/tasks/slack.json",
     ]) {
@@ -264,6 +262,16 @@ describe("gate, continued", () => {
     expect(matchesWatched("shared/skills.mjs")).toBe(true);
     expect(matchesWatched("evals/triggers/skill-know-research.json")).toBe(true);
     expect(matchesWatched("worker/jobs/evals.mjs")).toBe(false);
+  });
+
+  // WikiTom's skill files are what a run reads on demand, and the context
+  // assembler is what every opener's and HTTP door's prompt is built by.
+  it("watches WikiTom's skill files and the context assembler", () => {
+    expect(matchesWatched("skills/write.md")).toBe(true);
+    expect(matchesWatched(".claude/skills/convex/SKILL.md")).toBe(false);
+    expect(matchesWatched("convex/ttsContext.ts")).toBe(true);
+    expect(jobsAffectedBy(["skills/write.md"])).toBeNull();
+    expect(jobsAffectedBy(["convex/ttsContext.ts"])).toBeNull();
   });
 
   // A capability item is one that asks whether the system can now do a thing
@@ -634,6 +642,8 @@ describe("the golden-item rule", () => {
     expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "", ["skill-know-research.json"])).toBe(true);
     expect(goldenItemRule(["model-of-tom/intent.md", "evals/triggers/skill-know-research.json"], "")).toBe(false);
     expect(goldenItemRule(["shared/skill-router.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
+    expect(goldenItemRule(["skills/know-research.md", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
+    expect(goldenItemRule(["convex/ttsContext.ts", "evals/triggers/a.json"], "", ["a.json"])).toBe(false);
     expect(goldenItemRule([
       "shared/skills.mjs",
       "evals/triggers/skill-know-research.json",

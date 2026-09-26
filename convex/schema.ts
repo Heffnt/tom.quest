@@ -1421,40 +1421,6 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // THE PUBLISHED SKILL CATALOG — one row per skill, which is what this table's
-  // name has said all along (the unified agent ecosystem, phase 6). Until this
-  // commit it held one row per model-of-tom FILE; those rows moved to
-  // modelOfTomFiles below with their shape untouched, and this table now holds
-  // what shared/skills.mjs builds: `write`, `know-intent`, `know-week`, one
-  // `know-<area>` per area page, and one `repo-<name>` per repository.
-  //
-  // A WIDEN-MIGRATE-NARROW TABLE REPLACEMENT. Existing production rows use the
-  // old per-file shape (`sourcePath`, optional `bytes`, no catalog fields), so
-  // every field belonging to either side alone remains optional during this
-  // deploy. Readers treat an old-shaped row as absent, and POST /tts/skills
-  // deletes an old row only after modelOfTomFiles carries its exact sourcePath.
-  // Dropping the old fields and requiring the catalog fields belongs in a later
-  // PR, after one clean nightly proves the whole replacement has run in prod.
-  ttsSkills: defineTable({
-    name: v.string(), // "know-research" — the bare name, never the `tom-` directory spelling
-    group: v.optional(v.union(v.literal("write"), v.literal("know"), v.literal("repo"))),
-    // At most DESCRIPTION_MAX_BYTES (200). A description is a prompt cost every
-    // run pays whether or not the skill is loaded, so the cap is checked at the
-    // door rather than trusted from the publisher.
-    description: v.optional(v.string()),
-    body: v.string(),
-    // The extra files a skill carries beside its body: ground.md under `write`,
-    // each nested AGENTS.md under a `repo-` skill.
-    references: v.optional(v.array(v.object({ name: v.string(), path: v.string(), body: v.string() }))),
-    sourcePaths: v.optional(v.array(v.string())), // the WikiTom (or repo) paths the body came from
-    commit: v.optional(v.string()), // WikiTom's commit, or the repository's own for a `repo-` skill
-    syncedAt: v.number(), // the commit's time, not the post's
-    pushed: v.optional(v.boolean()), // whether that commit had reached GitHub when it was posted
-    // OLD per-file fields. Kept only for the widening deploy described above.
-    sourcePath: v.optional(v.string()),
-    bytes: v.optional(v.number()),
-  }).index("by_name", ["name"]),
-
   // The per-file model-of-tom source facts, MOVED HERE from ttsSkills above
   // with their shape untouched: one row per WikiTom file the nightly job posts
   // to POST /tts/model-of-tom. They are traceability metadata and a source-text
@@ -2011,7 +1977,7 @@ export default defineSchema({
     startedAt: v.number(),
     lastLineAt: v.number(),
     context: v.optional(v.object({
-      wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
+      wikitomCommit: v.optional(v.string()), layersKnown: v.optional(v.boolean()), layersGiven: v.optional(v.array(v.string())), layersDenied: v.optional(v.array(v.string())), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
       registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
       // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls
       // its transcript holds, beside skillsGranted, which is what the prompt

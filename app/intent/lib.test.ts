@@ -106,7 +106,7 @@ describe("segmentBullets", () => {
     "- Spend money,",
     "  or message anyone.",
     "",
-    "SKILLS (WikiTom commit abc)",
+    "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.",
   ].join("\n");
 
   it("cuts out each bullet of a tracked page, with the lines it wraps onto", () => {

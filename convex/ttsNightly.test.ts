@@ -39,7 +39,7 @@ describe("EXPORT_TABLES", () => {
     expect(EXPORT_TABLES).toEqual(all.filter((n) => !n.startsWith("auth")).sort());
     expect(EXPORT_TABLES).toContain("dtsTodos");
     expect(EXPORT_TABLES).toContain("claudeMessages");
-    expect(EXPORT_TABLES).toContain("ttsSkills");
+    expect(EXPORT_TABLES).toContain("modelOfTomFiles");
     for (const name of EXPORT_TABLES) expect(name.startsWith("auth")).toBe(false);
   });
 });

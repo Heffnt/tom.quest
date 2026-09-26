@@ -128,9 +128,6 @@ describe("a row at its three levels, one kind at a time", () => {
     // and the prompt the run opened with.
     const content = {
       model: "claude-opus-4-6",
-      layersKnown: true,
-      layersGiven: ["operate", "write"],
-      layersDenied: ["know"],
       skillsOffered: ["graphify"],
       skillsUsed: ["graphify"],
       tools: ["Bash", "Read"],
@@ -141,7 +138,7 @@ describe("a row at its three levels, one kind at a time", () => {
     render(<AgentRow row={row({ seq: 0, kind: "context", content })} source="run" />);
 
     expect(compactLine()).toBe(
-      "context claude-opus-4-6 tom.quest operate+write 1 skills 2 tools " +
+      "context claude-opus-4-6 tom.quest 1 skills 2 tools " +
         "MODEL-OF-TOM FILES (WikiTom commit 0123456789ab): operate work the batch",
     );
     expect(pres()).toEqual([]);

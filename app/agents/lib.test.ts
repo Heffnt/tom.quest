@@ -281,9 +281,6 @@ describe("contextFactsOf", () => {
     expect(
       contextFactsOf({
         model: "claude-opus-4",
-        layersKnown: true,
-        layersGiven: ["operate", "write"],
-        layersDenied: ["know"],
         skillsOffered: ["graphify"],
         skillsUsed: ["graphify"],
         tools: ["Bash", "Read"],
@@ -295,8 +292,6 @@ describe("contextFactsOf", () => {
       model: "claude-opus-4",
       host: undefined,
       cwd: "/root/tom.quest",
-      layersKnown: true,
-      layersGiven: ["operate", "write"],
       skillsUsed: ["graphify"],
       tools: ["Bash", "Read"],
       hooks: ["stop-hook"],
@@ -304,14 +299,10 @@ describe("contextFactsOf", () => {
     });
   });
 
-  // ingest.mjs:488-489 (Codex) — skillsUsed and hooks are always empty there,
-  // and the layers come back unknown when the prompt carried no header.
+  // ingest.mjs:488-489 (Codex) — skillsUsed and hooks are always empty there.
   it("reads the Codex context row", () => {
     const facts = contextFactsOf({
       model: "gpt-5.6-sol",
-      layersKnown: false,
-      layersGiven: [],
-      layersDenied: [],
       skillsOffered: [],
       skillsUsed: [],
       tools: ["shell"],
@@ -322,7 +313,6 @@ describe("contextFactsOf", () => {
     });
     expect(facts.model).toBe("gpt-5.6-sol");
     expect(facts.tools).toEqual(["shell"]);
-    expect(facts.layersKnown).toBe(false);
     expect(facts.skillsUsed).toEqual([]);
   });
 
@@ -330,27 +320,22 @@ describe("contextFactsOf", () => {
     expect(contextFactsOf({ modelRequested: "opus" }).model).toBe("opus");
   });
 
-  // witness: default layersKnown to true — a row that never said would claim
-  // the run was given no layers, which is a different fact.
   it("says nothing is known when the row names nothing", () => {
     expect(contextFactsOf({})).toEqual({
       model: undefined,
       host: undefined,
       cwd: undefined,
-      layersKnown: false,
-      layersGiven: [],
       skillsUsed: [],
       tools: [],
       hooks: [],
       prompt: "",
     });
-    expect(contextFactsOf(null).layersKnown).toBe(false);
+    expect(contextFactsOf(null).skillsUsed).toEqual([]);
     expect(contextFactsOf("context").tools).toEqual([]);
   });
 
   it("drops a name that is not a string", () => {
     expect(contextFactsOf({ tools: ["Bash", 7, null, { name: "Read" }] }).tools).toEqual(["Bash"]);
-    expect(contextFactsOf({ layersKnown: "yes" }).layersKnown).toBe(false);
   });
 });
 
