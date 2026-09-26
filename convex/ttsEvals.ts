@@ -480,15 +480,18 @@ function rulingSubjectKey(ruling: Doc<"rulings">): string | null {
  *  the cycle. */
 async function digestDayByTs(ctx: QueryCtx): Promise<Map<string, string>> {
   const rows = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", "digest-sent"))
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", "digest-sent"))
     .order("desc")
     .take(DIGEST_DAY_READ_LIMIT);
   const days = new Map<string, string>();
   for (const row of rows) {
-    const data = (row.data ?? {}) as { slackTs?: unknown; day?: unknown };
-    if (typeof data.slackTs === "string" && typeof data.day === "string" && !days.has(data.slackTs)) {
-      days.set(data.slackTs, data.day);
+    // `ts` since the box posts the digest (convex/jarvis/digest.ts);
+    // `slackTs` on the rows the Convex sender wrote before it.
+    const data = (row.data ?? {}) as { ts?: unknown; slackTs?: unknown; day?: unknown };
+    const ts = typeof data.ts === "string" ? data.ts : data.slackTs;
+    if (typeof ts === "string" && typeof data.day === "string" && !days.has(ts)) {
+      days.set(ts, data.day);
     }
   }
   return days;

@@ -36,6 +36,8 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { redactSecrets } from "../../shared/redact.mjs";
+import { channelFor, nyLocalHour, ttsDayKey } from "../ttsShared";
+import { digestFacts, lastDigest } from "./outbox";
 import { insertEvent } from "./record";
 
 /** The kind the digest reads as a job failure. */
@@ -179,7 +181,30 @@ const SILENCE_WATCH = [
   { job: "box-watch", everyMs: 2 * 60_000, feeds: "changes to the box" },
   { job: "box-state", everyMs: 10 * 60_000, feeds: "the box's state comparison" },
   { job: "agents-sweep", everyMs: 2 * 60_000, feeds: "the agents' transcripts" },
+  // The box's digest writer (Jarvis worker/jobs/write-slack.mjs): the one
+  // thing that writes to the output channel. The hourly update's idea — the
+  // ABSENT message is the alarm — lives here now: when it stops, this says so.
+  { job: "write-slack", everyMs: 2 * 60_000, feeds: "the digest and the needs-you replies" },
 ] as const;
+
+/** The New York hour by which today's digest should be in the channel: an
+ *  hour after it is due at 5, so a box that was briefly down is not an alarm. */
+export const DIGEST_LATE_NY_HOUR = 6;
+
+/** A condition the alarm raises: the row and one line in the output channel,
+ *  through the one Slack door, once until it recovers. The row directly, not
+ *  recordEvent: the line is the alarm's own, and the job-failed hook's would
+ *  be a second. */
+async function raise(ctx: MutationCtx, job: string, key: string, error: string, now: number): Promise<void> {
+  await insertEvent(ctx, { kind: JOB_FAILED, at: now, provenance: { job }, subject: key, data: { job, error }, text: error });
+  const channel = channelFor("today");
+  if (channel === null) return;
+  await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+    channel,
+    text: `${error} ${AGENTS_WINDOW_URL}`,
+    subject: { kind: "job", id: key },
+  });
+}
 
 /** How many intervals of silence make a job silent: the plan's three, so one
  *  run lost to a lock or a slow tick is not an alarm. */
@@ -216,20 +241,29 @@ export async function checkSilence(ctx: MutationCtx): Promise<{ silent: string[]
       silent.push(job);
       if (standing !== null) continue;
       const error = `The ${job} job has not run clean for ${minutesWord(quiet)} (it runs every ${minutesWord(everyMs)}), so ${feeds} after that are not reaching the record.`;
-      // The row directly, not recordEvent: the #tts-broken line is the one
-      // below, in the alarm's own words, and the job-failed hook would post a
-      // second.
-      await insertEvent(ctx, { kind: JOB_FAILED, at: now, provenance: { job }, subject: key, data: { job, error }, text: error });
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
-        job: key,
-        statement: error,
-        url: AGENTS_WINDOW_URL,
-      });
+      await raise(ctx, job, key, error, now);
       continue;
     }
     if (standing !== null) {
       await recover(ctx, job, key, standing.at, now);
       recovered.push(job);
+    }
+  }
+  // THE MORNING IS NEVER SILENT. The digest used to have a second writer (a
+  // Convex template behind the model); it has one now, on the box, so its
+  // absence is this alarm's to say: past 6 a.m. New York with no digest-sent
+  // for today, one line, once, closed when the digest goes out.
+  if (nyLocalHour(now) >= DIGEST_LATE_NY_HOUR) {
+    const day = ttsDayKey(now);
+    const key = `digest:${day}`;
+    const standing = await standingFailure(ctx, key);
+    const sentToday = digestFacts(await lastDigest(ctx)).day === day;
+    if (!sentToday && standing === null) {
+      silent.push("digest");
+      await raise(ctx, "write-slack", key, `Today's digest (${day}) has not gone out: the box's write-slack job has not posted it.`, now);
+    } else if (sentToday && standing !== null) {
+      await recover(ctx, "write-slack", key, standing.at, now);
+      recovered.push("digest");
     }
   }
   return { silent, recovered };

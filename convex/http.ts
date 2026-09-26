@@ -19,9 +19,7 @@ import {
 import {
   DAY_MS,
   NARROW_LIST,
-  NEEDS_YOU_CHANNEL_MISSING,
   SESSION_REPO_NAMES,
-  channelFor,
   isSessionModel,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
@@ -468,31 +466,8 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   if (typeof b.key !== "string" || b.key.trim().length === 0) {
     return jsonResponse(400, { error: "key (non-empty string) required" });
   }
-  // #tts-needs-you OR NOWHERE. This route used to omit `channel` when
-  // SLACK_TTS_NEEDS_YOU_CHANNEL_ID was unset, and the Slack door's default
-  // target is SLACK_TTS_CHANNEL_ID — so an unset variable did not silence the
-  // thread, it moved it into #tts-today, the one room the design says nothing
-  // but the morning message may write to. channelFor logs and answers null
-  // instead (ruling digest-env-missing-is-quiet), and nothing is opened.
-  //
-  // A DROP IS A BROKEN JOB, NOT SILENCE. Quiet here means Tom never learns
-  // that the things only he can settle stopped arriving, so the drop is
-  // reported through the same door a box job's failure comes through
-  // (convex/ttsJobs.ts): one "job-failed" row, keyed on the condition so a
-  // poller running every half hour writes it once. Writing the row schedules
-  // its #tts-broken line (logEvent's postBroken, once per job per TTS day);
-  // the digest and the hourly update list it for as long as it stands.
-  const channel = channelFor("needsYou");
-  if (channel === null) {
-    const reported = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, NEEDS_YOU_CHANNEL_MISSING);
-    return jsonResponse(200, {
-      ok: false,
-      opened: false,
-      key: b.key,
-      reason: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID not configured",
-      ...reported,
-    });
-  }
+  // A REPLY UNDER THE DAY'S DIGEST in the one output channel, posted by the
+  // box's digest job (convex/jarvis/digest.ts); no channel of its own.
   try {
     const result = await ctx.runMutation(internal.ttsSlack.internalOpenNeedsTomThread, {
       todoId: b.todoId,
@@ -500,7 +475,6 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
       key: b.key,
       // The reply invitation is printed only when a reply would reach TTS.
       canReply: Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID),
-      channel,
     });
     return jsonResponse(200, { ok: true, ...result });
   } catch (e) {

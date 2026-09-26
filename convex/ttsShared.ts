@@ -1160,6 +1160,17 @@ export const NEEDS_YOU_CHANNEL_MISSING = {
   key: "tts/needs-tom:needs-you-channel",
 };
 
+/** THE ONE CONFIG CHECK. A message says "reply here" only when a reply would
+ *  actually reach TTS: POST /slack/events answers 503 without
+ *  SLACK_SIGNING_SECRET, and ignores every message without TOM_SLACK_USER_ID.
+ *  Today the morning message prints "missed: reply done, or a new date" six
+ *  times a day into a route that answers 503 — the only call to action in the
+ *  whole system, and it is dead. A message that asks for something it cannot
+ *  receive teaches him to ignore the ones that can. */
+export function replyRouteLive(): boolean {
+  return Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
+}
+
 export function channelFor(kind: SlackChannelKind): string | null {
   const own = process.env[CHANNEL_ENV[kind]];
   if (typeof own === "string" && own !== "") return own;

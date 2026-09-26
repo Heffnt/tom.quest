@@ -589,10 +589,10 @@ async function seedDigestSent(
   t: ReturnType<typeof convexTest>,
   data: Record<string, unknown>,
 ) {
-  // NO KEY, exactly as tts.internalMarkDigestSent writes it: the resolver
-  // takes the newest rows of the kind and finds the one posted at that ts.
+  // The record's digest-sent row: the resolver takes the newest rows of the
+  // kind and finds the one posted at that ts.
   await t.run((ctx) =>
-    ctx.db.insert("dtsEvents", { at: 5_000, kind: "digest-sent", data }),
+    ctx.db.insert("events", { at: 5_000, kind: "digest-sent", provenance: {}, data }),
   );
 }
 

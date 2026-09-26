@@ -28,12 +28,15 @@ import { eventArgs, insertEvent } from "./record";
 import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
 import { onBoxChange } from "../boxChanges";
+import { onDigestSent, onNeedsYouPosted } from "./digest";
 
 /** What runs after a row of each kind lands, inside the same mutation. */
 const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Promise<unknown>> = {
   "job-ok": onJobOk,
   "job-failed": onJobFailed,
   "box-change": onBoxChange,
+  "digest-sent": onDigestSent,
+  "needs-you-posted": onNeedsYouPosted,
 };
 
 /** Insert one event and run its kind's hook. The hook's answer rides along. */

@@ -79,12 +79,12 @@ describe("POST /tts/capture: needing Tom today", () => {
   });
 });
 
-// ── POST /tts/needs-tom picks its room, or posts nothing ─────────────────────
-// The route used to omit `channel` when SLACK_TTS_NEEDS_YOU_CHANNEL_ID was
-// unset, and the Slack door's default target is SLACK_TTS_CHANNEL_ID — so an
-// unset variable did not silence the thread, it moved it into #tts-today, the
-// one room the design says nothing but the morning message may write to.
-describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
+// ── POST /tts/needs-tom opens a reply under the day's digest ─────────────────
+// One output channel (Tom, 2026-09-26): a needs-you is no room of its own but
+// a reply in the digest's thread, posted by the box's digest job from the
+// needs-you-opened row this route writes (convex/jarvis/digest.ts). With no
+// channel of its own there is no unset variable to drop it on.
+describe("POST /tts/needs-tom: a reply under the digest", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -99,57 +99,23 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
     });
   }
 
-  it("opens the thread in #tts-needs-you when its variable is set", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    vi.stubEnv("SLACK_TTS_CHANNEL_ID", TTS_TODAY);
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
-    const t = convexTest(schema, modules);
-    const res = await open(t, await aTodo(t));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true, opened: true, key: KEY });
-    const drafts = await events(t, "slack-draft-request");
-    expect(drafts).toHaveLength(1);
-    expect(drafts[0].data).toMatchObject({ channel: NEEDS_YOU });
-    expect(await events(t, "job-failed")).toHaveLength(0);
-  });
-
-  it("posts nothing and reports a job failure when the variable is unset", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    // The morning's channel IS set: this is the room the drop used to land in.
-    vi.stubEnv("SLACK_TTS_CHANNEL_ID", TTS_TODAY);
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "");
-    const t = convexTest(schema, modules);
-    const res = await open(t, await aTodo(t));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: false, opened: false, reported: true });
-
-    // Nothing was written towards a message, and nothing carries the morning's
-    // channel: the thread was not moved, it was not opened at all.
-    expect(await events(t, "slack-draft-request")).toHaveLength(0);
-    expect(await events(t, "needs-tom")).toHaveLength(0);
-    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
-    expect(JSON.stringify(rows)).not.toContain(TTS_TODAY);
-
-    // And the drop is not silent: one job-failed report in the record's
-    // events table (convex/jarvis/jobs.ts), which carries it to #tts-broken.
-    const failed = await jobReports(t);
-    expect(failed).toHaveLength(1);
-    expect(failed[0].subject).toBe("tts/needs-tom:needs-you-channel");
-    expect(failed[0].data).toMatchObject({ job: "tts/needs-tom" });
-    expect(String((failed[0].data as { error: string }).error)).toContain(
-      "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
-    );
-  });
-
-  // ONE ROW PER CONDITION. The Gmail poller runs every half hour; an unset
-  // variable must not become a row every half hour.
-  it("reports the same standing drop once, however many threads are dropped", async () => {
+  it("records one needs-you-opened row with its text, once per producer key, and nothing for Slack yet", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     vi.stubEnv("SLACK_TTS_CHANNEL_ID", TTS_TODAY);
     const t = convexTest(schema, modules);
     const id = await aTodo(t);
-    for (let i = 0; i < 3; i += 1) await open(t, id);
-    expect(await jobReports(t)).toHaveLength(1);
+    for (let i = 0; i < 3; i += 1) {
+      const res = await open(t, id);
+      expect(res.status).toBe(200);
+    }
+    const opened = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((row) => row.kind === "needs-you-opened"),
+    );
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({ subject: KEY, data: { key: KEY, todoId: id } });
+    expect(opened[0].text).toContain("Only you can settle this: sarah needs a reply.");
+    expect(await events(t, "slack-draft-request")).toHaveLength(0);
+    expect(await events(t, "job-failed")).toHaveLength(0);
   });
 });
 
@@ -905,9 +871,10 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
    *  reacts to and the token of the run that wrote it, and that run exists. */
   async function aMorning(t: ReturnType<typeof convexTest>) {
     await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
+      await ctx.db.insert("events", {
         at: 1_757_000_000_000,
         kind: "digest-sent",
+        provenance: {},
         data: { day: "2026-09-11", slackTs: DIGEST_TS, writtenBy: "fable", runToken: TOKEN },
       });
       await ctx.db.insert("runs", {

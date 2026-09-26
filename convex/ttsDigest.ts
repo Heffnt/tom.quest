@@ -16,7 +16,7 @@ import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
-import { SENT_AS_TOM } from "./ttsSignoff";
+import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { liveRunnerFacts } from "./ttsRunners";
 import { BOX_CHANGE, DEPLOY, boxChangeLines, boxChangeOf } from "./boxChanges";
@@ -40,6 +40,7 @@ import {
 // worker/jobs/nightly.mjs reports git stderr verbatim, and git stderr can name
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
+import { digestFacts, lastDigest } from "./jarvis/outbox";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -310,17 +311,10 @@ const OBJECTION_SCAN = 200;
 async function lastDigestSent(
   ctx: QueryCtx,
 ): Promise<{ day: string | null; windowEnd: number | null } | null> {
-  const row = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
-    .order("desc")
-    .first();
+  const row = await lastDigest(ctx);
   if (!row) return null;
-  const d = (row.data ?? {}) as { day?: unknown; windowEnd?: unknown };
-  return {
-    day: typeof d.day === "string" ? d.day : null,
-    windowEnd: typeof d.windowEnd === "number" ? d.windowEnd : null,
-  };
+  const { day, windowEnd } = digestFacts(row);
+  return { day, windowEnd };
 }
 
 /**
@@ -754,6 +748,11 @@ export async function gatherTodayFacts(
         // through POST /tts/job-failed). A Slack failure is the door's own and
         // is not a line.
         if (!e.kind.endsWith("-failed") || NOT_A_FAILURE_LINE.has(e.kind)) break;
+        // THE WALL'S OWN PROBE IS NOT A FAILED SEND. The nightly wall eval
+        // asks the sign-off door to send a calendar event to an address under
+        // .invalid (RFC 2606: can never be delivered) and expects the refusal;
+        // that refusal is the wall holding, so it is no broken line.
+        if (e.kind === SEND_AS_TOM_FAILED && typeof d.recipient === "string" && d.recipient.toLowerCase().endsWith(".invalid")) break;
         const job = str(d.job) ?? e.kind.replace(/-failed$/, "");
         // The raw `error` is a job's own stderr — worker/jobs/nightly.mjs
         // reports git's verbatim, and git names its remote with the token in

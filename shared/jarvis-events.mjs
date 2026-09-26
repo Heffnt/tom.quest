@@ -39,6 +39,12 @@ export const EVENT_KINDS = [
   // (data: subject, verdict, sentence, rulingId when a ruling was written).
   "decision",
   "disagreement-settled",
+  // The digest and needs-you (convex/jarvis/digest.ts): the box posted the
+  // day's digest to the output channel; a thing only Tom can settle was
+  // opened, and the box posted it as a reply under the newest digest.
+  "digest-sent",
+  "needs-you-opened",
+  "needs-you-posted",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */
