@@ -80,6 +80,11 @@ describe("Decisions", () => {
     });
     fireEvent.click(screen.getByText("accept"));
     await waitFor(() => expect(screen.getByText(/^not recorded: /)).toBeTruthy());
+    // Below the controls, not inside their row.
+    const message = screen.getByText(/^not recorded: /);
+    const row = screen.getByText("accept").parentElement!;
+    expect(row.contains(message)).toBe(false);
+    expect(row.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect((screen.getByText("accept") as HTMLButtonElement).disabled).toBe(false);
   });
 

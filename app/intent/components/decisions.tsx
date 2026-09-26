@@ -251,45 +251,48 @@ function Settle({
     );
   }
   return (
-    <div className="mt-1 flex items-center gap-1.5">
-      {accept !== null && (
+    <div className="mt-1">
+      <div className="flex items-center gap-1.5">
+        {accept !== null && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setFailed(null);
+              // A refusal is shown under the controls: he must be able to tell
+              // that nothing was recorded.
+              void onAccept(subject)
+                .catch((error: unknown) => setFailed(errMessage(error)))
+                .finally(() => setBusy(false));
+            }}
+            className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
+          >
+            {accept}
+          </button>
+        )}
         <button
           type="button"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            setFailed(null);
-            // A refusal is shown under the controls: he must be able to tell
-            // that nothing was recorded.
-            void onAccept(subject)
-              .catch((error: unknown) => setFailed(errMessage(error)))
-              .finally(() => setBusy(false));
-          }}
-          className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
+          onClick={() => onObject(subject, statement)}
+          className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text"
         >
-          {accept}
+          {object}
         </button>
-      )}
-      <button
-        type="button"
-        onClick={() => onObject(subject, statement)}
-        className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text"
-      >
-        {object}
-      </button>
-      <Info
-        call={
-          accept === null
-            ? `jarvis/intent.settle({ subject: "${subject}", verdict: "revise", sentence })`
-            : `jarvis/intent.settle({ subject: "${subject}", verdict: "approve" | "revise", sentence? })`
-        }
-        side="below"
-      >
-        {accept === null
-          ? `"${object}" takes his sentence and records it as an event of the record with his name on it; when a decision was about a todo, writes his revise ruling on that todo too. There is nothing to accept here: nothing was taken in his name.`
-          : `"${accept}" records that this stands, as an event of the record with his name on it, and "${object}" takes his sentence first and records it; when a decision was about a todo, each writes his ruling on that todo too (approve, or revise with his sentence).`}
-      </Info>
-      {failed !== null && <p className="text-[11px] text-error">not recorded: {failed}</p>}
+        <Info
+          call={
+            accept === null
+              ? `jarvis/intent.settle({ subject: "${subject}", verdict: "revise", sentence })`
+              : `jarvis/intent.settle({ subject: "${subject}", verdict: "approve" | "revise", sentence? })`
+          }
+          side="below"
+        >
+          {accept === null
+            ? `"${object}" takes his sentence and records it as an event of the record with his name on it; when a decision was about a todo, writes his revise ruling on that todo too. There is nothing to accept here: nothing was taken in his name.`
+            : `"${accept}" records that this stands, as an event of the record with his name on it, and "${object}" takes his sentence first and records it; when a decision was about a todo, each writes his ruling on that todo too (approve, or revise with his sentence).`}
+        </Info>
+      </div>
+      {/* Below the controls, not in their row: the row stays the controls. */}
+      {failed !== null && <p className="mt-0.5 text-[11px] text-error">not recorded: {failed}</p>}
     </div>
   );
 }
