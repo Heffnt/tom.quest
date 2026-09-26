@@ -43,7 +43,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
 import { withoutModelOfTomPrelude } from "./ttsSkills";
-import { assembleContext, type ContextSubject } from "./ttsContext";
+import { assembleContext, joinContext, type ContextSubject } from "./ttsContext";
 import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
 import {
   DAEMON_STALE_MS,
@@ -621,63 +621,39 @@ export async function insertSession(
     codeSessionLines = codeSessionRulingLines(subjects);
     await markCodeSessionRulingsApplied(ctx, consumed, sessionId);
   }
-  // The opener carries the model-of-tom context ASSEMBLED FOR ITS OWN SUBJECT
-  // (the dynamic-context round, Tom's ruling 2026-09-09), rather than a
-  // caller-selected set of whole layers: the browser-built prompts, the worker
-  // missions, the CLI pen, a fork — one home, here, rather than each builder
-  // pasting its own copy.
+  // The opener carries the model-of-tom context (ttsContext.assembleContext),
+  // in prompt order: the base (header line 1, the map, the operate rules),
+  // the write pages, the skills line, the subject's rulings and prior
+  // outcomes, then the mission the builder wrote, the code-session lines and
+  // the outcome pen. The base is identical for every run at one WikiTom
+  // commit, which makes it the cache boundary and the transcript's first line.
   //
-  // Three parts in prompt order, and the order is the point:
-  //   prefix   header line 1 + the map + the operate rules. Identical for every
-  //            run at one WikiTom commit — the cache boundary, and the
-  //            transcript's first line, so the row records what the session
-  //            began with.
-  //   grants   the skills this session may load, by name, about two hundred
-  //            bytes. The session loads a body itself, once, if it needs it.
-  //   body     the mission the builder wrote, plus the code-session lines and
-  //            the outcome pen. The task layer the map promises is last, and it
-  //            is now the last thing in the prompt: the fetchable index went
-  //            when the skill catalog replaced it.
+  // The subject is the seed's todo, else its first repo, else nothing. A
+  // therapy session's subject is never its todo (Tom's ruling 2026-09-25: it
+  // is about the mental-health area whatever todo it was opened on), so it
+  // carries no todo's rulings. The opener's output reaches Tom (the outcome, the digest, the transcript), so
+  // its prompt carries the write pages.
   //
-  // The subject is already in hand: the seed's todo, else its first repo, else
-  // nothing. `reachesTom` is TRUE for every opener — the
-  // outcome, the digest and the transcript all reach him — which is what grants
-  // it the `write` skill.
+  // Publication fails closed: with no posted base, assembleContext throws and
+  // this mutation publishes neither the session nor its opener.
   //
-  // Publication fails closed: with no complete posted layer set, assembleContext
-  // throws and this mutation publishes neither the session nor its opener.
-  //
-  // AND ONLY HERE: a seed whose prompt already begins with the header — a live
-  // opener copied into the Create session box, a builder that pasted its own
-  // copy — has that copy TAKEN OFF and the live one put there instead
-  // (withoutModelOfTomPrelude), so the session opens and the transcript's first
-  // line names one commit: the one this deployment holds. Two headers naming
-  // two commits is what nothing reading the row could make sense of, and one
-  // paste is a normal thing for Tom to do. WHAT IS STRIPPED IS THE STABLE
-  // PREFIX, which is all a paste can carry that is not rebuilt anyway: the
-  // grant block comes from the live record and the live catalog either way.
-  //
-  // A prefix read at some OTHER commit is still refused, because there is
-  // nothing in the text that says where it stops and the prompt starts (see
-  // withoutModelOfTomPrelude). The refusal writes nothing: a Convex mutation
-  // is one transaction, so the row inserted above and the ruling marks after
-  // it go back with the throw — pinned by the test, which finds no session and
-  // no inbound row.
+  // A seed whose prompt already begins with the header (a live opener copied
+  // into the Create session box, a builder that pasted its own copy) has that
+  // copy TAKEN OFF and the live one put there instead
+  // (withoutModelOfTomPrelude), so the transcript's first line names one
+  // commit: the one this deployment holds. A prefix read at some OTHER commit
+  // is refused, because nothing in the text says where it stops and the
+  // prompt starts. The refusal writes nothing: a Convex mutation is one
+  // transaction, so the row inserted above and the ruling marks after it go
+  // back with the throw.
   const prompt = seed.prompt(sessionId, repos);
-  // A therapy session's subject is the mental-health area, whatever todo it
-  // was opened on: the router grants write, know-intent and
-  // know-mental-health for it. It is the one thing that builds an area
-  // subject; the Jarvis session-start hook routes the same subject when the
-  // session host hands it TTS_SESSION_KIND=therapy.
   const subject: ContextSubject =
-    seed.kind === "therapy"
-      ? { kind: "area", area: "mental-health" }
-      : seed.todoId !== undefined
-        ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
-        : repos.length > 0 && repos[0] !== NO_REPO
-          ? { kind: "repo", repo: repos[0] }
-          : { kind: "none" };
-  const context = await assembleContext(ctx, subject, { reachesTom: true, caller: "opener", now });
+    seed.todoId !== undefined && seed.kind !== "therapy"
+      ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
+      : repos.length > 0 && repos[0] !== NO_REPO
+        ? { kind: "repo", repo: repos[0] }
+        : { kind: "none" };
+  const context = await assembleContext(ctx, subject, { reachesTom: true });
   const body = withoutModelOfTomPrelude(prompt, context.prefix);
   if (body === null) {
     throw new Error(
@@ -685,27 +661,11 @@ export async function insertSession(
     );
   }
   const text =
-    context.prefix +
-    "\n\n" +
-    context.grants +
+    joinContext(context) +
     "\n\n" +
     body +
     (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
     (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
-  // What this opener was given, for the delivery check to read beside what the
-  // session then did (schema: contextExpanded / contextBytes).
-  //
-  // THE TWO FIELDS KEEP THEIR PHASE-4 NAMES until phase 9 renames them, and
-  // what they hold is what replaced what they were named for: the GRANTED SKILL
-  // NAMES where the expanded manifest was, and the grant block's bytes in the
-  // `expanded` slot. `fetchable` is 0 because there is no fetchable block any
-  // more — the catalog is the index. A reader of an old row and a reader of a
-  // new one are reading the same question ("what did this opener carry"), which
-  // is why the rename waits rather than splitting the field in two.
-  await ctx.db.patch(sessionId, {
-    contextExpanded: context.granted,
-    contextBytes: { prefix: context.bytes.prefix, expanded: context.bytes.grants, fetchable: 0 },
-  });
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind: "user-turn",

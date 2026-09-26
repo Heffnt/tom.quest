@@ -4,8 +4,7 @@
 // ONE DETERMINISTIC GATHER, NO MODEL IN THE LOOP. The weekly job on the Jarvis
 // Box (worker/jobs/simplify.mjs) asks GET /tts/simplify-input for the four
 // weeks ending now, and everything below is a query on an index: how many runs
-// there were and of what kind, which layers were given and which denied, which
-// skills were offered and which used, which tools and hooks and working
+// there were and of what kind, which skills were offered and which used, which tools and hooks and working
 // directories appeared, a bag of words off the newest runs' own transcripts,
 // every gate check that ever failed, the evals' ablation deltas, and the
 // proposals this pass has already made. The job adds the files themselves from
@@ -143,32 +142,22 @@ export type SimplifyRunCounts = {
   byKind: Record<string, number>;
   /** Runs with a context envelope at all. */
   withContext: number;
-  /** Runs whose envelope says the layers were known. A run with NO envelope
-   *  tells you nothing about layers — neither that they were given nor that
-   *  they were denied — and these two numbers beside `total` are how the
-   *  reader tells "no layers" from "no record of layers". */
-  layersKnownTrue: number;
 };
 
 export type SimplifyFacts = {
   window: SimplifyWindow;
   agents: SimplifyRunCounts;
-  layers: { name: string; given: number; denied: number }[];
   skills: { name: string; offered: number; used: number }[];
   // WHAT THE BOX READS. Jarvis's simplify job, worker/jobs/simplify.mjs,
   // reads `agents` on the top level and on every tools, hooks and cwds entry,
-  // and each `sample` entry's tokens and graph nodes, never its id.
+  // and each `sample` entry's tokens, never its id.
   tools: { name: string; agents: number }[];
   hooks: { name: string; agents: number }[];
   /** Distinct working directories, plus ONE row with `cwd: null` counting the
    *  runs that reported none. */
   cwds: { cwd: string | null; agents: number }[];
-  /** One row per sampled run. `graphNodes` is the exact set of node ids that
-   *  run's prompt carried — the `given` edges off its context entry — and the
-   *  job counts a rule's `loaded` from it. UNDEFINED IS A VALUE: a run that
-   *  recorded no node list is not a run that was given no nodes, and the job
-   *  counts those separately rather than reading absence as zero. */
-  sample: { agentId: string; startedAt: number; depth: number; tokens: string[]; graphNodes: string[] | undefined }[];
+  /** One row per sampled run. */
+  sample: { agentId: string; startedAt: number; depth: number; tokens: string[] }[];
   /** The two checks of the mechanical merge gate, by the names the deny
    *  message and the morning line already use. */
   gate: { tests: SimplifyGateCheck; audit: SimplifyGateCheck };
@@ -365,20 +354,13 @@ export const internalSimplifyInput = internalQuery({
       byHost: {},
       byKind: {},
       withContext: 0,
-      layersKnownTrue: 0,
     };
-    const layers = new Map<string, { given: number; denied: number }>();
     const skills = new Map<string, { offered: number; used: number }>();
     const tools = new Map<string, number>();
     const hooks = new Map<string, number>();
     const cwds = new Map<string, number>();
     let cwdless = 0;
 
-    const layer = (name: string) => {
-      const row = layers.get(name) ?? { given: 0, denied: 0 };
-      layers.set(name, row);
-      return row;
-    };
     const skill = (name: string) => {
       const row = skills.get(name) ?? { offered: 0, used: 0 };
       skills.set(name, row);
@@ -396,11 +378,8 @@ export const internalSimplifyInput = internalQuery({
         continue;
       }
       counts.withContext += 1;
-      if (context.layersKnown === true) counts.layersKnownTrue += 1;
       // Deduped per run: a run that lists a tool twice used one tool, and the
       // number reported is runs, not mentions.
-      for (const name of new Set(context.layersGiven)) layer(name).given += 1;
-      for (const name of new Set(context.layersDenied)) layer(name).denied += 1;
       for (const name of new Set(context.skillsOffered)) skill(name).offered += 1;
       for (const name of new Set(context.skillsUsed)) skill(name).used += 1;
       for (const name of new Set(context.tools)) tools.set(name, (tools.get(name) ?? 0) + 1);
@@ -423,11 +402,6 @@ export const internalSimplifyInput = internalQuery({
         startedAt: run.startedAt,
         depth: run.depth,
         tokens: tokenBag(rows.map(rowText)),
-        // Passed through exactly as the run wrote it, absence included. The
-        // job's rule rows count how many of these lists hold a rule's node id;
-        // a run with no list at all goes to `loadedUnknown` and is never folded
-        // into a count, for the same reason a run with no cwd is not.
-        graphNodes: run.context?.graphNodes,
       });
     }
 
@@ -496,10 +470,6 @@ export const internalSimplifyInput = internalQuery({
     return {
       window: { since, until, weeks: WINDOW_WEEKS },
       agents: counts,
-      layers: ranked(layers, (row) => row.given + row.denied).map(({ name, value }) => ({
-        name,
-        ...value,
-      })),
       skills: ranked(skills, (row) => row.offered + row.used).map(({ name, value }) => ({
         name,
         ...value,

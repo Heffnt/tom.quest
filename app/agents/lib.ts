@@ -422,8 +422,6 @@ type ContextFacts = {
   model?: string;
   host?: string;
   cwd?: string;
-  layersKnown: boolean;
-  layersGiven: string[];
   skillsUsed: string[];
   tools: string[];
   hooks: string[];
@@ -433,9 +431,7 @@ type ContextFacts = {
 /**
  * A context row's facts. The row is the run's own `context` object plus the
  * opening prompt, so the page can say what a run was given without reading the
- * run row beside it. layersKnown is false when the row does not say — which is
- * not the same as a run that was given no layers, and a reader must be able to
- * tell those apart. The arrays filter to strings: a parser that learns a new
+ * run row beside it. The arrays filter to strings: a parser that learns a new
  * shape must not be able to put an object where a name goes.
  */
 export function contextFactsOf(content: unknown): ContextFacts {
@@ -453,8 +449,6 @@ export function contextFactsOf(content: unknown): ContextFacts {
     model: str("model") ?? str("modelRequested"),
     host: str("host"),
     cwd: str("cwd"),
-    layersKnown: typeof c.layersKnown === "boolean" ? c.layersKnown : false,
-    layersGiven: list("layersGiven"),
     skillsUsed: list("skillsUsed"),
     tools: list("tools"),
     hooks: list("hooks"),

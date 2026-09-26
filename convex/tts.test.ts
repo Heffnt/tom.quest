@@ -37,14 +37,11 @@ describe("POST /tts/time-notes", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.notes).toEqual([]);
-    // The door serves the ASSEMBLED CONTEXT now, not two whole layers: the
-    // stable prefix — the map and the operate rules — and the grant block,
-    // naming what this caller may load. The assembler's exact output is pinned
-    // in convex/ttsContext.test.ts; what this asserts is that the door serves
-    // it under the field name the worker asks for.
-    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
-    expect(prefix).toBe("published map + operate\n\noperate layer");
-    expect(grants).toContain("granted:");
+    // The door serves the ASSEMBLED CONTEXT: the base and the skills line
+    // (this fixture stores no write page). The assembler's exact output is
+    // pinned in convex/ttsContext.test.ts; what this asserts is that the door
+    // serves it under the field name the worker asks for.
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
     expect(body.writingStandard).not.toContain("write layer");
   });
 });

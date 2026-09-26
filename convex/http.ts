@@ -31,7 +31,6 @@ import { isRepoRulesPath } from "./ttsContext";
 import { NO_SIGNOFF, parseProposal } from "./ttsSignoff";
 import { INTENT_SOURCES_MAX, isIntentSourcePath } from "./intent";
 import { VOCABULARY_TERMS_MAX } from "./vocabulary";
-import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../shared/skills.mjs";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 // The door check's complaints are model-written text that lands where Tom
 // reads it, so it goes through the one redaction on the way in — the same
@@ -1909,126 +1908,6 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/model-of-tom", method: "POST", handler: ttsModelOfTom });
-
-// ── POST /tts/skills — the published skill catalog (the unified agent
-// ecosystem, phase 6) ────────────────────────────────────────────────────────
-// Body: { commit, syncedAt, pushed, skills: [{ name, group, description, body,
-// references, sourcePaths }], refused: [{ name, why }] }.
-//
-// A SECOND DOOR, NOT A WIDENED ONE. The base (POST /tts/model-of-tom above) and
-// the catalog are published by two posts so THEY FAIL SEPARATELY: a night whose
-// skills post fails must still deliver a base, and every run that night carries
-// the operate rules with an empty grant line rather than no prompt at all. One
-// door taking both would make the two failures one.
-//
-// `refused` is the publisher's own list of skills it could not build (a page
-// Tom emptied). It is READ AND NOT STORED: the assembler refuses a wanted name
-// the catalog does not carry, in the run's own words, at the moment it is
-// wanted — a stored copy of last night's reason would be a second answer to the
-// same question. It is accepted so the publisher can post one shape and the
-// digest can read the count off the response.
-const SKILLS_POST_MAX = 64;
-
-const ttsSkillsPost = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
-    return jsonResponse(400, { error: "commit (40 hex characters) required" });
-  }
-  if (typeof b.syncedAt !== "number" || !Number.isFinite(b.syncedAt)) {
-    return jsonResponse(400, { error: "syncedAt (epoch ms) required" });
-  }
-  if (typeof b.pushed !== "boolean") {
-    return jsonResponse(400, { error: "pushed (boolean) required" });
-  }
-  if (!Array.isArray(b.skills) || b.skills.length === 0) {
-    return jsonResponse(400, { error: "skills (non-empty array) required — an empty post leaves the store as it was" });
-  }
-  if (b.skills.length > SKILLS_POST_MAX) {
-    return jsonResponse(400, { error: `at most ${SKILLS_POST_MAX} skills per post — got ${b.skills.length}` });
-  }
-  if (b.refused !== undefined && !Array.isArray(b.refused)) {
-    return jsonResponse(400, { error: "refused, when given, is an array of { name, why }" });
-  }
-  const names = new Set<string>();
-  const skills: {
-    name: string; group: "write" | "know" | "repo"; description: string; body: string;
-    references: { name: string; path: string; body: string }[];
-    sourcePaths: string[];
-  }[] = [];
-  for (let i = 0; i < b.skills.length; i++) {
-    const s = b.skills[i] as Record<string, unknown> | null;
-    if (typeof s !== "object" || s === null || typeof s.name !== "string" || s.name.trim() === "") {
-      return jsonResponse(400, { error: `skills[${i}].name (non-empty string) required` });
-    }
-    if (names.has(s.name)) {
-      return jsonResponse(400, { error: `skills[${i}]: ${s.name} is posted twice` });
-    }
-    if (typeof s.group !== "string" || !(SKILL_GROUPS as readonly string[]).includes(s.group)) {
-      return jsonResponse(400, { error: `skills[${i}].group must be one of ${SKILL_GROUPS.join(", ")}` });
-    }
-    if (typeof s.description !== "string" || s.description.trim() === "") {
-      return jsonResponse(400, { error: `skills[${i}].description (non-empty string) required` });
-    }
-    if (byteLength(s.description) > DESCRIPTION_MAX_BYTES) {
-      return jsonResponse(400, {
-        error: `skills[${i}].description is ${byteLength(s.description)} bytes, over the ${DESCRIPTION_MAX_BYTES}-byte cap`,
-      });
-    }
-    if (typeof s.body !== "string" || s.body.trim() === "") {
-      return jsonResponse(400, { error: `skills[${i}].body (non-empty string) required` });
-    }
-    if (!Array.isArray(s.sourcePaths) || s.sourcePaths.some((path) => typeof path !== "string" || path.trim() === "")) {
-      return jsonResponse(400, { error: `skills[${i}].sourcePaths (array of paths) required` });
-    }
-    // The first publisher predates references; accepting its otherwise-complete
-    // catalog avoids an all-skill outage while that independently deployed job rolls.
-    const rawReferences = s.references === undefined ? [] : s.references;
-    if (!Array.isArray(rawReferences)) {
-      return jsonResponse(400, { error: `skills[${i}].references, when given, is an array` });
-    }
-    const references: { name: string; path: string; body: string }[] = [];
-    for (let j = 0; j < rawReferences.length; j++) {
-      const r = rawReferences[j] as Record<string, unknown> | null;
-      if (typeof r !== "object" || r === null ||
-        typeof r.name !== "string" || r.name.trim() === "" ||
-        typeof r.path !== "string" || r.path.trim() === "" ||
-        typeof r.body !== "string" || r.body.trim() === "") {
-        return jsonResponse(400, { error: `skills[${i}].references[${j}] needs a name, a path and a non-empty body` });
-      }
-      references.push({ name: r.name, path: r.path, body: r.body });
-    }
-    names.add(s.name);
-    skills.push({
-      name: s.name,
-      group: s.group as "write" | "know" | "repo",
-      description: s.description,
-      body: s.body,
-      references,
-      sourcePaths: s.sourcePaths as string[],
-    });
-  }
-  try {
-    const result = await ctx.runMutation(internal.ttsSkills.internalReplaceSkills, {
-      commit: b.commit,
-      syncedAt: b.syncedAt,
-      pushed: b.pushed,
-      skills,
-    });
-    return jsonResponse(200, { ok: true, ...result, refused: Array.isArray(b.refused) ? b.refused.length : 0 });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/skills", method: "POST", handler: ttsSkillsPost });
 
 // POST /tts/repo-rules — one repo's AGENTS.md bodies, replaced whole.
 //

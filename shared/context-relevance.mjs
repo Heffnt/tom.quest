@@ -3,25 +3,10 @@
 // record's to decide rather than the assembler's; this file is where each one
 // is cut, and where the line saying what was cut is written.
 //
-// WHAT LEFT, AND WHERE IT WENT. This file used to hold the know-layer
-// expansion: which bytes of which area page, intent section and AGENTS.md rode
-// a run's prompt, plus the fetchable index naming everything that did not. The
-// know layer is a published SKILL CATALOG now, so there is nothing to expand
-// and nothing to index — a run is granted skill names and loads a body itself,
-// once, if it needs it.
+// Nothing here selects, slices, ranks or renders a page: a run reads a
+// model-of-tom page or a skill itself, with `tts-search`.
 //
-//   the routing half   shared/skill-router.mjs — the same area terms, the
-//                      same word-boundary match, the same category and batch
-//                      rankings and path tokens, answering "which skills is
-//                      this run granted" instead of "which bytes ride"
-//   the bodies         shared/skills.mjs, which builds the catalog, and
-//                      scripts/publish-skills.mjs, which writes it out
-//   the search index   worker/jobs/search-lib.mjs `usage()`, which already
-//                      names every corpus and flag the index used to list
-//
-// Nothing here selects, slices, ranks or renders a page any more.
-//
-// THREE SIDES CALL WHAT IS LEFT, and they must agree byte for byte on where a
+// THREE SIDES CALL IT, and they must agree byte for byte on where a
 // brief stops:
 //   convex/claudeSessions.ts        the autonomous opener's facts block
 //   app/lib/tts-session-prompt.ts   the interactive twin's

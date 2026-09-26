@@ -296,20 +296,4 @@ describe("defining a word", () => {
     expect(answer.found).toEqual([]);
     expect(answer.elsewhere).toContain("vocabulary.json");
   });
-
-  it("carries a skill's own description when the word names a skill", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
-        name: "know-week",
-        group: "know",
-        description: "Tom's recurring week.",
-        body: "nothing here defines anything",
-        syncedAt: 1,
-      });
-    });
-    const answer = await tom.query(api.observe.define, { term: "know-week" });
-    expect(answer.found.some((entry) => entry.text === "Tom's recurring week.")).toBe(true);
-  });
 });

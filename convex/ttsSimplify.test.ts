@@ -67,9 +67,6 @@ async function seedRun(t: TestConvex<typeof schema>, over: RunOver = {}) {
         ? {}
         : {
             context: {
-              layersKnown: true,
-              layersGiven: ["operate", "write"],
-              layersDenied: ["know"],
               skillsOffered: ["graphify"],
               skillsUsed: [],
               tools: ["Bash", "Read"],
@@ -132,7 +129,7 @@ const openProposals = (t: TestConvex<typeof schema>, now = NOW) =>
 // ── 1. The counts ────────────────────────────────────────────────────────────
 
 describe("internalSimplifyInput — the counts off the runs in the window", () => {
-  it("counts runs, layers, skills, tools, hooks and cwds", async () => {
+  it("counts runs, skills, tools, hooks and cwds", async () => {
     const t = convex();
     // Three ordinary runs, one Codex run on the laptop in another directory,
     // and one run with no envelope at all.
@@ -144,7 +141,7 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
       cli: "codex",
       kind: "job",
       origin: "codex-cli",
-      context: { cwd: "C:/repo/CMT", tools: ["Bash"], layersDenied: [] },
+      context: { cwd: "C:/repo/CMT", tools: ["Bash"] },
     });
     await seedRun(t, { context: null });
     // Outside the window on both sides: neither is counted.
@@ -155,17 +152,11 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     expect(facts.agents.total).toBe(5);
     expect(facts.agents.capped).toBe(false);
     expect(facts.agents.withContext).toBe(4);
-    expect(facts.agents.layersKnownTrue).toBe(4);
     expect(facts.agents.byHost).toEqual({ box: 4, laptop: 1 });
     expect(facts.agents.byCli).toEqual({ claude: 4, codex: 1 });
     expect(facts.agents.byKind).toEqual({ session: 4, job: 1 });
     expect(facts.agents.byOrigin).toEqual({ cli: 4, "codex-cli": 1 });
 
-    expect(facts.layers).toEqual([
-      { name: "operate", given: 4, denied: 0 },
-      { name: "write", given: 4, denied: 0 },
-      { name: "know", given: 0, denied: 3 },
-    ]);
     expect(facts.skills).toEqual([{ name: "graphify", offered: 4, used: 1 }]);
     expect(facts.tools).toEqual([
       { name: "Bash", agents: 4 },
@@ -218,33 +209,6 @@ describe("the token bag", () => {
     expect(sample[0].tokens).not.toContain("quixotry");
     // And nothing shorter than five characters is a token.
     expect(sample[0].tokens).not.toContain("rule");
-  });
-});
-
-// ── 2b. The node ids each sampled run's prompt carried ───────────────────────
-//
-// The job counts a rule's `loaded` off these lists, so what the door must do is
-// pass them through exactly — including the absence, which is a different fact
-// from an empty list and not the same run at all.
-
-describe("the sample's node lists", () => {
-  it("carries each run's graphNodes through, and leaves a run with none undefined", async () => {
-    const t = convex();
-    const nodes = ["rule:1a2b3c4d", "line:5e6f7a8b", "skill:write"];
-    await seedRun(t, { runId: "with-nodes", startedAt: NOW - DAY, context: { graphNodes: nodes } });
-    await seedRun(t, { runId: "empty-list", startedAt: NOW - DAY - 1_000, context: { graphNodes: [] } });
-    await seedRun(t, { runId: "no-list", startedAt: NOW - DAY - 2_000 });
-    await seedRun(t, { runId: "no-context", startedAt: NOW - DAY - 3_000, context: null });
-
-    const { sample } = await gather(t);
-    const by = new Map(sample.map((row) => [row.agentId, row]));
-    expect(by.get("with-nodes")?.graphNodes).toEqual(nodes);
-    // An empty list is a run that was given nothing, and it is not undefined.
-    expect(by.get("empty-list")?.graphNodes).toEqual([]);
-    expect(by.get("no-list")?.graphNodes).toBeUndefined();
-    expect(by.get("no-context")?.graphNodes).toBeUndefined();
-    // The fields the pass already read are untouched beside the new one.
-    expect(by.get("with-nodes")).toMatchObject({ agentId: "with-nodes", depth: 0, tokens: [] });
   });
 });
 

@@ -156,19 +156,17 @@ describe("claude sessions", () => {
     // prompt verbatim, then the fetchable index; the outcome-pen footer is
     // appended server-side (pinned by its own test below).
     //
-    // NO LAYER BUT `operate` IS HERE, and none ever is again: the write layer
-    // and the know layer became skills, so what this session may load beyond
-    // the operate rules is a NAME in the grant block (convex/ttsContext.ts).
+    // NO STORED LAYER BUT `operate` IS HERE: the write pages come from the
+    // posted files (none in this fixture), then the skills line
+    // (convex/ttsContext.ts).
     const text = inbound[0].text ?? "";
     expect(text.startsWith(`${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude)`)).toBe(true);
     expect(text).toContain(TEST_PRELUDE_LAYERS.operate);
     expect(text).not.toContain(TEST_PRELUDE_LAYERS.write);
     expect(text).not.toContain(TEST_PRELUDE_LAYERS.know);
-    expect(text).toContain("SKILLS (WikiTom commit testprelude)");
-    expect(text.indexOf(TEST_PRELUDE_LAYERS.operate)).toBeLessThan(
-      text.indexOf("SKILLS (WikiTom commit testprelude)"),
-    );
-    expect(text.indexOf("SKILLS (WikiTom commit testprelude)")).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text).toContain("Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.operate)).toBeLessThan(text.indexOf("Skills: `tts-search skills`"));
+    expect(text.indexOf("Skills: `tts-search skills`")).toBeLessThan(text.indexOf("\n\nhello"));
     expect(text).not.toContain("MODEL-OF-TOM FETCHABLE");
   });
 

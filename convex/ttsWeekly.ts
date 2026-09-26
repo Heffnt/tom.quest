@@ -36,7 +36,7 @@ import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
-import { isModelOfTomPath, modelOfTomFilesWithLegacyFallback, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
+import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVALS_RUN, PRELUDE_DELIVERY, scoredNothing } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
@@ -701,13 +701,7 @@ export async function gatherWeeklyFacts(
 
   // 8, 9. The area pages and the size of the model-of-tom files, from the
   // rows the nightly job posted (a small table: one row per file).
-  //
-  // The new table holds per-file source facts; old ttsSkills rows fill only
-  // the source paths the new table lacks during the widening rollout.
-  // Same rows, same fields, same post — only the table name changed.
-  const filesFromNewTable = await ctx.db.query("modelOfTomFiles").collect();
-  const skills = await ctx.db.query("ttsSkills").collect();
-  const modelOfTomFiles = modelOfTomFilesWithLegacyFallback(filesFromNewTable, skills);
+  const modelOfTomFiles = await ctx.db.query("modelOfTomFiles").collect();
   const files: WeeklyFacts["modelOfTom"]["files"] = [];
   const areaPages: WeeklyFacts["areaPages"] = [];
   const publication = await ctx.db.query("modelOfTomPublication")

@@ -44,7 +44,7 @@ const ROWS_SOURCE = v.object({
 });
 const ATTACHMENT = v.object({ file: v.string(), bytes: v.number(), sha256: v.string() });
 const CONTEXT = v.object({
-  wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()),
+  wikitomCommit: v.optional(v.string()), layersKnown: v.optional(v.boolean()), layersGiven: v.optional(v.array(v.string())), layersDenied: v.optional(v.array(v.string())),
   skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()),
   cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()),
   entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
@@ -58,10 +58,9 @@ const CONTEXT = v.object({
   // Jarvis's registration change of 2026-09-25; it stays accepted because
   // stored rows carry it and the schema is additive-only.
   skillsAsked: v.optional(v.array(v.string())),
-  // The graph version a run ran under, and the exact node ids its prompt
-  // carried — the `given` edges. ABSENT IS A SUPPORTED VALUE, as it is for
-  // wikitomCommit and regToken: an unregistered run, and a run whose launcher
-  // could not build a graph, carry nothing, and nothing is inferred from that.
+  // Stored rows carry these; no writer sends them. They stay accepted
+  // because the schema is additive-only, like the three layers fields and
+  // skillsGranted / skillsRefused above.
   graphVersion: v.optional(v.string()),
   graphNodes: v.optional(v.array(v.string())),
 });
