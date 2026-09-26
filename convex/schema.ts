@@ -1701,6 +1701,9 @@ export default defineSchema({
     //                     fetchable list — the design's one real failure mode.
     // Absent on every row written before this landed, and on any row whose
     // assembly fell back to the stable prefix alone.
+    // NOTHING WRITES THESE since the prompt stopped expanding pages (night/s7,
+    // 2026-09-26): they stay declared, optional, only for the session rows
+    // that already carry them, and go with those rows.
     contextExpanded: v.optional(v.array(v.string())),
     contextBytes: v.optional(v.object({
       prefix: v.number(),

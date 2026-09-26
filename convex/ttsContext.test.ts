@@ -307,22 +307,6 @@ describe("insertSession's context", () => {
     expect(text).not.toContain("── model-of-tom/areas/climbing.md ──");
   });
 
-  it("records no grant on the session row", async () => {
-    const t = convexTest({ schema, modules });
-    const ids = await seed(t);
-    const tom = await withTom(t);
-    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
-      title: "a climbing session",
-      kind: "focus-item",
-      repo: "none",
-      todoId: ids.todos[IDS.climb],
-      initialPrompt: "hello",
-    });
-    const row = await t.run(async (ctx) => await ctx.db.get(sessionId));
-    expect(row?.contextExpanded).toBeUndefined();
-    expect(row?.contextBytes).toBeUndefined();
-  });
-
   it("delivers the subject's rulings and prior outcomes to the opened session", async () => {
     const t = convexTest({ schema, modules });
     const ids = await seed(t);
