@@ -460,8 +460,11 @@ describe("a new proposal opens a #tts-needs-you thread that names who and where,
 
     expect(slackPosts(posts).filter((p) => p.body.channel === NEEDS_YOU)).toHaveLength(0);
     expect(await kinds(t, "needs-tom")).toHaveLength(0);
-    const [failed] = await kinds(t, "job-failed");
-    expect(failed.key).toBe("tts/needs-tom:needs-you-channel");
+    // A job's report lives in the record's events table (convex/jarvis/jobs.ts).
+    const [failed] = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "job-failed")).collect(),
+    );
+    expect(failed.subject).toBe("tts/needs-tom:needs-you-channel");
   });
 
   it("the thread's message passes the form every Slack message is held to", () => {

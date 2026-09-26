@@ -3311,6 +3311,13 @@ const ttsEvent = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
   }
   try {
+    // A box change goes to the record's own write, not dtsEvents
+    // (convex/ttsNightly.ts internalRecordBoxChange), for as long as a box
+    // still posts it here.
+    if (b.kind === "box-change") {
+      const recorded = await ctx.runMutation(internal.ttsNightly.internalRecordBoxChange, { data: b.data, key: b.key as string | undefined });
+      return jsonResponse(200, { ok: true, ...recorded });
+    }
     if (b.kind === "evals-run") {
       const data = (b.data ?? {}) as Record<string, unknown>;
       const boxEvalsVersion = data.boxEvalsVersion;
