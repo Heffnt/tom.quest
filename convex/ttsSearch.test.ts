@@ -263,7 +263,7 @@ describe("GET /tts/search", () => {
       headers: { "X-TTS-Key": "search-key" },
     });
     expect(missing.status).toBe(503);
-    expect(await missing.json()).toEqual({ error: "TTS_WORKER_KEY not configured" });
+    expect(await missing.json()).toEqual({ error: "JARVIS_KEY not configured" });
   });
 
   it.each(routes)("accepts the 1 and 200 result limits for %s", async (route) => {

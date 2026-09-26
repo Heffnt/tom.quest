@@ -34,6 +34,12 @@ export function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+/** Does the request present the record's key at all (on either header)? The
+ *  routes that also take a narrower key (the evals key) ask this first. */
+export function presentsJarvisKey(request: Request): boolean {
+  return request.headers.get(KEY_HEADER) !== null || request.headers.get(OLD_KEY_HEADER) !== null;
+}
+
 /** Null when the request carries the key; else the response that refuses it. */
 export function jarvisAuth(request: Request): Response | null {
   const expected = jarvisKey();

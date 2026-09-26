@@ -143,6 +143,11 @@ describe("the /jarvis/ prefix", () => {
     // /tts/event: an old-style body is refused by the kinds list.
     expect((await post(t, "/jarvis/event", { kind: "deploy", data: {} }, { "X-TTS-Key": "k" })).status).toBe(400);
     expect((await post(t, "/tts/event", { kind: "deploy", data: {} }, { "X-TTS-Key": "k" })).status).toBe(200);
+    // Every old handler takes the new header too, under either prefix: the
+    // box sends X-Jarvis-Key to the legacy pen and to the aliased routes.
+    expect((await post(t, "/tts/event", { kind: "deploy", data: {} }, { "X-Jarvis-Key": "k" })).status).toBe(200);
+    expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "k" })).status).toBe(200);
+    expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "wrong" })).status).toBe(401);
   });
 });
 

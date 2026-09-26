@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { register as registerJarvisRoutes } from "./jarvis/routes";
+import { jarvisAuth, presentsJarvisKey } from "./jarvis/auth";
 import type { FunctionArgs } from "convex/server";
 import { httpAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -310,8 +311,12 @@ http.route({ path: "/pool", method: "GET", handler: poolRead });
 // POST /tts/ruling, writes only what Tom himself typed: it takes the id of a
 // turn he authored and his sentence verbatim, and refuses anything else.
 
+// The record's key check (convex/jarvis/auth.ts): JARVIS_KEY ?? TTS_WORKER_KEY,
+// on X-Jarvis-Key or X-TTS-Key, so the same handler answers the box under
+// /jarvis/ with the new header and old callers under /tts/ with the old.
+// This name goes with the /tts/ routes; new routes call jarvisAuth.
 function ttsAuth(request: Request): Response | null {
-  return keyAuth(request, "TTS_WORKER_KEY", "X-TTS-Key");
+  return jarvisAuth(request);
 }
 
 type TtsSearchArgs = {
@@ -1883,7 +1888,7 @@ function slowestFiles(value: unknown): { file: string; seconds: number }[] | nul
 }
 
 const ttsTests = httpAction(async (ctx, request) => {
-  const denied = request.headers.get("X-TTS-Key")
+  const denied = presentsJarvisKey(request)
     ? ttsAuth(request)
     : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
   if (denied) return denied;
@@ -2983,7 +2988,7 @@ http.route({ path: "/tts/agent-trace", method: "GET", handler: ttsAgentTrace });
 // key is strictly the more privileged of the two, so accepting it widens
 // nothing.
 const evalsRequest = httpAction(async (ctx, request) => {
-  const denied = request.headers.get("X-TTS-Key")
+  const denied = presentsJarvisKey(request)
     ? ttsAuth(request)
     : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
   if (denied) return denied;
@@ -3050,7 +3055,7 @@ http.route({ path: "/tts/evals-request", method: "POST", handler: evalsRequest }
 // The worker key is strictly the more privileged of the two, so accepting it
 // here widens nothing.
 const evalsRun = httpAction(async (ctx, request) => {
-  const denied = request.headers.get("X-TTS-Key")
+  const denied = presentsJarvisKey(request)
     ? ttsAuth(request)
     : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
   if (denied) return denied;
