@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 
@@ -13,6 +13,14 @@ const post = (t: ReturnType<typeof convexTest>, path: string, body: unknown, hea
 
 const rows = async (t: ReturnType<typeof convexTest>, table: "events" | "dtsEvents") =>
   await t.run(async (ctx) => (table === "events" ? ctx.db.query("events").collect() : ctx.db.query("dtsEvents").collect()));
+
+// The first request of the file loads every module under convex/, which on
+// a loaded box takes longer than the 5 s one test gets; the load is paid
+// here, once, with its own budget, so no test's time includes it.
+beforeAll(async () => {
+  const t = convexTest({ schema, modules });
+  await t.fetch("/jarvis/events");
+}, 60_000);
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -87,12 +95,30 @@ describe("POST /jarvis/event", () => {
   });
 });
 
+describe("the heartbeat", () => {
+  it("keeps one job-ok row per job, the newest, whatever its subject", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const ok = (job: string, subject: string, at: number) =>
+      post(t, "/jarvis/event", { kind: "job-ok", at, provenance: { job }, subject }, { "X-Jarvis-Key": "k" });
+    await ok("box-watch", "box-watch:read", 1000);
+    await ok("box-watch", "box-watch:post", 1001);
+    await ok("box-state", "box-state:read", 1002);
+    await ok("box-watch", "box-watch:read", 2000);
+    const kept = (await rows(t, "events")).map((row) => [row.provenance.job, row.subject, row.at]).sort();
+    expect(kept).toEqual([
+      ["box-state", "box-state:read", 1002],
+      ["box-watch", "box-watch:read", 2000],
+    ]);
+  });
+});
+
 describe("GET /jarvis/events", () => {
   it("reads newest first by kind, by subject, since a time, up to a limit", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
-    for (const at of [1000, 2000, 3000]) {
-      await post(t, "/jarvis/event", { kind: "job-ok", at, provenance: { job: "box-watch" }, subject: "box-watch:read" }, { "X-Jarvis-Key": "k" });
+    for (const [job, at] of [["a", 1000], ["b", 2000], ["c", 3000]] as const) {
+      await post(t, "/jarvis/event", { kind: "job-ok", at, provenance: { job }, subject: `${job}:read` }, { "X-Jarvis-Key": "k" });
     }
     await post(t, "/jarvis/event", { kind: "job-failed", at: 2500, provenance: { job: "box-state" }, subject: "box-state:read", data: { error: "x" } }, { "X-Jarvis-Key": "k" });
     const read = async (qs: string) => (await (await t.fetch(`/jarvis/events${qs}`, { headers: { "X-Jarvis-Key": "k" } })).json()).events;

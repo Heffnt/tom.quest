@@ -85,16 +85,34 @@ export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise
 }
 
 /**
- * The job-ok hook: a clean run that ENDS a reported failure writes the
- * recovery; every other clean run is the heartbeat row alone.
+ * The job-ok hook: the row that just landed becomes the job's ONE job-ok row,
+ * and a clean run that ENDS a reported failure writes the recovery.
+ *
+ * ONE JOB-OK ROW PER JOB. box-watch, box-state and the sweep alone would
+ * write about 1,600 clean runs a day, and no reader wants any but the
+ * newest: the silence alarm reads the last one (lastOkAt), and "when did
+ * this job last run clean" is what GET /jarvis/events?kind=job-ok answers.
+ * So the hook deletes the job's older job-ok rows on by_kind_job_at, the
+ * same index the alarm reads. This is the fact jobHeartbeats held (one time
+ * per job), kept as a row of the one record instead of a table of its own;
+ * it cannot go without either bringing that table back or letting the record
+ * grow by a heartbeat every two minutes, which is what the previous
+ * generation wrote job-ok never to do.
  */
 export async function onJobOk(ctx: MutationCtx, row: Doc<"events">): Promise<{ recovered: boolean; since?: number }> {
+  const job = row.provenance.job;
+  if (job !== undefined) {
+    const older = await ctx.db
+      .query("events")
+      .withIndex("by_kind_job_at", (q) => q.eq("kind", JOB_OK).eq("provenance.job", job).lt("at", row.at))
+      .collect();
+    for (const previous of older) if (previous._id !== row._id) await ctx.db.delete(previous._id);
+  }
   const key = row.subject;
   if (key === undefined) return { recovered: false };
   const standing = await standingFailure(ctx, key);
   if (standing === null) return { recovered: false };
-  const job = row.provenance.job ?? str((row.data as Record<string, unknown> | undefined)?.job) ?? "unknown";
-  await recover(ctx, job, key, standing.at, row.at);
+  await recover(ctx, job ?? str((row.data as Record<string, unknown> | undefined)?.job) ?? "unknown", key, standing.at, row.at);
   return { recovered: true, since: standing.at };
 }
 

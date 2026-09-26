@@ -9,8 +9,8 @@
  */
 
 import type * as agentLabels from "../agentLabels.js";
-import type * as agents from "../agents.js";
 import type * as agentSurfaces from "../agentSurfaces.js";
+import type * as agents from "../agents.js";
 import type * as auth from "../auth.js";
 import type * as authRoles from "../authRoles.js";
 import type * as boolbackPresets from "../boolbackPresets.js";
@@ -66,8 +66,8 @@ import type * as ttsSlack from "../ttsSlack.js";
 import type * as ttsSlackDrafts from "../ttsSlackDrafts.js";
 import type * as ttsSync from "../ttsSync.js";
 import type * as ttsWeekly from "../ttsWeekly.js";
-import type * as users from "../users.js";
 import type * as userSettings from "../userSettings.js";
+import type * as users from "../users.js";
 import type * as vocabulary from "../vocabulary.js";
 
 import type {
@@ -78,8 +78,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   agentLabels: typeof agentLabels;
-  agents: typeof agents;
   agentSurfaces: typeof agentSurfaces;
+  agents: typeof agents;
   auth: typeof auth;
   authRoles: typeof authRoles;
   boolbackPresets: typeof boolbackPresets;
@@ -135,8 +135,8 @@ declare const fullApi: ApiFromModules<{
   ttsSlackDrafts: typeof ttsSlackDrafts;
   ttsSync: typeof ttsSync;
   ttsWeekly: typeof ttsWeekly;
-  users: typeof users;
   userSettings: typeof userSettings;
+  users: typeof users;
   vocabulary: typeof vocabulary;
 }>;
 
