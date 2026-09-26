@@ -113,10 +113,20 @@ describe("the box-change door", () => {
 
   it("keeps one row per change when the outbox sends it twice, through either door", async () => {
     const t = convexTest({ schema, modules });
-    expect(await (await postEvent(t, { kind: "box-change", key: AGENT, data: change({ agentId: AGENT }) })).json()).toMatchObject({ duplicate: false });
-    expect(await (await recordEvent(t, eventOf({ agentId: AGENT, ...change() }))).json()).toMatchObject({ duplicate: true });
-    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, command: "/usr/bin/true" })))).json()).toMatchObject({ duplicate: false });
+    const sent = change({ agentId: AGENT, id: "s=1;i=a1" });
+    expect(await (await postEvent(t, { kind: "box-change", key: AGENT, data: sent })).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(sent))).json()).toMatchObject({ duplicate: true });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=a2", command: "/usr/bin/true" })))).json()).toMatchObject({ duplicate: false });
     expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(2);
+  });
+
+  it("records two identical changes in one millisecond as two, when their ids differ or they carry none", async () => {
+    const t = convexTest({ schema, modules });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=b1" })))).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=b2" })))).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT })))).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT })))).json()).toMatchObject({ duplicate: false });
+    expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(4);
   });
 
   it("refuses a body without the shape, a key or provenance that is not its agent, and an at that is not its own", async () => {

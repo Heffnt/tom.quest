@@ -66,10 +66,16 @@ export type BoxChange = {
   agentId?: string;
   count?: number;
   commit?: string;
+  /** The reader's own identity for the change: the journal cursor of its
+   *  first line, or the state comparison's snapshot key. A resend carries the
+   *  same id; two changes never do. Absent from a box that does not send it
+   *  yet, and then nothing is taken for a resend. */
+  id?: string;
 };
 
 const COMMAND_CHARS = 2000;
 const CHANGE_CHARS = 4000;
+const ID_CHARS = 512;
 
 /** Why a posted box-change body cannot be recorded; empty when it can. */
 export function boxChangeFaults(data: unknown): string[] {
@@ -84,6 +90,7 @@ export function boxChangeFaults(data: unknown): string[] {
   if (d.cwd !== undefined && typeof d.cwd !== "string") faults.push("data.cwd must be a string");
   if (d.agentId !== undefined && (typeof d.agentId !== "string" || d.agentId === "")) faults.push("data.agentId must be a non-empty string");
   if (d.commit !== undefined && (typeof d.commit !== "string" || !/^[0-9a-f]{7,40}$/.test(d.commit))) faults.push("data.commit must be a hex commit");
+  if (d.id !== undefined && (typeof d.id !== "string" || d.id === "" || d.id.length > ID_CHARS)) faults.push(`data.id must be a non-empty string of at most ${ID_CHARS} characters`);
   if (d.count !== undefined && (typeof d.count !== "number" || !Number.isSafeInteger(d.count) || d.count < 1)) faults.push("data.count must be a positive integer");
   if (d.change !== undefined) {
     const c = d.change as Record<string, unknown> | null;
@@ -177,19 +184,6 @@ export function whoCanActLine(change: BoxChange): string | null {
 
 /** Two bodies of one change, compared key by key whatever order each was
  *  written in. */
-function sameBody(left: unknown, right: unknown): boolean {
-  const canonical = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(canonical);
-    if (typeof value !== "object" || value === null) return value;
-    return Object.fromEntries(
-      Object.keys(value as Record<string, unknown>)
-        .sort()
-        .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
-    );
-  };
-  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
-}
-
 /**
  * THE KIND'S HOOK, run inside the record mutation after the row lands
  * (convex/jarvis/events.ts AFTER_RECORD). A throw rolls the row back and the
@@ -199,9 +193,11 @@ function sameBody(left: unknown, right: unknown): boolean {
  * was lost to the network is sent again on the next run, and for as long as a
  * box still posts through the legacy pen and another through POST
  * /jarvis/event, both carry the same outbox. A second row with the same `at`
- * and the same body is that resend, not a second change, so it is deleted
- * here and earns no Slack line. It cannot go without letting one change
- * print twice in an agent's chat and in the digest.
+ * and the same `data.id` (the reader's identity for the change) is that
+ * resend, not a second change, so it is deleted here and earns no digest
+ * line. The time and the body are no identity: two sudo runs of one command
+ * in one millisecond are two changes. A change posted without an id is
+ * always recorded, a resend of it included.
  *
  * Then the digest lines one recorded change earns (convex/jarvis/outbox.ts):
  * one on the objection list when it changes who or what can act, and a
@@ -216,13 +212,15 @@ export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise
     throw new Error("a box change's provenance.agentId is its data.agentId, and it has none when data.agentId is absent");
   }
   if (row.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
-  const sameTime = await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).eq("at", row.at))
-    .take(50);
-  if (sameTime.some((other) => other._id !== row._id && sameBody(other.data, row.data))) {
-    await ctx.db.delete(row._id);
-    return { duplicate: true };
+  if (change.id !== undefined) {
+    const sameTime = await ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", BOX_CHANGE).eq("at", row.at))
+      .take(50);
+    if (sameTime.some((other) => other._id !== row._id && (other.data as { id?: unknown } | null)?.id === change.id)) {
+      await ctx.db.delete(row._id);
+      return { duplicate: true };
+    }
   }
   const shown = redactedBoxChange(change);
   if (shown.change?.what === "journal-gap") {
