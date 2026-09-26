@@ -286,6 +286,14 @@ const AGENT_MAX = 500;
  * One agent's box changes, oldest first, for the marked rows in its chat, off
  * the agent's rows of the record (events.by_agent_at). `at` is when the
  * change happened on the box.
+ *
+ * NOTHING OLDER IS MISSING FROM IT. The one-time history copy (w4's
+ * convex/jarvis/history.ts, run in production on 2026-09-26 and deleted in
+ * 9555ceff) moved every dtsEvents box change into `events`; and no box
+ * change in the record has ever named an agent (production's events table,
+ * read 2026-09-26: 16 box changes, none with provenance.agentId), so no
+ * agent's chat had a box change to lose. boxChanges.test.ts "the /agents
+ * read" holds this read path.
  */
 export const forAgent = query({
   args: { agentId: v.string() },
