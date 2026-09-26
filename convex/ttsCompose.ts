@@ -540,15 +540,6 @@ export type ContinuedFact = {
   status: string;
 };
 
-export function elapsedText(ms: number): string {
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 1) return "<1m";
-  if (minutes < 60) return `${minutes}m`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}m`;
-}
-
 // ── Sentence builders ────────────────────────────────────────────────────────
 
 const NUMBER_WORDS = [

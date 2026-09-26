@@ -61,7 +61,7 @@ import {
  * rather than skipping the day. `force` composes regardless (a test run; its
  * first line is the box's to mark).
  */
-export type ComposeAnswer =
+type ComposeAnswer =
   | { due: false; day: string; reason: string }
   | {
       due: true;

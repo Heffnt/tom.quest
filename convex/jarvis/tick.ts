@@ -40,7 +40,7 @@ type Task = {
 
 /** The tasks by name. A cadence is a floor: the box ticks every minute, so a
  *  task runs within a minute of coming due. */
-export const TICK_TASKS: Record<string, Task> = {
+const TICK_TASKS: Record<string, Task> = {
   "turing-health": { everyMs: MINUTE, run: { action: internal.serverHealth.pollTuring } },
   "pull-requests": { everyMs: 5 * MINUTE, run: { action: internal.observeMerge.refreshOpenPulls } },
   calendar: { everyMs: 60 * MINUTE, run: { action: internal.ttsCalendarFetch.refreshFeeds } },

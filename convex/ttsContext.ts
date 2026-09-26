@@ -126,7 +126,7 @@ function sessionRow(session: Doc<"claudeSessions">): ContextRecord["sessions"][n
  * A todo subject that does not exist throws: a run that thinks it saw its
  * subject and saw nothing is worse than a run that stops.
  */
-export async function subjectFacts(
+async function subjectFacts(
   ctx: QueryCtx | MutationCtx,
   subject: ContextSubject,
 ): Promise<string> {

@@ -58,7 +58,7 @@ export type Decision = {
   settled: Settlement | null;
 };
 
-export type Settlement = {
+type Settlement = {
   at: number;
   verdict: "approve" | "revise";
   sentence: string | null;
@@ -83,8 +83,8 @@ const strs = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : [];
 
 /** The subject spelling a settlement carries, one per thing settled. */
-export const decisionSubject = (askId: string) => `decision:${askId}`;
-export const evalSubject = (itemName: string) => `eval:${itemName}`;
+const decisionSubject = (askId: string) => `decision:${askId}`;
+const evalSubject = (itemName: string) => `eval:${itemName}`;
 
 async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
   const rows = await ctx.db
