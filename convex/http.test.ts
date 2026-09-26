@@ -861,14 +861,15 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
     return (await res.json()) as Record<string, unknown>;
   }
 
-  /** A morning the model wrote: the digest-sent row carries the Slack ts Tom
-   *  reacts to and the token of the run that wrote it, and that run exists. */
+  /** A morning the model wrote: its (legacy, dtsEvents) digest-sent row
+   *  carries the Slack ts Tom reacts to and the token of the run that wrote
+   *  it, and that run exists. The box's own digest has no run to label. */
   async function aMorning(t: ReturnType<typeof convexTest>) {
     await t.run(async (ctx) => {
-      await ctx.db.insert("events", {
+      await ctx.db.insert("dtsEvents", {
         at: 1_757_000_000_000,
         kind: "digest-sent",
-        provenance: {},
+        key: "2026-09-11",
         data: { day: "2026-09-11", slackTs: DIGEST_TS, writtenBy: "fable", runToken: TOKEN },
       });
       await ctx.db.insert("runs", {

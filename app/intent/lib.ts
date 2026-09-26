@@ -216,7 +216,6 @@ export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
     return lines.filter((line) => line.source === source && line.section.toLowerCase() === wanted);
   }
   const path = trimmed.slice(0, cut).replace("/evidence/", "/");
-  if (/^\d+$/.test(heading)) return lines.filter((line) => line.id === `${path}#${heading}`);
   const wanted = heading.toLowerCase();
   return lines.filter((line) => line.source === path && line.section.toLowerCase() === wanted);
 }

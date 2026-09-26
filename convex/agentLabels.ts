@@ -511,32 +511,23 @@ export const internalLabelFromReaction = internalMutation({
       if (existing !== null) await ctx.db.delete(existing._id);
       return { removed: existing !== null };
     }
-    // The digest this reaction sat on: the same bounded newest-first take
-    // namedObjection uses on the record's digest-sent rows, and for the same
-    // reason: Slack's three-second budget. `ts` since the box posts it,
-    // `slackTs` on the rows written before.
-    const recent = await ctx.db
-      .query("events")
-      .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT))
-      .order("desc")
-      .take(DIGEST_OBJECTION_LOOKBACK);
-    const atTs = (row: { data?: unknown }) => {
+    // The digest this reaction sat on, among the mornings a model wrote: the
+    // legacy digest-sent rows in dtsEvents, which carry the writing run's
+    // token, on the same bounded newest-first take ttsSlack's namedObjection
+    // uses. A digest the box writes (the record's digest-sent rows) is
+    // deterministic and no run wrote it, so a reaction on one labels nothing
+    // and is not looked up; this read goes when the two-week lookback has
+    // passed the switch.
+    const sent = (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+        .order("desc")
+        .take(DIGEST_OBJECTION_LOOKBACK)
+    ).find((row) => {
       const d = row.data as { ts?: unknown; slackTs?: unknown } | undefined;
       return d?.ts === ts || d?.slackTs === ts;
-    };
-    // A morning marked before the box wrote the digest has its row in
-    // dtsEvents (convex/jarvis/digest.ts lastDigest says why), as
-    // ttsSlack's namedObjection reads it: a reaction on one of those still
-    // labels for the two weeks this lookback covers, then this read goes.
-    const sent =
-      recent.find(atTs) ??
-      (
-        await ctx.db
-          .query("dtsEvents")
-          .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
-          .order("desc")
-          .take(DIGEST_OBJECTION_LOOKBACK)
-      ).find(atTs);
+    });
     if (sent === undefined) return { wrote: false, why: "no digest was sent at that ts" };
     const mapped = REACTION_POLARITY[name];
     if (mapped === undefined) {

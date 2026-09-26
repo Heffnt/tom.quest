@@ -605,10 +605,11 @@ async function seedDigestSent(
   t: ReturnType<typeof convexTest>,
   data: Record<string, unknown>,
 ) {
-  // The record's digest-sent row: the resolver takes the newest rows of the
-  // kind and finds the one posted at that ts.
+  // A morning a model wrote: its digest-sent row in dtsEvents, with the
+  // writing run's token. The resolver takes the newest rows of the kind and
+  // finds the one posted at that ts.
   await t.run((ctx) =>
-    ctx.db.insert("events", { at: 5_000, kind: "digest-sent", provenance: {}, data }),
+    ctx.db.insert("dtsEvents", { at: 5_000, kind: "digest-sent", key: String(data.day ?? "day"), data }),
   );
 }
 
@@ -641,22 +642,16 @@ describe("a reaction on the morning becomes a label", () => {
     }
   });
 
-  // witness: the resolver read only the record's rows, so a reaction on a
-  // morning marked before the box wrote the digest (its row in dtsEvents)
-  // wrote no label.
-  it("labels a reaction on a morning whose digest-sent row is the legacy one", async () => {
+  // The box's digest is deterministic: no run wrote it, so a reaction on it
+  // labels nothing, and the record's digest-sent rows are not looked up.
+  it("labels nothing for a reaction on a digest the box wrote", async () => {
     const t = convexTest(schema, modules);
-    await seedRun(t, { regToken: "tok-legacy", runId: "claude:box:write-slack" });
+    await seedRun(t, { regToken: "tok-box" });
     await t.run((ctx) =>
-      ctx.db.insert("dtsEvents", {
-        at: 5_000,
-        kind: "digest-sent",
-        key: "2026-09-10",
-        data: { day: "2026-09-10", writtenBy: "fable", runToken: "tok-legacy", slackTs: "1757500000.0001" },
-      }),
+      ctx.db.insert("events", { at: 5_000, kind: "digest-sent", provenance: { job: "digest" }, subject: "2026-09-26", data: { day: "2026-09-26", ts: "1757500000.0001" } }),
     );
-    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "+1" }));
-    expect((await labels(t)).map((row) => row.runId)).toEqual(["claude:box:write-slack"]);
+    expect(await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "+1" }))).toMatchObject({ wrote: false });
+    expect(await labels(t)).toHaveLength(0);
   });
 
   it("reads a skin-toned thumb as the thumb that was tapped", async () => {

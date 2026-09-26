@@ -192,7 +192,9 @@ describe("linesRestedOn", () => {
 
   it("resolves a ruling id and a line number, and nothing it cannot read", () => {
     expect(linesRestedOn("ruling:qs7abc758ddm40", lines).map((l) => l.id)).toEqual(["rulings/qs7abc758ddm40"]);
-    expect(linesRestedOn("model-of-tom/intent.md#9", lines).map((l) => l.id)).toEqual(["model-of-tom/intent.md#9"]);
+    // The delegate cites a page by path and heading (Jarvis delegate.mjs),
+    // never by line number: a number names no section and no line.
+    expect(linesRestedOn("model-of-tom/intent.md#9", lines)).toEqual([]);
     expect(linesRestedOn("model-of-tom/intent.md#Nowhere", lines)).toEqual([]);
     expect(linesRestedOn("just words", lines)).toEqual([]);
     expect(linesRestedOn("model-of-tom/evidence/repos/CMT.md:commands", lines)).toEqual([]);
