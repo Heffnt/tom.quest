@@ -786,6 +786,26 @@ export async function gatherTodayFacts(
     failure(`${job}:recovered`, `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`);
   }
 
+  // The delegate's decisions recorded by `jarvis decide` (convex/jarvis/
+  //    intent.ts, kind "decision"): the same objection list as the older
+  //    delegate-decision rows above, numbered with them.
+  const decided = await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
+    .take(OBJECTION_SCAN);
+  for (const row of decided) {
+    const d = (row.data ?? {}) as Record<string, unknown>;
+    rawObjections.push({
+      at: row.at,
+      askId: str(d.askId) ?? row.subject ?? "",
+      todoId: str(d.todoId),
+      decision: str(d.decision) ?? null,
+      reason: str(d.reason),
+      refused: d.refused === true,
+      refusedBecause: str(d.refusedBecause),
+    });
+  }
+
   // 5. Ready for Tom (not already dated) — ruling 18's computation
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
   //    so the scan is the prepared list itself. §4.3: the ready SECTION is
