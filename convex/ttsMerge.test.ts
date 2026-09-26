@@ -24,8 +24,7 @@ import {
   removalNotesOf,
   slowConditions,
 } from "./ttsMerge";
-import { COVERAGE_NOT_REQUIRED, EVALS_REQUEST, EVALS_RUN } from "./ttsEvals";
-import { EVALS_PROTOCOL } from "../shared/evals-row.mjs";
+import { EVALS_RUN } from "./ttsEvals";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -85,8 +84,6 @@ const approvedAudit = (t: TestConvex<typeof schema>, sha = SHA) =>
  *  not answer, and the arm treats that as a no. */
 const cleanEvals = (t: TestConvex<typeof schema>, sha = SHA) =>
   seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 }, sha);
-const observeEvalsProtocol = (t: TestConvex<typeof schema>, boxEvalsVersion = EVALS_PROTOCOL) =>
-  t.mutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, { boxEvalsVersion });
 
 /** GitHub as POST /tts/merge asks it: how SHA compares with main, and the
  *  pull requests SHA belongs to. */
@@ -533,60 +530,6 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.allowed).toBe(true);
   });
 
-  it("denies a pending request while an unstamped scored row is historical", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convex();
-    await greenTests(t);
-    await approvedAudit(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: 50,
-        kind: EVALS_REQUEST,
-        key: commitKey(REPO, SHA),
-        data: {
-          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
-          paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: null,
-          unaffectedClaimed: false, requestedAt: 50,
-        },
-      });
-    });
-    await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });
-    await observeEvalsProtocol(t);
-    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(evalsCheckOf(gate).passed).toBe(false);
-    expect(gate.allowed).toBe(!EVALS_REQUIRED_FOR_MERGE);
-    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
-    expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
-      .toBe(`the evals are being scored again at ${SHA.slice(0, 7)}`);
-  });
-
-  it("names the protocol gap while the installed box is below the door", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convex();
-    await greenTests(t);
-    await approvedAudit(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: 50,
-        kind: EVALS_REQUEST,
-        key: commitKey(REPO, SHA),
-        data: {
-          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
-          paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: null,
-          unaffectedClaimed: false, requestedAt: 50,
-        },
-      });
-    });
-    await observeEvalsProtocol(t, EVALS_PROTOCOL - 1);
-    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(evalsCheckOf(gate).passed).toBe(false);
-    expect(gate.allowed).toBe(!EVALS_REQUIRED_FOR_MERGE);
-    expect(gate.checks.find((c: { name: string }) => c.name === "evals").why).toBe(
-      `the box's evals runner is at protocol ${EVALS_PROTOCOL - 1}; ` +
-        `this door needs ${EVALS_PROTOCOL} — run worker/setup.sh on the box`,
-    );
-  });
-
   // "not-required" is the ONE word that opens this way. Anything else on the
   // field is a run that did not answer, and the gate denies it.
   it("denies any other string on the field", async () => {
@@ -625,66 +568,6 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
     expect(gate.why).toContain("did not check golden coverage");
     expect(gate.why).toContain("--force");
-  });
-
-  // A ROW THAT SCORED NOTHING ANSWERS ONLY THE REQUEST IT WAS WRITTEN FOR, and
-  // the gate is the reader where getting that wrong OPENS something rather than
-  // delaying a run. An `unaffected` row says the diff THAT REQUEST CARRIED
-  // touched no watched path; ask about the same sha against a base whose diff
-  // does touch one, and the stale row would answer the gate `no watched path
-  // changed`. Found by the box's audit — every other reader went through the
-  // staleness rule and the gate did not.
-  it("does not open on an unaffected row the standing request has moved past", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convex();
-    await greenTests(t);
-    await approvedAudit(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: 50,
-        kind: EVALS_REQUEST,
-        key: commitKey(REPO, SHA),
-        data: {
-          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
-          paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: null,
-          // The request standing NOW says the diff DOES touch a watched path.
-          unaffectedClaimed: false, requestedAt: 50,
-        },
-      });
-    });
-    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED, answersRequestAt: 49 });
-    await observeEvalsProtocol(t, EVALS_PROTOCOL + 1);
-    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(evalsCheckOf(gate).passed).toBe(false);
-    expect(gate.allowed).toBe(!EVALS_REQUIRED_FOR_MERGE);
-    expect(gate.missing).toEqual(EVALS_IF_REQUIRED);
-    expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
-      .toBe(`the evals are being scored again at ${SHA.slice(0, 7)}`);
-  });
-
-  // The other direction, so the rule is not just "unaffected never counts":
-  // while the standing request agrees, the row opens the arm exactly as before.
-  it("opens on an unaffected row the standing request still agrees with", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convex();
-    await greenTests(t);
-    await approvedAudit(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: 50,
-        kind: EVALS_REQUEST,
-        key: commitKey(REPO, SHA),
-        data: {
-          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
-          paths: ["model-of-tom/**"], changed: ["worker/setup.sh"], prBody: null,
-          unaffectedClaimed: true, requestedAt: 50,
-        },
-      });
-    });
-    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED, answersRequestAt: 50 });
-    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
-    expect(evalsCheckOf(gate).passed).toBe(true);
-    expect(gate.allowed).toBe(true);
   });
 
   it("names the regression first when a run both regressed and shipped no item", async () => {

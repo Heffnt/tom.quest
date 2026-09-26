@@ -9,7 +9,6 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { EVALS_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, MERGE, TESTS_RUN, commitKey } from "./ttsMerge";
-import { EVALS_PROTOCOL } from "../shared/evals-row.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -45,7 +44,6 @@ async function seedFact(t: TestConvex<typeof schema>, kind: string, data: Record
 }
 
 async function green(t: TestConvex<typeof schema>) {
-  await t.mutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, { boxEvalsVersion: EVALS_PROTOCOL });
   await seedFact(t, TESTS_RUN, { ok: true });
   await seedFact(t, AUDIT_VERDICT, { verdict: "APPROVED" });
   await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });

@@ -12,8 +12,8 @@ import { defineConfig } from "vitest/config";
 const NO_MACHINE = path.resolve(__dirname, "test", "fixtures", "no-machine");
 const WITHOUT_THE_MACHINE = {
   // Git's own configuration: ~/.gitconfig, ~/.config/git/{config,ignore,
-  // attributes} and /etc/gitconfig. The check-agents-md and evals-check tests
-  // run real git; a test that commits names its own author.
+  // attributes} and /etc/gitconfig. The check-agents-md tests run real
+  // git; a test that commits names its own author.
   GIT_CONFIG_GLOBAL: path.join(NO_MACHINE, "gitconfig"),
   GIT_CONFIG_NOSYSTEM: "1",
   XDG_CONFIG_HOME: path.join(NO_MACHINE, "config"),

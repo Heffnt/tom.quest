@@ -2,15 +2,16 @@
 // its context through.
 //
 // Each caller's payload was its own route under /tts/ (planner-context,
-// capture-context, ask-context, learning-input, weekly-input, simplify-input,
-// prelude-delivery, golden-input, label-input). They are one route now, one
+// capture-context, ask-context, learning-input, weekly-input, simplify-input;
+// prelude-delivery, golden-input and label-input went with the evals request
+// protocol, s6). They are one route now, one
 // reader per caller in READERS below, each building the same bytes its old
 // route built: the old routes in convex/http.ts call these readers, so the
 // two spellings cannot drift while both stand. The /tts/ registrations go
 // when the box's last caller spells this route.
 //
 // The reader names are the box's word for what it is doing (planner,
-// capture, ask, learning, weekly, simplify, prelude-delivery, golden, label);
+// capture, ask, learning, weekly, simplify);
 // the context assembler's caller ids ("planner-context", "capture-context",
 // "weekly-input", "simplify-input") are the assembler's own and stay as they
 // are inside each reader.
@@ -19,7 +20,7 @@ import type { HttpRouter } from "convex/server";
 import { httpAction, type ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { nowContext } from "../tts";
-import { DAY_MS, SESSION_REPO_NAMES } from "../ttsShared";
+import { SESSION_REPO_NAMES } from "../ttsShared";
 import { jarvisAuth, jsonResponse } from "./auth";
 
 /** A worker job needs the original missing-layer sentence, not a framework
@@ -162,40 +163,6 @@ export const READERS: Record<string, Reader> = {
       return modelOfTomErrorResponse(error);
     }
     return jsonResponse(200, { ...facts, writingStandard });
-  },
-  // The nightly delivery check: sessions against the commit published when
-  // they began. Worker-only: it exposes session titles and commit stamps.
-  "prelude-delivery": async (ctx, params) => {
-    const until = untilOf(params);
-    const sinceArg = params.has("since") ? Number(params.get("since")) : undefined;
-    if (
-      !Number.isFinite(until) ||
-      until <= 0 ||
-      (sinceArg !== undefined && (!Number.isFinite(sinceArg) || sinceArg <= 0 || sinceArg >= until))
-    ) {
-      return jsonResponse(400, { error: "until must be an epoch ms instant; since, if given, before it" });
-    }
-    const since = sinceArg ?? ((await ctx.runQuery(internal.ttsEvals.internalLatestPreludeDeliveryAt, {})) ?? until - DAY_MS);
-    return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalPreludeDelivery, { since, until }));
-  },
-  // The golden exporter's input: the ruled subjects and their resolution facts.
-  golden: async (ctx, params) => {
-    const raw = params.get("limitPerPartition");
-    const limitPerPartition = raw === null ? undefined : Number(raw);
-    if (limitPerPartition !== undefined && (!Number.isFinite(limitPerPartition) || limitPerPartition <= 0)) {
-      return jsonResponse(400, { error: "limitPerPartition must be a positive number" });
-    }
-    return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalGoldenInput, { limitPerPartition }));
-  },
-  // The other corpus the exporter builds from: what Tom judged, with the run
-  // and the transcript rows the judgment covers.
-  label: async (ctx, params) => {
-    const raw = params.get("limitPerSource");
-    const limitPerSource = raw === null ? undefined : Number(raw);
-    if (limitPerSource !== undefined && (!Number.isFinite(limitPerSource) || limitPerSource <= 0)) {
-      return jsonResponse(400, { error: "limitPerSource must be a positive number" });
-    }
-    return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalLabelInput, { limitPerSource }));
   },
 };
 

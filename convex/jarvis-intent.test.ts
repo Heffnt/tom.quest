@@ -51,7 +51,7 @@ describe("GET /jarvis/context", () => {
     expect((await t.fetch("/jarvis/context?for=planner")).status).toBe(401);
     const unknown = await t.fetch("/jarvis/context?for=nope", { headers: KEY });
     expect(unknown.status).toBe(400);
-    expect((await unknown.json()).error).toContain("planner, capture, ask, learning, weekly, simplify, prelude-delivery, golden, label");
+    expect((await unknown.json()).error).toContain("planner, capture, ask, learning, weekly, simplify");
     const old = await t.fetch("/tts/learning-input?until=5&since=9", { headers: KEY });
     const moved = await t.fetch("/jarvis/context?for=learning&until=5&since=9", { headers: KEY });
     expect(moved.status).toBe(400);
@@ -61,8 +61,8 @@ describe("GET /jarvis/context", () => {
   it("serves the same bytes under both spellings for a reader with no clock in it", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
-    const old = await t.fetch("/tts/golden-input?limitPerPartition=2", { headers: KEY });
-    const moved = await t.fetch("/jarvis/context?for=golden&limitPerPartition=2", { headers: KEY });
+    const old = await t.fetch("/tts/ask-context?job=planner", { headers: KEY });
+    const moved = await t.fetch("/jarvis/context?for=ask&job=planner", { headers: KEY });
     expect(old.status).toBe(200);
     expect(await moved.text()).toBe(await old.text());
   });
