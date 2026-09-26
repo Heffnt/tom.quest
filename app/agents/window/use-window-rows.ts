@@ -49,10 +49,12 @@ type Walk = {
   results: unknown[];
 };
 
-/** Keep one paginated walk going until it is exhausted or reaches its cap. */
-function useWalk(walk: Walk, cap: number): { done: boolean; capped: boolean } {
+/** Keep one paginated walk going until it is exhausted or the rows it
+ *  shares a cap with (`beside`, the other walk's rows) and its own reach the
+ *  cap. */
+function useWalk(walk: Walk, cap: number, beside = 0): { done: boolean; capped: boolean } {
   const { status, loadMore } = walk;
-  const count = walk.results.length;
+  const count = walk.results.length + beside;
   useEffect(() => {
     if (status === "CanLoadMore" && count < cap) loadMore(PAGE);
   }, [status, count, cap, loadMore]);
@@ -75,18 +77,22 @@ export function useWindowRows(win: TimeWindow, on: boolean): WindowRows {
   const waiting = useQuery(api.observe.waitingOnTom, on ? {} : "skip");
 
   const runsWalk = useWalk(runs, RUNS_CAP);
-  const recordWalk = useWalk(record, EVENTS_CAP);
-  const olderWalk = useWalk(older, EVENTS_CAP);
+  // ONE CAP FOR THE MERGED POINT EVENTS: the two walks share EVENTS_CAP, and
+  // the merged window draws at most that many, saying it was capped when the
+  // two together held more.
+  const recordWalk = useWalk(record, EVENTS_CAP, older.results.length);
+  const olderWalk = useWalk(older, EVENTS_CAP, record.results.length);
 
-  const events = useMemo(
+  const merged = useMemo(
     () =>
       [...(record.results as PointEvent[]), ...(older.results as PointEvent[])].sort(
         (left, right) => left.at - right.at,
       ),
     [record.results, older.results],
   );
+  const events = useMemo(() => merged.slice(0, EVENTS_CAP), [merged]);
 
-  const capped = runsWalk.capped || recordWalk.capped || olderWalk.capped;
+  const capped = runsWalk.capped || recordWalk.capped || olderWalk.capped || merged.length > EVENTS_CAP;
   const complete = runsWalk.done && recordWalk.done && olderWalk.done && rulings !== undefined;
 
   return {
