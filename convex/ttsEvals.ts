@@ -54,53 +54,22 @@ export async function latestEvalRunFor(ctx: QueryCtx | MutationCtx, set: string)
     .first();
 }
 
-const EVALS_SEARCH_SCAN_LIMIT = 2_000;
-
-// GET /tts/search/evals, which serves `tts search evals` alone: the runner
-// reads its own last run off GET /jarvis/events. `set` narrows to one set on
-// events.by_kind_subject_at; without it, the newest runs of every set on
-// by_kind_at. Each row is the events document plus `id`, the name the search
-// command cites it by. `repo`, `sha` and `failing` are the old search's
-// arguments, still accepted by the route; an eval-run carries no repo or sha,
-// so `repo`/`sha` match nothing and `failing` keeps only runs with a failed item.
+// GET /tts/search/evals, which serves `tts search evals` alone (Jarvis
+// worker/jobs/search-lib.mjs, which sends `limit` and nothing else, on main
+// and on night/s6-evals): the newest eval-run rows of every set. The runner
+// reads its own last run off GET /jarvis/events, so no set, repo, sha, since
+// or failing filter is asked for, and none is kept. Each row is the events
+// document plus `id`, the name the search command cites it by.
 export const internalSearchEvals = internalQuery({
-  args: {
-    set: v.optional(v.string()),
-    repo: v.optional(v.string()),
-    sha: v.optional(v.string()),
-    since: v.optional(v.number()),
-    failing: v.optional(v.boolean()),
-    limit: v.optional(v.number()),
-  },
+  args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const limit = Math.min(200, Math.max(1, Math.floor(args.limit ?? 20)));
-    const { set, since } = args;
-    const rows = set !== undefined
-      ? await ctx.db
-        .query("events")
-        .withIndex("by_kind_subject_at", (q) => since === undefined
-          ? q.eq("kind", EVAL_RUN).eq("subject", set)
-          : q.eq("kind", EVAL_RUN).eq("subject", set).gte("at", since),
-        )
-        .order("desc")
-        .take(args.failing ? EVALS_SEARCH_SCAN_LIMIT : limit)
-      : await ctx.db
-        .query("events")
-        .withIndex("by_kind_at", (q) => since === undefined
-          ? q.eq("kind", EVAL_RUN)
-          : q.eq("kind", EVAL_RUN).gte("at", since),
-        )
-        .order("desc")
-        .take(EVALS_SEARCH_SCAN_LIMIT);
-    return rows
-      .filter((row) => {
-        const data = (row.data ?? {}) as Partial<EvalRunData> & Record<string, unknown>;
-        return (args.repo === undefined || data.repo === args.repo) &&
-          (args.sha === undefined || data.sha === args.sha) &&
-          (!args.failing || (typeof data.failed === "number" && data.failed > 0));
-      })
-      .slice(0, limit)
-      .map((row) => ({ ...row, id: row._id }));
+    const rows = await ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", EVAL_RUN))
+      .order("desc")
+      .take(limit);
+    return rows.map((row) => ({ ...row, id: row._id }));
   },
 });
 

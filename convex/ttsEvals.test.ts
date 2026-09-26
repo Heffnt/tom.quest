@@ -70,17 +70,7 @@ describe("latestEvalRunFor", () => {
 });
 
 describe("internalSearchEvals", () => {
-  it("answers one set's newest run as its events row, cited by id", async () => {
-    const t = convexTest({ schema, modules });
-    await seed(t, [run("wall", 1, 1, 10), run("role/read", 3, 0, 20), run("wall", 2, 0, 30)]);
-    const rows = await t.query(internal.ttsEvals.internalSearchEvals, { set: "wall", limit: 1 });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ at: 30, kind: EVAL_RUN, subject: "wall", data: { set: "wall", passed: 2 } });
-    expect(rows[0].id).toBe(rows[0]._id);
-    expect(await t.query(internal.ttsEvals.internalSearchEvals, { set: "task" })).toEqual([]);
-  });
-
-  it("without a set, lists every set's runs newest first; since and failing narrow it", async () => {
+  it("lists every set's eval-run rows newest first, cited by id, up to the limit, and nothing else", async () => {
     const t = convexTest({ schema, modules });
     await seed(t, [run("wall", 1, 1, 10), run("role/read", 3, 0, 20), run("wall", 2, 0, 30)]);
     await t.run(async (ctx) => {
@@ -91,9 +81,8 @@ describe("internalSearchEvals", () => {
     });
     const all = await t.query(internal.ttsEvals.internalSearchEvals, {});
     expect(all.map((row) => row.at)).toEqual([30, 20, 10]);
-    const since = await t.query(internal.ttsEvals.internalSearchEvals, { since: 20 });
-    expect(since.map((row) => row.at)).toEqual([30, 20]);
-    const failing = await t.query(internal.ttsEvals.internalSearchEvals, { failing: true });
-    expect(failing.map((row) => row.at)).toEqual([10]);
+    expect(all[0]).toMatchObject({ kind: EVAL_RUN, subject: "wall", data: { set: "wall", passed: 2 } });
+    expect(all[0].id).toBe(all[0]._id);
+    expect((await t.query(internal.ttsEvals.internalSearchEvals, { limit: 1 })).map((row) => row.at)).toEqual([30]);
   });
 });

@@ -2291,26 +2291,17 @@ const ttsAgentTrace = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/agent-trace", method: "GET", handler: ttsAgentTrace });
 
-// Mission 3's read-only search family. `--failing` is projected from the run
-// row's failures array, never by a second event read.
+// `tts search evals` (convex/ttsEvals.ts internalSearchEvals): the newest
+// eval-run rows, `limit` of them.
 const ttsSearchEvals = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const params = new URL(request.url).searchParams;
-  const since = params.has("since") ? Number(params.get("since")) : undefined;
   const limit = params.has("limit") ? Number(params.get("limit")) : undefined;
-  if ((since !== undefined && (!Number.isFinite(since) || since <= 0)) ||
-    (limit !== undefined && (!Number.isFinite(limit) || limit <= 0 || limit > 200))) {
-    return jsonResponse(400, { error: "since must be an epoch ms instant; limit must be 1 to 200" });
+  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0 || limit > 200)) {
+    return jsonResponse(400, { error: "limit must be 1 to 200" });
   }
-  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalSearchEvals, {
-    set: params.get("set") ?? undefined,
-    repo: params.get("repo") ?? undefined,
-    sha: params.get("sha") ?? undefined,
-    since,
-    failing: params.get("failing") === "true",
-    limit,
-  }));
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalSearchEvals, { limit }));
 });
 
 http.route({ path: "/tts/search/evals", method: "GET", handler: ttsSearchEvals });
