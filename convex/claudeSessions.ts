@@ -47,7 +47,6 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import { dueRunnerSteps } from "./ttsRunners";
-import { hostedFacts, onHostedSessionEnded, renewOrchestratorLease } from "./orchestrator";
 import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
 import { EVALS_REQUIRED_FOR_MERGE } from "./ttsMerge";
 import { briefForPrompt } from "../shared/context-relevance.mjs";
@@ -452,8 +451,8 @@ const SESSION_KIND = v.union(
  * order of authority — each source consulted only when the one above it says
  * nothing:
  *
- *  1. `explicit` — the caller named the set: the orchestrator's spawn, the
- *     session form, the weekly job. This is the normal path. An explicit empty
+ *  1. `explicit` — the caller named the set: the session form, the weekly
+ *     job. This is the normal path. An explicit empty
  *     array is an answer ("no checkout").
  *  2. The substring scan over the item's own words. The fallback, and the
  *     weakest: it is case-sensitive and matches anywhere, so it reads "the
@@ -990,7 +989,7 @@ export const internalCreateWeeklySession = internalMutation({
 // The one outcome pen for the interactive footer and every autonomous mission.
 // The caller owns its session-specific purpose and outcome wording; this owns
 // the credential-bearing command and its exact JSON shape.
-export function sessionOutcomePen({
+function sessionOutcomePen({
   sessionId,
   leadIn,
   summary,
@@ -1438,7 +1437,6 @@ export const forceClose = mutation({
     if (buf) await ctx.db.delete(buf._id);
     // A returning daemon learns from the poll that this session is terminal
     // and kills any process it still holds for it.
-    await onHostedSessionEnded(ctx, session, { status: "ended", endedReason: "force-closed by Tom; worker unconfirmed" });
   },
 });
 
@@ -1498,15 +1496,14 @@ export const internalPoll = internalMutation({
         readAt: v.number(),
       }),
     ),
-    // The model slugs the box's Codex CLI lists; the orchestrator's model is
-    // picked from them (convex/orchestrator.ts orchestratorModel).
+    // The model slugs the box's Codex CLI lists, stored for the pages.
     codexModels: v.optional(v.array(v.string())),
-    // What this daemon can host beyond ordinary sessions. A daemon that does
-    // not name "orchestrator" and "worker" is never shown a hosted row: an old
-    // copy on the box would end it after its first turn.
+    // Accepted and ignored: the daemon on the box still sends both (Jarvis
+    // worker/session-host/session-host.mjs, for the hosted runs of the
+    // deleted orchestrator), and a validator refuses an unknown argument,
+    // which would stop every session's poll. Delete both lines once the
+    // Jarvis branch night/w1-dead-generation is live on the box.
     hosts: v.optional(v.array(v.string())),
-    // The session ids the daemon holds; the orchestrator's lease is renewed
-    // while its live run is among them.
     held: v.optional(v.array(v.string())),
     // Whether Fable answers on the box (ttsShared FABLE_AVAILABILITY), absent
     // while the daemon has none recorded. Stored for the pages; nothing here
@@ -1526,8 +1523,6 @@ export const internalPoll = internalMutation({
       load,
       codexUsage,
       codexModels,
-      hosts,
-      held,
       fableAvailability,
       usageLimit,
     },
@@ -1568,8 +1563,6 @@ export const internalPoll = internalMutation({
         usageLimit,
       });
     }
-    if (held !== undefined) await renewOrchestratorLease(ctx, held, now);
-    const hostsHosted = hosts?.includes("orchestrator") === true && hosts.includes("worker");
 
     const sessions: unknown[] = [];
     for (const status of LIVE_STATUSES) {
@@ -1578,10 +1571,6 @@ export const internalPoll = internalMutation({
         .withIndex("by_status", (q) => q.eq("status", status))
         .collect(); // bounded: live sessions are few by design
       for (const s of rows) {
-        // A hosted row (the orchestrator's run, or a worker it spawned) goes
-        // only to a daemon that hosts them, with what decides its ending.
-        const hosted = await hostedFacts(ctx, s);
-        if (hosted !== undefined && !hostsHosted) continue;
         const pendingInbound = await ctx.db
           .query("claudeInbound")
           .withIndex("by_session_status", (q) =>
@@ -1629,7 +1618,6 @@ export const internalPoll = internalMutation({
           // daemon clears its live tail when the turn's rows have landed, not
           // at the turn's result, and this is how it sees them land.
           newestRow: await newestRunRow(ctx, s),
-          ...(hosted ?? {}),
         });
       }
     }
@@ -1870,15 +1858,6 @@ export const internalIngest = internalMutation({
         session.title,
         args.endedReason ?? session.endedReason,
       );
-    }
-    // A hosted run's ending: the orchestrator is restarted from its document,
-    // and a worker's orchestrator is told (convex/orchestrator.ts). Once, on
-    // the same live→terminal edge.
-    if (becameTerminal) {
-      await onHostedSessionEnded(ctx, session, {
-        status: args.status!,
-        endedReason: args.endedReason ?? session.endedReason,
-      });
     }
 
     // NOTE (review finding): there was a permission-REQUEST insert loop here,
@@ -2144,7 +2123,7 @@ function delegateDoctrine(sessionId: Id<"claudeSessions">, todoId?: Id<"dtsTodos
 // POST /tts/merge is the REPORT, and it runs the same gate again: it is what
 // puts the merge in the morning's objection list and posts one line to
 // #tts-decisions. It cannot make an ungated merge legitimate.
-export function mergeGate(): string {
+function mergeGate(): string {
   return [
     EVALS_REQUIRED_FOR_MERGE
       ? "Merging is mechanical, not Tom's gate. A merge is allowed when three things are on record for the exact commit you are merging: the tests are green, an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit), and an evals run scored it with no regression."
@@ -2877,15 +2856,7 @@ export const internalAutoSchedule = internalMutation({
           .collect()), // bounded: live sessions are few by design
       );
     }
-    // The orchestrator's runs and the workers it spawned are hosted runs with
-    // a limit of their own (convex/orchestrator.ts); they are not this
-    // scheduler's sessions and take none of its places, though a todo one of
-    // them holds is still excluded below.
-    const ownSessions: Doc<"claudeSessions">[] = [];
-    for (const s of liveSessions) {
-      if ((await hostedFacts(ctx, s)) === undefined) ownSessions.push(s);
-    }
-    const liveAutonomous = ownSessions.filter(
+    const liveAutonomous = liveSessions.filter(
       (s) => s.mode === "autonomous",
     ).length;
     if (liveAutonomous >= config.maxLiveAutonomous) return;
@@ -3213,7 +3184,7 @@ export const internalAutoSchedule = internalMutation({
     // session: it counts against maxLiveAutonomous on every later tick, and
     // against this tick's budget as the one pick it is.
     if (admittedSoFar() < capacity) {
-      await admitProspectMission(ctx, now, ownSessions, fleet);
+      await admitProspectMission(ctx, now, liveSessions, fleet);
     }
 
     // Quiet when idle: the scheduler event only exists when real work was

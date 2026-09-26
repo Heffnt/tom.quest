@@ -25,17 +25,6 @@ crons.interval(
   internal.ttsRunners.internalRunnerSweep,
 );
 
-// The orchestrator's backstop (convex/orchestrator.ts): restarts its run from
-// the document when the live run has ended and its crash backoff has passed,
-// or when a claimed run's lease has run out. An ending schedules this itself;
-// the cron is what recovers a scheduled call that was lost. Nothing happens
-// while the orchestrator is stopped or has never been started.
-crons.interval(
-  "orchestrator sweep",
-  { seconds: 60 },
-  internal.orchestrator.internalSweep,
-);
-
 // ── TTS (spec: WikiTom tts/spec.md §7) ──────────────────────────────────────
 // The TTS day anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
 // each job fires at both possible UTC times (EDT/EST) and the handler's

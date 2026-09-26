@@ -31,7 +31,6 @@ import type * as jarvis_record from "../jarvis/record.js";
 import type * as jarvis_routes from "../jarvis/routes.js";
 import type * as observe from "../observe.js";
 import type * as observeMerge from "../observeMerge.js";
-import type * as orchestrator from "../orchestrator.js";
 import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as sessionRows from "../sessionRows.js";
@@ -100,7 +99,6 @@ declare const fullApi: ApiFromModules<{
   "jarvis/routes": typeof jarvis_routes;
   observe: typeof observe;
   observeMerge: typeof observeMerge;
-  orchestrator: typeof orchestrator;
   secrets: typeof secrets;
   serverHealth: typeof serverHealth;
   sessionRows: typeof sessionRows;

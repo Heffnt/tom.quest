@@ -7,8 +7,7 @@ import type { runnerStatus } from "@/convex/ttsRunners";
 export type Todo = Doc<"dtsTodos">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
-// A ruling the page shows: on a todo or a code entry. Answers to a worker's
-// elevation are rulings too, and listRulings leaves them out.
+// A ruling the page shows: on a todo or a code entry.
 export type Ruling = Doc<"dtsRulings"> & { subjectType: "life" | "code" };
 
 /** A ruling as listRulings returns it. A ruling on a batch can still come

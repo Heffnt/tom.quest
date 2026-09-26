@@ -88,21 +88,19 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code and elevation keys disjoint, and a
+// spaces; the type prefix keeps life and code keys disjoint, and a
 // stored batch row — the schema declares one until the narrow — apart from
-// all three). Client code derives live rulings with the same rule via
+// both). Client code derives live rulings with the same rule via
 // app/tts/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch" | "elevation";
+  subjectType: "life" | "code" | "batch";
   todoId?: string;
   repo?: string;
   externalId?: string;
   batchId?: string;
-  elevationId?: string;
 }) => {
   if (row.subjectType === "life") return `life ${row.todoId}`;
   if (row.subjectType === "batch") return `batch ${row.batchId}`;
-  if (row.subjectType === "elevation") return `elevation ${row.elevationId}`;
   return `code ${row.repo} ${row.externalId}`;
 };
 
@@ -114,11 +112,7 @@ export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    // An elevation's answer is about a worker's question, not a todo, batch
-    // or code entry the page shows, so the page is not sent it.
-    return (await ctx.db.query("dtsRulings").collect()).filter(
-      (r): r is typeof r & { subjectType: "life" | "code" | "batch" } => r.subjectType !== "elevation",
-    );
+    return await ctx.db.query("dtsRulings").collect();
   },
 });
 
@@ -829,13 +823,11 @@ export function briefAwaitsRuling(
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    // The planner reads these as Tom's recent rulings on its todos. An answer to a worker's elevation is about neither, and a
-    // delegate's answer is not his, so none is sent; left out before the cap.
+    // The planner reads these as Tom's recent rulings on its todos.
     return await ctx.db
       .query("dtsRulings")
       .withIndex("by_ruled")
       .order("desc")
-      .filter((q) => q.neq(q.field("subjectType"), "elevation"))
       .take(Math.min(limit ?? 200, 1000));
   },
 });
