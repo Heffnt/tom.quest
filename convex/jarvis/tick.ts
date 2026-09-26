@@ -17,10 +17,12 @@
 //                   approved one whose gate turned green: every 5 minutes.
 //   calendar        the ICS feeds the digest and the planner read: hourly.
 //   code-mirror     tom.quest's vqc/todos.yaml beside the life todos: 6 h.
-//   repeats         the repeating todos, minted in the 4 a.m. New York hour
-//                   before the 5 a.m. digest reads them; the mutation's own
-//                   guard holds it to that hour and its provenance key makes a
-//                   second call in the hour create nothing: every 30 minutes.
+//   repeats         the repeating todos, minted ONCE A DAY at 4:30 New York
+//                   (the old cron's minute), before the 5 a.m. digest reads
+//                   them: due from 4:30 until it has run clean that day, a
+//                   failed run retried at the next tick, and never in the
+//                   same tick that starts the calendar refresh, whose rows its
+//                   skipWhenCalendarHas reads (it runs the minute after).
 
 import { v } from "convex/values";
 import { httpAction, internalAction, internalMutation } from "../_generated/server";
@@ -28,11 +30,14 @@ import type { FunctionReference } from "convex/server";
 import { internal } from "../_generated/api";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { JOB_FAILED, JOB_OK } from "./jobs";
+import { TTS_PREP_NY_HOUR, nyCalendarDayKey, nyHhmm } from "../ttsShared";
 
 const MINUTE = 60_000;
 
 type Task = {
-  everyMs: number;
+  /** The cadence; or, for a once-a-day task, the New York time it comes due
+   *  (it is then due until a clean run that day). */
+  when: { everyMs: number } | { dailyAt: { hour: number; minute: number }; after?: string };
   run:
     | { action: FunctionReference<"action", "internal", Record<string, unknown>> }
     | { mutation: FunctionReference<"mutation", "internal", Record<string, unknown>> };
@@ -41,11 +46,14 @@ type Task = {
 /** The tasks by name. A cadence is a floor: the box ticks every minute, so a
  *  task runs within a minute of coming due. */
 const TICK_TASKS: Record<string, Task> = {
-  "turing-health": { everyMs: MINUTE, run: { action: internal.serverHealth.pollTuring } },
-  "pull-requests": { everyMs: 5 * MINUTE, run: { action: internal.observeMerge.refreshOpenPulls } },
-  calendar: { everyMs: 60 * MINUTE, run: { action: internal.ttsCalendarFetch.refreshFeeds } },
-  "code-mirror": { everyMs: 6 * 60 * MINUTE, run: { action: internal.ttsSync.refreshMirror } },
-  repeats: { everyMs: 30 * MINUTE, run: { mutation: internal.ttsRepeats.internalGenerateRepeats } },
+  "turing-health": { when: { everyMs: MINUTE }, run: { action: internal.serverHealth.pollTuring } },
+  "pull-requests": { when: { everyMs: 5 * MINUTE }, run: { action: internal.observeMerge.refreshOpenPulls } },
+  calendar: { when: { everyMs: 60 * MINUTE }, run: { action: internal.ttsCalendarFetch.refreshFeeds } },
+  "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, run: { action: internal.ttsSync.refreshMirror } },
+  repeats: {
+    when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 30 }, after: "calendar" },
+    run: { mutation: internal.ttsRepeats.internalGenerateRepeats },
+  },
 };
 
 /** The ticks' own slack: a task whose last run was a few seconds short of its
@@ -82,7 +90,19 @@ export const due = internalMutation({
         .order("desc")
         .first();
       const last = Math.max(ok?.at ?? 0, failed?.at ?? 0);
-      if (now - last < task.everyMs - EARLY_MS) continue;
+      if ("everyMs" in task.when) {
+        if (now - last < task.when.everyMs - EARLY_MS) continue;
+      } else {
+        // Once a day: in its hour, from its minute, until a clean run that
+        // New York day; a failed run is retried at the next tick; and not in
+        // the tick that starts the task it reads after.
+        const { hour, minute } = task.when.dailyAt;
+        const [nowHour, nowMinute] = nyHhmm(now).split(":").map(Number);
+        if (nowHour !== hour || nowMinute < minute) continue;
+        if (ok !== null && nyCalendarDayKey(ok.at) === nyCalendarDayKey(now)) continue;
+        if (failed !== null && now - failed.at < MINUTE - EARLY_MS) continue;
+        if (task.when.after !== undefined && started.includes(task.when.after)) continue;
+      }
       await ctx.scheduler.runAfter(0, internal.jarvis.tick.runTask, { name });
       started.push(name);
     }

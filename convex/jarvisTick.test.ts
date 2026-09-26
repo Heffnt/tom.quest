@@ -62,3 +62,41 @@ describe("a tick task's outcome", () => {
     expect((await outcomes(t)).map((row) => row.kind)).toEqual(["job-ok"]);
   });
 });
+
+// witness: repeats ran every 30 minutes through the 4 a.m. hour, so rules the
+// calendar skipped wrote their skip twice, and it could start in the same
+// tick as the calendar refresh whose rows it reads.
+describe("the repeats task", () => {
+  // 2026-09-28 is in EDT: New York is UTC-4.
+  const nyAt = (hhmm: string, day = "2026-09-28") => Date.parse(`${day}T${hhmm}:00-04:00`);
+  const clean = (t: ReturnType<typeof convexTest>, name: string, at: number) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("events", { kind: "job-ok", at, provenance: { job: `tick:${name}` }, subject: `tick:${name}`, data: {} });
+    });
+  const started = async (t: ReturnType<typeof convexTest>, at: number) => {
+    vi.setSystemTime(at);
+    return (await t.mutation(internal.jarvis.tick.due, {})).started;
+  };
+
+  it("comes due once a day at 4:30 New York, never in the tick that starts the calendar, and not again after a clean run", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      expect(await started(t, nyAt("04:15"))).not.toContain("repeats");
+      // The first tick at 4:30 starts the calendar refresh, so not repeats.
+      const first = await started(t, nyAt("04:30"));
+      expect(first).toContain("calendar");
+      expect(first).not.toContain("repeats");
+      await clean(t, "calendar", nyAt("04:30"));
+      expect(await started(t, nyAt("04:31"))).toContain("repeats");
+      await clean(t, "repeats", nyAt("04:31"));
+      expect(await started(t, nyAt("04:45"))).not.toContain("repeats");
+      expect(await started(t, nyAt("05:30"))).not.toContain("repeats");
+      await clean(t, "calendar", nyAt("04:30", "2026-09-29"));
+      expect(await started(t, nyAt("04:31", "2026-09-29"))).toContain("repeats");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
