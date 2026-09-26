@@ -88,9 +88,9 @@ async function seedTodo(
 async function seedRuling(
   t: ReturnType<typeof convexTest>,
   over: Record<string, unknown>,
-): Promise<Id<"dtsRulings">> {
+): Promise<Id<"rulings">> {
   return await t.run((ctx) =>
-    ctx.db.insert("dtsRulings", {
+    ctx.db.insert("rulings", {
       subjectType: "life",
       verdict: "approve",
       ruledAt: 5_000,
@@ -257,25 +257,6 @@ describe("a ruling becomes a label", () => {
     });
   });
 
-  it("links a stored batch ruling to no run, even when the batch row carries a token", async () => {
-    const t = convexTest(schema, modules);
-    await seedRun(t, { regToken: "tok-batch", runId: "claude:box:planner" });
-    const batchId = await t.run((ctx) =>
-      ctx.db.insert("batches", {
-        statement: "the visa run",
-        status: "active",
-        producedByRunToken: "tok-batch",
-        createdAt: 1,
-        updatedAt: 1,
-      }),
-    );
-    const rulingId = await seedRuling(t, { subjectType: "batch", batchId, verdict: "approve" });
-    await t.mutation(internal.agentLabels.internalLabelFromRuling, { rulingId });
-    expect(await labels(t)).toEqual([]);
-    const unlinked = await events(t, "agent-label-unlinked");
-    expect(unlinked).toHaveLength(1);
-    expect(unlinked[0].data).toMatchObject({ source: "ruling", ref: `ruling:${rulingId}`, subjectKey: null });
-  });
 });
 
 // ── An objection ─────────────────────────────────────────────────────────────
@@ -350,6 +331,41 @@ describe("an objection becomes a label", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].runId).toBe("claude:box:merge-run");
     expect(rows[0].source).toBe("objection");
+  });
+
+  // witness: the label writer and the ask context read only the legacy
+  // dtsEvents rows, so a revert of a decision only the record holds was
+  // unlinked, and the next delegate asked about its todo saw no decision.
+  it("resolves a decision only the record holds, for the label and for the next ask's context", async () => {
+    const t = convexTest(schema, modules);
+    await seedRun(t, { regToken: "tok-decide", runId: "claude:box:decide-run" });
+    const todoId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "renew passport", status: "active", readiness: "prepared", timingClass: "whenever",
+        source: "tom", createdAt: 1, updatedAt: 1,
+      }),
+    );
+    // The row as POST /jarvis/event stores a delegate's decision: the askId
+    // as the subject, the agent that decided as provenance.agentId, and the
+    // body Jarvis worker/jobs/delegate.mjs sends. No runToken: the record
+    // links a row to its run by the agent id.
+    await t.run(async (ctx) =>
+      ctx.db.insert("events", {
+        kind: "decision", at: 1_000, provenance: { agentId: "claude:box:decide-run", job: "delegate" }, subject: "rec-1",
+        data: {
+          question: "Which day?", options: ["Thursday", "Friday"], decision: "Thursday", reason: "His calendar is free.",
+          restedOn: [], wouldChange: null, refused: false, refusedBecause: null, caller: "job:prepare", askId: "rec-1",
+          todoId, model: "claude-opus-5", nearMissed: [],
+        },
+      }),
+    );
+    const eventId = await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+      askId: "rec-1", text: "revert 1", revert: true, sentence: null, channel: "C", ts: "1.2", threadTs: "1.1",
+    });
+    await t.mutation(internal.agentLabels.internalLabelFromObjection, { eventId, askId: "rec-1" });
+    expect((await labels(t)).map((row) => row.runId)).toEqual(["claude:box:decide-run"]);
+    const context = await t.query(internal.ttsAsk.internalAskContext, { job: "prepare", todoId });
+    expect(context.priorObjections).toMatchObject([{ askId: "rec-1", revert: true, decision: "Thursday" }]);
   });
 
   it("writes nothing and throws nothing when no decision row carries the askId", async () => {
@@ -589,8 +605,9 @@ async function seedDigestSent(
   t: ReturnType<typeof convexTest>,
   data: Record<string, unknown>,
 ) {
-  // NO KEY, exactly as tts.internalMarkDigestSent writes it: the resolver
-  // takes the newest rows of the kind and finds the one posted at that ts.
+  // A morning a model wrote: its digest-sent row in dtsEvents, with the
+  // writing run's token. The resolver takes the newest rows of the kind and
+  // finds the one posted at that ts.
   await t.run((ctx) =>
     ctx.db.insert("dtsEvents", { at: 5_000, kind: "digest-sent", data }),
   );
@@ -623,6 +640,18 @@ describe("a reaction on the morning becomes a label", () => {
       expect(row.runId).toBe("claude:box:write-slack");
       expect(row.source).toBe("digest-reaction");
     }
+  });
+
+  // The box's digest is deterministic: no run wrote it, so a reaction on it
+  // labels nothing, and the record's digest-sent rows are not looked up.
+  it("labels nothing for a reaction on a digest the box wrote", async () => {
+    const t = convexTest(schema, modules);
+    await seedRun(t, { regToken: "tok-box" });
+    await t.run((ctx) =>
+      ctx.db.insert("events", { at: 5_000, kind: "digest-sent", provenance: { job: "digest" }, subject: "2026-09-26", data: { day: "2026-09-26", ts: "1757500000.0001" } }),
+    );
+    expect(await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "+1" }))).toMatchObject({ wrote: false });
+    expect(await labels(t)).toHaveLength(0);
   });
 
   it("reads a skin-toned thumb as the thumb that was tapped", async () => {

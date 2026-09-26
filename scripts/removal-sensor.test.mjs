@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { hash8 } from "../shared/graph-hash.mjs";
 import {
   baselineText,
+  hash8,
   collect,
   countByRule,
   diffAgainst,

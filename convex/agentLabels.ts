@@ -25,7 +25,7 @@ import { internalMutation } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { logEvent } from "./tts";
-import { DELEGATE_DECISION } from "./ttsAsk";
+import { DELEGATE_DECISION, recordedDecision } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { DIGEST_SENT } from "./ttsDigest";
 import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
@@ -245,7 +245,7 @@ function labelForVerdict(
 /** The row a ruling's subject names, and the token that row carries. */
 async function tokenForRulingSubject(
   ctx: MutationCtx,
-  ruling: Doc<"dtsRulings">,
+  ruling: Doc<"rulings">,
 ): Promise<string | undefined> {
   if (ruling.subjectType === "life" && ruling.todoId !== undefined) {
     return (await ctx.db.get(ruling.todoId))?.producedByRunToken;
@@ -267,15 +267,13 @@ async function tokenForRulingSubject(
 /** The subject's identity, in the one spelling ttsRulings.subjectKey defines.
  *  Duplicated as a local read rather than imported to keep this file free of a
  *  cycle through ttsRulings, which schedules into it. */
-function subjectKeyOf(ruling: Doc<"dtsRulings">): string | null {
+function subjectKeyOf(ruling: Doc<"rulings">): string | null {
   if (ruling.subjectType === "life") return `life ${ruling.todoId}`;
-  // A stored ruling on a batch has no subject key: the schema narrow removes it.
-  if (ruling.subjectType === "batch") return null;
   return `code ${ruling.repo} ${ruling.externalId}`;
 }
 
 export const internalLabelFromRuling = internalMutation({
-  args: { rulingId: v.id("dtsRulings") },
+  args: { rulingId: v.id("rulings") },
   handler: async (ctx, { rulingId }) => {
     const ruling = await ctx.db.get(rulingId);
     if (ruling === null) return { wrote: false, why: "no ruling" };
@@ -321,9 +319,12 @@ export const internalLabelFromObjection = internalMutation({
     const objection = await ctx.db.get(eventId);
     if (objection === null) return { wrote: false, why: "no objection row" };
     const data = (objection.data ?? {}) as { revert?: unknown; sentence?: unknown };
-    // The same two rows internalRecordDelegateObjection resolved: a delegate
-    // decision keyed by its askId, or a merge keyed by its own <repo>:<sha>.
-    const subject =
+    // The rows internalRecordDelegateObjection resolved: a delegate decision
+    // keyed by its askId, or a merge keyed by its own <repo>:<sha>, each
+    // carrying the run's registration token; else a decision only the record
+    // holds (convex/ttsAsk.ts recordedDecision), which names the agent that
+    // took it in provenance.agentId, the record's own link to a run.
+    const legacy =
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", askId))
@@ -332,17 +333,25 @@ export const internalLabelFromObjection = internalMutation({
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", askId))
         .first());
+    const recorded = legacy === null ? await recordedDecision(ctx, askId) : null;
     const ref = `objection:${eventId}`;
-    const token = (subject?.data as { runToken?: unknown } | undefined)?.runToken;
-    const run = await agentForToken(ctx, typeof token === "string" ? token : undefined);
+    const token = (legacy?.data as { runToken?: unknown } | undefined)?.runToken;
+    const agentId = recorded?.provenance.agentId;
+    const run = legacy !== null
+      ? await agentForToken(ctx, typeof token === "string" ? token : undefined)
+      : agentId === undefined
+        ? null
+        : await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", agentId)).first();
     if (run === null) {
       await unlinked(ctx, {
         source: "objection",
         ref,
         subjectKey: askId,
-        why: subject === null
+        why: legacy === null && recorded === null
           ? "no decision or merge row carries this askId"
-          : "the decision row carries no runToken, or no agent claimed it",
+          : legacy !== null
+            ? "the decision row carries no runToken, or no agent claimed it"
+            : "the record's decision names no agent, or no run has that id",
       });
       return { wrote: false, why: "unlinked" };
     }
@@ -502,18 +511,23 @@ export const internalLabelFromReaction = internalMutation({
       if (existing !== null) await ctx.db.delete(existing._id);
       return { removed: existing !== null };
     }
-    // The digest this reaction sat on. Its rows carry NO key by construction
-    // (ttsDigest.lastDigestSent depends on that), so this is the same bounded
-    // newest-first take namedObjection uses, and for the same reason: Slack's
-    // three-second budget.
-    const recent = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
-      .order("desc")
-      .take(DIGEST_OBJECTION_LOOKBACK);
-    const sent = recent.find(
-      (row) => (row.data as { slackTs?: unknown } | undefined)?.slackTs === ts,
-    );
+    // The digest this reaction sat on, among the mornings a model wrote: the
+    // legacy digest-sent rows in dtsEvents, which carry the writing run's
+    // token, on the same bounded newest-first take ttsSlack's namedObjection
+    // uses. A digest the box writes (the record's digest-sent rows) is
+    // deterministic and no run wrote it, so a reaction on one labels nothing
+    // and is not looked up; this read goes when the two-week lookback has
+    // passed the switch.
+    const sent = (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+        .order("desc")
+        .take(DIGEST_OBJECTION_LOOKBACK)
+    ).find((row) => {
+      const d = row.data as { ts?: unknown; slackTs?: unknown } | undefined;
+      return d?.ts === ts || d?.slackTs === ts;
+    });
     if (sent === undefined) return { wrote: false, why: "no digest was sent at that ts" };
     const mapped = REACTION_POLARITY[name];
     if (mapped === undefined) {

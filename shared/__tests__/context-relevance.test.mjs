@@ -6,10 +6,6 @@
 // and app/lib/tts-session-prompt.ts — both carry whatever briefForPrompt
 // returns, so a cut that landed mid-line or lost its pointer would ship to a
 // run with no other way to find the brief.
-//
-// The relevance cut these tests used to cover — the rule-9 AGENTS.md ordering
-// and the fetchable block's collapsed search line — went with the know-layer
-// expansion; the routing they tested lives in skill-router.test.mjs now.
 
 import { describe, expect, it } from "vitest";
 

@@ -22,7 +22,6 @@
 // serves three facts.
 
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -32,13 +31,12 @@ import {
   declinedIntegrations,
   isCredentialKey,
 } from "./ttsIntegrations";
-import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
+import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
-import { isModelOfTomPath, modelOfTomFilesWithLegacyFallback, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
-import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
-import { scoredNothing } from "../shared/evals-row.mjs";
+import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
+import { EVALS_RUN, PRELUDE_DELIVERY, scoredNothing } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
@@ -49,6 +47,7 @@ import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
 // through the one choke point the rest of Convex uses (convex/ttsMerge.ts,
 // convex/ttsSearch.ts).
 import { redactSecrets } from "../shared/redact.mjs";
+import { listForDigest } from "./jarvis/outbox";
 
 export const WEEK_MS = 7 * DAY_MS;
 
@@ -70,7 +69,7 @@ export { AREA_REVIEWED };
 
 /** The failure kinds the gather groups by job. "job-failed" carries the job
  * in its data; the others name theirs by kind. */
-export const FAILURE_KINDS: readonly string[] = [
+const FAILURE_KINDS: readonly string[] = [
   JOB_FAILED,
   NIGHTLY_FAILURE,
   WEEKLY_FAILURE,
@@ -83,8 +82,8 @@ export const FAILURE_KINDS: readonly string[] = [
 export const SURFACED_THRESHOLD = 3;
 
 // ── The three verifiers, and how far back the audit's own score reaches ───────
-// THE THREE VERIFIERS ARE checks, the audit AND the evals — the merge gate's
-// three head rows and nothing else. What follows measures two of them and says
+// THE THREE VERIFIERS ARE checks, the audit AND the evals; the merge gate
+// reads two of them, the tests and the audit, as its head rows. What follows measures two of them and says
 // so; NONE OF IT GATES ANYTHING. There is no new event kind, no new index, no
 // new row on any table: the judge's and the planted faults' numbers ride on the
 // weekly "evals-run" row the runner already writes, and the audit's own score is
@@ -297,7 +296,7 @@ type WeeklyFacts = {
   // measurement nobody took has no number, and a zero would read as one.
   //
   // REPORTS AND NEVER GATES. Not one of these numbers is read by
-  // convex/ttsMerge.ts: the gate keeps its three head rows, and a judge that
+  // convex/ttsMerge.ts: the gate keeps its two head rows, and a judge that
   // agreed with eighteen of twenty of Tom's labels is evidence about the judge,
   // not a verdict on anything it scored.
   verifiers: {
@@ -477,13 +476,13 @@ export function areaPageState(
 
 /**
  * The standing credential failure of one job, or null: its "job-failed" rows
- * read on by_kind_key over the job's own key prefix (`<job>:` — every keyed
- * condition the job ever reported, and no other job's), newest first within
- * each key, stopping at the first credential key whose newest failure has no
- * "job-recovered" at or after it. NO TAKE LIMIT, on purpose: a limit is a cap
- * in the gather, and a standing failure older than a cap's worth of other
- * rows would vanish behind it. The read is bounded by the job's own keyed
- * failures, which are one row per condition per occurrence (convex/ttsJobs.ts).
+ * in the record's events table, read on by_kind_subject_at over the job's own
+ * condition prefix (`<job>:` — every condition the job ever reported, and no
+ * other job's), newest first within each condition, stopping at the first
+ * credential condition whose newest failure has no "job-recovered" at or
+ * after it. NO TAKE LIMIT, on purpose: a limit is a cap in the gather, and a
+ * standing failure older than a cap's worth of other rows would vanish behind
+ * it. The read is bounded by the job's own failures (convex/jarvis/jobs.ts).
  */
 async function standingCredentialFailure(
   ctx: QueryCtx,
@@ -492,24 +491,25 @@ async function standingCredentialFailure(
   const prefix = `${job}:`;
   const seen = new Set<string>();
   for await (const f of ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) =>
-      q.eq("kind", JOB_FAILED).gte("key", prefix).lt("key", `${prefix}\uffff`),
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) =>
+      q.eq("kind", JOB_FAILED).gte("subject", prefix).lt("subject", `${prefix}\uffff`),
     )
     .order("desc")) {
-    // Descending on (key, at): the first row seen under a key is that key's
-    // newest failure, and the older ones under it say nothing more.
-    if (f.key === undefined || seen.has(f.key)) continue;
-    seen.add(f.key);
-    if (!isCredentialKey(f.key)) continue;
+    // Descending on (subject, at): the first row seen under a condition is
+    // its newest failure, and the older ones under it say nothing more.
+    const key = f.subject;
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
+    if (!isCredentialKey(key)) continue;
     const recovered = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_key", (q) => q.eq("kind", JOB_RECOVERED).eq("key", f.key))
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_RECOVERED).eq("subject", key))
       .order("desc")
       .first();
     if (recovered !== null && recovered.at >= f.at) continue;
     const d = (f.data ?? {}) as Record<string, unknown>;
-    return { key: f.key, at: f.at, error: str(d.error) ?? "" };
+    return { key, at: f.at, error: str(d.error) ?? "" };
   }
   return null;
 }
@@ -701,13 +701,7 @@ export async function gatherWeeklyFacts(
 
   // 8, 9. The area pages and the size of the model-of-tom files, from the
   // rows the nightly job posted (a small table: one row per file).
-  //
-  // The new table holds per-file source facts; old ttsSkills rows fill only
-  // the source paths the new table lacks during the widening rollout.
-  // Same rows, same fields, same post — only the table name changed.
-  const filesFromNewTable = await ctx.db.query("modelOfTomFiles").collect();
-  const skills = await ctx.db.query("ttsSkills").collect();
-  const modelOfTomFiles = modelOfTomFilesWithLegacyFallback(filesFromNewTable, skills);
+  const modelOfTomFiles = await ctx.db.query("modelOfTomFiles").collect();
   const files: WeeklyFacts["modelOfTom"]["files"] = [];
   const areaPages: WeeklyFacts["areaPages"] = [];
   const publication = await ctx.db.query("modelOfTomPublication")
@@ -1020,7 +1014,12 @@ export async function gatherWeeklyFacts(
   // 12. Job failures by job.
   const byJob = new Map<string, WeeklyFacts["jobFailures"][number]>();
   for (const kind of FAILURE_KINDS) {
-    for (const e of await eventsOfKind(kind)) {
+    // A job's failures live in the record's events table (convex/jarvis/jobs.ts
+    // failuresInWindow: the reports, not a standing condition's repeats); the
+    // other failure kinds still in dtsEvents.
+    const rows =
+      kind === JOB_FAILED ? (await failuresInWindow(ctx, since, until)).failed : await eventsOfKind(kind);
+    for (const e of rows) {
       const d = (e.data ?? {}) as Record<string, unknown>;
       const job =
         kind === JOB_FAILED
@@ -1202,18 +1201,20 @@ export const internalRecordWeeklyEvalsDecisions = internalMutation({
     if (isoWeek.trim() === "") throw new Error("isoWeek (non-empty) is what makes one week's ablation thread its own");
     let sent = 0;
     for (const item of graduated ?? []) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      const graduatedLine = await listForDigest(ctx, {
+        section: "decisions",
         askId: `golden:${item.id}`,
         decision: `a capability case graduated into the regression set: ${item.sentence}`,
         reason: "it passed every trial of the weekly run, so from now on a merge that breaks it is a regression",
       });
-      sent++;
+      if (graduatedLine.listed) sent++;
     }
     // Only the names that did NOT earn their tokens are a decision. A name
-    // whose cases need it is the system working, and #tts-decisions is for
+    // whose cases need it is the system working, and the objection list is for
     // what he might want reverted.
     for (const finding of (ablation ?? []).filter((f) => !f.earned)) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      const ablationLine = await listForDigest(ctx, {
+        section: "decisions",
         askId: `ablation:${finding.name}:${isoWeek}`,
         decision:
           `${finding.name} did not earn its tokens this week: ${finding.cases} cases, ` +
@@ -1222,7 +1223,7 @@ export const internalRecordWeeklyEvalsDecisions = internalMutation({
           "the weekly simplification pass reads this as a candidate to drop; it gates nothing, and a name the " +
           "golden set passes without may still be holding up a failure mode the set does not contain",
       });
-      sent++;
+      if (ablationLine.listed) sent++;
     }
     return { sent };
   },

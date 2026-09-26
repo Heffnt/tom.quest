@@ -8,6 +8,8 @@ import {
   LEARNING_INPUT_MAX,
   LEARNING_REPLY_CHARS,
 } from "./ttsNightly";
+import { gatherTodayFacts } from "./ttsDigest";
+import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -39,7 +41,7 @@ describe("EXPORT_TABLES", () => {
     expect(EXPORT_TABLES).toEqual(all.filter((n) => !n.startsWith("auth")).sort());
     expect(EXPORT_TABLES).toContain("dtsTodos");
     expect(EXPORT_TABLES).toContain("claudeMessages");
-    expect(EXPORT_TABLES).toContain("ttsSkills");
+    expect(EXPORT_TABLES).toContain("modelOfTomFiles");
     for (const name of EXPORT_TABLES) expect(name.startsWith("auth")).toBe(false);
   });
 });
@@ -244,20 +246,26 @@ describe("POST /tts/event", () => {
     expect(rows[0].at).toBeGreaterThan(0);
   });
 
-  it("posts the broken line for a nightly failure, which comes through this door and not logEvent", async () => {
+  it("puts a nightly failure in the digest's broken section, which comes through this door and not logEvent, and posts nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     await post(t, "/tts/event", {
       kind: "nightly-failure",
       data: { step: "push", error: "rejected" },
     });
-    const broken = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect())
-        .filter((job) => job.name.includes("sendBroken"))
-        .map((job) => job.args[0] as { job: string; detail?: string }),
+    // One output channel: nothing is scheduled for Slack. The digest reads the
+    // row itself (convex/ttsDigest.ts gatherTodayFacts, every failure kind).
+    const slack = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("ttsSync")),
     );
-    expect(broken.map((line) => line.job)).toEqual(["nightly"]);
-    expect(broken[0].detail).toBe("rejected");
+    expect(slack).toEqual([]);
+    const broken = await t.run(async (ctx) => {
+      const now = Date.now() + 1;
+      return (await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY_MS })).broken;
+    });
+    expect(broken).toHaveLength(1);
+    expect(broken[0].statement).toContain("nightly");
+    expect(broken[0]).toMatchObject({ detail: "rejected", count: 1 });
   });
 
   // The Slack bookkeeping kinds carry a `key` the events route looks up by;
@@ -321,7 +329,7 @@ describe("GET /tts/learning-input", () => {
         data: { text: "done", outcome: "completed" },
       });
       await ctx.db.insert("dtsEvents", { at: now, kind: "surfaced", todoId });
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "revise",
@@ -330,7 +338,7 @@ describe("GET /tts/learning-input", () => {
         provenance: { from: "tom-words", inboundId: "x", quote: "ask for a shorter term" },
       });
       // Outside the window: yesterday's ruling belongs to yesterday's run.
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "approve",

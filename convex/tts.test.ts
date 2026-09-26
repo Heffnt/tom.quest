@@ -13,6 +13,7 @@ import {
   nyLocalHour,
   nyOffsetHours,
 } from "./ttsShared";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -29,6 +30,7 @@ describe("POST /tts/time-notes", () => {
         operate: "operate layer",
         headers: [{ layers: ["operate"], header: "published map + operate" }],
       });
+      for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
     });
 
     const response = await t.fetch("/tts/time-notes", {
@@ -37,14 +39,11 @@ describe("POST /tts/time-notes", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.notes).toEqual([]);
-    // The door serves the ASSEMBLED CONTEXT now, not two whole layers: the
-    // stable prefix — the map and the operate rules — and the grant block,
-    // naming what this caller may load. The assembler's exact output is pinned
-    // in convex/ttsContext.test.ts; what this asserts is that the door serves
-    // it under the field name the worker asks for.
-    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
-    expect(prefix).toBe("published map + operate\n\noperate layer");
-    expect(grants).toContain("granted:");
+    // The door serves the ASSEMBLED CONTEXT: the base, the write pages and the
+    // skills line. The assembler's exact output is
+    // pinned in convex/ttsContext.test.ts; what this asserts is that the door
+    // serves it under the field name the worker asks for.
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\n── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
     expect(body.writingStandard).not.toContain("write layer");
   });
 });
@@ -270,43 +269,6 @@ describe("TTS todos", () => {
     expect(todos).toHaveLength(1);
     expect(todos[0].readiness).toBe("unprepared");
     expect(todos[0].source).toBe("slack-capture");
-  });
-
-  // ── The hourly update's reads (Tom's ruling 2026-08-30) ──────────────────
-  // Each is the internal twin of a requireTomId-gated query, because the
-  // hourly update runs from a cron and a cron has no identity.
-
-  // witness: change internalLastEventAt to return the newest event of ANY kind
-  // and this goes red — the window would start at the last capture rather than
-  // the last SEND, and an hour with captures in it would report nothing.
-  it("reads the window back from the last send, not the last event", async () => {
-    const t = convexTest({ schema, modules });
-    expect(
-      await t.query(internal.tts.internalLastEventAt, {
-        kind: "hourly-update-sent",
-      }),
-    ).toBeNull(); // never sent — the caller falls back to its default window
-
-    await t.mutation(internal.tts.internalLogEvent, {
-      kind: "hourly-update-sent",
-      data: { windowStart: 1, windowEnd: 2 },
-    });
-    // Busier events land AFTER the marker and must not be mistaken for it.
-    await t.mutation(internal.tts.internalCapture, {
-      statement: "later than the marker",
-      source: "manual",
-    });
-    const sentAt = await t.query(internal.tts.internalLastEventAt, {
-      kind: "hourly-update-sent",
-    });
-    expect(sentAt).not.toBeNull();
-
-    // And the range read covers [marker, now) — the capture above is in it.
-    const inWindow = await t.query(internal.tts.internalEventsInRange, {
-      start: sentAt!,
-      end: Date.now() + 1,
-    });
-    expect(inWindow.some((e) => e.kind === "captured")).toBe(true);
   });
 
   // witness: drop the `b.end > at` filter from internalScheduleAt and a block

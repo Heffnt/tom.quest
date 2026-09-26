@@ -11,8 +11,9 @@
 
 ## crons
 
-- `internal.serverHealth.pollTuring` probes the Turing API's `/health` and writes the `serverHealth` table; `useServer().status` reads it.
-- `internal.gpuPool.reconcile` drives the `gpuPool` table's desired state against the Turing API and tracks its own jobs in `gpuPoolAllocation`, so it cancels only pool-created jobs. It needs `TURING_API_KEY` in the Convex env, not only Vercel's.
+- The box is the one scheduler. `convex/crons.ts` holds only what must run when the box does not: the silence alarm. Every other timed task is a row of `TICK_TASKS` in `convex/jarvis/tick.ts`, started by the box's record-tick job.
+- A timed task of the record is an entry in `TICK_TASKS` (`convex/jarvis/tick.ts`), started by the box's `record-tick` job through `POST /jarvis/tick` when its cadence comes round; its last run is its own `job-ok`/`job-failed` row under `tick:<name>`. `internal.serverHealth.pollTuring` is one: it writes the `serverHealth` row `useServer().status` reads.
+- Slack gets one output channel (`outputChannel()`); the digest is written by the box from `POST /jarvis/digest`, and a producer's decision or failure line goes on it through `listForDigest` (`convex/jarvis/outbox.ts`), never to a channel of its own.
 
 ## sessions
 
@@ -35,7 +36,7 @@
 ## schema
 
 - Dropping a table from `convex/schema.ts` deletes nothing: `convex deploy` validates only declared tables and the rows persist undeclared. Purging data takes the dashboard or the CLI with credentials.
-- The model-of-tom publication table fails closed until the nightly post has written its singleton; there is no backfill door any more. The skill catalog follows widen-migrate-narrow: deploy a validator that accepts old per-file and new catalog rows, retain a legacy source row until `modelOfTomFiles` holds its exact `sourcePath`, then narrow in a later PR after one clean nightly. Readers ignore old-shaped rows while the widening is live.
+- The model-of-tom publication table fails closed until the nightly post has written its singleton; there is no backfill door any more.
 
 <!-- convex-ai-start -->
 

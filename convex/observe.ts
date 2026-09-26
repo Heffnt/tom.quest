@@ -1,7 +1,8 @@
-// THE OBSERVATION SURFACE'S READS. One window of time, four sources, and
-// nothing derived here that the page can derive from what comes back: the map's
-// node counts are counts of these rows, so a second count computed on the
-// server would be a number the page could contradict.
+// THE /agents WINDOW VIEW'S READS (the observation page until night/w4,
+// 2026-09-26, when /agents absorbed /observe). One window of time, four
+// sources, and nothing derived here that the page can derive from what comes
+// back: the map's node counts are counts of these rows, so a second count
+// computed on the server would be a number the page could contradict.
 //
 // PAGED, NOT COLLECTED. The window moves back through all history — a month of
 // runs and a month of events are both unbounded reads — so runs and events come
@@ -9,6 +10,14 @@
 // window is exhausted or its own cap stops it. Rulings are the exception and
 // are taken whole under a cap: the table is append-only at Tom's pace and a
 // month of it is tens of rows.
+//
+// TWO HOMES FOR POINT EVENTS, ONE RULE FOR WHICH. A kind in
+// shared/jarvis-events.mjs EVENT_KINDS is posted to POST /jarvis/event and
+// lives in the record's `events` table (recordInWindow); every other kind
+// still lives in dtsEvents (eventsInWindow), whose copies in `events`
+// (copyFromDts) are not read. As an area adds its kinds to that list and
+// moves its writer, the page follows with no edit here, and eventsInWindow
+// goes when the list holds every kind the page draws.
 //
 // The gate is `requireTom`: every row here is a run's content, a merge, a
 // failure or a ruling, and the `agent` account reads none of it
@@ -32,9 +41,13 @@ import {
 } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
 import { BOX_CHANGE, DEPLOY, boxChangeOf, redactedBoxChange } from "./boxChanges";
+import { EVENT_KINDS } from "../shared/jarvis-events.mjs";
 
 /** The label every gate in this module names, so a denial says which surface. */
-const SURFACE = "Observe";
+const SURFACE = "Agents";
+
+/** The kinds whose home is the record's events table (see the header). */
+const RECORD_KINDS: ReadonlySet<string> = new Set(EVENT_KINDS);
 
 /** The widest window the page offers, in milliseconds: one month, plus the
  *  slack a 31-day month needs. A wider one is more pages, not a different
@@ -79,8 +92,8 @@ const PAGE_OPENED_KIND = "tts-opened";
  *  rulings: it is his decision too, made by pressing "sign and send". */
 const SENT_AS_TOM_KIND = "sent-as-tom";
 
-/** The three head rows the merge gate reads for one commit
- *  (convex/ttsMerge.ts). */
+/** The head rows the merge gate reads for one commit (convex/ttsMerge.ts),
+ *  and the historic evals-run rows it no longer reads, still counted, not drawn. */
 export const GATE_KINDS = ["tests-run", "audit-verdict", "evals-run"] as const;
 
 /** True for the event rows the failures lane draws: the one spelling of the
@@ -116,7 +129,7 @@ function wanted(kind: string): boolean {
  * with the token in it. Every other surface that shows a failure sends that
  * string through redactSecrets first, which convex/tts.ts calls the one choke
  * point. Rather than add a second, this sends the browser the sixteen fields
- * app/observe reads and leaves the rest on the server, so there is nothing to
+ * app/agents/window reads and leaves the rest on the server, so there is nothing to
  * redact: a field added to a row is not on the wire until this list names it.
  */
 function drawnFields(data: unknown): Record<string, unknown> | null {
@@ -130,7 +143,7 @@ function drawnFields(data: unknown): Record<string, unknown> | null {
 }
 
 /** A merge row's four, a failure's job, the five a delegate decision is read
- *  from, the four a message sent in Tom's name is (app/observe/lib.ts and
+ *  from, the four a message sent in Tom's name is (app/agents/window/lib.ts and
  *  components/rulings-list.tsx), and a deploy's two commits. A sent message's
  *  text is not among them: the row carries its hash, and the text stays with
  *  his sign-off. A box change is drawn whole, redacted (boxDrawn). */
@@ -213,7 +226,7 @@ function mark(run: Doc<"runs">) {
     mergeKey: run.mergeKey ?? null,
     // The repository filter's value. A run names no repository field; what it
     // has is the working directory and the branch its launcher recorded, and
-    // the page turns the directory into a repository name (app/observe/lib.ts
+    // the page turns the directory into a repository name (app/agents/window/lib.ts
     // repoOfRun) rather than this module inventing a field the record does not
     // keep.
     cwd: run.context?.cwd ?? null,
@@ -281,13 +294,59 @@ export const eventsInWindow = query({
     return {
       ...page,
       page: page.page
-        .filter((event) => wanted(event.kind))
+        .filter((event) => wanted(event.kind) && !RECORD_KINDS.has(event.kind))
         .map((event) => ({
           id: event._id as string,
           at: event.at,
           kind: event.kind,
           key: event.key ?? null,
           todoId: (event.todoId ?? null) as string | null,
+          agentId: null as string | null,
+          data: COUNTED_NOT_DRAWN.has(event.kind) ? null : drawnFields(event.data),
+        })),
+    };
+  },
+});
+
+/** A job's post under a condition already reported: a row of the record, not
+ *  a failure to draw (convex/jarvis/jobs.ts marks it data.standingSince). */
+function isRepeat(event: Doc<"events">): boolean {
+  const data = event.data as { standingSince?: unknown } | null | undefined;
+  return typeof data === "object" && data !== null && data.standingSince !== undefined;
+}
+
+/**
+ * The same point events from the record's `events` table: the kinds whose
+ * home it is (shared/jarvis-events.mjs EVENT_KINDS), oldest first, in the
+ * shape eventsInWindow answers, plus the agent a row names. A box change's
+ * `at` is when it happened on the box; a job report's `key` is the condition
+ * it names.
+ */
+export const recordInWindow = query({
+  args: {
+    from: v.number(),
+    to: v.number(),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, { from, to, paginationOpts }) => {
+    await requireTom(ctx, SURFACE);
+    assertWindow(from, to);
+    const page = await ctx.db
+      .query("events")
+      .withIndex("by_at", (q) => q.gte("at", from).lt("at", to))
+      .order("asc")
+      .paginate(paginationOpts);
+    return {
+      ...page,
+      page: page.page
+        .filter((event) => wanted(event.kind) && RECORD_KINDS.has(event.kind) && !isRepeat(event))
+        .map((event) => ({
+          id: event._id as string,
+          at: event.at,
+          kind: event.kind,
+          key: event.subject ?? null,
+          todoId: null as string | null,
+          agentId: event.provenance.agentId ?? null,
           data: COUNTED_NOT_DRAWN.has(event.kind)
             ? null
             : event.kind === BOX_CHANGE
@@ -309,7 +368,7 @@ export const rulingsInWindow = query({
     await requireTom(ctx, SURFACE);
     assertWindow(from, to);
     const rulings = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_ruled", (q) => q.gte("ruledAt", from).lt("ruledAt", to))
       .order("asc")
       .take(RULINGS_MAX);
@@ -320,7 +379,7 @@ export const rulingsInWindow = query({
       sentence: ruling.sentence ?? null,
       subjectType: ruling.subjectType,
       todoId: (ruling.todoId ?? null) as string | null,
-      // Kept in the shape as null until app/observe stops reading it; the
+      // Kept in the shape as null until app/agents/window stops reading it; the
       // schema narrow removes it.
       batchId: null as string | null,
       repo: ruling.repo ?? null,
@@ -334,7 +393,7 @@ export const rulingsInWindow = query({
   },
 });
 
-async function subjectWords(ctx: QueryCtx, ruling: Doc<"dtsRulings">): Promise<string> {
+async function subjectWords(ctx: QueryCtx, ruling: Doc<"rulings">): Promise<string> {
   if (ruling.todoId !== undefined) {
     const todo = await ctx.db.get(ruling.todoId);
     return todo?.statement ?? "";
@@ -358,43 +417,6 @@ async function subjectWords(ctx: QueryCtx, ruling: Doc<"dtsRulings">): Promise<s
   }
   return "";
 }
-
-/**
- * EVERY LIVE RUNNER, which is what the map counts. The page used to read
- * api.ttsRunners.listRunners, the newest fifty runner rows ever created, so a
- * long-lived runner with fifty newer rows behind it left the map's count
- * quietly — a live runner the page said was not there. The live ones are their
- * own index (runners.by_ended, endedAt undefined), and there are a handful of
- * them, so they are read whole.
- */
-export const liveRunners = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTom(ctx, SURFACE);
-    const live = await ctx.db
-      .query("runners")
-      .withIndex("by_ended", (q) => q.eq("endedAt", undefined))
-      .collect();
-    return Promise.all(
-      live.map(async (runner) => {
-        const checkIn = await ctx.db
-          .query("runnerEvents")
-          .withIndex("by_runner_kind_at", (q) =>
-            q.eq("runnerId", runner._id).eq("kind", "check-in"),
-          )
-          .order("desc")
-          .first();
-        return {
-          runnerId: runner._id as string,
-          title: runner.title,
-          experimentHost: runner.experimentHost,
-          endedAt: null,
-          lastCheckInAt: checkIn?.at ?? null,
-        };
-      }),
-    );
-  },
-});
 
 /**
  * The needs-you threads still waiting on Tom, and when the oldest one opened.
@@ -443,7 +465,7 @@ export const waitingOnTom = query({
 /**
  * What the merge gate says about each commit the changes list draws.
  *
- * THE GATE'S OWN ANSWER, not a second reading of its three head rows:
+ * THE GATE'S OWN ANSWER, not a second reading of its head rows:
  * convex/ttsMerge.ts mergeGateFor is what decided whether each of these merges
  * was allowed, and a page that recomputed "green" from the rows would be a
  * second definition of green that one edit could make disagree with the one
@@ -454,7 +476,7 @@ export const gateRows = query({
   handler: async (ctx, { commits }) => {
     await requireTom(ctx, SURFACE);
     // Forty is what the changes list draws; the sixty is the room above it,
-    // and it is here because each commit costs three indexed reads and the
+    // and it is here because each commit costs a few indexed reads and the
     // argument comes from the browser. Without it one call could ask for a
     // year of commits and the read would be the page's whole cost.
     if (commits.length > 60) throw new Error("gateRows takes at most 60 commits");
@@ -503,7 +525,7 @@ export const gateRows = query({
 
 /**
  * Every open pull request of the approvable repositories, newest first, each
- * with the gate's three rows as they stand, the ruling it carries and what
+ * with the gate's rows as they stand, the ruling it carries and what
  * the last landing attempt said.
  *
  * Read off the mirror convex/observeMerge.ts keeps, because a query cannot ask
@@ -589,8 +611,8 @@ export const approveChange = mutation({
  * live in WikiTom `tts/vocabulary.json` and `tts search define` answers from
  * them on a box or a laptop with that checkout; tom.quest holds the term NAMES
  * alone (convex/ttsShared.ts VOCABULARY_TERMS says so in as many words). So
- * this reads the three published bodies the record DOES hold — the
- * model-of-Tom files, the skills and the repository rules — for the lines that
+ * this reads the two published bodies the record DOES hold — the
+ * model-of-Tom files and the repository rules — for the lines that
  * define the word, and answers with those lines and where each came from.
  *
  * A word the vocabulary names and none of those bodies define comes back with
@@ -608,21 +630,6 @@ export const define = query({
     // the record holds.
     if (word === "" || word.length > 80) throw new Error("a term is one to eighty characters");
     const found: { where: string; text: string }[] = [];
-
-    const skills = await ctx.db.query("ttsSkills").collect();
-    for (const skill of skills) {
-      if (skill.name.toLowerCase() === word.toLowerCase() && skill.description !== undefined) {
-        found.push({ where: `skill ${skill.name}`, text: skill.description });
-      }
-      for (const line of definingLines(skill.body, word)) {
-        found.push({ where: `skill ${skill.name}`, text: line });
-      }
-      for (const reference of skill.references ?? []) {
-        for (const line of definingLines(reference.body, word)) {
-          found.push({ where: reference.path, text: line });
-        }
-      }
-    }
 
     for (const file of await ctx.db.query("modelOfTomFiles").collect()) {
       for (const line of definingLines(file.body, word)) {

@@ -32,8 +32,8 @@
 // WHAT THE RECORD SHOWS. A delivered send is one dtsEvents row of kind
 // "sent-as-tom" { recipient, channel, sha256, signedAt }: /observe lists it
 // with the rulings and the morning message lists it with the decisions. A
-// refused or failed send is a "send-as-tom-failed" row, which is a #tts-broken
-// line (convex/tts.ts postBroken).
+// refused or failed send is a "send-as-tom-failed" row, which is a line in the
+// digest's broken section (convex/ttsDigest.ts).
 
 import { v } from "convex/values";
 import {
@@ -48,7 +48,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import { logEvent } from "./tts";
-import { NEEDS_TOM, NEEDS_YOU_CHANNEL_MISSING, channelFor, nyCalendarDayKey, nyHhmm } from "./ttsShared";
+import { NEEDS_TOM, nyCalendarDayKey, nyHhmm } from "./ttsShared";
+import { openNeedsYou } from "./jarvis/outbox";
 import { composeProposalAsk, renderSlack } from "./ttsCompose";
 
 /** The label the gates name: the sign-off control lives on the TTS page. */
@@ -263,11 +264,12 @@ function proposalOf(row: Doc<"dtsEvents"> | null): ProposalData | null {
 // ── 1. Propose (the worker key, through POST /tts/send-proposal) ────────────
 
 /**
- * One #tts-needs-you thread per proposal, so a proposal does not wait unseen
- * until he next opens /tts. It names the recipient and the channel and links
- * to where he signs; it never carries the text (composeProposalAsk). The
- * proposal is new, so its id is a key no earlier thread holds. Its subject is
- * the job "send-proposal": his reply there is a note on the record and signs
+ * One needs-you reply per proposal, under the day's digest in the one output
+ * channel (convex/jarvis/digest.ts), so a proposal does not wait unseen until
+ * he next opens /tts. It names the recipient and the channel and links to
+ * where he signs; it never carries the text (composeProposalAsk). The
+ * proposal is new, so its id is a key no earlier reply holds. Its subject is
+ * the job "send-proposal": his reply to it is a note on the record and signs
  * nothing.
  */
 async function openProposalNeedsYou(
@@ -275,18 +277,9 @@ async function openProposalNeedsYou(
   proposalId: Id<"dtsEvents">,
   target: { recipient: string; channel: string },
 ): Promise<void> {
-  const channel = channelFor("needsYou");
-  if (channel === null) {
-    await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, NEEDS_YOU_CHANNEL_MISSING);
-    return;
-  }
   const key = `${SEND_PROPOSAL}:${proposalId}`;
   await logEvent(ctx, NEEDS_TOM, undefined, { key, proposalId, recipient: target.recipient, channel: target.channel }, key);
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-    channel,
-    text: renderSlack(composeProposalAsk(target)),
-    subject: { kind: "job", id: SEND_PROPOSAL },
-  });
+  await openNeedsYou(ctx, { key, job: SEND_PROPOSAL, text: renderSlack(composeProposalAsk(target)) });
 }
 
 export const internalPropose = internalMutation({

@@ -11,6 +11,8 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
+import { resolveId } from "./jarvis/tables";
+import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
 // A ruling = subject + verdict + optional sentence + timestamp. The closed
@@ -38,11 +40,10 @@ import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 //            moment Tom opens an interactive session on the todo
 //            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
 //   code   — the repo is the system of record, so the effect is work in the
-//            repo: approve and archive are admitted by the auto-session
-//            scheduler as WORKER MISSIONS (claudeSessions.internalAutoSchedule
-//            — implement the plan into a pull request on a session/<id>
-//            branch, or close the entry in the repo's todo file the same
-//            way), and the ruling applies at admission with the session id;
+//            repo: approve and archive were admitted by the auto-session
+//            scheduler as worker missions until it was deleted (2026-09-26);
+//            the box's work-queue job is their consumer now, and until it
+//            takes them they stay pending on the feed;
 //            revise was consumed by the planner's brief pass, which is
 //            retired with ComplexMultiTrigger's registry (ruling 70) — a code
 //            ruling needs a brief and nothing writes one now; session applies
@@ -58,9 +59,8 @@ import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
 //
 // TWO SUBJECT TYPES: life (a dtsTodos row) and code (repo + externalId). The
 // third, a batch, went with batches (Tom's ruling of 2026-09-24: "I dont want
-// to have batches at all anymore"). The schema still declares subjectType
-// "batch" and batchId until the narrow, so a stored row can carry them; no
-// door takes one.
+// to have batches at all anymore"); its declaration went with the table on
+// 2026-09-26.
 
 const VERDICT = v.union(
   v.literal("approve"),
@@ -80,7 +80,7 @@ const VERDICTS: readonly RulingVerdict[] = [
 export const isRulingVerdict = (x: unknown): x is RulingVerdict =>
   typeof x === "string" && (VERDICTS as readonly string[]).includes(x);
 
-// Where a ruling came from when it was NOT a button (schema: dtsRulings.provenance).
+// Where a ruling came from when it was NOT a button (schema: rulings.provenance).
 export type TomWordsProvenance = {
   from: "tom-words";
   inboundId: string;
@@ -88,21 +88,16 @@ export type TomWordsProvenance = {
 };
 
 // The ONE definition of a ruling subject's identity (repo names carry no
-// spaces; the type prefix keeps life, code and elevation keys disjoint, and a
-// stored batch row — the schema declares one until the narrow — apart from
-// all three). Client code derives live rulings with the same rule via
-// app/tts/lib.ts.
+// spaces; the type prefix keeps life and code keys disjoint). Client code
+// derives live rulings with the same rule via
+// app/jarvis/lib.ts.
 export const subjectKey = (row: {
-  subjectType: "life" | "code" | "batch" | "elevation";
+  subjectType: "life" | "code";
   todoId?: string;
   repo?: string;
   externalId?: string;
-  batchId?: string;
-  elevationId?: string;
 }) => {
   if (row.subjectType === "life") return `life ${row.todoId}`;
-  if (row.subjectType === "batch") return `batch ${row.batchId}`;
-  if (row.subjectType === "elevation") return `elevation ${row.elevationId}`;
   return `code ${row.repo} ${row.externalId}`;
 };
 
@@ -114,11 +109,7 @@ export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    // An elevation's answer is about a worker's question, not a todo, batch
-    // or code entry the page shows, so the page is not sent it.
-    return (await ctx.db.query("dtsRulings").collect()).filter(
-      (r): r is typeof r & { subjectType: "life" | "code" | "batch" } => r.subjectType !== "elevation",
-    );
+    return await ctx.db.query("rulings").collect();
   },
 });
 
@@ -231,9 +222,9 @@ export async function insertRuling(
     if (isCode && isChangeSubject(externalId!)) {
       // A RULING ON A CHANGE (a pull request or a merged commit, not a code
       // todo) is applied the moment it is written, because nothing else can
-      // ever apply it: the auto-session scheduler would read an unapplied
-      // approve as a worker mission and refuse it as "not open in the mirror",
-      // and the brief pass would wait forever on a revise. What an approve
+      // ever apply it: a consumer of the pending feed would read an unapplied
+      // approve as a code todo's, and the brief pass would wait forever on a
+      // revise. What an approve
       // sets in motion is read off this row by convex/observeMerge.ts, which
       // lands the change once its gate is green; a later ruling on the same
       // subject is newer and so withdraws it.
@@ -244,7 +235,7 @@ export async function insertRuling(
           : `${verdict} recorded on the change`;
     }
 
-    const id = await ctx.db.insert("dtsRulings", {
+    const id = await ctx.db.insert("rulings", {
       subjectType: isLife ? "life" : "code",
       todoId,
       repo,
@@ -278,12 +269,12 @@ export async function insertRuling(
       rulingId: id,
     });
     // A RULING READ OUT OF HIS SENTENCE IS A DECISION TAKEN IN HIS NAME, so it
-    // goes to #tts-decisions the moment it is written rather than waiting for
-    // the morning (slack-design.md §1.2): the run that acts on a misread
-    // sentence will have finished by 5 a.m. Only the words door — a ruling he
-    // pressed a button for is not a decision anyone took for him.
+    // goes on the digest's objection list (convex/jarvis/outbox.ts), where
+    // "revert <n>" reaches it. Only the words door — a ruling he pressed a
+    // button for is not a decision anyone took for him.
     if (provenance !== undefined) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      await listForDigest(ctx, {
+        section: "decisions",
         askId: `ruling:${id}`,
         ...(todoId === undefined ? {} : { todoId }),
         decision: `${await ruledSubjectName(ctx, { todoId, repo, externalId })} was ruled a ${verdict} from your own words`,
@@ -592,6 +583,12 @@ export const internalRecordRulingFromTomWords = internalMutation({
   ) => {
     // 1. the row
     const rowId = ctx.db.normalizeId("claudeInbound", inboundId);
+    if (rowId === null && ctx.db.normalizeId("claudeMessages", inboundId) !== null) {
+      throw new Error(
+        "refused: a claudeMessages row records no author (a turn Tom typed, a task notification and an " +
+          "agent's brief are stored alike), so it cannot back a ruling in his words; cite the claudeInbound row",
+      );
+    }
     const row = rowId === null ? null : await ctx.db.get(rowId);
     if (rowId === null || !row || row.kind !== "user-turn") {
       throw new Error(`Unknown inbound id: ${inboundId}`);
@@ -618,7 +615,7 @@ export const internalRecordRulingFromTomWords = internalMutation({
     // 6. one ruling per row per subject
     const key = subjectKey({ subjectType, ...subject });
     const prior = await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_provenance_inboundId", (q) =>
         q.eq("provenance.inboundId", rowId),
       )
@@ -670,9 +667,9 @@ export const internalRecordRulingFromTomWords = internalMutation({
 
 /** Newest ruling per subject, from a full collect. */
 export function liveRulings(
-  all: Doc<"dtsRulings">[],
-): Map<string, Doc<"dtsRulings">> {
-  const newest = new Map<string, Doc<"dtsRulings">>();
+  all: Doc<"rulings">[],
+): Map<string, Doc<"rulings">> {
+  const newest = new Map<string, Doc<"rulings">>();
   for (const row of all) {
     const key = subjectKey(row);
     const prior = newest.get(key);
@@ -699,7 +696,7 @@ export async function markLiveSessionRulingApplied(
   sessionId: string,
 ): Promise<void> {
   const rulings = await ctx.db
-    .query("dtsRulings")
+    .query("rulings")
     .withIndex("by_todo", (q) => q.eq("todoId", todoId))
     .collect();
   const live = liveRulings(rulings).get(
@@ -728,8 +725,8 @@ export async function markLiveSessionRulingApplied(
  */
 export async function liveCodeSessionRulings(
   ctx: MutationCtx,
-): Promise<Doc<"dtsRulings">[]> {
-  const all = await ctx.db.query("dtsRulings").collect();
+): Promise<Doc<"rulings">[]> {
+  const all = await ctx.db.query("rulings").collect();
   return [...liveRulings(all).values()]
     .filter(
       (live) =>
@@ -742,7 +739,7 @@ export async function liveCodeSessionRulings(
 
 export async function markCodeSessionRulingsApplied(
   ctx: MutationCtx,
-  rulings: readonly Doc<"dtsRulings">[],
+  rulings: readonly Doc<"rulings">[],
   sessionId: string,
 ): Promise<void> {
   for (const ruling of rulings) {
@@ -757,12 +754,11 @@ export async function markCodeSessionRulingsApplied(
 // (a newer ruling on the same subject makes the older one dead history). Every
 // subject type rides the same feed — the planner filters by kind (a life
 // revise → its prepare pass) and consumes only what it served. Code approve and archive
-// rulings ride it too, but their consumer is the auto-session scheduler in
-// Convex, not a box job.
+// rulings ride it too, for the box's work-queue job.
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const all = await ctx.db.query("dtsRulings").collect();
+    const all = await ctx.db.query("rulings").collect();
     const newest = liveRulings(all);
     return all.filter(
       (row) =>
@@ -780,7 +776,7 @@ export const internalMarkRulingApplied = internalMutation({
   handler: async (ctx, { id, result }) => {
     // The worker sends plain strings over HTTP; normalizeId is the proper
     // reject-with-a-name path for malformed/wrong-table ids.
-    const normalized = ctx.db.normalizeId("dtsRulings", id);
+    const normalized = await resolveId(ctx, "rulings", id);
     if (!normalized) throw new Error(`Unknown ruling id: ${id}`);
     const ruling = await ctx.db.get(normalized);
     if (!ruling) throw new Error(`Unknown ruling id: ${id}`);
@@ -797,7 +793,7 @@ export const internalMarkRulingApplied = internalMutation({
 // Digest input: how many briefed code todos await a ruling. A brief awaits
 // when its live ruling is missing OR NOT NEWER than the brief — a re-brief
 // after a revise ruling puts the item back on Tom's plate (the fresh plan
-// needs a fresh ruling). The client-side needs-me selector (app/tts/lib.ts)
+// needs a fresh ruling). The client-side needs-me selector (app/jarvis/lib.ts)
 // mirrors this predicate.
 //
 // THE TIE IS DELIBERATE — DO NOT TIGHTEN `<=` BACK TO `<`. ruledAt (set at
@@ -812,7 +808,7 @@ export const internalMarkRulingApplied = internalMutation({
 // happen.
 export function briefAwaitsRuling(
   brief: { repo: string; externalId: string; preparedAt: number },
-  live: Map<string, Doc<"dtsRulings">>,
+  live: Map<string, Doc<"rulings">>,
 ): boolean {
   const ruling = live.get(
     subjectKey({
@@ -829,13 +825,11 @@ export function briefAwaitsRuling(
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    // The planner reads these as Tom's recent rulings on its todos. An answer to a worker's elevation is about neither, and a
-    // delegate's answer is not his, so none is sent; left out before the cap.
+    // The planner reads these as Tom's recent rulings on its todos.
     return await ctx.db
-      .query("dtsRulings")
+      .query("rulings")
       .withIndex("by_ruled")
       .order("desc")
-      .filter((q) => q.neq(q.field("subjectType"), "elevation"))
       .take(Math.min(limit ?? 200, 1000));
   },
 });
@@ -844,7 +838,7 @@ export const internalAwaitingRulingCount = internalQuery({
   args: {},
   handler: async (ctx) => {
     const briefs = await ctx.db.query("dtsCodeBriefs").collect();
-    const live = liveRulings(await ctx.db.query("dtsRulings").collect());
+    const live = liveRulings(await ctx.db.query("rulings").collect());
     return briefs.filter((b) => briefAwaitsRuling(b, live)).length;
   },
 });

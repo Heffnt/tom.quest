@@ -8,19 +8,15 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import {
   liveCodeSessionRulings,
-  liveRulings,
   markCodeSessionRulingsApplied,
   markLiveSessionRulingApplied,
-  subjectKey,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
 import { appendNotes, inboundRowIdOf, NOTES, rowSource } from "./sessionRows";
 import { isIsoDay } from "../shared/markdown-sections.mjs";
-import { redactSecrets } from "../shared/redact.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
@@ -44,37 +40,19 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // declared here AND in app/agents/lib.ts). The model-of-tom context each opener carries is assembled for that
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
-import { withoutModelOfTomPrelude } from "./ttsSkills";
-import { assembleContext, type ContextSubject } from "./ttsContext";
-import { dueRunnerSteps } from "./ttsRunners";
-import { hostedFacts, onHostedSessionEnded, renewOrchestratorLease } from "./orchestrator";
-import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
-import { EVALS_REQUIRED_FOR_MERGE } from "./ttsMerge";
-import { briefForPrompt } from "../shared/context-relevance.mjs";
-import { USAGE_LIMIT_RE } from "../shared/session-constants.mjs";
+import { assembleContext, CONTEXT_END, joinContext, withoutPastedContext, type ContextSubject } from "./ttsContext";
+import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
 import {
-  WORKER_CONTRACT,
-  CODEX_FALLBACK_MODEL,
-  CODEX_USAGE_STALE_MS,
-  CODEX_WEEKLY_CAP_PERCENT,
-  CODE_TODO_PATH,
-  CODE_TODO_REPOS,
   DAEMON_STALE_MS,
   DEFAULT_SESSION_MODEL,
   LIVE_STATUSES,
   MODEL_OF_TOM_HEADER,
-  NARROW_LIST,
   NO_REPO,
   SESSION_MODEL,
   SESSION_REPO_NAMES,
   isLive,
-  isPrepared,
-  isSessionRepo,
   modelFamily,
   normalizeSessionRepos,
-  tracksCodeTodos,
-  ttsSessionLink,
-  wakeAtPassed,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 export { DAEMON_STALE_MS };
@@ -88,56 +66,10 @@ async function getSessionOrThrow(
   return session;
 }
 
-// ── A session that failed (slack-design.md §1.2) ─────────────────────────────
-// THE PER-SESSION EVENT LINE IS GONE. It was switched off from the day it was
-// written and it had no channel of its own: a session recording an outcome is
-// not something Tom does anything about, and it reaches him in the morning
-// message's overnight run. The one case that IS a message is a session that
-// FAILED, and that goes to #tts-broken.
-//
-// The Slack POST is an ACTION (network), so a mutation cannot await it — it is
-// scheduled at runAfter(0) and rides the transaction: if the mutation rolls
-// back, the message is never scheduled at all, so Slack never reports a
-// transition that did not happen.
-//
-// EDGE TRIGGERS ONLY. Every call site below sits on a transition that the
-// surrounding code makes unrepeatable (a live→terminal status patch, an
-// undefined→set outcome). The daemon polls and flushes continuously; a
-// level-triggered check would send one message per flush for the whole time
-// Tom is asleep. #tts-broken dedupes on the job as well, and a session's job
-// name is the session itself, so two failures of one session are one message.
-function notifySessionFailed(
-  ctx: MutationCtx,
-  sessionId: Id<"claudeSessions">,
-  title: string,
-  reason: string | undefined,
-): Promise<Id<"_scheduled_functions">> {
-  return ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
-    job: `session:${sessionId}`,
-    statement: `A session stopped without finishing what it was carrying, so nothing it was doing is done.`,
-    // THE REASON AND THE TITLE ARE FREE TEXT a session wrote about itself, so
-    // both go through the one credential filter (the same redactSecrets
-    // convex/ttsSearch.ts and worker/session-host use) before they can become
-    // a #tts-broken line: a run that printed a token can put it in either.
-    detail: redactSecrets(`${title} stopped: ${reason ?? "no reason was reported"}`),
-    url: ttsSessionLink(sessionId),
-  });
-}
-
-// ONE wording for an outcome event, shared by the daemon's stamp
-// (internalIngest) and the agent's pen (internalRecordOutcome) — the two
-// writers of the same fact must not describe it two ways. Descriptive, one
-// line, no exclamation marks.
-function outcomeEventText(
-  title: string,
-  outcome: "completed" | "errored",
-  summary: string | undefined,
-): string {
-  const said = (summary ?? "").trim();
-  return `session "${title}" recorded its outcome: ${outcome} — ${
-    said === "" ? "no summary reported" : said
-  }`;
-}
+// ── A session that failed ────────────────────────────────────────────────────
+// Not a message of its own (one output channel, 2026-09-26): a session that
+// errored or failed is a line in the digest's broken section, read from its
+// session-outcome / session-ended row (convex/ttsDigest.ts).
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
 
@@ -452,8 +384,8 @@ const SESSION_KIND = v.union(
  * order of authority — each source consulted only when the one above it says
  * nothing:
  *
- *  1. `explicit` — the caller named the set: the orchestrator's spawn, the
- *     session form, the weekly job. This is the normal path. An explicit empty
+ *  1. `explicit` — the caller named the set: the session form, the weekly
+ *     job. This is the normal path. An explicit empty
  *     array is an answer ("no checkout").
  *  2. The substring scan over the item's own words. The fallback, and the
  *     weakest: it is case-sensitive and matches anywhere, so it reads "the
@@ -639,91 +571,55 @@ export async function insertSession(
     codeSessionLines = codeSessionRulingLines(subjects);
     await markCodeSessionRulingsApplied(ctx, consumed, sessionId);
   }
-  // The opener carries the model-of-tom context ASSEMBLED FOR ITS OWN SUBJECT
-  // (the dynamic-context round, Tom's ruling 2026-09-09), rather than a
-  // caller-selected set of whole layers: the browser-built prompts, the worker
-  // missions, the CLI pen, a fork — one home, here, rather than each builder
-  // pasting its own copy.
+  // The opener carries the model-of-tom context (ttsContext.assembleContext),
+  // in prompt order: the base (header line 1, the map, the operate rules),
+  // the write pages, the skills line, the subject's rulings and prior
+  // outcomes, then the mission the builder wrote, the code-session lines and
+  // the outcome pen. The base is identical for every run at one WikiTom
+  // commit, which makes it the cache boundary and the transcript's first line.
   //
-  // Three parts in prompt order, and the order is the point:
-  //   prefix   header line 1 + the map + the operate rules. Identical for every
-  //            run at one WikiTom commit — the cache boundary, and the
-  //            transcript's first line, so the row records what the session
-  //            began with.
-  //   grants   the skills this session may load, by name, about two hundred
-  //            bytes. The session loads a body itself, once, if it needs it.
-  //   body     the mission the builder wrote, plus the code-session lines and
-  //            the outcome pen. The task layer the map promises is last, and it
-  //            is now the last thing in the prompt: the fetchable index went
-  //            when the skill catalog replaced it.
+  // The subject is the seed's todo, else its first repo, else nothing. A
+  // therapy session's subject is never its todo (Tom's ruling 2026-09-25: it
+  // is about the mental-health area whatever todo it was opened on), so it
+  // carries no todo's rulings. The opener's output reaches Tom (the outcome, the digest, the transcript), so
+  // its prompt carries the write pages.
   //
-  // The subject is already in hand: the seed's todo, else its first repo, else
-  // nothing. `reachesTom` is TRUE for every opener — the
-  // outcome, the digest and the transcript all reach him — which is what grants
-  // it the `write` skill.
+  // Publication fails closed: with no posted base, assembleContext throws and
+  // this mutation publishes neither the session nor its opener.
   //
-  // Publication fails closed: with no complete posted layer set, assembleContext
-  // throws and this mutation publishes neither the session nor its opener.
-  //
-  // AND ONLY HERE: a seed whose prompt already begins with the header — a live
-  // opener copied into the Create session box, a builder that pasted its own
-  // copy — has that copy TAKEN OFF and the live one put there instead
-  // (withoutModelOfTomPrelude), so the session opens and the transcript's first
-  // line names one commit: the one this deployment holds. Two headers naming
-  // two commits is what nothing reading the row could make sense of, and one
-  // paste is a normal thing for Tom to do. WHAT IS STRIPPED IS THE STABLE
-  // PREFIX, which is all a paste can carry that is not rebuilt anyway: the
-  // grant block comes from the live record and the live catalog either way.
-  //
-  // A prefix read at some OTHER commit is still refused, because there is
-  // nothing in the text that says where it stops and the prompt starts (see
-  // withoutModelOfTomPrelude). The refusal writes nothing: a Convex mutation
-  // is one transaction, so the row inserted above and the ruling marks after
-  // it go back with the throw — pinned by the test, which finds no session and
-  // no inbound row.
+  // A seed whose prompt already begins with the header (a live opener copied
+  // into the Create session box, a builder that pasted its own copy) has that
+  // copy TAKEN OFF, with the write pages, the skills line and the old
+  // subject's facts that followed it (withoutPastedContext), and the live
+  // context put there instead, so no ruling of another subject rides along
+  // and the transcript's first line names one
+  // commit: the one this deployment holds. A prefix read at some OTHER commit
+  // is refused, because nothing in the text says where it stops and the
+  // prompt starts. The refusal writes nothing: a Convex mutation is one
+  // transaction, so the row inserted above and the ruling marks after it go
+  // back with the throw.
   const prompt = seed.prompt(sessionId, repos);
-  // A therapy session's subject is the mental-health area, whatever todo it
-  // was opened on: the router grants write, know-intent and
-  // know-mental-health for it. It is the one thing that builds an area
-  // subject; the Jarvis session-start hook routes the same subject when the
-  // session host hands it TTS_SESSION_KIND=therapy.
   const subject: ContextSubject =
-    seed.kind === "therapy"
-      ? { kind: "area", area: "mental-health" }
-      : seed.todoId !== undefined
-        ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
-        : repos.length > 0 && repos[0] !== NO_REPO
-          ? { kind: "repo", repo: repos[0] }
-          : { kind: "none" };
-  const context = await assembleContext(ctx, subject, { reachesTom: true, caller: "opener", now });
-  const body = withoutModelOfTomPrelude(prompt, context.prefix);
+    seed.todoId !== undefined && seed.kind !== "therapy"
+      ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
+      : repos.length > 0 && repos[0] !== NO_REPO
+        ? { kind: "repo", repo: repos[0] }
+        : { kind: "none" };
+  const context = await assembleContext(ctx, subject, { reachesTom: true });
+  const body = withoutPastedContext(prompt, context);
   if (body === null) {
     throw new Error(
       `the prompt begins with a model-of-tom prelude ("${MODEL_OF_TOM_HEADER}") read at another commit; the opener adds the live one, and where a prelude from another commit stops and the prompt starts is not written down anywhere in it`,
     );
   }
   const text =
-    context.prefix +
+    joinContext(context) +
     "\n\n" +
-    context.grants +
+    CONTEXT_END +
     "\n\n" +
     body +
     (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
     (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
-  // What this opener was given, for the delivery check to read beside what the
-  // session then did (schema: contextExpanded / contextBytes).
-  //
-  // THE TWO FIELDS KEEP THEIR PHASE-4 NAMES until phase 9 renames them, and
-  // what they hold is what replaced what they were named for: the GRANTED SKILL
-  // NAMES where the expanded manifest was, and the grant block's bytes in the
-  // `expanded` slot. `fetchable` is 0 because there is no fetchable block any
-  // more — the catalog is the index. A reader of an old row and a reader of a
-  // new one are reading the same question ("what did this opener carry"), which
-  // is why the rename waits rather than splitting the field in two.
-  await ctx.db.patch(sessionId, {
-    contextExpanded: context.granted,
-    contextBytes: { prefix: context.bytes.prefix, expanded: context.bytes.grants, fetchable: 0 },
-  });
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind: "user-turn",
@@ -849,7 +745,7 @@ export const internalTranscriptPage = internalQuery({
 // The one argument shape and body behind BOTH doors below: Tom's browser
 // mutation (requireTomId) and the CLI pen (internalMutation, run with
 // `npx convex run claudeSessions:internalCreateSession '{…}'` against the
-// deployment — the same pattern as internalSetAutoConfig). One body, so the
+// deployment). One body, so the
 // two doors can never resolve repos or seed the row differently.
 const CREATE_SESSION_ARGS = {
   title: v.string(),
@@ -987,27 +883,23 @@ export const internalCreateWeeklySession = internalMutation({
 // sendControl; the validations live in the body precisely so a pen can never
 // skip a check the browser enforces. Not repeated on each one.
 
-// The one outcome pen for the interactive footer and every autonomous mission.
-// The caller owns its session-specific purpose and outcome wording; this owns
-// the credential-bearing command and its exact JSON shape.
-export function sessionOutcomePen({
+// The one outcome pen for the interactive footer. The caller owns its
+// session-specific purpose and outcome wording; this owns the
+// credential-bearing command and its exact JSON shape.
+function sessionOutcomePen({
   sessionId,
   leadIn,
   summary,
   after,
-  fenced = false,
 }: {
   sessionId: Id<"claudeSessions">,
   leadIn: string;
   summary: string;
   after?: string;
-  fenced?: boolean;
 }): string {
   const command =
     `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "${summary}"}'`;
-  return fenced
-    ? [leadIn, "```", command, "```", after].filter((line): line is string => line !== undefined).join("\n")
-    : [leadIn, command, after].filter((line): line is string => line !== undefined).join("\n");
+  return [leadIn, command, after].filter((line): line is string => line !== undefined).join("\n");
 }
 
 // The interactive twin of the autonomous mission's pen: same route, same key,
@@ -1438,7 +1330,6 @@ export const forceClose = mutation({
     if (buf) await ctx.db.delete(buf._id);
     // A returning daemon learns from the poll that this session is terminal
     // and kills any process it still holds for it.
-    await onHostedSessionEnded(ctx, session, { status: "ended", endedReason: "force-closed by Tom; worker unconfirmed" });
   },
 });
 
@@ -1482,14 +1373,10 @@ export const internalPoll = internalMutation({
         liveSessions: v.number(),
       }),
     ),
-    // Codex account usage, read off the Codex CLI by the daemon. The
-    // scheduler's weekly gate reads it back; absent is UNKNOWN, and so is a
-    // reading whose `readAt` is older than CODEX_USAGE_STALE_MS — the daemon
-    // keeps resending its last successful reading with that reading's OWN
-    // readAt while later reads fail, so age is the signal. Unknown admits: a
-    // daemon that cannot read the CLI must not freeze the fleet. Reported on
-    // the same throttled heartbeat as `load`. The five-hour figure is absent
-    // when the account reports no such window (schema.ts says which plans).
+    // Codex account usage, read off the Codex CLI by the daemon and stored
+    // for the pages. Reported on the same throttled heartbeat as `load`. The
+    // five-hour figure is absent when the account reports no such window
+    // (schema.ts says which plans).
     codexUsage: v.optional(
       v.object({
         weeklyUsedPercent: v.number(),
@@ -1498,15 +1385,14 @@ export const internalPoll = internalMutation({
         readAt: v.number(),
       }),
     ),
-    // The model slugs the box's Codex CLI lists; the orchestrator's model is
-    // picked from them (convex/orchestrator.ts orchestratorModel).
+    // The model slugs the box's Codex CLI lists, stored for the pages.
     codexModels: v.optional(v.array(v.string())),
-    // What this daemon can host beyond ordinary sessions. A daemon that does
-    // not name "orchestrator" and "worker" is never shown a hosted row: an old
-    // copy on the box would end it after its first turn.
+    // Accepted and ignored: the daemon on the box still sends both (Jarvis
+    // worker/session-host/session-host.mjs, for the hosted runs of the
+    // deleted orchestrator), and a validator refuses an unknown argument,
+    // which would stop every session's poll. Delete both lines once the
+    // Jarvis branch night/w1-dead-generation is live on the box.
     hosts: v.optional(v.array(v.string())),
-    // The session ids the daemon holds; the orchestrator's lease is renewed
-    // while its live run is among them.
     held: v.optional(v.array(v.string())),
     // Whether Fable answers on the box (ttsShared FABLE_AVAILABILITY), absent
     // while the daemon has none recorded. Stored for the pages; nothing here
@@ -1526,8 +1412,6 @@ export const internalPoll = internalMutation({
       load,
       codexUsage,
       codexModels,
-      hosts,
-      held,
       fableAvailability,
       usageLimit,
     },
@@ -1568,8 +1452,6 @@ export const internalPoll = internalMutation({
         usageLimit,
       });
     }
-    if (held !== undefined) await renewOrchestratorLease(ctx, held, now);
-    const hostsHosted = hosts?.includes("orchestrator") === true && hosts.includes("worker");
 
     const sessions: unknown[] = [];
     for (const status of LIVE_STATUSES) {
@@ -1578,10 +1460,6 @@ export const internalPoll = internalMutation({
         .withIndex("by_status", (q) => q.eq("status", status))
         .collect(); // bounded: live sessions are few by design
       for (const s of rows) {
-        // A hosted row (the orchestrator's run, or a worker it spawned) goes
-        // only to a daemon that hosts them, with what decides its ending.
-        const hosted = await hostedFacts(ctx, s);
-        if (hosted !== undefined && !hostsHosted) continue;
         const pendingInbound = await ctx.db
           .query("claudeInbound")
           .withIndex("by_session_status", (q) =>
@@ -1629,15 +1507,10 @@ export const internalPoll = internalMutation({
           // daemon clears its live tail when the turn's rows have landed, not
           // at the turn's result, and this is how it sees them land.
           newestRow: await newestRunRow(ctx, s),
-          ...(hosted ?? {}),
         });
       }
     }
-    // Runner steps ride the same poll: one more array on this payload, one
-    // more branch in the daemon's walk, no second loop and no second key. A
-    // step is not a session and writes no session row (convex/ttsRunners.ts).
-    const runnerSteps = await dueRunnerSteps(ctx, now);
-    return { now, sessions, runnerSteps };
+    return { now, sessions };
   },
 });
 
@@ -1804,16 +1677,8 @@ export const internalIngest = internalMutation({
     // EDGE: the outcome field went undefined → set, and it can only make that
     // crossing once (every later ingest reads a defined session.outcome and
     // skips the branch above). The daemon may re-send the same outcome on
-    // every flush of a closing session; only the first one notifies.
+    // every flush of a closing session; only the first one is recorded.
     if (outcomeNewlyApplied && args.outcome !== undefined) {
-      if (args.outcome === "errored") {
-        await notifySessionFailed(
-          ctx,
-          args.sessionId,
-          session.title,
-          args.outcomeSummary ?? outcomeEventText(session.title, args.outcome, args.outcomeSummary),
-        );
-      }
       await logEvent(ctx, "session-outcome", session.todoId, {
         sessionId: args.sessionId,
         title: session.title,
@@ -1856,40 +1721,16 @@ export const internalIngest = internalMutation({
       }
     }
 
-    // EDGE: a failure is reported once, on the live→terminal crossing.
-    // `becameTerminal` requires `!noState` (the session was live at the top of
-    // this transaction AND the payload is not a pre-reopen replay), and the
-    // patch above just made it terminal, so every later flush computes
-    // `terminal === true` and cannot re-fire. The `stale` half is what closes
-    // the reopen hole: a replayed failure flush arrives at a live row again,
-    // and without it Tom would be told twice about one failure.
-    if (becameTerminal && args.status === "failed") {
-      await notifySessionFailed(
-        ctx,
-        args.sessionId,
-        session.title,
-        args.endedReason ?? session.endedReason,
-      );
-    }
-    // A hosted run's ending: the orchestrator is restarted from its document,
-    // and a worker's orchestrator is told (convex/orchestrator.ts). Once, on
-    // the same live→terminal edge.
-    if (becameTerminal) {
-      await onHostedSessionEnded(ctx, session, {
-        status: args.status!,
-        endedReason: args.endedReason ?? session.endedReason,
-      });
-    }
-
     // NOTE (review finding): there was a permission-REQUEST insert loop here,
     // with a Slack "waiting on a permission decision" message on the insert
     // edge. It was unreachable: the daemon's unified auto gate allows or denies
     // every tool call itself and has never had a producer for such a request,
     // so the loop could only ever run for a payload no code emits. Removed
-    // rather than left as a promise the system does not keep. The live
-    // needs-you edges are the failed ending above and the first outcome record;
-    // a genuine "this session needs Tom" signal has to be wired to a reachable
-    // edge (a turn that ends with a question), which is new work.
+    // rather than left as a promise the system does not keep. A session that
+    // fails or errors is a line in the digest's broken section (its
+    // session-ended / session-outcome row); a genuine "this session needs Tom"
+    // signal is a needs-you (POST /tts/needs-tom), wired to a reachable edge
+    // (a turn that ends with a question), which is new work.
     // The ack loop that stood here went with the permission table (the lifeos
     // update, phase 7).
 
@@ -1936,6 +1777,11 @@ export const internalRecordOutcome = internalMutation({
     // or correct completed → errored after a late failure), so the row itself
     // stops being an edge after the first write.
     const firstRecord = session.outcome === undefined;
+    // A CORRECTION TO ERRORED is a failure the record has not said yet: the
+    // first errored word of a session is written as its own event even after
+    // a completed one, so the digest (which reads events, one line per
+    // session) sees it. Later rewordings of the same verdict write nothing.
+    const turnedErrored = outcome === "errored" && session.outcome !== undefined && session.outcome !== "errored";
     await ctx.db.patch(normalized, {
       outcome,
       outcomeSummary: summary.trim(),
@@ -1944,16 +1790,8 @@ export const internalRecordOutcome = internalMutation({
     // row — the surface always shows the agent's latest word — but Slack is
     // told once, so an agent that revises its wording three times does not
     // ping Tom three times.
-    if (firstRecord) {
-      if (outcome === "errored") {
-        await notifySessionFailed(
-          ctx,
-          normalized,
-          session.title,
-          summary.trim() === "" ? undefined : summary.trim(),
-        );
-      }
-      // Same edge, same reason, into the events table the hourly update reads.
+    if (firstRecord || turnedErrored) {
+      // Same edge, same reason, into the events table the digest reads.
       await logEvent(ctx, "session-outcome", session.todoId, {
         sessionId: normalized,
         title: session.title,
@@ -1964,123 +1802,7 @@ export const internalRecordOutcome = internalMutation({
   },
 });
 
-// ── Autonomous-fleet config (P3) ─────────────────────────────────────────────
-
-// THE FOUR ADMISSION NUMBERS LIVE HERE, IN CODE (the lifeos update, phase 7).
-// They describe how hard the Jarvis Box may be pushed — the load and memory
-// ceilings admission is judged against, and the two runaway failsafes — and
-// they were set once and never touched again. A number nobody changes is not a
-// decision; it is mechanism, and mechanism belongs in code rather than in a
-// row Tom has to hold in his head to read the agents page. So NO DOOR WRITES
-// THEM any more: both pens below write these values verbatim, and Tom's own
-// door (setAutoConfig) takes `enabled` alone.
-//
-// The columns stay in the schema until NARROW, and the scheduler still reads
-// the row, so a value written before this change keeps working until the next
-// press of the switch copies the code values over it. At NARROW the columns go
-// and every reader takes them from here.
-//
-// enabled FALSE: the fleet runs nothing until the switch is deliberately on.
-export const AUTO_DEFAULTS = {
-  enabled: false,
-  maxLoadPerCpu: 0.8,
-  minFreeMemMb: 1024,
-  maxLiveAutonomous: 8,
-  maxNewPerTick: 2,
-  defaultModel: DEFAULT_SESSION_MODEL,
-} as const;
-
-/**
- * The one writer of the singleton row. It takes the two things that are still
- * decisions — whether the fleet runs, and which model it runs on — and writes
- * the four admission numbers from AUTO_DEFAULTS every time, which is what
- * makes those numbers code-owned while their columns are still in the schema.
- * An omitted `defaultModel` keeps whatever the row already holds (undefined is
- * never written), so a call that says nothing about the model cannot reset it.
- */
-async function upsertAutoConfig(
-  ctx: MutationCtx,
-  fields: { enabled: boolean; defaultModel?: SessionModel },
-): Promise<void> {
-  const existing = await ctx.db.query("claudeAutoConfig").first();
-  const { enabled, defaultModel } = fields;
-  const row = {
-    maxLoadPerCpu: AUTO_DEFAULTS.maxLoadPerCpu,
-    minFreeMemMb: AUTO_DEFAULTS.minFreeMemMb,
-    maxLiveAutonomous: AUTO_DEFAULTS.maxLiveAutonomous,
-    maxNewPerTick: AUTO_DEFAULTS.maxNewPerTick,
-    enabled,
-    ...(defaultModel !== undefined ? { defaultModel } : {}),
-    updatedAt: Date.now(),
-  };
-  if (existing) {
-    await ctx.db.patch(existing._id, row);
-  } else {
-    await ctx.db.insert("claudeAutoConfig", row);
-  }
-}
-
-// What the page reads. The four numbers come from the code, not from the row,
-// so the answer is what the scheduler will actually be admitting under once
-// the switch is next pressed — and so a row still carrying an older value
-// cannot show Tom a number nothing means to keep.
-export const getAutoConfig = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTomId(ctx);
-    const row = await ctx.db.query("claudeAutoConfig").first();
-    return {
-      ...AUTO_DEFAULTS,
-      ...(row === null
-        ? {}
-        : {
-            enabled: row.enabled,
-            // A row written before the field existed still has a default: the
-            // model named here is the one the scheduler would actually use.
-            defaultModel: row.defaultModel ?? DEFAULT_SESSION_MODEL,
-          }),
-      fromDefaults: row === null,
-    };
-  },
-});
-
-// Tom's door, and the whole of it: ON or OFF. See the fleet strip in
-// app/agents/components/session-list.tsx. The stored default model is
-// carried through untouched — a press of "stop" decides nothing about which
-// model the fleet runs on.
-export const setAutoConfig = mutation({
-  args: { enabled: v.boolean() },
-  handler: async (ctx, { enabled }) => {
-    await requireTomId(ctx);
-    await upsertAutoConfig(ctx, { enabled });
-  },
-});
-
-// The CLI pen for supervised enable at deploy:
-// `npx convex run claudeSessions:internalSetAutoConfig '{"enabled": true}'`
-// — same upsert as setAutoConfig (which needs Tom's browser identity the
-// Jarvis Box does not hold), plus the fleet's default model, which has no
-// browser control. Use only while supervising the first ticks. It no longer
-// takes the four admission numbers: they are code-owned (AUTO_DEFAULTS), and
-// a command line that names one is refused rather than quietly ignored.
-export const internalSetAutoConfig = internalMutation({
-  args: { enabled: v.boolean(), defaultModel: v.optional(SESSION_MODEL) },
-  handler: async (ctx, fields) => {
-    await upsertAutoConfig(ctx, fields);
-  },
-});
-
-// ── Autonomous mission prompt ────────────────────────────────────────────────
-
-function promptFact(label: string, value: string | undefined): string | null {
-  return value && value.trim() !== "" ? `${label}: ${value}` : null;
-}
-
-// Which repos a mission's workspace holds is answered ONCE, by
-// resolveSessionRepos above (the one home). This lane used to answer it here,
-// with pickMissionRepo — a case-sensitive substring search over the todo's
-// words that could only ever return ONE repo. It is gone; the substring scan
-// survives only as the resolver's fallback when no caller names the repos.
+// ── The workspace paragraph ──────────────────────────────────────────────────
 
 /**
  * The workspace paragraph, one home for every mission prompt. The agent must
@@ -2093,9 +1815,6 @@ function promptFact(label: string, value: string | undefined): string | null {
  * per-caller because a groundwork mission and a worker mission mean different
  * things by "implement".
  */
-// BOX_TOOLS_PARAGRAPH and DAEMON_RESTART_SENTENCE live in ttsShared.ts, which
-// the runner's step prompt (convex/ttsRunners.ts) reads too.
-
 export function workspaceParagraph(
   repos: string[],
   sessionId: Id<"claudeSessions">,
@@ -2108,1124 +1827,3 @@ export function workspaceParagraph(
   const list = repos.map((r) => `\`./${r}\``).join(" and ");
   return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
 }
-
-// Autonomous sessions are unattended, so a question that genuinely needs
-// Tom's judgment goes to the delegate instead of quietly becoming a todo.
-// The narrow list itself stays in ttsShared: the worker command and this
-// prompt must name the same four things Tom keeps for himself.
-function delegateDoctrine(sessionId: Id<"claudeSessions">, todoId?: Id<"dtsTodos">): string {
-  const todo = todoId === undefined ? "" : ` --todo ${todoId}`;
-  const narrow = NARROW_LIST.map((item) => item.decision).join("; ");
-  return [
-    "When a decision genuinely cannot be taken on your own judgment, ask the delegate — one command, one answer, about two minutes:",
-    `\`tts-ask --session ${sessionId}${todo} --question "<one sentence>" --option "<a>" --option "<b>" --recommend "<the one you would take>" --fallback "<what you will do if it does not answer>"\``,
-    "The delegate is a Fable run holding Tom's rules and intent. Its answer is a decision, not a ruling; it is recorded and appears in his objection list, where silence means it stands. Do not start a second ask in parallel or do other work while it runs.",
-    `It refuses only this narrow list: ${narrow}. On a refusal, do not take the action: park the item through the prepare pen with readiness \"prepared\", the one action only Tom can take, and evidence naming the ask and your default; then carry on. If it does not answer, take your stated fallback, say so in the outcome summary, and carry on. At most five asks in one session; decide everything else yourself.`,
-  ].join("\n\n");
-}
-
-// A merge is unattended work once its three mechanical checks pass (Tom,
-// 2026-09-09: merging is mechanical when the tests, the audit and the evals
-// pass, and is then REPORTED for objection rather than asked about — which is
-// why it is not on the narrow list). Since Tom's ruling of 2026-09-24 the
-// evals are reported but not required, for now: EVALS_REQUIRED_FOR_MERGE in
-// convex/ttsMerge.ts decides, and this paragraph reads the same constant so
-// it and the box say the same thing.
-//
-// THE GATE IS MECHANICAL AND THE BOX ENFORCES IT. A lone `git merge` or
-// `gh pr merge` is ruled on by the daemon before it runs: it reads HEAD in the
-// checkout and asks GET /tts/merge-gate for the checks
-// (worker/session-host/merge-gate.mjs, convex/ttsMerge.ts). Every required
-// check on record → the command runs and a transcript row says which checks
-// let it. Any missing → denied, naming them. So this paragraph and the box
-// agree, and a session that reads it and tries to merge finds out immediately
-// which one is not there yet.
-//
-// POST /tts/merge is the REPORT, and it runs the same gate again: it is what
-// puts the merge in the morning's objection list and posts one line to
-// #tts-decisions. It cannot make an ungated merge legitimate.
-export function mergeGate(): string {
-  return [
-    EVALS_REQUIRED_FOR_MERGE
-      ? "Merging is mechanical, not Tom's gate. A merge is allowed when three things are on record for the exact commit you are merging: the tests are green, an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit), and an evals run scored it with no regression."
-      : "Merging is mechanical, not Tom's gate. A merge is allowed when two things are on record for the exact commit you are merging: the tests are green, and an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit). The evals are still scored and reported for the commit, but by Tom's ruling of 2026-09-24 they are not required for merging for now.",
-    "Run the merge as its OWN command — `git merge` or `gh pr merge`, nothing chained to it. The box checks them itself and either runs it or denies it naming which are missing; you never have to ask.",
-    "After a merge, POST /tts/merge through the worker-key pen with its repo, the merged sha, and a concise summary. That is the report, not the permission: it puts the merge in Tom's morning objection list and in #tts-decisions, where silence means it stands.",
-  ].join("\n\n");
-}
-
-// Opening prompt for an AUTONOMOUS session. The sessionId rides in so the
-// outcome pen can name this session — the agent has no other way to learn its
-// own id. Interactive openings have their own framing in
-// app/lib/tts-session-prompt.ts; they do not share this autonomous contract.
-function buildAutoMissionPrompt(
-  todo: Doc<"dtsTodos">,
-  sessionId: Id<"claudeSessions">,
-  repos: string[],
-): string {
-  // Facts block — same labels and order as the interactive twin's
-  // buildTodoSessionPrompt (category is autonomous-only: it scopes what a
-  // block-lane session may touch).
-  const itemContext = [
-    `The item ("${todo.statement}"):`,
-    promptFact("category", todo.category),
-    promptFact("work description", todo.workDescription),
-    promptFact("entry action", todo.entryAction),
-    promptFact("body", todo.body),
-    // Cut at the same cap the interactive twin uses, through the same
-    // function, which appends the line saying where the rest is
-    // (shared/context-relevance.mjs).
-    promptFact("brief", todo.brief === undefined ? undefined : briefForPrompt(todo.brief).text),
-    // Tom's must-not-break line on a goal: it binds every step toward the goal.
-    // The worker prompt that carried it went with batches (2026-09-24); this is
-    // where an agent working the goal now reads it.
-    promptFact("must not break (Tom's line; a change that would break it is not a change to make)", todo.mustNotBreak),
-  ];
-  const lines: (string | null)[] = [
-    WORKER_CONTRACT,
-    "",
-    `The goal: do the groundwork this item needs — research, draft, gather — and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready.`,
-    "",
-    // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
-    // implementation — a session that halts at a decision leaves him nothing
-    // concrete to rule on.
-    `Tom decisions: a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in the write-up; the decision then surfaces where the work persists — the pull request, or the ruling on this item. Leave for Tom only what ONLY he can do: rulings and real-world actions.`,
-    "",
-    delegateDoctrine(sessionId, todo._id),
-    "",
-  ];
-  lines.push(
-    "",
-    // The env contract: the daemon injects ONLY these two variables into an
-    // autonomous session's shell — SESSIONS_WORKER_KEY (the ingest key) never
-    // enters a model-reachable environment (the auth-clobber lesson), which
-    // is why the outcome pen below rides the TTS key.
-    "The pens (shell commands; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment):",
-    "",
-    "1. Write your work into the item:",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "prepared"}'`,
-    "```",
-    'Every field except "id" is optional — send only what you produced.',
-    "",
-    sessionOutcomePen({
-      sessionId,
-      leadIn: "2. Record this session's outcome when the mission is done:",
-      summary: "one line: what landed where",
-      after:
-        '"completed" means the mission produced its artifact; otherwise record "errored" with a summary saying what blocked you.',
-      fenced: true,
-    }),
-    "",
-    // Two workspace variants. No repos is the groundwork posture (unchanged);
-    // a repo-equipped mission implements the code itself and stops exactly at
-    // the merge — the one gate the doctrine keeps for Tom.
-    ...(repos.length === 0
-      ? [
-          // No workspace paragraph in this posture, so the daemon sentence
-          // rides here instead — a session with no checkout still has a shell
-          // on the box and can still stop the daemon.
-          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the write-up as work still to do instead. ${DAEMON_RESTART_SENTENCE}`,
-        ]
-      : [
-          workspaceParagraph(
-            repos,
-            sessionId,
-            "Implement the agent steps INCLUDING the code ones.",
-          ),
-          "",
-          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never push any branch other than session/${sessionId}. ${mergeGate()}`,
-        ]),
-    "",
-    BOX_TOOLS_PARAGRAPH,
-    "",
-    "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
-    "",
-    ...itemContext,
-  );
-  return lines.filter((l): l is string => l !== null).join("\n");
-}
-
-// ── The code mission (the lifeos update, phase 7) ────────────────────────────
-// Tom's approve or archive ruling on a CODE todo — an entry in a repo's
-// vqc/todos.yaml, briefed on the /tts page — is carried out by an autonomous
-// session on that repo's checkout, the way worker/jobs/execute-approved.mjs
-// did on its own hourly clone before this: implement the plan (approve) or
-// close the entry (archive), run the registry's own guard test, commit, push
-// session/<id>, open a pull request, and merge only after the three mechanical
-// checks pass for its head — the box enforces that itself (worker/session-host/
-// merge-gate.mjs). Every merge is then recorded for objection.
-
-/** How a registry-keeping repo checks its own todo file — read off the one
- * home (ttsShared CODE_TODO_REPOS). A mission is told to run it and to fix
- * what it breaks: the PR must never carry a malformed registry. */
-const codeTodoGuard = (repo: string): string | undefined =>
-  tracksCodeTodos(repo)
-    ? CODE_TODO_REPOS[repo as keyof typeof CODE_TODO_REPOS].guard
-    : undefined;
-
-/** The one line a code mission's ruling row records at admission. */
-export const codeMissionApplyResult = (sessionId: string): string =>
-  `admitted as session ${sessionId}`;
-
-function buildCodeMissionPrompt(args: {
-  repo: string;
-  externalId: string;
-  verdict: "approve" | "archive";
-  sentence?: string;
-  statement: string;
-  brief: string;
-  sessionId: Id<"claudeSessions">;
-}): string {
-  const { repo, externalId, verdict, sentence, statement, brief, sessionId } = args;
-  const branch = `session/${sessionId}`;
-  const guard = codeTodoGuard(repo);
-  const codeTodoContext: (string | null)[] = [
-    verdict === "approve"
-      ? `TOM RULED "approve": the entry's attached plan is the ratified decision, not a suggestion. Implement it faithfully. Where the plan is silent, follow the repository's existing conventions and do not widen scope. Close the entry in ${CODE_TODO_PATH} in this same body of work, per that file's own discipline: move it below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` describing what landed.`
-      : `TOM RULED "archive": the entry is set aside — already done, moot, or superseded. Do NOT implement it. Close it in ${CODE_TODO_PATH} per that file's own discipline: move the entry below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` that says it was archived by Tom's TTS ruling${sentence ? " and quotes his sentence" : ""}, with the evidence the brief names if it names any. Until your pull request merges, the TTS mirror of ${CODE_TODO_PATH} still says the entry is open, so a second "archive" ruling on it would open a second pull request for the same close — say so in the pull request body, so Tom merges rather than re-rules.`,
-    "",
-    `THE CODE TODO: the entry \`${externalId}\` in ${CODE_TODO_PATH} of the ${repo} repository — the repository's own registry of decided work, where each entry carries a statement, a completion condition and (for the ready tier) a plan. The repository is the system of record for it; TTS only mirrors it.`,
-    `statement: ${statement}`,
-    promptFact("Tom's sentence with the ruling", sentence),
-    "",
-    "THE BRIEF Tom ruled from (written against the tree as it stood then; verify against the tree in front of you, and name in your pull request anything that has moved):",
-    brief,
-  ];
-  const lines: (string | null)[] = [
-    WORKER_CONTRACT,
-    "",
-    delegateDoctrine(sessionId),
-    "",
-    workspaceParagraph(
-      [repo],
-      sessionId,
-      `${verdict === "approve" ? "Implement the plan, then close the entry." : "Close the entry."} Run \`${guard ?? "the repository's own guard test for that file"}\` and the tests nearest your change, and fix what you break — a pull request never carries a malformed registry.`,
-    ),
-    "",
-    `Open the pull request in every case that produced commits: it is how the work reaches Tom. Its body STARTS with the line "CHANGE REPORT:" and ends with the line "This pull request may merge only when the tests, the audit and the evals all pass for its head; its merge is then reported for objection."`,
-    "",
-    sessionOutcomePen({
-      sessionId,
-      leadIn:
-        "The pen (a shell command; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment). Record this session's outcome when you stop:",
-      summary: "one line: the pull request URL and what it does",
-      after:
-        '"completed" means the pull request exists; otherwise record "errored" with a summary that says what blocked you — Tom re-rules to retry.',
-      fenced: true,
-    }),
-    "",
-    `Prohibitions: never record a ruling and never change the status of any TTS todo — verdicts are Tom's pens alone. Never push any branch other than ${branch}. ${mergeGate()}`,
-    "",
-    BOX_TOOLS_PARAGRAPH,
-    "",
-    "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
-    "",
-    ...codeTodoContext,
-  ];
-  return lines.filter((l): l is string => l !== null).join("\n");
-}
-
-// At most this many code missions admitted per tick, and at most this many
-// live at once. One, as execute-approved ran one per hour: it keeps pull
-// requests reviewable in series and a bad run costs one slot, not a pileup.
-const CODE_MISSIONS_PER_TICK = 1;
-const CODE_MISSIONS_MAX_LIVE = 1;
-
-/**
- * The code lane: Tom's live, unapplied approve and archive rulings on code
- * todos — archives first, then oldest ruling first — each admitted as a
- * worker mission on its repo's checkout. A ruling applies AT ADMISSION with the session id — a failed
- * mission is not retried by the fleet; Tom re-rules to retry, as with the
- * executor before. Returns how many it admitted (0 or 1).
- *
- * What it refuses, and how it records the refusal:
- *   - a repo no session can check out, or an entry not open in the mirror, or
- *     one with no brief: the ruling is marked applied with the reason, so it
- *     cannot ride the feed forever;
- *   - the per-subject ceiling (AUTO_MAX_SESSIONS_PER_TODO, by_code_subject):
- *     marked applied with the reason for the same cause;
- *   - a live mission on the same subject, or CODE_MISSIONS_MAX_LIVE reached:
- *     left pending for a later tick.
- */
-async function admitCodeMissions(
-  ctx: MutationCtx,
-  now: number,
-  liveSessions: Doc<"claudeSessions">[],
-  fleet: FleetModelContext,
-  liveBySubject: Map<string, Doc<"dtsRulings">>,
-  budget: number,
-): Promise<number> {
-  if (budget <= 0) return 0;
-  const liveCode = liveSessions.filter(
-    (s) => s.mode === "autonomous" && s.codeRepo !== undefined,
-  );
-  if (liveCode.length >= CODE_MISSIONS_MAX_LIVE) return 0;
-
-  const rulings = [...liveBySubject.values()]
-    .filter(
-      (r) =>
-        r.subjectType === "code" &&
-        r.appliedAt === undefined &&
-        (r.verdict === "approve" || r.verdict === "archive") &&
-        r.repo !== undefined &&
-        r.externalId !== undefined,
-    )
-    // Archives first, then oldest ruling first: closing an entry is one
-    // registry edit and a pull request, cheap and short, and it is Tom
-    // setting work ASIDE — an approve behind it can implement for an hour,
-    // and holding a set-aside behind that, one mission at a time, leaves the
-    // entry open in the mirror (and on Tom's plate) for no reason.
-    .sort(
-      (a, b) =>
-        (a.verdict === "archive" ? 0 : 1) - (b.verdict === "archive" ? 0 : 1) ||
-        a.ruledAt - b.ruledAt,
-    );
-
-  let admitted = 0;
-  for (const ruling of rulings) {
-    if (admitted >= Math.min(budget, CODE_MISSIONS_PER_TICK)) break;
-    const repo = ruling.repo!;
-    const externalId = ruling.externalId!;
-    const verdict = ruling.verdict as "approve" | "archive";
-    const refuse = async (why: string) => {
-      await ctx.db.patch(ruling._id, {
-        appliedAt: now,
-        applyResult: `refused: ${why}`,
-      });
-      await logEvent(ctx, "ruling-applied", undefined, {
-        verdict,
-        repo,
-        externalId,
-        result: `refused: ${why}`,
-      });
-    };
-    if (!isSessionRepo(repo)) {
-      await refuse(`no session can check out ${repo}`);
-      continue;
-    }
-    if (!tracksCodeTodos(repo)) {
-      await refuse(`${repo} keeps no code-todo file any more`);
-      continue;
-    }
-    if (
-      liveCode.some((s) => s.codeRepo === repo && s.codeExternalId === externalId)
-    ) {
-      continue; // a mission on it is already running
-    }
-    const mirrored = await ctx.db
-      .query("dtsCodeTodoMirror")
-      .withIndex("by_repo_external", (q) =>
-        q.eq("repo", repo).eq("externalId", externalId),
-      )
-      .first();
-    if (!mirrored || mirrored.status !== "open") {
-      await refuse(`${externalId} is not open in the ${repo} mirror`);
-      continue;
-    }
-    const brief = await ctx.db
-      .query("dtsCodeBriefs")
-      .withIndex("by_repo_external", (q) =>
-        q.eq("repo", repo).eq("externalId", externalId),
-      )
-      .unique();
-    if (!brief) {
-      await refuse(`${externalId} has no brief`);
-      continue;
-    }
-    // The far bound, per subject — the todo rule, one level over.
-    const history = await ctx.db
-      .query("claudeSessions")
-      .withIndex("by_code_subject", (q) =>
-        q.eq("codeRepo", repo).eq("codeExternalId", externalId),
-      )
-      .collect();
-    if (history.filter(wasAutonomous).length >= AUTO_MAX_SESSIONS_PER_TODO) {
-      await refuse(
-        `${externalId} has drawn ${AUTO_MAX_SESSIONS_PER_TODO} missions already`,
-      );
-      continue;
-    }
-    // The fleet default, falling back off Codex when the door is shut; a
-    // code todo carries no model tag, so "wait" cannot come back.
-    const model = await resolveFleetModel(ctx, fleet);
-    const sessionId = await insertSession(
-      ctx,
-      {
-        title: `auto: ${verdict} ${externalId}`,
-        kind: "adhoc",
-        repos: resolveSessionRepos({ explicit: [repo] }),
-        codeSubject: { repo, externalId },
-        mode: "autonomous",
-        model,
-        prompt: (id) =>
-          buildCodeMissionPrompt({
-            repo,
-            externalId,
-            verdict,
-            sentence: ruling.sentence,
-            statement: mirrored.statement,
-            brief: brief.brief,
-            sessionId: id,
-          }),
-        outcomePen: false,
-      },
-      now,
-    );
-    // The ruling is applied HERE, with the session that carries it out —
-    // the moment its effect exists (ttsRulings.ts header).
-    await ctx.db.patch(ruling._id, {
-      appliedAt: now,
-      applyResult: codeMissionApplyResult(sessionId),
-    });
-    await logEvent(ctx, "ruling-applied", undefined, {
-      verdict,
-      repo,
-      externalId,
-      result: codeMissionApplyResult(sessionId),
-    });
-    await logEvent(ctx, "auto-session-created", undefined, {
-      sessionId,
-      repo,
-      externalId,
-      verdict,
-    });
-    liveCode.push({ codeRepo: repo, codeExternalId: externalId } as Doc<"claudeSessions">);
-    admitted++;
-  }
-  return admitted;
-}
-
-// ── The prospecting lane ─────────────────────────────────────────────────────
-// Tom's directive (2026-08-29): "review the CMT and tom.quest repos for issues
-// to make more to-dos." A PROSPECTING MISSION is a worker that
-// works no todo: it reads one repo's fresh checkout, looks for concrete issues,
-// and captures each new one as an unprepared item.
-//
-// PARALLEL, NOT LAST RESORT (Tom's amendment the same night: keeping the Jarvis Box at
-// FULL CAPACITY overnight is the top priority, and "six hours is insane"). Real
-// todo work takes the per-tick budget FIRST; prospecting spends whatever is
-// left over on the same tick. So a tick that admits one real mission out of a
-// budget of two admits a prospector alongside it — the budget is a capacity
-// bound, and leaving it unspent is the thing being fixed.
-//
-// Doctrine kept intact: input gates PERSISTENCE, not implementation, and the
-// worker key may CAPTURE but never rule. A captured finding lands as an
-// ordinary unprepared todo and waits for Tom's pen like any other. Speculative
-// findings are welcome — Tom reviews everything, and a review he declines costs
-// him one glance.
-
-// Which repos get prospected: every session repo EXCEPT the ones named here.
-// Derived from SESSION_REPOS (the one home) rather than hand-listed, so a repo
-// added there is prospected by default and a repo that should not be has to say
-// why — the exclusion carries the reason, which a second hand-written list
-// could not. WikiTom is a wiki, not a source of code issues.
-const PROSPECT_EXCLUDED: readonly string[] = ["WikiTom"];
-const PROSPECT_REPOS = SESSION_REPO_NAMES.filter(
-  (repo) => !PROSPECT_EXCLUDED.includes(repo),
-);
-
-// How many prospecting missions may be LIVE at once. Two, so both repos can be
-// under review at the same time while real work keeps its own slots; every
-// prospector still counts against maxLiveAutonomous like any other session.
-const PROSPECT_MAX_LIVE = 2;
-
-// At most one prospecting mission per repo per 30 minutes. Not a backoff and
-// not a rationing device — just enough to stop a repo being re-scanned in
-// identical state twice in a row: a capture needs a few minutes to flow into
-// prep, so a scan minutes apart would read the same tree and reach the same
-// findings. The clock starts at CREATION, so a prospector that errors has
-// already spent the window by the time it ends.
-const PROSPECT_COOLDOWN_MS = 30 * 60 * 1000;
-// How far back the cooldown/fairness read looks, and how many rows it may
-// read. dtsEvents is the system's append-only instrumentation (busy: every
-// surfacing, capture, and queue cycle lands there), so the read is bounded on
-// both axes — see the truncation note in admitProspectMission.
-const PROSPECT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
-const PROSPECT_EVENT_SCAN = 1000;
-// Quality over volume: the cap is stated in the prompt, not enforced here (the
-// capture route is the agent's own pen). One number, one home.
-const PROSPECT_CAPTURE_CAP = 8;
-
-// Opening prompt for a PROSPECTING mission. It puts the fixed finding criteria
-// before mission-specific context, then the pens, prohibitions, and ending.
-// There is no item facts block or prepare pen, and the read-first step is
-// mandatory because the only way to avoid handing Tom a duplicate is to look
-// at what he already holds.
-function buildProspectMissionPrompt(
-  repo: string,
-  sessionId: Id<"claudeSessions">,
-): string {
-  const prospectContext = [
-    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for actionable issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
-  ];
-  const lines: string[] = [
-    WORKER_CONTRACT,
-    "",
-    "What counts as a finding:",
-    "- a failing or skipped test — name the test and the file it lives in",
-    "- dead code: a function, export, module, flag, or config key nothing reaches",
-    "- a document that contradicts the code it describes — name both files",
-    "- a TODO or FIXME comment in the source that nothing tracks",
-    "- a broken link between modules: a stale import path, a field one side renamed and the other still reads, one rule implemented two different ways in two files",
-    "- vocabulary drift: one fact carried under two names, or one name meaning two different things",
-    "",
-    `The quality bar: every finding NAMES the file or files it lives in, and is actionable by a future session holding nothing but your one sentence and the repo. A finding you are not certain about is still worth capturing when it names a change — Tom reads every item and declining one costs him a glance. What is not worth capturing is a style nitpick or a "this could be cleaner" with no named change: if you cannot say what would change and where, it is not a finding. At most ${PROSPECT_CAPTURE_CAP} captures for the whole mission: a short list of real findings is worth more than a long one, and finding NOTHING new is an honest, complete outcome.`,
-    "",
-    delegateDoctrine(sessionId),
-  ];
-  // A repo that governs itself by an in-repo code-todo registry holds
-  // already-tracked work a prospector must not re-capture. WHICH repos those
-  // are comes from the one home the mirror cron reads (ttsShared
-  // .CODE_TODO_REPOS) — this was hand-written as `repo === "ComplexMultiTrigger"`
-  // and went stale the moment tom.quest grew a registry of its own: the cron
-  // mirrored tom.quest's 15 entries while tom.quest prospectors were never told
-  // the file existed.
-  //
-  // The CHECKOUT, not /tts/state, is what the prospector reads. /tts/state
-  // answers "what items does TTS hold" (dtsTodos); these entries are not items
-  // — dtsCodeTodoMirror is a link-by-id-never-copy reflection of a file the
-  // repo owns, refreshed from the DEFAULT branch, so it is stale exactly when
-  // a prospector's own branch has moved. The file in front of the prospector
-  // is the fresher and more authoritative copy of the same fact.
-  if (tracksCodeTodos(repo)) {
-    lines.push(
-      "",
-      `This repo also tracks its own code todos in \`${CODE_TODO_PATH}\` in your checkout — a governed registry of work already decided on. Read that file too, and drop any finding it already names.`,
-    );
-  }
-  lines.push(
-    "",
-    "The pens (shell commands; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment):",
-    "",
-    "1. READ WHAT TTS ALREADY HOLDS — do this BEFORE you capture anything:",
-    "```",
-    `curl -s "$CONVEX_SITE_URL/tts/state" -H "X-TTS-Key: $TTS_WORKER_KEY"`,
-    "```",
-    'The response carries every item in the system under "todos". Read their statements. Never capture a finding that restates one of them, or that an item plainly already covers — a duplicate costs Tom a triage he has already done.',
-    "",
-    "2. Capture ONE new finding (repeat per finding, up to the cap above):",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Delete the unreachable helper someHelper in path/to/file.ts", "source": "prospecting", "provenance": "prospect mission ${sessionId}, ${repo}, path/to/file.ts"}'`,
-    "```",
-    'The statement is ONE imperative sentence that names the file or files. The provenance is where you found it, in exactly the shape above — that is how the item says which mission and which path it came from. Keep "source" as "prospecting".',
-    "",
-    sessionOutcomePen({
-      sessionId,
-      leadIn: "3. Record this session's outcome when the mission is done:",
-      summary: "one line: what was captured",
-      after:
-        '"completed" is the right outcome whether you captured findings or none — say what you captured, or say "nothing new found" and mean it. Record "errored" only when something blocked the review itself (the checkout was unusable, /tts/state would not answer).',
-      fenced: true,
-    }),
-    "",
-    // This prompt builds its own workspace sentence rather than calling
-    // workspaceParagraph (a prospector pushes nothing), so it names the daemon
-    // rule itself.
-    `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Change no file in the checkout, commit nothing, push nothing, and open no pull request: this mission's only output is captured items. Do not capture a duplicate of something TTS already holds, and do not capture more than ${PROSPECT_CAPTURE_CAP} items. ${DAEMON_RESTART_SENTENCE}`,
-    "",
-    "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
-    "",
-    ...prospectContext,
-  );
-  return lines.join("\n");
-}
-
-/**
- * What the fleet knows about models when it starts a session: the fleet default
- * and whether the Codex door is shut. Read once per tick and handed to every
- * lane, so no lane can quietly answer the question for itself.
- */
-type FleetModelContext = {
-  defaultModel?: SessionModel;
-  codexClosed: boolean;
-  codexWeeklyCapped: boolean;
-};
-
-/**
- * WHICH MODEL a fleet-started session runs on — ONE HOME for the rule, because
- * every lane that starts a session needs it and the prospecting lane drifted:
- * it passed no model at all, so a prospector took insertSession's built-in
- * default, ignoring both the fleet knob Tom sets and the Codex door the rest of
- * the tick respects.
- *
- * The order is the todo's own tag (the planner's judgment about THAT task),
- * then the fleet default, then the built-in default. When the Codex door is
- * shut and that answer is a Codex model the two cases part ways: a TAGGED todo
- * WAITS (undefined — the tag is a judgment, not a preference), while an
- * untagged one falls back to Claude, logged so the morning's history says why
- * the models differ. A prospecting mission carries no tag, so it is always the
- * untagged case and never gets `undefined` back.
- */
-async function resolveFleetModel(
-  ctx: MutationCtx,
-  fleet: FleetModelContext,
-  tagged?: SessionModel,
-  todoId?: Id<"dtsTodos">,
-): Promise<SessionModel | undefined> {
-  const model = tagged ?? fleet.defaultModel ?? DEFAULT_SESSION_MODEL;
-  if (!fleet.codexClosed || modelFamily(model) !== "codex") return model;
-  if (tagged !== undefined) return undefined;
-  await logEvent(ctx, "auto-model-fallback", todoId, {
-    ...(todoId !== undefined ? { todoId } : {}),
-    from: model,
-    to: CODEX_FALLBACK_MODEL,
-    reason: fleet.codexWeeklyCapped
-      ? `codex weekly usage at or past ${CODEX_WEEKLY_CAP_PERCENT}%`
-      : "a recent autonomous codex session ended on a usage limit",
-  });
-  return CODEX_FALLBACK_MODEL;
-}
-
-// The prospecting lane's whole body, called with whatever per-tick budget the
-// work walk left unspent. Returns the repo it prospected, or undefined when it
-// declined. It creates AT MOST ONE mission per tick: a second one would read a
-// tree the first has not finished reading.
-async function admitProspectMission(
-  ctx: MutationCtx,
-  now: number,
-  liveSessions: Doc<"claudeSessions">[],
-  fleet: FleetModelContext,
-): Promise<string | undefined> {
-  // At most PROSPECT_MAX_LIVE prospectors alive at once. A worker
-  // with NO todoId and NO code subject is what a prospecting mission looks
-  // like — a mission for real work always carries the todo it works, and a
-  // code mission the code todo, so this needs no extra field to key off.
-  // (liveSessions is this tick's snapshot, taken before any creation; since
-  // this lane creates one mission per tick at most, nothing it made can be
-  // missing from the count it just used.)
-  const liveProspectors = liveSessions.filter(
-    (s) =>
-      s.mode === "autonomous" &&
-      s.todoId === undefined &&
-      s.codeRepo === undefined,
-  ).length;
-  if (liveProspectors >= PROSPECT_MAX_LIVE) return undefined;
-
-  // The cooldown and the fairness order both come from this lane's own event
-  // trail. Read NEWEST-first inside a lookback window and bounded: truncation
-  // drops the OLDEST rows, so a repo's cooldown-relevant event is always in
-  // the scan and the bound can only cost fairness, never the cooldown.
-  const recentEvents = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_at", (q) => q.gte("at", now - PROSPECT_LOOKBACK_MS))
-    .order("desc")
-    .take(PROSPECT_EVENT_SCAN);
-  // ...unless the scan filled up INSIDE the cooldown window, where it cannot
-  // prove any repo is out of cooldown. Decline the tick rather than guess — a
-  // wrongly-skipped tick costs five minutes, and a wrongly-admitted one costs a
-  // whole session re-reading a tree it just read. With a 30-minute window this
-  // branch needs PROSPECT_EVENT_SCAN events inside half an hour, which the
-  // system does not produce in ordinary use.
-  const oldestScanned = recentEvents[recentEvents.length - 1]?.at;
-  if (
-    recentEvents.length >= PROSPECT_EVENT_SCAN &&
-    oldestScanned !== undefined &&
-    oldestScanned > now - PROSPECT_COOLDOWN_MS
-  ) {
-    return undefined;
-  }
-
-  // Rows are newest-first, so the first sighting of a repo IS its last
-  // prospecting.
-  const lastByRepo = new Map<string, number>();
-  for (const e of recentEvents) {
-    if (e.kind !== "prospect-mission-created") continue;
-    const eventRepo = (e.data as { repo?: unknown } | undefined)?.repo;
-    if (typeof eventRepo !== "string") continue;
-    if (!lastByRepo.has(eventRepo)) lastByRepo.set(eventRepo, e.at);
-  }
-
-  // The eligible repo whose last prospecting is OLDEST wins; a repo never
-  // prospected is older than any timestamp, and a tie keeps PROSPECT_REPOS
-  // order (the comparison is strict <).
-  let repo: string | undefined;
-  let repoLastAt = Infinity;
-  for (const candidate of PROSPECT_REPOS) {
-    const lastAt = lastByRepo.get(candidate) ?? -Infinity;
-    if (now - lastAt < PROSPECT_COOLDOWN_MS) continue;
-    if (lastAt < repoLastAt) {
-      repo = candidate;
-      repoLastAt = lastAt;
-    }
-  }
-  if (repo === undefined) return undefined;
-
-  // Same model rule as the work walk — a prospector is an ordinary autonomous
-  // session and runs on the fleet default, falling back off Codex when the
-  // door is shut. It carries no todo, so the tag argument is absent, the
-  // "wait" answer cannot come back, and the fallback event names no todoId.
-  const model = await resolveFleetModel(ctx, fleet);
-
-  const sessionId = await insertSession(
-    ctx,
-    {
-      title: `prospect: ${repo}`,
-      // "adhoc" because this mission works no todo — which is also the fact the
-      // one-at-a-time check above reads (todoId stays unset).
-      kind: "adhoc",
-      // Exactly one repo, on purpose: a prospecting mission reads ONE tree and
-      // the cooldown/fairness walk below is per-repo.
-      repos: resolveSessionRepos({ explicit: [repo] }),
-      mode: "autonomous",
-      model,
-      prompt: (id) => buildProspectMissionPrompt(repo!, id),
-      // The prospect prompt builds its own capture + outcome pens inline.
-      outcomePen: false,
-    },
-    now,
-  );
-  // The cooldown clock, started at CREATION rather than at the outcome: an
-  // errored prospector has already written this row, so the 30 minutes above is
-  // the entire wait for a failed run and this lane needs no second mechanism.
-  await logEvent(ctx, "prospect-mission-created", undefined, {
-    sessionId,
-    repo,
-  });
-  return repo;
-}
-
-// ── Autonomous-session scheduler (P3, cron every 5 min) ──────────────────────
-// Walks Tom's committed and pending work and admits up to a handful of
-// autonomous groundwork sessions when — and only when — the Jarvis Box has headroom.
-// Load-based admission is the PRIMARY throttle (Tom's ruling: no scalar cap as
-// primary); a heavy session with many subagents raises loadavg and blocks new
-// admissions naturally. maxLiveAutonomous is a runaway failsafe only,
-// maxNewPerTick a clone-burst bound.
-
-const AUTO_BLOCK_HORIZON_MS = 48 * 60 * 60 * 1000;
-const AUTO_BACKOFF_MS = 24 * 60 * 60 * 1000;
-const AUTO_CIRCUIT_WINDOW_MS = 3 * 60 * 60 * 1000;
-// How long a GOAL rests between checks. A goal is not work — it is a question
-// put to the world ("is the lease signed yet?"), and the honest answer to it
-// changes only as the world moves. So a checked-and-unmet goal waits a
-// day and is asked again, rather than being retired by the completed-backoff
-// (which reads "the session finished, and the row did not change" as "settled"
-// — true of a task, and the opposite of true of a goal).
-const AUTO_GOAL_RECHECK_MS = 24 * 60 * 60 * 1000;
-// How many workers one todo may ever consume. The completed-run
-// rule below re-admits a todo whenever a session actually advanced its row, so
-// a task that genuinely takes four sessions gets four. This is the far bound on
-// the other case: a task that keeps recording progress and never finishes would
-// otherwise draw sessions forever. Past it the row still stands, still renders
-// ready on /tts, and is Tom's to move.
-const AUTO_MAX_SESSIONS_PER_TODO = 8;
-// Usage-pressure fingerprints in an ending's own words — daemon endedReason
-// or agent outcomeSummary — are USAGE_LIMIT_RE (shared/session-constants.mjs),
-// the same regex the daemon records a cap with; its comment says why it is
-// narrow. The daemon routes SDK error text into outcomeSummary on any abnormal
-// autonomous turn end ("autonomous turn failed: …"), which is what makes this
-// breaker live: the usage-limit wording actually reaches the fields tested
-// below.
-//
-// PER FAMILY since 2026-09-04. The regex's later alternatives are Codex's
-// wordings — the Codex CLI reports a cap as usage_limit_reached /
-// rate_limit_reached rather than in Claude's prose — and the breaker asks
-// WHICH family a tripped ending belonged to (modelFamily of its row's model).
-// Claude tripping still stands the whole tick down (nothing else can run a
-// Claude session); Codex tripping only closes the Codex door, exactly like the
-// weekly gate.
-
-// "This session RAN as an autonomous one" — the question every history read
-// below is actually asking. `mode` alone answers it wrongly for a reopened
-// session: reopenSession flips mode to "interactive" so the daemon drops the
-// auto-end path, which would silently drop the run out of the backoff walk and
-// out of the usage breaker's window. reopenedFromAutonomous is the provenance
-// that survives the flip.
-function wasAutonomous(s: Doc<"claudeSessions">): boolean {
-  return s.mode === "autonomous" || s.reopenedFromAutonomous === true;
-}
-
-export const internalAutoSchedule = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const now = Date.now();
-
-    // (a) Off unless deliberately enabled — no config row means disabled.
-    // The row decides ONE thing (and names the fleet's model); the admission
-    // numbers come from the code (AUTO_DEFAULTS) unless the row still carries
-    // values written before they became code-owned, which the next press of
-    // the switch overwrites. At NARROW the columns go and this is just the
-    // constants.
-    const row = await ctx.db.query("claudeAutoConfig").first();
-    const config = { ...AUTO_DEFAULTS, ...(row ?? {}) };
-    if (!config.enabled) return;
-
-    // (b) A stale daemon cannot start sessions — admission needs a live box.
-    const health = await ctx.db.query("claudeDaemonHealth").first();
-    if (!health || now - health.lastSeenAt > DAEMON_STALE_MS) return;
-
-    // (c) LOAD-BASED ADMISSION — the primary throttle: no load report, high
-    // per-cpu load, or low free memory all mean no new admissions this tick.
-    const load = health.load;
-    if (
-      !load ||
-      load.cpus <= 0 ||
-      load.loadavg1 / load.cpus > config.maxLoadPerCpu ||
-      load.freeMemMb < config.minFreeMemMb
-    ) {
-      return;
-    }
-
-    // (d) Runaway failsafe: live autonomous count under the hard cap.
-    const liveSessions: Doc<"claudeSessions">[] = [];
-    for (const status of LIVE_STATUSES) {
-      liveSessions.push(
-        ...(await ctx.db
-          .query("claudeSessions")
-          .withIndex("by_status", (q) => q.eq("status", status))
-          .collect()), // bounded: live sessions are few by design
-      );
-    }
-    // The orchestrator's runs and the workers it spawned are hosted runs with
-    // a limit of their own (convex/orchestrator.ts); they are not this
-    // scheduler's sessions and take none of its places, though a todo one of
-    // them holds is still excluded below.
-    const ownSessions: Doc<"claudeSessions">[] = [];
-    for (const s of liveSessions) {
-      if ((await hostedFacts(ctx, s)) === undefined) ownSessions.push(s);
-    }
-    const liveAutonomous = ownSessions.filter(
-      (s) => s.mode === "autonomous",
-    ).length;
-    if (liveAutonomous >= config.maxLiveAutonomous) return;
-
-    // (e) Usage circuit breaker, PER FAMILY: an autonomous ending in the last
-    // 3h that names usage pressure closes the door for the family THAT session
-    // ran on — the two accounts are separate, and a capped Codex account says
-    // nothing about the Claude one.
-    const recentTerminal: Doc<"claudeSessions">[] = [];
-    for (const status of ["ended", "failed"] as const) {
-      recentTerminal.push(
-        ...(await ctx.db
-          .query("claudeSessions")
-          .withIndex("by_status", (q) =>
-            q.eq("status", status).gte("statusChangedAt", now - AUTO_CIRCUIT_WINDOW_MS),
-          )
-          .collect()),
-      );
-    }
-    const trippedFamilies = new Set<string>();
-    for (const s of recentTerminal) {
-      if (!wasAutonomous(s)) continue;
-      if (
-        USAGE_LIMIT_RE.test(s.endedReason ?? "") ||
-        USAGE_LIMIT_RE.test(s.outcomeSummary ?? "")
-      ) {
-        trippedFamilies.add(modelFamily(s.model));
-      }
-    }
-    // Claude capped = nothing runs: it is the fallback every Codex candidate
-    // lands on, so admitting anything at all would just re-hit the same wall.
-    if (trippedFamilies.has("claude")) return;
-    const codexTripped = trippedFamilies.has("codex");
-
-    // (f) The Codex WEEKLY gate (Tom, 2026-09-04). Read off the daemon's
-    // heartbeat; absent usage is UNKNOWN and unknown ADMITS, so a daemon that
-    // cannot read the CLI never silently freezes the fleet. The five-hour
-    // window is deliberately not gated — it refills on its own.
-    //
-    // A reading also EXPIRES. The daemon keeps resending its last successful
-    // reading, with that reading's original readAt, when a later read fails —
-    // so an old readAt is exactly the case "nobody has been able to ask Codex
-    // for a while", and it reads as UNKNOWN too. Without this, one 90% reading
-    // taken before the CLI broke would hold the Codex door shut for as long as
-    // the daemon stayed up.
-    const codexUsage = health.codexUsage;
-    const codexWeeklyCapped =
-      codexUsage !== undefined &&
-      now - codexUsage.readAt <= CODEX_USAGE_STALE_MS &&
-      codexUsage.weeklyUsedPercent >= CODEX_WEEKLY_CAP_PERCENT;
-    // Either signal shuts the same door, and the two behave identically: a
-    // candidate that ASKED for Codex waits (its tag is a judgment, not a
-    // preference), while one that only inherited the fleet default falls back.
-    const codexClosed = codexTripped || codexWeeklyCapped;
-    // Everything resolveFleetModel needs, decided once for the whole tick and
-    // handed to both lanes — the work walk below and the prospecting lane.
-    const fleet: FleetModelContext = {
-      defaultModel: config.defaultModel,
-      codexClosed,
-      codexWeeklyCapped,
-    };
-
-    const capacity = Math.min(
-      config.maxNewPerTick,
-      config.maxLiveAutonomous - liveAutonomous,
-    );
-    if (capacity <= 0) return;
-
-    // ── The work walk ────────────────────────────────────────────────────────
-    // The GROUNDWORK lanes below, over every active todo. The frontier walk
-    // that used to come first — ready todos inside active batches, each handed
-    // to a worker mission — went with batches (Tom's ruling of 2026-09-24: "I
-    // dont want to have batches at all anymore because I want to remove
-    // structure to allow agents to freely move toward completing all todos in
-    // the best way they (or the orchistrator) see fit."). Which todo an agent
-    // completes next is the orchestrator's to choose, not a lane's.
-    //
-    // ONE collect feeds everything below: todoById (a block's subject may be a
-    // row the active filter drops) and the lanes — which read only ACTIVE rows,
-    // filtered once here instead of once per lane.
-    const todos = await ctx.db.query("dtsTodos").collect();
-    const todoById = new Map<Id<"dtsTodos">, Doc<"dtsTodos">>(
-      todos.map((t) => [t._id, t]),
-    );
-    // Active AND awake: an active row whose wakeAt is ahead is the lifeos
-    // spelling of "waiting" (ttsShared.wakeAtPassed), and the lanes below
-    // never handed a waiting row to a worker.
-    const active = todos.filter((t) => t.status === "active" && wakeAtPassed(t, now));
-    // Tom's live rulings, for the code lane. One collect of an append-only
-    // table written at human pace (the /tts page collects it wholesale on
-    // every load).
-    const liveBySubject = liveRulings(await ctx.db.query("dtsRulings").collect());
-    // Two readiness values (ruling 18), read through the one home.
-    const unprepared = (t: Doc<"dtsTodos">): boolean => !isPrepared(t.readiness);
-
-    // ── Per-candidate exclusions (cheapest first) ────────────────────────────
-    const computeExcluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
-      // Code todos live in the mirror; their work happens in the repo.
-      if (t.category === "code") return true;
-      // An existing live session already references this todo — checked
-      // against the liveSessions array the failsafe (d) already collected,
-      // not a per-candidate by_todo query.
-      if (liveSessions.some((s) => s.todoId === t._id)) return true;
-      // A live (unapplied) ruling means Tom already spoke — do not race it;
-      // a live "session" verdict must not be silently consumed by a
-      // worker (a real conversation was asked for).
-      const rulings = await ctx.db
-        .query("dtsRulings")
-        .withIndex("by_todo", (q) => q.eq("todoId", t._id))
-        .collect();
-      const live = liveRulings(rulings).get(
-        subjectKey({ subjectType: "life", todoId: t._id }),
-      );
-      if (live && (live.appliedAt === undefined || live.verdict === "session")) {
-        return true;
-      }
-      // Backoff from worker history (do not redo settled work) —
-      // the ONE remaining by_todo collect: backoff needs the terminal history
-      // the liveSessions array cannot carry.
-      const history = await ctx.db
-        .query("claudeSessions")
-        .withIndex("by_todo", (q) => q.eq("todoId", t._id))
-        .collect();
-      const auto = history
-        .filter(wasAutonomous)
-        .sort((a, b) => b.createdAt - a.createdAt);
-      const newest = auto[0];
-      if (newest) {
-        // A recent non-completed run: wait 24h before another try.
-        if (
-          newest.outcome !== "completed" &&
-          now - newest.statusChangedAt < AUTO_BACKOFF_MS
-        ) {
-          return true;
-        }
-        // Three straight non-completed runs: wait for the todo to change.
-        if (
-          auto.length >= 3 &&
-          auto.slice(0, 3).every((s) => s.outcome !== "completed") &&
-          t.updatedAt <= newest.createdAt
-        ) {
-          return true;
-        }
-        // The far bound: no todo draws sessions without end.
-        if (auto.length >= AUTO_MAX_SESSIONS_PER_TODO) return true;
-        if (newest.outcome === "completed") {
-          if (t.kind === "goal") {
-            // A GOAL is a question, not work. "The session completed and the
-            // row did not change" means the answer was NO — which is exactly
-            // the case that has to be asked again once the world has moved.
-            // Nothing bumps a goal's updatedAt when the world changes, so the
-            // row-changed test below would retire every goal after its first
-            // check.
-            if (now - newest.statusChangedAt < AUTO_GOAL_RECHECK_MS) return true;
-          } else if (t.updatedAt <= newest.createdAt) {
-            // Last run completed and wrote NOTHING to the row: settled, do not
-            // redo it. Measured against the session's START, not its end:
-            // statusChangedAt is stamped when the session ends, AFTER every pen
-            // write it made, so an end-stamp test excludes precisely the
-            // sessions that did record progress — and the contract asks a
-            // worker for ONE STABLE STATE that "another session can pick up
-            // from cold". A row that moved during the session earns that
-            // second session; a row that did not, does not.
-            return true;
-          }
-        }
-      }
-      return false;
-    };
-    // Memoized: the category-block lane probes candidates through excluded()
-    // too, so a todo must not pay the ruling/history reads twice per tick.
-    const exclusionByTodo = new Map<string, boolean>();
-    const excluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
-      const cached = exclusionByTodo.get(t._id);
-      if (cached !== undefined) return cached;
-      const verdict = await computeExcluded(t);
-      exclusionByTodo.set(t._id, verdict);
-      return verdict;
-    };
-
-    // Candidates in walk order; lane + blockCategory ride along for the
-    // created session's kind and the scheduler event's counts.
-    type Candidate = {
-      todo: Doc<"dtsTodos">;
-      lane: "block" | "dated" | "whenever";
-      blockCategory?: string;
-    };
-    const candidates: Candidate[] = [];
-
-    // (1) Block prep: committed time starting within 48h whose subject is not
-    // ready — the nearest commitments get groundwork first.
-    const blocks = await ctx.db
-      .query("dtsBlocks")
-      .withIndex("by_start", (q) =>
-        q.gte("start", now).lt("start", now + AUTO_BLOCK_HORIZON_MS),
-      )
-      .collect();
-    for (const block of blocks) {
-      if (block.todoId !== undefined) {
-        // todoById, not `active` — but the sleep test `active` already applied
-        // has to be asked here too: a row whose wakeAt is still ahead is
-        // asleep, and a block on it does not wake it (no lane hands out a
-        // sleeping row).
-        const t = todoById.get(block.todoId);
-        if (!t || t.status !== "active" || !wakeAtPassed(t, now)) continue;
-        // Not ready: not yet prepared.
-        if (unprepared(t)) candidates.push({ todo: t, lane: "block" });
-      } else if (block.category !== undefined && block.category !== "code") {
-        // Category block: the stalest NON-excluded unprepared todo in the
-        // category — probed through excluded() (memoized, so the admission
-        // loop re-check is free). The old pick-one-then-test admitted nothing
-        // whenever the single stalest pick happened to be excluded.
-        const inCategory = active
-          .filter((t) => t.category === block.category && unprepared(t))
-          .sort((a, b) => a.updatedAt - b.updatedAt);
-        for (const t of inCategory) {
-          if (await excluded(t)) continue;
-          candidates.push({
-            todo: t,
-            lane: "block",
-            blockCategory: block.category,
-          });
-          break;
-        }
-      }
-    }
-
-    // (2) Dated actives still unprepared, soonest due first. Ordering comes
-    // from needs and dates, never a rating (Tom's ruling 2026-08-29).
-    const dated = active.filter(
-      (t) => t.timingClass === "dated" && unprepared(t),
-    );
-    dated.sort((a, b) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity));
-    for (const t of dated) candidates.push({ todo: t, lane: "dated" });
-
-    // (3) Whenever actives, stalest first. The condition-bound lane that used
-    // to sit here is gone with the value it read (the lifeos update, phase 7):
-    // a row that was condition-bound is now a task carrying its condition in
-    // its statement, asleep until its wake time, and it reaches a worker
-    // through this lane once it wakes.
-    const whenever = active.filter(
-      (t) => t.timingClass === "whenever" && unprepared(t),
-    );
-    whenever.sort((a, b) => a.updatedAt - b.updatedAt);
-    for (const t of whenever) candidates.push({ todo: t, lane: "whenever" });
-
-    // ── Admit up to `capacity` picks ─────────────────────────────────────────
-    const picked = new Set<string>();
-    const counts: Record<string, number> = {};
-    const admit = async (c: Candidate): Promise<void> => {
-      // ── Which model does this session run on? ────────────────────────────
-      // resolveFleetModel is the one home for the rule (the prospecting lane
-      // asks it the same question). Resolved BEFORE picked.add, because the
-      // Codex door being shut can send a Codex-TAGGED candidate back to the
-      // queue — `undefined` — rather than into a session.
-      const model = await resolveFleetModel(ctx, fleet, c.todo.model, c.todo._id);
-      if (model === undefined) return;
-      picked.add(c.todo._id);
-      counts[c.lane] = (counts[c.lane] ?? 0) + 1;
-
-      // Which repos this mission checks out — resolveSessionRepos is the one
-      // answer; a groundwork mission names none, so it is the word guess.
-      const repos = resolveSessionRepos({ todo: c.todo });
-
-      // The prompt is built BEFORE the insert (as a builder closed over
-      // everything but the session id, which does not exist yet).
-      const prompt = (sessionId: Id<"claudeSessions">) =>
-        buildAutoMissionPrompt(c.todo, sessionId, repos);
-
-      const sessionId = await insertSession(
-        ctx,
-        {
-          title: "auto: " + c.todo.statement.slice(0, 60),
-          // Category-block picks work a category ("block"); everything else
-          // targets the one todo ("focus-item").
-          kind: c.blockCategory !== undefined ? "block" : "focus-item",
-          blockCategory: c.blockCategory,
-          todoId: c.todo._id,
-          repos,
-          mode: "autonomous",
-          // Resolved above: the todo's tag, else the fleet default, else the
-          // Codex fallback when the weekly cap or the breaker shut that door.
-          model,
-          prompt,
-          // Both autonomous prompts build their own outcome pen inline, with
-          // mission-specific wording.
-          outcomePen: false,
-        },
-        now,
-      );
-      await logEvent(ctx, "auto-session-created", c.todo._id, {
-        sessionId,
-        todoId: c.todo._id,
-      });
-    };
-
-    // THE CODE LANE goes first: Tom's approve and archive rulings on code
-    // todos are work he ratified by hand, and any lane placed after the walk
-    // can be starved by it — a long groundwork backlog fills every slot of
-    // every tick. It takes at most one slot (CODE_MISSIONS_PER_TICK).
-    const codeAdmitted = await admitCodeMissions(
-      ctx,
-      now,
-      liveSessions,
-      fleet,
-      liveBySubject,
-      capacity,
-    );
-    if (codeAdmitted > 0) counts.code = codeAdmitted;
-    const admittedSoFar = () => picked.size + codeAdmitted;
-
-    for (const c of candidates) {
-      if (admittedSoFar() >= capacity) break;
-      if (picked.has(c.todo._id)) continue;
-      if (await excluded(c.todo)) continue;
-      await admit(c);
-    }
-
-    // ── The prospecting lane (parallel with the work walk) ───────────────────
-    // Real todo work has now taken its share of `capacity`; prospecting spends
-    // what is LEFT, on this same tick. The guard is the leftover budget itself,
-    // so prospecting can never take a slot the walk above wanted — but an
-    // unspent slot goes to prospecting rather than going unused, which is the
-    // full-capacity rule. The mission it creates is an ordinary autonomous
-    // session: it counts against maxLiveAutonomous on every later tick, and
-    // against this tick's budget as the one pick it is.
-    if (admittedSoFar() < capacity) {
-      await admitProspectMission(ctx, now, ownSessions, fleet);
-    }
-
-    // Quiet when idle: the scheduler event only exists when real work was
-    // admitted — no-op ticks leave no trace. A prospecting admission does not
-    // pass through here: its trace is the "prospect-mission-created" event,
-    // which names the session and the repo.
-    if (admittedSoFar() > 0) {
-      await logEvent(ctx, "auto-session-scheduler", undefined, {
-        admitted: admittedSoFar(),
-        counts,
-        liveAutonomousBefore: liveAutonomous,
-      });
-    }
-  },
-});

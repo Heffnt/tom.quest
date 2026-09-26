@@ -25,7 +25,42 @@ export const EVENT_KINDS = [
   "job-ok",
   "job-failed",
   "job-recovered",
+  // Box changes (convex/boxChanges.ts): every change to the Jarvis Box, as
+  // the box-change reader (Jarvis worker/jobs/box-watch.mjs) folds it; data
+  // is the fixed shape boxChanges.ts checks, `at` is when it happened on the
+  // box, and provenance.agentId names the agent that ran it when the reader
+  // matched one, so the /agents chat draws it on events.by_agent_at.
+  "box-change",
+  // Intent (convex/jarvis/intent.ts, the /intent page): the delegate's
+  // decision (`jarvis decide`: question, options, decision, reason, restedOn,
+  // wouldChange, refused, refusedBecause, caller, askId, model; subject is
+  // the askId), and Tom's settlement of one disagreement on the page — a
+  // decision he accepts or objects to, or a failing eval item he rules on
+  // (data: subject, verdict, sentence, rulingId when a ruling was written).
+  "decision",
+  "disagreement-settled",
+  // The digest and needs-you (convex/jarvis/digest.ts): the box posted the
+  // day's digest to the output channel; a thing only Tom can settle was
+  // opened, and the box posted it as a reply under the newest digest.
+  "digest-sent",
+  "needs-you-opened",
+  "needs-you-posted",
+  // Evals (Jarvis worker/jobs/evals.mjs; convex/ttsEvals.ts reads them): one row per eval set per run;
+  // subject is the set name ("wall", "role/classify", ...), data the runner's runData() shape, text the one summary line.
+  "eval-run",
+  // A line a producer put on the next digest (convex/jarvis/outbox.ts
+  // listForDigest): a decision taken in his name, or a failure, whose fact the
+  // digest reads from no row of its own. What #tts-decisions and #tts-broken
+  // carried as it happened.
+  "digest-line",
 ];
+
+/**
+ * The kinds whose subject is their identity, refused without one: a
+ * decision's askId (settle, "revert <n>" and the digest find it there), a
+ * digest line's askId or job, an eval run's set.
+ */
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run"];
 
 /** The provenance fields an event may carry, and nothing else. */
 export const PROVENANCE_FIELDS = ["agentId", "job", "session", "user"];
@@ -61,6 +96,9 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   }
   if (subject !== undefined && !nonEmptyString(subject)) {
     return { ok: false, error: "subject, when given, is a non-empty string" };
+  }
+  if (subject === undefined && SUBJECT_REQUIRED.includes(kind)) {
+    return { ok: false, error: `a ${kind} event names its subject` };
   }
   if (text !== undefined && typeof text !== "string") {
     return { ok: false, error: "text, when given, is a string" };

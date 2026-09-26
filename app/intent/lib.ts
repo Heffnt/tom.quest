@@ -182,3 +182,83 @@ export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
     return { kind: "bullet", text: part.text, line };
   });
 }
+
+// ── What the record says beside a line ──────────────────────────────────────
+//
+// A delegate decision's `restedOn` names what it rested on in the spellings
+// its prompt asks for: `ruling:<id>`, a page section `<path>#<Heading>`, an
+// evidence entry `<evidence path>:<heading>`. A rule eval item is named
+// `rule/ruling-<last 8 of the ruling id>`. Both resolve to lines of the list
+// here, in one place, so the page and its tests agree on what "beside" means.
+
+/** The lines one `restedOn` reference names; empty when it names none.
+ *  A parser, not an id lookup, because the delegate cites what its prompt
+ *  prints (Jarvis worker/jobs/delegate.mjs: `ruling:<id>`, `path:heading`, or
+ *  a page path and heading), and the /intent line ids are not in that prompt. */
+export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
+  const trimmed = ref.trim();
+  if (trimmed.startsWith("ruling:")) {
+    const id = `rulings/${trimmed.slice("ruling:".length)}`;
+    return lines.filter((line) => line.id === id);
+  }
+  const cut = trimmed.search(/[#:]/);
+  if (cut === -1) return [];
+  const heading = trimmed.slice(cut + 1).trim();
+  if (heading === "") return [];
+  // A repo's evidence file (`model-of-tom/evidence/repos/<Repo>.md:<file>#<heading>`)
+  // stands behind that repo's AGENTS.md rules, whose source is `<Repo> <file>`.
+  const repo = /^model-of-tom\/evidence\/repos\/([^/]+)\.md$/.exec(trimmed.slice(0, cut));
+  if (repo !== null) {
+    const inner = heading.indexOf("#");
+    if (inner === -1) return [];
+    const source = `${repo[1]} ${heading.slice(0, inner).trim()}`;
+    const wanted = heading.slice(inner + 1).trim().toLowerCase();
+    return lines.filter((line) => line.source === source && line.section.toLowerCase() === wanted);
+  }
+  const path = trimmed.slice(0, cut).replace("/evidence/", "/");
+  const wanted = heading.toLowerCase();
+  return lines.filter((line) => line.source === path && line.section.toLowerCase() === wanted);
+}
+
+/** The ruling id suffix an eval item names, or null for an item that names no line.
+ *  Eight characters because that is the name the rule set's writer gives an
+ *  item (Jarvis worker/jobs/evals.mjs on night/s6: `ruling-<id.slice(-8)>`). */
+export function evalItemLineSuffix(name: string): string | null {
+  const match = /^rule\/ruling-([a-z0-9]{8})$/.exec(name);
+  return match === null ? null : match[1];
+}
+
+/** Every eval item that names this line: rule items name a ruling by its id's last 8 characters. */
+export function evalItemsForLine<T extends { name: string }>(line: IntentLine, items: T[]): T[] {
+  if (line.kind !== "ruling") return [];
+  return items.filter((item) => {
+    const suffix = evalItemLineSuffix(item.name);
+    return suffix !== null && line.id.endsWith(suffix);
+  });
+}
+
+/** `passed/runs` over the runs read, or null for a line no eval item names. */
+export function passRate(items: { passed: number; runs: number }[]): { passed: number; runs: number } | null {
+  if (items.length === 0) return null;
+  return items.reduce((sum, item) => ({ passed: sum.passed + item.passed, runs: sum.runs + item.runs }), { passed: 0, runs: 0 });
+}
+
+/**
+ * The disagreements still open, as the view's badge counts them: the delegate
+ * decisions he has not settled, the failing eval items he has not settled, and
+ * the vocabulary's disagreements (settled in the files, so every one listed is
+ * open). Null until all three reads have answered; a vocabulary with no row
+ * (null) has none.
+ */
+export function openDisagreements(
+  decisions: { settled: unknown }[] | undefined,
+  evalItems: { pass: boolean | null; settled: unknown }[] | undefined,
+  vocabulary: { disagreements: unknown[] } | null | undefined,
+): number | null {
+  if (decisions === undefined || evalItems === undefined || vocabulary === undefined) return null;
+  return (
+    decisions.filter((one) => one.settled === null).length +
+    evalItems.filter((one) => one.pass === false && one.settled === null).length +
+    (vocabulary?.disagreements.length ?? 0)
+  );
+}

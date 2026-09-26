@@ -33,16 +33,16 @@ describe("page registry", () => {
   // IS the definition of what a session may look at, so it is asserted whole
   // and exactly — an extra slug appearing here is a widening nobody asked for.
   describe("the agent role", () => {
-    it("sees turing and tts and nothing else", () => {
+    it("sees turing and jarvis and nothing else", () => {
       expect(
         PAGES.filter((entry) => canSeePage("agent", entry)).map((entry) => entry.slug),
-      ).toEqual(["turing", "tts"]);
+      ).toEqual(["turing", "jarvis"]);
     });
 
     // Named individually because each is a specific thing a session must not
     // reach: /canvas spends LLM credits through its agent route, and the other
     // three are Tom's own surfaces.
-    it.each(["canvas", "agents", "forge", "logo", "intent", "vocabulary", "secrets"])(
+    it.each(["canvas", "agents", "forge", "logo", "intent", "secrets"])(
       "does not see /%s",
       (slug) => {
         const entry = PAGES.find((p) => p.slug === slug);
@@ -90,8 +90,8 @@ describe("page registry", () => {
   // the system says it in. Both are Tom-only and neither is agent-readable —
   // a headless session looking at a page it changed has no business reading
   // his intent.
-  it("keeps /intent and /vocabulary Tom-only", () => {
-    for (const slug of ["intent", "vocabulary"]) {
+  it("keeps /intent Tom-only", () => {
+    for (const slug of ["intent"]) {
       const entry = PAGES.find((page) => page.slug === slug);
       expect(entry, `no page named ${slug}`).toBeDefined();
       expect(entry!.visibility).toBe("tom");

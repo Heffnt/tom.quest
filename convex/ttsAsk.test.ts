@@ -1,7 +1,10 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
+import { gatherTodayFacts } from "./ttsDigest";
+import { nyCalendarDayKey } from "./ttsShared";
 import {
+  CAP_REFUSAL,
   DELEGATE_DECISION,
   DELEGATE_MAX_PER_SESSION,
   objectionRank,
@@ -146,6 +149,18 @@ describe("POST /tts/ask — the delegate's record", () => {
     const written = await rows(t);
     expect(written).toHaveLength(DELEGATE_MAX_PER_SESSION + 1);
     expect(written.find((row) => row.key === "aaaaaaaa")!.data.capped).toBe(true);
+    // witness: the capped row kept the delegate's answer as if it were taken,
+    // so the digest listed it as a decision made in his name. The box took
+    // its fallback: the row reads as refused, the cap its reason, and the
+    // digest parks it rather than listing a decision.
+    const capped = written.find((row) => row.key === "aaaaaaaa")!;
+    expect(capped.data).toMatchObject({ refused: true, refusedBecause: CAP_REFUSAL });
+    const facts = await t.run(async (ctx) => {
+      const now = Date.now() + 1;
+      return await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - 86_400_000 });
+    });
+    expect(facts.objections.find((o) => o.askId === "aaaaaaaa")).toMatchObject({ refused: true, refusedBecause: CAP_REFUSAL });
+    expect(facts.objections.find((o) => o.askId === "00000000")).toMatchObject({ refused: false });
   });
 
   it("counts the cap per caller, so one session does not cap another", async () => {

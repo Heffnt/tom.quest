@@ -23,7 +23,7 @@ import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import { describeOverflow } from "../lib";
 
 export default function OverflowExpand({

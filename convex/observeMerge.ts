@@ -8,7 +8,7 @@
 // TWO THINGS LIVE HERE. The first is the mirror of the changes that are
 // waiting: every open pull request, copied from GitHub so the page can show a
 // change before it lands. The second is the landing itself: an approved change
-// whose three gate rows are green is merged by the record, and the merge is
+// whose two gate rows (tests, audit) are green is merged by the record, and the merge is
 // written through convex/ttsMerge.ts internalRecordMerge — the same door the
 // box posts through — so the digest, the objection list and the page all see
 // one merge and not two.
@@ -21,7 +21,7 @@
 //
 // THE GATE IS NOT RE-IMPLEMENTED. mergeGateFor decides, exactly as it decides
 // for the box, and internalRecordMerge runs it again before it writes — so a
-// change landed without the three checks could not be recorded as a merge even
+// change landed without the two checks could not be recorded as a merge even
 // if this file were wrong.
 //
 // THE CREDENTIAL IS GITHUB_MIRROR_TOKEN, the one the record already uses to ask
@@ -109,7 +109,7 @@ export async function newestRuling(
   externalId: string,
 ) {
   const rulings = await ctx.db
-    .query("dtsRulings")
+    .query("rulings")
     .withIndex("by_repo_external", (q) =>
       q.eq("repo", repo).eq("externalId", externalId),
     )
@@ -498,13 +498,20 @@ async function landReady(
  */
 export const refreshOpenPulls = internalAction({
   args: {},
-  handler: async (ctx): Promise<{ open: number }> => {
+  handler: async (ctx): Promise<{ open: number; failures: string[] }> => {
     // Without the credential there is nothing to ask GitHub with, and the
     // mirror holds its last answer rather than emptying itself: the page would
     // otherwise show no waiting changes at all the moment a token expired.
     const token = process.env.GITHUB_MIRROR_TOKEN;
-    if (!token) return { open: 0 };
+    if (!token) return { open: 0, failures: [] };
     let open = 0;
+    // A repository that could not be read is a failure of the run
+    // (convex/jarvis/tick.ts failuresOf); the others are still mirrored.
+    const failures: string[] = [];
+    const fail = (message: string) => {
+      console.error(message);
+      failures.push(message);
+    };
     for (const repo of APPROVABLE_REPOS) {
       const slug = slugOf(repo);
       let pulls: Pull[];
@@ -514,18 +521,17 @@ export const refreshOpenPulls = internalAction({
           { headers: githubHeaders(token) },
         );
         if (!res.ok) {
-          console.error(
-            `observe: ${repo} pull requests could not be read (${res.status})`,
-          );
+          fail(`observe: ${repo} pull requests could not be read (${res.status})`);
           continue;
         }
         const body = (await res.json()) as unknown;
-        if (!Array.isArray(body)) continue;
+        if (!Array.isArray(body)) {
+          fail(`observe: ${repo} pull requests answered something that is not a list`);
+          continue;
+        }
         pulls = body as Pull[];
       } catch (error) {
-        console.error(
-          `observe: ${repo} pull requests could not be read: ${String(error)}`,
-        );
+        fail(`observe: ${repo} pull requests could not be read: ${String(error)}`);
         continue;
       }
       // GitHub's own JSON, which nothing in this repository types: the shapes
@@ -558,6 +564,6 @@ export const refreshOpenPulls = internalAction({
       open += answer.open;
     }
     await landReady(ctx);
-    return { open };
+    return { open, failures };
   },
 });

@@ -5,14 +5,14 @@
 // Tom talks to, `all roots` is everything else the record holds, and a row in
 // either opens the same component.
 //
-// The auto-fleet strip and the new-session form are the list's actions and are
-// unchanged: they already carry their Info popovers naming their Convex calls.
+// The new-session form is the list's action and carries its Info popover
+// naming its Convex call.
 
 import { useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import { useOpenSession } from "@/app/lib/use-open-todo-session";
 import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
 import type { Session, SessionModel } from "../lib";
@@ -34,85 +34,22 @@ import {
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 
-// ── Autonomous workers: ONE CONTROL (the lifeos update, phase 7) ────────────
-// This strip used to be an editor over five stored numbers — the load and
-// memory ceilings the scheduler admits under, the two runaway failsafes, and
-// the fleet's default model. Four of them were mechanism, not a decision: they
-// describe how hard a machine may be pushed, they were never touched after they
-// were set, and a number Tom has to hold in his head to read this page is
-// exactly what the update is removing. They are code-owned defaults now
-// (claudeSessions.AUTO_DEFAULTS), and this is the one thing left that is a
-// decision: are the autonomous workers running.
-function AutoFleetStrip() {
-  const config = useQuery(api.claudeSessions.getAutoConfig, {});
+// ── The box's load ─────────────────────────────────────────────────────────
+// What the daemon's heartbeat says about the Jarvis Box. The switch that stood
+// here, "start autonomous workers", went with the auto-session scheduler it
+// turned on (2026-09-26): its idea, the box working Tom's todos on its own
+// while it has room, is the box's work-queue job now.
+function BoxLoadStrip() {
   const health = useQuery(api.claudeSessions.getDaemonHealth, {});
-  const setAutoConfig = useMutation(api.claudeSessions.setAutoConfig);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // getAutoConfig answers with the defaults when no row has been written, so a
-  // falsy value here means the query has not landed yet.
-  if (!config) return null;
-
-  const flip = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await setAutoConfig({ enabled: !config.enabled });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "save failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const load = health?.load;
-
+  if (!load) return null;
   return (
-    <div className="border border-border rounded-lg bg-surface/40 px-3 py-2 space-y-1.5">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="inline-flex items-baseline gap-1">
-          {/* The label is the state it moves to, which is the ratified rule for
-              an action label: it names its exact effect. */}
-          <button
-            type="button"
-            onClick={() => void flip()}
-            disabled={busy}
-            className={`rounded-md border px-2.5 py-1 text-xs disabled:opacity-50 ${
-              config.enabled
-                ? "border-accent/60 bg-accent-dim text-accent hover:border-accent"
-                : "border-border text-text-muted hover:text-text hover:border-accent/60"
-            }`}
-          >
-            {config.enabled ? "stop autonomous workers" : "start autonomous workers"}
-          </button>
-          <Info call="claudeSessions.setAutoConfig({ enabled })">
-            Whether the box works on its own. While this is on, every five
-            minutes the scheduler walks your open work, claims what is ready and
-            opens a session for it — but only while the Jarvis Box is under the
-            load and memory ceilings, which are fixed in the code, not here.
-            Turning it off starts nothing new; sessions already running are left
-            alone.
-          </Info>
-        </span>
-        <span
-          className={`text-xs ${config.enabled ? "text-accent" : "text-text-muted"}`}
-        >
-          auto {config.enabled ? "on" : "off"}
-        </span>
-        {/* The model a worker runs on when the todo it claimed
-            named none of its own — a fact of the fleet, beside the switch. */}
-        <span className={MODEL_CHIP_CLASS}>{config.defaultModel}</span>
-        {load && (
-          <span className="font-mono text-[10px] text-text-faint">
-            load {load.loadavg1.toFixed(2)}/{load.cpus} ·{" "}
-            {(load.freeMemMb / 1024).toFixed(1)} GB free · {load.liveSessions}{" "}
-            sessions
-          </span>
-        )}
-      </div>
-      {error && <div className="text-xs text-error">{error}</div>}
+    <div className="border border-border rounded-lg bg-surface/40 px-3 py-2">
+      <span className="font-mono text-[10px] text-text-faint">
+        load {load.loadavg1.toFixed(2)}/{load.cpus} ·{" "}
+        {(load.freeMemMb / 1024).toFixed(1)} GB free · {load.liveSessions}{" "}
+        sessions
+      </span>
     </div>
   );
 }
@@ -350,7 +287,7 @@ export default function AgentList({
 
   return (
     <div className="space-y-4">
-      <AutoFleetStrip />
+      <BoxLoadStrip />
       {formOpen ? (
         <div className="space-y-2">
           <button

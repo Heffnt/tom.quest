@@ -7,9 +7,7 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { EVALS_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, MERGE, TESTS_RUN, commitKey } from "./ttsMerge";
-import { EVALS_PROTOCOL } from "../shared/evals-row.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -45,10 +43,8 @@ async function seedFact(t: TestConvex<typeof schema>, kind: string, data: Record
 }
 
 async function green(t: TestConvex<typeof schema>) {
-  await t.mutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, { boxEvalsVersion: EVALS_PROTOCOL });
   await seedFact(t, TESTS_RUN, { ok: true });
   await seedFact(t, AUDIT_VERDICT, { verdict: "APPROVED" });
-  await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });
 }
 
 const mirror = (t: TestConvex<typeof schema>, pulls = [PULL]) =>
@@ -90,7 +86,7 @@ describe("approveChange", () => {
     const second = await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
     expect(second).toEqual({ written: false, ruled: "approve" });
 
-    const rulings = await t.run((ctx) => ctx.db.query("dtsRulings").collect());
+    const rulings = await t.run((ctx) => ctx.db.query("rulings").collect());
     expect(rulings).toHaveLength(1);
     expect(rulings[0]).toMatchObject({
       subjectType: "code",
@@ -136,7 +132,7 @@ describe("approveChange", () => {
       }),
     );
     await tom.mutation(api.observe.approveChange, { repo: REPO, sha: SHA });
-    const [ruling] = await t.run((ctx) => ctx.db.query("dtsRulings").collect());
+    const [ruling] = await t.run((ctx) => ctx.db.query("rulings").collect());
     expect(ruling).toMatchObject({ externalId: `sha-${SHA}`, sentence: "Approve tts: the page has no capture bar" });
     const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled.filter((job) => job.name.includes("landApproved"))).toHaveLength(0);
@@ -175,7 +171,7 @@ describe("the mirror", () => {
         ]),
       ),
     );
-    expect(await t.action(internal.observeMerge.refreshOpenPulls, {})).toEqual({ open: 0 });
+    expect(await t.action(internal.observeMerge.refreshOpenPulls, {})).toEqual({ open: 0, failures: [] });
     expect(await tom.query(api.observe.changesWaiting, {})).toHaveLength(0);
   });
 });
@@ -298,8 +294,8 @@ describe("landing", () => {
     // later row wins on _creationTime, which is the only thing telling them
     // apart.
     await t.run(async (ctx) => {
-      const approve = await ctx.db.query("dtsRulings").first();
-      await ctx.db.insert("dtsRulings", {
+      const approve = await ctx.db.query("rulings").first();
+      await ctx.db.insert("rulings", {
         subjectType: "code",
         repo: REPO,
         externalId: "pr-212",

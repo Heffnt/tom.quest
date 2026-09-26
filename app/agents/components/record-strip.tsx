@@ -4,10 +4,10 @@
 // one home of what ran (convex/schema.ts events); this strip shows its
 // newest rows above the agents, whatever their kind, so a job's clean run,
 // a failure or a deploy is on the page beside the agents that ran them.
-// One list: a box change is drawn once, in its agent's chat (agent-rows.tsx
-// BoxChangeLine, from convex/boxChanges.ts), and the copied row has no
-// provenance.agentId, so it appears here as a line and there as a marker,
-// never twice in one place.
+// A box change is a row here like any other, and a marker in its agent's
+// chat (agent-rows.tsx BoxChangeLine, from convex/boxChanges.ts forAgent),
+// never twice in one place. What ran over a longer stretch is the page's
+// window view (app/agents/window).
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";

@@ -1,12 +1,13 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
-import { onDelegateObjection } from "./orchestrator";
+import { DIGEST_LINE } from "./jarvis/outbox";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -14,9 +15,6 @@ export const DELEGATE_TIMEOUT_MS = 120_000;
 export const DELEGATE_MAX_TURNS = 6;
 export const DELEGATE_MAX_PER_SESSION = 5;
 export const DELEGATE_MAX_PER_JOB = 3;
-// A runner's cap is keyed on the RUNNER, not the step: a step lives ten
-// minutes, so a per-step cap is no cap at all.
-export const DELEGATE_MAX_PER_RUNNER = 5;
 export const DIGEST_OBJECTION_LOOKBACK = 14;
 
 export type ObjectionFact = {
@@ -60,14 +58,10 @@ const ASK_ARGS = {
   askId: v.string(),
   sessionId: v.optional(v.string()),
   job: v.optional(v.string()),
-  runnerId: v.optional(v.string()),
-  // An elevation's trade-off, asked by the orchestrator; it carries no
-  // recommendation (Tom, 2026-09-21), and every other caller must send one.
-  elevationId: v.optional(v.string()),
   todoId: v.optional(v.string()),
   question: v.string(),
   options: v.array(v.string()),
-  recommendation: v.optional(v.string()),
+  recommendation: v.string(),
   fallback: v.string(),
   decision: v.union(v.string(), v.null()),
   reason: v.string(),
@@ -80,7 +74,7 @@ const ASK_ARGS = {
   // of Tom's in #tts-decisions can be scored against the output he objected to
   // (convex/agentLabels.ts internalLabelFromObjection reads it back off this
   // row's data). `data` is v.any(), so this is not a schema change, exactly as
-  // the objectionAskIds note on tts.internalMarkDigestSent says of its own
+  // the digest-sent row's objectionAskIds (convex/jarvis/digest.ts) say of their own
   // field. A caller that passes no token stores none: an unregistered
   // delegate call carries no run, and the absence is never inferred into one.
   runToken: v.optional(v.string()),
@@ -90,12 +84,10 @@ type AskData = {
   askId: string;
   sessionId?: string;
   job?: string;
-  runnerId?: string;
-  elevationId?: string;
   todoId?: string;
   question: string;
   options: string[];
-  recommendation?: string;
+  recommendation: string;
   fallback: string;
   decision: string | null;
   reason: string;
@@ -107,23 +99,21 @@ type AskData = {
   runToken?: string;
 };
 
-/** Who asked: a session, a runner, an elevation or a job, exactly one. The
+/** Who asked: a session or a job, exactly one. The
  *  cap and the count are both per caller, and both read this. */
-function sameCaller(data: unknown, args: { sessionId?: string; job?: string; runnerId?: string; elevationId?: string }): boolean {
-  const row = (data ?? {}) as { sessionId?: unknown; job?: unknown; runnerId?: unknown; elevationId?: unknown };
+function sameCaller(data: unknown, args: { sessionId?: string; job?: string }): boolean {
+  const row = (data ?? {}) as { sessionId?: unknown; job?: unknown };
   if (args.sessionId !== undefined) return row.sessionId === args.sessionId;
-  if (args.runnerId !== undefined) return row.runnerId === args.runnerId;
-  if (args.elevationId !== undefined) return row.elevationId === args.elevationId;
   return row.job === args.job;
 }
 
-function capFor(args: { sessionId?: string; runnerId?: string; elevationId?: string }): number {
+function capFor(args: { sessionId?: string }): number {
   if (args.sessionId !== undefined) return DELEGATE_MAX_PER_SESSION;
-  if (args.runnerId !== undefined) return DELEGATE_MAX_PER_RUNNER;
-  // An elevation is one more caller kind and is held to the job's cap: the
-  // count needs a caller key, and a new number would be one more to keep.
   return DELEGATE_MAX_PER_JOB;
 }
+
+/** The reason a capped ask carries: the caller took its own fallback. */
+export const CAP_REFUSAL = "cap: the delegate ask cap for this caller is spent, so the agent took its own fallback";
 
 /** Record the completed box-side delegate call. This does not call a model:
  * Convex cannot reach the box, and the caller is already there. */
@@ -149,31 +139,23 @@ export const internalRecordAsk = internalMutation({
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
       .take(200);
-    if (args.runnerId !== undefined) {
-      const runnerId = ctx.db.normalizeId("runners", args.runnerId);
-      if (runnerId === null || !(await ctx.db.get(runnerId))) throw new Error(`Unknown runner id: ${args.runnerId}`);
-    }
-    if (args.elevationId !== undefined) {
-      const elevationId = ctx.db.normalizeId("elevations", args.elevationId);
-      if (elevationId === null || !(await ctx.db.get(elevationId))) throw new Error(`Unknown elevation id: ${args.elevationId}`);
-      if (args.recommendation !== undefined) throw new Error("An elevation's trade-off carries no recommendation.");
-    } else if (args.recommendation === undefined) {
-      throw new Error("recommendation is required unless the ask is an elevation's trade-off");
-    }
     const callerCount = recent.filter((event) => sameCaller(event.data, args)).length;
     const cap = capFor(args);
     const attended = session !== null && session.mode !== "autonomous";
     const capped = callerCount >= cap;
-    const refused = attended ? true : args.refused;
+    // A CAPPED ASK TOOK NOTHING IN HIS NAME: the box does not act on the
+    // delegate's answer past the cap and takes the caller's fallback, so the
+    // row reads as refused, with the cap as its reason, like an attended one.
+    const refused = attended || capped ? true : args.refused;
     const refusedBecause = attended
       ? "attended-session: Tom is in this session — ask him"
-      : args.refusedBecause;
+      : capped
+        ? CAP_REFUSAL
+        : args.refusedBecause;
     const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
       ...args,
       sessionId: args.sessionId ?? null,
       job: args.job ?? null,
-      runnerId: args.runnerId ?? null,
-      elevationId: args.elevationId ?? null,
       todoId: todoId ?? null,
       refused,
       refusedBecause,
@@ -181,37 +163,30 @@ export const internalRecordAsk = internalMutation({
       capped,
     }, args.askId);
 
-    // Posted line by line as it is recorded, so a decision is observable the
-    // moment it is taken and not only at breakfast (Tom, 2026-09-09). It goes
-    // through ttsSync.sendDecision — the ONE #tts-decisions door, shared with
-    // the nightly job's model-of-Tom line and a ruling read out of Tom's
-    // words — so the wording of a decisions line has one home
-    // (ttsCompose.composeDecision) and the once-per-item-per-day claim is
-    // applied to all three producers alike. That action is quiet while
-    // SLACK_TTS_DECISIONS_CHANNEL_ID is unset, and the morning objection list
-    // is then the whole of it. Its subject is the ask itself, never the todo:
-    // a todo subject stamps slackReplyTs, which belongs to that todo's one
-    // #dump thread.
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
-      askId: args.askId,
-      ...(todoId === null || todoId === undefined ? {} : { todoId: todoId as string }),
-      // A no-answer is still a decision Tom may object to; it is spelled out
-      // rather than left null, because the composer prints one sentence.
-      decision:
-        attended || capped || args.decision === null
-          ? args.fallback
-          : args.decision,
-      reason: attended || capped ? refusedBecause ?? args.reason : args.reason,
-      refused: refused || capped,
-      ...(refused || capped ? { refusedBecause: refusedBecause ?? args.reason } : {}),
-      fallback: args.fallback,
-    });
+    // The digest's objection list reads this delegate-decision row itself
+    // (convex/ttsDigest.ts); there is no live line (one output channel).
     return { id, existing: false, attended, capped };
   },
 });
 
+/**
+ * The record's row for an askId the digest numbers: a `jarvis decide`
+ * decision (events kind "decision") or a line a producer put on the digest
+ * (kind "digest-line"), each filed under its askId as the subject. The one
+ * lookup the objection resolver, the ask context and the objection label
+ * share, so what one of them can find the others can.
+ */
+export async function recordedDecision(ctx: QueryCtx, askId: string): Promise<Doc<"events"> | null> {
+  return await ctx.db
+    .query("events")
+    .withIndex("by_subject_at", (q) => q.eq("subject", askId))
+    .order("desc")
+    .filter((q) => q.or(q.eq(q.field("kind"), "decision"), q.eq(q.field("kind"), DIGEST_LINE)))
+    .first();
+}
+
 export const internalAskContext = internalQuery({
-  args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), runnerId: v.optional(v.string()), elevationId: v.optional(v.string()), todoId: v.optional(v.string()) },
+  args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const recent = await ctx.db.query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
@@ -226,7 +201,11 @@ export const internalAskContext = internalQuery({
         const data = (event.data ?? {}) as { askId?: unknown; revert?: unknown; sentence?: unknown };
         const askId = data.askId;
         if (typeof askId !== "string") continue;
-        const decision = await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", askId)).first();
+        // The ask row, else the record's decision row: a revert of a decision
+        // only the record holds must still tell the next delegate what it was.
+        const decision =
+          (await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", askId)).first()) ??
+          (await recordedDecision(ctx, askId));
         const decisionData = (decision?.data ?? {}) as { decision?: unknown };
         priorObjections.push({ askId, at: event.at, revert: data.revert === true, sentence: typeof data.sentence === "string" ? data.sentence : null, decision: typeof decisionData.decision === "string" ? decisionData.decision : null });
       }
@@ -274,7 +253,15 @@ export const internalRecordDelegateObjection = internalMutation({
     // `simplify:<id>` key (convex/ttsNightly.ts). A removal-loop pull request
     // is the fourth: its #tts-simplify thread is keyed `loop:<number>`, and a
     // reply there is what the loop rewrites the branch from.
-    const subject =
+    //
+    // THE RECORD'S ROWS TOO. Every askId the digest numbers must resolve here,
+    // or "revert <n>" throws on a line he was offered: a `jarvis decide`
+    // decision is an events row of kind "decision" whose subject is its askId
+    // (convex/jarvis/intent.ts), and a line a producer put on the digest
+    // (ruling:, learning:, repo-proposal:, box-change:, golden:, ablation:)
+    // is an events row of kind "digest-line" whose subject is its askId
+    // (convex/jarvis/outbox.ts listForDigest).
+    const legacy =
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", args.askId))
@@ -291,11 +278,14 @@ export const internalRecordDelegateObjection = internalMutation({
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", REMOVAL_LOOP_PR).eq("key", args.askId))
         .first());
-    if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
-    const eventId = await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
-    // A delegate ruling on a worker's elevation is reverted by his objection,
-    // and the worker and the orchestrator are told (convex/orchestrator.ts).
-    await onDelegateObjection(ctx, args.askId, args.text, args.revert);
+    let todoId = legacy?.todoId;
+    if (legacy === null) {
+      const recorded = await recordedDecision(ctx, args.askId);
+      if (recorded === null) throw new Error(`Delegate decision not found: ${args.askId}`);
+      const named = (recorded.data as { todoId?: unknown } | undefined)?.todoId;
+      todoId = typeof named === "string" ? (ctx.db.normalizeId("dtsTodos", named) ?? undefined) : undefined;
+    }
+    const eventId = await logEvent(ctx, DELEGATE_OBJECTION, todoId, args, args.askId);
     // AN OBJECTION IS A JUDGMENT ABOUT THE RUN THAT TOOK THE DECISION, and the
     // label writer resolves it the same way this handler just resolved the
     // subject: the decision row (or the merge row) carries the run's token.

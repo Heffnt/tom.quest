@@ -56,31 +56,10 @@ export type IntentLine = {
   evidence: EvidenceEntry[];
 };
 
-/**
- * The callers the agent view offers: the ones whose context is assembled with
- * no subject — the five HTTP doors that read internalContextPrelude, and the
- * laptop's session-start hook. Every other caller (the session opener, a
- * runner step) is granted skills off its subject, so a view of it with none
- * would show grants no run of it ever gets.
- *
- * Here, in the pure half, because the page offers the list the query accepts.
- */
-export const AGENT_VIEW_CALLERS = [
-  "planner-context",
-  "capture-context",
-  "time-notes",
-  "weekly-input",
-  "simplify-input",
-  "laptop",
-] as const;
-
-export type AgentViewCaller = (typeof AGENT_VIEW_CALLERS)[number];
-
 /** The model-of-tom pages whose lines are intent, and which kind each is. Each
  *  page's evidence file says what its lines rest on; the query reads the two
  *  together, or a line arrives with nothing behind it. The agent view finds
- *  the same bullets in the prompt and in the `know-intent` body, and joins
- *  them back to the query's lines. */
+ *  the same bullets in the prompt and joins them back to the query's lines. */
 export const MODEL_OF_TOM_PAGES = [
   { name: "intent", path: "model-of-tom/intent.md", kind: "direction" as const },
   { name: "priorities", path: "model-of-tom/priorities.md", kind: "standing-rule" as const },

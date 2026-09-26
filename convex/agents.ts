@@ -44,7 +44,7 @@ const ROWS_SOURCE = v.object({
 });
 const ATTACHMENT = v.object({ file: v.string(), bytes: v.number(), sha256: v.string() });
 const CONTEXT = v.object({
-  wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()),
+  wikitomCommit: v.optional(v.string()), layersKnown: v.optional(v.boolean()), layersGiven: v.optional(v.array(v.string())), layersDenied: v.optional(v.array(v.string())),
   skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()),
   cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()),
   entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
@@ -58,10 +58,9 @@ const CONTEXT = v.object({
   // Jarvis's registration change of 2026-09-25; it stays accepted because
   // stored rows carry it and the schema is additive-only.
   skillsAsked: v.optional(v.array(v.string())),
-  // The graph version a run ran under, and the exact node ids its prompt
-  // carried — the `given` edges. ABSENT IS A SUPPORTED VALUE, as it is for
-  // wikitomCommit and regToken: an unregistered run, and a run whose launcher
-  // could not build a graph, carry nothing, and nothing is inferred from that.
+  // Stored rows carry these; no writer sends them. They stay accepted
+  // because the schema is additive-only, like the three layers fields and
+  // skillsGranted / skillsRefused above.
   graphVersion: v.optional(v.string()),
   graphNodes: v.optional(v.array(v.string())),
 });
@@ -82,9 +81,7 @@ const AGENT = v.object({
   environment: v.optional(AGENT_ENVIRONMENT),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: AGENT_KIND, status: AGENT_STATUS,
   mode: v.optional(AGENT_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
-  // batchId stays accepted while a box that has not rolled out still sends it;
-  // nothing reads it, and the schema narrow removes it.
-  todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  todoId: v.optional(v.id("dtsTodos")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
   regToken: v.optional(v.string()),
   envelopeKey: v.optional(v.string()), abandonedAt: v.optional(v.number()), file: FILE,
 });
@@ -216,8 +213,8 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
   };
 }
 
-// `runner:<id>` is a runner's step run: the id is the runners row it belongs
-// to, which is how the agents page names the runner beside the chain.
+// `runner:<id>` is a runner's step run, as the box's launcher still writes it;
+// the record's runners are gone (2026-09-26), so nothing reads the id.
 // `desktop` is a box session no launcher started, which scripts/agent-hook.mjs
 // records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
 // REMOVAL CHECK: the list is the ingest's refusal of an origin nobody wrote on
@@ -559,7 +556,7 @@ export const internalIngest = internalMutation({
       // the repair page is the only thing that can give it one. Without that
       // every label about a run whose first page beat its envelope would be
       // unlinked forever.
-      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "environment", "continuesRunId", "todoId", "batchId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
+      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "environment", "continuesRunId", "todoId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
       if (run.sessionId !== undefined && existing.sessionId === undefined) patch.sessionId = run.sessionId;
       if (existing.kind === "unknown") patch.kind = run.kind;
       if (existing.origin === "unknown") patch.origin = run.origin;
@@ -762,12 +759,11 @@ const traceText = (value: string) => redactSecrets(value).slice(0, AGENT_TRACE_M
  * Without it the audit's "I read the whole change" is unverifiable, which is
  * the exact fault this round closes.
  *
- * `null` FOR AN UNKNOWN TOKEN IS A NORMAL ANSWER and never an error, exactly as
- * ttsEvals.internalRunByToken treats it: the sweeper needs a moment to see the
- * run's file, so the caller polls with a short bounded wait and a trace that
+ * `null` FOR AN UNKNOWN TOKEN IS A NORMAL ANSWER and never an error: the
+ * sweeper needs a moment to see the run's file, so the caller polls with a short bounded wait and a trace that
  * never arrives is a counted absence, not a failed audit.
  *
- * NARROW LIKE ITS SIBLING. A caller holding a token is owed this run's tool
+ * NARROW. A caller holding a token is owed this run's tool
  * NAMES AND PATHS — never its transcript, its tool results, or any other field
  * of a call's input.
  */
@@ -1140,6 +1136,10 @@ export const internalEvictTick = internalMutation({
     deferred: v.optional(v.number()),
     steps: v.optional(v.number()),
     pendingRunId: v.optional(v.string()),
+    // The record-tick task (convex/jarvis/tick.ts "evict") decides when a day's
+    // run is due, at any hour from 4:15 New York, and passes force; the
+    // 4 a.m. guard below stays for a caller that does not.
+    force: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     // OFF by default. Turning it on is the caller's action, after the S3
@@ -1159,7 +1159,7 @@ export const internalEvictTick = internalMutation({
     // The house DST pattern: a cron pair fires at both possible UTC times and
     // this guard lets exactly one through. A CONTINUATION does not re-check, so
     // a long eviction is not cut in half at the hour boundary.
-    if (steps === 0 && args.pendingRunId === undefined && nyLocalHour(now) !== 4) {
+    if (steps === 0 && args.pendingRunId === undefined && args.force !== true && nyLocalHour(now) !== 4) {
       return { ok: true as const, skipped: "not the eviction hour" };
     }
 

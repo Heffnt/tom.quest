@@ -3,41 +3,47 @@
 //
 // The box-change reader on the box (Jarvis worker/jobs/box-watch.mjs) reads
 // the systemd journal every two minutes and compares the machine's state
-// every ten, and posts each change as one dtsEvents row of kind `box-change`
-// through POST /tts/event. The shape is fixed between the two repositories
-// (plan-root-dispositions.md, "Fixed shapes"):
+// every ten, and posts each change as one `events` row of kind `box-change`
+// through POST /jarvis/event (night/w4, 2026-09-26; before, a dtsEvents row
+// through the legacy pen POST /tts/event, which now hands a box change to
+// the same write, see convex/ttsNightly.ts internalRecordBoxChange). The data
+// shape is fixed between the two repositories (plan-root-dispositions.md,
+// "Fixed shapes"):
 //
 //   { source: "sudo"|"systemd"|"user"|"ssh"|"state"|"deploy"|"setup",
 //     why: "ran-as-root"|"unit"|"login"|"state"|"deploy"|"setup",
 //     command?, change?: { what, before?, after? }, cwd?, user, at,
 //     agentId?, count?, commit? }
 //
-// and the row's `key` is the agentId when the box matched one, so an agent's
-// changes are one indexed read. This module is the record's side of it:
-//   - boxChangeFaults, which the worker-event door runs before a row is
-//     written, so a row of this kind always has the shape the readers assume;
-//   - onBoxChange, which schedules the two Slack lines a change can earn: a
-//     #tts-decisions line when it changes who or what can act on the box, and
-//     a #tts-broken line when the journal lost entries the reader had not read;
+// The row's `at` is data.at, when it happened on the box, and its
+// provenance.agentId is data.agentId when the box matched an agent, so an
+// agent's changes are one indexed read (events.by_agent_at). This module is
+// the record's side of it:
+//   - onBoxChange, the kind's hook (convex/jarvis/events.ts AFTER_RECORD):
+//     refuses a row whose data is not the shape or whose provenance and data
+//     disagree, drops a second copy of one change, and schedules the two
+//     Slack lines a change can earn: a #tts-decisions line when it changes
+//     who or what can act on the box, and a #tts-broken line when the journal
+//     lost entries the reader had not read;
 //   - forAgent, the /agents chat's read of one agent's changes;
+//   - boxChangesInWindow, the digest's read of a window's changes;
 //   - boxChangeLines, the digest's "Box changes" facts: one line per agent
 //     that ran root commands, one per deploy and per setup run, and one per
 //     other kind of change.
 //
-// The command text arrives redacted by the box (its shape pass and, once J1
-// lands, its exact-value pass). Every reader here runs it through
-// redactSecrets again, the record's one choke point, before it leaves the
-// server: a row from a box that has not deployed the reader's redaction yet is
-// still shown redacted.
+// The command text arrives redacted by the box (its shape pass and its
+// exact-value pass). Every reader here runs it through redactSecrets again,
+// the record's one choke point, before it leaves the server: a row from a box
+// that has not deployed the reader's redaction yet is still shown redacted.
 
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
 import { query } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../shared/redact.mjs";
 import type { BoxChangeFact } from "./ttsCompose";
+import { listForDigest } from "./jarvis/outbox";
 
 export const BOX_CHANGE = "box-change";
 /** The deploy job's own row (Jarvis worker/jobs/deploy.mjs): data
@@ -60,10 +66,16 @@ export type BoxChange = {
   agentId?: string;
   count?: number;
   commit?: string;
+  /** The reader's own identity for the change: the journal cursor of its
+   *  first line, or the state comparison's snapshot key. A resend carries the
+   *  same id; two changes never do. Absent from a box that does not send it
+   *  yet, and then nothing is taken for a resend. */
+  id?: string;
 };
 
 const COMMAND_CHARS = 2000;
 const CHANGE_CHARS = 4000;
+const ID_CHARS = 512;
 
 /** Why a posted box-change body cannot be recorded; empty when it can. */
 export function boxChangeFaults(data: unknown): string[] {
@@ -78,6 +90,9 @@ export function boxChangeFaults(data: unknown): string[] {
   if (d.cwd !== undefined && typeof d.cwd !== "string") faults.push("data.cwd must be a string");
   if (d.agentId !== undefined && (typeof d.agentId !== "string" || d.agentId === "")) faults.push("data.agentId must be a non-empty string");
   if (d.commit !== undefined && (typeof d.commit !== "string" || !/^[0-9a-f]{7,40}$/.test(d.commit))) faults.push("data.commit must be a hex commit");
+  // Capped because the id becomes the row's indexed subject (onBoxChange); a
+  // journal cursor is about 150 characters.
+  if (d.id !== undefined && (typeof d.id !== "string" || d.id === "" || d.id.length > ID_CHARS)) faults.push(`data.id must be a non-empty string of at most ${ID_CHARS} characters`);
   if (d.count !== undefined && (typeof d.count !== "number" || !Number.isSafeInteger(d.count) || d.count < 1)) faults.push("data.count must be a positive integer");
   if (d.change !== undefined) {
     const c = d.change as Record<string, unknown> | null;
@@ -169,31 +184,97 @@ export function whoCanActLine(change: BoxChange): string | null {
   return null;
 }
 
+/** Two bodies of one change, compared key by key whatever order each was
+ *  written in. */
 /**
- * The Slack lines one recorded box change earns, scheduled in the mutation
- * that wrote its row: a #tts-decisions line when it changes who or what can
- * act, and a #tts-broken line when the journal lost entries the reader had
- * not read (plan-root T3). Neither holds a secret: the text is redacted first.
+ * THE KIND'S HOOK, run inside the record mutation after the row lands
+ * (convex/jarvis/events.ts AFTER_RECORD). A throw rolls the row back and the
+ * route answers 400 naming the fault, which the box logs and drops.
+ *
+ * ONE ROW PER CHANGE. The box's outbox is at-least-once: a post whose answer
+ * was lost to the network is sent again on the next run, and for as long as a
+ * box still posts through the legacy pen and another through POST
+ * /jarvis/event, both carry the same outbox. A second row with the same `at`
+ * and the same `data.id` (the reader's identity for the change) is that
+ * resend, not a second change, so it is deleted here and earns no digest
+ * line. The time and the body are no identity: two sudo runs of one command
+ * in one millisecond are two changes. A change posted without an id is
+ * always recorded, a resend of it included.
+ *
+ * Then the digest lines one recorded change earns (convex/jarvis/outbox.ts):
+ * one on the objection list when it changes who or what can act, and a
+ * broken line when the journal lost entries the reader had not read
+ * (plan-root T3). Neither holds a secret: the text is redacted first.
  */
-export async function onBoxChange(ctx: MutationCtx, id: Id<"dtsEvents">, data: unknown): Promise<void> {
-  const change = boxChangeOf(data);
-  if (change === null) return;
+/** The subject a box change with a reader id is filed under. */
+function boxChangeSubject(id: string): string {
+  return `box-change-id:${id}`;
+}
+
+export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise<{ duplicate: boolean }> {
+  const faults = boxChangeFaults(row.data);
+  if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
+  const change = row.data as BoxChange;
+  if (row.provenance.agentId !== change.agentId) {
+    throw new Error("a box change's provenance.agentId is its data.agentId, and it has none when data.agentId is absent");
+  }
+  if (row.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
+  if (change.id !== undefined) {
+    // The id is the row's subject, so a resend is one point lookup on
+    // events.by_subject_at: no scan of the millisecond, nothing it can miss.
+    const subject = boxChangeSubject(change.id);
+    const earlier = await ctx.db
+      .query("events")
+      .withIndex("by_subject_at", (q) => q.eq("subject", subject))
+      .filter((q) => q.and(q.eq(q.field("kind"), BOX_CHANGE), q.neq(q.field("_id"), row._id)))
+      .first();
+    if (earlier !== null) {
+      await ctx.db.delete(row._id);
+      return { duplicate: true };
+    }
+    if (row.subject !== subject) await ctx.db.patch(row._id, { subject });
+  }
   const shown = redactedBoxChange(change);
   if (shown.change?.what === "journal-gap") {
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+    await listForDigest(ctx, {
+      section: "broken",
       job: "box-watch:journal-gap",
       statement: `The box's journal lost entries the box-change reader had not read${shown.change.before ? `, from ${shown.change.before}` : ""}${shown.change.after ? ` to ${shown.change.after}` : ""}, so changes to the machine in that span are not in the record.`,
-      url: OBSERVE_URL,
+      url: AGENTS_WINDOW_URL,
     });
-    return;
+    return { duplicate: false };
   }
   const decision = whoCanActLine(shown);
-  if (decision === null) return;
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
-    askId: `box-change:${id}`,
+  if (decision === null) return { duplicate: false };
+  await listForDigest(ctx, {
+    section: "decisions",
+    askId: `box-change:${row._id}`,
     decision,
     reason: "it changes who or what can act on the Jarvis Box",
   });
+  return { duplicate: false };
+}
+
+/**
+ * The event a box change is, from the fixed shape the box posts: `at` when it
+ * happened, the reader's half as the job (the state comparison reports as
+ * box-state, the journal reader as box-watch), the matched agent as
+ * provenance.agentId. The legacy pen's translation and the history copy build
+ * the row with it; the box builds the same (Jarvis box-change.mjs
+ * recordEvent).
+ */
+export function boxChangeEvent(data: BoxChange) {
+  return {
+    kind: BOX_CHANGE,
+    at: data.at,
+    provenance: {
+      // A journal gap is the journal reader's (box-watch) whatever source the
+      // row names; older gap rows name "state".
+      job: data.source === "state" && data.change?.what !== "journal-gap" ? "box-state" : "box-watch",
+      ...(data.agentId === undefined ? {} : { agentId: data.agentId }),
+    },
+    data,
+  };
 }
 
 // ── The /agents chat ─────────────────────────────────────────────────────────
@@ -202,31 +283,71 @@ export async function onBoxChange(ctx: MutationCtx, id: Id<"dtsEvents">, data: u
 const AGENT_MAX = 500;
 
 /**
- * One agent's box changes, oldest first, for the marked rows in its chat.
- * `at` is when the change happened on the box (the row's own `at` is when it
- * was recorded, up to two minutes later).
+ * One agent's box changes, oldest first, for the marked rows in its chat, off
+ * the agent's rows of the record (events.by_agent_at). `at` is when the
+ * change happened on the box.
+ *
+ * NOTHING OLDER IS MISSING FROM IT. The one-time history copy (w4's
+ * convex/jarvis/history.ts, run in production on 2026-09-26 and deleted in
+ * 9555ceff) moved every dtsEvents box change into `events`; and no box
+ * change in the record has ever named an agent (production's events table,
+ * read 2026-09-26: 16 box changes, none with provenance.agentId), so no
+ * agent's chat had a box change to lose. boxChanges.test.ts "the /agents
+ * read" holds this read path.
  */
 export const forAgent = query({
   args: { agentId: v.string() },
   handler: async (ctx, { agentId }) => {
     await requireTom(ctx, "Agents");
     const rows = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_key", (q) => q.eq("kind", BOX_CHANGE).eq("key", agentId))
+      .query("events")
+      .withIndex("by_agent_at", (q) => q.eq("provenance.agentId", agentId))
       .order("asc")
+      .filter((q) => q.eq(q.field("kind"), BOX_CHANGE))
       .take(AGENT_MAX);
     const out: (BoxChange & { id: string })[] = [];
     for (const row of rows) {
       const change = boxChangeOf(row.data);
       if (change !== null) out.push({ ...redactedBoxChange(change), id: row._id });
     }
-    return out.sort((left, right) => left.at - right.at);
+    return out;
   },
 });
 
+/**
+ * The box changes RECORDED in the window, in the order they happened, as the
+ * digest reads them (boxChangeLines takes these). Unredacted: boxChangeLines
+ * redacts every line it writes.
+ *
+ * BY RECORDED TIME, NOT BY WHEN IT HAPPENED. The reader posts a change
+ * minutes after it happened (every two minutes, later when its outbox
+ * retries), so a change that happened before one digest was composed and was
+ * recorded after it would fall in neither window if read by `at`. Recorded
+ * time (_creationTime, on the kind's own index events.by_kind, so no other
+ * kind's rows are read however long the window) partitions the changes
+ * between consecutive digests exactly: each lands in one.
+ */
+export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
+  const rows = await ctx.db
+    .query("events")
+    .withIndex("by_kind", (q) => q.eq("kind", BOX_CHANGE).gte("_creationTime", from).lt("_creationTime", to))
+    .take(WINDOW_MAX);
+  const out: BoxChange[] = [];
+  for (const row of rows) {
+    const change = boxChangeOf(row.data);
+    if (change !== null) out.push(change);
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** The most changes one digest window reads: a day of a busy box is a few
+ *  hundred after folding. */
+const WINDOW_MAX = 2000;
+
 // ── The digest ───────────────────────────────────────────────────────────────
 
-export const OBSERVE_URL = "https://tom.quest/observe";
+/** Where a box change is read in time: the /agents page's window view. */
+export const AGENTS_WINDOW_URL = "https://tom.quest/agents?view=window";
 
 function agentUrl(agentId: string): string {
   return `https://tom.quest/agents?agent=${encodeURIComponent(agentId)}`;
@@ -290,7 +411,7 @@ export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []):
   }
   const unmatched = byAgent.get("");
   if (unmatched !== undefined) {
-    facts.push({ id: "box:unmatched", text: `Root commands no agent was matched to: ${rootLine(unmatched)}.`, url: OBSERVE_URL });
+    facts.push({ id: "box:unmatched", text: `Root commands no agent was matched to: ${rootLine(unmatched)}.`, url: AGENTS_WINDOW_URL });
   }
 
   const deployed = new Set<string>();
@@ -301,21 +422,21 @@ export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []):
     facts.push({
       id: `box:deploy:${sha || deploy.at}`,
       text: `The box deployed ${deploy.repo ?? "Jarvis"} ${sha.slice(0, 7)}${commits > 0 ? `, ${commits} ${plural(commits, "commit", "commits")}` : ""}.`,
-      url: OBSERVE_URL,
+      url: AGENTS_WINDOW_URL,
     });
   }
   for (const change of shown) {
     if (change.source === "deploy") {
       const commit = change.commit ?? "";
       if ([...deployed].some((sha) => commit !== "" && sha.startsWith(commit))) continue;
-      facts.push({ id: `box:deploy:${commit || change.at}`, text: `The box deployed ${commit.slice(0, 7)}.`, url: OBSERVE_URL });
+      facts.push({ id: `box:deploy:${commit || change.at}`, text: `The box deployed ${commit.slice(0, 7)}.`, url: AGENTS_WINDOW_URL });
     }
     if (change.source === "setup") {
       const folded = change.change?.what === "setup" && change.change.after ? `, ${change.change.after.replace(/^folded: /, "")}` : "";
       facts.push({
         id: `box:setup:${change.commit ?? change.at}`,
         text: `Setup ran as root${change.commit ? ` at ${change.commit.slice(0, 7)}` : ""}${folded}.`,
-        url: OBSERVE_URL,
+        url: AGENTS_WINDOW_URL,
       });
     }
   }
@@ -332,7 +453,7 @@ export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []):
         facts.push({
           id: `box:journal-gap:${gap.at}`,
           text: `The journal lost entries the reader had not read${gap.change?.before ? `, from ${gap.change.before}` : ""}${gap.change?.after ? ` to ${gap.change.after}` : ""}; the record has a gap there.`,
-          url: OBSERVE_URL,
+          url: AGENTS_WINDOW_URL,
         });
       }
       continue;
@@ -342,14 +463,14 @@ export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []):
     facts.push({
       id: `box:state:${what}`,
       text: `The ${ITEM_WORDS[what] ?? what} changed${items.length > 1 ? ` ${items.length} times` : ""}${now}.`,
-      url: OBSERVE_URL,
+      url: AGENTS_WINDOW_URL,
     });
   }
 
   const units = shown.filter((change) => change.source === "systemd");
   if (units.length > 0) {
     const words = units.map((unit) => `${unit.change?.what ?? "a unit"} ${unit.change?.after ?? ""}`.trim());
-    facts.push({ id: "box:units", text: `Units changed outside a root command: ${listed(words, 4)}.`, url: OBSERVE_URL });
+    facts.push({ id: "box:units", text: `Units changed outside a root command: ${listed(words, 4)}.`, url: AGENTS_WINDOW_URL });
   }
 
   const logins = new Map<string, number>();
@@ -360,7 +481,7 @@ export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []):
   if (logins.size > 0) {
     const total = [...logins.values()].reduce((sum, n) => sum + n, 0);
     const who = [...logins.entries()].sort((left, right) => right[1] - left[1]).map(([user, n]) => `${user} ${n}`).join(", ");
-    facts.push({ id: "box:logins", text: `${total} ssh ${plural(total, "login", "logins")} reached the box: ${who}.`, url: OBSERVE_URL });
+    facts.push({ id: "box:logins", text: `${total} ssh ${plural(total, "login", "logins")} reached the box: ${who}.`, url: AGENTS_WINDOW_URL });
   }
   return facts;
 }

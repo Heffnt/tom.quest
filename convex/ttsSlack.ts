@@ -9,7 +9,6 @@ import { DIGEST_SENT } from "./ttsDigest";
 import {
   NEEDS_TOM,
   SLACK_SUBJECT,
-  channelFor,
   isLive,
   slackThreadKey,
   ttsDayKey,
@@ -22,16 +21,11 @@ import {
   composeCaptured,
   composeContinued,
   composeNeedsYou,
-  composeRunnerAsk,
-  needsYouFactsBlock,
   renderSlack,
-  runnerAskBody,
   type NeedsYouFacts,
-  type RunnerAskFacts,
 } from "./ttsCompose";
-import { recordRunnerReply, agentLink } from "./ttsRunners";
-import { onElevationThreadFailed, recordElevationReply } from "./orchestrator";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
+import { needsYouNumber, openNeedsYou } from "./jarvis/outbox";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -135,9 +129,6 @@ export const internalRecordSlackFailed = internalMutation({
       subject.kind === "todo" ? subject.id : undefined,
       { channel, threadTs, subject, error, text, attempts, windowEnd },
     );
-    // A reserved elevation whose thread never posted is not waiting on Tom:
-    // it goes back to the orchestrator to put to him again.
-    if (subject.kind === "elevation") await onElevationThreadFailed(ctx, subject.id, error);
   },
 });
 
@@ -218,24 +209,17 @@ export const internalOpenNeedsTomThread = internalMutation({
   // carrying a worker's JSON, and this is where an unknown id becomes a named
   // refusal rather than a validator error (the internalPrepareTodo pattern).
   args: {
-    // Exactly one subject: a todo (every caller before runners), or a
-    // runner's question. The todo path below is the one it always was.
-    todoId: v.optional(v.string()),
-    runner: v.optional(v.object({ runnerId: v.id("runners"), askId: v.id("runnerEvents") })),
+    todoId: v.string(),
     // `verdict.why` from the triage — HALF A SENTENCE HE CAN READ, and the one
     // thing the old message never said.
     reason: v.string(),
     key: v.string(),
     canReply: v.optional(v.boolean()),
-    channel: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { todoId, runner, reason, key, canReply, channel },
+    { todoId, reason, key, canReply },
   ): Promise<{ opened: boolean; key: string; reason?: string }> => {
-    if ((todoId === undefined) === (runner === undefined)) throw new Error("A needs-you thread names exactly one subject: a todo or a runner's question.");
-    if (runner !== undefined) return await openRunnerNeedsYou(ctx, runner, key);
-    if (todoId === undefined) throw new Error("unreachable");
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
     const id = ctx.db.normalizeId("dtsTodos", todoId);
@@ -261,7 +245,7 @@ export const internalOpenNeedsTomThread = internalMutation({
       key,
       todoId: id,
       // The provenance the message does NOT print stays on the row.
-      data: { key, reason, provenance: todo.provenance, facts: needsYouFactsBlock(facts, day, canReply ?? false) },
+      data: { key, reason, provenance: todo.provenance },
     });
 
     // ONE APPEARANCE PER ITEM PER DAY. The morning message claims at 5 a.m.,
@@ -277,69 +261,19 @@ export const internalOpenNeedsTomThread = internalMutation({
     if (!claim.claimed) {
       return { opened: false, key, reason: `already claimed today by ${claim.by}` };
     }
-    // WRITTEN, NOT FILLED IN (Tom 2026-09-09, amendment 2) — the same route the
-    // morning message takes: the facts go to a draft request, the Fable run on
-    // the box writes it, the verifier checks every link and number against the
-    // facts, and the timeout posts this template if no accepted draft arrives.
-    await ctx.runMutation(internal.ttsSlackDrafts.internalOpenSlackDraft, {
-      requestId: `needs-you:${key}`,
-      kind: "needs-you",
-      subject: { kind: "todo", id },
-      ...(channel === undefined ? {} : { channel }),
-      facts: needsYouFactsBlock(facts, day, canReply ?? false),
-      canReply: canReply ?? false,
-      fallback: renderSlack(composeNeedsYou(facts, { canReply: canReply ?? false })),
+    // A REPLY UNDER THE DAY'S DIGEST (Tom, 2026-09-26: one output channel).
+    // Deterministic, no model: the box's digest job posts it in the newest
+    // digest's thread and records needs-you-posted, which routes his reply
+    // back to this todo (convex/jarvis/digest.ts).
+    await openNeedsYou(ctx, {
+      key,
+      todoId: id,
+      reason,
+      text: renderSlack(composeNeedsYou(facts, { canReply: canReply ?? false })),
     });
     return { opened: true, key };
   },
 });
-
-/**
- * A runner's question for Tom, opened as its own #tts-needs-you thread. Its
- * facts are the runner's title, the question, its tier and the link to the
- * step that asked. NO ONE-PER-DAY CLAIM: that claim keeps one todo from
- * appearing twice in a day across channels, and a runner asks about one
- * experiment; a second question in a day is a second question. The key still
- * dedupes a redelivered ask. Posted through the one door (sendSlack), whose
- * slack-sent row carries the runner subject, which is what routes his reply
- * back to the runner.
- */
-async function openRunnerNeedsYou(
-  ctx: MutationCtx,
-  { runnerId, askId }: { runnerId: Id<"runners">; askId: Id<"runnerEvents"> },
-  key: string,
-): Promise<{ opened: boolean; key: string; reason?: string }> {
-  const runner = await ctx.db.get(runnerId);
-  const ask = await ctx.db.get(askId);
-  if (!runner || !ask || ask.kind !== "ask" || ask.runnerId !== runnerId) throw new Error("Unknown runner question.");
-  const seen = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_TOM).eq("key", key))
-    .first();
-  if (seen) return { opened: false, key };
-  await ctx.db.insert("dtsEvents", {
-    at: Date.now(),
-    kind: NEEDS_TOM,
-    key,
-    data: { key, runnerId, askId, tier: ask.tier, blocking: ask.blocking === true },
-  });
-  const channel = channelFor("needsYou");
-  if (channel === null) return { opened: false, key, reason: "not configured" };
-  const canReply = Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
-  const facts: RunnerAskFacts = {
-    title: runner.title,
-    question: ask.text ?? "",
-    tier: ask.tier ?? "plan",
-    blocking: ask.blocking === true,
-    stepUrl: agentLink(ask.stepRunId ?? ""),
-  };
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-    channel,
-    text: `${renderSlack(composeRunnerAsk(facts, { canReply }))}\n\n${runnerAskBody(facts)}`,
-    subject: { kind: "runner", id: runnerId },
-  });
-  return { opened: true, key };
-}
 
 /** The message a capture came from, when its provenance carries one./** The message a capture came from, when its provenance carries one.
  *  worker/jobs/poll-gmail.mjs writes `gmail:message:<id> https://mail.google…`,
@@ -446,6 +380,16 @@ async function threadSubject(
   threadTs: string,
 ): Promise<ThreadSubject> {
   const key = slackThreadKey(channel, threadTs);
+  // A DIGEST OWNS ITS THREAD. The needs-you replies under it are later sends
+  // in the same thread, and newest-wins would hand the whole thread to the
+  // last of them; the digest case reads them itself (needsYouReply).
+  const root = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", "slack-sent").eq("key", key))
+    .order("asc")
+    .first();
+  const rootSubject = (root?.data as { subject?: SlackSubject } | undefined)?.subject;
+  if (rootSubject?.kind === "today" || rootSubject?.kind === "digest") return rootSubject;
   const sent = await threadRow(ctx, "slack-sent", key);
   const claimed = await threadRow(ctx, SLACK_THREAD_CLAIMED, key);
   // Newest wins, so an ordinary later send in the thread still re-points it.
@@ -487,8 +431,7 @@ export type ThreadReplyOutcome =
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
-  | { outcome: "runner-reply"; runnerId: Id<"runners"> }
-  | { outcome: "elevation-answer" | "elevation-note"; elevationId: Id<"elevations"> }
+  | { outcome: "asked-which"; numbers: number[] }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -563,9 +506,6 @@ export async function slackThreadReplyFrom(
       capturedAs: outcome.todoId,
     });
   }
-  // A reserved elevation's thread was opened on the elevation's todo, and the
-  // weekly gather matches a needs-you thread to its reply by that todo.
-  const elevationTodo = subject.kind === "elevation" ? (await ctx.db.get(subject.id))?.todoId : undefined;
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: "slack-event",
@@ -573,9 +513,7 @@ export async function slackThreadReplyFrom(
     todoId:
       subject.kind === "todo"
         ? subject.id
-        : subject.kind === "elevation"
-          ? elevationTodo
-          : outcome.outcome === "captured"
+        : outcome.outcome === "captured"
             ? outcome.todoId
             : undefined,
     data: {
@@ -681,6 +619,15 @@ async function routeReply(
         return { outcome: "delegate-objection", id: objectedDecision };
       }
       if (objected !== undefined) return { outcome: "learning-objection", id: objected };
+      // A NEEDS-YOU REPLY ANSWERED (convex/jarvis/digest.ts numbers them).
+      // In the digest's thread, a reply that names no todo and is no objection
+      // is the next turn of the needs-you it names by number; unnumbered, of
+      // the one needs-you still open; with several open, the thread is asked
+      // which (needsYouReply).
+      if (named === undefined && (subject.kind === "today" || subject.kind === "digest")) {
+        const answered = await needsYouReply(ctx, text, subject.day, at);
+        if (answered !== null) return answered;
+      }
       await logEvent(ctx, "tom-note", named?.todoId, {
         text,
         ...at,
@@ -724,18 +671,115 @@ async function routeReply(
       // the box's to fix, not a row with a status Tom can set.
       await logEvent(ctx, "tom-note", undefined, { text, ...at, subject, job: subject.id });
       return { outcome: "tom-note", subject };
-    case "runner":
-      // A reply in a runner's thread, its check-ins or its question: the next
-      // step reads it whole, and it answers the newest open question. Not a
-      // ruling — the rulings table is for todos.
-      return await recordRunnerReply(ctx, subject.id, text, at);
-    case "elevation":
-      // A reserved decision's thread: his reply is the answer, recorded as
-      // his ruling on the elevation and delivered to the worker that asked.
-      return await recordElevationReply(ctx, subject.id, text, at);
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }
+}
+
+/** The row that says a reply of his was routed to one numbered needs-you
+ *  of one thread, which closes it for an unnumbered reply. */
+const NEEDS_YOU_ANSWERED = "needs-you-answered";
+
+/** A reply that begins with a number: the number, and what follows it
+ *  ("4 done", "4 · Friday", "4: call her first", or "4" alone). A number run
+ *  into a word ("4pm") is not one. Exported for its test. */
+export function numberedReply(text: string): { n: number; rest: string } | null {
+  const hit = /^(\d{1,3})(?:\s*[·.:)\-–—]\s*|\s+|$)([\s\S]*)$/.exec(text.trim());
+  return hit === null ? null : { n: Number(hit[1]), rest: hit[2].trim() };
+}
+
+type NeedsYouItem = { n: number; subject: SlackSubject; answeredKey: string };
+
+/** The needs-you replies posted in this digest's thread, each with the number
+ *  it was posted with (convex/jarvis/outbox.ts needsYouNumber) and its
+ *  subject: the todo, or the producer's job. */
+async function needsYouInThread(
+  ctx: MutationCtx,
+  at: { channel: string; threadTs: string },
+): Promise<NeedsYouItem[]> {
+  const key = slackThreadKey(at.channel, at.threadTs);
+  const rows = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", "slack-sent").eq("key", key))
+    .take(200);
+  const items: NeedsYouItem[] = [];
+  for (const row of rows) {
+    const d = (row.data ?? {}) as { threadTs?: unknown; subject?: SlackSubject; text?: unknown };
+    if (d.threadTs !== at.threadTs || d.subject === undefined) continue;
+    if (d.subject.kind !== "todo" && d.subject.kind !== "job") continue;
+    const n = needsYouNumber(d.text);
+    if (n === null) continue;
+    items.push({ n, subject: d.subject, answeredKey: `${key}#${n}` });
+  }
+  return items;
+}
+
+/** Open: no reply of his has been routed to it, and its todo, if it has one,
+ *  is not done or archived. */
+async function isOpen(ctx: MutationCtx, item: NeedsYouItem): Promise<boolean> {
+  const answered = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_YOU_ANSWERED).eq("key", item.answeredKey))
+    .first();
+  if (answered !== null) return false;
+  if (item.subject.kind !== "todo") return true;
+  const todo = await ctx.db.get(item.subject.id);
+  return todo !== null && todo.status !== "done" && todo.status !== "archived";
+}
+
+/**
+ * The needs-you a reply in the digest's thread answers, and its answer — or
+ * null when the thread holds none, or the reply's number names none of them
+ * (a number that names an objection line was read before this).
+ *
+ * UNAMBIGUOUS BY CONSTRUCTION. A reply that starts with a number is that
+ * item's; one that does not goes to the one item still open; with several
+ * open, nothing is guessed: the thread gets one line asking which number,
+ * and the reply is kept as a note on the day.
+ */
+async function needsYouReply(
+  ctx: MutationCtx,
+  text: string,
+  day: string,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<ThreadReplyOutcome | null> {
+  const items = await needsYouInThread(ctx, at);
+  if (items.length === 0) return null;
+  const numbered = numberedReply(text);
+  let item: NeedsYouItem | undefined;
+  let said = text;
+  if (numbered !== null) {
+    item = items.find((one) => one.n === numbered.n);
+    if (item === undefined) return null;
+    said = numbered.rest;
+  } else {
+    const open: NeedsYouItem[] = [];
+    for (const one of items) if (await isOpen(ctx, one)) open.push(one);
+    if (open.length === 0) return null;
+    if (open.length > 1) {
+      const numbers = open.map((one) => one.n).sort((a, b) => a - b);
+      await logEvent(ctx, "tom-note", undefined, { text, ...at, subject: { kind: "today", day }, day, askedWhich: numbers });
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+        channel: at.channel,
+        threadTs: at.threadTs,
+        text: `Which one is that for? Start your reply with its number: ${numbers.slice(0, -1).join(", ")} or ${numbers[numbers.length - 1]}.`,
+        subject: { kind: "today", day },
+      });
+      return { outcome: "asked-which", numbers };
+    }
+    item = open[0];
+  }
+  await ctx.db.insert("dtsEvents", {
+    at: Date.now(),
+    kind: NEEDS_YOU_ANSWERED,
+    key: item.answeredKey,
+    data: { n: item.n, subject: item.subject, text, ...at },
+  });
+  // The number named the item; what follows it is the answer ("4 done").
+  const answer = numbered !== null && said !== "" ? said : text;
+  if (item.subject.kind === "todo") return await todoReply(ctx, item.subject.id, answer, at, replyShape(said));
+  await logEvent(ctx, "tom-note", undefined, { text, ...at, subject: item.subject });
+  return { outcome: "tom-note", subject: item.subject };
 }
 
 /** Nothing is lost: the reply becomes a todo whose provenance names the
@@ -880,18 +924,27 @@ async function namedObjection(
 ): Promise<string | undefined> {
   const parsed = parseObjectionReply(text);
   if (parsed === null) return undefined;
-  // DO NOT put `day` in the row's key to make this a point lookup.
-  // ttsDigest.lastDigestSent depends on "digest-sent" rows carrying NO key:
-  // with the kind pinned and every key empty, by_kind_key orders by time and
-  // .first() is the newest row. Keying them by day would silently break the
-  // window arithmetic of every future digest. So: a bounded newest-first take
-  // over two weeks of mornings, inside Slack's 3-second budget.
+  // The record's digest-sent rows (convex/jarvis/digest.ts), a bounded
+  // newest-first take over two weeks of mornings, inside Slack's 3-second
+  // budget.
   const recent = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT))
     .order("desc")
     .take(DIGEST_OBJECTION_LOOKBACK);
-  const sent = recent.find((row) => (row.data as { day?: unknown } | undefined)?.day === day);
+  const onDay = (row: { data?: unknown }) => (row.data as { day?: unknown } | undefined)?.day === day;
+  // A morning marked before the box wrote the digest has its row in dtsEvents
+  // (convex/jarvis/digest.ts lastDigest says why); its thread still takes
+  // "revert 2" for the two weeks this lookback covers, then this read goes.
+  const sent =
+    recent.find(onDay) ??
+    (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+        .order("desc")
+        .take(DIGEST_OBJECTION_LOOKBACK)
+    ).find(onDay);
   const printed = (sent?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
   const askId = Array.isArray(printed) ? printed[parsed.n - 1] : undefined;
   // A number that named no printed line is not an objection: fall through, and

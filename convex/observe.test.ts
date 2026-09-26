@@ -223,7 +223,7 @@ describe("the rulings", () => {
     const tom = await withTom(t);
     await t.run(async (ctx) => {
       const todoId = await ctx.db.insert("dtsTodos", todo("rename the observation page"));
-      await ctx.db.insert("dtsRulings", {
+      await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
         verdict: "approve",
@@ -262,7 +262,7 @@ describe("the merge gate's state", () => {
       commits: [{ repo: "tom.quest", sha: "abcdef1234" }],
     });
     expect(gate.allowed).toBe(false);
-    expect(gate.checks.map((check) => check.name).sort()).toEqual(["audit", "evals", "tests"]);
+    expect(gate.checks.map((check) => check.name).sort()).toEqual(["audit", "tests"]);
     expect(gate.checks.every((check) => check.passed)).toBe(false);
   });
 });
@@ -295,21 +295,5 @@ describe("defining a word", () => {
     expect(answer.inVocabulary).toBe(true);
     expect(answer.found).toEqual([]);
     expect(answer.elsewhere).toContain("vocabulary.json");
-  });
-
-  it("carries a skill's own description when the word names a skill", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
-        name: "know-week",
-        group: "know",
-        description: "Tom's recurring week.",
-        body: "nothing here defines anything",
-        syncedAt: 1,
-      });
-    });
-    const answer = await tom.query(api.observe.define, { term: "know-week" });
-    expect(answer.found.some((entry) => entry.text === "Tom's recurring week.")).toBe(true);
   });
 });
