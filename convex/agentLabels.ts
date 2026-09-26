@@ -509,10 +509,23 @@ export const internalLabelFromReaction = internalMutation({
       .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT))
       .order("desc")
       .take(DIGEST_OBJECTION_LOOKBACK);
-    const sent = recent.find((row) => {
+    const atTs = (row: { data?: unknown }) => {
       const d = row.data as { ts?: unknown; slackTs?: unknown } | undefined;
       return d?.ts === ts || d?.slackTs === ts;
-    });
+    };
+    // A morning marked before the box wrote the digest has its row in
+    // dtsEvents (convex/jarvis/digest.ts lastDigest says why), as
+    // ttsSlack's namedObjection reads it: a reaction on one of those still
+    // labels for the two weeks this lookback covers, then this read goes.
+    const sent =
+      recent.find(atTs) ??
+      (
+        await ctx.db
+          .query("dtsEvents")
+          .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+          .order("desc")
+          .take(DIGEST_OBJECTION_LOOKBACK)
+      ).find(atTs);
     if (sent === undefined) return { wrote: false, why: "no digest was sent at that ts" };
     const mapped = REACTION_POLARITY[name];
     if (mapped === undefined) {

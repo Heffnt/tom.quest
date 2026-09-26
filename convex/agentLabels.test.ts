@@ -606,6 +606,24 @@ describe("a reaction on the morning becomes a label", () => {
     }
   });
 
+  // witness: the resolver read only the record's rows, so a reaction on a
+  // morning marked before the box wrote the digest (its row in dtsEvents)
+  // wrote no label.
+  it("labels a reaction on a morning whose digest-sent row is the legacy one", async () => {
+    const t = convexTest(schema, modules);
+    await seedRun(t, { regToken: "tok-legacy", runId: "claude:box:write-slack" });
+    await t.run((ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: 5_000,
+        kind: "digest-sent",
+        key: "2026-09-10",
+        data: { day: "2026-09-10", writtenBy: "fable", runToken: "tok-legacy", slackTs: "1757500000.0001" },
+      }),
+    );
+    await t.mutation(internal.agentLabels.internalLabelFromReaction, reaction({ emoji: "+1" }));
+    expect((await labels(t)).map((row) => row.runId)).toEqual(["claude:box:write-slack"]);
+  });
+
   it("reads a skin-toned thumb as the thumb that was tapped", async () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-morning" });
