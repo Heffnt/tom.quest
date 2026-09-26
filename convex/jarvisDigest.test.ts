@@ -158,7 +158,7 @@ describe("needs-you, a numbered reply under the digest", () => {
     await recordSent(t, { ...answer, objectionAskIds: ["a1", "a2"] }, THREAD_TS);
     pending = await get(t, "/jarvis/digest/needs-you");
     expect(pending.thread).toEqual({ channel: CHANNEL, ts: THREAD_TS, day: DAY });
-    expect(pending.previousThread).toBeNull();
+    expect(pending.searchThreads).toEqual([{ channel: CHANNEL, ts: THREAD_TS, day: DAY }]);
     expect(pending.pending).toEqual([
       expect.objectContaining({ key: "k1", n: 3, todoId, text: expect.stringContaining("Only you can settle this: the landlord needs an answer today.") }),
     ]);
@@ -204,20 +204,35 @@ describe("needs-you, a numbered reply under the digest", () => {
     expect(await reply(t, "Ev1", "Looks right to me.", "1758882800.000100")).toEqual({ outcome: "tom-note", subject: { kind: "today", day: DAY } });
   });
 
-  it("names the previous digest's thread, where a reply posted before the newest digest may sit", async () => {
+  it("names every digest thread a pending reply may sit under, back to the third day", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(MORNING - 86_400_000);
     vi.stubEnv("JARVIS_KEY", "k");
     vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", CHANNEL);
     const t = convexTest({ schema, modules });
-    const yesterday = await (await post(t, "/jarvis/digest", {})).json();
-    await recordSent(t, yesterday, "1758796200.000100");
-    vi.setSystemTime(MORNING);
-    const today = await (await post(t, "/jarvis/digest", {})).json();
-    await recordSent(t, today, THREAD_TS);
+    const days = [
+      { at: MORNING - 3 * 86_400_000, ts: "1758623400.000100", day: "2026-09-23" },
+      { at: MORNING - 2 * 86_400_000, ts: "1758709800.000100", day: "2026-09-24" },
+      { at: MORNING - 86_400_000, ts: "1758796200.000100", day: "2026-09-25" },
+      { at: MORNING, ts: THREAD_TS, day: DAY },
+    ];
+    // A needs-you opened on the first of them stays pending three days.
+    vi.setSystemTime(days[0].at + 60_000);
+    const todoId = await aTodo(t);
+    for (const one of days) {
+      vi.setSystemTime(one.at);
+      const answer = await (await post(t, "/jarvis/digest", {})).json();
+      await recordSent(t, answer, one.ts);
+      if (one === days[0]) {
+        vi.setSystemTime(one.at + 60_000);
+        await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { todoId, reason: "it needs an answer", key: "k-old" });
+      }
+    }
+    vi.setSystemTime(MORNING + 60_000);
     const answer = await get(t, "/jarvis/digest/needs-you");
     expect(answer.thread.ts).toBe(THREAD_TS);
-    expect(answer.previousThread).toEqual({ channel: CHANNEL, ts: "1758796200.000100", day: "2026-09-25" });
+    expect(answer.pending.map((p: { key: string }) => p.key)).toEqual(["k-old"]);
+    // Newest first, and the first day's thread, where it was posted, is in it.
+    expect(answer.searchThreads.map((th: { ts: string }) => th.ts)).toEqual(days.map((d) => d.ts).reverse());
   });
 });
 

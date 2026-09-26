@@ -51,7 +51,7 @@ import {
   NEEDS_YOU_WINDOW_MS,
   digestFacts,
   lastDigest,
-  recentDigests,
+  digestsSince,
 } from "./outbox";
 
 /**
@@ -173,7 +173,11 @@ type Thread = { channel: string; ts: string; day: string | null };
 
 type PendingNeedsYou = {
   thread: Thread | null;
-  previousThread: Thread | null;
+  /** Every digest thread a pending reply may already sit under, newest
+   *  first: each digest sent since a day before the pending window opened
+   *  (the digest that was newest when the oldest pending item opened is at
+   *  most a day older than it). The box reads them all before posting. */
+  searchThreads: Thread[];
   pending: { key: string; text: string; n: number; todoId?: string; job?: string }[];
 };
 
@@ -194,9 +198,10 @@ export const pendingNeedsYou = internalQuery({
   args: {},
   handler: async (ctx): Promise<PendingNeedsYou> => {
     const now = Date.now();
-    const [newest, previous] = await recentDigests(ctx, 2);
-    const thread = threadOf(newest);
     const from = now - NEEDS_YOU_WINDOW_MS;
+    const digests = await digestsSince(ctx, from - DAY_MS);
+    const newest = digests[0];
+    const thread = threadOf(newest);
     const opened = await ctx.db
       .query("events")
       .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gte("at", from))
@@ -214,7 +219,10 @@ export const pendingNeedsYou = internalQuery({
     const first = (Array.isArray(objectionLines) ? objectionLines.length : 0) + inThread + 1;
     return {
       thread,
-      previousThread: threadOf(previous),
+      searchThreads: digests.flatMap((row) => {
+        const one = threadOf(row);
+        return one === null ? [] : [one];
+      }),
       pending: opened
         .filter((row) => row.subject !== undefined && !done.has(row.subject))
         .map((row, index) => {
