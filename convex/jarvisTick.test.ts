@@ -55,6 +55,15 @@ describe("a tick task's outcome", () => {
     expect(String((rows[0].data as { error?: unknown }).error)).toContain("pull requests could not be read (502)");
   });
 
+  it("is job-failed with the credential name when the pull-request mirror has no GitHub credential", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "pull-requests" })).toEqual({ ok: false });
+    const rows = await outcomes(t);
+    expect(rows.map((row) => row.kind)).toEqual(["job-failed"]);
+    expect((rows[0].data as { error?: unknown }).error).toBe("observe: GITHUB_MIRROR_TOKEN is not set");
+  });
+
   it("is job-ok when the task returns no failure", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("TTS_ICS_FEEDS", "");
@@ -86,6 +95,38 @@ describe("the daily tasks: repeats and eviction", () => {
     });
     return answer;
   };
+
+  it("deletes completed tick leases while keeping success and failure outcomes", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("TTS_ICS_FEEDS", "");
+    const successLease = await t.run(async (ctx) =>
+      ctx.db.insert("events", {
+        kind: "tick-started",
+        at: 1,
+        provenance: { job: "tick:calendar" },
+        subject: "tick:calendar",
+        data: { task: "calendar", timeoutMs: 1 },
+      }),
+    );
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar", leaseId: successLease })).toEqual({ ok: true });
+
+    vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
+    const failureLease = await t.run(async (ctx) =>
+      ctx.db.insert("events", {
+        kind: "tick-started",
+        at: 2,
+        provenance: { job: "tick:pull-requests" },
+        subject: "tick:pull-requests",
+        data: { task: "pull-requests", timeoutMs: 1 },
+      }),
+    );
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "pull-requests", leaseId: failureLease })).toEqual({ ok: false });
+
+    const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(rows.filter((row) => row.kind === "tick-started")).toEqual([]);
+    expect(rows.filter((row) => row.kind === "job-ok" && row.subject === "tick:calendar")).toHaveLength(1);
+    expect(rows.filter((row) => row.kind === "job-failed" && row.subject === "tick:pull-requests")).toHaveLength(1);
+  });
 
   // witness: a task wrote no row until it finished, so the next minute's
   // tick queued a second copy while the first scheduled action was still live.

@@ -69,7 +69,7 @@ function github(mergeStatus: number, message = "", base = "main") {
   return { fake, puts };
 }
 
-beforeEach(() => vi.stubEnv("GITHUB_MIRROR_TOKEN", "test-token"));
+beforeEach(() => vi.stubEnv("GITHUB_MIRROR_TOKEN", "not-a-key"));
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -142,6 +142,15 @@ describe("approveChange", () => {
 });
 
 describe("the mirror", () => {
+  it("reports the missing GitHub credential as a failure by name", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
+    expect(await t.action(internal.observeMerge.refreshOpenPulls, {})).toEqual({
+      open: 0,
+      failures: ["observe: GITHUB_MIRROR_TOKEN is not set"],
+    });
+  });
+
   it("marks a pull request GitHub stopped listing as closed, so it leaves the waiting list", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);

@@ -503,7 +503,7 @@ export const refreshOpenPulls = internalAction({
     // mirror holds its last answer rather than emptying itself: the page would
     // otherwise show no waiting changes at all the moment a token expired.
     const token = process.env.GITHUB_MIRROR_TOKEN;
-    if (!token) return { open: 0, failures: [] };
+    if (!token) return { open: 0, failures: ["observe: GITHUB_MIRROR_TOKEN is not set"] };
     let open = 0;
     // A repository that could not be read is a failure of the run
     // (convex/jarvis/tick.ts failuresOf); the others are still mirrored.

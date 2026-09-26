@@ -7,7 +7,7 @@
 
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
-import { DAY_MS, nyCalendarDayBoundsUtc, nyCalendarDayKey, outputChannel } from "../ttsShared";
+import { DAY_MS, outputChannel, ttsDayBoundsUtc, ttsDayKey } from "../ttsShared";
 import { insertEvent } from "./record";
 
 export const DIGEST_SENT = "digest-sent";
@@ -162,11 +162,11 @@ type DigestLine =
 
 export async function listForDigest(ctx: MutationCtx, line: DigestLine): Promise<{ listed: boolean }> {
   const subject = line.section === "decisions" ? line.askId : line.job;
-  // ONCE A DAY PER SUBJECT, as the channel's per-day claim was: a rerun that
+  // ONCE PER DIGEST WINDOW PER SUBJECT: a rerun that
   // offers the same decision again (a Friday job's --overwrite), or a job that
   // fails on every run, is one line, not one per offer.
   const now = Date.now();
-  const { start, end } = nyCalendarDayBoundsUtc(nyCalendarDayKey(now));
+  const { start, end } = ttsDayBoundsUtc(ttsDayKey(now));
   const seen = await ctx.db
     .query("events")
     .withIndex("by_subject_at", (q) => q.eq("subject", subject).gte("at", start).lt("at", end))

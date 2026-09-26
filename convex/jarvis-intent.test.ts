@@ -172,6 +172,28 @@ describe("jarvis/intent", () => {
     await expect(tom.mutation(api.jarvis.intent.settle, { subject: `eval:${failing.runId}:rule/nope`, verdict: "approve" })).rejects.toThrow("no eval run");
   });
 
+  it("keeps identically named eval items from different sets separate", async () => {
+    const t = convexTest({ schema, modules });
+    await event(t, "eval-run", "rule", {
+      set: "rule",
+      model: "opus",
+      items: [{ name: "shared/item", pass: true, note: "rule result" }],
+    }, 1);
+    await event(t, "eval-run", "wall", {
+      set: "wall",
+      model: "opus",
+      items: [{ name: "shared/item", pass: false, note: "wall result" }],
+    }, 2);
+    const tom = await asTom(t);
+    const items = (await tom.query(api.jarvis.intent.evalItems, {}))
+      .filter((item) => item.name === "shared/item")
+      .sort((left, right) => left.set.localeCompare(right.set));
+    expect(items).toMatchObject([
+      { set: "rule", pass: true, passed: 1, runs: 1, note: "rule result" },
+      { set: "wall", pass: false, passed: 0, runs: 1, note: "wall result" },
+    ]);
+  });
+
   it("files a decision under its row's subject and skips one without", async () => {
     const t = convexTest({ schema, modules });
     await event(t, "decision", "filed1", { ...DECISION, askId: "a-different-spelling" });

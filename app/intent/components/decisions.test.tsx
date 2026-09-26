@@ -1,6 +1,5 @@
-// The disagreement list offers only what a settlement can mean: a refused or
-// unanswered decision has nothing to accept, and a run whose items were all
-// skipped passed nothing.
+// The disagreement list contains decisions the delegate actually took, and a
+// run whose items were all skipped passed nothing.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -54,13 +53,16 @@ function draw(decisions: Decision[], evalItems: EvalItem[], onSettle: () => Prom
 }
 
 describe("Decisions", () => {
-  it("offers accept on a decision taken, and only object on one refused or unanswered", () => {
-    draw([DECISION], []);
+  it("lists a decision taken and excludes refused or unanswered rows", () => {
+    draw([
+      DECISION,
+      { ...DECISION, id: "e2", askId: "refused", question: "Refused question", decision: null, refused: true, refusedBecause: "money" },
+      { ...DECISION, id: "e3", askId: "unanswered", question: "Unanswered question", decision: null },
+    ], []);
     expect(screen.getByText("accept")).toBeTruthy();
-    cleanup();
-    draw([{ ...DECISION, decision: null, refused: true, refusedBecause: "money" }, { ...DECISION, id: "e2", askId: "x", decision: null }], []);
-    expect(screen.queryByText("accept")).toBeNull();
-    expect(screen.getAllByText("object")).toHaveLength(2);
+    expect(screen.getAllByText("object")).toHaveLength(1);
+    expect(screen.queryByText("Refused question")).toBeNull();
+    expect(screen.queryByText("Unanswered question")).toBeNull();
   });
 
   it("does not call a run whose items were all skipped a pass", () => {
@@ -88,11 +90,10 @@ describe("Decisions", () => {
     expect((screen.getByText("accept") as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("captions object as the revise it records, and names no approve where there is nothing to accept", () => {
-    draw([{ ...DECISION, decision: null, refused: true, refusedBecause: "money" }], []);
+  it("captions object as the revise it records", () => {
+    draw([DECISION], []);
     fireEvent.click(screen.getAllByLabelText("what this does")[1]);
-    expect(screen.getByText(/verdict: "revise", sentence \}\)/)).toBeTruthy();
-    expect(screen.getByText(/takes his sentence/).textContent).toContain("There is nothing to accept here");
-    expect(screen.queryByText(/verdict: "approve"/)).toBeNull();
+    expect(screen.getByText(/verdict: "approve" \| "revise", sentence\? \}\)/)).toBeTruthy();
+    expect(screen.getByText(/takes his sentence/)).toBeTruthy();
   });
 });

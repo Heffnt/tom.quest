@@ -41,6 +41,7 @@ export default function Decisions({
   onSettle: (args: { subject: string; verdict: Verdict; sentence?: string }) => Promise<unknown>;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
+  const disagreementDecisions = decisions.filter((decision) => !decision.refused && decision.decision !== null);
   const failing = evalItems.filter((item) => item.pass === false);
   const scored = evalItems.filter((item) => item.pass !== null).length;
   const skipped = evalItems.length - scored;
@@ -50,15 +51,15 @@ export default function Decisions({
       <section>
         <h2 className="flex items-baseline gap-2 border-b border-border pb-1">
           <span className="text-[13px] font-semibold text-text">delegate decisions</span>
-          <span className="text-[11px] font-mono text-text-faint">{decisions.length}</span>
+          <span className="text-[11px] font-mono text-text-faint">{disagreementDecisions.length}</span>
           <Info call="jarvis/intent.decisions()" side="below">
             Every decision the delegate took in his place, newest first: the question, what it decided and why,
-            and the lines of this page it rested on. One it refused is listed with its reason.
+            and the lines of this page it rested on.
           </Info>
         </h2>
-        {decisions.length === 0 && <p className="mt-2 text-[12px] text-text-muted">No delegate decision in the record.</p>}
+        {disagreementDecisions.length === 0 && <p className="mt-2 text-[12px] text-text-muted">No delegate disagreement in the record.</p>}
         <ul>
-          {decisions.map((decision) => (
+          {disagreementDecisions.map((decision) => (
             <li key={decision.id} className="border-b border-border/50 px-2 py-2">
               <p className="text-[13px] leading-snug text-text">{decision.question}</p>
               <p className="mt-0.5 text-[13px] leading-snug text-accent">
@@ -109,7 +110,7 @@ export default function Decisions({
             const suffix = evalItemLineSuffix(item.name);
             const line = suffix === null ? undefined : lines.find((one) => one.kind === "ruling" && one.id.endsWith(suffix));
             return (
-              <li key={item.name} className="border-b border-border/50 px-2 py-2">
+              <li key={`${item.set}:${item.name}`} className="border-b border-border/50 px-2 py-2">
                 <p className="flex flex-wrap items-baseline gap-x-2 text-[11px] font-mono text-text-faint">
                   <span className="text-text">{item.name}</span>
                   <span>

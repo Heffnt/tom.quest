@@ -142,7 +142,7 @@ describe("the job a worker run belongs to", () => {
 });
 
 describe("a failure row", () => {
-  it("uses the record's provenance job when data does not duplicate it", () => {
+  it("prefers the record's provenance job and falls back to legacy data", () => {
     expect(failureRowOf({
       id: "e1",
       at: 10,
@@ -151,8 +151,18 @@ describe("a failure row", () => {
       todoId: null,
       agentId: null,
       job: "poll-canvas",
-      data: {},
+      data: { job: "legacy-canvas" },
     }).job).toBe("poll-canvas");
+    expect(failureRowOf({
+      id: "e2",
+      at: 11,
+      kind: "job-failed",
+      key: "legacy-canvas:read",
+      todoId: null,
+      agentId: null,
+      job: null,
+      data: { job: "legacy-canvas" },
+    }).job).toBe("legacy-canvas");
   });
 });
 
@@ -275,6 +285,12 @@ describe("the map's shape", () => {
   it("names every node an edge points at", () => {
     const ids = new Set(NODES.map((node) => node.id));
     expect(ids.size).toBe(NODES.length);
+  });
+
+  it("shows no generic runners tally on Turing", () => {
+    const turing = NODES.find((node) => node.id === "turing");
+    expect(turing).toBeDefined();
+    expect("tally" in turing!).toBe(false);
   });
 });
 

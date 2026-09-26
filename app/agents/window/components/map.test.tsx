@@ -38,7 +38,10 @@ describe("the map", () => {
 
   it("gives every number its unit in words", () => {
     const { container } = draw();
-    for (const node of NODES) expect(container.textContent).toContain(`0 ${node.unit}`);
+    for (const node of NODES) {
+      if ("unit" in node) expect(container.textContent).toContain(`0 ${node.unit}`);
+    }
+    expect(container.textContent).not.toContain("0 runner agents");
   });
 
   it("ends every arrow in a polygon of three corners, and uses no marker element", () => {

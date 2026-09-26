@@ -138,14 +138,14 @@ describe("POST /jarvis/digest", () => {
 });
 
 describe("the digest outbox", () => {
-  it("lists one subject once per New York calendar day, not once per rolling 24 hours", async () => {
+  it("lists one subject once from 5 a.m. New York to the next 5 a.m.", async () => {
     const beforeMidnight = Date.parse("2026-09-26T03:59:00Z"); // 23:59 New York
     const t = setup(beforeMidnight);
     const line = { section: "broken" as const, job: "calendar", statement: "The calendar failed." };
     expect(await t.run(async (ctx) => listForDigest(ctx, line))).toEqual({ listed: true });
-    vi.setSystemTime(beforeMidnight + 30_000);
-    expect(await t.run(async (ctx) => listForDigest(ctx, line))).toEqual({ listed: false });
     vi.setSystemTime(beforeMidnight + 2 * 60_000);
+    expect(await t.run(async (ctx) => listForDigest(ctx, line))).toEqual({ listed: false });
+    vi.setSystemTime(Date.parse("2026-09-26T09:00:00Z")); // 05:00 New York
     expect(await t.run(async (ctx) => listForDigest(ctx, line))).toEqual({ listed: true });
     expect(await ofKind(t, "events", "digest-line")).toHaveLength(2);
   });

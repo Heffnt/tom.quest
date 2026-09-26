@@ -34,6 +34,7 @@ import type { FunctionReference } from "convex/server";
 import { internal } from "../_generated/api";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { JOB_FAILED, JOB_OK } from "./jobs";
+import { recordEvent } from "./events";
 import { insertEvent } from "./record";
 import { TTS_PREP_NY_HOUR, nyCalendarDayKey, nyHhmm } from "../ttsShared";
 
@@ -137,27 +138,59 @@ export const due = internalMutation({
         if (failed !== null && now - failed.at < MINUTE - EARLY_MS) continue;
         if (task.when.after !== undefined && started.includes(task.when.after)) continue;
       }
-      await ctx.scheduler.runAfter(0, internal.jarvis.tick.runTask, { name });
-      await insertEvent(ctx, {
+      const leaseId = await insertEvent(ctx, {
         kind: TICK_STARTED,
         at: now,
         provenance: { job },
         subject: job,
         data: { task: name, timeoutMs: task.timeoutMs },
       });
+      await ctx.scheduler.runAfter(0, internal.jarvis.tick.runTask, { name, leaseId });
       started.push(name);
     }
     return { started };
   },
 });
 
+/** Record one task's outcome and remove the exact lease that started it. The
+ *  outcome and deletion share a transaction, so a completed run never leaves
+ *  its tick-started row behind and can never delete a newer retry's lease. */
+export const complete = internalMutation({
+  args: {
+    name: v.string(),
+    leaseId: v.optional(v.id("events")),
+    error: v.optional(v.string()),
+  },
+  handler: async (ctx, { name, leaseId, error }): Promise<null> => {
+    const job = jobOf(name);
+    await recordEvent(ctx, error === undefined
+      ? {
+          kind: JOB_OK,
+          provenance: { job },
+          subject: job,
+          data: { job, key: job },
+        }
+      : {
+          kind: JOB_FAILED,
+          provenance: { job },
+          subject: job,
+          data: { job, error },
+          text: `The ${name} task failed: ${error}`,
+        });
+    if (leaseId !== undefined) {
+      const lease = await ctx.db.get(leaseId);
+      if (lease?.kind === TICK_STARTED && lease.subject === job) await ctx.db.delete(leaseId);
+    }
+    return null;
+  },
+});
+
 /** One task, and the row that says how it went. */
 export const runTask = internalAction({
-  args: { name: v.string() },
-  handler: async (ctx, { name }): Promise<{ ok: boolean }> => {
+  args: { name: v.string(), leaseId: v.optional(v.id("events")) },
+  handler: async (ctx, { name, leaseId }): Promise<{ ok: boolean }> => {
     const task = TICK_TASKS[name];
     if (task === undefined) throw new Error(`no tick task named ${name}`);
-    const job = jobOf(name);
     let error: string | null = null;
     try {
       const result: unknown = "action" in task.run
@@ -168,23 +201,13 @@ export const runTask = internalAction({
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
-    if (error !== null) {
-      await ctx.runMutation(internal.jarvis.events.record, {
-        kind: JOB_FAILED,
-        provenance: { job },
-        subject: job,
-        data: { job, error },
-        text: `The ${name} task failed: ${error}`,
-      });
-      return { ok: false };
-    }
-    await ctx.runMutation(internal.jarvis.events.record, {
-      kind: JOB_OK,
-      provenance: { job },
-      subject: job,
-      data: { job, key: job },
+    const completed: null = await ctx.runMutation(internal.jarvis.tick.complete, {
+      name,
+      ...(leaseId === undefined ? {} : { leaseId }),
+      ...(error === null ? {} : { error }),
     });
-    return { ok: true };
+    void completed;
+    return { ok: error === null };
   },
 });
 

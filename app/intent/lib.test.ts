@@ -224,7 +224,12 @@ describe("evalItemsForLine", () => {
 
 describe("openDisagreements", () => {
   it("counts the vocabulary's disagreements beside the unsettled decisions and failing items", () => {
-    const decisions = [{ settled: null }, { settled: { verdict: "approve" } }];
+    const decisions = [
+      { decision: "One.", refused: false, settled: null },
+      { decision: "Two.", refused: false, settled: { verdict: "approve" } },
+      { decision: null, refused: true, settled: null },
+      { decision: null, refused: false, settled: null },
+    ];
     const items = [
       { pass: false, settled: null },
       { pass: false, settled: { verdict: "revise" } },

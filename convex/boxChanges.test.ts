@@ -177,26 +177,26 @@ describe("the box-change door", () => {
     }
   }, 60_000);
 
-  // witness: an event-time window loses a change delivered after its window,
-  // while an unrestricted creation-time window repeats the one-time history
-  // copy. The occurrence cut and recorded-time partition avoid both.
-  it("puts a change delivered an hour late in exactly one digest and copied history in none", async () => {
+  // witness: filtering the history cut by occurrence time loses a live change
+  // that happened before the cut but reached the record after it. Both the
+  // history copy and this read partition rows by their record creation time.
+  it("partitions copied history and a late live change by record creation time", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
       const boundary = BOX_CHANGE_HISTORY_CUT + 24 * 60 * 60_000;
-      const happenedAt = boundary - 5 * 60_000;
-      vi.setSystemTime(happenedAt + 59 * 60_000);
-      // The copied row was recorded during the second window, but occurred
-      // before the production cut and therefore belongs to no new digest.
+      const happenedAt = BOX_CHANGE_HISTORY_CUT - 5 * 60_000;
+      vi.setSystemTime(BOX_CHANGE_HISTORY_CUT - 1);
+      // The history copy owns rows written before the cut, whatever their
+      // occurrence time says.
       await t.run(async (ctx) => {
-        const old = change({ at: BOX_CHANGE_HISTORY_CUT - 1 });
+        const old = change({ at: BOX_CHANGE_HISTORY_CUT + 1 });
         await ctx.db.insert("events", { ...eventOf(old), provenance: eventOf(old).provenance });
       });
-      vi.setSystemTime(happenedAt + 60 * 60_000);
+      vi.setSystemTime(boundary + 60 * 60_000);
       await recordEvent(t, eventOf(change({ agentId: AGENT, at: happenedAt })));
       const first = await t.run(async (ctx) => boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_CUT, boundary));
-      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, boundary, boundary + 24 * 60 * 60_000));
+      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, boundary, boundary + 2 * 60 * 60_000));
       expect(first).toHaveLength(0);
       expect(second).toHaveLength(1);
       expect(second[0].agentId).toBe(AGENT);

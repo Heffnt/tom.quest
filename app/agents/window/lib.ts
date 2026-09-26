@@ -292,7 +292,7 @@ export function failureRowOf(event: PointEvent): FailureRow {
     at: event.at,
     // The job that broke: a legacy row may name it in data; a record row names
     // it in provenance; the kind is the final fallback for older producers.
-    job: field(event.data, "job") ?? event.job ?? event.kind.replace(/-fail(ed|ure)$/, ""),
+    job: event.job ?? field(event.data, "job") ?? event.kind.replace(/-fail(ed|ure)$/, ""),
     todoId: event.todoId,
   };
 }

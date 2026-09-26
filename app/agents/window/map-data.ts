@@ -60,17 +60,26 @@ export type Shape =
   /** Outside Tom's system: a faint dotted edge. */
   | "outside";
 
+type CountedNode = {
+  /** What its number counts, in the plural, so the number is never bare. */
+  unit: string;
+  tally: Tally;
+};
+
+type UncountedNode = {
+  unit?: never;
+  tally?: never;
+};
+
 export type MapNode = {
   id: string;
   /** The vocabulary's word for it, and no other word. */
   label: string;
-  /** What its number counts, in the plural, so the number is never bare. */
-  unit: string;
   /** Centre, in the diagram's own units. */
   x: number;
   y: number;
   shape: Shape;
-  tally: Tally;
+  tally?: Tally;
   /** Pressing it holds the timeline to this lane. */
   filters?: Lane;
   /** Pressing it opens this page of tom.quest. */
@@ -78,7 +87,7 @@ export type MapNode = {
   // A node with neither is the record, and pressing it gives the whole window
   // back. That needs no third field: one node has neither, and a flag saying
   // which would be a second way to spell the same fact.
-};
+} & (CountedNode | UncountedNode);
 
 /** A node's name. The edges below are typed on it, so an edge naming a node
  *  the map does not hold is a compile error rather than a drawing that throws
@@ -123,7 +132,7 @@ export const NODES = [
   // The resources, each under what reaches for it.
   { id: "wikitom", label: "WikiTom", unit: "commits", x: 440, y: ROW_FLOOR, shape: "store", tally: { of: "wikitom" }, opens: "/jarvis" },
   { id: "models", label: "the models", unit: "models", x: 625, y: ROW_FLOOR, shape: "outside", tally: { of: "models" }, opens: "/turing" },
-  { id: "turing", label: "Turing", unit: "runner agents", x: 810, y: ROW_FLOOR, shape: "machine", tally: { of: "lane", lane: "runners" }, opens: "/turing" },
+  { id: "turing", label: "Turing", x: 810, y: ROW_FLOOR, shape: "machine", opens: "/turing" },
   { id: "github", label: "GitHub", unit: "merges", x: 995, y: ROW_FLOOR, shape: "outside", tally: { of: "lane", lane: "merges" }, filters: "merges" },
 ] as const satisfies readonly MapNode[];
 

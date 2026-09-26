@@ -312,9 +312,9 @@ export const forAgent = query({
  * BY RECORDED TIME, AFTER THE HISTORY CUT. A live change can arrive after the
  * digest whose event-time window held it; `_creationTime` puts it in the next
  * digest instead. The one-time history copy created old rows on 2026-09-26,
- * so only changes whose occurrence is at or after the copy's production cut
- * enter this stream. Consecutive digest windows then partition every eligible
- * row exactly once, however late it arrives.
+ * so only rows the record wrote at or after the copy's production cut enter
+ * this stream. Consecutive digest windows then partition every live row
+ * exactly once, however late it arrives or whenever it occurred.
  */
 /** The `before` boundary used by the production history copy. */
 export const BOX_CHANGE_HISTORY_CUT = Date.UTC(2026, 8, 26, 8, 38, 58);
@@ -322,11 +322,10 @@ export const BOX_CHANGE_HISTORY_CUT = Date.UTC(2026, 8, 26, 8, 38, 58);
 export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
   const rows = await ctx.db
     .query("events")
-    .withIndex("by_kind", (q) => q.eq("kind", BOX_CHANGE).gte("_creationTime", from).lt("_creationTime", to))
+    .withIndex("by_kind", (q) => q.eq("kind", BOX_CHANGE).gte("_creationTime", Math.max(from, BOX_CHANGE_HISTORY_CUT)).lt("_creationTime", to))
     .take(WINDOW_MAX);
   return rows
     .map((row) => row.data as BoxChange)
-    .filter((change) => change.at >= BOX_CHANGE_HISTORY_CUT)
     .sort((a, b) => a.at - b.at);
 }
 

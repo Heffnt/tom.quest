@@ -255,13 +255,13 @@ export function passRate(items: { passed: number; runs: number }[]): { passed: n
  * (null) has none.
  */
 export function openDisagreements(
-  decisions: { settled: unknown }[] | undefined,
+  decisions: { decision: string | null; refused: boolean; settled: unknown }[] | undefined,
   evalItems: { pass: boolean | null; settled: unknown }[] | undefined,
   vocabulary: { disagreements: unknown[] } | null | undefined,
 ): number | null {
   if (decisions === undefined || evalItems === undefined || vocabulary === undefined) return null;
   return (
-    decisions.filter((one) => one.settled === null).length +
+    decisions.filter((one) => !one.refused && one.decision !== null && one.settled === null).length +
     evalItems.filter((one) => one.pass === false && one.settled === null).length +
     (vocabulary?.disagreements.length ?? 0)
   );

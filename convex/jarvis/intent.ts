@@ -150,7 +150,7 @@ export const decisions = query({
 
 /**
  * The eval items as the newest run of each set reports them, with each
- * item's pass count over the runs read. One row per item name; a set that
+ * item's pass count over the runs read. One row per set and item name; a set that
  * ran more than once contributes every run to `passed`/`runs` and its newest
  * run's `pass`, `note`, `at` and `model`.
  */
@@ -173,9 +173,10 @@ export const evalItems = query({
         const name = str(item.name);
         if (name === null) continue;
         const pass = item.pass === true ? true : item.pass === false ? false : null;
-        const known = items.get(name);
+        const key = JSON.stringify([set, name]);
+        const known = items.get(key);
         if (known === undefined) {
-          items.set(name, {
+          items.set(key, {
             name,
             runId: run._id,
             set,
