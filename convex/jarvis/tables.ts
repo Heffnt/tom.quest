@@ -130,6 +130,7 @@ async function fieldsFor(
  * old table is done; for todos, then the needs pass. Answers what this page
  * did. Re-running is safe: see the header.
  */
+// RAN IN PRODUCTION for rulings (2026-09-26 09:01Z and 09:04Z, remap done); every ruling since is written to `rulings`, so merging needs no copy.
 export const copy = internalMutation({
   args: {
     table: NEW_TABLE,
