@@ -1,4 +1,5 @@
 import { httpRouter } from "convex/server";
+import { register as registerJarvisRoutes } from "./jarvis/routes";
 import type { FunctionArgs } from "convex/server";
 import { httpAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -3338,6 +3339,10 @@ const ttsEvent = httpAction(async (ctx, request) => {
       data: b.data,
       key: b.key,
     });
+    // The same row in the one record (convex/jarvis/events.ts copyFromDts),
+    // so /agents and GET /jarvis/events show one list while the areas that
+    // still post here move to POST /jarvis/event. Goes with this route.
+    await ctx.runMutation(internal.jarvis.events.copyFromDts, { id });
     return jsonResponse(200, { ok: true, id });
   } catch (e) {
     return jsonResponse(400, {
@@ -4231,5 +4236,26 @@ const sessionsSecretsTaken = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/sessions/secrets/taken", method: "POST", handler: sessionsSecretsTaken });
+
+// ── /jarvis/: the one prefix (night/s3, 2026-09-26) ─────────────────────────
+// The record's own routes first (convex/jarvis/routes.ts register), then
+// every /tts/* route above is also served under /jarvis/* by the same
+// handler, so the box switches its base path (Jarvis worker/jobs/tts-lib.mjs
+// recordRoute) with no change in behaviour. A /jarvis/ path an area has
+// registered itself keeps its own handler: the loop skips it, which is how
+// an area moves a route (write the /jarvis/ handler; the /tts/ one still
+// answers old callers). /tts/ GOES WHEN THE BOX HAS SWITCHED: delete the
+// loop and each /tts/ registration per area, and the area's route file is
+// the only registration left.
+registerJarvisRoutes(http);
+const jarvisOwn = new Set(
+  http.getRoutes().filter(([path]) => path.startsWith("/jarvis/")).map(([path, method]) => `${method} ${path}`),
+);
+for (const [path, method, handler] of http.getRoutes()) {
+  if (!path.startsWith("/tts/")) continue;
+  const moved = `/jarvis/${path.slice("/tts/".length)}`;
+  if (jarvisOwn.has(`${method} ${moved}`)) continue;
+  http.route({ path: moved, method, handler });
+}
 
 export default http;

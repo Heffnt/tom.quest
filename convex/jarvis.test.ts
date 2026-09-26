@@ -1,0 +1,134 @@
+import { convexTest } from "convex-test";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { internal } from "./_generated/api";
+import schema from "./schema";
+
+// From the convex root, as every other test: convex-test names modules by
+// their path under convex/, so a glob from a subdirectory finds none of them.
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+const JSON_HEADERS = { "Content-Type": "application/json" };
+const post = (t: ReturnType<typeof convexTest>, path: string, body: unknown, headers: Record<string, string>) =>
+  t.fetch(path, { method: "POST", headers: { ...JSON_HEADERS, ...headers }, body: JSON.stringify(body) });
+
+const rows = async (t: ReturnType<typeof convexTest>, table: "events" | "dtsEvents") =>
+  await t.run(async (ctx) => (table === "events" ? ctx.db.query("events").collect() : ctx.db.query("dtsEvents").collect()));
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
+});
+
+describe("POST /jarvis/event", () => {
+  it("takes the new key on the new header, the old key on the old header, and refuses the rest", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "new");
+    vi.stubEnv("TTS_WORKER_KEY", "old");
+    const body = { kind: "job-ok", provenance: { job: "box-watch" }, subject: "box-watch:read" };
+    expect((await post(t, "/jarvis/event", body, { "X-Jarvis-Key": "new" })).status).toBe(200);
+    // JARVIS_KEY wins once set; the old header carries whichever key is current.
+    expect((await post(t, "/jarvis/event", body, { "X-TTS-Key": "new" })).status).toBe(200);
+    expect((await post(t, "/jarvis/event", body, { "X-TTS-Key": "old" })).status).toBe(401);
+    expect((await post(t, "/jarvis/event", body, {})).status).toBe(401);
+    vi.stubEnv("JARVIS_KEY", "");
+    expect((await post(t, "/jarvis/event", body, { "X-Jarvis-Key": "old" })).status).toBe(200);
+    vi.stubEnv("TTS_WORKER_KEY", "");
+    expect((await post(t, "/jarvis/event", body, { "X-Jarvis-Key": "old" })).status).toBe(503);
+  });
+
+  it("writes the row as validated and answers its id; a kind off the list is a 400 naming the list", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    const res = await post(
+      t,
+      "/jarvis/event",
+      { kind: "job-ok", provenance: { job: "box-watch" }, subject: "box-watch:read", data: { entries: 3 } },
+      { "X-Jarvis-Key": "k" },
+    );
+    expect(res.status).toBe(200);
+    const answer = await res.json();
+    expect(answer.ok).toBe(true);
+    expect(answer.recovered).toBe(false);
+    const events = await rows(t, "events");
+    expect(events).toHaveLength(1);
+    expect(events[0]._id).toBe(answer.id);
+    expect(events[0]).toMatchObject({
+      kind: "job-ok",
+      at: 1_700_000_000_000,
+      provenance: { job: "box-watch" },
+      subject: "box-watch:read",
+      data: { entries: 3 },
+    });
+
+    const bad = await post(t, "/jarvis/event", { kind: "deploy", data: {} }, { "X-Jarvis-Key": "k" });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toContain("EVENT_KINDS");
+    expect(await rows(t, "events")).toHaveLength(1);
+  });
+
+  it("runs the job hooks: one digest row and one line per standing failure, re-armed by the clean run", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const failed = { kind: "job-failed", provenance: { job: "poll-canvas" }, subject: "poll-canvas:canvas-auth", data: { job: "poll-canvas", error: "token expired" } };
+    expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: true });
+    expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: false });
+    // Every accepted post is a row of the record; the digest's row is one.
+    expect((await rows(t, "events")).filter((row) => row.kind === "job-failed")).toHaveLength(2);
+    expect((await rows(t, "dtsEvents")).filter((row) => row.kind === "job-failed")).toHaveLength(1);
+
+    const ok = { kind: "job-ok", provenance: { job: "poll-canvas" }, subject: "poll-canvas:canvas-auth" };
+    expect(await (await post(t, "/jarvis/event", ok, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ recovered: true });
+    expect((await rows(t, "events")).map((row) => row.kind).sort()).toEqual(["job-failed", "job-failed", "job-ok", "job-recovered"]);
+    expect((await rows(t, "dtsEvents")).map((row) => row.kind).sort()).toEqual(["job-failed", "job-recovered"]);
+    // The next failure is news again.
+    expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: true });
+  });
+});
+
+describe("GET /jarvis/events", () => {
+  it("reads newest first by kind, by subject, since a time, up to a limit", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    for (const at of [1000, 2000, 3000]) {
+      await post(t, "/jarvis/event", { kind: "job-ok", at, provenance: { job: "box-watch" }, subject: "box-watch:read" }, { "X-Jarvis-Key": "k" });
+    }
+    await post(t, "/jarvis/event", { kind: "job-failed", at: 2500, provenance: { job: "box-state" }, subject: "box-state:read", data: { error: "x" } }, { "X-Jarvis-Key": "k" });
+    const read = async (qs: string) => (await (await t.fetch(`/jarvis/events${qs}`, { headers: { "X-Jarvis-Key": "k" } })).json()).events;
+    expect((await read("")).map((row: { at: number }) => row.at)).toEqual([3000, 2500, 2000, 1000]);
+    expect((await read("?kind=job-ok&limit=2")).map((row: { at: number }) => row.at)).toEqual([3000, 2000]);
+    expect((await read("?subject=box-state:read")).map((row: { kind: string }) => row.kind)).toEqual(["job-failed"]);
+    expect((await read("?since=2500")).map((row: { at: number }) => row.at)).toEqual([3000, 2500]);
+    expect((await t.fetch("/jarvis/events?limit=x", { headers: { "X-Jarvis-Key": "k" } })).status).toBe(400);
+    expect((await t.fetch("/jarvis/events")).status).toBe(401);
+  });
+});
+
+describe("the /jarvis/ prefix", () => {
+  it("serves every /tts/ route under /jarvis/ with the same handler, except one the area registered itself", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    // The old job-ok door, reached by its new name, writes the same events row.
+    const res = await post(t, "/jarvis/job-ok", { job: "agents-sweep", key: "agents-sweep:read" }, { "X-TTS-Key": "k" });
+    expect(res.status).toBe(200);
+    expect((await rows(t, "events")).map((row) => [row.kind, row.provenance.job])).toEqual([["job-ok", "agents-sweep"]]);
+    // /jarvis/event is the record's own route, not the loop's copy of
+    // /tts/event: an old-style body is refused by the kinds list.
+    expect((await post(t, "/jarvis/event", { kind: "deploy", data: {} }, { "X-TTS-Key": "k" })).status).toBe(400);
+    expect((await post(t, "/tts/event", { kind: "deploy", data: {} }, { "X-TTS-Key": "k" })).status).toBe(200);
+  });
+});
+
+describe("the copy from dtsEvents", () => {
+  it("copies what POST /tts/event writes, kind and key as they were, with no provenance", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    const res = await post(t, "/tts/event", { kind: "deploy", key: "tom.quest:abc", data: { repo: "tom.quest", to: "abc" } }, { "X-TTS-Key": "k" });
+    expect(res.status).toBe(200);
+    const [old] = await rows(t, "dtsEvents");
+    const [copy] = await rows(t, "events");
+    expect(copy).toMatchObject({ kind: "deploy", at: old.at, provenance: {}, subject: "tom.quest:abc", data: { repo: "tom.quest", to: "abc" } });
+    expect(await t.mutation(internal.jarvis.events.copyFromDts, { id: old._id })).not.toBeNull();
+  });
+});
