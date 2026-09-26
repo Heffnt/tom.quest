@@ -28,7 +28,6 @@ import type * as jarvis_auth from "../jarvis/auth.js";
 import type * as jarvis_context from "../jarvis/context.js";
 import type * as jarvis_digest from "../jarvis/digest.js";
 import type * as jarvis_events from "../jarvis/events.js";
-import type * as jarvis_history from "../jarvis/history.js";
 import type * as jarvis_intent from "../jarvis/intent.js";
 import type * as jarvis_jobs from "../jarvis/jobs.js";
 import type * as jarvis_outbox from "../jarvis/outbox.js";
@@ -103,7 +102,6 @@ declare const fullApi: ApiFromModules<{
   "jarvis/context": typeof jarvis_context;
   "jarvis/digest": typeof jarvis_digest;
   "jarvis/events": typeof jarvis_events;
-  "jarvis/history": typeof jarvis_history;
   "jarvis/intent": typeof jarvis_intent;
   "jarvis/jobs": typeof jarvis_jobs;
   "jarvis/outbox": typeof jarvis_outbox;
