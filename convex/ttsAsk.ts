@@ -112,6 +112,9 @@ function capFor(args: { sessionId?: string }): number {
   return DELEGATE_MAX_PER_JOB;
 }
 
+/** The reason a capped ask carries: the caller took its own fallback. */
+export const CAP_REFUSAL = "cap: the delegate ask cap for this caller is spent, so the agent took its own fallback";
+
 /** Record the completed box-side delegate call. This does not call a model:
  * Convex cannot reach the box, and the caller is already there. */
 export const internalRecordAsk = internalMutation({
@@ -140,10 +143,15 @@ export const internalRecordAsk = internalMutation({
     const cap = capFor(args);
     const attended = session !== null && session.mode !== "autonomous";
     const capped = callerCount >= cap;
-    const refused = attended ? true : args.refused;
+    // A CAPPED ASK TOOK NOTHING IN HIS NAME: the box does not act on the
+    // delegate's answer past the cap and takes the caller's fallback, so the
+    // row reads as refused, with the cap as its reason, like an attended one.
+    const refused = attended || capped ? true : args.refused;
     const refusedBecause = attended
       ? "attended-session: Tom is in this session — ask him"
-      : args.refusedBecause;
+      : capped
+        ? CAP_REFUSAL
+        : args.refusedBecause;
     const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
       ...args,
       sessionId: args.sessionId ?? null,

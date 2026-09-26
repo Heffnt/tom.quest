@@ -13,7 +13,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
-import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
+import { CAP_REFUSAL, DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
@@ -568,8 +568,10 @@ export async function gatherTodayFacts(
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
           decision: safeStr(d.decision) ?? null,
           reason: safeStr(d.reason),
-          refused: d.refused === true,
-          refusedBecause: safeStr(d.refusedBecause),
+          // A capped ask is refused however its row was written (rows from
+          // before the cap was stamped as a refusal carry capped alone).
+          refused: d.refused === true || d.capped === true,
+          refusedBecause: d.capped === true ? CAP_REFUSAL : safeStr(d.refusedBecause),
           fallback: safeStr(d.fallback),
         });
         break;
