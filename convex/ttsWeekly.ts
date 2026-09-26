@@ -82,8 +82,8 @@ const FAILURE_KINDS: readonly string[] = [
 export const SURFACED_THRESHOLD = 3;
 
 // ── The three verifiers, and how far back the audit's own score reaches ───────
-// THE THREE VERIFIERS ARE checks, the audit AND the evals — the merge gate's
-// three head rows and nothing else. What follows measures two of them and says
+// THE THREE VERIFIERS ARE checks, the audit AND the evals; the merge gate
+// reads two of them, the tests and the audit, as its head rows. What follows measures two of them and says
 // so; NONE OF IT GATES ANYTHING. There is no new event kind, no new index, no
 // new row on any table: the judge's and the planted faults' numbers ride on the
 // weekly "evals-run" row the runner already writes, and the audit's own score is
@@ -296,7 +296,7 @@ type WeeklyFacts = {
   // measurement nobody took has no number, and a zero would read as one.
   //
   // REPORTS AND NEVER GATES. Not one of these numbers is read by
-  // convex/ttsMerge.ts: the gate keeps its three head rows, and a judge that
+  // convex/ttsMerge.ts: the gate keeps its two head rows, and a judge that
   // agreed with eighteen of twenty of Tom's labels is evidence about the judge,
   // not a verdict on anything it scored.
   verifiers: {

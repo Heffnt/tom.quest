@@ -158,7 +158,7 @@ type MergeRow = {
   sha: string | null;
   subject: string | null;
   mainCheck: string | null;
-  /** `<repo>@<sha>` — what the gate's three head rows are filed under. */
+  /** `<repo>@<sha>` — what the gate's two head rows are filed under. */
   commitKey: string | null;
 };
 

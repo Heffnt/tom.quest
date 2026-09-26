@@ -1634,7 +1634,7 @@ const ttsAudit = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/audit", method: "POST", handler: ttsAudit });
 
-// GET /tts/merge-gate?repo=&sha= — the three checks, and which of the
+// GET /tts/merge-gate?repo=&sha= — the two checks, and which of the
 // required ones are missing. This is what the box asks before it lets a merge command run
 // (worker/session-host/session.mjs), so it is read-only and opens nothing.
 const ttsMergeGate = httpAction(async (ctx, request) => {

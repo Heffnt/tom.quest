@@ -299,7 +299,7 @@ function ApproveControl({
       >
         {quiet
           ? "Records your ruling approving this change. It has already merged, so nothing else happens."
-          : "Records your ruling approving this change. The record merges it with a merge commit once its three gate rows are green."}
+          : "Records your ruling approving this change. The record merges it with a merge commit once its tests are green and its audit approved it."}
       </Info>
     </span>
   );
