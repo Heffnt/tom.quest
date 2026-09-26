@@ -17,6 +17,9 @@
 //                   approved one whose gate turned green: every 5 minutes.
 //   calendar        the ICS feeds the digest and the planner read: hourly.
 //   code-mirror     tom.quest's vqc/todos.yaml beside the life todos: 6 h.
+//   evict           the agents' row eviction (a switch, OFF by default: the
+//                   run then only records that it did nothing), once a day
+//                   from 4:15 New York, until it has run clean that day.
 //   repeats         the repeating todos, minted ONCE A DAY at 4:30 New York
 //                   (the old cron's minute), before the 5 a.m. digest reads
 //                   them: due from 4:30, at any hour after, until it has run
@@ -51,6 +54,13 @@ const TICK_TASKS: Record<string, Task> = {
   "pull-requests": { when: { everyMs: 5 * MINUTE }, run: { action: internal.observeMerge.refreshOpenPulls } },
   calendar: { when: { everyMs: 60 * MINUTE }, run: { action: internal.ttsCalendarFetch.refreshFeeds } },
   "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, run: { action: internal.ttsSync.refreshMirror } },
+  // The row eviction switch (convex/agents.ts internalEvictTick; OFF unless
+  // AGENTS_EVICTION_ENABLED, and then it says so in its event), once a day
+  // from 4:15, before repeats and the digest.
+  evict: {
+    when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 15 } },
+    run: { mutation: internal.agents.internalEvictTick, args: { force: true } },
+  },
   repeats: {
     when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 30 }, after: "calendar" },
     // force: the tick decides when it is due (any hour from 4:30), so the

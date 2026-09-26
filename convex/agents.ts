@@ -1136,6 +1136,10 @@ export const internalEvictTick = internalMutation({
     deferred: v.optional(v.number()),
     steps: v.optional(v.number()),
     pendingRunId: v.optional(v.string()),
+    // The record-tick task (convex/jarvis/tick.ts "evict") decides when a day's
+    // run is due, at any hour from 4:15 New York, and passes force; the
+    // 4 a.m. guard below stays for a caller that does not.
+    force: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     // OFF by default. Turning it on is the caller's action, after the S3
@@ -1155,7 +1159,7 @@ export const internalEvictTick = internalMutation({
     // The house DST pattern: a cron pair fires at both possible UTC times and
     // this guard lets exactly one through. A CONTINUATION does not re-check, so
     // a long eviction is not cut in half at the hour boundary.
-    if (steps === 0 && args.pendingRunId === undefined && nyLocalHour(now) !== 4) {
+    if (steps === 0 && args.pendingRunId === undefined && args.force !== true && nyLocalHour(now) !== 4) {
       return { ok: true as const, skipped: "not the eviction hour" };
     }
 

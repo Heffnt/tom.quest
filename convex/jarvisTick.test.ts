@@ -66,16 +66,25 @@ describe("a tick task's outcome", () => {
 // witness: repeats ran every 30 minutes through the 4 a.m. hour, so rules the
 // calendar skipped wrote their skip twice, and it could start in the same
 // tick as the calendar refresh whose rows it reads.
-describe("the repeats task", () => {
+describe("the daily tasks: repeats and eviction", () => {
   // 2026-09-28 is in EDT: New York is UTC-4.
   const nyAt = (hhmm: string, day = "2026-09-28") => Date.parse(`${day}T${hhmm}:00-04:00`);
   const clean = (t: ReturnType<typeof convexTest>, name: string, at: number) =>
     t.run(async (ctx) => {
       await ctx.db.insert("events", { kind: "job-ok", at, provenance: { job: `tick:${name}` }, subject: `tick:${name}`, data: {} });
     });
+  // `due` schedules each started task; this suite asks only what is due, so
+  // the scheduled runs are cancelled before they start (a run finishing after
+  // the test's backend is gone is an unhandled rejection).
   const started = async (t: ReturnType<typeof convexTest>, at: number) => {
     vi.setSystemTime(at);
-    return (await t.mutation(internal.jarvis.tick.due, {})).started;
+    const answer = (await t.mutation(internal.jarvis.tick.due, {})).started;
+    await t.run(async (ctx) => {
+      for (const job of await ctx.db.system.query("_scheduled_functions").collect()) {
+        if (job.state.kind === "pending") await ctx.scheduler.cancel(job._id);
+      }
+    });
+    return answer;
   };
 
   it("comes due once a day at 4:30 New York, never in the tick that starts the calendar, and not again after a clean run", async () => {
@@ -118,6 +127,32 @@ describe("the repeats task", () => {
       expect(await t.action(internal.jarvis.tick.runTask, { name: "repeats" })).toEqual({ ok: true });
       const minted = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
       expect(minted.map((row) => row.statement)).toEqual(["water the plants"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // witness: the row eviction was the last Convex cron besides the silence
+  // alarm; it is a record-tick task now, due once a day from 4:15.
+  it("runs the eviction switch once a day from 4:15 as a tick task, and records it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      expect(await started(t, nyAt("04:10"))).not.toContain("evict");
+      expect(await started(t, nyAt("04:15"))).toContain("evict");
+      vi.setSystemTime(nyAt("09:00"));
+      expect(await t.action(internal.jarvis.tick.runTask, { name: "evict" })).toEqual({ ok: true });
+      const rows = await t.run(async (ctx) => ({
+        ok: (await ctx.db.query("events").collect()).filter((row) => row.kind === "job-ok" && row.subject === "tick:evict"),
+        evicted: (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === "agents-evicted"),
+      }));
+      // (The 4:15 tick's own scheduled run may also have landed: each run is
+      // one clean row and one "did nothing" event.)
+      expect(rows.ok).toHaveLength(1);
+      // The switch is off: every run says it did nothing.
+      expect(rows.evicted.length).toBeGreaterThan(0);
+      expect(rows.evicted.every((row) => (row.data as { disabled?: boolean }).disabled === true)).toBe(true);
+      expect(await started(t, nyAt("09:30"))).not.toContain("evict");
     } finally {
       vi.useRealTimers();
     }
