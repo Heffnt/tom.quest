@@ -1307,11 +1307,10 @@ http.route({
 // superseded by a newer ruling on the same subject), from the unified
 // ttsRulings table. Both subject types ride the one feed: rows carry
 // subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
-// own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
-// pass — consuming only what it served. A
-// "code" approve or archive rides the feed too, for the box's work-queue
-// job. Each row carries its _id, which the
-// planner echoes back to /tts/ruling-applied.
+// own kind — a "life" revise → its prepare pass — consuming only what it
+// served. A "code" approve or archive rides the feed too and stays pending
+// there: nothing consumes it. Each row carries its _id, which the planner
+// echoes back to /tts/ruling-applied.
 const ttsRulingsFeed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
