@@ -22,7 +22,7 @@ import Info from "./info";
 import { TIME_NOTES_EXPLANATION } from "../explanations";
 import { errMessage } from "../lib";
 
-export type TimeNote = Doc<"dtsTimeNotes">;
+export type TimeNote = Doc<"timeNotes">;
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
@@ -65,8 +65,8 @@ export default function TimeNoteField({
   notes,
   showInput = true,
 }: {
-  todoId?: Id<"dtsTodos">;
-  blockId?: Id<"dtsBlocks">;
+  todoId?: Id<"todos">;
+  blockId?: Id<"blocks">;
   /** Calendar day "YYYY-MM-DD" — the label of the column, never epoch-ms. */
   day?: string;
   /** This context's notes, bucketed by the parent (groupTimeNotes). */
@@ -105,7 +105,7 @@ export default function TimeNoteField({
     }
   };
 
-  const remove = (id: Id<"dtsTimeNotes">) => {
+  const remove = (id: Id<"timeNotes">) => {
     setError(null);
     void deleteTimeNote({ id }).catch((err) => setError(errMessage(err)));
   };

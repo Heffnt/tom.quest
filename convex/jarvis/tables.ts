@@ -98,6 +98,33 @@ export async function oldId<T extends Core>(
   return old !== null && (await ctx.db.get(old)) !== null ? old : null;
 }
 
+/**
+ * Rows holding a stored todo reference (a ruling's, an event's, a session's),
+ * as a reader hands them out: the todoId is the plain row's id, whichever
+ * form the row stores. One lookup per todo named, however many rows name it.
+ */
+export async function withPlainTodoIds<R extends { todoId?: string }>(
+  ctx: QueryCtx | MutationCtx,
+  rows: R[],
+): Promise<Array<Omit<R, "todoId"> & { todoId?: Id<"todos"> }>> {
+  const seen = new Map<string, Id<"todos">>();
+  const out: Array<Omit<R, "todoId"> & { todoId?: Id<"todos"> }> = [];
+  for (const row of rows) {
+    if (row.todoId === undefined) {
+      out.push(row as Omit<R, "todoId">);
+      continue;
+    }
+    let plain = seen.get(row.todoId);
+    if (plain === undefined) {
+      // A reference naming no row (none is deleted) is handed out as stored.
+      plain = (await resolveId(ctx, "todos", row.todoId)) ?? (row.todoId as Id<"todos">);
+      seen.set(row.todoId, plain);
+    }
+    out.push({ ...row, todoId: plain });
+  }
+  return out;
+}
+
 /** One page of a count: rows, and (in `rulings`) rows carrying a legacyId. */
 export const countPage = internalQuery({
   args: {
@@ -164,7 +191,7 @@ export const counts = internalAction({
 // fields, and its copy carries the same stamp: leftToRemap's `version` counts
 // an old row whose stamp is not its fingerprint (a write that went around
 // `follow`) or whose copy's stamp differs. sync stays the catch-up, and
-// stamps as it copies. Readers still read the old tables.
+// stamps as it copies. Step B moves the readers (the header above).
 //
 // THE WAY BACK before the switch: nothing reads the plain tables, so it is the
 // previous head, whose schema has no legacyVersion and whose todoIds name

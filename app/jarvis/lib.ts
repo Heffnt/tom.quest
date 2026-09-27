@@ -1,18 +1,20 @@
 // Shared types + date/age helpers for the /tts surface.
-// All persisted dates are epoch-ms numbers (convex/schema.ts dtsTodos).
+// All persisted dates are epoch-ms numbers (convex/schema.ts todos).
 
-import type { Doc } from "@/convex/_generated/dataModel";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 
-export type Todo = Doc<"dtsTodos">;
+export type Todo = Doc<"todos">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
-// A ruling the page shows: on a todo or a code entry.
-export type Ruling = Doc<"rulings"> & { subjectType: "life" | "code" };
+// A ruling the page shows: on a todo or a code entry. listRulings hands its
+// todo's plain id (convex/jarvis/tables.ts withPlainTodoIds), the id a Todo
+// row carries.
+export type Ruling = Omit<Doc<"rulings">, "todoId"> & { todoId?: Id<"todos">; subjectType: "life" | "code" };
 
 /** A ruling as listRulings returns it. The batch subject went with the
  * batches table (2026-09-26), so every listed ruling is a Ruling; the guard
  * below stays as the page's own check of what it shows. */
-type ListedRuling = Doc<"rulings"> & { subjectType: string };
+type ListedRuling = Omit<Doc<"rulings">, "todoId"> & { todoId?: Id<"todos">; subjectType: string };
 
 /** Whether a listed ruling is on a subject this page shows. */
 function isPageRuling(r: ListedRuling): r is Ruling {

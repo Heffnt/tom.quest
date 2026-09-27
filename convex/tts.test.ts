@@ -14,8 +14,14 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
+import { follow, resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+/** The plain row's id for the id a door answered with (its old table's): the
+ *  readers hand out plain ids (convex/jarvis/tables.ts). */
+const plainId = <T extends "todos" | "blocks" | "timeNotes">(t: ReturnType<typeof convexTest>, table: T, id: string) =>
+  t.run(async (ctx) => (await resolveId(ctx, table, id))!);
 
 describe("POST /tts/time-notes", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -156,13 +162,14 @@ describe("TTS todos", () => {
     });
     const todos = await tom.query(api.tts.listTodos, {});
     expect(todos).toHaveLength(1);
+    expect(todos[0].legacyId).toBe(id);
     expect(todos[0].statement).toBe("email Ana Maria");
     expect(todos[0].timingClass).toBe("dated"); // dueAt implies dated
     expect(todos[0].dateKind).toBe("self-imposed");
     expect(todos[0].readiness).toBe("unprepared");
     expect(todos[0].status).toBe("active");
     const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(events.some((e) => e.kind === "created" && e.todoId === id)).toBe(true);
+    expect(events.some((e) => e.kind === "created" && e.todoId === todos[0]._id)).toBe(true);
   });
 
   it("promotes whenever to dated when a date is set (spec §5.2)", async () => {
@@ -540,17 +547,18 @@ describe("TTS blocks and category", () => {
     });
     const blocks = await tom.query(api.tts.listBlocks, {});
     expect(blocks).toHaveLength(2);
-    const perTodo = blocks.find((b) => b._id === todoBlock);
-    expect(perTodo?.todoId).toBe(todoId);
+    const plainTodo = await plainId(t, "todos", todoId);
+    const perTodo = blocks.find((b) => b.legacyId === todoBlock);
+    expect(perTodo?.todoId).toBe(plainTodo);
     expect(perTodo?.category).toBeUndefined();
     expect(perTodo?.note).toBe("Tue 9-11");
-    const perCategory = blocks.find((b) => b._id === categoryBlock);
+    const perCategory = blocks.find((b) => b.legacyId === categoryBlock);
     expect(perCategory?.category).toBe("chores");
     expect(perCategory?.todoId).toBeUndefined();
     const events = await tom.query(api.tts.listRecentEvents, {});
     const created = events.filter((e) => e.kind === "block-created");
     expect(created).toHaveLength(2);
-    expect(created.some((e) => e.todoId === todoId)).toBe(true);
+    expect(created.some((e) => e.todoId === plainTodo)).toBe(true);
   });
 
   // witness: drop the recomputed-span throw from updateBlock in convex/tts.ts
@@ -604,7 +612,7 @@ describe("TTS blocks and category", () => {
     expect(await tom.query(api.tts.listBlocks, {})).toHaveLength(0);
     const events = await tom.query(api.tts.listRecentEvents, {});
     const deleted = events.find((e) => e.kind === "block-deleted");
-    expect(deleted?.todoId).toBe(todoId);
+    expect(deleted?.todoId).toBe(await plainId(t, "todos", todoId));
     expect(deleted?.data).toMatchObject({ start, end: start + HOUR });
   });
 
@@ -921,7 +929,7 @@ describe("TTS time notes", () => {
       todoId,
     });
     const [note] = await tom.query(api.tts.listTimeNotes, {});
-    expect(note._id).toBe(id);
+    expect(note.legacyId).toBe(id);
     expect(note.text).toBe("next wednesday");
     expect(note.status).toBe("pending");
   });
@@ -959,6 +967,7 @@ describe("TTS time notes", () => {
         result: "long ago",
         resolvedAt: Date.now() - 2 * DAY,
       });
+      await follow(ctx, "timeNotes", id);
     });
     const listed = await tom.query(api.tts.listTimeNotes, {});
     expect(listed.map((n) => n.text).sort()).toEqual(["fresh", "sometime-ish"]);
@@ -1019,7 +1028,7 @@ describe("TTS time notes", () => {
     [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBe(due);
     const notes = await tom.query(api.tts.listTimeNotes, {});
-    expect(notes.find((n) => n._id === second)?.status).toBe("pending");
+    expect(notes.find((n) => n.legacyId === second)?.status).toBe("pending");
   });
 
   // witness: drop the now < dueAt check from applyDateOutcome (or stop routing
@@ -1042,7 +1051,7 @@ describe("TTS time notes", () => {
     const newDueAt = Date.now() + 9 * DAY;
     await apply(t, ok, [{ kind: "renegotiate", newDueAt, note: "trip" }], "moved");
     const todos = await tom.query(api.tts.listTodos, {});
-    const moved = todos.find((x) => x._id === ahead)!;
+    const moved = todos.find((x) => x.legacyId === ahead)!;
     expect(moved.dueAt).toBe(newDueAt);
     expect(moved.dateOutcomes).toHaveLength(1);
     expect(moved.dateOutcomes?.[0].outcome).toBe("renegotiated");
@@ -1068,7 +1077,7 @@ describe("TTS time notes", () => {
     });
     await apply(t, missed, [{ kind: "record-missed" }], "recorded as missed");
     const after = (await tom.query(api.tts.listTodos, {})).find(
-      (x) => x._id === past,
+      (x) => x.legacyId === past,
     )!;
     expect(after.dueAt).toBeUndefined();
     expect(after.timingClass).toBe("whenever");
@@ -1146,7 +1155,7 @@ describe("TTS time notes", () => {
     });
     await apply(t, good, [{ kind: "create-block", start, end }], "placed 1h");
     const [block] = await tom.query(api.tts.listBlocks, {});
-    expect(block.todoId).toBe(todoId);
+    expect(block.todoId).toBe(await plainId(t, "todos", todoId));
 
     // Move it, then refuse a backwards span, then delete it.
     const move = await tom.mutation(api.tts.createTimeNote, {
@@ -1292,7 +1301,7 @@ describe("TTS time notes", () => {
       "recorded the miss and set Friday",
     );
     let todo = (await tom.query(api.tts.listTodos, {})).find(
-      (x) => x._id === past,
+      (x) => x.legacyId === past,
     )!;
     expect(todo.dateOutcomes).toHaveLength(1);
     expect(todo.dateOutcomes?.[0].outcome).toBe("missed");
@@ -1320,7 +1329,7 @@ describe("TTS time notes", () => {
       ],
       "moved to Friday",
     );
-    todo = (await tom.query(api.tts.listTodos, {})).find((x) => x._id === ahead)!;
+    todo = (await tom.query(api.tts.listTodos, {})).find((x) => x.legacyId === ahead)!;
     expect(todo.dueAt).toBe(second);
     expect(todo.dateOutcomes).toHaveLength(2);
     // The second row records the date the SECOND move replaced — the first
@@ -1475,7 +1484,7 @@ describe("TTS time notes", () => {
       "marked as someone else's deadline",
     );
     const todos = await tom.query(api.tts.listTodos, {});
-    const after = todos.find((x) => x._id === dated)!;
+    const after = todos.find((x) => x.legacyId === dated)!;
     expect(after.dateKind).toBe("external");
     expect(after.dueAt).toBe(dueAt); // the date itself never moved
     const nothing = await tom.mutation(api.tts.createTimeNote, {

@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
-import { eitherId, follow, oldId, resolveId } from "./jarvis/tables";
+import { eitherId, follow, oldId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -104,12 +104,13 @@ export const subjectKey = (row: {
 // ── Tom-facing ───────────────────────────────────────────────────────────────
 
 // Everything, always: append-only at human pace — a full collect is fine and
-// lets the client find the live (newest ruledAt) ruling per subject.
+// lets the client find the live (newest ruledAt) ruling per subject. A row
+// stores its todo's old id; the page is handed the plain one it joins on.
 export const listRulings = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgent(ctx, "TTS");
-    return await ctx.db.query("rulings").collect();
+    return await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
   },
 });
 
@@ -767,10 +768,15 @@ export const internalPendingRulings = internalQuery({
   handler: async (ctx) => {
     const all = await ctx.db.query("rulings").collect();
     const newest = liveRulings(all);
-    return all.filter(
-      (row) =>
-        row.appliedAt === undefined &&
-        newest.get(subjectKey(row))?._id === row._id,
+    // The box joins these to the plain todos it reads, so each carries the
+    // plain todo id.
+    return await withPlainTodoIds(
+      ctx,
+      all.filter(
+        (row) =>
+          row.appliedAt === undefined &&
+          newest.get(subjectKey(row))?._id === row._id,
+      ),
     );
   },
 });
@@ -832,12 +838,16 @@ export function briefAwaitsRuling(
 export const internalRecentRulings = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    // The planner reads these as Tom's recent rulings on its todos.
-    return await ctx.db
-      .query("rulings")
-      .withIndex("by_ruled")
-      .order("desc")
-      .take(Math.min(limit ?? 200, 1000));
+    // The planner reads these as Tom's recent rulings on its todos, which it
+    // reads as plain rows.
+    return await withPlainTodoIds(
+      ctx,
+      await ctx.db
+        .query("rulings")
+        .withIndex("by_ruled")
+        .order("desc")
+        .take(Math.min(limit ?? 200, 1000)),
+    );
   },
 });
 

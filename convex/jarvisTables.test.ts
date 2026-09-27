@@ -94,6 +94,7 @@ describe("rulings under their plain name", () => {
       "syncPage",
       "unstamp",
       "unstampPage",
+      "withPlainTodoIds",
     ]);
   });
 });

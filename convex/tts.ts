@@ -20,7 +20,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
-import { eitherId, follow, oldId } from "./jarvis/tables";
+import { eitherId, follow, oldId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -87,7 +87,7 @@ export const listTodos = query({
   args: {},
   handler: async (ctx) => {
     await requireTomOrAgentId(ctx);
-    return await ctx.db.query("dtsTodos").collect();
+    return await ctx.db.query("todos").collect();
   },
 });
 
@@ -129,11 +129,15 @@ export const listRecentEvents = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
     await requireTomOrAgentId(ctx);
-    return await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_at")
-      .order("desc")
-      .take(Math.min(limit ?? 200, 1000));
+    // The rows store the old todo id; the page joins them to plain rows.
+    return await withPlainTodoIds(
+      ctx,
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_at")
+        .order("desc")
+        .take(Math.min(limit ?? 200, 1000)),
+    );
   },
 });
 
@@ -565,9 +569,9 @@ export const listBlocks = query({
     await requireTomOrAgentId(ctx);
     const rows =
       end === undefined
-        ? await ctx.db.query("dtsBlocks").collect()
+        ? await ctx.db.query("blocks").collect()
         : await ctx.db
-            .query("dtsBlocks")
+            .query("blocks")
             .withIndex("by_start", (q) => q.lt("start", end))
             .collect();
     return start === undefined ? rows : rows.filter((b) => b.end > start);
@@ -740,7 +744,7 @@ export const listTimeNotes = query({
     await requireTomOrAgentId(ctx);
     const byStatus = (status: "pending" | "needs-session" | "applied") =>
       ctx.db
-        .query("dtsTimeNotes")
+        .query("timeNotes")
         .withIndex("by_status_and_resolvedAt", (q) => q.eq("status", status));
     // Applied notes are kept forever (instrumentation); only the last 24h of
     // them ride the page's subscription — hence resolvedAt in the index. The
@@ -751,7 +755,7 @@ export const listTimeNotes = query({
       byStatus("pending").take(TIME_NOTE_LIST_MAX),
       byStatus("needs-session").take(TIME_NOTE_LIST_MAX),
       ctx.db
-        .query("dtsTimeNotes")
+        .query("timeNotes")
         .withIndex("by_status_and_resolvedAt", (q) =>
           q.eq("status", "applied").gte("resolvedAt", cutoff),
         )
@@ -900,7 +904,7 @@ export const internalPendingTimeNotes = internalQuery({
   args: {},
   handler: async (ctx) => {
     const notes = await ctx.db
-      .query("dtsTimeNotes")
+      .query("timeNotes")
       .withIndex("by_status_and_resolvedAt", (q) => q.eq("status", "pending"))
       .take(TIME_NOTE_LIST_MAX);
     if (notes.length === 0) return [];
@@ -908,11 +912,11 @@ export const internalPendingTimeNotes = internalQuery({
     // one NY calendar day per note that needs one, memoized so N notes on the
     // same day cost one range query. "That day's blocks" = the blocks that
     // START that day — the same rule the day column paints by.
-    const blocksByDay = new Map<string, Doc<"dtsBlocks">[]>();
+    const blocksByDay = new Map<string, Doc<"blocks">[]>();
     const dayBlocks = async (dayKey: string) => {
       const cached = blocksByDay.get(dayKey);
       if (cached) return cached;
-      let rows: Doc<"dtsBlocks">[] = [];
+      let rows: Doc<"blocks">[] = [];
       // A key that is not a calendar date has no window. createTimeNote is the
       // only writer and validates the same shape, but this read serves the
       // whole worker queue every two minutes: one malformed row must not take
@@ -920,7 +924,7 @@ export const internalPendingTimeNotes = internalQuery({
       if (DAY_KEY_RE.test(dayKey)) {
         const { start, end } = nyCalendarDayBoundsUtc(dayKey);
         rows = await ctx.db
-          .query("dtsBlocks")
+          .query("blocks")
           .withIndex("by_start", (q) => q.gte("start", start).lt("start", end))
           .collect();
       }
@@ -929,10 +933,10 @@ export const internalPendingTimeNotes = internalQuery({
     };
     // The active list is the same for every day-scoped note, and most runs have
     // none at all — read it once, lazily.
-    let activeTodos: Doc<"dtsTodos">[] | null = null;
+    let activeTodos: Doc<"todos">[] | null = null;
     const activeOnce = async () => {
       activeTodos ??= await ctx.db
-        .query("dtsTodos")
+        .query("todos")
         .withIndex("by_status", (q) => q.eq("status", "active"))
         .collect();
       return activeTodos;
@@ -941,7 +945,8 @@ export const internalPendingTimeNotes = internalQuery({
     for (const note of notes) {
       let context: unknown = null;
       if (note.todoId !== undefined) {
-        const todo = await ctx.db.get(note.todoId);
+        const todoId = await resolveId(ctx, "todos", note.todoId);
+        const todo = todoId === null ? null : await ctx.db.get(todoId);
         context = todo
           ? {
               kind: "todo",
@@ -1484,7 +1489,7 @@ export const internalPrepareTodo = internalMutation({
 export const internalListTodos = internalQuery({
   args: {},
   handler: async (ctx) => {
-    return await ctx.db.query("dtsTodos").collect();
+    return await ctx.db.query("todos").collect();
   },
 });
 
@@ -1510,21 +1515,21 @@ export const internalScheduleAt = internalQuery({
   args: { at: v.number() },
   handler: async (ctx, { at }) => {
     const blocks = await ctx.db
-      .query("dtsBlocks")
+      .query("blocks")
       .withIndex("by_start", (q) => q.lte("start", at))
       .collect();
     const live = blocks.filter((b) => b.end > at);
     return await Promise.all(
-      live.map(async (b) => ({
-        start: b.start,
-        end: b.end,
-        category: b.category,
-        note: b.note,
-        statement:
-          b.todoId === undefined
-            ? undefined
-            : (await ctx.db.get(b.todoId))?.statement,
-      })),
+      live.map(async (b) => {
+        const todoId = b.todoId === undefined ? null : await resolveId(ctx, "todos", b.todoId);
+        return {
+          start: b.start,
+          end: b.end,
+          category: b.category,
+          note: b.note,
+          statement: todoId === null ? undefined : (await ctx.db.get(todoId))?.statement,
+        };
+      }),
     );
   },
 });

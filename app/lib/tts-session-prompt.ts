@@ -64,7 +64,7 @@ const RULING_PEN = `When Tom states a ruling in plain language — approve, revi
 // Tom one item at a time and records his spoken rulings as they land.
 export function buildBlockSessionPrompt(
   category: string,
-  todos: Doc<"dtsTodos">[],
+  todos: Doc<"todos">[],
 ): string {
   const lines: string[] = [
     FRAMING,
@@ -156,7 +156,7 @@ function rulingLines(ruling: LiveRulingContext | undefined): string[] {
 }
 
 export function buildTodoSessionPrompt(
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   kind: "gate" | "focus-item",
   ruling?: LiveRulingContext,
 ): string {

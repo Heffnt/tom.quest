@@ -13,7 +13,7 @@ const todo = {
   readiness: "prepared",
   createdAt: 1,
   updatedAt: 1,
-} as unknown as Doc<"dtsTodos">;
+} as unknown as Doc<"todos">;
 
 describe("interactive session prompts", () => {
   it("keeps interactive framing to the session's scope before item data", () => {

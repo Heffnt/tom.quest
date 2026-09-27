@@ -13,7 +13,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import type { Doc } from "@/convex/_generated/dataModel";
 import {
   READINESS_VALUES,
   countdownText,
@@ -180,7 +179,7 @@ function FieldEditor({
 const EVENT_WINDOW = 1000;
 
 function doorFaultsOf(
-  events: Doc<"dtsEvents">[] | undefined,
+  events: { kind: string; todoId?: string; data?: unknown }[] | undefined,
   todoId: string,
 ): string[] {
   if (events === undefined) return [];
