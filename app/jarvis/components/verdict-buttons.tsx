@@ -29,7 +29,7 @@ import RulingDialog, { type SentenceVerdict } from "./ruling-dialog";
 import { VERDICTS_EXPLANATION } from "../explanations";
 import { errMessage, VERDICTS, type RulingVerdict } from "../lib";
 
-/** What the ruling is on. A todo is a dtsTodos row; a code subject is a repo
+/** What the ruling is on. A todo is a todos row; a code subject is a repo
  * plus its id in that repo's todo file. */
 export type VerdictSubject = "todo" | "code";
 

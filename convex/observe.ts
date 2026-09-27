@@ -42,6 +42,7 @@ import {
 import { NEEDS_TOM } from "./ttsSlack";
 import { BOX_CHANGE, DEPLOY, redactedBoxChange, type BoxChange } from "./boxChanges";
 import { EVENT_KINDS } from "../shared/jarvis-events.mjs";
+import { todoReader } from "./jarvis/tables";
 
 /** The label every gate in this module names, so a denial says which surface. */
 const SURFACE = "Agents";
@@ -373,20 +374,23 @@ export const rulingsInWindow = query({
       .withIndex("by_ruled", (q) => q.gte("ruledAt", from).lt("ruledAt", to))
       .order("asc")
       .take(RULINGS_MAX);
+    // A ruling stores its todo's old id; the page is handed the plain one
+    // (convex/jarvis/tables.ts).
+    const todoOf = todoReader(ctx);
     return await Promise.all(rulings.map(async (ruling) => ({
       id: ruling._id as string,
       ruledAt: ruling.ruledAt,
       verdict: ruling.verdict,
       sentence: ruling.sentence ?? null,
       subjectType: ruling.subjectType,
-      todoId: (ruling.todoId ?? null) as string | null,
+      todoId: (ruling.todoId === undefined ? null : ((await todoOf(ruling.todoId))?._id ?? ruling.todoId)) as string | null,
       // Kept in the shape as null until app/agents/window stops reading it; the
       // schema narrow removes it.
       batchId: null as string | null,
       repo: ruling.repo ?? null,
       externalId: ruling.externalId ?? null,
       // What the ruling is ABOUT, in the subject's own words.
-      subject: await subjectWords(ctx, ruling),
+      subject: await subjectWords(ctx, ruling, todoOf),
       // Set when the ruling was read out of Tom's own sentence rather than
       // pressed on a button; the quote is the sentence that was read.
       quote: ruling.provenance?.quote ?? null,
@@ -394,9 +398,13 @@ export const rulingsInWindow = query({
   },
 });
 
-async function subjectWords(ctx: QueryCtx, ruling: Doc<"rulings">): Promise<string> {
+async function subjectWords(
+  ctx: QueryCtx,
+  ruling: Doc<"rulings">,
+  todoOf: ReturnType<typeof todoReader>,
+): Promise<string> {
   if (ruling.todoId !== undefined) {
-    const todo = await ctx.db.get(ruling.todoId);
+    const todo = await todoOf(ruling.todoId);
     return todo?.statement ?? "";
   }
   const { repo, externalId } = ruling;

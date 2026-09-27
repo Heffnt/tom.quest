@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { insertTodo } from "../test/core-tables";
 import { REACTION_POLARITY, baseEmoji, meaningFault, plainMeaning } from "./agentLabels";
 import { parseConfirmReply } from "./ttsSlack";
 
@@ -72,7 +73,7 @@ async function seedTodo(
   over: Record<string, unknown> = {},
 ): Promise<Id<"dtsTodos">> {
   return await t.run((ctx) =>
-    ctx.db.insert("dtsTodos", {
+    insertTodo(ctx, {
       statement: "renew the visa",
       readiness: "prepared",
       status: "active",
@@ -340,7 +341,7 @@ describe("an objection becomes a label", () => {
     const t = convexTest(schema, modules);
     await seedRun(t, { regToken: "tok-decide", runId: "claude:box:decide-run" });
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "renew passport", status: "active", readiness: "prepared", timingClass: "whenever",
         source: "tom", createdAt: 1, updatedAt: 1,
       }),

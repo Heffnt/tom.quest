@@ -20,6 +20,7 @@
 // weekly gather, which lists integrations by state.
 
 import { internalQuery, type QueryCtx } from "./_generated/server";
+import { oldId } from "./jarvis/tables";
 
 /** The one shape a declining todo's statement has. */
 export const INTEGRATION_PREFIX = "integration:";
@@ -97,7 +98,7 @@ export async function declinedIntegrations(
   ctx: QueryCtx,
 ): Promise<DeclinedIntegration[]> {
   const rows = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
     .collect();
   const out: DeclinedIntegration[] = [];
@@ -105,9 +106,12 @@ export async function declinedIntegrations(
     if (todo.status !== "archived") continue;
     const name = integrationName(todo.statement);
     if (name === null) continue;
+    // A ruling names its todo by the old id (convex/jarvis/tables.ts).
+    const old = await oldId(ctx, "todos", todo._id);
+    if (old === null) continue;
     const rulings = await ctx.db
       .query("rulings")
-      .withIndex("by_todo", (q) => q.eq("todoId", todo._id))
+      .withIndex("by_todo", (q) => q.eq("todoId", old))
       .collect();
     // The newest ruling decides; it has to be the archive.
     const newest = rulings.sort((a, b) => b.ruledAt - a.ruledAt)[0];

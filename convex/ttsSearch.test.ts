@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { follow } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -10,8 +11,9 @@ async function insertTodo(
   statement: string,
   overrides: Partial<{ status: "active" | "waiting" | "archived" | "done"; category: string }> = {},
 ) {
-  return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+  // The old row and its plain copy, as the dual write stores a todo.
+  return await t.run(async (ctx) => {
+    const id = await ctx.db.insert("dtsTodos", {
       statement,
       readiness: "unprepared",
       status: overrides.status ?? "active",
@@ -20,8 +22,10 @@ async function insertTodo(
       category: overrides.category,
       createdAt: 100,
       updatedAt: 200,
-    }),
-  );
+    });
+    await follow(ctx, "todos", id);
+    return id;
+  });
 }
 
 function shapedGithubToken(letter: string): string {

@@ -14,8 +14,20 @@ import {
   integrationStatement,
 } from "./ttsIntegrations";
 import { writePageRows } from "../scripts/context-fixture.mjs";
+import { follow, resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+/** A todo's status set by hand, and its plain row with it (the dual write). */
+const setStatus = (t: ReturnType<typeof convexTest>, id: Id<"dtsTodos">, status: "active" | "archived") =>
+  t.run(async (ctx) => {
+    await ctx.db.patch(id, { status });
+    await follow(ctx, "todos", id);
+  });
+
+/** The plain row's id, which the readers hand out (convex/jarvis/tables.ts). */
+const plainId = (t: ReturnType<typeof convexTest>, id: string) =>
+  t.run(async (ctx) => (await resolveId(ctx, "todos", id))!);
 
 async function publishWritingStandard(t: ReturnType<typeof convexTest>) {
   await t.run(async (ctx) => {
@@ -43,7 +55,7 @@ async function declineable(
     source: "slack-capture",
   });
   if (status !== "active") {
-    await t.run(async (ctx) => ctx.db.patch(id, { status }));
+    await setStatus(t, id, status);
   }
   return id;
 }
@@ -142,7 +154,7 @@ describe("internalDeclinedIntegrations", () => {
         statement: `finished thing ${i}`,
         source: "slack-capture",
       });
-      await t.run(async (ctx) => ctx.db.patch(other, { status: "archived" }));
+      await setStatus(t, other, "archived");
     }
     const id = await declineable(t, "integration: canvas");
     await rule(t, id, "archive");
@@ -169,7 +181,7 @@ describe("internalDeclinedIntegrations", () => {
     expect(await declined(t)).toEqual([
       {
         name: "outlook",
-        todoId: id,
+        todoId: await plainId(t, id),
         ruledAt: 1_757_000_000_000,
         sentence: "the WPI tenant will not give me a token worth the trouble",
       },
@@ -239,7 +251,7 @@ describe("GET /tts/capture-context declined integrations", () => {
     expect(body.declinedIntegrations).toEqual([
       {
         name: "outlook",
-        todoId: id,
+        todoId: await plainId(t, id),
         ruledAt: expect.any(Number),
         sentence: "not worth the credential",
       },

@@ -278,7 +278,7 @@ export default function RulingsList({
               verdict: "revise",
               sentence,
               ...(objecting.subjectType === "life" && objecting.todoId !== null
-                ? { todoId: objecting.todoId as Id<"dtsTodos"> }
+                ? { todoId: objecting.todoId as Id<"todos"> }
                 : {}),
               ...(objecting.subjectType === "code" &&
               objecting.repo !== null &&
