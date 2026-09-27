@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
-import { resolveId } from "./jarvis/tables";
+import { follow, resolveId } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -187,6 +187,7 @@ export async function insertRuling(
       // one verdict that hands the subject BACK to the preparing agent.
       if (verdict !== "revise") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
+        await follow(ctx, "todos", todoId);
       }
       if (verdict === "revise") {
         // Two readiness values (ruling 18): revise hands the write-up back, so
@@ -194,6 +195,7 @@ export async function insertRuling(
         // preparer returns it as prepared. It is therefore not ready for Tom
         // in the meantime (ttsShared.isReadyForTom).
         await ctx.db.patch(todoId, { readiness: "unprepared", updatedAt: now });
+        await follow(ctx, "todos", todoId);
       }
       if (verdict === "archive") {
         await applyStatusChange(ctx, todo, {
