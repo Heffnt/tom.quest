@@ -99,7 +99,7 @@ function ProposalRow({ proposal: p, now }: { proposal: Proposal; now: number }) 
           )}
         </span>
         {/* Kept: shows his press landed, in place of a button the server would now refuse. */}
-        {p.status === "sending" ? (
+        {p.status === "sending" || p.status === "delivering" ? (
           <span className="text-xs text-text-faint">signed · sending</span>
         ) : p.status === "unknown" ? (
           /* Kept: an unknown outcome may have gone out, so it is never signed again, only cleared. */

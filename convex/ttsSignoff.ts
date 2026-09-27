@@ -109,8 +109,12 @@ const CALENDAR_INVITE = v.object({
 });
 
 // Kept: "sending" refuses a second press before the scheduled send finishes, which would otherwise schedule a second send that the spent sign-off refuses and records as a failure.
+// "sending": his press queued the send, no sign-off claimed yet.
+// "delivering": the sign-off was claimed (in the same mutation) and the
+// delivery is under way; a send found here stopped mid-delivery, so its
+// outcome is unknown, never failed.
 // "unknown": the send may have gone out; it is never signed again, only declined.
-type ProposalStatus = "proposed" | "sending" | "sent" | "failed" | "unknown" | "declined";
+type ProposalStatus = "proposed" | "sending" | "delivering" | "sent" | "failed" | "unknown" | "declined";
 
 /** What a "send-proposal" row's `data` holds. */
 type ProposalData = {
@@ -125,6 +129,8 @@ type ProposalData = {
   signedAt?: number;
   sentAt?: number;
   error?: string;
+  /** The sign-off a delivery claimed, set with "delivering". */
+  signoffId?: Id<"signoffs">;
 };
 
 /** sha256 of the text's UTF-8 bytes, lower-case hex. Exact bytes: nothing is
@@ -416,10 +422,18 @@ export const internalProposal = internalQuery({
 /** Take the sign-off that matches, or say there is none. Atomic: two sends of
  *  one signed text race for one row and one of them is refused. */
 export const internalClaimSignoff = internalMutation({
-  args: { text: v.string(), recipient: v.string(), channel: v.string() },
+  args: {
+    text: v.string(),
+    recipient: v.string(),
+    channel: v.string(),
+    // The proposal the claim delivers: marked "delivering" in this same
+    // mutation, so no moment exists where the sign-off is spent and the
+    // proposal still reads as merely queued.
+    proposalId: v.optional(v.id("dtsEvents")),
+  },
   handler: async (
     ctx,
-    { text, recipient, channel },
+    { text, recipient, channel, proposalId },
   ): Promise<
     | { ok: true; signoffId: Id<"signoffs">; sha256: string; signedAt: number }
     | { ok: false; sha256: string }
@@ -438,6 +452,10 @@ export const internalClaimSignoff = internalMutation({
     ).find((s) => s.usedAt === undefined && s.signedBy === "tom" && s.text === text);
     if (match === undefined) return { ok: false, sha256 };
     await ctx.db.patch(match._id, { usedAt: Date.now() });
+    if (proposalId !== undefined) {
+      const p = proposalOf(await ctx.db.get(proposalId));
+      if (p !== null) await ctx.db.patch(proposalId, { data: { ...p, status: "delivering", signoffId: match._id } });
+    }
     return { ok: true, signoffId: match._id, sha256, signedAt: match.signedAt };
   },
 });
@@ -502,13 +520,14 @@ export class DeliveryRefused extends Error {}
  */
 export async function deliverAsTom<T>(
   ctx: ActionCtx,
-  target: { text: string; recipient: string; channel: string },
+  target: { text: string; recipient: string; channel: string; proposalId?: Id<"dtsEvents"> },
   deliver: () => Promise<T>,
 ): Promise<T> {
   const claim = await ctx.runMutation(internal.ttsSignoff.internalClaimSignoff, {
     text: target.text,
     recipient: target.recipient,
     channel: target.channel,
+    proposalId: target.proposalId,
   });
   // Kept, not deletable: this refusal is the wall for I5. Without it a text he
   // never signed goes out in his name, and the record is the only trace.
@@ -599,6 +618,17 @@ export const internalSendProposal = internalAction({
     // A rerun on anything else — sent, unknown, failed, declined — changes
     // nothing: rewriting an unknown one to failed would let a fresh sign-off
     // resend a message that may have gone out. Only his clear moves it on.
+    // A SEND FOUND DELIVERING stopped after its sign-off was claimed and
+    // before its outcome was written: it may have gone out. Unknown, surfaced,
+    // its sign-off left spent.
+    if (p.status === "delivering") {
+      const error = "the send stopped after its sign-off was claimed, before its outcome was written";
+      if (p.signoffId !== undefined) {
+        await recordUnknown(ctx, { signoffId: p.signoffId, recipient: p.recipient, channel: p.channel, sha256: p.sha256, error });
+      }
+      await ctx.runMutation(internal.ttsSignoff.internalFinishProposal, { proposalId, outcome: "unknown", error });
+      return { sent: false, error: `${OUTCOME_UNKNOWN}: ${error}` };
+    }
     if (p.status !== "sending" && p.status !== "proposed") {
       return { sent: false, error: `not sendable: the proposal is ${p.status}` };
     }
@@ -606,7 +636,7 @@ export const internalSendProposal = internalAction({
     try {
       if (door === null) throw new Error(`not a channel a message can be sent on: ${p.channel}`);
       if (door.via === "slack") {
-        await deliverAsTom(ctx, p, async () => {
+        await deliverAsTom(ctx, { ...p, proposalId }, async () => {
           const posted = await ctx.runAction(internal.ttsSync.sendSlack, {
             text: p.text,
             channel: door.conversation,
@@ -621,7 +651,7 @@ export const internalSendProposal = internalAction({
         if (p.event === undefined) throw new Error("a calendar proposal without its event");
         // The calendar door checks the sign-off itself, from the event it is
         // about to create; the text it derives is this proposal's text.
-        await ctx.runAction(internal.ttsCalendarWrite.internalCreateEvent, p.event);
+        await ctx.runAction(internal.ttsCalendarWrite.internalCreateEvent, { ...p.event, proposalId });
       }
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);

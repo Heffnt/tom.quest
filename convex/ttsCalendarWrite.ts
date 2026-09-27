@@ -83,8 +83,11 @@ export const internalCreateEvent = internalAction({
     recurrence: v.optional(v.array(v.string())),
     calendarId: v.optional(v.string()),
     guests: v.optional(v.array(v.string())),
+    // The sign-off proposal this event delivers (convex/ttsSignoff.ts
+    // internalSendProposal), marked delivering when its sign-off is claimed.
+    proposalId: v.optional(v.id("dtsEvents")),
   },
-  handler: async (ctx, args): Promise<{ id: string; htmlLink: string }> => {
+  handler: async (ctx, { proposalId, ...args }): Promise<{ id: string; htmlLink: string }> => {
     if (args.calendarId !== undefined && args.calendarId !== ONE_CALENDAR) {
       throw new Error(`calendar ${args.calendarId} refused: this door writes only to Tom's primary calendar`);
     }
@@ -96,6 +99,7 @@ export const internalCreateEvent = internalAction({
           text: invitationText({ ...args, guests }),
           recipient: calendarRecipient(guests),
           channel: CALENDAR_CHANNEL,
+          proposalId,
         },
         async () => await createEvent(ctx, { ...args, guests }),
       );
@@ -117,22 +121,33 @@ async function createEvent(
     );
   }
 
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
-  });
-  if (!tokenRes.ok) {
-    throw new DeliveryRefused(
-      `calendar token refresh -> HTTP ${tokenRes.status}: ${(await tokenRes.text()).slice(0, 200)}`,
-    );
+  // EVERYTHING BEFORE THE INSERT IS ISSUED sent nothing: a token that could
+  // not be had (a network error, a refusal, an unreadable answer) or a body
+  // that could not be built is a definite refusal, and gives the sign-off
+  // back. Only a failure after the insert request went out may have sent.
+  let accessToken: string;
+  let body: string;
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
+    if (!tokenRes.ok) {
+      throw new Error(`calendar token refresh -> HTTP ${tokenRes.status}: ${(await tokenRes.text()).slice(0, 200)}`);
+    }
+    const token = ((await tokenRes.json()) as { access_token?: unknown }).access_token;
+    if (typeof token !== "string" || token === "") throw new Error("calendar token refresh answered no access token");
+    accessToken = token;
+    body = JSON.stringify(buildEventBody(args));
+  } catch (e) {
+    throw new DeliveryRefused(`before the calendar insert: ${e instanceof Error ? e.message : String(e)}`);
   }
-  const accessToken = (await tokenRes.json()).access_token as string;
 
   // sendUpdates=all: a guest is invited by the email Google sends, which is
   // the message Tom signed. Without guests there is nobody to send it to.
@@ -145,7 +160,7 @@ async function createEvent(
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildEventBody(args)),
+      body,
     },
   );
   if (!res.ok) {
