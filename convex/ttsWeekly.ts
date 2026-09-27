@@ -34,7 +34,8 @@ import {
 import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
-import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
+import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, SESSION_OUTCOME, isPrepared } from "./ttsShared";
+import { resolveId } from "./jarvis/tables";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
@@ -321,20 +322,35 @@ const EVALUATION_KINDS = ["session-created", "session-outcome"] as const;
 /**
  * When a goal was last evaluated, or null when never: the newest evaluation
  * row on the goal's own id (by_todo, newest first, stopped at the first hit
- * rather than collecting its history).
+ * rather than collecting its history), or the newest outcome the box's work
+ * queue posted on it (the record's events table, the goal's plain id as
+ * subject: convex/jarvis/events.ts), whichever is later.
  */
 async function lastGoalEvaluation(
   ctx: QueryCtx,
   goal: Doc<"dtsTodos">,
   until: number,
 ): Promise<number | null> {
+  let last: number | null = null;
   for await (const e of ctx.db
     .query("dtsEvents")
     .withIndex("by_todo", (q) => q.eq("todoId", goal._id).lt("at", until))
     .order("desc")) {
-    if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) return e.at;
+    if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) {
+      last = e.at;
+      break;
+    }
   }
-  return null;
+  const plain = await resolveId(ctx, "todos", goal._id);
+  const worked =
+    plain === null
+      ? null
+      : await ctx.db
+          .query("events")
+          .withIndex("by_kind_subject_at", (q) => q.eq("kind", SESSION_OUTCOME).eq("subject", plain).lt("at", until))
+          .order("desc")
+          .first();
+  return worked !== null && (last === null || worked.at > last) ? worked.at : last;
 }
 
 export async function gatherWeeklyFacts(

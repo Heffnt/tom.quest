@@ -23,6 +23,7 @@ import { failuresInWindow } from "./jarvis/jobs";
 import {
   DAY_MS,
   LIVE_STATUSES,
+  SESSION_OUTCOME,
   buildDoneSet,
   feedIsPrivate,
   isFailureKind,
@@ -42,6 +43,7 @@ import {
 import { redactSecrets } from "../shared/redact.mjs";
 import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
+import { oldId } from "./jarvis/tables";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -301,6 +303,10 @@ function safeStr(value: unknown): string | undefined {
  *  read on /agents); excluded here, or the digest would say the night twice. */
 const NOT_A_FAILURE_LINE = new Set(["slack-send-failed", LEARNING_CHECK_FAILED]);
 
+/** One row of the night as the digest reads it: a dtsEvents row, or a work
+ *  outcome from the record's events table in the same shape. */
+type NightRow = Pick<Doc<"dtsEvents">, "at" | "kind" | "todoId" | "data" | "key">;
+
 export async function gatherTodayFacts(
   ctx: QueryCtx,
   {
@@ -450,7 +456,25 @@ export async function gatherTodayFacts(
     .withIndex("by_at", (q) => q.gte("at", since).lt("at", now))
     .order("desc")
     .take(EVENT_SCAN);
-  const events = [...scanned.filter((e) => !objectionKinds.has(e.kind)), ...byKind.flat()].sort((a, b) => a.at - b.at);
+  // THE WORK QUEUE'S OUTCOMES (Jarvis worker/jobs/work-queue.mjs) come
+  //    through POST /jarvis/event into the record's events table, the todo as
+  //    subject, and join the night's rows as an outcome on that todo. A row
+  //    whose subject names no todo is the copy of a POST /tts/event row
+  //    (subject = its key), which the scan above already read. Newest first,
+  //    as the scan above: past the cap it is the oldest that go, never the
+  //    night's last.
+  const worked: NightRow[] = [];
+  for (const w of await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", SESSION_OUTCOME).gte("at", since).lt("at", now))
+    .order("desc")
+    .take(EVENT_SCAN)) {
+    const todoId = w.subject === undefined ? null : await oldId(ctx, "todos", w.subject);
+    if (todoId !== null) worked.push({ at: w.at, kind: w.kind, todoId, data: w.data, key: undefined });
+  }
+  const events: NightRow[] = [...scanned.filter((e) => !objectionKinds.has(e.kind)), ...byKind.flat(), ...worked].sort(
+    (a, b) => a.at - b.at,
+  );
 
   // OUTCOMES, NEVER LOGGED EVENTS. One line per TODO, from every session
   // event in the window that named it: a night of five sessions on one todo is
