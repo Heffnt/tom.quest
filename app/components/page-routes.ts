@@ -35,6 +35,7 @@ export const PAGES: Page[] = [
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "agents", title: "Agents", blurb: "Every agent, and everything that ran, by window", priority: 9, visibility: "tom" },
   { slug: "jarvis", title: "Jarvis", blurb: "Todos, calendar and what waits on a ruling", priority: 9, visibility: "tom", agentReadable: true },
+  { slug: "frame",  title: "Frame",  blurb: "Every jarvis component in one frame", priority: 4, visibility: "tom", frame: true },
   { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, what each line rests on, the vocabulary, and what stands until he objects", priority: 8, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
   { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5, visibility: "tom" },
