@@ -25,7 +25,7 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { internalAction, internalMutation, internalQuery } from "../_generated/server";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 
 /** Each plain-named core table and the table its rows come from. */
 const CORE = { todos: "dtsTodos", blocks: "dtsBlocks", timeNotes: "dtsTimeNotes" } as const;
@@ -96,6 +96,23 @@ export async function oldId<T extends Core>(
   const row = plain === null ? null : ((await ctx.db.get(plain)) as Row | null);
   const old = ctx.db.normalizeId(CORE[table], row === null ? id : String(row.legacyId));
   return old !== null && (await ctx.db.get(old)) !== null ? old : null;
+}
+
+/**
+ * The plain todo an id in either form names, read at most once per id: the
+ * lookup a gather makes for every reference its rows hold.
+ */
+export function todoReader(ctx: QueryCtx | MutationCtx): (id: string | undefined) => Promise<Doc<"todos"> | null> {
+  const seen = new Map<string, Doc<"todos"> | null>();
+  return async (id) => {
+    if (id === undefined) return null;
+    const hit = seen.get(id);
+    if (hit !== undefined) return hit;
+    const plain = await resolveId(ctx, "todos", id);
+    const row = plain === null ? null : await ctx.db.get(plain);
+    seen.set(id, row);
+    return row;
+  };
 }
 
 /**

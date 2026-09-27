@@ -92,6 +92,7 @@ describe("rulings under their plain name", () => {
       "resolveId",
       "sync",
       "syncPage",
+      "todoReader",
       "unstamp",
       "unstampPage",
       "withPlainTodoIds",

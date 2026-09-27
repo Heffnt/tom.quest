@@ -43,7 +43,7 @@ import {
 import { redactSecrets } from "../shared/redact.mjs";
 import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
-import { oldId } from "./jarvis/tables";
+import { oldId, resolveId, todoReader } from "./jarvis/tables";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -324,23 +324,16 @@ export async function gatherTodayFacts(
   // Names for the ids the sections actually touch, fetched one at a time and
   // remembered. The whole dtsTodos and batches tables were read here before —
   // two full-table scans that grow with the record forever, for a handful of
-  // lookups.
-  const todoCache = new Map<string, Doc<"dtsTodos"> | null>();
-  const todoOf = async (id: Id<"dtsTodos"> | undefined): Promise<Doc<"dtsTodos"> | null> => {
-    if (id === undefined) return null;
-    const hit = todoCache.get(id);
-    if (hit !== undefined) return hit;
-    const row = await ctx.db.get(id);
-    todoCache.set(id, row);
-    return row;
-  };
+  // lookups. An id comes in either form (a stored reference holds the old
+  // one: convex/jarvis/tables.ts); the row is the plain one.
+  const todoOf = todoReader(ctx);
 
   // 1. Dated and late: every active dated todo due today or earlier, oldest
   //    date first — what the cap drops has to be the newest, because an item
   //    three weeks late is the one Tom needs named in the morning.
   const dated = (
     await ctx.db
-      .query("dtsTodos")
+      .query("todos")
       .withIndex("by_status_and_due", (q) =>
         q.eq("status", "active").gte("dueAt", 0).lt("dueAt", dayEnd),
       )
@@ -368,7 +361,7 @@ export async function gatherTodayFacts(
   //    calendar stays in the record, and nothing he reads names it.
   const privateFeeds = privateFeedNames(process.env.TTS_ICS_FEEDS);
   const blockRows = await ctx.db
-    .query("dtsBlocks")
+    .query("blocks")
     .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
     .collect();
   const spans: { start: number; end: number; title: string; allDay: boolean }[] = [];
@@ -401,7 +394,7 @@ export async function gatherTodayFacts(
   //    capture that is not ready is a row, not a line (§4.3). Read only to
   //    keep them out of the ready list twice.
   const recentEmail = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_source", (q) => q.eq("source", "email"))
     .order("desc")
     .take(CAPTURE_SCAN);
@@ -424,9 +417,13 @@ export async function gatherTodayFacts(
   );
   const unshown: typeof flagged = [];
   for (const t of flagged) {
-    const shown = (
-      await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", t._id)).collect()
-    ).some((e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest");
+    // The surfaced rows name the todo by its old id.
+    const old = await oldId(ctx, "todos", t._id);
+    const shown =
+      old !== null &&
+      (await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", old)).collect()).some(
+        (e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest",
+      );
     if (!shown) unshown.push(t);
   }
   const needsYou = unshown
@@ -483,7 +480,7 @@ export async function gatherTodayFacts(
   const byTodo = new Map<string, TodoOutcome>();
   const finishedSessions = new Set<string>();
   const todoOutcomeFor = async (
-    todoId: Id<"dtsTodos"> | undefined,
+    todoId: string | undefined,
     sessionId: string | undefined,
   ): Promise<TodoOutcome> => {
     const todo = await todoOf(todoId);
@@ -889,14 +886,14 @@ export async function gatherTodayFacts(
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
   //    so the scan is the prepared list itself. §4.3: the ready SECTION is
   //    gone; the count is the today section's last sentence.
-  const preparedRows: Doc<"dtsTodos">[] = await ctx.db
-    .query("dtsTodos")
+  const preparedRows: Doc<"todos">[] = await ctx.db
+    .query("todos")
     .withIndex("by_readiness", (q) => q.eq("readiness", "prepared"))
     .collect();
   const readyIds = new Set<string>();
   for (const t of preparedRows) {
     if (t.status !== "active" || datedIds.has(t._id as string)) continue;
-    const needRows: Doc<"dtsTodos">[] = [];
+    const needRows: Doc<"todos">[] = [];
     for (const id of t.needs ?? []) {
       const need = await ctx.db.get(id);
       if (need) needRows.push(need);
@@ -912,6 +909,11 @@ export async function gatherTodayFacts(
   //    numbered in printed order. Nothing at all when the delegate has taken
   //    no decision — the rows may not exist yet: the delegate is built on
   //    branch uac/delegate and this reads by kind if present.
+  // An objection names its todo as its row stored it; the facts hand the
+  // plain id, which the ready and dated sets above are keyed on.
+  for (const o of rawObjections) {
+    if (o.todoId !== undefined) o.todoId = (await resolveId(ctx, "todos", o.todoId)) ?? o.todoId;
+  }
   const objections = rawObjections
     // The newest OBJECTION_SCAN of every source together: the reads above
     // come in different orders, so they are put in time order before the cut.
@@ -1109,8 +1111,8 @@ export const internalComposeToday = internalQuery({
       // Both read off the fitted message, so an item whose line was dropped
       // never counts as seen.
       surfacedTodoIds: printedTodoIds(message, facts)
-        .map((id) => ctx.db.normalizeId("dtsTodos", id))
-        .filter((id): id is Id<"dtsTodos"> => id !== null),
+        .map((id) => ctx.db.normalizeId("todos", id))
+        .filter((id): id is Id<"todos"> => id !== null),
       // The decisions the objection list carried, in PRINTED order: a reply of
       // "revert 2" names the second of these. Read off the FITTED message, not
       // off `facts.objections`: `fit` can reduce the objections run to its lead
