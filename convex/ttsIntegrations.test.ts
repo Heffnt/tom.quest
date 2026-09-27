@@ -14,15 +14,16 @@ import {
   integrationStatement,
 } from "./ttsIntegrations";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { follow, resolveId } from "./jarvis/tables";
+import { back, resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/** A todo's status set by hand, and its plain row with it (the dual write). */
+/** A todo's status set by hand on the plain row, and its old row written
+ *  back, as this part's writers do (convex/jarvis/tables.ts `back`). */
 const setStatus = (t: ReturnType<typeof convexTest>, id: Id<"todos">, status: "active" | "archived") =>
   t.run(async (ctx) => {
     await ctx.db.patch(id, { status });
-    await follow(ctx, "todos", id);
+    await back(ctx, "todos", id);
   });
 
 /** The plain row's id, which the readers hand out (convex/jarvis/tables.ts). */

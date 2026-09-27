@@ -138,11 +138,13 @@ export const internalRecordSlackFailed = internalMutation({
     ctx,
     { channel, threadTs, subject, error, text, attempts, windowEnd },
   ) => {
+    // A todo subject is stored by its plain id, whichever form the caller holds.
+    const stored = await plainSubject(ctx, subject);
     await logEvent(
       ctx,
       "slack-send-failed",
-      subject.kind === "todo" ? subject.id : undefined,
-      { channel, threadTs, subject, error, text, attempts, windowEnd },
+      stored.kind === "todo" ? stored.id : undefined,
+      { channel, threadTs, subject: stored, error, text, attempts, windowEnd },
     );
   },
 });

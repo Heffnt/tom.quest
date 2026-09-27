@@ -291,6 +291,15 @@ describe("the dual write: each writer of the old core tables writes the plain ro
     await followed(t);
   });
 
+  it("a failed Slack send given the old id stores the plain one, in its todoId and its subject", async () => {
+    const { t, id } = await setup();
+    const legacy = (await plainOf(t, "todos", id))!.legacyId as Id<"dtsTodos">;
+    await t.mutation(internal.ttsSlack.internalRecordSlackFailed, { channel: "C-today", subject: { kind: "todo", id: legacy }, error: "rate limited" });
+    const [row] = await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === "slack-send-failed"));
+    expect(row.todoId).toBe(id);
+    expect((row.data as { subject: { id: string } }).subject.id).toBe(id);
+  });
+
   it("internalSyncCanvasTodos (its insert and its moved due date)", async () => {
     const t = convexTest({ schema, modules });
     const dueAt = Date.now() + 4 * DAY_MS;
