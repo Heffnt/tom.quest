@@ -207,6 +207,33 @@ describe("GET /jarvis/events", () => {
     expect((await t.fetch("/jarvis/events?limit=x", { headers: { "X-Jarvis-Key": "k" } })).status).toBe(400);
     expect((await t.fetch("/jarvis/events")).status).toBe(401);
   });
+
+  it("finds a subject's row of one kind behind more than 500 newer rows of other kinds", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", { kind: "job-failed", at: 1, provenance: { job: "busy" }, subject: "busy:read", data: {} });
+      for (let i = 0; i < 510; i += 1) {
+        await ctx.db.insert("events", { kind: "job-ok", at: 10 + i, provenance: { job: "busy" }, subject: "busy:read", data: {} });
+      }
+    });
+    const res = await t.fetch("/jarvis/events?subject=busy:read&kind=job-failed&limit=1", { headers: { "X-Jarvis-Key": "k" } });
+    expect((await res.json()).events.map((row: { at: number }) => row.at)).toEqual([1]);
+  });
+});
+
+describe("a decision is the delegate's", () => {
+  it("is refused on both worker event routes, subject and all, and nothing is written", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    const decision = { kind: "decision", subject: "86f2f341", data: { question: "q", decision: "Yes." } };
+    const jarvis = await post(t, "/jarvis/event", decision, { "X-Jarvis-Key": "k" });
+    expect(jarvis.status).toBe(403);
+    expect((await jarvis.json()).error).toContain("POST /tts/ask");
+    expect((await post(t, "/tts/event", { kind: "decision", key: "86f2f341", data: { question: "q" } }, { "X-TTS-Key": "k" })).status).toBe(403);
+    expect(await rows(t, "events")).toEqual([]);
+    expect(await rows(t, "dtsEvents")).toEqual([]);
+  });
 });
 
 describe("the /jarvis/ prefix", () => {
@@ -226,11 +253,11 @@ describe("the /jarvis/ prefix", () => {
     expect((await post(t, "/tts/event", { kind: "deploy", data: {} }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "wrong" })).status).toBe(401);
-    // A decision's key is its askId, the record row's subject: without one
+    // A digest line's key is its askId, the record row's subject: without one
     // the legacy pen refuses it as POST /jarvis/event refuses it.
     const before = (await rows(t, "events")).length;
-    expect((await post(t, "/tts/event", { kind: "decision", data: { question: "q" } }, { "X-TTS-Key": "k" })).status).toBe(400);
-    for (const kind of ["decision", "digest-line", "eval-run"]) {
+    expect((await post(t, "/tts/event", { kind: "digest-line", data: { section: "decisions" } }, { "X-TTS-Key": "k" })).status).toBe(400);
+    for (const kind of ["digest-line", "eval-run"]) {
       expect((await post(t, "/tts/event", { kind, key: " \t ", data: {} }, { "X-TTS-Key": "k" })).status).toBe(400);
     }
     expect((await post(t, "/jarvis/event", { kind: "decision", data: { question: "q" } }, { "X-Jarvis-Key": "k" })).status).toBe(400);
@@ -247,6 +274,14 @@ describe("the copy from dtsEvents", () => {
     const [old] = await rows(t, "dtsEvents");
     const [copy] = await rows(t, "events");
     expect(copy).toMatchObject({ kind: "deploy", at: old.at, provenance: {}, subject: "tom.quest:abc", data: { repo: "tom.quest", to: "abc" } });
-    expect(await t.mutation(internal.jarvis.events.copyFromDts, { id: old._id })).not.toBeNull();
+  });
+
+  it("writes the old row and its copy in the one mutation, so neither table can hold it alone", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, { kind: "deploy", key: "tom.quest:def", data: { to: "def" } });
+    const [old] = await rows(t, "dtsEvents");
+    expect(await rows(t, "events")).toEqual([
+      expect.objectContaining({ kind: "deploy", at: old.at, provenance: {}, subject: "tom.quest:def", data: { to: "def" } }),
+    ]);
   });
 });

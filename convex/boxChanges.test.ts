@@ -257,6 +257,17 @@ describe("the box-change door", () => {
     expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toHaveLength(0);
   });
 
+  it("refuses a malformed post that reuses a recorded change's id, rather than answering it as a resend", async () => {
+    const t = convexTest({ schema, modules });
+    const sent = change({ agentId: AGENT, id: "s=1;i=m1" });
+    expect((await recordEvent(t, eventOf(sent))).status).toBe(200);
+    // Its provenance names no agent, its at is not its own, its body lacks the shape.
+    expect((await recordEvent(t, { ...eventOf(sent), provenance: { job: "box-watch" } })).status).toBe(400);
+    expect((await recordEvent(t, { ...eventOf(sent), at: sent.at + 1 })).status).toBe(400);
+    expect((await recordEvent(t, { ...eventOf(sent), data: { id: "s=1;i=m1", source: "root" } })).status).toBe(400);
+    expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(1);
+  });
+
   it("names every fault of a malformed body", () => {
     expect(boxChangeFaults(change())).toEqual([]);
     expect(boxChangeFaults({ ...change(), count: 0, commit: "not-hex", change: { what: "" } })).toEqual([

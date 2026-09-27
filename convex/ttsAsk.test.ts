@@ -242,6 +242,77 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect(row.data.job).toBe("poll-gmail");
   });
 
+  it("writes the decision row itself, once, and none for an attended, capped or unanswered ask", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const decisions = () =>
+      t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect());
+    const response = await post(t, body({ job: "poll-gmail", restedOn: ["ruling:abc"], wouldChange: "A closed consulate." }));
+    expect(response.status).toBe(200);
+    await post(t, body({ job: "poll-gmail" })); // the same askId again: nothing new
+    const [row, ...rest] = await decisions();
+    expect(rest).toEqual([]);
+    expect(row).toMatchObject({
+      subject: "3f9c1a22",
+      provenance: { job: "poll-gmail" },
+      data: {
+        askId: "3f9c1a22",
+        caller: "job:poll-gmail",
+        decision: "Move it to Thursday morning.",
+        restedOn: ["ruling:abc"],
+        wouldChange: "A closed consulate.",
+        refused: false,
+        model: "fable",
+      },
+    });
+    await post(t, body({ sessionId: await seedSession(t), askId: "cccccccc" })); // attended
+    await post(t, body({ job: "poll-gmail", askId: "dddddddd", decision: null })); // no answer
+    expect((await decisions()).map((d) => d.subject)).toEqual(["3f9c1a22"]);
+    expect((await post(t, body({ job: "poll-gmail", askId: "eeeeeeee", restedOn: "ruling:abc" }))).status).toBe(400);
+  });
+
+  it("a retry of an ask recorded before the decision row was written here writes it, once", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const decisions = () =>
+      t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect());
+    // The ask row as the old mutation left it: no decision row beside it.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(), kind: DELEGATE_DECISION, key: "3f9c1a22",
+        data: { ...body({ job: "poll-gmail" }), sessionId: null, todoId: null, attended: false },
+      }),
+    );
+    // A retry that contradicts the recorded ask is refused and writes nothing.
+    const contradicts = await post(t, body({ job: "poll-gmail", decision: "Leave it Wednesday and warn him it may be shut." }));
+    expect(contradicts.status).toBe(400);
+    expect((await contradicts.json()).error).toContain("already recorded for a different ask");
+    expect((await post(t, body({ job: "poll-canvas" }))).status).toBe(400);
+    // A todo id that names no todo is not "no todo".
+    expect((await post(t, body({ job: "poll-gmail", todoId: "no-such-todo" }))).status).toBe(400);
+    expect(await decisions()).toEqual([]);
+    // The same ask again: its decision row, built from the ask as recorded,
+    // whatever else the retry's body carries.
+    expect((await (await post(t, body({ job: "poll-gmail", restedOn: ["ruling:abc"], reason: "another reason" }))).json()).existing).toBe(true);
+    await post(t, body({ job: "poll-gmail" }));
+    expect(await decisions()).toEqual([
+      expect.objectContaining({
+        subject: "3f9c1a22",
+        provenance: { job: "poll-gmail" },
+        data: expect.objectContaining({ caller: "job:poll-gmail", decision: "Move it to Thursday morning.", reason: body().reason, restedOn: [] }),
+      }),
+    ]);
+    // A capped ask took nothing in his name: its retry writes no decision.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(), kind: DELEGATE_DECISION, key: "abababab",
+        data: { ...body({ job: "poll-gmail", askId: "abababab" }), refused: true, refusedBecause: CAP_REFUSAL, attended: false },
+      }),
+    );
+    await post(t, body({ job: "poll-gmail", askId: "abababab" }));
+    expect(await decisions()).toHaveLength(1);
+  });
+
   it("refuses an unauthenticated caller", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });

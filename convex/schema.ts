@@ -62,7 +62,7 @@ export default defineSchema({
   // Convex-internal reporters; the readers are GET /jarvis/events and the
   // /agents page. dtsEvents (below) is the previous generation's table: the
   // kinds it still owns are copied here as they arrive through POST
-  // /tts/event (copyFromDts), so this table shows one list, and each area
+  // /tts/event (copyDtsRow), so this table shows one list, and each area
   // moves its kinds to the new route in its own stream, after which dtsEvents
   // goes.
   //
@@ -112,6 +112,10 @@ export default defineSchema({
     // condition, which a window of one job's repeats must not crowd out
     // (convex/jarvis/jobs.ts failuresInWindow).
     .index("by_kind_standing_at", ["kind", "data.standingSince", "at"])
+    // One kind's row by the writer's own id for it: the one lookup that finds
+    // a retry of a kind in shared/jarvis-events.mjs REPEATS_BY_DATA_ID
+    // (convex/jarvis/events.ts recordEvent).
+    .index("by_kind_data_id", ["kind", "data.id"])
     // One kind's rows by when the record wrote them (_creationTime, which ends
     // every index): the digest's read of post-history-cut box changes recorded
     // in its window, however long after they happened (convex/boxChanges.ts).

@@ -9,7 +9,7 @@
 //
 // ONE LIST, NO DUPLICATES. dtsEvents rows that still arrive through POST
 // /tts/event (deploy, box-change, evals-run, the learning runs...) are copied
-// here by copyFromDts, called from that route, with `provenance: {}` and the
+// here by copyDtsRow, in that route's one mutation, with `provenance: {}` and the
 // old `key` as `subject`: a faithful copy, nothing invented. The copy is
 // the route's, not the writer's (logEvent), because /tts/event is the box's
 // one generic pen into dtsEvents and the other writers are Convex-internal
@@ -24,13 +24,14 @@ import { internalMutation, internalQuery, query } from "../_generated/server";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
-import { eventArgs, insertEvent } from "./record";
+import { checkEvent, eventArgs, insertEvent } from "./record";
 import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
-import { onBoxChange } from "../boxChanges";
+import { assertBoxChange, BOX_CHANGE, boxChangeSubject, onBoxChange } from "../boxChanges";
 import { onDigestSent, onNeedsYouPosted } from "./digest";
 import { resolveId } from "./tables";
 import { SESSION_OUTCOME } from "../ttsShared";
+import { REPEATS_BY_DATA_ID } from "../../shared/jarvis-events.mjs";
 
 /** What runs after a row of each kind lands, inside the same mutation. */
 const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Promise<unknown>> = {
@@ -46,6 +47,9 @@ export async function recordEvent(
   ctx: MutationCtx,
   input: EventInput,
 ): Promise<{ id: Id<"events">; result?: unknown }> {
+  // A box change is checked whole before anything else, a resend's lookup
+  // below included: a malformed post is refused whatever id it reuses.
+  if (input.kind === BOX_CHANGE) assertBoxChange(input);
   // An outcome is counted on its todo by subject, so it names one that
   // exists, in either id form, and the row keeps the plain id.
   if (input.kind === SESSION_OUTCOME) {
@@ -62,20 +66,32 @@ export async function recordEvent(
       input = { ...input, data: { ...data, rulingId: ruling } };
     }
   }
+  // A RETRY IS NOT A SECOND FACT. A kind whose writer re-posts with a stable
+  // data.id (shared/jarvis-events.mjs REPEATS_BY_DATA_ID) is recorded once:
+  // a row of the kind with the same data.id already stands for it (one point
+  // read on events.by_kind_data_id), and the caller is answered with that
+  // row's id. A box change with an id is filed under that id as its subject.
+  const repeats = (REPEATS_BY_DATA_ID as readonly string[]).includes(input.kind);
+  const repeatId = (input.data as { id?: unknown } | undefined)?.id;
+  if (repeats && typeof repeatId === "string" && repeatId !== "") {
+    // The whole event is valid before it is matched: a retry is the same
+    // well-formed event, never a malformed one that reuses an id.
+    const checked = checkEvent(input);
+    if (!checked.ok) throw new Error(checked.error);
+    const kind = input.kind;
+    const earlier = await ctx.db
+      .query("events")
+      .withIndex("by_kind_data_id", (q) => q.eq("kind", kind).eq("data.id", repeatId))
+      .first();
+    if (earlier !== null) return { id: earlier._id, result: { duplicate: true } };
+    if (kind === BOX_CHANGE) input = { ...input, subject: boxChangeSubject(repeatId) };
+  }
   const id = await insertEvent(ctx, input);
   const hook = AFTER_RECORD[input.kind];
-  if (hook === undefined) return { id };
+  if (hook === undefined) return repeats ? { id, result: { duplicate: false } } : { id };
   const row = await ctx.db.get(id);
   if (row === null) return { id };
-  const result = await hook(ctx, row);
-  // A hook that deleted the row as a resend of an earlier one names the row
-  // that stands for it (boxChanges.ts onBoxChange): the caller is answered
-  // with that id, never the id of a row that no longer exists.
-  if (typeof result === "object" && result !== null && "survivorId" in result) {
-    const { survivorId, ...rest } = result as { survivorId: Id<"events"> };
-    return { id: survivorId, result: rest };
-  }
-  return { id, result };
+  return { id, result: await hook(ctx, row) };
 }
 
 /** POST /jarvis/event's mutation, and any Convex reporter's. */
@@ -100,13 +116,19 @@ async function listEvents(
 ): Promise<Doc<"events">[]> {
   const n = clampLimit(limit);
   const from = since ?? 0;
+  if (subject !== undefined && kind !== undefined) {
+    return await ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", kind).eq("subject", subject).gte("at", from))
+      .order("desc")
+      .take(n);
+  }
   if (subject !== undefined) {
-    const rows = await ctx.db
+    return await ctx.db
       .query("events")
       .withIndex("by_subject_at", (q) => q.eq("subject", subject).gte("at", from))
       .order("desc")
-      .take(kind === undefined ? n : LIST_MAX);
-    return (kind === undefined ? rows : rows.filter((row) => row.kind === kind)).slice(0, n);
+      .take(n);
   }
   if (kind !== undefined) {
     return await ctx.db
@@ -157,22 +179,21 @@ export const forAgent = query({
 
 /**
  * Copy one dtsEvents row into events, as it is: the kind it had, the key as
- * subject, no provenance (the old row carries none). Called by POST /tts/event
- * for every row it writes, until each area posts through /jarvis/event and
- * this, with the route, goes. Not validated against the kinds list: the row is
+ * subject, no provenance (the old row carries none). POST /tts/event's
+ * mutation (convex/ttsNightly.ts internalRecordWorkerEvent) calls it inside
+ * the same transaction that wrote the old row, so the two tables hold the row
+ * together or neither does. Not validated against the kinds list: the row is
  * already in the record; the list governs what is posted.
  */
-export const copyFromDts = internalMutation({
-  args: { id: v.id("dtsEvents") },
-  handler: async (ctx, { id }): Promise<Id<"events"> | null> => {
-    const row = await ctx.db.get(id);
-    if (row === null) return null;
-    return await ctx.db.insert("events", {
-      kind: row.kind,
-      at: row.at,
-      provenance: {},
-      ...(row.key === undefined ? {} : { subject: row.key }),
-      data: row.data === undefined ? {} : row.data,
-    });
-  },
-});
+export async function copyDtsRow(
+  ctx: MutationCtx,
+  row: Pick<Doc<"dtsEvents">, "kind" | "at" | "key" | "data">,
+): Promise<Id<"events">> {
+  return await ctx.db.insert("events", {
+    kind: row.kind,
+    at: row.at,
+    provenance: {},
+    ...(row.key === undefined ? {} : { subject: row.key }),
+    data: row.data === undefined ? {} : row.data,
+  });
+}

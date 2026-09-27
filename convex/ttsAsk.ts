@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import type { QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
@@ -9,6 +9,7 @@ import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
 import { oldId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
+import { insertEvent } from "./jarvis/record";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -79,6 +80,13 @@ const ASK_ARGS = {
   // field. A caller that passes no token stores none: an unregistered
   // delegate call carries no run, and the absence is never inferred into one.
   runToken: v.optional(v.string()),
+  // What the decision row (events kind "decision", convex/jarvis/intent.ts)
+  // carries beyond the ask: the lines it rested on, what would change it, and
+  // the searches that missed. Only this mutation writes that row
+  // (shared/jarvis-events.mjs DELEGATE_ONLY_KINDS).
+  restedOn: v.optional(v.array(v.string())),
+  wouldChange: v.optional(v.union(v.string(), v.null())),
+  nearMissed: v.optional(v.any()),
 };
 
 type AskData = {
@@ -116,6 +124,51 @@ function capFor(args: { sessionId?: string }): number {
 /** The reason a capped ask carries: the caller took its own fallback. */
 export const CAP_REFUSAL = "cap: the delegate ask cap for this caller is spent, so the agent took its own fallback";
 
+/** An ask as its delegate-decision row stores it (the fields the decision
+ *  row reads), with what only the decision row carries when the caller sent
+ *  it. The caller is exactly one of sessionId and job. */
+type StoredAsk = {
+  askId: string;
+  question: string;
+  options: string[];
+  decision: string | null;
+  reason: string;
+  refused: boolean;
+  refusedBecause: string | null;
+  model: string;
+  sessionId: string | null;
+  job: string | null;
+  todoId: string | null;
+  restedOn?: string[];
+  wouldChange?: string | null;
+  nearMissed?: unknown;
+};
+
+/** The decision row (events kind "decision", convex/jarvis/intent.ts) for one
+ *  answered ask, built from the ask as recorded; only internalRecordAsk calls it. */
+async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
+  await insertEvent(ctx, {
+    kind: "decision",
+    provenance: ask.sessionId !== null ? { session: ask.sessionId } : { job: ask.job ?? undefined },
+    subject: ask.askId,
+    data: {
+      question: ask.question,
+      options: ask.options,
+      decision: ask.decision,
+      reason: ask.reason,
+      restedOn: ask.restedOn ?? [],
+      wouldChange: ask.wouldChange ?? null,
+      refused: ask.refused,
+      refusedBecause: ask.refusedBecause,
+      caller: ask.sessionId !== null ? `session:${ask.sessionId}` : `job:${ask.job}`,
+      askId: ask.askId,
+      ...(ask.todoId === null ? {} : { todoId: ask.todoId }),
+      model: ask.model,
+      ...(ask.nearMissed === undefined ? {} : { nearMissed: ask.nearMissed }),
+    },
+  });
+}
+
 /** Record the completed box-side delegate call. This does not call a model:
  * Convex cannot reach the box, and the caller is already there. */
 export const internalRecordAsk = internalMutation({
@@ -125,7 +178,39 @@ export const internalRecordAsk = internalMutation({
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", args.askId))
       .first();
-    if (existing) return { id: existing._id, existing: true, attended: false, capped: false };
+    if (existing) {
+      const stored = (existing.data ?? {}) as StoredAsk & { attended?: unknown };
+      // A RETRY IS THE SAME ASK. One that names another question, decision,
+      // caller or todo under a recorded askId is refused: the recorded ask
+      // stands, and nothing is written from the new body.
+      // A todo id that names no todo is itself a contradiction: it must not
+      // resolve to "no todo" and so match an ask recorded without one.
+      const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
+      if (
+        (args.todoId !== undefined && todoId === null) ||
+        args.question !== stored.question ||
+        args.decision !== stored.decision ||
+        (args.sessionId ?? null) !== (stored.sessionId ?? null) ||
+        (args.job ?? null) !== (stored.job ?? null) ||
+        todoId !== (stored.todoId ?? null)
+      ) {
+        throw new Error(`askId ${args.askId} is already recorded for a different ask`);
+      }
+      // A RETRY OF A RECORDED ASK still gets its decision row: an ask
+      // recorded before this mutation wrote the row had it posted separately,
+      // a post the generic routes now refuse, so the retry is its one way in.
+      // The row is built from the ask as recorded, and one per ask: none is
+      // written when one already stands.
+      const took = stored.decision !== null && stored.decision !== undefined && stored.attended !== true && stored.refusedBecause !== CAP_REFUSAL;
+      if (took) {
+        const written = await ctx.db
+          .query("events")
+          .withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", args.askId))
+          .first();
+        if (written === null) await insertDecision(ctx, stored);
+      }
+      return { id: existing._id, existing: true, attended: false, capped: false };
+    }
 
     const todoId = args.todoId === undefined ? undefined : await oldId(ctx, "todos", args.todoId);
     if (args.todoId !== undefined && todoId === null) throw new Error(`Unknown todo id: ${args.todoId}`);
@@ -154,15 +239,28 @@ export const internalRecordAsk = internalMutation({
       : capped
         ? CAP_REFUSAL
         : args.refusedBecause;
-    const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
-      ...args,
+    // The dts row keeps the ask; what only the decision row carries stays off it.
+    const { restedOn, wouldChange, nearMissed, ...ask } = args;
+    const stored = {
+      ...ask,
       sessionId: args.sessionId ?? null,
       job: args.job ?? null,
       todoId: todoId ?? null,
+    };
+    const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
+      ...stored,
       refused,
       refusedBecause,
       attended,
     }, args.askId);
+
+    // THE DECISION ROW: one per decision the delegate took, a refusal
+    // included, written here and nowhere else, in the ask's own transaction,
+    // so a decision row exists only for an ask that passed the attended check
+    // and the cap. Silence, attended and capped asks took nothing in his name.
+    if (args.decision !== null && !attended && !capped) {
+      await insertDecision(ctx, { ...stored, restedOn, wouldChange, nearMissed });
+    }
 
     // The digest's objection list reads this delegate-decision row itself
     // (convex/ttsDigest.ts); there is no live line (one output channel).

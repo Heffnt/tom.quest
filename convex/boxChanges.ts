@@ -39,7 +39,7 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../shared/redact.mjs";
 import type { BoxChangeFact } from "./ttsCompose";
@@ -189,10 +189,10 @@ export function whoCanActLine(change: BoxChange): string | null {
  * ONE ROW PER CHANGE. The box's outbox is at-least-once: a post whose answer
  * was lost to the network is sent again on the next run, and for as long as a
  * box still posts through the legacy pen and another through POST
- * /jarvis/event, both carry the same outbox. A second row with the same `at`
- * and the same `data.id` (the reader's identity for the change) is that
- * resend, not a second change, so it is deleted here and earns no digest
- * line. The time and the body are no identity: two sudo runs of one command
+ * /jarvis/event, both carry the same outbox. A second row with the same
+ * `data.id` (the reader's identity for the change) is that resend, not a
+ * second change, so recordEvent (convex/jarvis/events.ts) does not record it
+ * and it earns no digest line. The time and the body are no identity: two sudo runs of one command
  * in one millisecond are two changes. A change posted without an id is
  * always recorded, a resend of it included.
  *
@@ -202,39 +202,33 @@ export function whoCanActLine(change: BoxChange): string | null {
  * (plan-root T3). Neither holds a secret: the text is redacted first.
  */
 /** The subject a box change with a reader id is filed under. */
-function boxChangeSubject(id: string): string {
+export function boxChangeSubject(id: string): string {
   return `box-change-id:${id}`;
+}
+
+/** Throws unless the event is a well-formed box change: the fixed data
+ *  shape, provenance.agentId its data.agentId, and `at` its data.at. Run by
+ *  recordEvent before anything else, a resend's lookup included, so a
+ *  malformed post is refused whatever id it carries. */
+export function assertBoxChange(event: { at?: number; provenance?: { agentId?: string }; data?: unknown }): void {
+  const faults = boxChangeFaults(event.data);
+  if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
+  const change = event.data as BoxChange;
+  if (event.provenance?.agentId !== change.agentId) {
+    throw new Error("a box change's provenance.agentId is its data.agentId, and it has none when data.agentId is absent");
+  }
+  if (event.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
 }
 
 export async function onBoxChange(
   ctx: MutationCtx,
   row: Doc<"events">,
-): Promise<{ duplicate: boolean; survivorId?: Id<"events"> }> {
-  const faults = boxChangeFaults(row.data);
-  if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
+): Promise<{ duplicate: boolean }> {
+  // The shape was checked before the insert (assertBoxChange, recordEvent).
   const change = row.data as BoxChange;
-  if (row.provenance.agentId !== change.agentId) {
-    throw new Error("a box change's provenance.agentId is its data.agentId, and it has none when data.agentId is absent");
-  }
-  if (row.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
-  if (change.id !== undefined) {
-    // The id is the row's subject, so a resend is one point lookup on
-    // events.by_subject_at: no scan of the millisecond, nothing it can miss.
-    const subject = boxChangeSubject(change.id);
-    const earlier = await ctx.db
-      .query("events")
-      .withIndex("by_subject_at", (q) => q.eq("subject", subject))
-      .filter((q) => q.and(q.eq(q.field("kind"), BOX_CHANGE), q.neq(q.field("_id"), row._id)))
-      .first();
-    if (earlier !== null) {
-      // The resend's row goes; the row that stands for the change is the
-      // earlier one, and that is the id both doors answer
-      // (convex/jarvis/events.ts recordEvent reads survivorId).
-      await ctx.db.delete(row._id);
-      return { duplicate: true, survivorId: earlier._id };
-    }
-    if (row.subject !== subject) await ctx.db.patch(row._id, { subject });
-  }
+  // A resend (the same data.id) never reaches this hook: recordEvent answers
+  // it with the earlier row (shared/jarvis-events.mjs REPEATS_BY_DATA_ID),
+  // and files a change with an id under boxChangeSubject(id).
   const shown = redactedBoxChange(change);
   if (shown.change?.what === "journal-gap") {
     await listForDigest(ctx, {
