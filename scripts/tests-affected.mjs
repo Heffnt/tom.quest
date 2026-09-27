@@ -144,6 +144,8 @@ function statusRows(text) {
     // made a rename look like an edit, and the fallback never fired. A copy's
     // source still exists, but it is treated the same way: the worst that
     // costs is a full suite, which is the direction this file errs in.
+    // `C` stays: git reports copy rows under -C (or diff.renames=copies), and a copy is a rename's twin here.
+    // `rest.length >= 2` stays: a malformed row with one path must fall through, not crash or emit undefined.
     if ((status.startsWith("R") || status.startsWith("C")) && rest.length >= 2) {
       return [
         { path: rest[0], deleted: true },

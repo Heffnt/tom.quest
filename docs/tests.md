@@ -36,7 +36,7 @@ job and is not counted in any row.
 | `pnpm build` | The production Next.js build, the one Vercel runs on main | CI `tests`; local | **62 s** | checks |
 | `pnpm check:guardrails` — 8 scripts | The eight static boundaries below | CI `static-boundaries`; local | **10.0 s** | checks |
 | ↳ `check-removals.mjs` | A change may not add a complexity smell, and the committed count only goes down; needs `ast-grep` | CI `static-boundaries` | 5.8 s | checks |
-| ↳ `check-private-paths.mjs` | No `model-of-tom` path, area-category line or operate-page window is in this public repository | CI `static-boundaries` | 3.4 s | checks |
+| ↳ `check-private-paths.mjs` | No `model-of-tom` path, area-category line or 40-character window of any top-level `model-of-tom/*.md` page is in this public repository; with no WikiTom it warns in CI and fails when `REQUIRE_WIKITOM` or `WIKITOM_DIR` asks for one | CI `static-boundaries` | 3.4 s | checks |
 | ↳ `check-vocabulary.mjs` | The closed vocabulary's generated block, the graph kinds it is the schema of, the commit key, and no refused word under `convex/`, `app/` or `vqc/` | CI `static-boundaries` | 0.11 s | checks |
 | ↳ `check-session-mirrors.mjs` | The live-status list matches the schema; no second repo list | CI `static-boundaries` | 0.19 s | checks |
 | ↳ `check-auth-boundary.mjs` | No inline `admin`/`tom` role comparison outside the two files that own it | CI `static-boundaries` | 0.10 s | checks |
@@ -168,7 +168,7 @@ not exist: git's configuration (`GIT_CONFIG_GLOBAL`, `XDG_CONFIG_HOME`, with
 run real git, and `WIKITOM_DIR`, so no default WikiTom checkout is found. The
 three `REAL` cases in `shared/__tests__/skills.test.mjs`, which check Tom's own
 model-of-tom, run only when `REAL_WIKITOM_DIR` names a checkout
-(`REAL_WIKITOM_DIR=/root/wikitom pnpm test shared/__tests__/skills.test.mjs`)
+(`REAL_WIKITOM_DIR=/home/jarvis/wikitom pnpm test shared/__tests__/skills.test.mjs`)
 and are skipped otherwise.
 
 ## What is not a test

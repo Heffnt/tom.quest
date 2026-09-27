@@ -272,6 +272,7 @@ export function wikiTomRoot({ env = process.env, platform = process.platform, ex
  * reads it), so requiring it there would fail every pull request. A CI skip is
  * a warning annotation on the run instead of a line in the log.
  */
+// REQUIRE_WIKITOM stays: it is how the box makes this check required, while CI, which has no WikiTom, only warns.
 export function wikiTomRequired(env = process.env) {
   return Boolean(env.REQUIRE_WIKITOM) || Boolean(env.WIKITOM_DIR);
 }
