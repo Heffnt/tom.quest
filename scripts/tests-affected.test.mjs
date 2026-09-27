@@ -86,12 +86,33 @@ describe("tests-affected", () => {
     expect(rows).toEqual([
       { path: "convex/ttsMerge.ts", deleted: false },
       { path: "convex/gone.ts", deleted: true },
+      { path: "scripts/old.mjs", deleted: true },
       { path: "scripts/new.mjs", deleted: false },
       { path: "app/jarvis/page.tsx", deleted: false },
       // Present on disk, so a change; absent, so a deletion.
       { path: "package.json", deleted: false },
       { path: "convex/never-written.ts", deleted: true },
     ]);
+  });
+
+  // A RENAME IS A DELETION OF ITS OLD NAME. Before this, the old path was
+  // dropped and a pure rename of an imported module ran in related mode.
+  it("takes the whole suite when a diff renames or copies a file", () => {
+    for (const status of ["R100", "C075"]) {
+      const rows = changedFiles("base", (args) => {
+        if (args[1] === "--name-status") return `${status}\tscripts/old.mjs\tscripts/new.mjs\n`;
+        return "";
+      });
+      expect(rows).toEqual([
+        { path: "scripts/old.mjs", deleted: true },
+        { path: "scripts/new.mjs", deleted: false },
+      ]);
+      expect(decideMode(rows, { base: "base" })).toEqual({
+        mode: FULL,
+        why: "scripts/old.mjs was deleted, and the graph cannot name what imported it",
+        files: [],
+      });
+    }
   });
 
   it("names the slowest files of a vitest report, in seconds, newest measure first", () => {
