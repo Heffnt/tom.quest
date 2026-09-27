@@ -141,6 +141,36 @@ describe("POST /jarvis/event", () => {
     expect(window.failed.map((row) => row.at)).toEqual([1_700_000_000_000, 1_700_000_180_000]);
     expect(window.recovered.map((row) => row.at)).toEqual([1_700_000_120_000]);
   });
+
+  // witness: the window read took the first 4,000 job-failed rows and then
+  // dropped the repeats, so a few jobs failing all day filled the read and a
+  // new failure after them never reached the digest.
+  it("finds a new failure behind more repeats than the read limit", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 4_001; i++) {
+        await ctx.db.insert("events", {
+          kind: "job-failed",
+          at: 1_000 + i,
+          provenance: { job: `stuck-${i % 3}` },
+          subject: `stuck-${i % 3}`,
+          data: { error: "still down", ...(i < 3 ? {} : { standingSince: 1_000 + (i % 3) }) },
+        });
+      }
+      await ctx.db.insert("events", {
+        kind: "job-failed",
+        at: 10_000,
+        provenance: { job: "poll-gmail" },
+        subject: "poll-gmail",
+        data: { error: "new" },
+      });
+    });
+    const window = await t.run(async (ctx) => {
+      const { failuresInWindow } = await import("./jarvis/jobs");
+      return await failuresInWindow(ctx, 0, 20_000);
+    });
+    expect(window.failed.map((row) => row.subject)).toEqual(["stuck-0", "stuck-1", "stuck-2", "poll-gmail"]);
+  });
 });
 
 describe("the heartbeat", () => {

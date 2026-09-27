@@ -469,8 +469,8 @@ export const RETIRED_RECOMMENDATION_MAP = {
 export type StoredRecommendation =
   | Recommendation
   | keyof typeof RETIRED_RECOMMENDATION_MAP;
-/** The stored form: the four verdict words. convex/schema.ts, the brief pen
- * and POST /tts/code-briefs use this. */
+/** The stored form: the four verdict words. convex/schema.ts and the brief pen
+ * use this. */
 export const RECOMMENDATION = v.union(
   ...RECOMMENDATION_VALUES.map((r) => v.literal(r)),
 );

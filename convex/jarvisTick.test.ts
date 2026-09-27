@@ -17,6 +17,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// The lease `due` writes before it schedules a run; runTask removes it.
+const lease = (t: ReturnType<typeof convexTest>, name: string, at = Date.now()) =>
+  t.run(async (ctx) =>
+    ctx.db.insert("events", {
+      kind: "tick-started",
+      at,
+      provenance: { job: `tick:${name}` },
+      subject: `tick:${name}`,
+      data: { task: name, timeoutMs: 1 },
+    }),
+  );
+
 const outcomes = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) =>
     (await ctx.db.query("events").collect()).filter((row) => row.kind === "job-ok" || row.kind === "job-failed"),
@@ -30,7 +42,7 @@ describe("a tick task's outcome", () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("TTS_ICS_FEEDS", JSON.stringify([{ name: "work", url: "https://calendar.invalid/work.ics" }]));
     vi.stubGlobal("fetch", vi.fn(async () => new Response("gone", { status: 503 })));
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar" })).toEqual({ ok: false });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar", leaseId: await lease(t, "calendar") })).toEqual({ ok: false });
     const rows = await outcomes(t);
     expect(rows.map((row) => row.kind)).toEqual(["job-failed"]);
     expect(rows[0].subject).toBe("tick:calendar");
@@ -41,7 +53,7 @@ describe("a tick task's outcome", () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "t");
     vi.stubGlobal("fetch", vi.fn(async () => new Response("no", { status: 500 })));
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "code-mirror" })).toEqual({ ok: false });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "code-mirror", leaseId: await lease(t, "code-mirror") })).toEqual({ ok: false });
     expect((await outcomes(t)).map((row) => row.kind)).toEqual(["job-failed"]);
   });
 
@@ -49,7 +61,7 @@ describe("a tick task's outcome", () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "t");
     vi.stubGlobal("fetch", vi.fn(async () => new Response("no", { status: 502 })));
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "pull-requests" })).toEqual({ ok: false });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "pull-requests", leaseId: await lease(t, "pull-requests") })).toEqual({ ok: false });
     const rows = await outcomes(t);
     expect(rows.map((row) => row.kind)).toEqual(["job-failed"]);
     expect(String((rows[0].data as { error?: unknown }).error)).toContain("pull requests could not be read (502)");
@@ -58,7 +70,7 @@ describe("a tick task's outcome", () => {
   it("is job-failed with the credential name when the pull-request mirror has no GitHub credential", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "pull-requests" })).toEqual({ ok: false });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "pull-requests", leaseId: await lease(t, "pull-requests") })).toEqual({ ok: false });
     const rows = await outcomes(t);
     expect(rows.map((row) => row.kind)).toEqual(["job-failed"]);
     expect((rows[0].data as { error?: unknown }).error).toBe("observe: GITHUB_MIRROR_TOKEN is not set");
@@ -67,7 +79,7 @@ describe("a tick task's outcome", () => {
   it("is job-ok when the task returns no failure", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("TTS_ICS_FEEDS", "");
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar" })).toEqual({ ok: true });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar", leaseId: await lease(t, "calendar") })).toEqual({ ok: true });
     expect((await outcomes(t)).map((row) => row.kind)).toEqual(["job-ok"]);
   });
 });
@@ -176,6 +188,29 @@ describe("the daily tasks: repeats and eviction", () => {
     }
   });
 
+  // witness: repeats waited only for a calendar refresh started in the same
+  // tick, so one still running from an earlier tick let repeats read the
+  // calendar's rows before they landed and mint a todo it should skip.
+  it("does not start while a calendar refresh from an earlier tick is still in flight", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      expect(await started(t, nyAt("04:30"))).toContain("calendar");
+      // The 4:30 refresh has not finished: its lease stands.
+      expect(await started(t, nyAt("04:31"))).not.toContain("repeats");
+      expect(await started(t, nyAt("04:35"))).not.toContain("repeats");
+      // Past the action limit the lease is dead; that tick restarts the
+      // calendar, so repeats still waits.
+      const retry = await started(t, nyAt("04:30") + 10 * 60_000 + 1);
+      expect(retry).toContain("calendar");
+      expect(retry).not.toContain("repeats");
+      await clean(t, "calendar", nyAt("04:41"));
+      expect(await started(t, nyAt("04:42"))).toContain("repeats");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("mints the day's instances when the task runs after the 4 a.m. hour", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -187,7 +222,7 @@ describe("the daily tasks: repeats and eviction", () => {
         } as never);
       });
       vi.setSystemTime(nyAt("09:15"));
-      expect(await t.action(internal.jarvis.tick.runTask, { name: "repeats" })).toEqual({ ok: true });
+      expect(await t.action(internal.jarvis.tick.runTask, { name: "repeats", leaseId: await lease(t, "repeats") })).toEqual({ ok: true });
       const minted = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
       expect(minted.map((row) => row.statement)).toEqual(["water the plants"]);
     } finally {
@@ -204,7 +239,7 @@ describe("the daily tasks: repeats and eviction", () => {
       expect(await started(t, nyAt("04:10"))).not.toContain("evict");
       expect(await started(t, nyAt("04:15"))).toContain("evict");
       vi.setSystemTime(nyAt("09:00"));
-      expect(await t.action(internal.jarvis.tick.runTask, { name: "evict" })).toEqual({ ok: true });
+      expect(await t.action(internal.jarvis.tick.runTask, { name: "evict", leaseId: await lease(t, "evict") })).toEqual({ ok: true });
       const rows = await t.run(async (ctx) => ({
         ok: (await ctx.db.query("events").collect()).filter((row) => row.kind === "job-ok" && row.subject === "tick:evict"),
         evicted: (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === "agents-evicted"),

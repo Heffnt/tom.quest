@@ -110,26 +110,34 @@ export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise
  * job-failed that opened a condition (not a repeat of a standing one) and
  * every job-recovered that closed one. The digest's read of failures; the
  * Slack stream switches it to this.
+ *
+ * THE REPEATS ARE LEFT OUT BY THE INDEX, before the limit: by_kind_standing_at
+ * reads only the rows with no data.standingSince, so a job failing every two
+ * minutes all day adds nothing to the read and cannot push a new failure
+ * past it.
  */
 export async function failuresInWindow(
   ctx: QueryCtx,
   from: number,
   to: number,
 ): Promise<{ failed: Doc<"events">[]; recovered: Doc<"events">[] }> {
-  const read = async (kind: string) =>
-    await ctx.db
-      .query("events")
-      .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", from).lt("at", to))
-      .order("asc")
-      .take(WINDOW_MAX);
-  const failed = (await read(JOB_FAILED)).filter(
-    (row) => (row.data as Record<string, unknown> | undefined)?.standingSince === undefined,
-  );
-  return { failed, recovered: await read(JOB_RECOVERED) };
+  const failed = await ctx.db
+    .query("events")
+    .withIndex("by_kind_standing_at", (q) =>
+      q.eq("kind", JOB_FAILED).eq("data.standingSince", undefined).gte("at", from).lt("at", to),
+    )
+    .order("asc")
+    .take(WINDOW_MAX);
+  const recovered = await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", JOB_RECOVERED).gte("at", from).lt("at", to))
+    .order("asc")
+    .take(WINDOW_MAX);
+  return { failed, recovered };
 }
 
-/** The most rows of one kind a window reads: a failing job posts every tick,
- *  and a day of a two-minute job's repeats is 720 rows. */
+/** The most rows of one kind a window reads: conditions opened, or closed,
+ *  in one window, which is far fewer than this. */
 const WINDOW_MAX = 4000;
 
 /**

@@ -34,7 +34,7 @@ import type { MutationCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { logEvent } from "../tts";
-import { recordSlackSent } from "../ttsSlack";
+import { needsYouInThread, recordSlackSent } from "../ttsSlack";
 import {
   DAY_MS,
   TTS_DIGEST_NY_HOUR,
@@ -225,17 +225,13 @@ export const pendingNeedsYou = internalQuery({
       opened.push(row);
       if (opened.length >= PENDING_MAX) break;
     }
-    const posted = thread === null
-      ? []
-      : await ctx.db
-        .query("events")
-        .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_POSTED).gte("at", from))
-        .take(500);
+    // The next number after the objection lines and the highest reply
+    // number already in this thread (every row of it, however many).
     const objectionLines = (newest?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
     const inThread = thread === null
-      ? 0
-      : posted.filter((row) => (row.data as { threadTs?: unknown } | undefined)?.threadTs === thread.ts).length;
-    const first = (Array.isArray(objectionLines) ? objectionLines.length : 0) + inThread + 1;
+      ? []
+      : (await needsYouInThread(ctx, { channel: thread.channel, threadTs: thread.ts })).map((item) => item.n);
+    const first = Math.max(Array.isArray(objectionLines) ? objectionLines.length : 0, ...inThread) + 1;
     return {
       thread,
       searchThreads: digests.flatMap((row) => {

@@ -265,6 +265,51 @@ describe("needs-you, a numbered reply under the digest", () => {
     expect(await reply(t, "Ev4", "7 done", "1758883000.000100")).toEqual({ outcome: "tom-note", subject: { kind: "today", day: DAY } });
   });
 
+  // witness: the next number counted only the first 500 posted replies of
+  // three days, and a reply was routed from the first 200 rows of the thread
+  // (the digest itself among them), so past those a number was handed out
+  // twice and a reply to a later one reached nothing.
+  it("numbers after the highest reply in the thread and routes a reply to it, however many were posted", async () => {
+    const t = setup(MORNING);
+    const answer = await (await post(t, "/jarvis/digest", {})).json();
+    await recordSent(t, answer, THREAD_TS);
+    const posted = 505;
+    await t.run(async (ctx) => {
+      for (let n = 1; n <= posted; n += 1) {
+        const key = `job-${n}`;
+        const subject = { kind: "job" as const, id: key };
+        await ctx.db.insert("events", {
+          kind: "needs-you-posted",
+          at: MORNING - 3600_000 + n,
+          provenance: { job: "write-slack" },
+          subject: key,
+          data: { key, job: key, channel: CHANNEL, threadTs: THREAD_TS, ts: `1758882601.${n}`, n },
+          text: `${n} · ${key}`,
+        });
+        await ctx.db.insert("dtsEvents", {
+          at: MORNING - 3600_000 + n,
+          kind: "slack-sent",
+          key: `${CHANNEL}:${THREAD_TS}`,
+          data: { channel: CHANNEL, ts: `1758882601.${n}`, threadTs: THREAD_TS, subject, text: `${n} · ${key}` },
+        });
+      }
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING - 60_000,
+        provenance: {},
+        subject: "late",
+        data: { key: "late", job: "late-job" },
+        text: "late",
+      });
+    });
+    const pending = (await get(t, "/jarvis/digest/needs-you")).pending;
+    expect(pending.map((p: { key: string; n: number }) => [p.key, p.n])).toEqual([["late", posted + 1]]);
+    expect(await reply(t, "Ev1", `${posted} seen`, "1758882700.000100")).toEqual({
+      outcome: "tom-note",
+      subject: { kind: "job", id: `job-${posted}` },
+    });
+  }, 60_000);
+
   it("a thread with no needs-you keeps a reply as a note on the day", async () => {
     const t = setup(MORNING);
     const answer = await (await post(t, "/jarvis/digest", {})).json();

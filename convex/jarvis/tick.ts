@@ -24,12 +24,13 @@
 //                   (the old cron's minute), before the 5 a.m. digest reads
 //                   them: due from 4:30, at any hour after, until it has run
 //                   clean that New York day, a
-//                   failed run retried at the next tick, and never in the
-//                   same tick that starts the calendar refresh, whose rows its
-//                   skipWhenCalendarHas reads (it runs the minute after).
+//                   failed run retried at the next tick, and never while a
+//                   calendar refresh is started or in flight, since its
+//                   skipWhenCalendarHas reads the calendar's rows (it runs at
+//                   the first tick after the refresh has finished).
 
 import { v } from "convex/values";
-import { httpAction, internalAction, internalMutation } from "../_generated/server";
+import { httpAction, internalAction, internalMutation, type QueryCtx } from "../_generated/server";
 import type { FunctionReference } from "convex/server";
 import { internal } from "../_generated/api";
 import { jarvisAuth, jsonResponse } from "./auth";
@@ -51,7 +52,7 @@ type Task = {
   timeoutMs: number;
   run:
     | { action: FunctionReference<"action", "internal", Record<string, unknown>> }
-    | { mutation: FunctionReference<"mutation", "internal", Record<string, unknown>>; args?: Record<string, unknown> };
+    | { mutation: FunctionReference<"mutation", "internal", Record<string, unknown>> };
 };
 
 /** The tasks by name. A cadence is a floor: the box ticks every minute, so a
@@ -91,6 +92,37 @@ function failuresOf(result: unknown): string[] {
   return Array.isArray(failures) ? failures.filter((one): one is string => typeof one === "string") : [];
 }
 
+/** One task's newest outcome and newest lease, and whether that lease is a
+ *  run still in flight: started after the newest outcome and younger than the
+ *  task's timeout (a queued run older than that cannot still be alive). */
+async function taskState(ctx: QueryCtx, name: string, now: number) {
+  const job = jobOf(name);
+  const ok = await ctx.db
+    .query("events")
+    .withIndex("by_kind_job_at", (q) => q.eq("kind", JOB_OK).eq("provenance.job", job))
+    .order("desc")
+    .first();
+  const failed = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_FAILED).eq("subject", job))
+    .order("desc")
+    .first();
+  const finished = [ok, failed]
+    .filter((row): row is NonNullable<typeof row> => row !== null)
+    .sort((left, right) => right.at - left.at || right._creationTime - left._creationTime)[0];
+  const queued = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", TICK_STARTED).eq("subject", job))
+    .order("desc")
+    .first();
+  const inFlight = queued !== null && now - queued.at <= TICK_TASKS[name].timeoutMs && (
+    finished === undefined ||
+    queued.at > finished.at ||
+    (queued.at === finished.at && queued._creationTime > finished._creationTime)
+  );
+  return { ok, failed, finished, inFlight };
+}
+
 /** POST /jarvis/tick's mutation: start every due task; answer their names. */
 export const due = internalMutation({
   args: {},
@@ -99,30 +131,8 @@ export const due = internalMutation({
     const started: string[] = [];
     for (const [name, task] of Object.entries(TICK_TASKS)) {
       const job = jobOf(name);
-      const ok = await ctx.db
-        .query("events")
-        .withIndex("by_kind_job_at", (q) => q.eq("kind", JOB_OK).eq("provenance.job", job))
-        .order("desc")
-        .first();
-      const failed = await ctx.db
-        .query("events")
-        .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_FAILED).eq("subject", job))
-        .order("desc")
-        .first();
-      const finished = [ok, failed]
-        .filter((row): row is NonNullable<typeof row> => row !== null)
-        .sort((left, right) => right.at - left.at || right._creationTime - left._creationTime)[0];
-      const queued = await ctx.db
-        .query("events")
-        .withIndex("by_kind_subject_at", (q) => q.eq("kind", TICK_STARTED).eq("subject", job))
-        .order("desc")
-        .first();
-      const inFlight = queued !== null && (
-        finished === undefined ||
-        queued.at > finished.at ||
-        (queued.at === finished.at && queued._creationTime > finished._creationTime)
-      );
-      if (inFlight && now - queued.at <= task.timeoutMs) continue;
+      const { ok, failed, finished, inFlight } = await taskState(ctx, name, now);
+      if (inFlight) continue;
       const last = finished?.at ?? 0;
       if ("everyMs" in task.when) {
         if (now - last < task.when.everyMs - EARLY_MS) continue;
@@ -130,13 +140,15 @@ export const due = internalMutation({
         // Once a day: from its New York time, at any hour after, until a
         // clean run that New York day (a box down past the hour still runs
         // it when it comes back); a failed run is retried at the next tick;
-        // and not in the tick that starts the task it reads after.
+        // and not while the task it reads after is starting in this tick or
+        // still running from an earlier one.
         const { hour, minute } = task.when.dailyAt;
         const [nowHour, nowMinute] = nyHhmm(now).split(":").map(Number);
         if (nowHour * 60 + nowMinute < hour * 60 + minute) continue;
         if (ok !== null && nyCalendarDayKey(ok.at) === nyCalendarDayKey(now)) continue;
         if (failed !== null && now - failed.at < MINUTE - EARLY_MS) continue;
-        if (task.when.after !== undefined && started.includes(task.when.after)) continue;
+        const after = task.when.after;
+        if (after !== undefined && (started.includes(after) || (await taskState(ctx, after, now)).inFlight)) continue;
       }
       const leaseId = await insertEvent(ctx, {
         kind: TICK_STARTED,
@@ -158,7 +170,7 @@ export const due = internalMutation({
 export const complete = internalMutation({
   args: {
     name: v.string(),
-    leaseId: v.optional(v.id("events")),
+    leaseId: v.id("events"),
     error: v.optional(v.string()),
   },
   handler: async (ctx, { name, leaseId, error }): Promise<null> => {
@@ -177,17 +189,15 @@ export const complete = internalMutation({
           data: { job, error },
           text: `The ${name} task failed: ${error}`,
         });
-    if (leaseId !== undefined) {
-      const lease = await ctx.db.get(leaseId);
-      if (lease?.kind === TICK_STARTED && lease.subject === job) await ctx.db.delete(leaseId);
-    }
+    const lease = await ctx.db.get(leaseId);
+    if (lease?.kind === TICK_STARTED && lease.subject === job) await ctx.db.delete(leaseId);
     return null;
   },
 });
 
 /** One task, and the row that says how it went. */
 export const runTask = internalAction({
-  args: { name: v.string(), leaseId: v.optional(v.id("events")) },
+  args: { name: v.string(), leaseId: v.id("events") },
   handler: async (ctx, { name, leaseId }): Promise<{ ok: boolean }> => {
     const task = TICK_TASKS[name];
     if (task === undefined) throw new Error(`no tick task named ${name}`);
@@ -195,7 +205,7 @@ export const runTask = internalAction({
     try {
       const result: unknown = "action" in task.run
         ? await ctx.runAction(task.run.action, {})
-        : await ctx.runMutation(task.run.mutation, task.run.args ?? {});
+        : await ctx.runMutation(task.run.mutation, {});
       const failures = failuresOf(result);
       if (failures.length > 0) error = failures.join("; ");
     } catch (e) {
@@ -203,7 +213,7 @@ export const runTask = internalAction({
     }
     const completed: null = await ctx.runMutation(internal.jarvis.tick.complete, {
       name,
-      ...(leaseId === undefined ? {} : { leaseId }),
+      leaseId,
       ...(error === null ? {} : { error }),
     });
     void completed;

@@ -74,12 +74,12 @@ export default function IntentClient() {
   const settle = useMutation(api.jarvis.intent.settle);
 
   // The /vocabulary address redirects to /intent#vocabulary (next.config.ts):
-  // the fragment picks the view once, on arrival, and moves nothing. It stays
+  // the fragment picks that view once, on arrival, and moves nothing. It stays
   // while Slack messages and old links name /vocabulary; the redirect alone
-  // would land them on the default view.
+  // would land them on the default view. No link names another view's
+  // fragment, so no other one is read.
   useEffect(() => {
-    const wanted = window.location.hash.slice(1);
-    if ((INTENT_VIEWS as string[]).includes(wanted)) setView(wanted as IntentView);
+    if (window.location.hash === "#vocabulary") setView("vocabulary");
   }, [setView]);
 
   const lines = useMemo(() => answer?.lines ?? [], [answer]);

@@ -41,7 +41,11 @@ export default function Decisions({
   onSettle: (args: { subject: string; verdict: Verdict; sentence?: string }) => Promise<unknown>;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
-  const disagreementDecisions = decisions.filter((decision) => !decision.refused && decision.decision !== null);
+  // Only a decision the delegate took stands in his name: a refused or
+  // unanswered one took nothing, so it is no disagreement candidate.
+  const disagreementDecisions = decisions.filter(
+    (decision): decision is Decision & { decision: string } => !decision.refused && decision.decision !== null,
+  );
   const failing = evalItems.filter((item) => item.pass === false);
   const scored = evalItems.filter((item) => item.pass !== null).length;
   const skipped = evalItems.length - scored;
@@ -62,9 +66,7 @@ export default function Decisions({
           {disagreementDecisions.map((decision) => (
             <li key={decision.id} className="border-b border-border/50 px-2 py-2">
               <p className="text-[13px] leading-snug text-text">{decision.question}</p>
-              <p className="mt-0.5 text-[13px] leading-snug text-accent">
-                {decision.refused ? `refused: ${decision.refusedBecause ?? "no reason given"}` : decision.decision}
-              </p>
+              <p className="mt-0.5 text-[13px] leading-snug text-accent">{decision.decision}</p>
               {decision.reason !== null && <p className="mt-0.5 text-[12px] leading-snug text-text-muted">{decision.reason}</p>}
               {decision.wouldChange !== null && (
                 <p className="mt-0.5 text-[11px] leading-snug text-text-faint">would change: {decision.wouldChange}</p>
@@ -79,11 +81,9 @@ export default function Decisions({
               <Settle
                 subject={`decision:${decision.askId}`}
                 settled={decision.settled}
-                // A refused or unanswered decision took nothing in his name, so
-                // there is nothing to accept; he can only give his sentence.
-                accept={decision.refused || decision.decision === null ? null : "accept"}
+                accept="accept"
                 object="object"
-                statement={decision.decision ?? decision.question}
+                statement={decision.decision}
                 onAccept={(subject) => onSettle({ subject, verdict: "approve" })}
                 onObject={(subject, statement) =>
                   setPending({ subject, statement, action: "object", confirm: "record objection" })}
@@ -233,8 +233,8 @@ function Settle({
 }: {
   subject: string;
   settled: { at: number; verdict: Verdict; sentence: string | null } | null;
-  /** The accept button's word; null draws no accept button. */
-  accept: string | null;
+  /** The accept button's word. */
+  accept: string;
   object: string;
   statement: string;
   onAccept: (subject: string) => Promise<unknown>;
@@ -254,24 +254,22 @@ function Settle({
   return (
     <div className="mt-1">
       <div className="flex items-center gap-1.5">
-        {accept !== null && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              setFailed(null);
-              // A refusal is shown under the controls: he must be able to tell
-              // that nothing was recorded.
-              void onAccept(subject)
-                .catch((error: unknown) => setFailed(errMessage(error)))
-                .finally(() => setBusy(false));
-            }}
-            className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
-          >
-            {accept}
-          </button>
-        )}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            setFailed(null);
+            // A refusal is shown under the controls: he must be able to tell
+            // that nothing was recorded.
+            void onAccept(subject)
+              .catch((error: unknown) => setFailed(errMessage(error)))
+              .finally(() => setBusy(false));
+          }}
+          className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
+        >
+          {accept}
+        </button>
         <button
           type="button"
           onClick={() => onObject(subject, statement)}
@@ -280,16 +278,10 @@ function Settle({
           {object}
         </button>
         <Info
-          call={
-            accept === null
-              ? `jarvis/intent.settle({ subject: "${subject}", verdict: "revise", sentence })`
-              : `jarvis/intent.settle({ subject: "${subject}", verdict: "approve" | "revise", sentence? })`
-          }
+          call={`jarvis/intent.settle({ subject: "${subject}", verdict: "approve" | "revise", sentence? })`}
           side="below"
         >
-          {accept === null
-            ? `"${object}" takes his sentence and records it as an event of the record with his name on it; when a decision was about a todo, writes his revise ruling on that todo too. There is nothing to accept here: nothing was taken in his name.`
-            : `"${accept}" records that this stands, as an event of the record with his name on it, and "${object}" takes his sentence first and records it; when a decision was about a todo, each writes his ruling on that todo too (approve, or revise with his sentence).`}
+          {`"${accept}" records that this stands, as an event of the record with his name on it, and "${object}" takes his sentence first and records it; when a decision was about a todo, each writes his ruling on that todo too (approve, or revise with his sentence).`}
         </Info>
       </div>
       {/* Below the controls, not in their row: the row stays the controls. */}

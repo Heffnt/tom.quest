@@ -22,7 +22,7 @@ import {
   type RunMark,
   type WindowData,
 } from "./lib";
-import { NODES } from "./map-data";
+import { EDGES, NODES } from "./map-data";
 
 const RUN: RunMark = {
   runId: "claude:box:abcdefgh",
@@ -287,10 +287,11 @@ describe("the map's shape", () => {
     expect(ids.size).toBe(NODES.length);
   });
 
-  it("shows no generic runners tally on Turing", () => {
-    const turing = NODES.find((node) => node.id === "turing");
-    expect(turing).toBeDefined();
-    expect("tally" in turing!).toBe(false);
+  // witness: a second /turing node stood beside "the models", which already
+  // opens /turing, with no edge to anything.
+  it("connects every node by at least one edge", () => {
+    const ended = new Set(EDGES.flatMap((edge) => [edge.from, edge.to]));
+    expect(NODES.filter((node) => !ended.has(node.id)).map((node) => node.id)).toEqual([]);
   });
 });
 

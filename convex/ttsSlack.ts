@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { applyStatusChange, logEvent } from "./tts";
@@ -692,16 +692,22 @@ type NeedsYouItem = { n: number; subject: SlackSubject; answeredKey: string };
 
 /** The needs-you replies posted in this digest's thread, each with the number
  *  it was posted with (convex/jarvis/outbox.ts needsYouNumber) and its
- *  subject: the todo, or the producer's job. */
-async function needsYouInThread(
-  ctx: MutationCtx,
+ *  subject: the todo, or the producer's job. Also the numbering's read
+ *  (convex/jarvis/digest.ts pendingNeedsYou goes on from the highest).
+ *
+ *  EVERY ROW OF THE THREAD, not a first page: a reply numbered past a page
+ *  would be unroutable and its number handed out again. The read is one
+ *  thread's slack-sent rows on by_kind_key, the digest and what was posted
+ *  under it that day. */
+export async function needsYouInThread(
+  ctx: QueryCtx,
   at: { channel: string; threadTs: string },
 ): Promise<NeedsYouItem[]> {
   const key = slackThreadKey(at.channel, at.threadTs);
   const rows = await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_key", (q) => q.eq("kind", "slack-sent").eq("key", key))
-    .take(200);
+    .collect();
   const items: NeedsYouItem[] = [];
   for (const row of rows) {
     const d = (row.data ?? {}) as { threadTs?: unknown; subject?: SlackSubject; text?: unknown };

@@ -176,7 +176,7 @@ function Box({
   onFocus: (next: Lane | null) => void;
   waiting: { waiting: number; oldestAt: number | null } | null;
 }) {
-  const tally = node.tally === undefined ? null : tallyFor(node.tally, data, now);
+  const tally = tallyFor(node.tally, data, now);
   const selected = node.filters !== undefined && focus === node.filters;
   const y = node.y - HALF_H;
   const action = nodeAction(node);
@@ -187,22 +187,18 @@ function Box({
       <Outline node={node} selected={selected} />
       <text
         x={node.x}
-        y={y + (tally === null ? 36 : 20)}
+        y={y + 20}
         textAnchor="middle"
         className={selected ? "fill-accent text-[13px]" : "fill-text text-[13px]"}
       >
         {node.label}
       </text>
-      {tally !== null && (
-        <>
-          <text x={node.x} y={y + 40} textAnchor="middle" className="fill-text-muted text-[13px] font-mono">
-            {`${tally.count} ${node.unit}`}
-          </text>
-          <text x={node.x} y={y + 55} textAnchor="middle" className="fill-text-faint text-[10px] font-mono">
-            {tally.lastAt === null ? "—" : `${ago(tally.lastAt, now)} ago`}
-          </text>
-        </>
-      )}
+      <text x={node.x} y={y + 40} textAnchor="middle" className="fill-text-muted text-[13px] font-mono">
+        {`${tally.count} ${node.unit}`}
+      </text>
+      <text x={node.x} y={y + 55} textAnchor="middle" className="fill-text-faint text-[10px] font-mono">
+        {tally.lastAt === null ? "—" : `${ago(tally.lastAt, now)} ago`}
+      </text>
       {/* Nothing waiting draws nothing. The query answers the count because
           the same read carries the oldest thread's age, which the badge says
           when there is one; a badge reading nought is a thing to read that

@@ -102,6 +102,12 @@ export default defineSchema({
     // and the digest's read of one condition, without a scan of every job's
     // failures (convex/jarvis/jobs.ts).
     .index("by_kind_subject_at", ["kind", "subject", "at"])
+    // One kind's rows that are not a standing condition's repeat (a
+    // job-failed posted while its condition stands carries
+    // data.standingSince): the digest's read of the failures that opened a
+    // condition, which a window of one job's repeats must not crowd out
+    // (convex/jarvis/jobs.ts failuresInWindow).
+    .index("by_kind_standing_at", ["kind", "data.standingSince", "at"])
     // One kind's rows by when the record wrote them (_creationTime, which ends
     // every index): the digest's read of post-history-cut box changes recorded
     // in its window, however long after they happened (convex/boxChanges.ts).
