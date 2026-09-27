@@ -1296,7 +1296,12 @@ export default defineSchema({
     // (convex/ttsDigest.ts) read here instead of taking N
     // rows off by_at and filtering: past N rows a by_at read silently answers
     // wrong.
-    .index("by_kind_at", ["kind", "at"]),
+    .index("by_kind_at", ["kind", "at"])
+    // One delegate caller's asks in a window (convex/ttsAsk.ts callerAsks):
+    // an ask row names its caller as data.sessionId or data.job, the other
+    // null, so the cap reads only that caller's rows, not every caller's day.
+    .index("by_kind_session_at", ["kind", "data.sessionId", "at"])
+    .index("by_kind_job_at", ["kind", "data.job", "at"]),
 
   // Read-only mirror of code todos from each repo's vqc/todos.yaml (link by
   // id, never copy — the repo stays the system of record; acting on one means
