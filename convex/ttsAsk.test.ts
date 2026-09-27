@@ -288,6 +288,8 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect(contradicts.status).toBe(400);
     expect((await contradicts.json()).error).toContain("already recorded for a different ask");
     expect((await post(t, body({ job: "poll-canvas" }))).status).toBe(400);
+    // A todo id that names no todo is not "no todo".
+    expect((await post(t, body({ job: "poll-gmail", todoId: "no-such-todo" }))).status).toBe(400);
     expect(await decisions()).toEqual([]);
     // The same ask again: its decision row, built from the ask as recorded,
     // whatever else the retry's body carries.

@@ -183,8 +183,11 @@ export const internalRecordAsk = internalMutation({
       // A RETRY IS THE SAME ASK. One that names another question, decision,
       // caller or todo under a recorded askId is refused: the recorded ask
       // stands, and nothing is written from the new body.
+      // A todo id that names no todo is itself a contradiction: it must not
+      // resolve to "no todo" and so match an ask recorded without one.
       const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
       if (
+        (args.todoId !== undefined && todoId === null) ||
         args.question !== stored.question ||
         args.decision !== stored.decision ||
         (args.sessionId ?? null) !== (stored.sessionId ?? null) ||
