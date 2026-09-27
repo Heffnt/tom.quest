@@ -91,9 +91,6 @@ export default defineSchema({
     .index("by_at", ["at"])
     .index("by_kind_at", ["kind", "at"])
     .index("by_subject_at", ["subject", "at"])
-    // One subject's rows of one kind, newest first: GET /jarvis/events with
-    // both filters reads exactly the rows it answers.
-    .index("by_subject_kind_at", ["subject", "kind", "at"])
     // One job's rows of one kind, newest first: the silence alarm's read of
     // its last `job-ok`. Named separately from by_kind_at because a scan of
     // every job's heartbeats to find one job's is what an index is for.
@@ -115,6 +112,10 @@ export default defineSchema({
     // condition, which a window of one job's repeats must not crowd out
     // (convex/jarvis/jobs.ts failuresInWindow).
     .index("by_kind_standing_at", ["kind", "data.standingSince", "at"])
+    // One kind's row by the writer's own id for it: the one lookup that finds
+    // a retry of a kind in shared/jarvis-events.mjs REPEATS_BY_DATA_ID
+    // (convex/jarvis/events.ts recordEvent).
+    .index("by_kind_data_id", ["kind", "data.id"])
     // One kind's rows by when the record wrote them (_creationTime, which ends
     // every index): the digest's read of post-history-cut box changes recorded
     // in its window, however long after they happened (convex/boxChanges.ts).

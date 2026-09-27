@@ -1,7 +1,7 @@
-import { v } from "convex/values";
+import { v, type ObjectType } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import type { QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
@@ -124,6 +124,32 @@ function capFor(args: { sessionId?: string }): number {
 /** The reason a capped ask carries: the caller took its own fallback. */
 export const CAP_REFUSAL = "cap: the delegate ask cap for this caller is spent, so the agent took its own fallback";
 
+/** The decision row (events kind "decision", convex/jarvis/intent.ts) for one
+ *  answered ask; only internalRecordAsk calls it. */
+async function insertDecision(ctx: MutationCtx, args: ObjectType<typeof ASK_ARGS>): Promise<void> {
+  const { restedOn, wouldChange, nearMissed } = args;
+  await insertEvent(ctx, {
+    kind: "decision",
+    provenance: args.sessionId !== undefined ? { session: args.sessionId } : { job: args.job },
+    subject: args.askId,
+    data: {
+      question: args.question,
+      options: args.options,
+      decision: args.decision,
+      reason: args.reason,
+      restedOn: restedOn ?? [],
+      wouldChange: wouldChange ?? null,
+      refused: args.refused,
+      refusedBecause: args.refusedBecause,
+      caller: args.sessionId !== undefined ? `session:${args.sessionId}` : `job:${args.job}`,
+      askId: args.askId,
+      ...(args.todoId === undefined ? {} : { todoId: args.todoId }),
+      model: args.model,
+      ...(nearMissed === undefined ? {} : { nearMissed }),
+    },
+  });
+}
+
 /** Record the completed box-side delegate call. This does not call a model:
  * Convex cannot reach the box, and the caller is already there. */
 export const internalRecordAsk = internalMutation({
@@ -133,7 +159,22 @@ export const internalRecordAsk = internalMutation({
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", args.askId))
       .first();
-    if (existing) return { id: existing._id, existing: true, attended: false, capped: false };
+    if (existing) {
+      // A RETRY OF A RECORDED ASK still gets its decision row: an ask
+      // recorded before this mutation wrote the row had it posted separately,
+      // a post the generic routes now refuse, so the retry is its one way in.
+      // One row per ask: none is written when one already stands.
+      const stored = (existing.data ?? {}) as { decision?: unknown; attended?: unknown; refusedBecause?: unknown };
+      const took = stored.decision !== null && stored.decision !== undefined && stored.attended !== true && stored.refusedBecause !== CAP_REFUSAL;
+      if (took && args.decision !== null) {
+        const written = await ctx.db
+          .query("events")
+          .withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", args.askId))
+          .first();
+        if (written === null) await insertDecision(ctx, args);
+      }
+      return { id: existing._id, existing: true, attended: false, capped: false };
+    }
 
     const todoId = args.todoId === undefined ? undefined : await oldId(ctx, "todos", args.todoId);
     if (args.todoId !== undefined && todoId === null) throw new Error(`Unknown todo id: ${args.todoId}`);
@@ -162,7 +203,9 @@ export const internalRecordAsk = internalMutation({
       : capped
         ? CAP_REFUSAL
         : args.refusedBecause;
-    const { restedOn, wouldChange, nearMissed, ...ask } = args;
+    // The dts row keeps the ask; what only the decision row carries stays off it.
+    const ask: Record<string, unknown> = { ...args };
+    for (const field of ["restedOn", "wouldChange", "nearMissed"]) delete ask[field];
     const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
       ...ask,
       sessionId: args.sessionId ?? null,
@@ -177,28 +220,7 @@ export const internalRecordAsk = internalMutation({
     // included, written here and nowhere else, in the ask's own transaction,
     // so a decision row exists only for an ask that passed the attended check
     // and the cap. Silence, attended and capped asks took nothing in his name.
-    if (args.decision !== null && !attended && !capped) {
-      await insertEvent(ctx, {
-        kind: "decision",
-        provenance: args.sessionId !== undefined ? { session: args.sessionId } : { job: args.job },
-        subject: args.askId,
-        data: {
-          question: args.question,
-          options: args.options,
-          decision: args.decision,
-          reason: args.reason,
-          restedOn: restedOn ?? [],
-          wouldChange: wouldChange ?? null,
-          refused: args.refused,
-          refusedBecause: args.refusedBecause,
-          caller: args.sessionId !== undefined ? `session:${args.sessionId}` : `job:${args.job}`,
-          askId: args.askId,
-          ...(args.todoId === undefined ? {} : { todoId: args.todoId }),
-          model: args.model,
-          ...(nearMissed === undefined ? {} : { nearMissed }),
-        },
-      });
-    }
+    if (args.decision !== null && !attended && !capped) await insertDecision(ctx, args);
 
     // The digest's objection list reads this delegate-decision row itself
     // (convex/ttsDigest.ts); there is no live line (one output channel).

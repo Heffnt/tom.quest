@@ -271,6 +271,34 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect((await post(t, body({ job: "poll-gmail", askId: "eeeeeeee", restedOn: "ruling:abc" }))).status).toBe(400);
   });
 
+  it("a retry of an ask recorded before the decision row was written here writes it, once", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const decisions = () =>
+      t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect());
+    // The ask row as the old mutation left it: no decision row beside it.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(), kind: DELEGATE_DECISION, key: "3f9c1a22",
+        data: { ...body({ job: "poll-gmail" }), sessionId: null, todoId: null, attended: false },
+      }),
+    );
+    expect((await (await post(t, body({ job: "poll-gmail", restedOn: ["ruling:abc"] }))).json()).existing).toBe(true);
+    await post(t, body({ job: "poll-gmail" }));
+    expect(await decisions()).toEqual([
+      expect.objectContaining({ subject: "3f9c1a22", data: expect.objectContaining({ restedOn: ["ruling:abc"] }) }),
+    ]);
+    // A capped ask took nothing in his name: its retry writes no decision.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(), kind: DELEGATE_DECISION, key: "abababab",
+        data: { ...body({ job: "poll-gmail", askId: "abababab" }), refused: true, refusedBecause: CAP_REFUSAL, attended: false },
+      }),
+    );
+    await post(t, body({ job: "poll-gmail", askId: "abababab" }));
+    expect(await decisions()).toHaveLength(1);
+  });
+
   it("refuses an unauthenticated caller", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });

@@ -85,6 +85,21 @@ describe("a work-queue outcome on its todo", () => {
     expect(rows.filter((r) => r.kind === "session-outcome").map((r) => r._id)).toEqual([first.id, next.id]);
   });
 
+  it("finds a retry by its id behind many earlier outcomes on the same todo", async () => {
+    vi.stubEnv("JARVIS_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const { plain } = await seed(t);
+    const at = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 5000; i += 1) {
+        await ctx.db.insert("events", { kind: "session-outcome", at: at - 10_000 + i, provenance: {}, subject: plain.todo, data: { id: `work-queue:${plain.todo}:r0:${i}` } });
+      }
+    });
+    const sent = { ...outcome(plain.todo, at), data: { ...outcome(plain.todo, 0).data, id: `work-queue:${plain.todo}:r1:${at}` } };
+    const first = await (await post(t, sent)).json();
+    expect(await (await post(t, sent)).json()).toEqual({ ok: true, id: first.id, duplicate: true });
+  });
+
   it("is taken with the todo as subject in either form, kept under the plain id; any other subject is refused", async () => {
     vi.stubEnv("JARVIS_KEY", KEY);
     const t = convexTest({ schema, modules });

@@ -65,22 +65,18 @@ export async function recordEvent(
   }
   // A RETRY IS NOT A SECOND FACT. A kind whose writer re-posts with a stable
   // data.id (shared/jarvis-events.mjs REPEATS_BY_DATA_ID) is recorded once:
-  // a row of the kind with the same subject and data.id already stands for
-  // it, and the caller is answered with that row's id. A box change's id is
-  // also its subject, so its lookup is one point read.
+  // a row of the kind with the same data.id already stands for it (one point
+  // read on events.by_kind_data_id), and the caller is answered with that
+  // row's id. A box change with an id is filed under that id as its subject.
   const repeatId = (input.data as { id?: unknown } | undefined)?.id;
   if ((REPEATS_BY_DATA_ID as readonly string[]).includes(input.kind) && typeof repeatId === "string" && repeatId !== "") {
-    if (input.kind === BOX_CHANGE) input = { ...input, subject: boxChangeSubject(repeatId) };
-    const subject = input.subject;
-    if (subject !== undefined) {
-      for await (const earlier of ctx.db
-        .query("events")
-        .withIndex("by_subject_kind_at", (q) => q.eq("subject", subject).eq("kind", input.kind))) {
-        if ((earlier.data as { id?: unknown } | undefined)?.id === repeatId) {
-          return { id: earlier._id, result: { duplicate: true } };
-        }
-      }
-    }
+    const kind = input.kind;
+    const earlier = await ctx.db
+      .query("events")
+      .withIndex("by_kind_data_id", (q) => q.eq("kind", kind).eq("data.id", repeatId))
+      .first();
+    if (earlier !== null) return { id: earlier._id, result: { duplicate: true } };
+    if (kind === BOX_CHANGE) input = { ...input, subject: boxChangeSubject(repeatId) };
   }
   const id = await insertEvent(ctx, input);
   const hook = AFTER_RECORD[input.kind];
@@ -115,7 +111,7 @@ async function listEvents(
   if (subject !== undefined && kind !== undefined) {
     return await ctx.db
       .query("events")
-      .withIndex("by_subject_kind_at", (q) => q.eq("subject", subject).eq("kind", kind).gte("at", from))
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", kind).eq("subject", subject).gte("at", from))
       .order("desc")
       .take(n);
   }
