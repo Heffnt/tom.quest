@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BOX_WIKITOM_DIR,
@@ -10,6 +14,7 @@ import {
   checkPrivatePaths,
   privatePathFindings,
   wikiTomCategoryLines,
+  wikiTomRequired,
   wikiTomRoot,
 } from "./check-private-paths.mjs";
 
@@ -43,7 +48,7 @@ describe("private path guardrail", () => {
       expect(options.encoding).toBe("utf8");
       return "evals/triggers/skill-know-health-and-food.json\0README.md\0";
     };
-    expect(checkPrivatePaths(run, { root: null })).toEqual([
+    expect(checkPrivatePaths(run, { root: null, env: {} })).toEqual([
       { file: "evals/triggers/skill-know-health-and-food.json", rule: "private know-area trigger" },
     ]);
   });
@@ -155,6 +160,8 @@ describe("private path guardrail", () => {
     }).map(({ file }) => file)).toEqual(["in-a-comment.mjs", "in-a-string.mjs", "indented.md", "whole.md"]);
   });
 
+  const onePage = () => [{ name: "agent-rules.md", isFile: () => true }];
+
   it("cuts each long line into windows and reads nothing when the page is absent", () => {
     const page = [
       "# Agent rules",
@@ -162,7 +169,7 @@ describe("private path guardrail", () => {
       "- short one.",
       OPERATE[0],
     ].join("\n");
-    const windows = operateWindows("C:/vault", { exists: () => true, readFile: () => page });
+    const windows = operateWindows("C:/vault", { exists: () => true, readdir: onePage, readFile: () => page });
     // Only the long line contributes, and every window is exactly the floor.
     for (const w of windows) expect(w.length).toBe(OPERATE_LINE_MIN);
     expect(windows).toContain(OPERATE[0].slice(0, OPERATE_LINE_MIN));
@@ -171,7 +178,7 @@ describe("private path guardrail", () => {
     expect(windows.length).toBeLessThanOrEqual(
       Math.ceil((OPERATE[0].length - OPERATE_LINE_MIN) / OPERATE_WINDOW_STEP) + 2,
     );
-    expect(operateWindows("C:/vault", { exists: () => false, readFile: () => page })).toBeNull();
+    expect(operateWindows("C:/vault", { exists: () => false, readdir: onePage, readFile: () => page })).toBeNull();
   });
 
   // THE CASE THE WHOLE-LINE VERSION MISSED, which is why this is a window and
@@ -180,7 +187,7 @@ describe("private path guardrail", () => {
   // across six files that the first version reported as clean.
   it("catches a long fragment of a line, and still catches the whole line", () => {
     const page = [OPERATE[0], OPERATE[1]].join("\n");
-    const windows = operateWindows("C:/vault", { exists: () => true, readFile: () => page });
+    const windows = operateWindows("C:/vault", { exists: () => true, readdir: onePage, readFile: () => page });
     const fragment = OPERATE[0].slice(0, 44);
     expect(fragment.length).toBe(44);
     // The fragment is not a line of the page - it is 44 of its characters.
@@ -199,7 +206,7 @@ describe("private path guardrail", () => {
   it("keeps path checks active and emits a deterministic notice without a checkout", () => {
     const notes = [];
     const run = () => "evals/triggers/skill-know-research.json\0";
-    expect(checkPrivatePaths(run, { root: null, notice: (line) => notes.push(line) })).toEqual([
+    expect(checkPrivatePaths(run, { root: null, env: {}, notice: (line) => notes.push(line) })).toEqual([
       { file: "evals/triggers/skill-know-research.json", rule: "private know-area trigger" },
     ]);
     // BOTH CONTENT CHECKS SAY SO SEPARATELY. A check with nothing to compare
@@ -207,7 +214,7 @@ describe("private path guardrail", () => {
     // never ran.
     expect(notes).toEqual([
       "private-paths: WikiTom checkout unavailable; area-category content check skipped\n",
-      "private-paths: WikiTom checkout unavailable; operate content check skipped\n",
+      "private-paths: WikiTom checkout unavailable; model-of-tom page content check skipped\n",
     ]);
 
     // A checkout whose area directory holds no page is the same absence.
@@ -215,11 +222,81 @@ describe("private path guardrail", () => {
     checkPrivatePaths(run, {
       root: "C:/private",
       fs: { exists: () => true, readdir: () => [], readFile: () => "" },
+      env: {},
       notice: (line) => empty.push(line),
     });
     expect(empty).toEqual([
       "private-paths: WikiTom checkout unavailable; area-category content check skipped\n",
-      "private-paths: WikiTom checkout unavailable; operate content check skipped\n",
+      "private-paths: WikiTom checkout unavailable; model-of-tom page content check skipped\n",
     ]);
+  });
+  // EVERY MODEL-OF-TOM PAGE, on a real directory. The WikiTom here is a
+  // temporary one built by this test, and every line in it is invented: the
+  // check is proved without a single private line entering this repository.
+  it("catches a fragment of any model-of-tom page, not only agent-rules.md", () => {
+    const base = mkdtempSync(path.join(tmpdir(), "private-paths-"));
+    try {
+      const vault = path.join(base, "vault");
+      const pub = path.join(base, "public");
+      mkdirSync(path.join(vault, "model-of-tom", "areas"), { recursive: true });
+      mkdirSync(pub);
+      const invented = "- the invented lighthouse keeper counts herons before breakfast.";
+      writeFileSync(path.join(vault, "model-of-tom", "agent-rules.md"), "# Rules\n- an invented operate sentence, long enough for a window.\n");
+      writeFileSync(path.join(vault, "model-of-tom", "invented-page.md"), `# Invented\n${invented}\n`);
+      writeFileSync(path.join(vault, "model-of-tom", "areas", "alpha.md"), "---\ncategories: [amber, birch, cobalt]\n---\n");
+      writeFileSync(path.join(pub, "quotes.md"), `A note: ${invented.slice(6, 52)} and more.\n`);
+      writeFileSync(path.join(pub, "clean.md"), "A note this repository wrote for itself, about nothing private.\n");
+      const run = () => "quotes.md\0clean.md\0";
+      expect(checkPrivatePaths(run, { root: vault, cwd: pub, env: {} })).toEqual([
+        { file: "quotes.md", rule: "model-of-tom page content" },
+      ]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  // ABSENT IS A FAILURE WHEN IT IS REQUIRED, a warning annotation in CI, and a
+  // plain notice otherwise.
+  it("fails an absent WikiTom when REQUIRE_WIKITOM or WIKITOM_DIR asks for one", () => {
+    const run = () => "README.md\0";
+    const fs = { exists: () => false, readdir: () => [], readFile: () => "" };
+    expect(wikiTomRequired({})).toBe(false);
+    expect(wikiTomRequired({ CI: "true" })).toBe(false);
+    expect(wikiTomRequired({ REQUIRE_WIKITOM: "1" })).toBe(true);
+    expect(wikiTomRequired({ WIKITOM_DIR: "/nowhere" })).toBe(true);
+
+    const required = checkPrivatePaths(run, { root: null, fs, cwd: "/", env: { REQUIRE_WIKITOM: "1" } });
+    expect(required).toHaveLength(1);
+    expect(required[0].rule).toMatch(/^WikiTom required but absent/);
+
+    const notes = [];
+    expect(checkPrivatePaths(run, { root: null, fs, cwd: "/", env: { CI: "true" }, notice: (line) => notes.push(line) })).toEqual([]);
+    expect(notes.every((line) => line.startsWith("::warning::"))).toBe(true);
+    expect(notes).toHaveLength(2);
+  });
+
+  it("exits non-zero from the command line when a required WikiTom is absent", () => {
+    const empty = mkdtempSync(path.join(tmpdir(), "no-wikitom-"));
+    // vitest runs from the repository root, as every script test here assumes.
+    const script = path.resolve(process.cwd(), "scripts", "check-private-paths.mjs");
+    try {
+      let status = 0;
+      let stderr = "";
+      try {
+        execFileSync(process.execPath, [script], {
+          cwd: process.cwd(),
+          env: { ...process.env, REQUIRE_WIKITOM: "1", WIKITOM_DIR: empty, CI: "" },
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+      } catch (error) {
+        status = error.status;
+        stderr = String(error.stderr);
+      }
+      expect(status).toBe(1);
+      expect(stderr).toContain("WikiTom required but absent");
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
   });
 });

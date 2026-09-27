@@ -86,8 +86,8 @@ const PAGE_STYLE = `
     font-size: 13px;
     color: #e2e8f0;
   }
-  table { border-collapse: collapse; width: 100%; margin: 16px 0 20px; font-size: 13.5px; }
-  th, td { border: 1px solid #1e293b; padding: 7px 10px; text-align: left; vertical-align: top; }
+  table { width: 100%; font-size: 13.5px; margin: 16px 0 20px; border-collapse: collapse; }
+  td, th { vertical-align: top; text-align: left; padding: 7px 10px; border: 1px solid #1e293b; }
   th { color: #e8a040; font-weight: 600; background: #0d1320; }
   .term { color: #e8a040; }
   .muted { color: #94a3b8; }

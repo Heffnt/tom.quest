@@ -113,15 +113,15 @@ export function isChangeSubject(externalId: string): boolean {
   return /^pr-\d+$/.test(externalId) || /^sha-[0-9a-f]{7,40}$/i.test(externalId);
 }
 
-// <vocabulary generated version=fdd55cb533934518 — scripts/vocabulary.mjs; do not edit>
+// <vocabulary generated version=5eb146a59f81616a — scripts/vocabulary.mjs; do not edit>
 export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
 - task — A task is work an agent or Tom performs.
 - goal — A goal is a checkable condition about the world. It is done when its statement is true.
 - needs — Needs are the ids a todo cannot proceed without. They are the only ordering mechanism in TTS.
 - ready — Ready is computed, never stored. A todo is ready when it is prepared and active, its wake time has passed or is absent, and every id in its needs is done or archived, because a need set aside is not going to happen.
 - display text — Display text is the always-visible register: the short line always on screen, assuming Tom's background.
-- ground-up explanation — A ground-up explanation is the register behind the more on every line of display text: self-contained, every term defined at first use, one complete HTML document shown fullscreen in the form the writing standard specifies.`;
-export const VOCABULARY_VERSION = "fdd55cb533934518";
+- ground-up explanation — A ground-up explanation is the register that the more on each line of display text opens: it stands on its own, defines each term where it first appears, and is a single whole HTML document shown fullscreen, shaped as the writing standard requires.`;
+export const VOCABULARY_VERSION = "5eb146a59f81616a";
 /** Every word in the vocabulary, names only — the definitions live in
  *  WikiTom tts/vocabulary.json and `tts search define` answers from them. */
 export const VOCABULARY_TERMS: readonly string[] = [

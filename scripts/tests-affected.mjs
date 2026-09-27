@@ -135,12 +135,24 @@ const lines = (text) =>
   text.split("\n").map((line) => line.trim()).filter((line) => line !== "");
 
 function statusRows(text) {
-  return lines(text).map((line) => {
+  return lines(text).flatMap((line) => {
     const [status, ...rest] = line.split(/\s+/);
-    // A rename is `R100\told\tnew`. Its old path is a deletion, which rule 2
-    // already answers through the new path's own row being a change, so the
-    // row this keeps is the one naming where the file is now.
-    return { path: rest[rest.length - 1], deleted: status.startsWith("D") };
+    // A rename or copy is `R100\told\tnew` (`C` alike). THE OLD PATH IS A
+    // DELETION as far as the graph is concerned: whatever imported it by that
+    // name can no longer be named from the new one, so it is emitted as a
+    // deleted row and rule 2 takes the whole suite. Keeping only the new path
+    // made a rename look like an edit, and the fallback never fired. A copy's
+    // source still exists, but it is treated the same way: the worst that
+    // costs is a full suite, which is the direction this file errs in.
+    // `C` stays: git reports copy rows under -C (or diff.renames=copies), and a copy is a rename's twin here.
+    // `rest.length >= 2` stays: a malformed row with one path must fall through, not crash or emit undefined.
+    if ((status.startsWith("R") || status.startsWith("C")) && rest.length >= 2) {
+      return [
+        { path: rest[0], deleted: true },
+        { path: rest[rest.length - 1], deleted: false },
+      ];
+    }
+    return [{ path: rest[rest.length - 1], deleted: status.startsWith("D") }];
   });
 }
 
