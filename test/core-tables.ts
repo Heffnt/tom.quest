@@ -1,15 +1,13 @@
 // THE CORE TABLES' MOVE, AS A TEST READS IT (convex/jarvis/tables.ts). A
-// reader moved to todos, blocks or timeNotes hands out plain ids; a fixture
-// written through a door holds the old ids the door answered with. A test
-// that asserted a reader's answer before the move keeps its assertion by
-// reading the answer in the old tables' terms: every plain id in it, alone or
+// reader of todos, blocks or timeNotes hands out plain ids. `inOldTerms`
+// reads an answer in the old tables' terms: every plain id in it, alone or
 // inside a string (a link in a message), replaced by the old id its row
-// carries as legacyId. Equal in those terms is the same result as before, for
-// rows both tables hold.
+// carries as legacyId. Since step C a door writes plain rows only, which
+// carry none, so for them it reads as the answer itself; the tests written
+// against the old tables keep their assertions through it.
 
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import { back } from "../convex/jarvis/tables";
 
 /** `value` with every plain todo, block or time-note id in it replaced by
  *  that row's old id, at any depth. Anything else is left as it is. */
@@ -35,21 +33,17 @@ export async function inOldTerms<V>(ctx: QueryCtx, value: V): Promise<V> {
   return map(value) as V;
 }
 
-/** A todo inserted as a door stores one: the plain row, with its old row
- *  written back while step C moves the writers. Answers the plain id. */
+/** A todo inserted as a door stores one since step C: the plain row. */
 export async function insertTodo(
   ctx: MutationCtx,
   fields: Omit<Doc<"todos">, "_id" | "_creationTime">,
 ): Promise<Id<"todos">> {
-  const id = await ctx.db.insert("todos", fields);
-  await back(ctx, "todos", id);
-  return id;
+  return await ctx.db.insert("todos", fields);
 }
 
-/** A todo patched by hand, and its old row with it. */
+/** A todo patched by hand. */
 export async function patchTodo(ctx: MutationCtx, id: Id<"todos">, fields: Partial<Doc<"todos">>): Promise<void> {
   await ctx.db.patch(id, fields);
-  await back(ctx, "todos", id);
 }
 
 type Core = "todos" | "blocks" | "timeNotes";

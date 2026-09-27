@@ -581,7 +581,7 @@ describe("TTS unified rulings", () => {
     expect(ruling.verdict).toBe("revise");
     expect(ruling.sentence).toBe("spoken in session");
     const todo = await t.run(async (ctx) =>
-      ctx.db.get((await ctx.db.query("dtsTodos").collect())[0]._id),
+      ctx.db.get((await ctx.db.query("todos").collect())[0]._id),
     );
     expect(todo?.readiness).toBe("unprepared");
     await expect(

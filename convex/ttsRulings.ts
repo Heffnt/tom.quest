@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
-import { back, eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
+import { eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -105,7 +105,7 @@ export const subjectKey = (row: {
 
 // Everything, always: append-only at human pace — a full collect is fine and
 // lets the client find the live (newest ruledAt) ruling per subject. A row
-// stores its todo's old id; the page is handed the plain one it joins on.
+// names its todo in either form; the page is handed the plain one it joins on.
 export const listRulings = query({
   args: {},
   handler: async (ctx) => {
@@ -188,7 +188,6 @@ export async function insertRuling(
       // one verdict that hands the subject BACK to the preparing agent.
       if (verdict !== "revise") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
-        await back(ctx, "todos", todoId);
       }
       if (verdict === "revise") {
         // Two readiness values (ruling 18): revise hands the write-up back, so
@@ -196,7 +195,6 @@ export async function insertRuling(
         // preparer returns it as prepared. It is therefore not ready for Tom
         // in the meantime (ttsShared.isReadyForTom).
         await ctx.db.patch(todoId, { readiness: "unprepared", updatedAt: now });
-        await back(ctx, "todos", todoId);
       }
       if (verdict === "archive") {
         await applyStatusChange(ctx, todo, {
