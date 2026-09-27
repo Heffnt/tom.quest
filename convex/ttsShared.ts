@@ -557,6 +557,18 @@ export function frontier<T extends GraphTodo>(
 export type ReadyTodo = GraphTodo & { readiness: StoredReadiness };
 
 /**
+ * Whether a todo's live ruling still answers it: ruled AFTER the todo last
+ * changed. A re-preparation bumps updatedAt to at least ruledAt, so the tie
+ * reads as not answered: a strict `>` costs at most one extra look at an item
+ * Tom just ruled, where `>=` would drop one that changed after its ruling
+ * (app/jarvis/lib.ts selectNeedsMe reads it for the needs-me pile, the
+ * work-queue context for an approve an agent may act on).
+ */
+export function rulingAnswers(ruling: { ruledAt: number }, todo: { updatedAt: number }): boolean {
+  return ruling.ruledAt > todo.updatedAt;
+}
+
+/**
  * READY FOR TOM (ruling 18): prepared, active, wakeAt absent or passed, every
  * need done. The one computation behind the page's ready filter, the needs-me
  * list, the digest's "ready for him" section, and the session-kind choice. A

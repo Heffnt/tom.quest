@@ -52,6 +52,15 @@ export async function recordEvent(
     const todo = input.subject === undefined ? null : await resolveId(ctx, "todos", input.subject);
     if (todo === null) throw new Error(`a ${SESSION_OUTCOME} event names its todo as its subject`);
     input = { ...input, subject: todo };
+    // The approve the work queue ran under (data.rulingId), kept as the
+    // rulings id the work-queue list reads it by (convex/ttsRulings.ts
+    // internalWorkQueue).
+    const data = input.data as { rulingId?: unknown } | undefined;
+    if (data?.rulingId !== undefined) {
+      const ruling = typeof data.rulingId === "string" ? await resolveId(ctx, "rulings", data.rulingId) : null;
+      if (ruling === null) throw new Error(`a ${SESSION_OUTCOME} event's data.rulingId names no ruling`);
+      input = { ...input, data: { ...data, rulingId: ruling } };
+    }
   }
   const id = await insertEvent(ctx, input);
   const hook = AFTER_RECORD[input.kind];

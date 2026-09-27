@@ -11,7 +11,7 @@
 // when the box's last caller spells this route.
 //
 // The reader names are the box's word for what it is doing (planner,
-// capture, ask, learning, weekly, simplify). The ones that carry the
+// capture, ask, learning, weekly, simplify, work-queue). The ones that carry the
 // model-of-tom context all read the same text (ttsContext
 // internalContextPrelude takes no caller name).
 
@@ -161,6 +161,12 @@ const READERS: Record<string, Reader> = {
     }
     return jsonResponse(200, { ...facts, writingStandard });
   },
+  // The todos an unattended agent may work now, in need order
+  // (convex/ttsRulings.ts internalWorkQueue): { todos: [{ id, title, brief,
+  // entryAction, workDescription, doneWhen, mustNotBreak, approve: {
+  // rulingId, sentence } }] }.
+  "work-queue": async (ctx) =>
+    jsonResponse(200, { todos: await ctx.runQuery(internal.ttsRulings.internalWorkQueue, {}) }),
 };
 
 const CONTEXT_FOR = Object.keys(READERS);
