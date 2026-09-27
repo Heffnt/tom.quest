@@ -93,59 +93,59 @@ function carryIndexes<T>(rebuilt: T, source: Indexed): T {
 
 const {
   dtsTodos: schemaTodos,
+  todos: schemaPlainTodos,
   claudeSessions: schemaSessions,
   dtsCodeBriefs: schemaBriefs,
   ...otherTables
 } = schema.tables;
 
-const wideSchema = defineSchema({
-  ...otherTables,
-  dtsTodos: carryIndexes(
-    defineTable(
+/** The retired dtsTodos fields a row may still hold until its walk clears it. */
+const RETIRED_TODO_FIELDS = {
+  readiness: v.union(
+    ...[...READINESS_VALUES, ...RETIRED_READINESS_VALUES].map((r) =>
+      v.literal(r),
+    ),
+  ),
+  timingClass: v.union(
+    v.literal("dated"),
+    v.literal("condition-bound"),
+    v.literal("whenever"),
+  ),
+  latestSafeAt: v.optional(v.number()),
+  wakeCondition: v.optional(v.string()),
+  importance: RETIRED_IMPORTANCE,
+  // The v1 batch pair, declared here for the same reason as the fields
+  // above: a dtsTodos row carrying `members` WAS a batch and `plan` was
+  // its ordered steps, the graph migration has replaced both, and the
+  // narrow drops the declarations — while rows on the deployment still
+  // hold them until this walk has cleared them.
+  members: v.optional(
+    v.array(
       v.object({
-        ...schemaTodos.validator.fields,
-        readiness: v.union(
-          ...[...READINESS_VALUES, ...RETIRED_READINESS_VALUES].map((r) =>
-            v.literal(r),
-          ),
-        ),
-        timingClass: v.union(
-          v.literal("dated"),
-          v.literal("condition-bound"),
-          v.literal("whenever"),
-        ),
-        latestSafeAt: v.optional(v.number()),
-        wakeCondition: v.optional(v.string()),
-        importance: RETIRED_IMPORTANCE,
-        // The v1 batch pair, declared here for the same reason as the fields
-        // above: a dtsTodos row carrying `members` WAS a batch and `plan` was
-        // its ordered steps, the graph migration has replaced both, and the
-        // narrow drops the declarations — while rows on the deployment still
-        // hold them until this walk has cleared them.
-        members: v.optional(
-          v.array(
-            v.object({
-              todoId: v.optional(v.id("dtsTodos")),
-              repo: v.optional(v.string()),
-              externalId: v.optional(v.string()),
-            }),
-          ),
-        ),
-        plan: v.optional(
-          v.array(
-            v.object({
-              text: v.string(),
-              actor: v.union(v.literal("tom"), v.literal("agent")),
-              status: v.union(v.literal("open"), v.literal("done")),
-              doneAt: v.optional(v.number()),
-              evidence: v.optional(v.string()),
-            }),
-          ),
-        ),
+        todoId: v.optional(v.id("dtsTodos")),
+        repo: v.optional(v.string()),
+        externalId: v.optional(v.string()),
       }),
     ),
-    schemaTodos,
   ),
+  plan: v.optional(
+    v.array(
+      v.object({
+        text: v.string(),
+        actor: v.union(v.literal("tom"), v.literal("agent")),
+        status: v.union(v.literal("open"), v.literal("done")),
+        doneAt: v.optional(v.number()),
+        evidence: v.optional(v.string()),
+      }),
+    ),
+  ),
+};
+
+const wideSchema = defineSchema({
+  ...otherTables,
+  dtsTodos: carryIndexes(defineTable(v.object({ ...schemaTodos.validator.fields, ...RETIRED_TODO_FIELDS })), schemaTodos),
+  // The dual write copies each migrated row into todos as it is written.
+  todos: carryIndexes(defineTable(v.object({ ...schemaPlainTodos.validator.fields, ...RETIRED_TODO_FIELDS })), schemaPlainTodos),
   claudeSessions: carryIndexes(
     defineTable(
       v.object({
@@ -226,6 +226,15 @@ async function eventsOfKind(t: ReturnType<typeof convexTest>, kind: string) {
   return await t.run(async (ctx) =>
     (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === kind),
   );
+}
+
+/** The dual write's check on a walk: the seed is inserted raw, so the copy
+ * runs first; after the walk every todos copy matches its old row. */
+async function expectFollowed(t: ReturnType<typeof convexTest>, walk: () => Promise<unknown>) {
+  await t.action(internal.jarvis.tables.sync, { table: "todos" });
+  await walk();
+  const { left } = await t.action(internal.jarvis.tables.leftToRemap, {});
+  expect(left.todos).toMatchObject({ notCopied: 0, stale: 0, version: 0, orphaned: 0 });
 }
 
 describe("readiness migration (ready-for-tom → prepared, preparing → unprepared)", () => {
@@ -348,6 +357,12 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("dual-writes every row it maps into todos", async () => {
+    const t = convexTest({ schema: wideSchema, modules });
+    await seedTodos(t, seed());
+    await expectFollowed(t, () => t.mutation(internal.ttsMigrations.internalMigrateReadiness, {}));
   });
 
   it("is idempotent: a second run maps nothing", async () => {
@@ -620,6 +635,12 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
       "condition-wake-kept": 0,
     });
     expect(await eventsOfKind(t, "status-changed")).toHaveLength(3);
+  });
+
+  it("dual-writes every row it maps into todos", async () => {
+    const t = convexTest({ schema: wideSchema, modules });
+    await seedTodos(t, seed());
+    await expectFollowed(t, () => t.mutation(internal.ttsMigrations.internalMigrateTiming, {}));
   });
 
   it("resumes across pages by cursor", async () => {
@@ -978,6 +999,13 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
   // witness: patch a row inside the dryRun branch — the counts would still be
   // right and every row would have moved before Tom saw the numbers.
+  it("dual-writes every todo it clears into todos", async () => {
+    const t = convexTest({ schema: wideSchema, modules });
+    await seedTodos(t, todoSeed());
+    await seedRest(t);
+    await expectFollowed(t, () => clearAll(t));
+  });
+
   it("a dry run reports the same counts and writes nothing but the dry-run event", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, todoSeed());
@@ -1346,6 +1374,12 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
 
   // witness: match an entry by its completion test as well as by the old
   // wording — every run would rewrite the kept goal and log it again.
+  it("dual-writes every goal it converts or archives into todos", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t);
+    await expectFollowed(t, () => t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {}));
+  });
+
   it("is idempotent: a second run changes nothing", async () => {
     const t = convexTest({ schema, modules });
     await seed(t);
