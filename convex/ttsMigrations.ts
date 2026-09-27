@@ -45,7 +45,6 @@ import { logEvent } from "./tts";
 export const GRAPH_SUPERSEDED = "superseded by graph batch ";
 import {
   CONDITION_WINDOW_MS,
-  MAX_NEEDS,
   normalizeReadiness,
   normalizeRecommendation,
   type StoredReadiness,
@@ -330,103 +329,6 @@ export const internalMigrateTiming = internalMutation({
   },
 });
 
-// ── 4. batches.path → batches.needs ─────────────────────────────────────────
-// The retired path (name, index, edge to the previous batch) becomes needs
-// edges between batches: a batch whose edge is "must" needs the previous
-// batch on its path (the one with the greatest index below its own); a
-// "helps" edge becomes nothing — "only makes this easier" is not a
-// prerequisite, and needs holds prerequisites only; a first or unlinked
-// batch needs nothing. The path itself is gone from the validator; a stored
-// one still comes back off the row, which is what keeps this walk re-runnable.
-//
-// One transaction: the batches table is human-scale (a few dozen rows for
-// years, per its schema comment), and deriving an edge needs the whole path
-// in view. Same dry run, counts, idempotence, and event as the walks above.
-export const BATCH_NEEDS_MIGRATION = "batch-needs";
-
-/** The retired shape, as a stored batch still holds it. The validator no
- * longer declares `path` (the lifeos update, phase 7) and Convex returns an
- * undeclared field on an existing row unchanged, so this walk reads it through
- * a loose view — which is what lets a verification re-run stay possible after
- * the narrow. */
-type RetiredPath = { path?: { name: string; index: number; edge?: string } };
-
-/** The previous batch on a path: the greatest index below `index`. Two
- * batches sharing that index (the planner never wrote one, but nothing
- * refused it) tie, and the first in `all` — table order, oldest first — wins:
- * the strict `>` below keeps the one already found. Stated so the derived
- * edge is the same on every run. */
-export function previousOnPath<T>(batch: T, all: readonly T[]): T | undefined {
-  const pathOf = (b: T) => (b as RetiredPath).path;
-  const path = pathOf(batch);
-  if (!path) return undefined;
-  let best: T | undefined;
-  for (const other of all) {
-    const op = pathOf(other);
-    if (other === batch || !op || op.name !== path.name) continue;
-    if (op.index >= path.index) continue;
-    if (!best || op.index > pathOf(best)!.index) best = other;
-  }
-  return best;
-}
-
-export const internalMigrateBatchNeeds = internalMutation({
-  args: { dryRun: v.optional(v.boolean()) },
-  handler: async (ctx, { dryRun = false }): Promise<MigrationReport> => {
-    const all = await ctx.db.query("batches").collect();
-    const page: Counts = {
-      scanned: all.length,
-      "must-to-need": 0,
-      "must-without-previous": 0,
-      "helps-dropped": 0,
-      "unlinked": 0,
-      "already-derived": 0,
-      "no-path": 0,
-    };
-    for (const batch of all) {
-      const path = (batch as unknown as RetiredPath).path;
-      if (!path) {
-        page["no-path"]++;
-        continue;
-      }
-      if (path.edge === "helps") {
-        page["helps-dropped"]++;
-        continue;
-      }
-      if (path.edge !== "must") {
-        page.unlinked++;
-        continue;
-      }
-      const previous = previousOnPath(batch, all);
-      if (!previous) {
-        page["must-without-previous"]++;
-        continue;
-      }
-      if ((batch.needs ?? []).includes(previous._id)) {
-        page["already-derived"]++;
-        continue;
-      }
-      page["must-to-need"]++;
-      if (!dryRun) {
-        const needs = [...(batch.needs ?? []), previous._id].slice(0, MAX_NEEDS);
-        await ctx.db.patch(batch._id, { needs });
-        await logEvent(ctx, "batch-needs-derived", undefined, {
-          batchId: batch._id,
-          needs: previous._id,
-          path,
-        });
-      }
-    }
-    await logEvent(
-      ctx,
-      dryRun ? `${BATCH_NEEDS_MIGRATION}-dry-run` : `${BATCH_NEEDS_MIGRATION}-migrated`,
-      undefined,
-      page,
-    );
-    return { done: true, dryRun, page, totals: page, continueCursor: null };
-  },
-});
-
 // ── 6. Code-brief recommendation → the four verdict words ───────────────────
 // stale-replan → revise, needs-session → session, propose-archive → archive;
 // approve stays. One transaction: one brief per open code todo, a small
@@ -489,7 +391,7 @@ export const internalMigrateRecommendations = internalMutation({
 //
 //   dtsTodos        latestSafeAt, wakeCondition, importance  → unset
 //                   members, plan (the v1 batch fields)      → unset
-//   batches         path                                     → unset
+//   (batches        path → unset, until the table went on 2026-09-26)
 //   claudeSessions  status "awaiting-permission"             → ended
 //   dtsCodeBriefs   importance → unset; a retired recommendation spelling →
 //                   its verdict word (ttsShared.normalizeRecommendation)
@@ -520,7 +422,6 @@ export const CLEAR_PAGE_SIZE = 250;
  * totals as one event. */
 export const CLEAR_TABLES = [
   "dtsTodos",
-  "batches",
   "claudeSessions",
   "dtsCodeBriefs",
 ] as const;
@@ -547,7 +448,6 @@ const RETIRED_TODO_FIELDS = [
 const CLEAR_COUNT_KEYS = [
   ...CLEAR_TABLES.map((t) => `${t}-scanned`),
   ...RETIRED_TODO_FIELDS.map((f) => `${f}-cleared`),
-  "path-cleared",
   "awaiting-permission-ended",
   "brief-importance-cleared",
   "recommendation-normalized",
@@ -632,26 +532,6 @@ export const internalClearRetiredFields = internalMutation({
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(row._id, patch as Partial<Doc<"dtsTodos">>);
           }
-        }
-        ({ isDone, continueCursor } = result);
-        break;
-      }
-      case "batches": {
-        const result = await ctx.db.query("batches").paginate(opts);
-        for (const row of result.page) {
-          page["batches-scanned"]++;
-          const path = (row as unknown as RetiredFields).path;
-          if (path === undefined) continue;
-          page["path-cleared"]++;
-          if (dryRun) continue;
-          // The WHOLE object, not just the edge the needs migration derived
-          // from: a "helps" edge became nothing and an unlinked batch's path
-          // name was never an edge at all, and both are part of what the row
-          // said about where its work sat.
-          await record({ batchId: row._id }, "path", path);
-          await ctx.db.patch(row._id, {
-            path: undefined,
-          } as Partial<Doc<"batches">>);
         }
         ({ isDone, continueCursor } = result);
         break;
@@ -1104,299 +984,6 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
       { counts, changes },
     );
     return { dryRun, counts, changes };
-  },
-});
-
-// ── 9. Batches removed: every todo stands alone (Tom's ruling, 2026-09-24) ──
-// Tom, 2026-09-24: "I dont want to have batches at all anymore because I want
-// to remove structure to allow agents to freely move toward completing all
-// todos in the best way they (or the orchistrator) see fit." and "lets make
-// sure that we dont lose any of the things i wanted to do when removing
-// batches and everything related to that. i cant make those rulings right now
-// but proceed with the recommendations anyway."
-//
-// Per batch, what happens to each todo whose batchId names it:
-//
-//   a goal (any status)            → unbound: batchId cleared, kind "goal"
-//       kept. A goal is Tom's own todo that the planner bound here.
-//   an open task written by the planner (source "planner", active or
-//       waiting, not Tom-touched)  → archived, batchId cleared. Its statement
-//       was a step of this batch's plan and meant something only inside it.
-//   an open task from a migration of Tom's earlier todos (source
-//       "migration")               → made standalone: batchId cleared, kind
-//       and status kept. It was his item before the planner bound it, and he
-//       ruled that nothing of his is lost.
-//   any other open task (another source, or a planner task Tom has touched)
-//                                  → made standalone the same way: nothing
-//       says it is only a plan step, and an archive is not an agent's to make
-//       on a row he ruled on.
-//   a done or archived task        → batchId cleared, status kept.
-//
-// The batch row itself is set to archived. `needs` stays on every row and the
-// ready rule is unchanged: an archived need counts as done, so a todo that
-// needed an archived plan step becomes ready.
-//
-// WHAT IS NOT WRITTEN: no unarchiveCondition (the page shows it as "propose
-// back when:", and none of these has a condition under which it comes back),
-// and never updatedAt, on a todo or on the batch — a migration must not put
-// settled items back on Tom's pile.
-//
-// ONE BATCH PER CALL. Each call walks one `batches` row (paginate, one item)
-// and schedules itself with the cursor and the running totals; a call given a
-// `batchId` does that one batch and schedules nothing. Each batch that changes
-// anything gets ONE dtsEvents row (kind BATCH_REMOVED_EVENT) naming the
-// batch's id and statement, the ruling verbatim, and every todo id whose
-// batchId it cleared, grouped by what happened to it — the record of where
-// each of Tom's things went. After the batches, the walk clears
-// runs.batchId on every run row, one page per call. The finished totals are
-// one `batches-removed-migrated` (or `-dry-run`) event, which also counts the
-// todos still carrying a batchId (zero once the walk is done).
-//
-// IDEMPOTENT: an archived batch that no todo points at is counted as
-// already-removed and left alone, and a run row with no batchId is not
-// touched, so a second run reports zero on every change count.
-export const BATCHES_REMOVED_MIGRATION = "batches-removed";
-/** The per-batch event kind; its data names the batch id. */
-export const BATCH_REMOVED_EVENT = "batch-removed";
-/** Tom's ruling, verbatim, as every per-batch event carries it. */
-export const BATCHES_REMOVED_RULING =
-  "I dont want to have batches at all anymore because I want to remove structure to allow agents to freely move toward completing all todos in the best way they (or the orchistrator) see fit.";
-/** The reason a planner task is archived with, on its batch's event. */
-const PLANNER_TASK_ARCHIVE_REASON =
-  `a step of a batch's plan, written by the planner; batches were removed on Tom's ruling of 2026-09-24: "${BATCHES_REMOVED_RULING}"`;
-/** Run rows per call in the runs phase. */
-const RUNS_PAGE_SIZE = 200;
-/** The most bound todos the finished report counts. */
-const STILL_BOUND_CAP = 100;
-
-/** Every count key, so a report names every case even when it is zero. */
-const BATCH_REMOVAL_COUNT_KEYS = [
-  "batches-scanned",
-  "batches-archived",
-  "batches-already-archived",
-  "batches-already-removed",
-  "goals-unbound",
-  "migration-tasks-made-standalone",
-  "other-tasks-made-standalone",
-  "planner-tasks-archived",
-  "done-or-archived-tasks-cleared",
-  "runs-scanned",
-  "runs-cleared",
-] as const;
-
-/** The todo ids of one batch, grouped by what happened to each. */
-type BatchRemoval = {
-  goalsUnbound: Id<"dtsTodos">[];
-  migrationTasksMadeStandalone: Id<"dtsTodos">[];
-  otherTasksMadeStandalone: Id<"dtsTodos">[];
-  plannerTasksArchived: Id<"dtsTodos">[];
-  doneOrArchivedTasksCleared: Id<"dtsTodos">[];
-};
-
-type BatchRemovalReport = {
-  done: boolean;
-  dryRun: boolean;
-  phase: "batches" | "runs";
-  /** The batch this call walked, or null in the runs phase. */
-  batchId: Id<"batches"> | null;
-  /** What happened to that batch's todos (empty in the runs phase). */
-  removal: BatchRemoval | null;
-  page: Counts;
-  totals: Counts;
-  continueCursor: string | null;
-  /** On the finished report only: todos still carrying a batchId. */
-  todosStillBound?: number;
-};
-
-const emptyRemovalCounts = (): Counts =>
-  Object.fromEntries(BATCH_REMOVAL_COUNT_KEYS.map((key) => [key, 0]));
-
-/** One batch: classify its todos, and (unless dryRun) clear and archive. */
-async function removeOneBatch(
-  ctx: MutationCtx,
-  batch: Doc<"batches">,
-  dryRun: boolean,
-  page: Counts,
-): Promise<BatchRemoval> {
-  const removal: BatchRemoval = {
-    goalsUnbound: [],
-    migrationTasksMadeStandalone: [],
-    otherTasksMadeStandalone: [],
-    plannerTasksArchived: [],
-    doneOrArchivedTasksCleared: [],
-  };
-  const rows = await ctx.db
-    .query("dtsTodos")
-    .withIndex("by_batch", (q) => q.eq("batchId", batch._id))
-    .collect();
-  page["batches-scanned"]++;
-  if (rows.length === 0 && batch.status === "archived") {
-    page["batches-already-removed"]++;
-    return removal;
-  }
-  const now = Date.now();
-  for (const row of rows) {
-    const open = row.status === "active" || row.status === "waiting";
-    if (row.kind === "goal") {
-      removal.goalsUnbound.push(row._id);
-      page["goals-unbound"]++;
-      if (!dryRun) await ctx.db.patch(row._id, { batchId: undefined });
-    } else if (!open) {
-      removal.doneOrArchivedTasksCleared.push(row._id);
-      page["done-or-archived-tasks-cleared"]++;
-      if (!dryRun) await ctx.db.patch(row._id, { batchId: undefined });
-    } else if (row.source === "planner" && row.tomTouchedAt === undefined) {
-      removal.plannerTasksArchived.push(row._id);
-      page["planner-tasks-archived"]++;
-      if (!dryRun) {
-        await ctx.db.patch(row._id, { batchId: undefined, status: "archived", archivedAt: now });
-      }
-    } else if (row.source === "migration") {
-      removal.migrationTasksMadeStandalone.push(row._id);
-      page["migration-tasks-made-standalone"]++;
-      if (!dryRun) await ctx.db.patch(row._id, { batchId: undefined });
-    } else {
-      removal.otherTasksMadeStandalone.push(row._id);
-      page["other-tasks-made-standalone"]++;
-      if (!dryRun) await ctx.db.patch(row._id, { batchId: undefined });
-    }
-  }
-  if (batch.status === "archived") page["batches-already-archived"]++;
-  else {
-    page["batches-archived"]++;
-    if (!dryRun) await ctx.db.patch(batch._id, { status: "archived" });
-  }
-  if (!dryRun) {
-    await logEvent(
-      ctx,
-      BATCH_REMOVED_EVENT,
-      undefined,
-      {
-        batchId: batch._id,
-        statement: batch.statement,
-        ruling: BATCHES_REMOVED_RULING,
-        rulingDay: "2026-09-24",
-        plannerTaskArchiveReason: PLANNER_TASK_ARCHIVE_REASON,
-        ...removal,
-      },
-    );
-  }
-  return removal;
-}
-
-export const internalRemoveBatches = internalMutation({
-  args: {
-    ...MIGRATION_ARGS,
-    /** Walk this one batch only, and schedule nothing. */
-    batchId: v.optional(v.string()),
-    /** Which walk the cursor belongs to; never passed by a caller. */
-    phase: v.optional(v.union(v.literal("batches"), v.literal("runs"))),
-  },
-  handler: async (ctx, args): Promise<BatchRemovalReport> => {
-    const dryRun = args.dryRun ?? false;
-    const page = emptyRemovalCounts();
-
-    if (args.batchId !== undefined) {
-      const id = ctx.db.normalizeId("batches", args.batchId);
-      const batch = id === null ? null : await ctx.db.get(id);
-      if (batch === null) throw new Error(`Unknown batch id: ${args.batchId}`);
-      const removal = await removeOneBatch(ctx, batch, dryRun, page);
-      return {
-        done: true,
-        dryRun,
-        phase: "batches",
-        batchId: batch._id,
-        removal,
-        page,
-        totals: addCounts(args.totals ?? {}, page),
-        continueCursor: null,
-      };
-    }
-
-    const phase = args.phase ?? "batches";
-    const next = async (nextPhase: "batches" | "runs", cursor: string | null, totals: Counts) => {
-      await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalRemoveBatches, {
-        cursor,
-        dryRun,
-        phase: nextPhase,
-        totals,
-        ...(args.pageSize === undefined ? {} : { pageSize: args.pageSize }),
-      });
-    };
-
-    if (phase === "batches") {
-      const result = await ctx.db
-        .query("batches")
-        .paginate({ cursor: args.cursor ?? null, numItems: 1 });
-      const batch = result.page[0];
-      const removal = batch === undefined ? null : await removeOneBatch(ctx, batch, dryRun, page);
-      const totals = addCounts(args.totals ?? {}, page);
-      if (result.isDone) await next("runs", null, totals);
-      else await next("batches", result.continueCursor, totals);
-      return {
-        done: false,
-        dryRun,
-        phase,
-        batchId: batch?._id ?? null,
-        removal,
-        page,
-        totals,
-        continueCursor: result.isDone ? null : result.continueCursor,
-      };
-    }
-
-    // The runs phase: runs.batchId on every run row. The runs table has no
-    // index on batchId, so the walk pages through all of it.
-    const result = await ctx.db
-      .query("runs")
-      .paginate({ cursor: args.cursor ?? null, numItems: args.pageSize ?? RUNS_PAGE_SIZE });
-    for (const run of result.page) {
-      page["runs-scanned"]++;
-      if (run.batchId === undefined) continue;
-      page["runs-cleared"]++;
-      if (!dryRun) await ctx.db.patch(run._id, { batchId: undefined });
-    }
-    const totals = addCounts(args.totals ?? {}, page);
-    if (!result.isDone) {
-      await next("runs", result.continueCursor, totals);
-      return {
-        done: false,
-        dryRun,
-        phase,
-        batchId: null,
-        removal: null,
-        page,
-        totals,
-        continueCursor: result.continueCursor,
-      };
-    }
-    // The verification count: todos whose batchId is still set, counted up to
-    // STILL_BOUND_CAP (a dtsTodos row carries its whole write-up, so reading
-    // every bound row in one transaction would approach the read limit). A
-    // finished real run counts zero; a dry run counts up to the cap, and its
-    // per-case totals are the full count. Ids sort after an absent field in an
-    // index, so every set batchId is at or above "".
-    const stillBound = await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_batch", (q) => q.gte("batchId", "" as Id<"batches">))
-      .take(STILL_BOUND_CAP);
-    await logEvent(
-      ctx,
-      dryRun ? `${BATCHES_REMOVED_MIGRATION}-dry-run` : `${BATCHES_REMOVED_MIGRATION}-migrated`,
-      undefined,
-      { ...totals, "todos-still-bound": stillBound.length },
-    );
-    return {
-      done: true,
-      dryRun,
-      phase,
-      batchId: null,
-      removal: null,
-      page,
-      totals,
-      continueCursor: null,
-      todosStillBound: stillBound.length,
-    };
   },
 });
 

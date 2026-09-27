@@ -14,10 +14,10 @@
 // the route's, not the writer's (logEvent), because /tts/event is the box's
 // one generic pen into dtsEvents and the other writers are Convex-internal
 // facts (Slack, digest, merge, sessions) whose areas move them here in their
-// own streams. Box changes stay drawn from dtsEvents by convex/boxChanges.ts
-// forAgent, which places each after the sudo call that ran it; their copies
-// carry no provenance.agentId, so forAgent below does not return them and the
-// chat shows each change once.
+// own streams. A box change is no longer copied: the pen hands it to this
+// table's own write (convex/ttsNightly.ts internalRecordBoxChange), and the
+// box posts it through POST /jarvis/event with provenance.agentId, which is
+// how the /agents chat finds it (convex/boxChanges.ts forAgent).
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "../_generated/server";
@@ -27,11 +27,16 @@ import { requireTom } from "../authRoles";
 import { eventArgs, insertEvent } from "./record";
 import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
+import { onBoxChange } from "../boxChanges";
+import { onDigestSent, onNeedsYouPosted } from "./digest";
 
 /** What runs after a row of each kind lands, inside the same mutation. */
 const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Promise<unknown>> = {
   "job-ok": onJobOk,
   "job-failed": onJobFailed,
+  "box-change": onBoxChange,
+  "digest-sent": onDigestSent,
+  "needs-you-posted": onNeedsYouPosted,
 };
 
 /** Insert one event and run its kind's hook. The hook's answer rides along. */
@@ -44,7 +49,15 @@ export async function recordEvent(
   if (hook === undefined) return { id };
   const row = await ctx.db.get(id);
   if (row === null) return { id };
-  return { id, result: await hook(ctx, row) };
+  const result = await hook(ctx, row);
+  // A hook that deleted the row as a resend of an earlier one names the row
+  // that stands for it (boxChanges.ts onBoxChange): the caller is answered
+  // with that id, never the id of a row that no longer exists.
+  if (typeof result === "object" && result !== null && "survivorId" in result) {
+    const { survivorId, ...rest } = result as { survivorId: Id<"events"> };
+    return { id: survivorId, result: rest };
+  }
+  return { id, result };
 }
 
 /** POST /jarvis/event's mutation, and any Convex reporter's. */

@@ -89,8 +89,8 @@ jobs:
         run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          # FULL HISTORY on a pull request, for .github/workflows/evals.yml's
-          # reason: scripts/tests-affected.mjs diffs against the merge base to
+          # FULL HISTORY on a pull request, because
+          # scripts/tests-affected.mjs diffs against the merge base to
           # decide which tests the change can reach, and a shallow clone has no
           # merge base. A run with no base falls back to the whole suite, which
           # is correct and slow, so the fetch is what makes the mode real.
@@ -203,8 +203,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # NO INSTALL: scripts/tests-report.mjs imports nothing, for the reason
-      # scripts/evals-check.mjs imports nothing.
+      # NO INSTALL: scripts/tests-report.mjs imports only Node's own modules.
       - if: vars.CONVEX_SITE_URL != ''
         run: node scripts/tests-report.mjs
         env:
@@ -224,5 +223,5 @@ jobs:
           # The mode, the file count, the suite's own seconds and its slowest
           # files, as scripts/tests-affected.mjs wrote them. It reaches the
           # script as an ENVIRONMENT VALUE and is never interpolated into a
-          # `run:` line, for .github/workflows/evals.yml's PR_BODY reason.
+          # `run:` line, where text a branch can write would become a shell command.
           SUMMARY: ${{ needs.tests.outputs.summary }}

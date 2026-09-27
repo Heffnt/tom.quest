@@ -397,39 +397,43 @@ describe("the proposal route's shapes", () => {
   });
 });
 
-describe("a new proposal opens a #tts-needs-you thread that names who and where, never the text", () => {
-  const NEEDS_YOU = "C0NEEDSYOU";
-
-  /** Every line of the proposal's text, so a thread quoting any one of them
+describe("a new proposal opens a needs-you reply under the digest that names who and where, never the text", () => {
+  /** Every line of the proposal's text, so a reply quoting any one of them
    *  is caught, not only one quoting all of it. */
   function expectNoTextOf(posted: string, text: string) {
     for (const line of text.split("\n").filter((l) => l.trim() !== "")) expect(posted).not.toContain(line.trim());
   }
 
-  it("a Slack proposal posts one thread to #tts-needs-you naming its recipient and conversation", async () => {
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
+  /** The needs-you rows the box posts from (convex/jarvis/digest.ts). */
+  const opened = async (t: ReturnType<typeof convexTest>) =>
+    await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((row) => row.kind === "needs-you-opened"),
+    );
+
+  it("a Slack proposal opens one needs-you naming its recipient and conversation, and posts nothing itself", async () => {
     const t = convexTest(schema, modules);
     const posts = stubNetwork();
     const proposalId = await proposeSlack(t);
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    const threads = slackPosts(posts).filter((p) => p.body.channel === NEEDS_YOU);
-    expect(threads).toHaveLength(1);
-    const posted = String(threads[0].body.text);
+    const rows = await opened(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ subject: `${SEND_PROPOSAL}:${proposalId}`, data: { job: SEND_PROPOSAL } });
+    const posted = String(rows[0].text);
     expect(posted).toContain(RECIPIENT);
     expect(posted).toContain("C0SARAH01");
     expect(posted).toContain("https://tom.quest/tts?tab=everything");
     expectNoTextOf(posted, TEXT);
-    // Nothing went to the person it is for: the thread is Tom's, the send waits.
-    expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(0);
+    // Nothing reached Slack from Convex: the box posts it under the digest,
+    // and nothing went to the person it is for — the send waits.
+    expect(slackPosts(posts)).toHaveLength(0);
 
     const [marker] = await kinds(t, "needs-tom");
     expect(marker.key).toBe(`${SEND_PROPOSAL}:${proposalId}`);
     expect(marker.data).toEqual({ key: marker.key, proposalId, recipient: RECIPIENT, channel: CHANNEL });
   });
 
-  it("a calendar proposal's thread names its guests and never the invitation text", async () => {
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
+  it("a calendar proposal's reply names its guests and never the invitation text", async () => {
     const t = convexTest(schema, modules);
     const posts = stubNetwork();
     const event = {
@@ -443,25 +447,13 @@ describe("a new proposal opens a #tts-needs-you thread that names who and where,
     expect(res.status).toBe(200);
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    const [thread] = slackPosts(posts).filter((p) => p.body.channel === NEEDS_YOU);
-    const posted = String(thread.body.text);
+    const [row] = await opened(t);
+    const posted = String(row.text);
     expect(posted).toContain("a calendar invitation");
     expect(posted).toContain("sarah@example.com");
     expect(posted).not.toContain(event.title);
     expectNoTextOf(posted, event.description);
     expect(posts.filter((p) => p.url.includes("googleapis"))).toHaveLength(0);
-  });
-
-  it("with the channel unset it posts nothing and says so on the one standing needs-you failure", async () => {
-    const t = convexTest(schema, modules);
-    const posts = stubNetwork();
-    await proposeSlack(t);
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-
-    expect(slackPosts(posts).filter((p) => p.body.channel === NEEDS_YOU)).toHaveLength(0);
-    expect(await kinds(t, "needs-tom")).toHaveLength(0);
-    const [failed] = await kinds(t, "job-failed");
-    expect(failed.key).toBe("tts/needs-tom:needs-you-channel");
   });
 
   it("the thread's message passes the form every Slack message is held to", () => {

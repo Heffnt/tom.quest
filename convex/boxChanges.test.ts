@@ -1,7 +1,7 @@
 // Box changes on the record's side (plan-root T1 and T3): the shape the door
-// holds a box-change row to, the Slack lines a change earns, the /agents read,
-// the digest's "Box changes" section, the /observe events read, and the
-// silence alarm over the box jobs' heartbeats.
+// holds a box-change row to, the digest lines a change earns, the /agents read,
+// the digest's "Box changes" section, the /agents window view's events read,
+// and the silence alarm over the box jobs' heartbeats.
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,13 +12,15 @@ import {
   composeToday,
   renderSlack,
   todayFactsBlock,
-  verifyDraft,
   type TodayFacts,
 } from "./ttsCompose";
 import {
-  OBSERVE_URL,
+  AGENTS_WINDOW_URL,
+  BOX_CHANGE_HISTORY_COPIED_THROUGH,
+  BOX_CHANGE_HISTORY_CUT,
   boxChangeFaults,
   boxChangeLines,
+  boxChangesInWindow,
   whoCanActLine,
   type BoxChange,
 } from "./boxChanges";
@@ -58,6 +60,14 @@ async function postEvent(t: ReturnType<typeof convexTest>, body: unknown) {
 const scheduled = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
 
+/** The rows the digest reads its decisions and broken lines from, oldest first. */
+const digestLines = (t: ReturnType<typeof convexTest>) =>
+  t.run(async (ctx) =>
+    (await ctx.db.query("events").collect())
+      .filter((row) => row.kind === "digest-line")
+      .sort((a, b) => a.at - b.at || a._creationTime - b._creationTime),
+  );
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.stubEnv("TTS_WORKER_KEY", "s3cret");
@@ -67,22 +77,183 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+async function recordEvent(t: ReturnType<typeof convexTest>, body: unknown) {
+  return await t.fetch("/jarvis/event", {
+    method: "POST",
+    headers: { "X-Jarvis-Key": "s3cret", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+const eventOf = (data: BoxChange) => ({
+  kind: "box-change",
+  at: data.at,
+  provenance: { job: "box-watch", ...(data.agentId === undefined ? {} : { agentId: data.agentId }) },
+  data,
+});
+
 describe("the box-change door", () => {
-  it("takes the fixed shape and files it under the agent it names", async () => {
+  it("records a change posted to POST /jarvis/event under the agent it names, and nothing in dtsEvents", async () => {
+    const t = convexTest({ schema, modules });
+    const res = await recordEvent(t, eventOf(change({ agentId: AGENT })));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, duplicate: false });
+    const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "box-change", at: AT, provenance: { job: "box-watch", agentId: AGENT }, data: change({ agentId: AGENT }) });
+    expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);
+  });
+
+  it("records a change the legacy pen still receives as the same events row", async () => {
     const t = convexTest({ schema, modules });
     const res = await postEvent(t, { kind: "box-change", key: AGENT, data: change({ agentId: AGENT }) });
     expect(res.status).toBe(200);
-    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+    const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ kind: "box-change", key: AGENT, data: change({ agentId: AGENT }) });
+    expect(rows[0]).toMatchObject({ kind: "box-change", at: AT, provenance: { job: "box-watch", agentId: AGENT }, data: change({ agentId: AGENT }) });
+    expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);
   });
 
-  it("refuses a body without the shape, and a key that is not its agent", async () => {
+  it("keeps one row per change when the outbox sends it twice, through either door", async () => {
+    const t = convexTest({ schema, modules });
+    const sent = change({ agentId: AGENT, id: "s=1;i=a1" });
+    expect(await (await postEvent(t, { kind: "box-change", key: AGENT, data: sent })).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(sent))).json()).toMatchObject({ duplicate: true });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=a2", command: "/usr/bin/true" })))).json()).toMatchObject({ duplicate: false });
+    expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(2);
+  });
+
+  // witness: the hook deleted the resend's row and both doors answered with
+  // that deleted row's id, which names nothing in the record.
+  it("answers a resend with the id of the row that stands, through either door", async () => {
+    const t = convexTest({ schema, modules });
+    const first = change({ agentId: AGENT, id: "s=1;i=s1" });
+    const kept = (await (await recordEvent(t, eventOf(first))).json()) as { id: string };
+    const again = (await (await recordEvent(t, eventOf(first))).json()) as { id: string; duplicate: boolean };
+    expect(again).toMatchObject({ ok: true, duplicate: true, id: kept.id });
+    const second = change({ agentId: AGENT, id: "s=1;i=s2", at: AT + 1 });
+    const legacyKept = (await (await postEvent(t, { kind: "box-change", key: AGENT, data: second })).json()) as { id: string };
+    const legacyAgain = (await (await postEvent(t, { kind: "box-change", key: AGENT, data: second })).json()) as { id: string };
+    expect(legacyAgain).toMatchObject({ ok: true, duplicate: true, id: legacyKept.id });
+    const ids = (await t.run(async (ctx) => ctx.db.query("events").collect())).map((row) => row._id as string);
+    expect(ids.sort()).toEqual([kept.id, legacyKept.id].sort());
+  });
+
+  it("records two identical changes in one millisecond as two, when their ids differ or they carry none", async () => {
+    const t = convexTest({ schema, modules });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=b1" })))).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=b2" })))).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT })))).json()).toMatchObject({ duplicate: false });
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT })))).json()).toMatchObject({ duplicate: false });
+    expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(4);
+  });
+
+  // witness: the resend check read only 50 rows of the millisecond, so a
+  // resend of the 51st same-millisecond change was recorded twice.
+  it("finds a resend by its id however many changes share its millisecond", async () => {
+    const t = convexTest({ schema, modules });
+    for (let n = 0; n < 60; n += 1) {
+      expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: `s=1;i=c${n}` })))).json()).toMatchObject({ duplicate: false });
+    }
+    expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=c59" })))).json()).toMatchObject({ duplicate: true });
+    expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(60);
+  });
+
+  // witness: the legacy pen's translation labelled a journal gap posted with
+  // source "state" as box-state; the journal reader is box-watch.
+  it("files a journal gap under the journal reader, box-watch", async () => {
+    const t = convexTest({ schema, modules });
+    await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "journal-gap" } }) });
+    await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "sudoers" }, at: AT + 1 }) });
+    const rows = (await t.run(async (ctx) => ctx.db.query("events").collect()))
+      .filter((row) => row.kind === "box-change")
+      .sort((a, b) => a.at - b.at);
+    expect(rows.map((row) => row.provenance.job)).toEqual(["box-watch", "box-state"]);
+  });
+
+  // witness: the read scanned every event recorded in the window and kept
+  // the box changes, so a long catch-up window of other rows could pass a
+  // query's read limit and stop every digest. It reads the kind's own index.
+  it("reads the window's box changes on their kind's index, past any number of other rows", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      const liveAt = BOX_CHANGE_HISTORY_CUT + 60 * 60_000;
+      vi.setSystemTime(liveAt + 60_000);
+      await t.run(async (ctx) => {
+        for (let n = 0; n < 2500; n += 1) {
+          await ctx.db.insert("events", { kind: "decision", at: liveAt, provenance: {}, subject: `d${n}`, data: {} });
+        }
+      });
+      await recordEvent(t, eventOf(change({ agentId: AGENT, at: liveAt })));
+      const rows = await t.run(async (ctx) => boxChangesInWindow(ctx, liveAt, Date.now() + 60_000));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].command).toBe(change().command);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  // witness: the history migration inserted its copied rows after its event-
+  // time cut, so a creation-time lower bound at that cut replayed the copies.
+  it("excludes a post-cut history copy and selects a late live change exactly once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      const boundary = BOX_CHANGE_HISTORY_COPIED_THROUGH + 2_000;
+      const happenedAt = BOX_CHANGE_HISTORY_CUT - 5 * 60_000;
+      vi.setSystemTime(BOX_CHANGE_HISTORY_CUT + 1);
+      await t.run(async (ctx) => {
+        const old = change({ at: BOX_CHANGE_HISTORY_CUT - 1, id: "copied-history" });
+        await ctx.db.insert("events", { ...eventOf(old), provenance: eventOf(old).provenance });
+      });
+      vi.setSystemTime(BOX_CHANGE_HISTORY_COPIED_THROUGH + 1_000);
+      await recordEvent(t, eventOf(change({ agentId: AGENT, at: happenedAt, id: "late-live" })));
+      const first = await t.run(async (ctx) => boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_CUT, boundary));
+      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, boundary, boundary + 2_000));
+      expect(first.map((row) => row.id)).toEqual(["late-live"]);
+      expect(second).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // witness: taking 2,000 rows and then advancing the digest through the
+  // whole window permanently skipped every later row in that same window.
+  it("reads every box change when a window holds more than 2,000", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      const recordedAt = BOX_CHANGE_HISTORY_COPIED_THROUGH + 10_000;
+      vi.setSystemTime(recordedAt);
+      await t.run(async (ctx) => {
+        for (let n = 0; n < 2_001; n += 1) {
+          const data = change({ at: AT + n, id: `window-${n}` });
+          await ctx.db.insert("events", { ...eventOf(data), provenance: eventOf(data).provenance });
+        }
+      });
+      const rows = await t.run(async (ctx) =>
+        boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_COPIED_THROUGH + 1, recordedAt + 100),
+      );
+      expect(rows).toHaveLength(2_001);
+      expect(rows[0].id).toBe("window-0");
+      expect(rows[2_000].id).toBe("window-2000");
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
+  it("refuses a body without the shape, a key or provenance that is not its agent, and an at that is not its own", async () => {
     const t = convexTest({ schema, modules });
     expect((await postEvent(t, { kind: "box-change", data: { source: "root", why: "ran-as-root", user: "jarvis", at: AT } })).status).toBe(400);
     expect((await postEvent(t, { kind: "box-change", data: change({ at: Number.NaN as unknown as number }) })).status).toBe(400);
     expect((await postEvent(t, { kind: "box-change", key: "claude:box:other", data: change({ agentId: AGENT }) })).status).toBe(400);
     expect((await postEvent(t, { kind: "box-change", key: AGENT, data: change() })).status).toBe(400);
+    expect((await recordEvent(t, { ...eventOf(change()), provenance: { job: "box-watch", agentId: AGENT } })).status).toBe(400);
+    expect((await recordEvent(t, eventOf(change({ agentId: AGENT })))).status).toBe(200);
+    expect((await recordEvent(t, { ...eventOf(change({ agentId: AGENT, command: "/usr/bin/id -u" })), at: AT + 1 })).status).toBe(400);
+    expect((await recordEvent(t, { ...eventOf(change()), data: { source: "root" } })).status).toBe(400);
+    expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(1);
     expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toHaveLength(0);
   });
 
@@ -96,8 +267,8 @@ describe("the box-change door", () => {
   });
 });
 
-describe("the Slack lines a change earns", () => {
-  it("puts a change to who or what can act in #tts-decisions, and nothing else", () => {
+describe("the digest lines a change earns", () => {
+  it("puts a change to who or what can act on the digest's objection list, and nothing else", () => {
     expect(whoCanActLine(change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "sudoers", after: "/etc/sudoers.d/jarvis: jarvis ALL=(ALL) NOPASSWD: ALL" } })))
       .toBe("The box's sudo rules changed: now /etc/sudoers.d/jarvis: jarvis ALL=(ALL) NOPASSWD: ALL");
     expect(whoCanActLine(change({ source: "user", why: "state", command: undefined, user: "root", change: { what: "users", after: "useradd: new user: name=eve" } })))
@@ -110,20 +281,35 @@ describe("the Slack lines a change earns", () => {
     expect(whoCanActLine(change({ command: "read-only: cat ×2", count: 2 }))).toBeNull();
   });
 
-  it("schedules the decision line for a sudoers change and the broken line for a journal gap", async () => {
+  it("lists the decision line for a sudoers change and the broken line for a journal gap in the digest, and schedules no Slack post", async () => {
     const t = convexTest({ schema, modules });
     await postEvent(t, { kind: "box-change", data: change() });
-    expect(await scheduled(t)).toHaveLength(0);
+    expect(await digestLines(t)).toHaveLength(0);
     await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "sudoers", after: `token ${TOKEN}` } }) });
-    let jobs = await scheduled(t);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toContain("sendDecision");
-    expect(JSON.stringify(jobs[0].args)).not.toContain(TOKEN);
+    let lines = await digestLines(t);
+    expect(lines).toHaveLength(1);
+    const sudoers = await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).find((row) => row.kind === "box-change" && (row.data as BoxChange).change?.what === "sudoers"),
+    );
+    expect(lines[0].subject).toBe(`box-change:${sudoers!._id}`);
+    expect(lines[0].data).toMatchObject({
+      section: "decisions",
+      askId: `box-change:${sudoers!._id}`,
+      reason: "it changes who or what can act on the Jarvis Box",
+    });
+    expect((lines[0].data as { decision: string }).decision).toMatch(/^The box's sudo rules changed: now token /);
+    expect(JSON.stringify(lines[0])).not.toContain(TOKEN);
     await postEvent(t, { kind: "box-change", data: change({ source: "state", why: "state", command: undefined, user: "unknown", change: { what: "journal-gap", before: "2026-09-25T05:08:34.000Z", after: "2026-09-25T06:08:34.000Z" } }) });
-    jobs = await scheduled(t);
-    expect(jobs).toHaveLength(2);
-    expect(jobs[1].name).toContain("sendBroken");
-    expect(jobs[1].args[0]).toMatchObject({ job: "box-watch:journal-gap" });
+    lines = await digestLines(t);
+    expect(lines).toHaveLength(2);
+    expect(lines[1].subject).toBe("box-watch:journal-gap");
+    expect(lines[1].data).toMatchObject({
+      section: "broken",
+      job: "box-watch:journal-gap",
+      statement: "The box's journal lost entries the box-change reader had not read, from 2026-09-25T05:08:34.000Z to 2026-09-25T06:08:34.000Z, so changes to the machine in that span are not in the record.",
+      url: AGENTS_WINDOW_URL,
+    });
+    expect((await scheduled(t)).filter((job) => job.name.includes("ttsSync"))).toEqual([]);
   });
 });
 
@@ -139,6 +325,51 @@ describe("the /agents read", () => {
     expect(rows[1].command).toContain("[redacted:github]");
     expect(rows[1].command).not.toContain(TOKEN);
     await expect(t.query(api.boxChanges.forAgent, { agentId: AGENT })).rejects.toThrow();
+  });
+
+  // witness: the read walked every row the agent wrote (events.by_agent_at)
+  // and kept the box changes, so an agent with enough other rows passed the
+  // query's read limit and its /agents chat failed to load.
+  // convex-test counts only the rows a query returns toward the read limit,
+  // where Convex counts every row a filter looked at, so the test records the
+  // queries the read makes: an index range that is all box changes, with no
+  // filter after it, is one whose rows read are the rows returned.
+  it("reads an agent's box changes without reading the agent's other rows", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 700; n += 1) {
+        await ctx.db.insert("events", { kind: "job-ok", at: AT - 1_000 + n, provenance: { agentId: AGENT }, subject: `j${n}`, data: {} });
+      }
+    });
+    await recordEvent(t, eventOf(change({ agentId: AGENT })));
+    const tom = await withTom(t);
+    const runtime = globalThis as unknown as { Convex: { syscall: (op: string, args: string) => string } };
+    const convexGlobal = runtime.Convex;
+    const queries: { source: { indexName?: string; range?: unknown[] }; operators: Record<string, unknown>[] }[] = [];
+    runtime.Convex = {
+      get asyncSyscall() {
+        return (convexGlobal as unknown as { asyncSyscall: unknown }).asyncSyscall;
+      },
+      get jsSyscall() {
+        return (convexGlobal as unknown as { jsSyscall: unknown }).jsSyscall;
+      },
+      syscall: (op: string, args: string) => {
+        if (op === "1.0/queryStream") queries.push((JSON.parse(args) as { query: (typeof queries)[number] }).query);
+        return convexGlobal.syscall(op, args);
+      },
+    } as unknown as typeof convexGlobal;
+    let rows;
+    try {
+      rows = await tom.query(api.boxChanges.forAgent, { agentId: AGENT });
+    } finally {
+      runtime.Convex = convexGlobal;
+    }
+    expect(rows.map((row) => row.at)).toEqual([AT]);
+    const reads = queries.filter((query) => query.source.indexName?.startsWith("events."));
+    expect(reads).toHaveLength(1);
+    expect(reads[0].source.indexName).toBe("events.by_kind_agent_at");
+    expect(JSON.stringify(reads[0].source.range)).toContain('"box-change"');
+    expect(reads[0].operators.filter((operator) => "filter" in operator)).toEqual([]);
   });
 });
 
@@ -164,12 +395,12 @@ describe("the digest's Box changes", () => {
         text: "An agent ran 5 root commands, 2 changed the machine: apt-get install -y jq; systemctl restart nginx.",
         url: `https://tom.quest/agents?agent=${encodeURIComponent(AGENT)}`,
       },
-      { id: "box:unmatched", text: "Root commands no agent was matched to: ran 1 root command, 1 changed the machine: tts-install-cron.", url: OBSERVE_URL },
-      { id: "box:deploy:888b43a0e41c5d3b0f3c9f1e0a1b2c3d4e5f6a7b", text: "The box deployed Jarvis 888b43a, 2 commits.", url: OBSERVE_URL },
-      { id: "box:setup:0123456789abcdef0123456789abcdef01234567", text: "Setup ran as root at 0123456, 1 daemon reloads, 2 unit changes.", url: OBSERVE_URL },
-      { id: "box:state:packages", text: "The package list changed: jq 1.8.", url: OBSERVE_URL },
-      { id: "box:units", text: "Units changed outside a root command: tts-session-host.service stop.", url: OBSERVE_URL },
-      { id: "box:logins", text: "3 ssh logins reached the box: jarvis 2, root 1.", url: OBSERVE_URL },
+      { id: "box:unmatched", text: "Root commands no agent was matched to: ran 1 root command, 1 changed the machine: tts-install-cron.", url: AGENTS_WINDOW_URL },
+      { id: "box:deploy:888b43a0e41c5d3b0f3c9f1e0a1b2c3d4e5f6a7b", text: "The box deployed Jarvis 888b43a, 2 commits.", url: AGENTS_WINDOW_URL },
+      { id: "box:setup:0123456789abcdef0123456789abcdef01234567", text: "Setup ran as root at 0123456, 1 daemon reloads, 2 unit changes.", url: AGENTS_WINDOW_URL },
+      { id: "box:state:packages", text: "The package list changed: jq 1.8.", url: AGENTS_WINDOW_URL },
+      { id: "box:units", text: "Units changed outside a root command: tts-session-host.service stop.", url: AGENTS_WINDOW_URL },
+      { id: "box:logins", text: "3 ssh logins reached the box: jarvis 2, root 1.", url: AGENTS_WINDOW_URL },
     ]);
   });
 
@@ -183,7 +414,6 @@ describe("the digest's Box changes", () => {
       calendar: [],
       objections: [],
       needsYou: [],
-      runners: [],
       overnightByTodo: [],
       broken: [],
       boxChanges,
@@ -197,30 +427,27 @@ describe("the digest's Box changes", () => {
     const block = todayFactsBlock(facts, false);
     const agentFact = block.facts.find((fact) => fact.id === `box:agent:${AGENT}`);
     expect(agentFact?.numbers).toEqual(["5", "2"]);
-    const draft = {
-      firstLine: "Nothing is dated today and nothing is late.",
-      firstLineSources: [],
-      lines: [
-        { role: "lead" as const, text: "What ran as root on the box.", sources: [] },
-        { role: "item" as const, text: "An agent ran 5 root commands; 2 of them changed the machine.", url: agentFact!.urls[0], sources: [agentFact!.id] },
-      ],
-    };
-    expect(verifyDraft(draft, block).filter((fault) => fault.includes("box") || fault.includes("number") || fault.includes("link"))).toEqual([]);
   });
 });
 
-describe("the /observe box lane", () => {
-  it("returns box changes whole but redacted, and the deploy rows' commits", async () => {
+describe("the /agents window view's box lane", () => {
+  it("returns box changes from events, whole but redacted, and the deploy rows' commits from dtsEvents", async () => {
     const t = convexTest({ schema, modules });
-    await postEvent(t, { kind: "box-change", data: change({ command: `/usr/bin/env TOKEN=${TOKEN} true` }) });
+    vi.setSystemTime(AT + 30_000);
+    await recordEvent(t, eventOf(change({ agentId: AGENT, command: `/usr/bin/env TOKEN=${TOKEN} true` })));
     await postEvent(t, { kind: "deploy", key: "Jarvis:888b43a0", data: { repo: "Jarvis", from: "1cdb2c2", to: "888b43a", commits: ["x"], setupNeeded: false } });
     const tom = await withTom(t);
-    const now = Date.now();
-    const page = await tom.query(api.observe.eventsInWindow, { from: now - 60_000, to: now + 60_000, paginationOpts: { numItems: 50, cursor: null } });
-    const box = page.page.find((event) => event.kind === "box-change");
+    const win = { from: AT - 60_000, to: AT + 60_000, paginationOpts: { numItems: 50, cursor: null } };
+    const record = await tom.query(api.observe.recordInWindow, win);
+    const box = record.page.find((event) => event.kind === "box-change");
     expect(box?.data).toMatchObject({ source: "sudo", user: "jarvis", at: AT });
+    expect(box?.agentId).toBe(AGENT);
     expect(JSON.stringify(box?.data)).not.toContain(TOKEN);
-    expect(page.page.find((event) => event.kind === "deploy")?.data).toEqual({ repo: "Jarvis", from: "1cdb2c2", to: "888b43a" });
+    // The deploy's home is still dtsEvents; its copy in events is not read twice.
+    expect(record.page.find((event) => event.kind === "deploy")).toBeUndefined();
+    const old = await tom.query(api.observe.eventsInWindow, win);
+    expect(old.page.find((event) => event.kind === "box-change")).toBeUndefined();
+    expect(old.page.find((event) => event.kind === "deploy")?.data).toEqual({ repo: "Jarvis", from: "1cdb2c2", to: "888b43a" });
   });
 });
 
@@ -234,12 +461,16 @@ describe("the silence alarm", () => {
 
   it("watches nothing until a job's first clean run", async () => {
     const t = convexTest({ schema, modules });
+    // Before 6 a.m. New York, so the late-digest line is not due either.
+    vi.setSystemTime(AT);
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: [] });
     expect(await scheduled(t)).toHaveLength(0);
   });
 
   it("posts one line when a heartbeat is three intervals old, and writes the recovery when it beats again", async () => {
     const t = convexTest({ schema, modules });
+    // The alarm's line goes to the one output channel.
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
     vi.setSystemTime(AT);
     await ok(t, "box-watch");
     await ok(t, "box-state");
@@ -259,17 +490,18 @@ describe("the silence alarm", () => {
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["box-watch"], recovered: [] });
     // Said once, however many passes find it still silent.
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["box-watch"], recovered: [] });
-    const failed = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
-    expect(failed.filter((row) => row.kind === "job-failed").map((row) => row.key)).toEqual(["box-watch:silent"]);
+    const failed = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(failed.filter((row) => row.kind === "job-failed").map((row) => row.subject)).toEqual(["box-watch:silent"]);
     const jobs = await scheduled(t);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toContain("sendBroken");
-    expect(jobs[0].args[0]).toMatchObject({ job: "box-watch:silent" });
-    expect(String((jobs[0].args[0] as { statement: string }).statement)).toContain("has not run clean for 6 minutes");
+    expect(jobs[0].name).toContain("sendSlack");
+    expect(jobs[0].args[0]).toMatchObject({ channel: "C0TODAY", subject: { kind: "job", id: "box-watch:silent" } });
+    expect(String((jobs[0].args[0] as { text: string }).text)).toContain("has not run clean for 6 minutes");
 
     await ok(t, "box-watch");
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: ["box-watch"] });
-    const recovered = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
-    expect(recovered.filter((row) => row.kind === "job-recovered").map((row) => row.key)).toEqual(["box-watch:silent"]);
+    const recovered = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(recovered.filter((row) => row.kind === "job-recovered").map((row) => row.subject)).toEqual(["box-watch:silent"]);
+    expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);
   });
 });

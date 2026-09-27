@@ -7,7 +7,7 @@
 // schedule mechanics (like dtsBlocks): editable and deletable freely, with
 // every change logged to dtsEvents.
 //
-// The generator runs at 4:30, BEFORE the 5 a.m. digest (crons.ts), so the
+// The generator runs at 4:30, BEFORE the 5 a.m. digest (jarvis/tick.ts), so the
 // day's instances are already in the record when the digest reads it and they
 // land in it as ordinary due-today items.
 
@@ -16,9 +16,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
 import {
-  TTS_PREP_NY_HOUR,
   nyCalendarDayBoundsUtc,
-  nyLocalHour,
   nyTimeUtcMs,
   ttsPrepDay,
   weekdayWordOf,
@@ -221,13 +219,11 @@ export const internalCreateRepeat = internalMutation({
 
 export const internalGenerateRepeats = internalMutation({
   args: {
-    force: v.optional(v.boolean()),
     // Test/backfill door: generate for a specific day instead of ttsPrepDay.
     day: v.optional(v.string()),
   },
-  handler: async (ctx, { force, day: dayOverride }) => {
+  handler: async (ctx, { day: dayOverride }) => {
     const now = Date.now();
-    if (!force && nyLocalHour(now) !== TTS_PREP_NY_HOUR) return; // DST guard
     const day = dayOverride ?? ttsPrepDay(now);
     const weekday = weekdayWordOf(day);
     const bounds = nyCalendarDayBoundsUtc(day);

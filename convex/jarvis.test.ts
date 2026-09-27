@@ -76,22 +76,100 @@ describe("POST /jarvis/event", () => {
     expect(await rows(t, "events")).toHaveLength(1);
   });
 
-  it("runs the job hooks: one digest row and one line per standing failure, re-armed by the clean run", async () => {
+  it("refuses a job-failed that names no job, and records nothing", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
+    const res = await post(t, "/jarvis/event", { kind: "job-failed", provenance: {}, subject: "x:y", data: { error: "e" } }, { "X-Jarvis-Key": "k" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("provenance.job");
+    expect(await rows(t, "events")).toEqual([]);
+  });
+
+  it("refuses Tom-only events through both worker-key routes", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    const body = {
+      kind: "disagreement-settled",
+      subject: "decision:ask-1",
+      data: { subject: "decision:ask-1", verdict: "approve" },
+    };
+    for (const path of ["/jarvis/event", "/tts/event"]) {
+      const res = await post(t, path, body, { "X-Jarvis-Key": "k" });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "disagreement-settled is Tom-only" });
+    }
+    expect(await rows(t, "events")).toEqual([]);
+    expect(await rows(t, "dtsEvents")).toEqual([]);
+  });
+
+  it("runs the job hooks: one digest failure per standing condition, a repeat marked, re-armed by the clean run, all in events, no Slack post", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
     const failed = { kind: "job-failed", provenance: { job: "poll-canvas" }, subject: "poll-canvas:canvas-auth", data: { job: "poll-canvas", error: "token expired" } };
     expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: true });
-    expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: false });
-    // Every accepted post is a row of the record; the digest's row is one.
-    expect((await rows(t, "events")).filter((row) => row.kind === "job-failed")).toHaveLength(2);
-    expect((await rows(t, "dtsEvents")).filter((row) => row.kind === "job-failed")).toHaveLength(1);
+    vi.setSystemTime(1_700_000_060_000);
+    expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: false, since: 1_700_000_000_000 });
+    // Every accepted post is a row of the record; the repeat names the report it repeats.
+    const failures = (await rows(t, "events")).filter((row) => row.kind === "job-failed").sort((a, b) => a.at - b.at);
+    expect(failures.map((row) => (row.data as { standingSince?: number }).standingSince)).toEqual([undefined, 1_700_000_000_000]);
+    // The digest's broken section reads the first report and not the repeat;
+    // nothing posts to Slack on either.
+    const standing = await t.run(async (ctx) => {
+      const { failuresInWindow } = await import("./jarvis/jobs");
+      return await failuresInWindow(ctx, 1_700_000_000_000, 1_700_000_100_000);
+    });
+    expect(standing.failed.map((row) => row.at)).toEqual([1_700_000_000_000]);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((job) => job.name.includes("ttsSync"))).toEqual([]);
 
+    vi.setSystemTime(1_700_000_120_000);
     const ok = { kind: "job-ok", provenance: { job: "poll-canvas" }, subject: "poll-canvas:canvas-auth" };
     expect(await (await post(t, "/jarvis/event", ok, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ recovered: true });
     expect((await rows(t, "events")).map((row) => row.kind).sort()).toEqual(["job-failed", "job-failed", "job-ok", "job-recovered"]);
-    expect((await rows(t, "dtsEvents")).map((row) => row.kind).sort()).toEqual(["job-failed", "job-recovered"]);
+    // Nothing of a job's report reaches the previous generation's table.
+    expect(await rows(t, "dtsEvents")).toEqual([]);
     // The next failure is news again.
+    vi.setSystemTime(1_700_000_180_000);
     expect(await (await post(t, "/jarvis/event", failed, { "X-Jarvis-Key": "k" })).json()).toMatchObject({ reported: true });
+    const window = await t.run(async (ctx) => {
+      const { failuresInWindow } = await import("./jarvis/jobs");
+      return await failuresInWindow(ctx, 1_700_000_000_000, 1_700_000_200_000);
+    });
+    expect(window.failed.map((row) => row.at)).toEqual([1_700_000_000_000, 1_700_000_180_000]);
+    expect(window.recovered.map((row) => row.at)).toEqual([1_700_000_120_000]);
+  });
+
+  // witness: the window read took the first 4,000 job-failed rows and then
+  // dropped the repeats, so a few jobs failing all day filled the read and a
+  // new failure after them never reached the digest.
+  it("finds a new failure behind more repeats than the read limit", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 4_001; i++) {
+        await ctx.db.insert("events", {
+          kind: "job-failed",
+          at: 1_000 + i,
+          provenance: { job: `stuck-${i % 3}` },
+          subject: `stuck-${i % 3}`,
+          data: { error: "still down", ...(i < 3 ? {} : { standingSince: 1_000 + (i % 3) }) },
+        });
+      }
+      await ctx.db.insert("events", {
+        kind: "job-failed",
+        at: 10_000,
+        provenance: { job: "poll-gmail" },
+        subject: "poll-gmail",
+        data: { error: "new" },
+      });
+    });
+    const window = await t.run(async (ctx) => {
+      const { failuresInWindow } = await import("./jarvis/jobs");
+      return await failuresInWindow(ctx, 0, 20_000);
+    });
+    expect(window.failed.map((row) => row.subject)).toEqual(["stuck-0", "stuck-1", "stuck-2", "poll-gmail"]);
   });
 });
 
@@ -148,6 +226,15 @@ describe("the /jarvis/ prefix", () => {
     expect((await post(t, "/tts/event", { kind: "deploy", data: {} }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "wrong" })).status).toBe(401);
+    // A decision's key is its askId, the record row's subject: without one
+    // the legacy pen refuses it as POST /jarvis/event refuses it.
+    const before = (await rows(t, "events")).length;
+    expect((await post(t, "/tts/event", { kind: "decision", data: { question: "q" } }, { "X-TTS-Key": "k" })).status).toBe(400);
+    for (const kind of ["decision", "digest-line", "eval-run"]) {
+      expect((await post(t, "/tts/event", { kind, key: " \t ", data: {} }, { "X-TTS-Key": "k" })).status).toBe(400);
+    }
+    expect((await post(t, "/jarvis/event", { kind: "decision", data: { question: "q" } }, { "X-Jarvis-Key": "k" })).status).toBe(400);
+    expect((await rows(t, "events")).length).toBe(before);
   });
 });
 

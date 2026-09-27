@@ -59,6 +59,11 @@ export const refreshFeeds = internalAction({
         results.push({ feed: feed.name, error: message });
       }
     }
-    return { results };
+    // A feed that failed is a failure of the run (convex/jarvis/tick.ts
+    // failuresOf) while the others still land.
+    const failures = results.flatMap((result) =>
+      typeof result.error === "string" ? [`calendar feed "${String(result.feed)}" failed: ${result.error}`] : [],
+    );
+    return { results, failures };
   },
 });

@@ -1,21 +1,15 @@
-import { v } from "convex/values";
-import { internalMutation, internalQuery, query } from "./_generated/server";
+import { internalQuery, query } from "./_generated/server";
 import { requireTomOrAgent } from "./authRoles";
-import { logEvent } from "./tts";
-import { RECOMMENDATION } from "./ttsShared";
 
 // TTS code-todo BRIEFS — ground-up briefs for open code todos (from the
 // dtsCodeTodoMirror's repos). Their one writer was the planner's brief pass
 // over ComplexMultiTrigger's vqc/todos.yaml, retired when CMT adoption ruling
 // 70 moved CMT's todos into TTS; the 31 CMT rows here are records, and
-// nothing writes a new brief today (POST /tts/code-briefs in http.ts still
-// accepts one). Tom's rulings on them live in the unified ttsRulings table
+// nothing writes a new brief (POST /tts/code-briefs went on 2026-09-26).
+// Tom's rulings on them live in the unified ttsRulings table
 // (ttsRulings.ts, ratified 2026-08-28), and worker jobs read pending rulings
 // back from there to apply/execute them. Tom-facing functions are Tom-gated
-// (tts.ts pattern); everything the worker touches goes through internal
-// functions behind the key-authed /tts/code-* routes in http.ts.
-
-const EXEC_CLASS = v.union(v.literal("box"), v.literal("needs-turing"));
+// (tts.ts pattern).
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
 
@@ -29,79 +23,7 @@ export const listCodeBriefs = query({
   },
 });
 
-// ── Internal: worker paths (via key-authed http.ts /tts/code-* routes) ───────
-
-// Upsert by (repo, externalId): the brief table holds the CURRENT brief per
-// item, not history (the ruling table is the append-only side). One
-// "code-briefed" event per batch, not per row.
-export const internalStoreBriefs = internalMutation({
-  args: {
-    briefs: v.array(
-      v.object({
-        repo: v.string(),
-        externalId: v.string(),
-        sourceHash: v.string(),
-        brief: v.string(),
-        recommendation: RECOMMENDATION,
-        execClass: EXEC_CLASS,
-        evidence: v.optional(v.string()),
-        // THE DOOR CHECK'S MARK (phase 9): what this brief failed on when the
-        // planner read it back against the writing standard, on both
-        // attempts. Absent means the brief passed.
-        doorFaults: v.optional(v.array(v.string())),
-      }),
-    ),
-    // THE RUN THAT WROTE THESE BRIEFS. A code ruling of Tom's is a judgment
-    // about the brief he read, and this is the edge back to the run that wrote
-    // it (convex/agentLabels.ts tokenForRulingSubject reads it off the brief
-    // row). One token per call rather than per brief: one brief pass is one
-    // run, and the pen takes the pass's output as a batch. Absent is a
-    // supported value and is never inferred.
-    runToken: v.optional(v.string()),
-  },
-  handler: async (ctx, { briefs, runToken }) => {
-    const now = Date.now();
-    for (const brief of briefs) {
-      const existing = await ctx.db
-        .query("dtsCodeBriefs")
-        .withIndex("by_repo_external", (q) =>
-          q.eq("repo", brief.repo).eq("externalId", brief.externalId),
-        )
-        .first();
-      // No normalizing left to do: the pen's validator holds the four verdict
-      // words, so what arrives is already what is stored (the lifeos update,
-      // phase 7).
-      // Spread conditionally, never as `producedByRunToken: runToken`: a patch
-      // written with undefined DELETES the field, so a re-brief from an
-      // unregistered caller would silently strip the edge the last registered
-      // run left behind.
-      //
-      // doorFaults IS THE OPPOSITE CASE, and it is written UNCONDITIONALLY for
-      // that reason — the deletion a bare `undefined` causes is exactly what
-      // this field wants. producedByRunToken is an edge a caller may
-      // legitimately not know (an unregistered run has no token to send), so
-      // silence there means UNKNOWN and must not erase what a registered run
-      // recorded. The door mark is a property of THE TEXT BEING WRITTEN RIGHT
-      // NOW: this call replaces the brief, so silence means the replacement is
-      // CLEAN. Leaving a previous refusal's mark standing over rewritten text
-      // would print "the door check refused this brief twice" under a brief
-      // the door passed.
-      const { doorFaults, ...rest } = brief;
-      const row = {
-        ...rest,
-        ...(runToken === undefined ? {} : { producedByRunToken: runToken }),
-        doorFaults,
-        preparedAt: now,
-      };
-      if (existing) {
-        await ctx.db.patch(existing._id, row);
-      } else {
-        await ctx.db.insert("dtsCodeBriefs", row);
-      }
-    }
-    await logEvent(ctx, "code-briefed", undefined, { count: briefs.length });
-  },
-});
+// ── Internal: the worker's read (GET /tts/planner-context in http.ts) ─────────
 
 export const internalListBriefs = internalQuery({
   args: {},

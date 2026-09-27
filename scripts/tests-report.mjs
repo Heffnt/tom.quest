@@ -1,8 +1,7 @@
 // tests-report.mjs — the Guardrails run's own result, posted to the merge
 // gate's first head row (POST /tts/tests, convex/ttsMerge.ts).
 //
-// NO SHEBANG LINE and ZERO IMPORTS, for scripts/evals-check.mjs's reasons: the
-// test beside it imports this file, and the `report` job runs it with plain
+// NO SHEBANG LINE and ZERO IMPORTS: the test beside it imports this file, and the `report` job runs it with plain
 // node before any install.
 //
 // IT IS ITS OWN JOB, and that is the whole reason this file exists rather than

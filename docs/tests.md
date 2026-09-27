@@ -24,9 +24,9 @@ job and is not counted in any row.
 
 | Test or check | What it verifies | Where it runs | Wall time | Verifier |
 |---|---|---|---|---|
-| vitest, `convex/` — 42 files, 1,338 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
-| vitest, `app/` — 68 files, 1,042 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 18.5 s of CPU | checks |
-| vitest, `scripts/` — 9 files, 128 tests | The guardrail scripts' own logic, the affected-tests decision, the tests and evals reports | CI `tests`; local | 1.2 s of CPU | checks |
+| vitest, `convex/` — 43 files, 1,343 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
+| vitest, `app/` — 68 files, 1,047 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 18.5 s of CPU | checks |
+| vitest, `scripts/` — 8 files, 64 tests | The guardrail scripts' own logic, the affected-tests decision, the tests report | CI `tests`; local | 1.2 s of CPU | checks |
 | vitest, `shared/__tests__/` — 10 files, 278 tests | The modules Convex, the site and the box share: the skills catalog and router, the graph, redaction, the session constants, and that each imports only its siblings | CI `tests`; local | 0.3 s of CPU | checks |
 | vitest, `vqc/` — 2 files, 9 tests | The shape of `vqc/todos.yaml` and the registries beside it | CI `tests`; local | 0.1 s of CPU | checks |
 | vitest, `test/` — 1 file, 3 tests | `test/temp.mjs`, the `tempDir` helper every test's scratch directory comes from | CI `tests`; local | under 0.01 s of CPU | checks |
@@ -37,7 +37,7 @@ job and is not counted in any row.
 | `pnpm check:guardrails` — 8 scripts | The eight static boundaries below | CI `static-boundaries`; local | **10.0 s** | checks |
 | ↳ `check-removals.mjs` | A change may not add a complexity smell, and the committed count only goes down; needs `ast-grep` | CI `static-boundaries` | 5.8 s | checks |
 | ↳ `check-private-paths.mjs` | No `model-of-tom` path, area-category line or operate-page window is in this public repository | CI `static-boundaries` | 3.4 s | checks |
-| ↳ `check-vocabulary.mjs` | The closed vocabulary's generated block, the graph kinds it is the schema of, the evals commit key, and no refused word under `convex/`, `app/` or `vqc/` | CI `static-boundaries` | 0.11 s | checks |
+| ↳ `check-vocabulary.mjs` | The closed vocabulary's generated block, the graph kinds it is the schema of, the commit key, and no refused word under `convex/`, `app/` or `vqc/` | CI `static-boundaries` | 0.11 s | checks |
 | ↳ `check-session-mirrors.mjs` | The live-status list matches the schema; no second repo list | CI `static-boundaries` | 0.19 s | checks |
 | ↳ `check-auth-boundary.mjs` | No inline `admin`/`tom` role comparison outside the two files that own it | CI `static-boundaries` | 0.10 s | checks |
 | ↳ `check-agents-md.mjs` | Each `AGENTS.md` has its `CLAUDE.md` beside it and no sentence of it is in a second one; a file over its byte target, or a chain over 32,768 bytes, warns and never fails | CI `static-boundaries` | 0.07 s | checks |
@@ -47,7 +47,7 @@ job and is not counted in any row.
 | `pnpm lint` (eslint) | Style and unused bindings | Local only, and not a gate | 50 s | not a verifier |
 | `turing-api/*_test.py` — 9 files, 121 tests | The FastAPI service on the WPI Turing cluster: its keys, its Slurm and tmux wrappers, its GPU report | Not in this repository's CI; the cluster is its own deployment | 4 s under `python3 -m pytest` | checks, elsewhere |
 | the audit | One change, before it merges | the Jarvis repository's `worker/jobs/audit.mjs` on the box, per head | one Codex run | the audit |
-| the evals | An output, against Tom's labels | `.github/workflows/evals.yml` asks, the box answers | 20 to 60 minutes, serial | the evals |
+| the evals | An output, against Tom's labels | Not in this repository: the Jarvis box's runner posts each set's result as an `eval-run` event; the wall evals run in Jarvis's own test suite | per set | the evals |
 
 The merge bar is four CI jobs green — `static-boundaries`, `secret-scan`,
 `tests` and `e2e` — and a fifth job, `report`, that writes all four onto the
@@ -164,7 +164,7 @@ reads nothing of the machine it runs on outside the checkout and `TMPDIR`.
 `vitest.config.mts` sets, for every test, the variables that would name the
 machine's files, pointed at `test/fixtures/no-machine`, a directory that does
 not exist: git's configuration (`GIT_CONFIG_GLOBAL`, `XDG_CONFIG_HOME`, with
-`GIT_CONFIG_NOSYSTEM=1`), because the `check-agents-md` and `evals-check` tests
+`GIT_CONFIG_NOSYSTEM=1`), because the `check-agents-md` tests
 run real git, and `WIKITOM_DIR`, so no default WikiTom checkout is found. The
 three `REAL` cases in `shared/__tests__/skills.test.mjs`, which check Tom's own
 model-of-tom, run only when `REAL_WIKITOM_DIR` names a checkout

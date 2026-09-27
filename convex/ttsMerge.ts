@@ -3,26 +3,19 @@ import { internalAction, internalMutation, internalQuery } from "./_generated/se
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import {
-  answeredEvalsRun,
-  COVERAGE_NOT_REQUIRED,
-  EVALS_RUN,
-  evalsProtocolStatus,
-  evalsRequestFor,
-} from "./ttsEvals";
 import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
 // Merging used to be Tom's gate: the box classifier denied `git merge` and
 // `gh pr merge` outright, and every finished branch waited on him. His ruling
-// is that merging is MECHANICAL — when the tests are green, an audit approved
-// the head, and the evals came back clean, nothing is left for a person to
-// judge — so the gate is those three checks, and the merge is then REPORTED
+// is that merging is MECHANICAL — when the tests are green and an audit
+// approved the head, nothing is left for a person to judge — so the gate is
+// those two checks, and the merge is then REPORTED
 // for objection rather than asked about. That is also why a merge is not on
 // the narrow list: the delegate takes no decision here.
 //
-// The three facts are three dtsEvents rows about ONE COMMIT, each keyed
+// The two facts are two dtsEvents rows about ONE COMMIT, each keyed
 // `<repo>@<sha>`, so every check is a point lookup:
 //
 //   "tests-run"     — the Guardrails `tests` job posts its own result at the
@@ -32,31 +25,14 @@ import { redactSecrets } from "../shared/redact.mjs";
 //                     `VERDICT: <WORD>` line in it is the verdict
 //                     (POST /tts/audit).
 //                     data { repo, sha, verdict, text, model?, fallback? }
-//   "evals-run"     — already written by worker/jobs/evals.mjs for every
-//                     scored head (convex/ttsEvals.ts). `data.regressions` is
-//                     the runner's own comparison against the base run, and
-//                     `data.goldenCoverage` its answer to whether a watched
-//                     context change shipped an item, so this file never
-//                     reimplements gate().
 //
-// FOR NOW THE GATE OPENS ON TWO OF THE THREE (Tom, 2026-09-24). The evals row
-// is still read and still reported in `checks`, with its `passed` and its
-// `why`, so the digest, the pages and the #tts-decisions merge line show it;
-// it is not counted in `allowed` or in `missing` while EVALS_REQUIRED_FOR_MERGE
-// below is false.
+// The wall evals are not a third row: they run in Jarvis's own test suite
+// (worker/jobs/evals-wall.test.mjs), so they gate through its tests-run row.
 //
 // FAIL-CLOSED, and deliberately unlike the Bash classifier, which fails open:
 // a missing row is a check that did not pass. Guessing wrong here costs a
 // merge nobody looked at; guessing wrong the other way costs a branch that
 // waits, and a branch that waits is visible.
-
-/** Whether the evals row must pass for the gate to open. Tom, 2026-09-24:
- *  "evals seem to be broken rn so lets remove that requirement for merging for
- *  now until I have the time to personally look into it." The evals arm had
- *  failed closed for every pull request because the box's Claude account was
- *  out of Fable usage and the Fable judge could not answer. Restoring the
- *  requirement is setting this to true; nothing else changes. */
-export const EVALS_REQUIRED_FOR_MERGE = false;
 
 export const TESTS_RUN = "tests-run";
 export const AUDIT_VERDICT = "audit-verdict";
@@ -88,11 +64,9 @@ export const AUDIT_REMOVAL_HEADING = "REMOVAL CHECK:";
 export const AUDIT_REMOVAL_NOTES_MAX = 20;
 export const AUDIT_REMOVAL_NOTE_MAX_CHARS = 300;
 
-/** The key every fact ABOUT ONE COMMIT is filed under — the spelling
- *  convex/ttsEvals.ts already uses for an evals run, so all three checks are
+/** The key every fact ABOUT ONE COMMIT is filed under, so both checks are
  *  the same lookup. */
-// Both keys moved to ./ttsShared, which convex/ttsEvals.ts already imports;
-// they are re-exported here so every existing reader of this module keeps
+// Both keys live in ./ttsShared; they are re-exported here so every existing reader of this module keeps
 // working and there is still exactly one definition.
 export { commitKey, mergeKey } from "./ttsShared";
 
@@ -126,8 +100,8 @@ export function auditVerdictOf(text: string): string | null {
  * The list ends at a blank line or at the first line that is not a bullet,
  * because the audit's paragraph follows it and a paragraph is not a finding.
  *
- * THE GATE DOES NOT READ THIS. §23.8: the gate keeps its three head rows, and a
- * fourth condition goes inside a check that already runs rather than beside it.
+ * THE GATE DOES NOT READ THIS. §23.8: the gate keeps its two head rows, and a
+ * third condition goes inside a check that already runs rather than beside it.
  * A branch that adds an early return with no argument against deleting what it
  * patches still merges; the finding is on the row for whoever reads it and for
  * the weekly simplification pass.
@@ -259,8 +233,8 @@ export function auditChunkNote(data: { chunks?: unknown }): string {
 }
 
 /**
- * What a PASSED check is, for each of the three kinds, in one place. The gate
- * below computes its three `passed` booleans with this, and convex/ttsSimplify.ts
+ * What a PASSED check is, for each kind, in one place. The gate
+ * below computes its two `passed` booleans with this, and convex/ttsSimplify.ts
  * counts how often a check has failed with it: two copies of this predicate is
  * one of them wrong, and the wrong one would be the copy that decides whether a
  * branch merges.
@@ -269,17 +243,16 @@ export function auditChunkNote(data: { chunks?: unknown }): string {
  * fail-closed: a row nobody taught this function about has not passed anything.
  */
 export function checkRowPassed(kind: string, data: unknown): boolean {
-  const row = (data ?? {}) as { ok?: unknown; verdict?: unknown; regressions?: unknown };
+  const row = (data ?? {}) as { ok?: unknown; verdict?: unknown };
   if (kind === TESTS_RUN) return row.ok === true;
   if (kind === AUDIT_VERDICT) return String(row.verdict).toUpperCase() === AUDIT_APPROVED;
-  if (kind === EVALS_RUN) return row.regressions === 0;
   return false;
 }
 
 export type MergeCheck = {
-  /** "tests", "audit" or "evals" — the vocabulary the prompt, the deny message
-   *  and the morning line all use, so what Tom reads and what an agent is told
-   *  are the same three words. */
+  /** "tests" or "audit" — the vocabulary the prompt, the deny message and the
+   *  morning line all use, so what Tom reads and what an agent is told are the
+   *  same two words. */
   name: string;
   passed: boolean;
   /** One sentence: what was found, or what is missing. */
@@ -302,10 +275,9 @@ export type MergeGateResult = {
   /** The head's recorded test result, or null when the fail-closed row is absent. */
   testsRun: TestsRunRecord | null;
   allowed: boolean;
-  /** Every check, required or not, in gate order. */
+  /** Every check, in gate order. */
   checks: MergeCheck[];
-  /** The names of the REQUIRED checks that did not pass, in gate order. The
-   *  evals check is not among them while EVALS_REQUIRED_FOR_MERGE is false. */
+  /** The names of the checks that did not pass, in gate order. */
   missing: string[];
 };
 
@@ -318,7 +290,7 @@ async function rowFor(ctx: QueryCtx | MutationCtx, kind: string, key: string) {
 }
 
 /** The gate itself. A plain function, so the record mutation runs the same
- *  three checks the read route reports: one implementation, and no door that
+ *  two checks the read route reports: one implementation, and no door that
  *  can write a merge past a check the reader would have failed. */
 export async function mergeGateFor(
   ctx: QueryCtx | MutationCtx,
@@ -370,7 +342,7 @@ export async function mergeGateFor(
   //
   // Nothing here is a condition. `chunks.read < chunks.count` still passes the
   // audit arm exactly as it did — checkRowPassed reads the verdict and nothing
-  // else, and this file adds no fourth check to the three head rows.
+  // else, and this file adds no third check to the two head rows.
   const auditDetail = [auditWhy, auditChunkNote(auditData)]
     .filter((clause): clause is string => typeof clause === "string" && clause !== "")
     .map((clause) => ` — ${clause}`)
@@ -392,121 +364,14 @@ export async function mergeGateFor(
             why: `the audit answered ${verdict ?? "nothing readable"} at ${short}${byWhom}, not ${AUDIT_APPROVED}${auditDetail}`,
           };
 
-  // THROUGH THE STALENESS RULE, not straight off the newest row. A row that
-  // scored nothing answers only the request it was written for (convex/
-  // ttsEvals.ts answeredRun), and this is the reader where getting that wrong
-  // opens the gate instead of merely delaying a run.
-  const evals = await answeredEvalsRun(ctx, repo, sha);
-  const pendingEvalsRequest = evals === null
-    ? await evalsRequestFor(ctx, repo, sha)
-    : null;
-  const protocol = pendingEvalsRequest === null ? null : await evalsProtocolStatus(ctx);
-  const evalsData = (evals?.data ?? {}) as {
-    regressions?: unknown;
-    goldenCoverage?: unknown;
-    items?: unknown;
-    pass?: unknown;
-    error?: unknown;
-    reason?: unknown;
-    errored?: unknown;
-  };
-  const regressions = typeof evalsData.regressions === "number" ? evalsData.regressions : null;
-  const errored = typeof evalsData.errored === "number" && evalsData.errored > 0
-    ? evalsData.errored
-    : null;
-  // STILL THREE HEAD ROWS. Golden coverage is not a fourth check and has no
-  // row of its own: it is a field of the evals run, so the evals arm asks two
-  // questions of one fact and GET /tts/merge-gate's shape does not move.
-  //
-  // BOTH null AND undefined DENY. `null` is the run saying nobody asked it
-  // about a diff; `undefined` is a run recorded before the field existed.
-  // A MERGE ALWAYS HAS A DIFF, so neither is an answer to "did this change
-  // ship what it owed" — and a gate that opened on "we did not check" is
-  // precisely the failure the `regressions: null` rule above was written to
-  // prevent (worker/jobs/evals.mjs failedRun).
-  //
-  // `not-required` IS AN ANSWER AND OPENS. It is the row an unaffected branch
-  // gets: the check read its own diff, nothing in it was a watched path, and
-  // the door recorded that instead of asking for a fifty-minute run of a set
-  // this change cannot move. The distinction from `true` is kept because the
-  // two are different facts — one says the branch paid for a context change,
-  // the other says there was none — and the `why` below says which.
-  const coverage =
-    typeof evalsData.goldenCoverage === "boolean" ||
-    evalsData.goldenCoverage === null ||
-    evalsData.goldenCoverage === COVERAGE_NOT_REQUIRED
-      ? evalsData.goldenCoverage
-      : undefined;
-  const scored =
-    typeof evalsData.pass === "number" && typeof evalsData.items === "number"
-      ? ` (${evalsData.pass} of ${evalsData.items} pass)`
-      : "";
-  const evalsUnavailable = evalsData.error === true ||
-    (typeof evalsData.error === "string" && evalsData.error !== "");
-  const evalsReason = typeof evalsData.reason === "string" && evalsData.reason !== ""
-    ? evalsData.reason
-    : typeof evalsData.error === "string" && evalsData.error !== "" ? evalsData.error : "runner failed";
-  const evalsCheck: MergeCheck =
-    pendingEvalsRequest !== null && protocol !== null && protocol.protocolGap !== null
-      ? { name: "evals", passed: false, why: protocol.protocolGap }
-    : pendingEvalsRequest !== null
-      ? { name: "evals", passed: false, why: `the evals are being scored again at ${short}` }
-    : evals === null
-      ? { name: "evals", passed: false, why: `no evals run scored ${short}` }
-      : evalsUnavailable
-        ? { name: "evals", passed: false, why: `the evals could not run at ${short}: ${evalsReason}` }
-      : errored !== null
-        ? {
-            name: "evals",
-            passed: false,
-            why: `the evals run at ${short} had ${errored} runner error${errored === 1 ? "" : "s"}`,
-          }
-      // `regressions !== 0` spelled with the one predicate the gate and
-      // convex/ttsSimplify.ts share: a second copy is how the two come apart.
-      : !checkRowPassed(EVALS_RUN, evalsData)
-        ? {
-            name: "evals",
-            passed: false,
-            why: `the evals found ${regressions ?? "an unreadable number of"} regression${
-              regressions === 1 ? "" : "s"
-            } at ${short}`,
-          }
-        : coverage === COVERAGE_NOT_REQUIRED
-          ? {
-              name: "evals",
-              passed: true,
-              // THE SAME WORDS the check's own log prints (scripts/
-              // evals-check.mjs report()), and the #tts-decisions merge line
-              // joins these whys — so the CI log, the gate and Tom's Slack all
-              // say one thing about this commit.
-              why: `the evals are unaffected at ${short}: no watched path changed`,
-            }
-          : coverage === true
-          ? { name: "evals", passed: true, why: `the evals scored ${short} with no regression${scored}` }
-          : coverage === false
-            ? {
-                name: "evals",
-                passed: false,
-                why: `the evals run at ${short} changed a watched context file and shipped no golden item`,
-              }
-            : {
-                name: "evals",
-                passed: false,
-                why:
-                  `the evals run did not check golden coverage — re-run it: ` +
-                  `node /opt/jarvis/worker/jobs/evals.mjs --repo ${repo} --sha ${sha} --force`,
-              };
-
-  const checks = [testsCheck, auditCheck, evalsCheck];
-  // Every check is reported; only the required ones open or shut the gate.
-  const required = EVALS_REQUIRED_FOR_MERGE ? checks : [testsCheck, auditCheck];
+  const checks = [testsCheck, auditCheck];
   return {
     repo,
     sha,
     testsRun,
-    allowed: required.every((check) => check.passed),
+    allowed: checks.every((check) => check.passed),
     checks,
-    missing: required.filter((check) => !check.passed).map((check) => check.name),
+    missing: checks.filter((check) => !check.passed).map((check) => check.name),
   };
 }
 
@@ -558,7 +423,6 @@ const GATE_STATUS_POSTS_MAX = 3;
 const ROW_OF_CHECK: Record<string, string> = {
   tests: TESTS_RUN,
   audit: AUDIT_VERDICT,
-  evals: EVALS_RUN,
 };
 
 type GateStatus = {
@@ -571,9 +435,7 @@ type GateStatus = {
  * `failure` when a row it reads refused (the tests red, the audit answered
  * something other than APPROVED), `pending` while a row is missing. An
  * UNAVAILABLE audit is the absence of an audit (see internalRecordAudit), so it
- * waits rather than refuses. A required evals check that did not pass waits
- * too: the evals arm has more ways to be unanswered than refused, and a
- * pending status keeps the merge shut exactly as a failure does.
+ * waits rather than refuses.
  */
 async function gateStatusFor(
   ctx: QueryCtx | MutationCtx,
@@ -695,7 +557,7 @@ export const internalPostGateStatus = internalAction({
 // recorded, on a fact that has already happened, and the only thing they can do
 // is write one "job-failed" row — the channel the morning digest and the hourly
 // update already read (convex/ttsJobs.ts). A time check that could fail a build
-// would be a fourth condition on the merge gate, which §23.8 refuses, and it
+// would be a third condition on the merge gate, which §23.8 refuses, and it
 // would trade quality for speed in exactly the direction the ruling forbids.
 //
 // IT LIVES IN CONVEX RATHER THAN IN CI for two reasons. CI holds the narrow
@@ -906,8 +768,8 @@ export const internalRecordAudit = internalMutation({
      * nothing; `traceFindings: []` WITH `trace: { available: false, reason }`
      * means the audit's run record could not be read, so nothing was checked.
      * Those two must not print the same sentence, which is the posture
-     * `regressions: null` already takes in the evals arm: "we did not check" is
-     * never recorded as "we checked and it was clean".
+     * the gate takes with a missing row: "we did not check" is never recorded
+     * as "we checked and it was clean".
      */
     trace: v.optional(v.object({ available: v.boolean(), reason: v.optional(v.string()) })),
   },
@@ -993,7 +855,7 @@ export const internalRecordAudit = internalMutation({
  * corrected afterwards: a merge row is written once per sha, and a second
  * report returns the first. PR #196 was recorded at c4e73b5 on 2026-09-19 from
  * a merge command GitHub had refused; its real merge landed half an hour later
- * as 9f1096a, and that row stands. The three checks cannot catch this, since
+ * as 9f1096a, and that row stands. The gate's checks cannot catch this, since
  * they are about the commit and not about whether it was merged.
  *
  * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
@@ -1064,9 +926,8 @@ export async function mergedOnMain(
 
 /**
  * POST /tts/merge writes exactly this event, and ONLY after the gate above
- * allows it (the tests and the audit, and the evals when
- * EVALS_REQUIRED_FOR_MERGE is true). A merge is reported for objection, never placed on the narrow
- * list: the delegate did not make this decision.
+ * allows it (the tests and the audit). A merge is reported for objection,
+ * never placed on the narrow list: the delegate did not make this decision.
  *
  * The gate runs HERE as well as at the box, on purpose. The box's check is
  * what stops the COMMAND; this one is what stops the RECORD — a merge that
@@ -1098,23 +959,21 @@ export const internalRecordMerge = internalMutation({
       ctx,
       MERGE,
       todoId ?? undefined,
-      { repo: args.repo, sha: args.sha, subject: args.subject, mainCheck: args.mainCheck },
+      {
+        repo: args.repo,
+        sha: args.sha,
+        subject: args.subject,
+        mainCheck: args.mainCheck,
+        // Why it merged, in the gate's own words (who audited, and on which
+        // model when Codex was capped; the evals it merged past): the digest's
+        // objection line for this merge prints it.
+        reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
+      },
       key,
     );
-    // ONE LINE IN #tts-decisions as it is recorded, through the one decisions
-    // door every producer shares (convex/ttsSync.ts sendDecision). The morning
-    // message's objection list is the second sighting, not the only one.
-    //
-    // Its askId is the merge's own key, so a reply in that thread objects to
-    // THIS merge: convex/ttsAsk.ts internalRecordDelegateObjection resolves a
-    // merge row as well as a delegate decision.
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
-      askId: key,
-      ...(todoId === undefined || todoId === null ? {} : { todoId: todoId as string }),
-      decision: `merged ${args.repo}@${args.sha.slice(0, 7)}: ${args.subject}`,
-      reason: [...gate.checks.map((check) => check.why), args.mainCheck].join("; "),
-      refused: false,
-    });
+    // The digest's objection list reads this merge row itself, under its key,
+    // so "revert <n>" in the digest's thread objects to THIS merge
+    // (convex/ttsAsk.ts internalRecordDelegateObjection resolves a merge row).
     return { recorded: true, id, existing: false, gate };
   },
 });

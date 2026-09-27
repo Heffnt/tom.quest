@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import AgentsClient from "./agents-client";
 
 export const metadata: Metadata = {
@@ -8,5 +9,11 @@ export const metadata: Metadata = {
 };
 
 export default function AgentsPage() {
-  return <AgentsClient />;
+  // AgentsClient reads the query string (useSearchParams), which a statically
+  // rendered page must hold inside a Suspense boundary.
+  return (
+    <Suspense>
+      <AgentsClient />
+    </Suspense>
+  );
 }

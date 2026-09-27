@@ -9,6 +9,8 @@ import {
   canvasProvenance,
   provenanceExternalId,
 } from "./ttsCanvas";
+import { gatherTodayFacts } from "./ttsDigest";
+import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -318,8 +320,8 @@ describe("POST /tts/canvas-assignments", () => {
 // does not read. This route is how an expired Canvas token becomes a line in
 // the morning digest instead.
 describe("POST /tts/job-failed", () => {
-  // A report schedules its #tts-broken send. Fake timers hold it until a test
-  // runs it on purpose, so no send fires after its own test has ended.
+  // Fake timers, so a test can set the instant its reports land at and the
+  // window the digest reads them over.
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -349,8 +351,14 @@ describe("POST /tts/job-failed", () => {
     });
   }
 
+  // A job's reports live in the record's events table (convex/jarvis/jobs.ts):
+  // every post is a row, and a repeat of a standing condition carries
+  // data.standingSince. The reports are the rows without it.
+  const recordRows = (t: ReturnType<typeof convexTest>) => t.run(async (ctx) => ctx.db.query("events").collect());
   const failures = async (t: ReturnType<typeof convexTest>) =>
-    (await allEvents(t)).filter((e) => e.kind === "job-failed");
+    (await recordRows(t)).filter(
+      (e) => e.kind === "job-failed" && (e.data as { standingSince?: number }).standingSince === undefined,
+    );
 
   it("records the job and its plain message as a digest-readable failure", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
@@ -364,7 +372,8 @@ describe("POST /tts/job-failed", () => {
     // reads to put a row in the morning digest's failures section.
     expect(rows[0].kind.endsWith("-failed")).toBe(true);
     expect(rows[0].data).toEqual({ job: "poll-canvas", error });
-    expect(rows[0].key).toBeUndefined(); // an unkeyed report is per call
+    // An unkeyed report is about the job itself: filed under its name.
+    expect(rows[0].subject).toBe("poll-canvas");
   });
 
   // A DEAD CREDENTIAL IS DEAD FOR DAYS, and the job reporting it runs every
@@ -372,7 +381,7 @@ describe("POST /tts/job-failed", () => {
   // morning digest listed each one and the hourly update repeated the same
   // sentence around the clock, burying the one fact Tom needed under its own
   // repetitions.
-  it("writes one row per condition, however many ticks report it", async () => {
+  it("reports once per condition, however many ticks post it", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const failure = {
@@ -388,7 +397,7 @@ describe("POST /tts/job-failed", () => {
     }
     const rows = await failures(t);
     expect(rows).toHaveLength(1);
-    expect(rows[0].key).toBe("poll-canvas:canvas-auth");
+    expect(rows[0].subject).toBe("poll-canvas:canvas-auth");
   });
 
   it("reports the next expiry, because the clean run in between closed the last", async () => {
@@ -406,38 +415,50 @@ describe("POST /tts/job-failed", () => {
     expect(await (await ok(t, { job: "poll-canvas", key })).json()).toMatchObject({
       recovered: false,
     });
-    const recovered = (await allEvents(t)).filter((e) => e.kind === "job-recovered");
+    const recovered = (await recordRows(t)).filter((e) => e.kind === "job-recovered");
     expect(recovered).toHaveLength(1);
-    expect(recovered[0].key).toBe(key);
+    expect(recovered[0].subject).toBe(key);
 
     // Months later the new token expires too, and that is a second fact.
     expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
     expect(await failures(t)).toHaveLength(2);
   });
 
-  it("keeps two conditions apart, and an unkeyed report out of both", async () => {
+  // witness: an unkeyed report had no condition, so every one was its own
+  // report and the digest needed a fallback key for them.
+  it("keeps two conditions apart, files unkeyed reports under the job, and a clean run of the job clears that", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     await report(t, { job: "poll-canvas", error: "HTTP 401", key: "a" });
     await report(t, { job: "poll-gmail", error: "no verdict", key: "b" });
-    await report(t, { job: "poll-canvas", error: "one bad run" });
-    await report(t, { job: "poll-canvas", error: "another bad run" });
-    expect(await failures(t)).toHaveLength(4);
+    expect(await (await report(t, { job: "poll-canvas", error: "one bad run" })).json()).toMatchObject({ reported: true });
+    expect(await (await report(t, { job: "poll-canvas", error: "another bad run" })).json()).toMatchObject({ reported: false });
+    expect((await failures(t)).map((row) => row.subject).sort()).toEqual(["a", "b", "poll-canvas"]);
+    // A clean run keyed on condition "a" is a clean run of the job, too.
+    expect(await (await ok(t, { job: "poll-canvas", key: "a" })).json()).toMatchObject({ recovered: true });
+    const recovered = (await recordRows(t)).filter((e) => e.kind === "job-recovered").map((e) => e.subject).sort();
+    expect(recovered).toEqual(["a", "poll-canvas"]);
+    expect(await (await report(t, { job: "poll-canvas", error: "a third bad run" })).json()).toMatchObject({ reported: true });
   });
 
-  // #TTS-BROKEN GETS A LINE PER DISTINCT FAILURE. This route once inserted its
-  // row beside logEvent rather than through it, so postBroken never ran and no
-  // box job's failure (agents-sweep, deploy, the needs-you drop) ever reached
-  // #tts-broken, while the comments here said the digest carried it there.
-  const brokenScheduled = async (t: ReturnType<typeof convexTest>) =>
+  // A job's failure reaches Tom as a line in the digest's broken section,
+  // read from its own row (convex/ttsDigest.ts gatherTodayFacts, through
+  // convex/jarvis/jobs.ts failuresInWindow). Nothing posts to Slack on a
+  // report: there is one output channel, and the digest is what it carries.
+  const slackScheduled = async (t: ReturnType<typeof convexTest>) =>
     await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect())
-        .filter((job) => job.name.includes("sendBroken"))
-        .map((job) => job.args[0] as { job: string; detail?: string }),
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("ttsSync")),
     );
+  const digestBroken = async (t: ReturnType<typeof convexTest>) =>
+    await t.run(async (ctx) => {
+      const now = Date.now() + 1;
+      const facts = await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY_MS });
+      return facts.broken;
+    });
 
-  it("schedules one #tts-broken line for a report, and none for a condition already standing", async () => {
+  it("puts one digest failure for a report, marks a condition already standing, and posts nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
     const t = convexTest({ schema, modules });
     const failure = {
       job: "agents-sweep",
@@ -445,48 +466,80 @@ describe("POST /tts/job-failed", () => {
       key: "agents-sweep:read",
     };
     expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
-    const first = await brokenScheduled(t);
-    expect(first).toHaveLength(1);
-    expect(first[0].job).toBe("agents-sweep");
-    expect(first[0].detail).toBe(failure.error);
+    expect(await digestBroken(t)).toEqual([
+      { statement: "The agents-sweep job failed overnight.", detail: failure.error, count: 1 },
+    ]);
 
-    // The same condition again the same day: suppressed as standing, so it
-    // schedules nothing at all.
+    // The same condition again the same day: its row is marked standing, and
+    // the digest still reads the one report.
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12, 30));
     expect(await (await report(t, failure)).json()).toMatchObject({ reported: false });
-    expect(await brokenScheduled(t)).toHaveLength(1);
+    const rows = (await recordRows(t)).filter((e) => e.kind === "job-failed").sort((a, b) => a.at - b.at);
+    expect(rows.map((e) => (e.data as { standingSince?: number }).standingSince)).toEqual([
+      undefined,
+      Date.UTC(2026, 8, 26, 12),
+    ]);
+    expect(await digestBroken(t)).toHaveLength(1);
+    expect((await digestBroken(t))[0].count).toBe(1);
+    expect(await slackScheduled(t)).toEqual([]);
   });
 
-  it("posts exactly one #tts-broken line per job per day, however many reports", async () => {
+  it("puts one digest failure per job for its unkeyed reports, the repeats standing under the first", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
-    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "C0BROKEN");
-    const posts: { channel: string; text: string }[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: { body?: string }) => {
-        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
-        posts.push({ channel: body.channel, text: body.text });
-        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
-      }),
-    );
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
     const t = convexTest({ schema, modules });
-    // Unkeyed, so each report is its own row; the line is still one per job.
-    // Each report's scheduled send runs before the next report arrives, as a
-    // poller's ticks would.
+    // Unkeyed: each report's condition is its job, so a repeat stands under
+    // the first and the line is one per job.
     for (const body of [
       { job: "deploy", error: "vercel build failed" },
       { job: "deploy", error: "vercel build failed again" },
       { job: "agents-sweep", error: "sweep failed" },
     ]) {
       await report(t, body);
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      vi.advanceTimersByTime(60_000);
     }
 
-    expect(await failures(t)).toHaveLength(3);
-    const broken = posts.filter((p) => p.channel === "C0BROKEN");
+    expect(await failures(t)).toHaveLength(2);
+    const broken = await digestBroken(t);
     expect(broken).toHaveLength(2);
-    expect(broken.filter((p) => p.text.includes("deploy"))).toHaveLength(1);
-    expect(broken.filter((p) => p.text.includes("agents-sweep"))).toHaveLength(1);
+    expect(broken.filter((b) => b.statement.includes("deploy"))).toMatchObject([{ count: 1, detail: "vercel build failed" }]);
+    expect(broken.filter((b) => b.statement.includes("agents-sweep"))).toMatchObject([{ count: 1 }]);
+    expect(await slackScheduled(t)).toEqual([]);
+  });
+
+  // witness: the digest grouped failures by job, so two conditions of one
+  // job were one line, and the one that recovered made the line say the job
+  // ran clean again while the other still failed.
+  it("puts one digest line per condition, so a recovered one does not mask another of the same job", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
+    const t = convexTest({ schema, modules });
+    await report(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth", error: "Canvas rejected the token" });
+    vi.advanceTimersByTime(60_000);
+    await report(t, { job: "poll-canvas", key: "poll-canvas:feed", error: "the feed timed out" });
+    vi.advanceTimersByTime(60_000);
+    expect((await ok(t, { job: "poll-canvas", key: "poll-canvas:feed" })).status).toBe(200);
+    const broken = await digestBroken(t);
+    expect(broken).toHaveLength(2);
+    expect(broken.filter((b) => b.statement.includes("running clean again") || b.statement.includes("run clean again"))).toHaveLength(1);
+    expect(broken.find((b) => b.detail === "Canvas rejected the token")?.statement).not.toContain("clean again");
+  });
+
+  // witness: the line kept the first report's statement, so a condition
+  // that failed, recovered and failed again read as running clean.
+  it("reads a condition that failed again after it recovered as failing", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    vi.setSystemTime(Date.UTC(2026, 8, 26, 12));
+    const t = convexTest({ schema, modules });
+    await report(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth", error: "first failure" });
+    vi.advanceTimersByTime(60_000);
+    expect((await ok(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth" })).status).toBe(200);
+    vi.advanceTimersByTime(60_000);
+    await report(t, { job: "poll-canvas", key: "poll-canvas:canvas-auth", error: "second failure" });
+    const broken = await digestBroken(t);
+    expect(broken).toHaveLength(1);
+    expect(broken[0].statement).not.toContain("clean again");
+    expect(broken[0].detail).toBe("second failure");
   });
 
   it("refuses a blank key on either route, and an unnamed clean run", async () => {

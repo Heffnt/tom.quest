@@ -4,7 +4,13 @@ import {
   dateLabel,
   filterLines,
   groupByKind,
+  evalItemLineSuffix,
+  evalItemsForLine,
   joinLines,
+  linesRestedOn,
+  openDisagreements,
+  passRate,
+  rulingLineHasSuffix,
   segmentBullets,
   sourcesOf,
   type IntentLine,
@@ -33,7 +39,7 @@ describe("filterLines", () => {
   const lines = [
     line(),
     line({ id: "b", kind: "standing-rule", voice: "unattributed", source: "tom.quest AGENTS.md" }),
-    line({ id: "c", kind: "ruling", voice: "his", source: "dtsRulings" }),
+    line({ id: "c", kind: "ruling", voice: "his", source: "rulings" }),
   ];
 
   it("shows everything when nothing is picked", () => {
@@ -41,7 +47,7 @@ describe("filterLines", () => {
   });
 
   it("narrows on each of the three at once", () => {
-    expect(filterLines(lines, { kind: "ruling", voice: "his", source: "dtsRulings" }).map((x) => x.id))
+    expect(filterLines(lines, { kind: "ruling", voice: "his", source: "rulings" }).map((x) => x.id))
       .toEqual(["c"]);
     expect(filterLines(lines, { kind: "ruling", voice: "his", source: "model-of-tom/intent.md" }))
       .toEqual([]);
@@ -84,8 +90,8 @@ describe("dateLabel", () => {
 
 describe("sourcesOf and countVoices", () => {
   it("lists each source once, sorted", () => {
-    expect(sourcesOf([line(), line({ source: "dtsRulings" }), line()]))
-      .toEqual(["dtsRulings", "model-of-tom/intent.md"]);
+    expect(sourcesOf([line(), line({ source: "rulings" }), line()]))
+      .toEqual(["model-of-tom/intent.md", "rulings"]);
   });
 
   it("counts the three voices", () => {
@@ -106,7 +112,7 @@ describe("segmentBullets", () => {
     "- Spend money,",
     "  or message anyone.",
     "",
-    "SKILLS (WikiTom commit abc)",
+    "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.",
   ].join("\n");
 
   it("cuts out each bullet of a tracked page, with the lines it wraps onto", () => {
@@ -163,5 +169,107 @@ describe("joinLines", () => {
       kind: "bullet",
       line: { kind: "direction", voice: "inferred", locator: "unmatched", evidence: [] },
     });
+  });
+});
+
+describe("linesRestedOn", () => {
+  const lines = [
+    line(),
+    line({ id: "model-of-tom/intent.md#9", section: "Directions" }),
+    line({ id: "model-of-tom/agent-rules.md#3", kind: "standing-rule", source: "model-of-tom/agent-rules.md", section: "How you work" }),
+    line({ id: "CMT AGENTS.md#4", kind: "standing-rule", source: "CMT AGENTS.md", section: "commands", voice: "unattributed" }),
+    line({ id: "rulings/qs7abc758ddm40", kind: "ruling", source: "rulings", section: "life", locator: "qs7abc758ddm40" }),
+  ];
+
+  it("resolves a page section, whatever its case, to the lines under it", () => {
+    expect(linesRestedOn("model-of-tom/intent.md#what to protect", lines).map((l) => l.id)).toEqual(["model-of-tom/intent.md#5"]);
+    expect(linesRestedOn("model-of-tom/agent-rules.md#How you work", lines).map((l) => l.id)).toEqual(["model-of-tom/agent-rules.md#3"]);
+  });
+
+  it("resolves an evidence entry to the page's lines, and a repo's evidence entry to its AGENTS.md rules", () => {
+    expect(linesRestedOn("model-of-tom/evidence/intent.md:Directions", lines).map((l) => l.id)).toEqual(["model-of-tom/intent.md#9"]);
+    expect(linesRestedOn("model-of-tom/evidence/repos/CMT.md:AGENTS.md#commands", lines).map((l) => l.id)).toEqual(["CMT AGENTS.md#4"]);
+  });
+
+  it("resolves a ruling id and a line number, and nothing it cannot read", () => {
+    expect(linesRestedOn("ruling:qs7abc758ddm40", lines).map((l) => l.id)).toEqual(["rulings/qs7abc758ddm40"]);
+    // The delegate cites a page by path and heading (Jarvis delegate.mjs),
+    // never by line number: a number names no section and no line.
+    expect(linesRestedOn("model-of-tom/intent.md#9", lines)).toEqual([]);
+    expect(linesRestedOn("model-of-tom/intent.md#Nowhere", lines)).toEqual([]);
+    expect(linesRestedOn("just words", lines)).toEqual([]);
+    expect(linesRestedOn("model-of-tom/evidence/repos/CMT.md:commands", lines)).toEqual([]);
+  });
+});
+
+// witness: a ruling copied from dtsRulings answered only to its new id, so
+// the delegate's `ruling:<old id>` and a rule item named from the old id
+// attached to no line.
+describe("a ruling copied from dtsRulings", () => {
+  const copied = line({ id: "rulings/kn2new0000aaaa", kind: "ruling", source: "rulings", locator: "kn2new0000aaaa", legacyId: "jd7old00fe3kq2x9" });
+  const lines = [line(), copied];
+
+  it("is the line a reference by its old id rests on, as by its new one", () => {
+    expect(linesRestedOn("ruling:jd7old00fe3kq2x9", lines).map((l) => l.id)).toEqual(["rulings/kn2new0000aaaa"]);
+    expect(linesRestedOn("ruling:kn2new0000aaaa", lines).map((l) => l.id)).toEqual(["rulings/kn2new0000aaaa"]);
+    expect(linesRestedOn("ruling:jd7old00", lines)).toEqual([]);
+  });
+
+  it("is the line an eval item named from either id's last eight names", () => {
+    const items = [
+      { name: "rule/ruling-fe3kq2x9", passed: 1, runs: 2 },
+      { name: "rule/ruling-000aaaa0", passed: 1, runs: 1 },
+      { name: "rule/ruling-0000aaaa", passed: 3, runs: 3 },
+    ];
+    expect(evalItemsForLine(copied, items).map((i) => i.name)).toEqual(["rule/ruling-fe3kq2x9", "rule/ruling-0000aaaa"]);
+    expect(rulingLineHasSuffix(copied, "fe3kq2x9")).toBe(true);
+    // Another kind of line never answers to a ruling's suffix, old or new.
+    expect(rulingLineHasSuffix(line({ id: "model-of-tom/intent.md#fe3kq2x9", legacyId: "fe3kq2x9" }), "fe3kq2x9")).toBe(false);
+  });
+});
+
+describe("evalItemsForLine", () => {
+  const items = [
+    { name: "rule/ruling-758ddm40", passed: 1, runs: 3 },
+    { name: "rule/ruling-td8dkhd8", passed: 2, runs: 2 },
+    { name: "wall/pre-push-clean", passed: 5, runs: 5 },
+  ];
+  const ruling = line({ id: "rulings/qs7abc758ddm40", kind: "ruling", source: "rulings" });
+
+  it("names a ruling line by the last eight characters of its id, and no other kind of line", () => {
+    expect(evalItemLineSuffix("rule/ruling-758ddm40")).toBe("758ddm40");
+    expect(evalItemLineSuffix("wall/pre-push-clean")).toBeNull();
+    expect(evalItemsForLine(ruling, items).map((i) => i.name)).toEqual(["rule/ruling-758ddm40"]);
+    expect(evalItemsForLine(line({ id: "model-of-tom/intent.md#758ddm40" }), items)).toEqual([]);
+  });
+
+  it("sums the pass rate over the items naming the line, or answers null for none", () => {
+    expect(passRate(evalItemsForLine(ruling, items))).toEqual({ passed: 1, runs: 3 });
+    expect(passRate([])).toBeNull();
+  });
+});
+
+describe("openDisagreements", () => {
+  it("counts the vocabulary's disagreements beside the unsettled decisions and failing items", () => {
+    const decisions = [
+      { decision: "One.", refused: false, settled: null },
+      { decision: "Two.", refused: false, settled: { verdict: "approve" } },
+      { decision: null, refused: true, settled: null },
+      { decision: null, refused: false, settled: null },
+    ];
+    const items = [
+      { pass: false, settled: null },
+      { pass: false, settled: { verdict: "revise" } },
+      { pass: true, settled: null },
+      { pass: null, settled: null },
+    ];
+    expect(openDisagreements(decisions, items, { disagreements: [1, 2, 3] })).toBe(5);
+    expect(openDisagreements(decisions, items, null)).toBe(2);
+  });
+
+  it("says nothing until every read has answered", () => {
+    expect(openDisagreements(undefined, [], null)).toBeNull();
+    expect(openDisagreements([], undefined, null)).toBeNull();
+    expect(openDisagreements([], [], undefined)).toBeNull();
   });
 });

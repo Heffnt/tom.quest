@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
-  channelFor,
+  outputChannel,
   feedIsPrivate,
   privateFeedNames,
   type ModelFamily,
@@ -43,38 +43,21 @@ describe("privateFeedNames", () => {
   });
 });
 
-// ── The six channels ─────────────────────────────────────────────────────────
-// Only the morning falls back to SLACK_TTS_CHANNEL_ID. Every other kind
-// answers null, because the Slack door's default target is that same variable
-// and a fallback would put the message in #tts-today.
-describe("channelFor", () => {
+// ── The one output channel ───────────────────────────────────────────────────
+// Its own variable first, then the room's older one; nothing when neither.
+describe("outputChannel", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it("answers each channel's own variable", () => {
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "C0NEEDSYOU");
-    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "C0BROKEN");
-    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "C0SIMPLIFY");
-    expect(channelFor("needsYou")).toBe("C0NEEDSYOU");
-    expect(channelFor("broken")).toBe("C0BROKEN");
-    expect(channelFor("simplify")).toBe("C0SIMPLIFY");
-  });
-
-  it("falls back to SLACK_TTS_CHANNEL_ID for the morning and nothing else", () => {
+  it("answers the output channel's variable, then the older one, then nothing", () => {
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
     vi.stubEnv("SLACK_TTS_CHANNEL_ID", "C0TTS");
+    expect(outputChannel()).toBe("C0TODAY");
     vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "");
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "");
-    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "");
-    vi.stubEnv("SLACK_TTS_HOURLY_CHANNEL_ID", "");
-    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "");
-    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "");
-    expect(channelFor("today")).toBe("C0TTS");
-    expect(channelFor("needsYou")).toBeNull();
-    expect(channelFor("decisions")).toBeNull();
-    expect(channelFor("hourly")).toBeNull();
-    expect(channelFor("broken")).toBeNull();
-    expect(channelFor("simplify")).toBeNull();
+    expect(outputChannel()).toBe("C0TTS");
+    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "");
+    expect(outputChannel()).toBeNull();
   });
 });
 

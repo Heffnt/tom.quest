@@ -70,8 +70,8 @@ describe("USAGE_LIMIT_RE", () => {
     expect(USAGE_LIMIT_RE.test(text)).toBe(false);
   });
 
-  // The box's sensor and the record each read this default. When they were
-  // two copies, convex/ttsRunners.test.ts held them equal.
+  // The box's runner sensor imports this default by name; the record's
+  // runners are gone.
   it("give a runner with no ceiling of its own two GPUs, four hours and 128000 MB", () => {
     expect(RUNNER_CEILING_DEFAULT).toEqual({ gpus: 2, minutes: 240, memoryMb: 128000 });
   });

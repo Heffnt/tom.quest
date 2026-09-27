@@ -10,7 +10,7 @@
 import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import type { Session } from "../lib";
 import { isLive } from "../lib";
 

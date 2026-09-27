@@ -89,11 +89,11 @@ export const rulings = internalQuery({
     const limit = searchLimit(args.limit);
     const candidates = args.since === undefined
       ? ctx.db
-          .query("dtsRulings")
+          .query("rulings")
           .withIndex("by_ruled")
           .order("desc")
       : ctx.db
-          .query("dtsRulings")
+          .query("rulings")
           .withIndex("by_ruled", (q) => q.gte("ruledAt", args.since!))
           .order("desc");
     const results = [];

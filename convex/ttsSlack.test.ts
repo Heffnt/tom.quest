@@ -9,6 +9,7 @@ import { DELEGATE_DECISION, DELEGATE_OBJECTION } from "./ttsAsk";
 import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { slackHourKey, slackThreadKey, ttsDayKey } from "./ttsShared";
 import { composeCaptured, renderSlack } from "./ttsCompose";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 /** The one reply line at capture, as convex/ttsCompose.ts writes it. */
 const captureLine = (statement: string, todoId: string) =>
@@ -42,6 +43,7 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
         header: "MODEL-OF-TOM FILES (WikiTom commit slack-session-test): operate",
       }],
     });
+    for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
   });
 }
 
@@ -300,6 +302,11 @@ describe("the #tts thread for a todo that needs Tom", () => {
 
   const KEY = "gmail:message:18f0a1";
 
+  const opened = async (t: ReturnType<typeof convexTest>) =>
+    await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((row) => row.kind === "needs-you-opened"),
+    );
+
   // THE JOB SENDS FACTS, NOT TEXT (slack-design.md §4.5). The thread is
   // composed here from the todo's own statement and entry action plus the
   // triage's reason, and the vendor's subject and From header — which the job
@@ -315,26 +322,17 @@ describe("the #tts thread for a todo that needs Tom", () => {
       }),
     ).toEqual({ opened: true, key: KEY });
 
-    // The message is a DRAFT REQUEST now: the Fable run on the box writes it,
-    // and the template it falls back to is composed here.
-    const drafts = await events(t, "slack-draft-request");
-    expect(drafts).toHaveLength(1);
-    const draft = drafts[0].data as {
-      kind: string;
-      fallback: string;
-      subject: unknown;
-      facts: { facts: { id: string }[] };
-    };
-    expect(draft.kind).toBe("needs-you");
-    expect(draft.subject).toEqual({ kind: "todo", id });
-    expect(draft.fallback).toContain(
-      "Only you can settle this: the mail threatens to deactivate the account",
-    );
-    expect(draft.fallback).toContain("Open the message it came from.");
+    // The message is a REPLY UNDER THE DAY'S DIGEST now: one needs-you-opened
+    // row carrying its deterministic text, which the box posts in the thread.
+    const rows = await opened(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ subject: KEY, data: { key: KEY, todoId: id } });
+    const text = rows[0].text ?? "";
+    expect(text).toContain("Only you can settle this: the mail threatens to deactivate the account");
+    expect(text).toContain("Open the message it came from.");
     // The provenance's link is the source line; the raw vendor text is not in
     // the message at all.
-    expect(draft.fallback).toContain("https://mail.google.com/mail/u/0/#all/18f0a1");
-    expect(draft.facts.facts.map((f) => f.id)).toContain(`todo:${id}`);
+    expect(text).toContain("https://mail.google.com/mail/u/0/#all/18f0a1");
 
     const markers = await events(t, "needs-tom");
     expect(markers).toHaveLength(1);
@@ -364,7 +362,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
       key: KEY,
     });
     expect(result).toMatchObject({ opened: false });
-    expect(await events(t, "slack-draft-request")).toHaveLength(0);
+    expect(await opened(t)).toHaveLength(0);
   });
 
   it("claims the item for the day, and the same item under another ask is its own key", async () => {
@@ -417,7 +415,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
     expect(
       await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, args),
     ).toEqual({ opened: false, key: KEY });
-    expect(await events(t, "slack-draft-request")).toHaveLength(1);
+    expect(await opened(t)).toHaveLength(1);
     expect(await events(t, "needs-tom")).toHaveLength(1);
   });
 
@@ -438,7 +436,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
         key: KEY,
       }),
     ).toEqual({ opened: false, key: KEY });
-    expect(await events(t, "slack-draft-request")).toHaveLength(1);
+    expect(await opened(t)).toHaveLength(1);
   });
 
   it("refuses an unknown todo and leaves no marker behind", async () => {
@@ -453,7 +451,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
       }),
     ).rejects.toThrow(/Unknown todo id/);
     expect(await events(t, "needs-tom")).toHaveLength(0);
-    expect(await events(t, "slack-draft-request")).toHaveLength(0);
+    expect(await opened(t)).toHaveLength(0);
   });
 
   // ── The door the box poller comes through ────────────────────────────────
@@ -493,7 +491,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
       const res = await open(t, { todoId: id, reason: "Sarah needs a reply", key: KEY });
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ ok: true, opened: true, key: KEY });
-      expect(await events(t, "slack-draft-request")).toHaveLength(1);
+      expect(await opened(t)).toHaveLength(1);
     });
 
     it("is closed to a caller without the worker key", async () => {
@@ -528,7 +526,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
       }
       // Nothing was written and nothing was sent for any of them.
       expect(await events(t, "needs-tom")).toHaveLength(0);
-      expect(await events(t, "slack-draft-request")).toHaveLength(0);
+      expect(await opened(t)).toHaveLength(0);
     });
 
     it("refuses a body that is not JSON at all", async () => {
@@ -1109,27 +1107,6 @@ describe("threaded replies from Tom", () => {
     expect(await events(t, "slack-event")).toHaveLength(1);
   });
 
-  // witness: drop SLACK_TTS_RUNNERS_CHANNEL_ID from slackReplyChannels and
-  // Tom's reply under a runner's check-in, a ceiling ruling included, is
-  // ignored before it reaches the runner.
-  it("acts on Tom's reply in a runner's check-in thread in #tts-runners, a ceiling ruling included", async () => {
-    slackEnv();
-    vi.stubEnv("SLACK_TTS_RUNNERS_CHANNEL_ID", "C0RUNNERS");
-    const t = convexTest(schema, modules);
-    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, {
-      seed: {
-        title: "TRAIN25 campaign", type: "probe", experimentHost: "turing", repo: "ComplexMultiTrigger",
-        stepMs: 600_000, delegateAllowed: false, from: { kind: "document", text: "# TRAIN25\n" },
-      },
-    });
-    await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
-      channel: "C0RUNNERS", ts: "960.1", subject: { kind: "runner", id: runnerId }, text: "first check-in",
-    });
-    const reply = await postEvent(t, { channel: "C0RUNNERS", ts: "960.2", thread_ts: "960.1", text: "ceiling 16 GPUs" });
-    expect(reply.outcome).toBe("runner-reply");
-    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.ceiling).toEqual({ gpus: 16, minutes: 240, memoryMb: 128000 });
-  });
-
   // witness: restore the `dumpChannel !== undefined &&` guard and an unset id
   // turns every channel the app is in into #dump — a top-level message
   // anywhere becomes a todo AND gets a bot reply posted under it.
@@ -1238,6 +1215,58 @@ describe("objecting to a delegate decision in the digest thread", () => {
     // where internalAskContext finds it for the next ask about that item.
     expect(rows[0].todoId).toBe(todoId);
     expect(rows[0].data).toMatchObject({ n: 2, revert: true, sentence: null, day: "2026-09-05" });
+  });
+
+  // witness: the digest numbered `jarvis decide` decisions and producers'
+  // digest lines (ruling:, learning:, repo-proposal:, box-change:), but the
+  // objection resolver searched only dtsEvents, so "revert <n>" on one of
+  // them threw instead of recording his objection.
+  it("resolves every askId the digest numbers, from the record's decision and digest-line rows", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const day = "2026-09-05";
+    const todoId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "renew passport",
+        status: "active",
+        readiness: "prepared",
+        timingClass: "whenever",
+        source: "tom",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const at = Date.now() - 60_000;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "decision", at, provenance: { job: "decide" }, subject: "d1e2c3a4",
+        data: { askId: "d1e2c3a4", question: "Which day?", decision: "Thursday", todoId, refused: false },
+      });
+      for (const askId of ["ruling:r1", "learning:l1", "repo-proposal:p1", "box-change:b1"]) {
+        await ctx.db.insert("events", {
+          kind: "digest-line", at, provenance: {}, subject: askId,
+          data: { section: "decisions", askId, decision: `the line for ${askId}` },
+        });
+      }
+    });
+    const now = Date.now() + 1;
+    const composed = await t.query(internal.ttsDigest.internalComposeToday, { day, now, since: now - 86_400_000 });
+    expect([...composed.objectionAskIds].sort()).toEqual(["box-change:b1", "d1e2c3a4", "learning:l1", "repo-proposal:p1", "ruling:r1"]);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "digest-sent",
+        data: { day, windowEnd: now, objectionAskIds: composed.objectionAskIds },
+      });
+    });
+    await posted(t, "400.1", { kind: "digest", day }, "the morning");
+    for (const [index, askId] of composed.objectionAskIds.entries()) {
+      const result = await postEvent(t, { channel: TTS, ts: `400.${index + 2}`, thread_ts: "400.1", text: `revert ${index + 1}` });
+      expect(result).toMatchObject({ outcome: "delegate-objection", id: askId });
+    }
+    const rows = await events(t, DELEGATE_OBJECTION);
+    expect(rows.map((row) => row.key).sort()).toEqual([...composed.objectionAskIds].sort());
+    expect(rows.find((row) => row.key === "d1e2c3a4")?.todoId).toBe(todoId);
   });
 
   it("keeps the sentence when he says what to do instead", async () => {

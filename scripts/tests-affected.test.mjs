@@ -13,9 +13,9 @@ const changed = (...paths) => paths.map((path) => ({ path, deleted: false }));
 
 describe("tests-affected", () => {
   it("runs only the related files when every change is one the graph follows", () => {
-    const decision = decideMode(changed("convex/ttsMerge.ts", "app/tts/page.tsx"), { base: "abc" });
+    const decision = decideMode(changed("convex/ttsMerge.ts", "app/jarvis/page.tsx"), { base: "abc" });
     expect(decision.mode).toBe(RELATED);
-    expect(decision.files).toEqual(["convex/ttsMerge.ts", "app/tts/page.tsx"]);
+    expect(decision.files).toEqual(["convex/ttsMerge.ts", "app/jarvis/page.tsx"]);
     expect(decision.why).toBe("2 changed files, all in the module graph");
   });
 
@@ -75,7 +75,7 @@ describe("tests-affected", () => {
     const rows = changedFiles("base", (args) => {
       asked.push(args.join(" "));
       if (args[1] === "--name-status") return "M\tconvex/ttsMerge.ts\nD\tconvex/gone.ts\nR100\tscripts/old.mjs\tscripts/new.mjs\n\n";
-      if (args[1] === "--cached") return "A\tconvex/ttsMerge.ts\nM\tapp/tts/page.tsx\n";
+      if (args[1] === "--cached") return "A\tconvex/ttsMerge.ts\nM\tapp/jarvis/page.tsx\n";
       return "package.json\nconvex/never-written.ts\n";
     });
     expect(asked).toEqual([
@@ -87,7 +87,7 @@ describe("tests-affected", () => {
       { path: "convex/ttsMerge.ts", deleted: false },
       { path: "convex/gone.ts", deleted: true },
       { path: "scripts/new.mjs", deleted: false },
-      { path: "app/tts/page.tsx", deleted: false },
+      { path: "app/jarvis/page.tsx", deleted: false },
       // Present on disk, so a change; absent, so a deletion.
       { path: "package.json", deleted: false },
       { path: "convex/never-written.ts", deleted: true },
@@ -98,7 +98,7 @@ describe("tests-affected", () => {
     const report = {
       testResults: [
         { name: `${process.cwd()}/convex/http.test.ts`, startTime: 0, endTime: 12_340 },
-        { name: `${process.cwd()}/app/tts/page.test.tsx`, startTime: 100, endTime: 200 },
+        { name: `${process.cwd()}/app/jarvis/page.test.tsx`, startTime: 100, endTime: 200 },
         { name: `${process.cwd()}/convex/tts.test.ts`, startTime: 0, endTime: 4_000 },
       ],
     };

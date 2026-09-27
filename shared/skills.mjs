@@ -1,3 +1,4 @@
+// REMOVAL CHECK: goes when Jarvis worker/jobs/evals.mjs stops importing it; nothing in tom.quest does.
 // THE ONE DEFINITION of the published skill set, and of the prompt's stable
 // layers while they retire.
 //

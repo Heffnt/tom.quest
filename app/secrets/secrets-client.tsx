@@ -11,7 +11,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";

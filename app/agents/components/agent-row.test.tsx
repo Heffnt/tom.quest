@@ -38,7 +38,7 @@ import type { TranscriptMessage } from "../lib";
 // ── The Convex stand-in ─────────────────────────────────────────────────────
 // The row pulls in OverflowExpand (the control over a cut payload), which calls
 // useQuery. Nothing here asks for a cut payload; the mock is what lets the row
-// mount at all. Same idiom as app/tts/components/popover-contract.test.tsx.
+// mount at all. Same idiom as app/jarvis/components/popover-contract.test.tsx.
 const convex = vi.hoisted(() => ({
   data: {} as Record<string, unknown>,
   calls: [] as string[],
@@ -128,9 +128,6 @@ describe("a row at its three levels, one kind at a time", () => {
     // and the prompt the run opened with.
     const content = {
       model: "claude-opus-4-6",
-      layersKnown: true,
-      layersGiven: ["operate", "write"],
-      layersDenied: ["know"],
       skillsOffered: ["graphify"],
       skillsUsed: ["graphify"],
       tools: ["Bash", "Read"],
@@ -141,7 +138,7 @@ describe("a row at its three levels, one kind at a time", () => {
     render(<AgentRow row={row({ seq: 0, kind: "context", content })} source="run" />);
 
     expect(compactLine()).toBe(
-      "context claude-opus-4-6 tom.quest operate+write 1 skills 2 tools " +
+      "context claude-opus-4-6 tom.quest 1 skills 2 tools " +
         "MODEL-OF-TOM FILES (WikiTom commit 0123456789ab): operate work the batch",
     );
     expect(pres()).toEqual([]);

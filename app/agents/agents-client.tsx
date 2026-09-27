@@ -14,9 +14,15 @@
 //
 // The daemon banner that used to sit above the rows is gone: its two facts are
 // suffixes on the run's one header line, while they are true (§4).
+//
+// TWO VIEWS OF ONE PAGE (2026-09-26, when /agents absorbed /observe): the
+// agents list (what is running, each agent's chat) and the window view
+// (window/window-view.tsx: everything that ran in a stretch of time, the map,
+// the timeline, the rulings and the changes). ?view=window opens the second;
+// /observe redirects there.
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -24,7 +30,15 @@ import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import AgentList from "./components/agent-list";
 import Agent from "./components/agent";
+import WindowView from "./window/window-view";
 import { DAEMON_STALE_MS } from "./lib";
+
+type Target =
+  | { kind: "session"; sessionId: Id<"claudeSessions"> }
+  | { kind: "run"; runId: string }
+  | null;
+
+type View = "agents" | "window";
 
 // Shape of a Convex document id as it appears in a deep link. A malformed
 // ?session= value passed straight into useQuery throws during render, so
@@ -35,10 +49,17 @@ const SESSION_ID_SHAPE = /^[a-z0-9]{20,40}$/;
 const RUN_ID_SHAPE =
   /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
 
-type Target =
-  | { kind: "session"; sessionId: Id<"claudeSessions"> }
-  | { kind: "run"; runId: string }
-  | null;
+/** What the query string opens: the view, and the agent when it names one. */
+function readDeepLink(sp: URLSearchParams): { view: View; target: Target } {
+  const view: View = sp.get("view") === "window" ? "window" : "agents";
+  const runId = sp.get("agent") ?? sp.get("run");
+  if (runId && RUN_ID_SHAPE.test(runId)) return { view, target: { kind: "run", runId } };
+  const id = sp.get("session");
+  if (id && SESSION_ID_SHAPE.test(id)) {
+    return { view, target: { kind: "session", sessionId: id as Id<"claudeSessions"> } };
+  }
+  return { view, target: null };
+}
 
 export default function AgentsClient() {
   // isTom still gates the queries ("skip" idiom); TomGate owns the gate JSX.
@@ -47,7 +68,6 @@ export default function AgentsClient() {
   const sessions = useQuery(api.claudeSessions.listSessions, isTom ? {} : "skip");
   const health = useQuery(api.claudeSessions.getDaemonHealth, isTom ? {} : "skip");
 
-  const [target, setTarget] = useState<Target>(null);
 
   // Staleness is derived at render; a 15s tick keeps ages honest.
   const [now, setNow] = useState(() => Date.now());
@@ -56,36 +76,51 @@ export default function AgentsClient() {
     return () => clearInterval(t);
   }, []);
 
-  // Read the deep link once on mount (GETs never change state).
-  useEffect(() => {
-    const sp = new URLSearchParams(window.location.search);
-    const runId = sp.get("agent") ?? sp.get("run");
-    if (runId && RUN_ID_SHAPE.test(runId)) {
-      setTarget({ kind: "run", runId });
-      return;
-    }
-    const id = sp.get("session");
-    if (id && SESSION_ID_SHAPE.test(id)) {
-      setTarget({ kind: "session", sessionId: id as Id<"claudeSessions"> });
-    }
-  }, []);
+  // THE URL IS THE PAGE'S STATE: the view and the open agent are read from
+  // the query string on every render and changed only by changing it, so a
+  // link (the window view's included) and Back move one thing, never two.
+  const search = useSearchParams().toString();
+  const { view, target } = useMemo(() => readDeepLink(new URLSearchParams(search)), [search]);
+  const viewParam = view === "window" ? "view=window&" : "";
 
   const openSession = (sessionId: Id<"claudeSessions">) => {
-    setTarget({ kind: "session", sessionId });
-    router.replace(`/agents?session=${sessionId}`, { scroll: false });
+    router.replace(`/agents?${viewParam}session=${sessionId}`, { scroll: false });
   };
 
   const openRun = (runId: string) => {
-    setTarget({ kind: "run", runId });
-    router.replace(`/agents?agent=${encodeURIComponent(runId)}`, {
+    router.replace(`/agents?${viewParam}agent=${encodeURIComponent(runId)}`, {
       scroll: false,
     });
   };
 
   const close = () => {
-    setTarget(null);
-    router.replace("/agents", { scroll: false });
+    router.replace(view === "window" ? "/agents?view=window" : "/agents", { scroll: false });
   };
+
+  const selectView = (next: View) => {
+    router.replace(next === "window" ? "/agents?view=window" : "/agents", { scroll: false });
+  };
+
+  const header = (
+    <header className="flex flex-wrap items-baseline justify-between gap-2">
+      <h1 className="text-2xl font-bold tracking-tight">Agents</h1>
+      <div className="flex items-center gap-1 rounded-md border border-border bg-surface/40 p-0.5">
+        {(["agents", "window"] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={view === option}
+            onClick={() => selectView(option)}
+            className={`rounded px-2 py-0.5 text-[11px] ${
+              view === option ? "bg-accent-dim text-accent" : "text-text-muted hover:bg-surface-alt hover:text-text"
+            }`}
+          >
+            {option === "agents" ? "now" : "by window"}
+          </button>
+        ))}
+      </div>
+    </header>
+  );
 
   // health: undefined = query loading; null = the worker has never reported.
   const daemonStale =
@@ -110,12 +145,15 @@ export default function AgentsClient() {
         onOpenSession={openSession}
       />
     </div>
+  ) : view === "window" ? (
+    <div className="w-full px-3 py-5 sm:px-5 space-y-3">
+      {header}
+      <WindowView />
+    </div>
   ) : (
     <div className="max-w-3xl mx-auto w-full">
       <div className="px-3 sm:px-4 py-6 space-y-4">
-        <header>
-          <h1 className="text-2xl font-bold tracking-tight">Agents</h1>
-        </header>
+        {header}
         <AgentList
           sessions={sessions}
           now={now}

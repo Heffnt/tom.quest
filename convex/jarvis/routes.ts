@@ -20,6 +20,11 @@ import { httpAction } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { checkEvent } from "./record";
+import { register as registerContext } from "./context";
+import { postRuling } from "./rulings";
+import { channelRoute, digestRoute, needsYouRoute } from "./digest";
+import { tickRoute } from "./tick";
+import { TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
 
 export const postEvent = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);
@@ -32,6 +37,9 @@ export const postEvent = httpAction(async (ctx, request) => {
   }
   const checked = checkEvent(body);
   if (!checked.ok) return jsonResponse(400, { error: checked.error });
+  if ((TOM_ONLY_KINDS as readonly string[]).includes(checked.event.kind)) {
+    return jsonResponse(403, { error: `${checked.event.kind} is Tom-only` });
+  }
   try {
     const { id, result } = await ctx.runMutation(internal.jarvis.events.record, checked.event);
     return jsonResponse(200, { ok: true, id, ...(typeof result === "object" && result !== null ? result : {}) });
@@ -63,4 +71,10 @@ export const getEvents = httpAction(async (ctx, request) => {
 export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/event", method: "POST", handler: postEvent });
   http.route({ path: "/jarvis/events", method: "GET", handler: getEvents });
+  registerContext(http); // GET /jarvis/context?for=<caller> (context.ts)
+  http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
+  http.route({ path: "/jarvis/digest", method: "POST", handler: digestRoute });
+  http.route({ path: "/jarvis/digest/needs-you", method: "GET", handler: needsYouRoute });
+  http.route({ path: "/jarvis/digest/channel", method: "GET", handler: channelRoute });
+  http.route({ path: "/jarvis/tick", method: "POST", handler: tickRoute });
 }

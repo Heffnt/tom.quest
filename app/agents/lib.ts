@@ -5,7 +5,7 @@
 import type { Doc } from "@/convex/_generated/dataModel";
 
 // Age text is shared with the Inventory surface — one definition.
-export { ageText } from "../tts/lib";
+export { ageText } from "../jarvis/lib";
 
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
@@ -422,8 +422,6 @@ type ContextFacts = {
   model?: string;
   host?: string;
   cwd?: string;
-  layersKnown: boolean;
-  layersGiven: string[];
   skillsUsed: string[];
   tools: string[];
   hooks: string[];
@@ -433,9 +431,7 @@ type ContextFacts = {
 /**
  * A context row's facts. The row is the run's own `context` object plus the
  * opening prompt, so the page can say what a run was given without reading the
- * run row beside it. layersKnown is false when the row does not say — which is
- * not the same as a run that was given no layers, and a reader must be able to
- * tell those apart. The arrays filter to strings: a parser that learns a new
+ * run row beside it. The arrays filter to strings: a parser that learns a new
  * shape must not be able to put an object where a name goes.
  */
 export function contextFactsOf(content: unknown): ContextFacts {
@@ -453,8 +449,6 @@ export function contextFactsOf(content: unknown): ContextFacts {
     model: str("model") ?? str("modelRequested"),
     host: str("host"),
     cwd: str("cwd"),
-    layersKnown: typeof c.layersKnown === "boolean" ? c.layersKnown : false,
-    layersGiven: list("layersGiven"),
     skillsUsed: list("skillsUsed"),
     tools: list("tools"),
     hooks: list("hooks"),
@@ -588,7 +582,8 @@ export function compactInput(toolName: string, input: unknown): string {
 
 // ── Box changes in an agent's chat (plan-root T1) ───────────────────────────
 // Every change the agent made to the Jarvis Box as root is a box-change row in
-// the record (convex/boxChanges.ts), keyed by the agent's id. The chat shows
+// the record's events table (convex/boxChanges.ts), under the agent's id as
+// provenance.agentId. The chat shows
 // each as a marked row: right after the tool call that ran it, whose own row
 // carries the outcome, or, when no loaded call ran it, at its time.
 

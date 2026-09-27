@@ -15,6 +15,7 @@ import {
   waitingReason,
   waitingReasonText,
 } from "./ttsShared";
+import { writePageRows } from "../scripts/context-fixture.mjs";
 
 // The todo graph: todos wired by `needs`, and the ones whose needs are all
 // done are "ready". Batches, which grouped todos into graphs, went with Tom's
@@ -330,6 +331,7 @@ describe("GET /tts/planner-context", () => {
         operate: "operate layer reaches the planner",
         headers: [{ layers: ["operate"], header: "published map + operate" }],
       });
+      for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
     });
   const get = (t: ReturnType<typeof convexTest>, path: string) =>
     t.fetch(path, { method: "GET", headers: { "X-TTS-Key": "s3cret" } });
@@ -346,12 +348,10 @@ describe("GET /tts/planner-context", () => {
     const res = await get(t, "/tts/planner-context");
     expect(res.status).toBe(200);
     const body = await res.json();
-    // The door serves the ASSEMBLED CONTEXT: the stable prefix — the map and
-    // the operate rules — and the grant block naming what the planner may
-    // load. The assembler's exact output is pinned in convex/ttsContext.test.ts.
-    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
-    expect(prefix).toBe("published map + operate\n\noperate layer reaches the planner");
-    expect(grants).toContain("granted:");
+    // The door serves the ASSEMBLED CONTEXT: the base, the write pages and the
+    // skills line. The assembler's exact output is
+    // pinned in convex/ttsContext.test.ts.
+    expect(body.writingStandard).toBe("published map + operate\n\noperate layer reaches the planner\n\n── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
     expect(body.vocabulary).toBe(TTS_CLOSED_VOCABULARY);
     expect(body.todos.map((todo: Doc<"dtsTodos">) => todo.statement)).toEqual(["sign the lease"]);
     expect(Array.isArray(body.sessionRepos)).toBe(true);
@@ -391,6 +391,5 @@ describe("GET /tts/planner-context", () => {
       });
       expect(res.status).toBe(404);
     }
-    expect(await t.run(async (ctx) => ctx.db.query("batches").collect())).toEqual([]);
   });
 });

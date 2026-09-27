@@ -1,20 +1,11 @@
-// Guardrail: the closed vocabulary's generated block in convex/ttsShared.ts,
-// the evals commit key, and the refused words over this repository's own code
-// — the checks of the vocabulary and the graph whose subject lives here.
+// Guardrail: the closed vocabulary's generated block in convex/ttsShared.ts
+// and the evals commit key — the checks of the vocabulary whose subject lives
+// here.
 //
-// THE CHECK NUMBERS ARE SHARED WITH THE JARVIS REPOSITORY. The checker was one
-// script of eight in-repo checks while the box's code lived here; the split
-// kept each check where the files it reads live. tom.quest keeps 1, 2, 3 and 5,
-// and check 4 over convex/, app/ and vqc/; check 6 is retired (see below).
-// Jarvis keeps check 4 over its own worker/ and scripts/, check 7 (the graph's
-// generator holds no model, no network and no vector index) and check 8 (the
-// generator's shape parser still reads shared/skills.mjs), under the same
-// numbers, so a failure named "check 7" means the same thing in both.
-//
-// THE RENDER CHECKS WENT WITH THE GENERATORS. They asked scripts/graph.mjs and
-// scripts/vocabulary.mjs, both Jarvis's now, whether a WikiTom checkout's
-// tts/graph.json and tts/vocabulary.json are what the render produces; the
-// nightly runs them against both checkouts.
+// THE CHECK NUMBERS ARE SHARED WITH THE JARVIS REPOSITORY, so a failure named
+// "check 3" means the same thing in both. tom.quest keeps 1, 2, 3 and 5; 4 and
+// 6 are retired (see below). The render check of tts/vocabulary.json is the
+// Jarvis repository's scripts/vocabulary.mjs, which the nightly runs.
 //
 // It reads files relative to the CURRENT DIRECTORY, the way
 // scripts/check-session-mirrors.mjs does, so `pnpm check:guardrails` from the
@@ -45,10 +36,6 @@ const MARKER_CLOSE_RE = /^\/\/ <\/vocabulary generated>\r?$/gm;
 // The closed vocabulary's own opening sentence. It has one home, inside the
 // block; check 3 below is what keeps it there.
 const CLOSED_SENTENCE = "these words mean exactly this and nothing else";
-
-// The two words the graph refuses outright: the whole is called the graph, and
-// these are the names it is not called.
-const REFUSED_WORDS = [/ontology/gi, /knowledge graph/gi];
 
 // Check 3's exemption: this file and its test, which carry the closed
 // vocabulary's opening sentence because a check for a sentence has to spell the
@@ -126,7 +113,7 @@ function matches(re, text) {
   return out;
 }
 
-// ── The five in-repo checks ──────────────────────────────────────────────────
+// ── The four in-repo checks ──────────────────────────────────────────────────
 
 const shared = read(SHARED_PATH);
 if (shared === null) {
@@ -224,35 +211,15 @@ if (block !== null) {
   }
 }
 
-// 4. Switch (4)/(c): the whole is called the graph. "ontology" and "knowledge
-//    graph" are refused words, in code and in comments alike — the name is what
-//    a reader takes from a file, and a comment is read. Scanned here over
-//    convex/, app/ and vqc/, none of which has a reason to spell them; this
-//    script and its test, which must, are under scripts/ and outside the scan.
-//    The Jarvis repository runs the same check over its own worker/ and
-//    scripts/, with the graph generator's fenced refused-words block exempt.
-// witness: write "the ontology" in any comment under convex/, app/ or vqc/.
-{
-  const scanned = ["convex", "app", "vqc"].flatMap((dir) => sourceFiles(dir));
-  for (const file of scanned) {
-    const text = read(file);
-    if (text === null) continue;
-    for (const re of REFUSED_WORDS) {
-      for (const { index, match } of matches(re, text)) {
-        failures.push(
-          `${file}:${lineOf(text, index)}: "${match[0]}" is a refused word — the whole is called the graph`,
-        );
-      }
-    }
-  }
-}
+// THERE IS NO CHECK 4 ANY MORE. It refused two names for the context graph,
+// and the graph is deleted; one name per thing is what checks 1 to 3 keep for
+// the closed vocabulary.
 
 // REMOVAL CHECK for 5: cannot remove. The key is what the merge gate joins its
-// three rows on, so a second spelling does not fail — it silently reads a
+// two rows on, so a second spelling does not fail — it silently reads a
 // DIFFERENT row, and the gate then allows or refuses a merge on another
 // commit's checks. `commitKey` having one home is the fix; this is what keeps
-// the second spelling from coming back, and the cycle that caused it once
-// (ttsMerge imports EVALS_RUN from ttsEvals) is still there.
+// the second spelling from coming back.
 //
 // 5. The evals commit key has one home. An inline `${repo}@${sha}` template is a
 //    second spelling of the key rows are stored under, and a row written under
@@ -273,28 +240,10 @@ if (block !== null) {
   }
 }
 
-// THERE IS NO CHECK 6 ANY MORE, and there was. It compared the graph's two
-// closed kind lists, which the generated block used to carry, with the lists
-// shared/graph.mjs mints. Nothing read those two lists at runtime, and the
-// mirror tied every node-kind change here to a Jarvis pin bump and a
-// regeneration, so Tom agreed on 2026-09-25 to delete it; the generator stopped
-// writing the lists in the same round. The number stays retired rather than
-// reused, because the check numbers are shared with the Jarvis repository.
-
-// THERE IS NO TABLE-COUNT CHECK AND NO CONTEXT_CALLERS CHECK, and there were.
-//
-// The first pinned convex/schema.ts at 44 `defineTable` calls to assert that
-// the graph adds no table. The graph adding a table is visible in this round's
-// own diff, which the merge gate's audit reads; a pinned count instead fails
-// `check:guardrails` on every LATER branch that adds a table for any reason at
-// all, which is a tax on other people's rounds to restate a fact about this
-// one.
-//
-// The second asserted that CONTEXT_CALLERS is declared exactly once. Nothing
-// parses CONTEXT_CALLERS — not this file, not scripts/vocabulary.mjs — so a
-// second declaration would break nothing this checker could then detect, and
-// no second one ever existed. A check with no reader and no history is a check
-// that only ever fires on a false positive.
+// THERE IS NO CHECK 6 ANY MORE. It compared the graph's two closed kind lists
+// with the ones the graph module minted, and the graph is deleted. The number
+// stays retired rather than reused, because the check numbers are shared with
+// the Jarvis repository.
 
 // ── The report ───────────────────────────────────────────────────────────────
 
@@ -304,4 +253,4 @@ if (failures.length > 0) {
   for (const failure of failures) console.error("  - " + failure);
   process.exit(1);
 }
-console.log("check-vocabulary: the 5 in-repo checks passed; the render checks run in the nightly");
+console.log("check-vocabulary: the 4 in-repo checks passed; the render checks run in the nightly");

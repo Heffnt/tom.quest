@@ -13,7 +13,7 @@
 // plain sentence for what it does.
 
 import { useState } from "react";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import type { SessionModel } from "../lib";
 
 export default function ForkDialog({

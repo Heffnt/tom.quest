@@ -31,6 +31,18 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "job-ok", text: 3 }).ok).toBe(false);
   });
 
+  it("takes an eval set's run, subject the set's name", () => {
+    const result = validateEvent({ kind: "eval-run", provenance: { job: "evals" }, subject: "wall", data: { set: "wall", passed: 3, total: 3 }, text: "wall: 3 of 3 pass" });
+    expect(result).toMatchObject({ ok: true, event: { kind: "eval-run", subject: "wall", text: "wall: 3 of 3 pass" } });
+  });
+
+  it("refuses a decision, a digest line or an eval run without its subject", () => {
+    for (const kind of ["decision", "digest-line", "eval-run"]) {
+      expect(validateEvent({ kind, data: {} })).toEqual({ ok: false, error: `a ${kind} event names its subject` });
+      expect(validateEvent({ kind, subject: "s", data: {} }).ok).toBe(true);
+    }
+  });
+
   it("lists every kind once", () => {
     expect(new Set(EVENT_KINDS).size).toBe(EVENT_KINDS.length);
   });

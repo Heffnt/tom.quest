@@ -59,7 +59,7 @@ conditions are not restated here beyond the phrase needed to identify the row.
 |---|---|---|
 | checks | every commit (CI `report`, which carries `static-boundaries`, `secret-scan`, `tests` and `e2e`); at each write door | `npx tsc --noEmit`, `pnpm test` (the whole suite on main and nightly, the diff's related files on a pull request — `scripts/tests-affected.mjs`), `pnpm check:guardrails`, `pnpm build`, gitleaks, `pnpm test:e2e`; the writing standard at the prepare door and as the prod rung; WikiTom's evidence check in the nightly job; the digest's facts-block verification. `docs/tests.md` is the whole inventory |
 | the audit | before every merge | the Jarvis repository's `worker/jobs/audit.mjs` → the `audit-verdict` head row |
-| the evals | on a pull request touching a watched context file (`scripts/evals-check.mjs`); the whole set weekly | the Jarvis repository's `worker/jobs/evals.mjs` → the `evals-run` head row |
+| the evals | nightly and when the rules or the model registry change; the wall evals in Jarvis's test suite | the Jarvis repository's `worker/jobs/evals.mjs` → one `eval-run` event per set |
 
 There are exactly three verifiers and they are these three; `vqc/verifiers.md`
 says what each one verifies, what it costs, and how it fails.

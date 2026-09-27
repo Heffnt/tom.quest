@@ -10,10 +10,11 @@ import type { IntentLine } from "../lib";
 afterEach(() => cleanup());
 
 const VIEW = {
-  prefix: "MODEL-OF-TOM FILES (WikiTom commit abc): model-of-tom/agent-rules.md\n\n── model-of-tom/agent-rules.md ──\n# Agent rules\n\n- Guess nothing.",
-  grants: "SKILLS (WikiTom commit abc)\ngranted: write",
-  listing: "- tom-write: Load before writing.",
-  skills: [{ name: "write", text: "write [write] 40B\ndescription=\"Load before writing.\"\n\n- Be plain." }],
+  prompt: [
+    "MODEL-OF-TOM FILES (WikiTom commit abc): model-of-tom/agent-rules.md\n\n── model-of-tom/agent-rules.md ──\n# Agent rules\n\n- Guess nothing.",
+    "── model-of-tom/writing.md ──\n# Writing\n\nBe plain.",
+    "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.",
+  ].join("\n\n"),
 };
 
 const LINE: IntentLine = {
@@ -30,10 +31,10 @@ const LINE: IntentLine = {
 };
 
 describe("AgentText", () => {
-  it("draws the prompt, the listing and each skill, in that order", () => {
+  it("draws the prompt verbatim, in its own order", () => {
     const { container } = render(<AgentText view={VIEW} lines={[LINE]} selected={null} onSelect={() => {}} />);
     const text = container.textContent ?? "";
-    const order = ["MODEL-OF-TOM FILES", "SKILLS (WikiTom commit abc)", "- tom-write:", "write [write] 40B"]
+    const order = ["MODEL-OF-TOM FILES", "── model-of-tom/writing.md ──", "Skills: `tts-search skills`"]
       .map((needle) => text.indexOf(needle));
     expect(order.every((at) => at >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);

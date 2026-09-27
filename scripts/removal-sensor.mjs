@@ -44,11 +44,15 @@
 // bottom, so removal-sensor.test.mjs runs with no ast-grep and no git.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { hash8 } from "../shared/graph-hash.mjs";
+/** A fingerprint: eight hex characters of the SHA-256 of `text`, UTF-8. */
+export function hash8(text) {
+  return createHash("sha256").update(String(text), "utf8").digest("hex").slice(0, 8);
+}
 
 // ── The numbers and the names ────────────────────────────────────────────────
 

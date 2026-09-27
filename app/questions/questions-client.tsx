@@ -3,7 +3,7 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import TomGate from "@/app/components/tom-gate";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
-import Info from "@/app/tts/components/info";
+import Info from "@/app/jarvis/components/info";
 import Drawer, { type DrawerContent } from "./components/drawer";
 import { BANK } from "./data/types";
 import {
