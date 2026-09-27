@@ -1235,6 +1235,121 @@ describe("claude sessions", () => {
   });
 });
 
+// ── The replay wall (2026-09-25 incident) ────────────────────────────────────
+// witness: delete the expireStaleAutonomousRequest call from internalPoll. A
+// month-old autonomous request the host never claimed is ended at the poll, not
+// handed to a host that keeps no memory across restarts.
+describe("stale autonomous requests", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  async function sessionAged(
+    t: ReturnType<typeof convexTest>,
+    tom: Awaited<ReturnType<typeof withTom>>,
+    patch: {
+      mode: "autonomous" | "interactive";
+      status: "requested" | "starting" | "running";
+      ageHours: number;
+      sdkSessionId?: string;
+    },
+  ) {
+    const sessionId = await createBasicSession(tom);
+    await t.run((ctx) =>
+      ctx.db.patch(sessionId, {
+        mode: patch.mode,
+        status: patch.status,
+        createdAt: Date.now() - patch.ageHours * HOUR,
+        ...(patch.sdkSessionId !== undefined ? { sdkSessionId: patch.sdkSessionId } : {}),
+      }),
+    );
+    return sessionId;
+  }
+
+  async function poll(t: ReturnType<typeof convexTest>) {
+    const result = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+    });
+    return (result.sessions as { id: string }[]).map((s) => s.id);
+  }
+
+  it("ends an autonomous request older than a day, with the reason, and does not return it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await sessionAged(t, tom, { mode: "autonomous", status: "requested", ageHours: 25 });
+
+    expect(await poll(t)).not.toContain(sessionId);
+    const row = await t.run((ctx) => ctx.db.get(sessionId));
+    expect(row?.status).toBe("failed");
+    expect(row?.endedReason).toBe("autonomous request expired before claim");
+    const inbound = await t.run((ctx) =>
+      ctx.db
+        .query("claudeInbound")
+        .withIndex("by_session_status", (q) => q.eq("sessionId", sessionId).eq("status", "pending"))
+        .collect(),
+    );
+    expect(inbound).toEqual([]);
+    expect(await sessionFailureRows(t)).toEqual([
+      expect.objectContaining({
+        kind: "session-ended",
+        sessionId,
+        status: "failed",
+        endedReason: "autonomous request expired before claim",
+      }),
+    ]);
+    // A second poll finds it terminal: no second ending row.
+    expect(await poll(t)).not.toContain(sessionId);
+    expect(await sessionFailureRows(t)).toHaveLength(1);
+  });
+
+  it("returns an autonomous request younger than a day", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await sessionAged(t, tom, { mode: "autonomous", status: "requested", ageHours: 23 });
+
+    expect(await poll(t)).toContain(sessionId);
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.status).toBe("requested");
+  });
+
+  it("never touches an interactive request, however old", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await sessionAged(t, tom, { mode: "interactive", status: "requested", ageHours: 25 });
+
+    expect(await poll(t)).toContain(sessionId);
+    const row = await t.run((ctx) => ctx.db.get(sessionId));
+    expect(row?.status).toBe("requested");
+    expect(row?.endedReason).toBeUndefined();
+  });
+
+  it("ends an autonomous starting row with no sdkSessionId older than a day", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await sessionAged(t, tom, { mode: "autonomous", status: "starting", ageHours: 25 });
+
+    expect(await poll(t)).not.toContain(sessionId);
+    const row = await t.run((ctx) => ctx.db.get(sessionId));
+    expect(row?.status).toBe("failed");
+    expect(row?.endedReason).toBe("autonomous request expired before claim");
+  });
+
+  it("leaves an already-running autonomous row alone", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await sessionAged(t, tom, {
+      mode: "autonomous",
+      status: "running",
+      ageHours: 25,
+      sdkSessionId: "sdk-session-1",
+    });
+
+    expect(await poll(t)).toContain(sessionId);
+    const row = await t.run((ctx) => ctx.db.get(sessionId));
+    expect(row?.status).toBe("running");
+    expect(row?.endedReason).toBeUndefined();
+    expect(await sessionFailureRows(t)).toEqual([]);
+  });
+});
+
 // ── A session's failure rows (todo tts-session-needs-you-notify) ─────────────
 // Every row below is EDGE-triggered: "one line, not one per poll", and the
 // daemon flushes several times a second while a session is live. Each test
