@@ -39,7 +39,7 @@ import {
   buildDoneSet,
   isReady,
 } from "./ttsShared";
-import { resolveId } from "./jarvis/tables";
+import { back, resolveId } from "./jarvis/tables";
 
 // The phase-7 row mappings (convex/ttsMigrations.ts): resumable, dry-runnable,
 // idempotent, and counted. These tests are the local harness the design says
@@ -145,7 +145,7 @@ const RETIRED_TODO_FIELDS = {
 const wideSchema = defineSchema({
   ...otherTables,
   dtsTodos: carryIndexes(defineTable(v.object({ ...schemaTodos.validator.fields, ...RETIRED_TODO_FIELDS })), schemaTodos),
-  // The dual write copies each migrated row into todos as it is written.
+  // The walks write the plain todos (step C, convex/jarvis/tables.ts).
   todos: carryIndexes(defineTable(v.object({ ...schemaPlainTodos.validator.fields, ...RETIRED_TODO_FIELDS })), schemaPlainTodos),
   claudeSessions: carryIndexes(
     defineTable(
@@ -187,7 +187,7 @@ const wideSchema = defineSchema({
 // declares them: a row on the deployment keeps the fields the validator
 // dropped, and these fixtures and assertions are about exactly those fields.
 type WideModel = DataModelFromSchemaDefinition<typeof wideSchema>;
-type WideTodo = DocumentByName<WideModel, "dtsTodos">;
+type WideTodo = DocumentByName<WideModel, "todos">;
 type WideBrief = DocumentByName<WideModel, "dtsCodeBriefs">;
 type WideSession = DocumentByName<WideModel, "claudeSessions">;
 
@@ -199,7 +199,7 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
     const ids = [];
     for (const row of rows) {
       ids.push(
-        await ctx.db.insert("dtsTodos", {
+        await ctx.db.insert("todos", {
           readiness: "unprepared",
           status: "active",
           timingClass: "whenever",
@@ -210,6 +210,9 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
         }),
       );
     }
+    // Each with its old row, as a door writes a todo while step C moves the
+    // writers (convex/jarvis/tables.ts).
+    for (const id of ids) await back(ctx, "todos", id);
     return ids;
   });
 }
@@ -219,7 +222,7 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
 // validator dropped, and these assertions are about exactly those fields.
 async function allTodos(t: ReturnType<typeof convexTest>): Promise<WideTodo[]> {
   return (await t.run(async (ctx) =>
-    ctx.db.query("dtsTodos").collect(),
+    ctx.db.query("todos").collect(),
   )) as unknown as WideTodo[];
 }
 
@@ -229,10 +232,9 @@ async function eventsOfKind(t: ReturnType<typeof convexTest>, kind: string) {
   );
 }
 
-/** The dual write's check on a walk: the seed is inserted raw, so the copy
- * runs first; after the walk every todos copy matches its old row. */
-async function expectFollowed(t: ReturnType<typeof convexTest>, walk: () => Promise<unknown>) {
-  await t.action(internal.jarvis.tables.sync, { table: "todos" });
+/** Step C's check on a walk (convex/jarvis/tables.ts): the walk writes the
+ * plain rows, and each row it writes has its old row written back to match. */
+async function expectWrittenBack(t: ReturnType<typeof convexTest>, walk: () => Promise<unknown>) {
   await walk();
   const { left } = await t.action(internal.jarvis.tables.leftToRemap, {});
   expect(left.todos).toMatchObject({ notCopied: 0, stale: 0, version: 0, orphaned: 0 });
@@ -360,10 +362,10 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
     }
   });
 
-  it("dual-writes every row it maps into todos", async () => {
+  it("writes the plain rows it maps, and writes each one's old row back", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
-    await expectFollowed(t, () => t.mutation(internal.ttsMigrations.internalMigrateReadiness, {}));
+    await expectWrittenBack(t, () => t.mutation(internal.ttsMigrations.internalMigrateReadiness, {}));
   });
 
   it("is idempotent: a second run maps nothing", async () => {
@@ -566,7 +568,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     // The event names the todo by its plain id (tts.logEvent).
     const visaPlain = await t.run(async (ctx) => await resolveId(ctx, "todos", visa._id));
     const mapped = (await eventsOfKind(t, "timing-mapped")).find((e) => e.todoId === visaPlain);
-    expect((mapped!.data as { after: Partial<Doc<"dtsTodos">> }).after).toEqual({
+    expect((mapped!.data as { after: Partial<Doc<"todos">> }).after).toEqual({
       status: "active",
       kind: "task",
       timingClass: "whenever",
@@ -640,10 +642,10 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     expect(await eventsOfKind(t, "status-changed")).toHaveLength(3);
   });
 
-  it("dual-writes every row it maps into todos", async () => {
+  it("writes the plain rows it maps, and writes each one's old row back", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
-    await expectFollowed(t, () => t.mutation(internal.ttsMigrations.internalMigrateTiming, {}));
+    await expectWrittenBack(t, () => t.mutation(internal.ttsMigrations.internalMigrateTiming, {}));
   });
 
   it("resumes across pages by cursor", async () => {
@@ -920,7 +922,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
   const wideRows = async (t: ReturnType<typeof convexTest>) =>
     await t.run(async (ctx) => ({
-      todos: await ctx.db.query("dtsTodos").collect(),
+      todos: await ctx.db.query("todos").collect(),
       sessions: await ctx.db.query("claudeSessions").collect(),
       briefs: await ctx.db.query("dtsCodeBriefs").collect(),
     }));
@@ -1002,11 +1004,11 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
   // witness: patch a row inside the dryRun branch — the counts would still be
   // right and every row would have moved before Tom saw the numbers.
-  it("dual-writes every todo it clears into todos", async () => {
+  it("writes the plain todos it clears, and writes each one's old row back", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, todoSeed());
     await seedRest(t);
-    await expectFollowed(t, () => clearAll(t));
+    await expectWrittenBack(t, () => clearAll(t));
   });
 
   it("a dry run reports the same counts and writes nothing but the dry-run event", async () => {
@@ -1107,7 +1109,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   const goal = (
     entry: string,
     createdAt: number,
-    extra: Partial<Doc<"dtsTodos">> = {},
+    extra: Partial<Doc<"todos">> = {},
   ): Seed => ({
     statement: closedUpstreamStatement(entry),
     condition: closedUpstreamStatement(entry),
@@ -1178,7 +1180,7 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
   }
 
   const byId = async (t: ReturnType<typeof convexTest>) =>
-    new Map((await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).map((r) => [r._id, r]));
+    new Map((await t.run(async (ctx) => ctx.db.query("todos").collect())).map((r) => [r._id, r]));
 
   const firstRunCounts = {
     scanned: 12,
@@ -1377,10 +1379,10 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
 
   // witness: match an entry by its completion test as well as by the old
   // wording — every run would rewrite the kept goal and log it again.
-  it("dual-writes every goal it converts or archives into todos", async () => {
+  it("writes the plain goals it converts or archives, and writes each one's old row back", async () => {
     const t = convexTest({ schema, modules });
     await seed(t);
-    await expectFollowed(t, () => t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {}));
+    await expectWrittenBack(t, () => t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {}));
   });
 
   it("is idempotent: a second run changes nothing", async () => {

@@ -1580,3 +1580,39 @@ describe("a reply in one of the new rooms", () => {
     expect(await events(t, "delegate-objection")).toHaveLength(0);
   });
 });
+
+describe("a todo taken from a Slack subject", () => {
+  it("is stored as the plain todo, and as none when the subject's id names no row; the subject stays as it is", async () => {
+    const t = convexTest({ schema, modules });
+    const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: 1, updatedAt: 1 };
+    const { plain, legacy, gone } = await t.run(async (ctx) => {
+      const legacy = await ctx.db.insert("dtsTodos", fields);
+      const gone = await ctx.db.insert("dtsTodos", fields);
+      await ctx.db.delete(gone);
+      return { legacy, gone, plain: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
+    });
+    // Two threads opened before step C: one on the old id, one on an id naming no row.
+    await t.run(async (ctx) => {
+      for (const [ts, id] of [["9000.1", legacy], ["9100.1", gone]] as const) {
+        await ctx.db.insert("dtsEvents", {
+          at: Date.now() - 1_000, kind: "slack-sent", key: slackThreadKey("C-dump", ts),
+          data: { channel: "C-dump", ts, subject: { kind: "todo", id }, text: "captured" },
+        });
+      }
+    });
+    await t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId: "Ev1", channel: "C-dump", threadTs: "9000.1", ts: "9000.2", text: "the landlord called back", user: "UTOM" });
+    await t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId: "Ev2", channel: "C-dump", threadTs: "9100.1", ts: "9100.2", text: "the landlord called back", user: "UTOM" });
+    // A send and a failed send on the id naming no row.
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, { channel: "C-today", ts: "9200.1", subject: { kind: "todo", id: gone }, text: "needs you" });
+    await t.mutation(internal.ttsSlack.internalRecordSlackFailed, { channel: "C-today", subject: { kind: "todo", id: gone }, error: "channel_not_found" });
+    const rows = await t.run(async (ctx) => await ctx.db.query("dtsEvents").collect());
+    const event = (key: string) => rows.find((e) => e.kind === "slack-event" && e.key === key)!;
+    expect(event("Ev1").todoId).toBe(plain);
+    expect(event("Ev2").todoId).toBeUndefined();
+    expect((event("Ev2").data as { subject: { id: string } }).subject.id).toBe(gone);
+    const sent = rows.find((e) => e.kind === "slack-sent" && e.key === slackThreadKey("C-today", "9200.1"))!;
+    expect(sent.todoId).toBeUndefined();
+    expect((sent.data as { subject: { id: string } }).subject.id).toBe(gone);
+    expect(rows.find((e) => e.kind === "slack-send-failed")!.todoId).toBeUndefined();
+  });
+});

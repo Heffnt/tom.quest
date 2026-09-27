@@ -427,11 +427,12 @@ export async function gatherWeeklyFacts(
   const dateOutcomes: WeeklyFacts["dateOutcomes"] = [];
   for (const e of await eventsOfKind("date-outcome")) {
     const d = (e.data ?? {}) as Record<string, unknown>;
-    if (e.todoId === undefined) continue;
+    // A todo reference naming no row names no todo (convex/jarvis/tables.ts).
     const todo = await todoOf(e.todoId);
+    if (todo === null) continue;
     dateOutcomes.push({
-      todoId: todo?._id ?? e.todoId,
-      statement: todo?.statement ?? "",
+      todoId: todo._id,
+      statement: todo.statement,
       outcome: str(d.outcome) ?? "",
       at: e.at,
       newDueAt: num(d.newDueAt),
@@ -443,24 +444,24 @@ export async function gatherWeeklyFacts(
   // todo; touched = a later row on that todo of a kind Tom's own hand writes
   // (TOM_TOUCH_KINDS above) — the system's rows on it do not count.
   // Keyed by the plain id: a todo's rows name it in either form.
-  const surfacings = new Map<string, { count: number; firstAt: number }>();
+  // A todo reference naming no row names no todo (convex/jarvis/tables.ts).
+  const surfacings = new Map<string, { todo: Doc<"todos">; count: number; firstAt: number }>();
   for (const e of await eventsOfKind("surfaced")) {
-    if (e.todoId === undefined) continue;
-    const key = (await todoOf(e.todoId))?._id ?? e.todoId;
-    const s = surfacings.get(key) ?? { count: 0, firstAt: e.at };
+    const todo = await todoOf(e.todoId);
+    if (todo === null) continue;
+    const s = surfacings.get(todo._id) ?? { todo, count: 0, firstAt: e.at };
     s.count++;
     s.firstAt = Math.min(s.firstAt, e.at);
-    surfacings.set(key, s);
+    surfacings.set(todo._id, s);
   }
   const surfacedUntouched: WeeklyFacts["surfacedUntouched"] = [];
-  for (const [todoId, s] of surfacings) {
+  for (const { todo, ...s } of surfacings.values()) {
     if (s.count < SURFACED_THRESHOLD) continue;
-    const later = await todoEvents(ctx, todoId, s.firstAt);
+    const later = await todoEvents(ctx, todo._id, s.firstAt);
     if (later.some(isTomTouch)) continue;
-    const todo = await todoOf(todoId);
     surfacedUntouched.push({
-      id: todo?._id ?? todoId,
-      statement: todo?.statement ?? "",
+      id: todo._id,
+      statement: todo.statement,
       surfaced: s.count,
       firstAt: s.firstAt,
     });
@@ -809,13 +810,14 @@ export async function gatherWeeklyFacts(
   // reported as a duration, never as a judgement.
   const threads: WeeklyFacts["threads"] = [];
   for (const e of await eventsOfKind(NEEDS_TOM)) {
-    if (e.todoId === undefined) continue;
-    const later = await todoEvents(ctx, e.todoId, e.at);
-    const reply = later.find((r) => r.kind === "slack-event");
+    // A todo reference naming no row names no todo (convex/jarvis/tables.ts).
     const todo = await todoOf(e.todoId);
+    if (todo === null) continue;
+    const later = await todoEvents(ctx, todo._id, e.at);
+    const reply = later.find((r) => r.kind === "slack-event");
     threads.push({
-      todoId: todo?._id ?? e.todoId,
-      statement: todo?.statement ?? "",
+      todoId: todo._id,
+      statement: todo.statement,
       askedAt: e.at,
       repliedAt: reply?.at ?? null,
       replyMs: reply === undefined ? null : reply.at - e.at,

@@ -1,5 +1,6 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import { gatherTodayFacts } from "./ttsDigest";
 import { nyCalendarDayKey } from "./ttsShared";
@@ -12,6 +13,7 @@ import {
   stripNarrowListId,
   type ObjectionFact,
 } from "./ttsAsk";
+import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -19,7 +21,7 @@ const KEY = "worker-key";
 
 async function seedTodo(t: TestConvex<typeof schema>, statement: string) {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    insertTodo(ctx, {
       statement,
       status: "active",
       readiness: "prepared",
@@ -337,6 +339,68 @@ describe("POST /tts/ask — the delegate's record", () => {
     );
     await post(t, body({ job: "poll-gmail", askId: "abababab" }));
     expect(await decisions()).toHaveLength(1);
+  });
+
+  it("a retry names the recorded todo in either id form, whichever form the ask stored", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    // A todo from before step C: its old row, and the plain copy naming it.
+    const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: Date.now(), updatedAt: Date.now() };
+    const { todoId, legacy } = await t.run(async (ctx) => {
+      const legacy = await ctx.db.insert("dtsTodos", fields);
+      return { legacy, todoId: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
+    });
+    const other = await seedTodo(t, "book the dentist");
+    // An ask recorded before the stored references went plain: the old id.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(), kind: DELEGATE_DECISION, key: "3f9c1a22",
+        data: { ...body({ job: "poll-gmail" }), sessionId: null, todoId: legacy, attended: false },
+      }),
+    );
+    const decision = async (askId: string) =>
+      (await t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect()))
+        .find((row) => row.subject === askId)?.data as { todoId?: string } | undefined;
+    expect((await (await post(t, body({ job: "poll-gmail", todoId }))).json()).existing).toBe(true);
+    // The retry's decision row names the plain todo, though the ask stored the old id.
+    expect((await decision("3f9c1a22"))!.todoId).toBe(todoId);
+    expect((await (await post(t, body({ job: "poll-gmail", todoId: legacy }))).json()).existing).toBe(true);
+    expect((await post(t, body({ job: "poll-gmail", todoId: other }))).status).toBe(400);
+    expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(400);
+    // An ask recorded now stores the plain id, and its retry may name the old.
+    expect((await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId }))).status).toBe(200);
+    expect((await rows(t)).find((row) => row.key === "cdcdcdcd")!.data.todoId).toBe(todoId);
+    expect((await (await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId: legacy }))).json()).existing).toBe(true);
+  });
+
+  it("an objection lands on the ask's todo as the plain row, and on none when the stored id names no row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: Date.now(), updatedAt: Date.now() };
+    const { todoId, legacy, gone } = await t.run(async (ctx) => {
+      const legacy = await ctx.db.insert("dtsTodos", fields);
+      const gone = await ctx.db.insert("dtsTodos", fields);
+      await ctx.db.delete(gone);
+      return { legacy, gone, todoId: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
+    });
+    // Asks recorded before the stored references went plain: the old id, and
+    // one whose id was checked for form only.
+    for (const [askId, stored] of [["aaaa0001", legacy], ["aaaa0002", gone]] as const) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("dtsEvents", {
+          at: Date.now(), kind: DELEGATE_DECISION, key: askId, todoId: stored,
+          data: { ...body({ job: "poll-gmail", askId }), sessionId: null, todoId: stored, attended: false },
+        }),
+      );
+    }
+    const objected = async (askId: string) => {
+      const eventId = await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+        askId, text: "revert", revert: true, sentence: null, channel: "C", ts: "1.2", threadTs: "1.1",
+      });
+      return await t.run(async (ctx) => (await ctx.db.get(eventId))!.todoId ?? null);
+    };
+    expect(await objected("aaaa0001")).toBe(todoId);
+    expect(await objected("aaaa0002")).toBeNull();
   });
 
   it("refuses an unauthenticated caller", async () => {

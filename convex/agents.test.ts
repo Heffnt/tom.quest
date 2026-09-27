@@ -80,6 +80,25 @@ describe("agents", () => {
     expect(await tom.query(api.agents.entry, { agentId: "claude:laptop:root-run", seq: 1 })).toMatchObject({ provenance: { fileVersion: STORED_HASH }, digest: "fedcba9876543210" });
   });
 
+  it("stores a run's todo as the plain id whichever form it names, and drops an id naming no row", async () => {
+    const t = convexTest(schema, modules);
+    const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: 1, updatedAt: 1 };
+    const { plain, legacy, gone } = await t.run(async (ctx) => {
+      const legacy = await ctx.db.insert("dtsTodos", fields);
+      const plain = await ctx.db.insert("todos", { ...fields, legacyId: legacy });
+      const gone = await ctx.db.insert("todos", fields);
+      await ctx.db.delete(gone);
+      return { plain, legacy, gone };
+    });
+    const stored = (runId: string) =>
+      t.run(async (ctx) => (await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).first())!.todoId ?? null);
+    for (const [name, todoId, expected] of [["old", legacy, plain], ["plain", plain, plain], ["gone", gone, null]] as const) {
+      const runId = `claude:laptop:${name}-todo`;
+      expect(await t.mutation(internal.agents.internalIngest, ingest(run({ runId, rootRunId: runId, todoId })) as never)).toMatchObject({ ok: true });
+      expect(await stored(runId)).toBe(expected);
+    }
+  });
+
   it("uses the prior cursor/hash tuple as an append compare-and-swap fence", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.agents.internalIngest, ingest() as never);

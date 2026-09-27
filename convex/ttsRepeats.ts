@@ -1,6 +1,6 @@
 // Repeating todos (integrations round, 2026-08-29). A ttsRepeats row is a
 // standing rule ("core + antagonist training", monday+friday, 18:00); the
-// 4:30 a.m. generator mints that day's instances as REAL dtsTodos rows —
+// 4:30 a.m. generator mints that day's instances as REAL todos rows —
 // dated, self-imposed, source "repeating" — so every instance gets the full
 // kept-dates treatment: doing it records done, skipping it records a miss,
 // and the weekly session reads the honest record. The rule itself is
@@ -15,7 +15,7 @@ import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
-import { follow } from "./jarvis/tables";
+import { back } from "./jarvis/tables";
 import {
   nyCalendarDayBoundsUtc,
   nyTimeUtcMs,
@@ -248,7 +248,7 @@ export const internalGenerateRepeats = internalMutation({
     const existing = new Set(
       (
         await ctx.db
-          .query("dtsTodos")
+          .query("todos")
           .withIndex("by_source", (q) => q.eq("source", "repeating"))
           .collect()
       ).map((t) => t.provenance),
@@ -283,7 +283,7 @@ export const internalGenerateRepeats = internalMutation({
         dueAt = nyTimeUtcMs(day, 12); // the noon storage convention
       }
 
-      const id = await ctx.db.insert("dtsTodos", {
+      const id = await ctx.db.insert("todos", {
         statement: rule.statement,
         body: rule.body,
         // Ready by construction: the rule already carries everything an
@@ -304,7 +304,7 @@ export const internalGenerateRepeats = internalMutation({
         createdAt: now,
         updatedAt: now,
       });
-      await follow(ctx, "todos", id);
+      await back(ctx, "todos", id);
       await logEvent(ctx, "created", id, {
         source: "repeating",
         repeatId: rule._id,

@@ -25,6 +25,7 @@ import {
 } from "./ttsMerge";
 import { gatherTodayFacts } from "./ttsDigest";
 import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
+import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -353,7 +354,7 @@ describe("a merge the gate allows", () => {
     const t = convex();
     await gated(t);
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "the delegate lands",
         status: "active",
         readiness: "prepared",

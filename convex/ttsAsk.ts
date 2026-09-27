@@ -7,7 +7,7 @@ import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
-import { newestTodoEvents, oldId } from "./jarvis/tables";
+import { newestTodoEvents, resolveId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 
@@ -201,34 +201,39 @@ export const internalRecordAsk = internalMutation({
       // stands, and nothing is written from the new body.
       // A todo id that names no todo is itself a contradiction: it must not
       // resolve to "no todo" and so match an ask recorded without one.
-      const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
+      // The recorded todo is a stored reference: the old row's id on an ask
+      // recorded before this step, the plain row's since. Both sides are
+      // compared as the plain todo they name.
+      const todoId = args.todoId === undefined ? null : await resolveId(ctx, "todos", args.todoId);
+      const storedTodoId = typeof stored.todoId === "string" ? await resolveId(ctx, "todos", stored.todoId) : null;
       if (
         (args.todoId !== undefined && todoId === null) ||
         args.question !== stored.question ||
         args.decision !== stored.decision ||
         (args.sessionId ?? null) !== (stored.sessionId ?? null) ||
         (args.job ?? null) !== (stored.job ?? null) ||
-        todoId !== (stored.todoId ?? null)
+        todoId !== storedTodoId
       ) {
         throw new Error(`askId ${args.askId} is already recorded for a different ask`);
       }
       // A RETRY OF A RECORDED ASK still gets its decision row: an ask
       // recorded before this mutation wrote the row had it posted separately,
       // a post the generic routes now refuse, so the retry is its one way in.
-      // The row is built from the ask as recorded, and one per ask: none is
-      // written when one already stands.
+      // The row is built from the ask as recorded, its todo the plain one the
+      // check above resolved, and one per ask: none is written when one
+      // already stands.
       const took = stored.decision !== null && stored.decision !== undefined && stored.attended !== true && stored.refusedBecause !== CAP_REFUSAL;
       if (took) {
         const written = await ctx.db
           .query("events")
           .withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", args.askId))
           .first();
-        if (written === null) await insertDecision(ctx, stored);
+        if (written === null) await insertDecision(ctx, { ...stored, todoId: storedTodoId });
       }
       return { id: existing._id, existing: true, attended: false, capped: false };
     }
 
-    const todoId = args.todoId === undefined ? undefined : await oldId(ctx, "todos", args.todoId);
+    const todoId = args.todoId === undefined ? undefined : await resolveId(ctx, "todos", args.todoId);
     if (args.todoId !== undefined && todoId === null) throw new Error(`Unknown todo id: ${args.todoId}`);
     let session: Doc<"claudeSessions"> | null = null;
     if (args.sessionId !== undefined) {
@@ -391,7 +396,7 @@ export const internalRecordDelegateObjection = internalMutation({
       const recorded = await recordedDecision(ctx, args.askId);
       if (recorded === null) throw new Error(`Delegate decision not found: ${args.askId}`);
       const named = (recorded.data as { todoId?: unknown } | undefined)?.todoId;
-      todoId = typeof named === "string" ? ((await oldId(ctx, "todos", named)) ?? undefined) : undefined;
+      todoId = typeof named === "string" ? ((await resolveId(ctx, "todos", named)) ?? undefined) : undefined;
     }
     const eventId = await logEvent(ctx, DELEGATE_OBJECTION, todoId, args, args.askId);
     // AN OBJECTION IS A JUDGMENT ABOUT THE RUN THAT TOOK THE DECISION, and the

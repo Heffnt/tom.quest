@@ -52,6 +52,25 @@ const RECORD_SLACK_SENT_ARGS = {
   text: v.string(),
 };
 
+/** The todo a subject names, as a row's todoId column stores it: the plain
+ *  id, or none for an id naming no row (convex/jarvis/tables.ts resolveId).
+ *  Every todoId taken from a Slack subject is taken here. */
+async function subjectTodo(ctx: MutationCtx, subject: { kind: string }): Promise<Id<"todos"> | undefined> {
+  if (subject.kind !== "todo") return undefined;
+  return (await resolveId(ctx, "todos", (subject as unknown as { id: string }).id)) ?? undefined;
+}
+
+/** A subject as a new row stores it: a todo named by its plain id, whichever
+ *  form the thread or the caller holds (step C, convex/jarvis/tables.ts).
+ *  A todo id naming no row stays in the subject, and only there: a subject is
+ *  the thread's identity, which every message must carry and a todo subject
+ *  has no todo-less form of, so the row's todoId column stores no todo. */
+async function plainSubject<S extends { kind: string }>(ctx: MutationCtx, subject: S): Promise<S> {
+  if (subject.kind !== "todo") return subject;
+  const plain = await resolveId(ctx, "todos", (subject as unknown as { id: string }).id);
+  return plain === null ? subject : ({ ...subject, id: plain } as S);
+}
+
 /**
  * One "slack-sent" row per posted message: channel, ts, the thread it lives
  * in (its own ts when it is a root), its subject, and the text as posted.
@@ -59,15 +78,6 @@ const RECORD_SLACK_SENT_ARGS = {
  * reply only, never re-pointed: the reply that exists in Slack is the first
  * one (Tom's ruling 2026-08-30: exactly one reply per #dump message).
  */
-/** A subject as a new row stores it: a todo named by its plain id, whichever
- *  form the thread or the caller holds (step C, convex/jarvis/tables.ts). A
- *  todo id naming no row is kept as given. */
-async function plainSubject<S extends { kind: string }>(ctx: MutationCtx, subject: S): Promise<S> {
-  if (subject.kind !== "todo") return subject;
-  const plain = await resolveId(ctx, "todos", (subject as unknown as { id: string }).id);
-  return plain === null ? subject : ({ ...subject, id: plain } as S);
-}
-
 export async function recordSlackSent(
   ctx: MutationCtx,
   {
@@ -87,7 +97,7 @@ export async function recordSlackSent(
   // A subject names its todo in either form; the row stores the plain id,
   // in its todoId and in its subject.
   subject = await plainSubject(ctx, subject);
-  const todoId = subject.kind === "todo" ? ((await resolveId(ctx, "todos", subject.id)) ?? undefined) : undefined;
+  const todoId = await subjectTodo(ctx, subject);
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: "slack-sent",
@@ -143,7 +153,7 @@ export const internalRecordSlackFailed = internalMutation({
     await logEvent(
       ctx,
       "slack-send-failed",
-      stored.kind === "todo" ? stored.id : undefined,
+      await subjectTodo(ctx, stored),
       { channel, threadTs, subject: stored, error, text, attempts, windowEnd },
     );
   },
@@ -535,7 +545,7 @@ export async function slackThreadReplyFrom(
     key: eventId,
     todoId:
       subject.kind === "todo"
-        ? subject.id
+        ? await subjectTodo(ctx, subject)
         : outcome.outcome === "captured"
             ? outcome.todoId
             : undefined,

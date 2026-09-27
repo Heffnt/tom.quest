@@ -383,7 +383,7 @@ export const rulingsInWindow = query({
       verdict: ruling.verdict,
       sentence: ruling.sentence ?? null,
       subjectType: ruling.subjectType,
-      todoId: (ruling.todoId === undefined ? null : ((await todoOf(ruling.todoId))?._id ?? ruling.todoId)) as string | null,
+      todoId: (ruling.todoId === undefined ? null : ((await todoOf(ruling.todoId))?._id ?? null)) as string | null,
       // Kept in the shape as null until app/agents/window stops reading it; the
       // schema narrow removes it.
       batchId: null as string | null,

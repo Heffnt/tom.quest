@@ -37,7 +37,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { follow } from "./jarvis/tables";
+import { back } from "./jarvis/tables";
 
 /** The unarchiveCondition the retired v1 → graph migration
  * (tts.internalMigrateToGraph, deleted with batches on 2026-09-24 after it had
@@ -102,12 +102,12 @@ async function walkTodos(
   name: string,
   self: typeof internal.ttsMigrations.internalMigrateReadiness,
   page: Counts,
-  mapRow: (row: Doc<"dtsTodos">, dryRun: boolean) => Promise<void>,
+  mapRow: (row: Doc<"todos">, dryRun: boolean) => Promise<void>,
 ): Promise<MigrationReport> {
   const dryRun = args.dryRun ?? false;
   const pageSize = args.pageSize ?? PAGE_SIZE;
   const result = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
   for (const row of result.page) {
     page.scanned = (page.scanned ?? 0) + 1;
@@ -165,7 +165,7 @@ export const internalMigrateReadiness = internalMutation({
         page[`${stored}-to-${target}`]++;
         if (!dryRun) {
           await ctx.db.patch(row._id, { readiness: target });
-          await follow(ctx, "todos", row._id);
+          await back(ctx, "todos", row._id);
         }
       },
     );
@@ -206,7 +206,7 @@ export const TIMING_MIGRATION = "timing";
 /** The retired shape, as a stored row still holds it. The validator no longer
  * declares these three (the lifeos update, phase 7), and Convex returns an
  * undeclared field on an existing row unchanged, so the walk reads them
- * through this view rather than through Doc<"dtsTodos"> — which is what keeps
+ * through this view rather than through Doc<"todos"> — which is what keeps
  * a verification re-run possible after the narrow. */
 type RetiredTiming = {
   timingClass: "dated" | "whenever" | "condition-bound";
@@ -249,7 +249,7 @@ export const internalMigrateTiming = internalMutation({
         // condition-bound; (a) and (b) each add to the same patch and the
         // same statement, so the second mapping cannot overwrite what the
         // first carried in, and one write lands both.
-        const patch: Partial<Doc<"dtsTodos">> = {};
+        const patch: Partial<Doc<"todos">> = {};
         const retired = row as unknown as RetiredTiming;
         const terminal = row.status === "done" || row.status === "archived";
         let statement = row.statement;
@@ -288,7 +288,7 @@ export const internalMigrateTiming = internalMutation({
         if (statement !== row.statement) patch.statement = statement;
         if (!dryRun && Object.keys(patch).length > 0) {
           await ctx.db.patch(row._id, patch);
-          await follow(ctx, "todos", row._id);
+          await back(ctx, "todos", row._id);
           if (row.status === "waiting") {
             await logEvent(ctx, "status-changed", row._id, {
               from: "waiting",
@@ -505,7 +505,7 @@ export const internalClearRetiredFields = internalMutation({
      * so a todo's history reads the clearing off by_todo like every other
      * event about it. */
     const record = async (
-      subject: { todoId?: Id<"dtsTodos"> } & Record<string, unknown>,
+      subject: { todoId?: Id<"todos"> } & Record<string, unknown>,
       field: string,
       value: unknown,
     ) => {
@@ -521,7 +521,9 @@ export const internalClearRetiredFields = internalMutation({
     let continueCursor: string;
     switch (table) {
       case "dtsTodos": {
-        const result = await ctx.db.query("dtsTodos").paginate(opts);
+        // Its name when the walk was written; since step C of the core
+        // tables' move (convex/jarvis/tables.ts) the todos live in `todos`.
+        const result = await ctx.db.query("todos").paginate(opts);
         for (const row of result.page) {
           page["dtsTodos-scanned"]++;
           const retired = row as unknown as RetiredFields;
@@ -535,8 +537,8 @@ export const internalClearRetiredFields = internalMutation({
             patch[field] = undefined;
           }
           if (Object.keys(patch).length > 0) {
-            await ctx.db.patch(row._id, patch as Partial<Doc<"dtsTodos">>);
-            await follow(ctx, "todos", row._id);
+            await ctx.db.patch(row._id, patch as Partial<Doc<"todos">>);
+            await back(ctx, "todos", row._id);
           }
         }
         ({ isDone, continueCursor } = result);
@@ -859,7 +861,7 @@ export function duplicateArchiveReason(entry: string, keptId: string): string {
 /** One line of the event: what happened to one row. Keys are omitted rather
  * than set to undefined (an undefined member is not a storable Convex value). */
 type ClosedUpstreamChange = {
-  todoId: Id<"dtsTodos">;
+  todoId: Id<"todos">;
   entry: string;
   oldStatement: string;
 } & (
@@ -874,14 +876,14 @@ type ClosedUpstreamReport = {
   changes: ClosedUpstreamChange[];
 };
 
-const activeOrWaiting = (row: Doc<"dtsTodos">) =>
+const activeOrWaiting = (row: Doc<"todos">) =>
   row.status === "active" || row.status === "waiting";
 
 export const internalConvertClosedUpstreamGoals = internalMutation({
   args: { dryRun: v.optional(v.boolean()) },
   handler: async (ctx, { dryRun = false }): Promise<ClosedUpstreamReport> => {
     const rows = await ctx.db
-      .query("dtsTodos")
+      .query("todos")
       .withIndex("by_source", (q) => q.eq("source", "migration"))
       .collect();
     const counts: Counts = {
@@ -900,7 +902,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
 
     // Every goal still worded the old way, grouped by registry entry, oldest
     // first so "the first copy" is the same row on every run.
-    const byEntry = new Map<string, Doc<"dtsTodos">[]>();
+    const byEntry = new Map<string, Doc<"todos">[]>();
     for (const row of rows) {
       if (row.kind !== "goal") continue;
       const entry = CLOSED_UPSTREAM_PATTERN.exec(row.statement)?.[1];
@@ -912,7 +914,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
     }
 
     const archive = async (
-      row: Doc<"dtsTodos">,
+      row: Doc<"todos">,
       entry: string,
       reason: string,
       count: string,
@@ -921,7 +923,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
       changes.push({ todoId: row._id, entry, oldStatement: row.statement, action: "archived", reason });
       if (!dryRun) {
         await ctx.db.patch(row._id, { status: "archived", archivedAt: Date.now() });
-        await follow(ctx, "todos", row._id);
+        await back(ctx, "todos", row._id);
       }
     };
 
@@ -969,7 +971,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
           readiness: "unprepared",
           status,
         });
-        await follow(ctx, "todos", kept._id);
+        await back(ctx, "todos", kept._id);
       }
       for (const row of copies) {
         await archive(row, entry, duplicateArchiveReason(entry, kept._id), "duplicate-archived");
