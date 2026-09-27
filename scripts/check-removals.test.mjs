@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AST_GREP_VERSION, checkRemovals, movedAgainst } from "./check-removals.mjs";
+import { AST_GREP_VERSION, checkRemovals, movedAgainst, readMainBaseline } from "./check-removals.mjs";
 import { baselineText, hash8 } from "./removal-sensor.mjs";
 
 /** The fingerprint the sensor gives an exported name. */
@@ -97,5 +97,39 @@ describe("check-removals", () => {
 
   it("fails a missing baseline", () => {
     expect(checkRemovals(io({ baseline: null })).err[0]).toContain("is missing");
+  });
+
+  describe("main's baseline", () => {
+    const BEFORE = "e1693db22392738cd155aa831fc56248d7f0d716";
+    /** A git whose `show` answers from `files` by rev, recording each call. */
+    function fakeGit(files) {
+      const calls = [];
+      const git = (args) => {
+        calls.push(args.join(" "));
+        if (args[0] === "fetch") return { ok: true, stdout: "" };
+        const rev = args[1].split(":")[0];
+        return rev in files ? { ok: true, stdout: files[rev] } : { ok: false, stdout: "" };
+      };
+      return { git, calls };
+    }
+    const push = (before) => ({ GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: "event.json", before });
+    const readEvent = (env) => () => JSON.stringify({ before: env.before });
+
+    it("on a push, is the commit the push replaced, not main as it is when the job runs", () => {
+      const { git, calls } = fakeGit({ [BEFORE]: "before's", "origin/main": "a later merge's" });
+      const env = push(BEFORE);
+      expect(readMainBaseline(git, env, readEvent(env))).toBe("before's");
+      expect(calls[0]).toBe(`fetch --no-tags --depth=1 origin ${BEFORE}`);
+    });
+
+    it("reads main on a new branch's push, a pull request and a local run", () => {
+      const files = { [BEFORE]: "before's", "origin/main": "main's" };
+      const env = push("0".repeat(40));
+      expect(readMainBaseline(fakeGit(files).git, env, readEvent(env))).toBe("main's");
+      const pr = fakeGit(files);
+      expect(readMainBaseline(pr.git, { GITHUB_EVENT_NAME: "pull_request" })).toBe("main's");
+      expect(pr.calls.some((call) => call.startsWith("fetch"))).toBe(false);
+      expect(readMainBaseline(fakeGit(files).git, {})).toBe("main's");
+    });
   });
 });
