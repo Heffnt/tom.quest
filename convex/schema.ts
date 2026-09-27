@@ -603,6 +603,9 @@ export default defineSchema({
     updatedAt: v.number(),
     doneAt: v.optional(v.number()),
     archivedAt: v.optional(v.number()),
+    // The dual write's stamp (convex/jarvis/tables.ts, `follow`): a fingerprint
+    // of this row's other fields, which its plain copy carries too.
+    legacyVersion: v.optional(v.string()),
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
@@ -802,6 +805,9 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // The dual write's stamp: the version of the old row this copy was last
+    // written from (convex/jarvis/tables.ts, `follow`); it must match it.
+    legacyVersion: v.optional(v.string()),
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
@@ -972,6 +978,9 @@ export default defineSchema({
     category: v.optional(v.string()),
     note: v.optional(v.string()),
     createdAt: v.number(),
+    // The dual write's stamp (convex/jarvis/tables.ts, `follow`): a fingerprint
+    // of this row's other fields, which its plain copy carries too.
+    legacyVersion: v.optional(v.string()),
   }).index("by_start", ["start"]),
 
   // blocks: the plain-named home of dtsBlocks's rows (the record's core tables,
@@ -990,6 +999,9 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // The dual write's stamp: the version of the old row this copy was last
+    // written from (convex/jarvis/tables.ts, `follow`); it must match it.
+    legacyVersion: v.optional(v.string()),
   }).index("by_start", ["start"])
     .index("by_legacy", ["legacyId"]),
 
@@ -1023,6 +1035,9 @@ export default defineSchema({
     result: v.optional(v.string()),
     createdAt: v.number(),
     resolvedAt: v.optional(v.number()),
+    // The dual write's stamp (convex/jarvis/tables.ts, `follow`): a fingerprint
+    // of this row's other fields, which its plain copy carries too.
+    legacyVersion: v.optional(v.string()),
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
   // timeNotes: the plain-named home of dtsTimeNotes's rows (the record's core
@@ -1048,8 +1063,13 @@ export default defineSchema({
     // copies it here), so an id cited in the evidence, a Slack thread or
     // a box file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
+    // The dual write's stamp: the version of the old row this copy was last
+    // written from (convex/jarvis/tables.ts, `follow`); it must match it.
+    legacyVersion: v.optional(v.string()),
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"])
-    .index("by_legacy", ["legacyId"]),
+    .index("by_legacy", ["legacyId"])
+    // A deleted block's notes, found when the dual write takes the block away.
+    .index("by_block", ["blockId"]),
 
   // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
   // superseded the retired dtsCodeRulings). APPEND-ONLY: a new ruling on the same

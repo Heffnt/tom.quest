@@ -78,8 +78,10 @@ describe("rulings under their plain name", () => {
 
   it("exports exactly the rulings count and the core tables' copy; no retired copy or remap returns", () => {
     expect(Object.keys(tablesModule).sort()).toEqual([
+      "clearBlockPage",
       "countPage",
       "counts",
+      "follow",
       "leftPage",
       "leftToRemap",
       "prunePage",
@@ -88,6 +90,8 @@ describe("rulings under their plain name", () => {
       "resolveId",
       "sync",
       "syncPage",
+      "unstamp",
+      "unstampPage",
     ]);
   });
 });
@@ -108,9 +112,9 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
       return rows.find((r) => r.legacyId === legacyId) ?? null;
     });
   const zeros = {
-    todos: { notCopied: 0, stale: 0, orphaned: 0, needs: 0 },
-    blocks: { notCopied: 0, stale: 0, orphaned: 0, todoId: 0 },
-    timeNotes: { notCopied: 0, stale: 0, orphaned: 0, todoId: 0, blockId: 0 },
+    todos: { notCopied: 0, stale: 0, version: 0, orphaned: 0, needs: 0 },
+    blocks: { notCopied: 0, stale: 0, version: 0, orphaned: 0, todoId: 0 },
+    timeNotes: { notCopied: 0, stale: 0, version: 0, orphaned: 0, todoId: 0, blockId: 0 },
   };
   /** Two todos (the first needs the second, later in the table), a block on
    *  the first, and a time note on that todo and block. */
@@ -211,6 +215,13 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
     });
     expect(await t.run((ctx) => ctx.db.get(pb))).toMatchObject({ todoId: ta._id });
     expect(await t.run((ctx) => ctx.db.get(pn))).toMatchObject({ todoId: ta._id });
+    // Their old rows were never stamped (no sync ran over them): the version
+    // count says so until the catch-up sync stamps them.
+    const remapped = await left(t);
+    expect(remapped.left.blocks).toEqual({ ...zeros.blocks, version: 1 });
+    expect(remapped.left.timeNotes).toEqual({ ...zeros.timeNotes, version: 1 });
+    await t.action(internal.jarvis.tables.sync, { table: "blocks" });
+    await t.action(internal.jarvis.tables.sync, { table: "timeNotes" });
     expect(await left(t)).toEqual({ zero: true, left: zeros });
   });
 
@@ -248,6 +259,28 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
         expect(row.todoId).toBe(a);
       }
     });
+  });
+
+  it("unstamp takes legacyVersion off every row of the six tables", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t);
+    await syncAll(t);
+    const stamped = (ctx: Parameters<Parameters<T["run"]>[0]>[0]) =>
+      Promise.all(
+        (["dtsTodos", "dtsBlocks", "dtsTimeNotes", "todos", "blocks", "timeNotes"] as const).map(async (table) =>
+          (await ctx.db.query(table).collect()).filter((row) => row.legacyVersion !== undefined).length,
+        ),
+      );
+    expect(await t.run(stamped)).toEqual([2, 1, 1, 2, 1, 1]);
+    expect(await t.action(internal.jarvis.tables.unstamp, {})).toEqual({
+      dtsTodos: 2,
+      dtsBlocks: 1,
+      dtsTimeNotes: 1,
+      todos: 2,
+      blocks: 1,
+      timeNotes: 1,
+    });
+    expect(await t.run(stamped)).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
   it("takes a todos id in a plain todoId (the widening, until the switch narrows it)", async () => {
