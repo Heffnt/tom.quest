@@ -34,14 +34,14 @@ async function withTom(t: T) {
 
 const DAY = 86_400_000;
 
-/** A todo from before step C (its old row and its plain copy) and a block
+/** A todo from before step C (a plain row carrying its old id) and a block
  *  on it, with both ids of each. */
 async function seed(t: T) {
   const tom = await withTom(t);
   const ids = await t.run(async (ctx) => {
     const todo = await insertCopied(ctx, "todos", { statement: "renew the lease", readiness: "unprepared", status: "active", timingClass: "dated", dueAt: Date.now() + 3 * DAY, source: "manual", createdAt: 1, updatedAt: 1 });
     const span = { start: Date.now() + DAY, end: Date.now() + DAY + 3_600_000, createdAt: 1 };
-    const block = await insertCopied(ctx, "blocks", { ...span, todoId: todo.plain }, { ...span, todoId: todo.old });
+    const block = await insertCopied(ctx, "blocks", { ...span, todoId: todo.plain });
     return { todo, block };
   });
   return {

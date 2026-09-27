@@ -106,7 +106,6 @@ export async function recordSlackSent(
     data: { channel, ts, threadTs, subject, text },
   });
   if (todoId !== undefined) {
-    // The plain row, then its old row written back (convex/jarvis/tables.ts).
     const todo = await ctx.db.get(todoId);
     if (todo && todo.slackRepliedAt === undefined) {
       await ctx.db.patch(todoId, {
@@ -319,7 +318,7 @@ export function sourceUrlOf(provenance: string | undefined): string | null {
 // A reply on a todo thread that says ONLY "done" completes the todo through
 // applyStatusChange — the one status writer, so the kept-dates rule resolves
 // an open date the same way the page's button does. A reply that is ONLY a
-// date is a time note (dtsTimeNotes): worker/jobs/apply-time-notes.mjs reads
+// date is a time note (timeNotes): worker/jobs/apply-time-notes.mjs reads
 // Tom's words and moves the date through the kept-dates rules. Anything
 // longer is a fact. The recognised shapes are deliberately finite — a sentence
 // that happens to contain a date is still a sentence.
@@ -1022,7 +1021,7 @@ async function namedTodo(
  * read it off the reply with the todo's name taken out (namedTodo). */
 async function todoReply(
   ctx: MutationCtx,
-  given: Id<"todos"> | Id<"dtsTodos">,
+  given: string,
   text: string,
   at: { channel: string; ts: string; threadTs: string },
   shape: ReplyShape = replyShape(text),

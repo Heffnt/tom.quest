@@ -30,7 +30,6 @@
 
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { applyDateOutcome, applyStatusChange, logEvent } from "./tts";
 import { todoEvents } from "./jarvis/tables";
@@ -83,7 +82,7 @@ export function provenanceExternalId(provenance: string | undefined): string | n
  */
 async function reopenedSinceCompletion(
   ctx: MutationCtx,
-  todoId: Id<"todos"> | Id<"dtsTodos">,
+  todoId: string,
 ): Promise<boolean> {
   // Under either id the rows store it by (convex/jarvis/tables.ts).
   const events = await todoEvents(ctx, todoId);

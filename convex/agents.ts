@@ -8,7 +8,7 @@ import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { inboundRowIdOf } from "./sessionRows";
-import { eitherId, resolveId } from "./jarvis/tables";
+import { coreId, resolveId } from "./jarvis/tables";
 
 const AGENT_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
@@ -82,7 +82,7 @@ const AGENT = v.object({
   environment: v.optional(AGENT_ENVIRONMENT),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: AGENT_KIND, status: AGENT_STATUS,
   mode: v.optional(AGENT_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
-  todoId: v.optional(eitherId.todos), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  todoId: v.optional(coreId), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
   regToken: v.optional(v.string()),
   envelopeKey: v.optional(v.string()), abandonedAt: v.optional(v.number()), file: FILE,
 });

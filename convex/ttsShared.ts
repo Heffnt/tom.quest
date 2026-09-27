@@ -359,7 +359,7 @@ export function weekdayWordOf(day: string): WeekdayWord {
  * UTC bounds [start, end) of a CALENDAR day in New York: local midnight to the
  * next local midnight. This is the window a /tts calendar COLUMN covers — the
  * day-scoped time note carries that column's YYYY-MM-DD label (schema:
- * dtsTimeNotes.day) and the server resolves it here, so browser-local ms and
+ * timeNotes.day) and the server resolves it here, so browser-local ms and
  * `day + DAY_MS` arithmetic never enter the picture.
  */
 export function nyCalendarDayBoundsUtc(day: string): {
@@ -958,9 +958,10 @@ export const SLACK_SUBJECT = v.union(
   v.object({ kind: v.literal("today"), day: v.string() }),
   v.object({ kind: v.literal("digest"), day: v.string() }),
   v.object({ kind: v.literal("hourly"), hour: v.string() }),
-  // Either id: a thread posted before step C of the core tables' move names
-  // its todo's old id, one posted since the plain one.
-  v.object({ kind: v.literal("todo"), id: v.union(v.id("dtsTodos"), v.id("todos")) }),
+  // Either form: a thread posted before step C of the core tables' move names
+  // its todo's old id (todos.legacyId, no declared table's id), one posted
+  // since the plain one; convex/jarvis/tables.ts resolveId reads both.
+  v.object({ kind: v.literal("todo"), id: v.string() }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
   // ONE DELEGATED DECISION (an "ask"), posted to the decisions channel as it

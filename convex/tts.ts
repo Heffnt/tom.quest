@@ -20,7 +20,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
-import { clearBlock, eitherId, resolveId, withPlainTodoIds } from "./jarvis/tables";
+import { clearBlock, coreId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -61,7 +61,7 @@ const DATE_OUTCOME = v.union(
 export async function logEvent(
   ctx: MutationCtx,
   kind: string,
-  todoId?: Id<"todos"> | Id<"dtsTodos">,
+  todoId?: string,
   data?: unknown,
   // The indexed lookup key (schema: dtsEvents.key) — set on the kinds the
   // schema comment lists, and on no other.
@@ -187,7 +187,7 @@ export const createTodo = mutation({
 // bumps. Status transitions go through setStatus (they carry side effects).
 export const updateTodo = mutation({
   args: {
-    id: eitherId.todos,
+    id: coreId,
     statement: v.optional(v.string()),
     body: v.optional(v.string()),
     readiness: v.optional(READINESS),
@@ -318,7 +318,7 @@ export async function applyStatusChange(
 
 export const setStatus = mutation({
   args: {
-    id: eitherId.todos,
+    id: coreId,
     status: STATUS,
     wakeAt: v.optional(v.number()),
     unarchiveCondition: v.optional(v.string()),
@@ -525,7 +525,7 @@ export async function recordMissedKeepingDate(
 
 export const recordDateOutcome = mutation({
   args: {
-    id: eitherId.todos,
+    id: coreId,
     outcome: DATE_OUTCOME,
     newDueAt: v.optional(v.number()),
     note: v.optional(v.string()),
@@ -656,7 +656,7 @@ export const createBlock = mutation({
   args: {
     start: v.number(),
     end: v.number(),
-    todoId: v.optional(eitherId.todos),
+    todoId: v.optional(coreId),
     category: v.optional(v.string()),
     note: v.optional(v.string()),
   },
@@ -670,7 +670,7 @@ export const createBlock = mutation({
 
 export const updateBlock = mutation({
   args: {
-    id: eitherId.blocks,
+    id: coreId,
     start: v.optional(v.number()),
     end: v.optional(v.number()),
     note: v.optional(v.union(v.string(), v.null())),
@@ -685,7 +685,7 @@ export const updateBlock = mutation({
 });
 
 export const deleteBlock = mutation({
-  args: { id: eitherId.blocks },
+  args: { id: coreId },
   handler: async (ctx, { id }) => {
     await requireTomId(ctx);
     const plain = await resolveId(ctx, "blocks", id);
@@ -765,8 +765,8 @@ export const listTimeNotes = query({
 // browser enforces.
 const CREATE_TIME_NOTE_ARGS = {
   text: v.string(),
-  todoId: v.optional(eitherId.todos),
-  blockId: v.optional(eitherId.blocks),
+  todoId: v.optional(coreId),
+  blockId: v.optional(coreId),
   day: v.optional(v.string()),
 };
 
@@ -823,7 +823,7 @@ export const internalCreateTimeNote = internalMutation({
 // deletable — it already changed the world, and its record is the only trace
 // of why (nothing-ever-lost applies to what happened, not to what is queued).
 export const deleteTimeNote = mutation({
-  args: { id: eitherId.timeNotes },
+  args: { id: coreId },
   handler: async (ctx, { id: given }) => {
     await requireTomId(ctx);
     const id = await resolveId(ctx, "timeNotes", given);
@@ -1201,7 +1201,7 @@ export function nowContext(utcMs: number) {
 export const recordEvent = mutation({
   args: {
     kind: v.string(),
-    todoId: v.optional(eitherId.todos),
+    todoId: v.optional(coreId),
     data: v.optional(v.any()),
   },
   handler: async (ctx, { kind, todoId, data }) => {

@@ -47,18 +47,25 @@ export async function patchTodo(ctx: MutationCtx, id: Id<"todos">, fields: Parti
 }
 
 type Core = "todos" | "blocks" | "timeNotes";
-const OLD = { todos: "dtsTodos", blocks: "dtsBlocks", timeNotes: "dtsTimeNotes" } as const;
 
-/** A row from before step C: the old row and its plain copy, which carries
- *  the old id as legacyId (the copy's references are the caller's to give in
- *  the plain table's terms). Answers both ids. */
+let minted = 0;
+
+/** An id as a row had it before the move: the old table has left the
+ *  schema, so it is no declared table's id, only a string the plain row
+ *  keeps as legacyId. Alphanumeric, as a Convex id is, and unique. */
+export function oldId(): string {
+  minted += 1;
+  return `old${String(minted).padStart(6, "0")}id`;
+}
+
+/** A row from before step C: its plain copy, which carries the old row's id
+ *  as legacyId. Answers both ids. */
 export async function insertCopied<C extends Core>(
   ctx: MutationCtx,
   table: C,
   fields: Omit<Doc<C>, "_id" | "_creationTime" | "legacyId">,
-  oldFields: Record<string, unknown> = fields,
-): Promise<{ old: Id<(typeof OLD)[C]>; plain: Id<C> }> {
-  const old = (await ctx.db.insert(OLD[table], oldFields as never)) as Id<(typeof OLD)[C]>;
+): Promise<{ old: string; plain: Id<C> }> {
+  const old = oldId();
   const plain = (await ctx.db.insert(table, { ...fields, legacyId: old } as never)) as Id<C>;
   return { old, plain };
 }

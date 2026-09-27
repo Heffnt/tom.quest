@@ -1,5 +1,6 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { oldId } from "../test/core-tables";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
@@ -84,7 +85,7 @@ describe("agents", () => {
     const t = convexTest(schema, modules);
     const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: 1, updatedAt: 1 };
     const { plain, legacy, gone } = await t.run(async (ctx) => {
-      const legacy = await ctx.db.insert("dtsTodos", fields);
+      const legacy = oldId();
       const plain = await ctx.db.insert("todos", { ...fields, legacyId: legacy });
       const gone = await ctx.db.insert("todos", fields);
       await ctx.db.delete(gone);

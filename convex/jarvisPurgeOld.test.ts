@@ -5,7 +5,10 @@ import schema from "./schema";
 
 // The old tables emptied once (convex/jarvis/tables.ts purgeOldTables): only
 // when each table holds exactly the rows the off-box copy counts, and then
-// every row, whichever page it falls on.
+// every row, whichever page it falls on. The schema no longer declares
+// dtsTodos, dtsBlocks or dtsTimeNotes; like the deployment, convex-test keeps
+// an undeclared table's rows, so the fixtures write them through a harness
+// typed without the schema.
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 

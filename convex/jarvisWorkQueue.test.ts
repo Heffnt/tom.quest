@@ -31,7 +31,7 @@ afterEach(() => {
 
 type Verdict = "approve" | "revise" | "session" | "archive";
 
-/** One todo from before step C (its old row and its plain copy),
+/** One todo from before step C (a plain row carrying its old id),
  *  eligible unless `fields` says otherwise, with its rulings, oldest first. */
 async function todo(
   ctx: MutationCtx,
@@ -51,10 +51,10 @@ async function todo(
     updatedAt: UPDATED,
     ...fields,
   };
-  // A need names the old row in the old table and the plain one in the copy.
+  // A need names another todo by either id; the plain row stores the plain one.
   const needs = (row as { needs?: string[] }).needs;
   const plainNeeds = needs === undefined ? undefined : await Promise.all(needs.map(async (id) => (await resolveId(ctx, "todos", id))!));
-  const old = (await insertCopied(ctx, "todos", { ...row, ...(needs === undefined ? {} : { needs: plainNeeds }) } as never, row)).old;
+  const old = (await insertCopied(ctx, "todos", { ...row, ...(needs === undefined ? {} : { needs: plainNeeds }) } as never)).old;
   const ids: Id<"rulings">[] = [];
   for (const r of rulings) {
     ids.push(

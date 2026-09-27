@@ -39,7 +39,8 @@ describe("EXPORT_TABLES", () => {
     const auth = all.filter((n) => n.startsWith("auth"));
     expect(auth.length).toBe(6);
     expect(EXPORT_TABLES).toEqual(all.filter((n) => !n.startsWith("auth")).sort());
-    expect(EXPORT_TABLES).toContain("dtsTodos");
+    expect(EXPORT_TABLES).toContain("todos");
+    expect(EXPORT_TABLES).not.toContain("dtsTodos");
     expect(EXPORT_TABLES).toContain("claudeMessages");
     expect(EXPORT_TABLES).toContain("modelOfTomFiles");
     for (const name of EXPORT_TABLES) expect(name.startsWith("auth")).toBe(false);
@@ -130,9 +131,9 @@ describe("GET /tts/export", () => {
     const t = convexTest({ schema, modules });
     expect((await get(t, "/tts/export?table=authSessions&boundary=5")).status).toBe(400);
     expect((await get(t, "/tts/export?table=nope&boundary=5")).status).toBe(400);
-    expect((await get(t, "/tts/export?table=dtsTodos")).status).toBe(400);
-    expect((await get(t, "/tts/export?table=dtsTodos&boundary=5&numItems=0")).status).toBe(400);
-    expect((await get(t, "/tts/export?table=dtsTodos&boundary=5", "nope")).status).toBe(401);
+    expect((await get(t, "/tts/export?table=todos")).status).toBe(400);
+    expect((await get(t, "/tts/export?table=todos&boundary=5&numItems=0")).status).toBe(400);
+    expect((await get(t, "/tts/export?table=todos&boundary=5", "nope")).status).toBe(401);
   });
 
   it("defaults the page size", () => {
@@ -312,7 +313,7 @@ describe("GET /tts/learning-input", () => {
         });
       await turn("tom", "sign it Friday");
       await turn("agent", "the code-built opener");
-      const todoId = await ctx.db.insert("dtsTodos", {
+      const todoId = await ctx.db.insert("todos", {
         statement: "sign the lease",
         readiness: "unprepared",
         status: "active",
@@ -505,7 +506,7 @@ describe("GET /tts/learning-input", () => {
         nextSeq: 1,
         createdAt: now,
       });
-      const todoId = await ctx.db.insert("dtsTodos", {
+      const todoId = await ctx.db.insert("todos", {
         statement: "x",
         readiness: "unprepared",
         status: "active",

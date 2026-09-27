@@ -11,7 +11,7 @@ async function insertTodo(
   statement: string,
   overrides: Partial<{ status: "active" | "waiting" | "archived" | "done"; category: string }> = {},
 ) {
-  // The old row and its plain copy, as the dual write stores a todo.
+  // A todo from before step C: the plain row, carrying its old id.
   return await t.run(async (ctx) => {
     const id = (await insertCopied(ctx, "todos", {
       statement,

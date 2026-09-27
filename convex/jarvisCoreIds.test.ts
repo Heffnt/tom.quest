@@ -8,10 +8,10 @@ import { logEvent } from "./tts";
 import { insertCopied } from "../test/core-tables";
 
 // The core tables' move (convex/jarvis/tables.ts): a todo, block or time
-// note id reaches the record from outside in either form, the old table's id
-// (an old link, a Slack thread, a stored reference) or the plain row's, and
-// every door resolves it to the plain row, which since step C is the row it
-// writes.
+// note id reaches the record from outside in either form, the id its row had
+// before the move (an old link, a Slack thread, a stored reference), which the
+// plain row keeps as legacyId, or the plain row's, and every door resolves it
+// to the plain row, the one row there is.
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -30,7 +30,7 @@ async function withTom(t: T) {
 const DAY = 86_400_000;
 
 /** A todo, a block on it and a time note on the block from before step C
- *  (each an old row and its plain copy), with both ids of each. */
+ *  (each a plain row carrying its old id), with both ids of each. */
 async function seed(t: T) {
   const tom = await withTom(t);
   const now = Date.now();
@@ -38,13 +38,8 @@ async function seed(t: T) {
     const fields = { statement: "renew the lease", readiness: "unprepared" as const, status: "active" as const, timingClass: "dated" as const, dueAt: now + 3 * DAY, dateKind: "self-imposed" as const, source: "manual", createdAt: now, updatedAt: now };
     const todo = await insertCopied(ctx, "todos", fields);
     const span = { start: now + DAY, end: now + DAY + 3_600_000, createdAt: now };
-    const block = await insertCopied(ctx, "blocks", { ...span, todoId: todo.plain }, { ...span, todoId: todo.old });
-    const note = await insertCopied(
-      ctx,
-      "timeNotes",
-      { text: "move it to Friday", blockId: block.plain, status: "pending" as const, createdAt: now },
-      { text: "move it to Friday", blockId: block.old, status: "pending" as const, createdAt: now },
-    );
+    const block = await insertCopied(ctx, "blocks", { ...span, todoId: todo.plain });
+    const note = await insertCopied(ctx, "timeNotes", { text: "move it to Friday", blockId: block.plain, status: "pending" as const, createdAt: now });
     return { todo, block, note };
   });
   return {
@@ -80,8 +75,6 @@ describe("an id in either form", () => {
       const t = convexTest({ schema, modules });
       const { tom, old, plain } = await seed(t);
       const ids = form === "old" ? old : plain;
-      const oldRows = () => t.run(async (ctx) => [await ctx.db.get(old.todo), await ctx.db.get(old.block), await ctx.db.get(old.note)]);
-      const before = await oldRows();
       const row = () => t.run(async (ctx) => (await ctx.db.get(plain.todo))!);
 
       await tom.mutation(api.tts.updateTodo, { id: ids.todo, body: "the landlord's terms" });
@@ -115,8 +108,6 @@ describe("an id in either form", () => {
       expect((await row()).status).toBe("done");
       await tom.mutation(api.tts.deleteBlock, { id: ids.block });
       expect(await t.run(async (ctx) => await ctx.db.get(plain.block))).toBeNull();
-      // Nothing wrote an old row.
-      expect(await oldRows()).toEqual(before);
     });
   }
 });
@@ -226,14 +217,13 @@ describe("an event of one kind on a todo since a time", () => {
 });
 
 describe("a Slack send on a todo named by either id", () => {
-  it("stamps the reply on the plain row and leaves the old row as it was", async () => {
+  it("stamps the reply on the plain row", async () => {
     for (const form of ["old", "plain"] as const) {
       const t = convexTest({ schema, modules });
       const { old, plain } = await seed(t);
       await t.mutation(internal.ttsSlack.internalRecordSlackSent, { channel: "C-dump", ts: "9000.1", subject: { kind: "todo", id: form === "old" ? old.todo : plain.todo }, text: "captured" });
       await t.run(async (ctx) => {
         expect(await ctx.db.get(plain.todo)).toMatchObject({ slackReplyTs: "9000.1" });
-        expect(await ctx.db.get(old.todo)).not.toHaveProperty("slackReplyTs");
       });
     }
   });
