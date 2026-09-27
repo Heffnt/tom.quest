@@ -120,7 +120,7 @@ export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these 
 - needs — Needs are the ids a todo cannot proceed without. They are the only ordering mechanism in TTS.
 - ready — Ready is computed, never stored. A todo is ready when it is prepared and active, its wake time has passed or is absent, and every id in its needs is done or archived, because a need set aside is not going to happen.
 - display text — Display text is the always-visible register: the short line always on screen, assuming Tom's background.
-- ground-up explanation — A ground-up explanation is the register behind the more on every line of display text: self-contained, every term defined at first use, one complete HTML document shown fullscreen in the form the writing standard specifies.`;
+- ground-up explanation — A ground-up explanation is the register that the more on each line of display text opens: it stands on its own, defines each term where it first appears, and is a single whole HTML document shown fullscreen, shaped as the writing standard requires.`;
 export const VOCABULARY_VERSION = "fdd55cb533934518";
 /** Every word in the vocabulary, names only — the definitions live in
  *  WikiTom tts/vocabulary.json and `tts search define` answers from them. */

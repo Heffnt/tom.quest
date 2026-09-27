@@ -264,7 +264,7 @@ export function FrequencyGlyph({
         boxShadow: `inset 0 0 0 1px ${color}22`,
         color,
         fontFamily:
-          'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+          'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Courier New", monospace',
         fontWeight: 700,
         fontSize: Math.round(size * (id.length > 1 ? 0.5 : 0.62)),
         letterSpacing: id.length > 1 ? "-0.04em" : 0,
