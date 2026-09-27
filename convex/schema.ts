@@ -975,13 +975,14 @@ export default defineSchema({
   }).index("by_start", ["start"]),
 
   // blocks: the plain-named home of dtsBlocks's rows (the record's core tables,
-  // 2026-09-26). todoId still names dtsTodos because copied rows hold dts ids
-  // until the switch pull request remaps them with remapTodoRefs and changes
-  // the type then. legacyId and by_legacy preserve lookup by the old id.
+  // 2026-09-26). legacyId and by_legacy preserve lookup by the old id.
   blocks: defineTable({
     start: v.number(), // epoch ms
     end: v.number(), // epoch ms, > start
-    todoId: v.optional(v.id("dtsTodos")),
+    // Either id during the move: copied rows hold dtsTodos ids until
+    // jarvis/tables.remapTodoRefs points them at todos. The switch pull
+    // request narrows it to v.id("todos").
+    todoId: v.optional(v.union(v.id("dtsTodos"), v.id("todos"))),
     category: v.optional(v.string()),
     note: v.optional(v.string()),
     createdAt: v.number(),
@@ -1025,13 +1026,14 @@ export default defineSchema({
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
   // timeNotes: the plain-named home of dtsTimeNotes's rows (the record's core
-  // tables, 2026-09-26). todoId still names dtsTodos; blockId names blocks, as
-  // deployed. Copied rows hold dts ids until the switch pull request remaps
-  // them with remapTodoRefs and changes the types then. legacyId and by_legacy
-  // preserve lookup by the old id.
+  // tables, 2026-09-26). blockId names blocks, as deployed. legacyId and
+  // by_legacy preserve lookup by the old id.
   timeNotes: defineTable({
     text: v.string(),
-    todoId: v.optional(v.id("dtsTodos")),
+    // Either id during the move: copied rows hold dtsTodos ids until
+    // jarvis/tables.remapTodoRefs points them at todos. The switch pull
+    // request narrows it to v.id("todos").
+    todoId: v.optional(v.union(v.id("dtsTodos"), v.id("todos"))),
     blockId: v.optional(v.id("blocks")),
     day: v.optional(v.string()), // "YYYY-MM-DD", New York calendar date
     status: v.union(
