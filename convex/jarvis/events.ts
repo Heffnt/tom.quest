@@ -9,7 +9,7 @@
 //
 // ONE LIST, NO DUPLICATES. dtsEvents rows that still arrive through POST
 // /tts/event (deploy, box-change, evals-run, the learning runs...) are copied
-// here by copyFromDts, called from that route, with `provenance: {}` and the
+// here by copyDtsRow, in that route's one mutation, with `provenance: {}` and the
 // old `key` as `subject`: a faithful copy, nothing invented. The copy is
 // the route's, not the writer's (logEvent), because /tts/event is the box's
 // one generic pen into dtsEvents and the other writers are Convex-internal
@@ -100,13 +100,19 @@ async function listEvents(
 ): Promise<Doc<"events">[]> {
   const n = clampLimit(limit);
   const from = since ?? 0;
+  if (subject !== undefined && kind !== undefined) {
+    return await ctx.db
+      .query("events")
+      .withIndex("by_subject_kind_at", (q) => q.eq("subject", subject).eq("kind", kind).gte("at", from))
+      .order("desc")
+      .take(n);
+  }
   if (subject !== undefined) {
-    const rows = await ctx.db
+    return await ctx.db
       .query("events")
       .withIndex("by_subject_at", (q) => q.eq("subject", subject).gte("at", from))
       .order("desc")
-      .take(kind === undefined ? n : LIST_MAX);
-    return (kind === undefined ? rows : rows.filter((row) => row.kind === kind)).slice(0, n);
+      .take(n);
   }
   if (kind !== undefined) {
     return await ctx.db
@@ -157,22 +163,18 @@ export const forAgent = query({
 
 /**
  * Copy one dtsEvents row into events, as it is: the kind it had, the key as
- * subject, no provenance (the old row carries none). Called by POST /tts/event
- * for every row it writes, until each area posts through /jarvis/event and
- * this, with the route, goes. Not validated against the kinds list: the row is
+ * subject, no provenance (the old row carries none). POST /tts/event's
+ * mutation (convex/ttsNightly.ts internalRecordWorkerEvent) calls it inside
+ * the same transaction that wrote the old row, so the two tables hold the row
+ * together or neither does. Not validated against the kinds list: the row is
  * already in the record; the list governs what is posted.
  */
-export const copyFromDts = internalMutation({
-  args: { id: v.id("dtsEvents") },
-  handler: async (ctx, { id }): Promise<Id<"events"> | null> => {
-    const row = await ctx.db.get(id);
-    if (row === null) return null;
-    return await ctx.db.insert("events", {
-      kind: row.kind,
-      at: row.at,
-      provenance: {},
-      ...(row.key === undefined ? {} : { subject: row.key }),
-      data: row.data === undefined ? {} : row.data,
-    });
-  },
-});
+export async function copyDtsRow(ctx: MutationCtx, row: Doc<"dtsEvents">): Promise<Id<"events">> {
+  return await ctx.db.insert("events", {
+    kind: row.kind,
+    at: row.at,
+    provenance: {},
+    ...(row.key === undefined ? {} : { subject: row.key }),
+    data: row.data === undefined ? {} : row.data,
+  });
+}

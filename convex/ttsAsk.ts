@@ -9,6 +9,7 @@ import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
 import { oldId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
+import { insertEvent } from "./jarvis/record";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -79,6 +80,13 @@ const ASK_ARGS = {
   // field. A caller that passes no token stores none: an unregistered
   // delegate call carries no run, and the absence is never inferred into one.
   runToken: v.optional(v.string()),
+  // What the decision row (events kind "decision", convex/jarvis/intent.ts)
+  // carries beyond the ask: the lines it rested on, what would change it, and
+  // the searches that missed. Only this mutation writes that row
+  // (shared/jarvis-events.mjs DELEGATE_ONLY_KINDS).
+  restedOn: v.optional(v.array(v.string())),
+  wouldChange: v.optional(v.union(v.string(), v.null())),
+  nearMissed: v.optional(v.any()),
 };
 
 type AskData = {
@@ -154,8 +162,9 @@ export const internalRecordAsk = internalMutation({
       : capped
         ? CAP_REFUSAL
         : args.refusedBecause;
+    const { restedOn, wouldChange, nearMissed, ...ask } = args;
     const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
-      ...args,
+      ...ask,
       sessionId: args.sessionId ?? null,
       job: args.job ?? null,
       todoId: todoId ?? null,
@@ -163,6 +172,33 @@ export const internalRecordAsk = internalMutation({
       refusedBecause,
       attended,
     }, args.askId);
+
+    // THE DECISION ROW: one per decision the delegate took, a refusal
+    // included, written here and nowhere else, in the ask's own transaction,
+    // so a decision row exists only for an ask that passed the attended check
+    // and the cap. Silence, attended and capped asks took nothing in his name.
+    if (args.decision !== null && !attended && !capped) {
+      await insertEvent(ctx, {
+        kind: "decision",
+        provenance: args.sessionId !== undefined ? { session: args.sessionId } : { job: args.job },
+        subject: args.askId,
+        data: {
+          question: args.question,
+          options: args.options,
+          decision: args.decision,
+          reason: args.reason,
+          restedOn: restedOn ?? [],
+          wouldChange: wouldChange ?? null,
+          refused: args.refused,
+          refusedBecause: args.refusedBecause,
+          caller: args.sessionId !== undefined ? `session:${args.sessionId}` : `job:${args.job}`,
+          askId: args.askId,
+          ...(args.todoId === undefined ? {} : { todoId: args.todoId }),
+          model: args.model,
+          ...(nearMissed === undefined ? {} : { nearMissed }),
+        },
+      });
+    }
 
     // The digest's objection list reads this delegate-decision row itself
     // (convex/ttsDigest.ts); there is no live line (one output channel).

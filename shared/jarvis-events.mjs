@@ -15,7 +15,7 @@
 // here, in its own block, so the whole vocabulary of the record is one file a
 // reader can read top to bottom. A kind the list does not hold is refused at
 // the route with a 400 naming it. Rows copied from the previous generation's
-// dtsEvents table (convex/jarvis/events.ts copyFromDts) keep the kind they
+// dtsEvents table (convex/jarvis/events.ts copyDtsRow) keep the kind they
 // had; the list governs what is POSTED, not what was.
 
 /** @type {const} */
@@ -69,6 +69,20 @@ export const EVENT_KINDS = [
 /** @type {const} */
 export const TOM_ONLY_KINDS = ["disagreement-settled"];
 
+/** Events only the delegate's own record writes: a decision row is written by
+ *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
+ *  transaction as the ask it answers, after the attended check and the cap.
+ *  A generic worker-key route refuses them, so no decision exists in the
+ *  record without the ask that passed those checks. */
+/** @type {const} */
+export const DELEGATE_ONLY_KINDS = ["decision"];
+
+/** How far past the writer's clock an event's `at` may lie. The silence alarm
+ *  reads a job's newest row (convex/jarvis/jobs.ts), so a row dated in the
+ *  future would hold it quiet until that date; a box clock a little ahead of
+ *  Convex's is all this allows. */
+export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
+
 /**
  * The kinds whose subject is their identity, refused without one: a
  * decision's askId (settle, "revert <n>" and the digest find it there), a
@@ -95,6 +109,9 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   if (!kinds.includes(kind)) return { ok: false, error: `kind "${kind}" is not in shared/jarvis-events.mjs EVENT_KINDS` };
   if (at !== undefined && !(typeof at === "number" && Number.isFinite(at) && at > 0)) {
     return { ok: false, error: "at, when given, is epoch milliseconds" };
+  }
+  if (at !== undefined && at > now + MAX_FUTURE_SKEW_MS) {
+    return { ok: false, error: "at is more than 5 minutes in the future" };
   }
   if (provenance !== undefined && !isPlainObject(provenance)) {
     return { ok: false, error: "provenance, when given, is an object" };

@@ -31,6 +31,16 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "job-ok", text: 3 }).ok).toBe(false);
   });
 
+  it("refuses an at more than five minutes past the writer's clock, and takes one within it", () => {
+    const now = 1_700_000_000_000;
+    expect(validateEvent({ kind: "job-ok", at: now + 5 * 60_000 + 1 }, { now })).toEqual({
+      ok: false,
+      error: "at is more than 5 minutes in the future",
+    });
+    expect(validateEvent({ kind: "job-ok", at: now + 5 * 60_000 }, { now }).ok).toBe(true);
+    expect(validateEvent({ kind: "job-ok", at: now - 60_000 }, { now }).ok).toBe(true);
+  });
+
   it("takes an eval set's run, subject the set's name", () => {
     const result = validateEvent({ kind: "eval-run", provenance: { job: "evals" }, subject: "wall", data: { set: "wall", passed: 3, total: 3 }, text: "wall: 3 of 3 pass" });
     expect(result).toMatchObject({ ok: true, event: { kind: "eval-run", subject: "wall", text: "wall: 3 of 3 pass" } });

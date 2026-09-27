@@ -36,7 +36,7 @@ import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly"
 // reads it, so it goes through the one redaction on the way in — the same
 // import convex/ttsMerge.ts makes for the same reason.
 import { redactSecrets } from "../shared/redact.mjs";
-import { SUBJECT_REQUIRED, TOM_ONLY_KINDS } from "../shared/jarvis-events.mjs";
+import { DELEGATE_ONLY_KINDS, SUBJECT_REQUIRED, TOM_ONLY_KINDS } from "../shared/jarvis-events.mjs";
 
 const http = httpRouter();
 
@@ -1370,6 +1370,8 @@ http.route({ path: "/tts/ruling", method: "POST", handler: postRuling });
 // POST /tts/ask records a completed delegate call. It intentionally never
 // calls a model: Fable runs on the box where the caller already is, while this
 // route is the durable record, digest input, and immediate Slack notification.
+// It is also the one door a `decision` event comes through (convex/ttsAsk.ts
+// internalRecordAsk): the generic event routes refuse the kind.
 const ttsAsk = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1402,6 +1404,12 @@ const ttsAsk = httpAction(async (ctx, request) => {
   } else if (b.refusedBecause !== null) return jsonResponse(400, { error: "refusedBecause must be null unless refused" });
   if (!nonempty(b.model) || !nonempty(b.promptSha)) return jsonResponse(400, { error: "model and promptSha (non-empty strings) required" });
   if (typeof b.ms !== "number" || !Number.isFinite(b.ms) || b.ms < 0) return jsonResponse(400, { error: "ms (nonnegative finite number) required" });
+  if (b.restedOn !== undefined && !(Array.isArray(b.restedOn) && b.restedOn.every((line) => typeof line === "string"))) {
+    return jsonResponse(400, { error: "restedOn, when given, is an array of strings" });
+  }
+  if (b.wouldChange !== undefined && b.wouldChange !== null && typeof b.wouldChange !== "string") {
+    return jsonResponse(400, { error: "wouldChange, when given, is a string or null" });
+  }
   try {
     const result = await ctx.runMutation(internal.ttsAsk.internalRecordAsk, {
       askId: b.askId as string, sessionId: hasSession ? b.sessionId as string : undefined,
@@ -1411,6 +1419,8 @@ const ttsAsk = httpAction(async (ctx, request) => {
       decision: b.decision as string | null, reason: (b.reason as string).trim(),
       refused: b.refused, refusedBecause: b.refusedBecause as string | null,
       model: b.model as string, ms: b.ms, promptSha: b.promptSha as string,
+      restedOn: b.restedOn as string[] | undefined, wouldChange: b.wouldChange as string | null | undefined,
+      nearMissed: b.nearMissed,
     });
     const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
       sessionId: hasSession ? b.sessionId as string : undefined,
@@ -2458,10 +2468,13 @@ const ttsEvent = httpAction(async (ctx, request) => {
   if ((TOM_ONLY_KINDS as readonly string[]).includes(b.kind)) {
     return jsonResponse(403, { error: `${b.kind} is Tom-only` });
   }
+  if ((DELEGATE_ONLY_KINDS as readonly string[]).includes(b.kind)) {
+    return jsonResponse(403, { error: `${b.kind} is written only by POST /tts/ask` });
+  }
   if (b.key !== undefined && (typeof b.key !== "string" || b.key.trim() === "")) {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
   }
-  // The key becomes the record row's subject (jarvis/events copyFromDts), so a
+  // The key becomes the record row's subject (jarvis/events copyDtsRow), so a
   // kind whose subject is its identity is refused without one here, as POST
   // /jarvis/event refuses it (shared/jarvis-events.mjs SUBJECT_REQUIRED).
   if (b.key === undefined && SUBJECT_REQUIRED.includes(b.kind)) {
@@ -2475,15 +2488,15 @@ const ttsEvent = httpAction(async (ctx, request) => {
       const recorded = await ctx.runMutation(internal.ttsNightly.internalRecordBoxChange, { data: b.data, key: b.key as string | undefined });
       return jsonResponse(200, { ok: true, ...recorded });
     }
+    // One mutation writes the row and its copy in the one record
+    // (convex/jarvis/events.ts copyDtsRow), so /agents and GET /jarvis/events
+    // show one list while the areas that still post here move to POST
+    // /jarvis/event. The copy goes with this route.
     const id = await ctx.runMutation(internal.ttsNightly.internalRecordWorkerEvent, {
       kind: b.kind,
       data: b.data,
       key: b.key,
     });
-    // The same row in the one record (convex/jarvis/events.ts copyFromDts),
-    // so /agents and GET /jarvis/events show one list while the areas that
-    // still post here move to POST /jarvis/event. Goes with this route.
-    await ctx.runMutation(internal.jarvis.events.copyFromDts, { id });
     return jsonResponse(200, { ok: true, id });
   } catch (e) {
     return jsonResponse(400, {

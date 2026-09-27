@@ -15,7 +15,7 @@
 // shared/jarvis-events.mjs EVENT_KINDS is posted to POST /jarvis/event and
 // lives in the record's `events` table (recordInWindow); every other kind
 // still lives in dtsEvents (eventsInWindow), whose copies in `events`
-// (copyFromDts) are not read. As an area adds its kinds to that list and
+// (copyDtsRow) are not read. As an area adds its kinds to that list and
 // moves its writer, the page follows with no edit here, and eventsInWindow
 // goes when the list holds every kind the page draws.
 //

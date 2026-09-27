@@ -242,6 +242,35 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect(row.data.job).toBe("poll-gmail");
   });
 
+  it("writes the decision row itself, once, and none for an attended, capped or unanswered ask", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const decisions = () =>
+      t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect());
+    const response = await post(t, body({ job: "poll-gmail", restedOn: ["ruling:abc"], wouldChange: "A closed consulate." }));
+    expect(response.status).toBe(200);
+    await post(t, body({ job: "poll-gmail" })); // the same askId again: nothing new
+    const [row, ...rest] = await decisions();
+    expect(rest).toEqual([]);
+    expect(row).toMatchObject({
+      subject: "3f9c1a22",
+      provenance: { job: "poll-gmail" },
+      data: {
+        askId: "3f9c1a22",
+        caller: "job:poll-gmail",
+        decision: "Move it to Thursday morning.",
+        restedOn: ["ruling:abc"],
+        wouldChange: "A closed consulate.",
+        refused: false,
+        model: "fable",
+      },
+    });
+    await post(t, body({ sessionId: await seedSession(t), askId: "cccccccc" })); // attended
+    await post(t, body({ job: "poll-gmail", askId: "dddddddd", decision: null })); // no answer
+    expect((await decisions()).map((d) => d.subject)).toEqual(["3f9c1a22"]);
+    expect((await post(t, body({ job: "poll-gmail", askId: "eeeeeeee", restedOn: "ruling:abc" }))).status).toBe(400);
+  });
+
   it("refuses an unauthenticated caller", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });

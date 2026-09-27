@@ -62,7 +62,7 @@ export default defineSchema({
   // Convex-internal reporters; the readers are GET /jarvis/events and the
   // /agents page. dtsEvents (below) is the previous generation's table: the
   // kinds it still owns are copied here as they arrive through POST
-  // /tts/event (copyFromDts), so this table shows one list, and each area
+  // /tts/event (copyDtsRow), so this table shows one list, and each area
   // moves its kinds to the new route in its own stream, after which dtsEvents
   // goes.
   //
@@ -91,6 +91,9 @@ export default defineSchema({
     .index("by_at", ["at"])
     .index("by_kind_at", ["kind", "at"])
     .index("by_subject_at", ["subject", "at"])
+    // One subject's rows of one kind, newest first: GET /jarvis/events with
+    // both filters reads exactly the rows it answers.
+    .index("by_subject_kind_at", ["subject", "kind", "at"])
     // One job's rows of one kind, newest first: the silence alarm's read of
     // its last `job-ok`. Named separately from by_kind_at because a scan of
     // every job's heartbeats to find one job's is what an index is for.
