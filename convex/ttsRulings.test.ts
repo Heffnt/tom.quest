@@ -5,8 +5,14 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
 import { writePageRows } from "../scripts/context-fixture.mjs";
+import { resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+/** The plain row's id for the id a door answered with (its old table's): the
+ *  readers hand out plain ids (convex/jarvis/tables.ts). */
+const plainId = (t: ReturnType<typeof convexTest>, id: string) =>
+  t.run(async (ctx) => (await resolveId(ctx, "todos", id))!);
 
 // EVERY TEST HERE MAKES ITS DATABASE THROUGH THIS, and nothing calls
 // convexTest directly, because recording a ruling schedules work that outlives
@@ -246,8 +252,9 @@ describe("TTS unified rulings", () => {
     expect(ruling.sentence).toBe("ask about the Friday slot instead"); // trimmed
     expect(ruling.appliedAt).toBeUndefined(); // the preparer consumes it
     const events = await tom.query(api.tts.listRecentEvents, {});
+    const plainTodo = await plainId(t, todoId);
     expect(
-      events.some((e) => e.kind === "ruling" && e.todoId === todoId),
+      events.some((e) => e.kind === "ruling" && e.todoId === plainTodo),
     ).toBe(true);
   });
 
@@ -740,10 +747,11 @@ describe("TTS unified rulings", () => {
       sentence: "I want to see the numbers first",
     });
     const rulings = await tom.query(api.ttsRulings.listRulings, {});
-    expect(rulings.find((r) => r.todoId === a)?.sentence).toBe(
+    const [plainA, plainS] = [await plainId(t, a), await plainId(t, s)];
+    expect(rulings.find((r) => r.todoId === plainA)?.sentence).toBe(
       "yes, and keep the scope to the kitchen",
     );
-    expect(rulings.find((r) => r.todoId === s)?.sentence).toBe(
+    expect(rulings.find((r) => r.todoId === plainS)?.sentence).toBe(
       "I want to see the numbers first",
     );
     // A blank sentence is stored as absent, not as "".
@@ -753,9 +761,10 @@ describe("TTS unified rulings", () => {
       verdict: "approve",
       sentence: "   ",
     });
+    const plainB = await plainId(t, b);
     expect(
       (await tom.query(api.ttsRulings.listRulings, {})).find(
-        (r) => r.todoId === b,
+        (r) => r.todoId === plainB,
       )?.sentence,
     ).toBeUndefined();
     // revise is still the one verdict that cannot go without one.
@@ -788,7 +797,7 @@ describe("TTS unified rulings", () => {
       unarchiveCondition: "the explicit one",
     });
     const todos = await tom.query(api.tts.listTodos, {});
-    expect(todos.find((x) => x._id === other)?.unarchiveCondition).toBe(
+    expect(todos.find((x) => x.legacyId === other)?.unarchiveCondition).toBe(
       "the explicit one",
     );
   });
@@ -860,7 +869,7 @@ describe("a ruling from Tom's words", () => {
     expect(res.status).toBe(200);
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling.verdict).toBe("archive");
-    expect(ruling.todoId).toBe(todoId);
+    expect(ruling.todoId).toBe(await plainId(t, todoId));
     expect(ruling.provenance).toEqual({
       from: "tom-words",
       inboundId: tomRow._id,

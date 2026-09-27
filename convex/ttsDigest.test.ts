@@ -18,8 +18,14 @@ import {
 } from "./ttsDigest";
 import { MESSAGE_MAX_CHARS, TAB_EVERYTHING } from "./ttsCompose";
 import { nyCalendarDayBoundsUtc, ttsItemLink, ttsSessionLink } from "./ttsShared";
+import { resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+/** The plain row's id for the id a door answered with (its old table's): the
+ *  readers hand out plain ids (convex/jarvis/tables.ts). */
+const plainId = (t: ReturnType<typeof convexTest>, id: string) =>
+  t.run(async (ctx) => (await resolveId(ctx, "todos", id))!);
 
 const DAY = 86_400_000;
 // 2026-09-05 05:00 EDT — the digest's instant; its day key is 2026-09-05.
@@ -84,21 +90,22 @@ describe("the missed rollover", () => {
     expect(second).toEqual([]);
 
     const todos = await tom.query(api.tts.listTodos, {});
-    const rolled = todos.find((x) => x._id === late)!;
+    const rolled = todos.find((x) => x.legacyId === late)!;
     expect(rolled.dueAt).toBe(passed); // the original date is kept
     expect(rolled.status).toBe("active");
     expect(rolled.dateOutcomes).toEqual([
       { dueAt: passed, outcome: "missed", recordedAt: expect.any(Number), note: ROLLOVER_NOTE },
     ]);
-    expect(todos.find((x) => x._id === today)!.dateOutcomes).toBeUndefined();
-    expect(todos.find((x) => x._id === undated)!.dateOutcomes).toBeUndefined();
+    expect(todos.find((x) => x.legacyId === today)!.dateOutcomes).toBeUndefined();
+    expect(todos.find((x) => x.legacyId === undated)!.dateOutcomes).toBeUndefined();
     // The met date resolved as done when the item completed; the rollover
     // left it alone.
-    expect(todos.find((x) => x._id === met)!.dateOutcomes).toEqual([
+    expect(todos.find((x) => x.legacyId === met)!.dateOutcomes).toEqual([
       { dueAt: passed, outcome: "done", recordedAt: expect.any(Number) },
     ]);
     const events = await tom.query(api.tts.listRecentEvents, {});
-    const outcomes = events.filter((e) => e.kind === "date-outcome" && e.todoId === late);
+    const plainLate = await plainId(t, late);
+    const outcomes = events.filter((e) => e.kind === "date-outcome" && e.todoId === plainLate);
     expect(outcomes).toHaveLength(1);
     // The row says it is the rollover's, so the weekly gather never reads it
     // as Tom touching the item (convex/ttsWeekly.ts isTomTouch).

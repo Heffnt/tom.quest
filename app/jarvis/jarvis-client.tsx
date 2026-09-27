@@ -100,6 +100,14 @@ export default function JarvisClient() {
     void recordEvent({ kind: "tts-opened" }).catch(() => {});
   }, [isTom, todos, recordEvent]);
 
+  // An item link names its todo by the id it was sent with: the row's own, or
+  // (a link sent before the record's core tables moved) the id the row had in
+  // dtsTodos, which it keeps as legacyId (convex/jarvis/tables.ts).
+  const linkToRow = useMemo(() => {
+    const row = link === null ? undefined : todos?.find((t) => t.legacyId === link.item);
+    return link === null || row === undefined ? link : { ...link, item: row._id as string };
+  }, [link, todos]);
+
   // The everything tab's badge: the awaiting count, from the SAME selector
   // its awaiting section renders (app/jarvis/lib.ts selectNeedsMe) so the count
   // and the rows cannot drift. Same subscriptions the tab holds — Convex
@@ -153,7 +161,7 @@ export default function JarvisClient() {
             />
           )}
           {tab === "everything" && (
-            <EverythingTab link={link} onLinkCleared={clearLink} />
+            <EverythingTab link={linkToRow} onLinkCleared={clearLink} />
           )}
         </div>
       </div>

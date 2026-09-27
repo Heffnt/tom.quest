@@ -12,7 +12,7 @@ import { useState } from "react";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { normalizeRecommendation } from "@/convex/ttsShared";
 import OptionsRow from "./options-row";
-import { ageText, type MirrorRow } from "../lib";
+import { ageText, type MirrorRow, type Ruling } from "../lib";
 
 const chipCls =
   "text-xs text-text-faint border border-border rounded px-1 py-px";
@@ -50,7 +50,7 @@ export default function CodeTodoRow({
   /** The prepared brief for this item, when one exists. */
   brief: Doc<"dtsCodeBriefs"> | undefined;
   /** The LIVE ruling (newest ruledAt for this repo+externalId), when one exists. */
-  ruling: Doc<"rulings"> | undefined;
+  ruling: Ruling | undefined;
   now: number;
   expanded: boolean;
   onToggle: () => void;
