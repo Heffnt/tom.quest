@@ -148,7 +148,7 @@ describe("POST /tts/ask — the delegate's record", () => {
     // session that is asking too much.
     const written = await rows(t);
     expect(written).toHaveLength(DELEGATE_MAX_PER_SESSION + 1);
-    expect(written.find((row) => row.key === "aaaaaaaa")!.data.capped).toBe(true);
+    expect(written.find((row) => row.key === "aaaaaaaa")!.data.capped).toBeUndefined();
     // witness: the capped row kept the delegate's answer as if it were taken,
     // so the digest listed it as a decision made in his name. The box took
     // its fallback: the row reads as refused, the cap its reason, and the

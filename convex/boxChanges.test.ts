@@ -16,6 +16,7 @@ import {
 } from "./ttsCompose";
 import {
   AGENTS_WINDOW_URL,
+  BOX_CHANGE_HISTORY_COPIED_THROUGH,
   BOX_CHANGE_HISTORY_CUT,
   boxChangeFaults,
   boxChangeLines,
@@ -177,33 +178,54 @@ describe("the box-change door", () => {
     }
   }, 60_000);
 
-  // witness: filtering the history cut by occurrence time loses a live change
-  // that happened before the cut but reached the record after it. Both the
-  // history copy and this read partition rows by their record creation time.
-  it("partitions copied history and a late live change by record creation time", async () => {
+  // witness: the history migration inserted its copied rows after its event-
+  // time cut, so a creation-time lower bound at that cut replayed the copies.
+  it("excludes a post-cut history copy and selects a late live change exactly once", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
-      const boundary = BOX_CHANGE_HISTORY_CUT + 24 * 60 * 60_000;
+      const boundary = BOX_CHANGE_HISTORY_COPIED_THROUGH + 2_000;
       const happenedAt = BOX_CHANGE_HISTORY_CUT - 5 * 60_000;
-      vi.setSystemTime(BOX_CHANGE_HISTORY_CUT - 1);
-      // The history copy owns rows written before the cut, whatever their
-      // occurrence time says.
+      vi.setSystemTime(BOX_CHANGE_HISTORY_CUT + 1);
       await t.run(async (ctx) => {
-        const old = change({ at: BOX_CHANGE_HISTORY_CUT + 1 });
+        const old = change({ at: BOX_CHANGE_HISTORY_CUT - 1, id: "copied-history" });
         await ctx.db.insert("events", { ...eventOf(old), provenance: eventOf(old).provenance });
       });
-      vi.setSystemTime(boundary + 60 * 60_000);
-      await recordEvent(t, eventOf(change({ agentId: AGENT, at: happenedAt })));
+      vi.setSystemTime(BOX_CHANGE_HISTORY_COPIED_THROUGH + 1_000);
+      await recordEvent(t, eventOf(change({ agentId: AGENT, at: happenedAt, id: "late-live" })));
       const first = await t.run(async (ctx) => boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_CUT, boundary));
-      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, boundary, boundary + 2 * 60 * 60_000));
-      expect(first).toHaveLength(0);
-      expect(second).toHaveLength(1);
-      expect(second[0].agentId).toBe(AGENT);
+      const second = await t.run(async (ctx) => boxChangesInWindow(ctx, boundary, boundary + 2_000));
+      expect(first.map((row) => row.id)).toEqual(["late-live"]);
+      expect(second).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
   });
+
+  // witness: taking 2,000 rows and then advancing the digest through the
+  // whole window permanently skipped every later row in that same window.
+  it("reads every box change when a window holds more than 2,000", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t = convexTest({ schema, modules });
+      const recordedAt = BOX_CHANGE_HISTORY_COPIED_THROUGH + 10_000;
+      vi.setSystemTime(recordedAt);
+      await t.run(async (ctx) => {
+        for (let n = 0; n < 2_001; n += 1) {
+          const data = change({ at: AT + n, id: `window-${n}` });
+          await ctx.db.insert("events", { ...eventOf(data), provenance: eventOf(data).provenance });
+        }
+      });
+      const rows = await t.run(async (ctx) =>
+        boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_COPIED_THROUGH + 1, recordedAt + 100),
+      );
+      expect(rows).toHaveLength(2_001);
+      expect(rows[0].id).toBe("window-0");
+      expect(rows[2_000].id).toBe("window-2000");
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
 
   it("refuses a body without the shape, a key or provenance that is not its agent, and an at that is not its own", async () => {
     const t = convexTest({ schema, modules });

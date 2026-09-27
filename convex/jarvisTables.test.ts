@@ -23,6 +23,30 @@ const todo = {
   updatedAt: 1,
 };
 
+describe("plain core-table references", () => {
+  it("accepts the reference types deployed before the switch", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      const todoId = await ctx.db.insert("dtsTodos", todo);
+      const blockId = await ctx.db.insert("blocks", {
+        start: 1,
+        end: 2,
+        todoId,
+        createdAt: 1,
+      });
+      const noteId = await ctx.db.insert("timeNotes", {
+        text: "move it",
+        todoId,
+        blockId,
+        status: "pending",
+        createdAt: 1,
+      });
+      expect(await ctx.db.get(blockId)).toMatchObject({ todoId });
+      expect(await ctx.db.get(noteId)).toMatchObject({ todoId, blockId });
+    });
+  });
+});
+
 // The copy into `rulings` ran in production on 2026-09-26 and went with
 // this stack; what stays is the reader of its legacyId and the count the
 // old table is emptied on. A copied row is seeded here as the copy left it.

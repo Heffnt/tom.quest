@@ -39,7 +39,7 @@ describe("the map", () => {
   it("gives every number its unit in words", () => {
     const { container } = draw();
     for (const node of NODES) {
-      if ("unit" in node) expect(container.textContent).toContain(`0 ${node.unit}`);
+      expect(container.textContent).toContain(`0 ${node.unit}`);
     }
     expect(container.textContent).not.toContain("0 runner agents");
   });

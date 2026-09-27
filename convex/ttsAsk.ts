@@ -161,7 +161,6 @@ export const internalRecordAsk = internalMutation({
       refused,
       refusedBecause,
       attended,
-      capped,
     }, args.askId);
 
     // The digest's objection list reads this delegate-decision row itself

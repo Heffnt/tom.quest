@@ -309,29 +309,38 @@ export const forAgent = query({
  * digest reads them (boxChangeLines takes these). Unredacted: boxChangeLines
  * redacts every line it writes.
  *
- * BY RECORDED TIME, AFTER THE HISTORY CUT. A live change can arrive after the
+ * BY RECORDED TIME, AFTER THE HISTORY COPY. A live change can arrive after the
  * digest whose event-time window held it; `_creationTime` puts it in the next
- * digest instead. The one-time history copy created old rows on 2026-09-26,
- * so only rows the record wrote at or after the copy's production cut enter
- * this stream. Consecutive digest windows then partition every live row
- * exactly once, however late it arrives or whenever it occurred.
+ * digest instead. The one-time history copy created old rows after its event-
+ * time cut, and marked them no differently from live rows. The measured last
+ * copy creation time below excludes all of them. Consecutive digest windows
+ * then partition every live row exactly once, however late it arrives or
+ * whenever it occurred.
  */
 /** The `before` boundary used by the production history copy. */
 export const BOX_CHANGE_HISTORY_CUT = Date.UTC(2026, 8, 26, 8, 38, 58);
+/** The latest `_creationTime` among the eight rows inserted by the one-time
+ * production history copy. Measured read-only on 2026-09-27 by matching the
+ * copied events to their pre-cut dtsEvents source rows. The copy wrote no
+ * marker, so its exact inclusive upper bound is the durable partition. */
+export const BOX_CHANGE_HISTORY_COPIED_THROUGH = 1_790_412_428_617.723;
 
 export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
-  const rows = await ctx.db
+  if (to <= BOX_CHANGE_HISTORY_COPIED_THROUGH) return [];
+  const query = ctx.db
     .query("events")
-    .withIndex("by_kind", (q) => q.eq("kind", BOX_CHANGE).gte("_creationTime", Math.max(from, BOX_CHANGE_HISTORY_CUT)).lt("_creationTime", to))
-    .take(WINDOW_MAX);
+    .withIndex("by_kind", (q) => {
+      const kind = q.eq("kind", BOX_CHANGE);
+      return from <= BOX_CHANGE_HISTORY_COPIED_THROUGH
+        ? kind.gt("_creationTime", BOX_CHANGE_HISTORY_COPIED_THROUGH).lt("_creationTime", to)
+        : kind.gte("_creationTime", from).lt("_creationTime", to);
+    });
+  const rows: Doc<"events">[] = [];
+  for await (const row of query) rows.push(row);
   return rows
     .map((row) => row.data as BoxChange)
     .sort((a, b) => a.at - b.at);
 }
-
-/** The most changes one digest window reads: a day of a busy box is a few
- *  hundred after folding. */
-const WINDOW_MAX = 2000;
 
 // ── The digest ───────────────────────────────────────────────────────────────
 

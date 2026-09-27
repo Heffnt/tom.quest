@@ -68,9 +68,9 @@ export default defineSchema({
   //
   // WHY `provenance` IS AN OBJECT AND `subject` A STRING: a reader asks two
   // questions of the record, "what did THIS agent/job do" and "what happened
-  // to THIS thing", and each is one index below. `data` is v.any() and no
-  // index reaches it, so anything a reader filters on must be one of the
-  // fields here.
+  // to THIS thing", and each is one index below. `data` is v.any(); only
+  // by_kind_standing_at reaches its standingSince field, so any other fact a
+  // reader filters on must be one of the fields here.
   events: defineTable({
     kind: v.string(),
     at: v.number(),
@@ -510,13 +510,10 @@ export default defineSchema({
     // field that made a dtsTodos row a batch — and `plan`, its ordered
     // completion steps, were NARROWED out after
     // ttsMigrations.internalClearRetiredFields took both off every row on prod
-    // and a second run reported zero. A batch is its own `batches` row now,
-    // and its contents are dtsTodos rows pointing back at it by batchId, kind
-    // "task" or "goal", ordered by `needs`. tts.internalMigrateToGraph, which
-    // moved all 61 of them across, still reads the pair through a loose view
-    // of the row, so it runs on a deployment whose validator has moved on.
-    // What each row SAID is on record as a `retired-field-cleared` dtsEvents
-    // row. The lifeos update, phase 7.)
+    // and a second run reported zero. What each row SAID is on record as a
+    // `retired-field-cleared` dtsEvents row. The lifeos update, phase 7. The
+    // v2 batch that replaced it, its own `batches` row with todos pointing
+    // back at it by batchId, went in turn on Tom's ruling of 2026-09-24.)
     // Stamped by the Tom doors (updateTodo, setStatus, the ruling life path,
     // the pens). A row with this set is FROZEN: the planner
     // (tts.internalStorePlanGraph) may never rewrite or retire it.
@@ -626,8 +623,9 @@ export default defineSchema({
     .index("by_slackTs", ["slackTs"]),
 
   // todos: the plain-named home of dtsTodos's rows (the record's core tables,
-  // 2026-09-26). Same fields and indexes; dtsTodos above empties once
-  // convex/jarvis/tables.ts has copied it, and then goes.
+  // 2026-09-26). Its payload and source indexes match dtsTodos except `needs`
+  // points to todos; legacyId and by_legacy preserve lookup by the old id.
+  // dtsTodos above empties once convex/jarvis/tables.ts has copied it.
   todos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
@@ -702,13 +700,10 @@ export default defineSchema({
     // field that made a dtsTodos row a batch — and `plan`, its ordered
     // completion steps, were NARROWED out after
     // ttsMigrations.internalClearRetiredFields took both off every row on prod
-    // and a second run reported zero. A batch is its own `batches` row now,
-    // and its contents are dtsTodos rows pointing back at it by batchId, kind
-    // "task" or "goal", ordered by `needs`. tts.internalMigrateToGraph, which
-    // moved all 61 of them across, still reads the pair through a loose view
-    // of the row, so it runs on a deployment whose validator has moved on.
-    // What each row SAID is on record as a `retired-field-cleared` dtsEvents
-    // row. The lifeos update, phase 7.)
+    // and a second run reported zero. What each row SAID is on record as a
+    // `retired-field-cleared` dtsEvents row. The lifeos update, phase 7. The
+    // v2 batch that replaced it, its own `batches` row with todos pointing
+    // back at it by batchId, went in turn on Tom's ruling of 2026-09-24.)
     // Stamped by the Tom doors (updateTodo, setStatus, the ruling life path,
     // the pens). A row with this set is FROZEN: the planner
     // (tts.internalStorePlanGraph) may never rewrite or retire it.
@@ -750,6 +745,8 @@ export default defineSchema({
     // a task. "task" = work someone does; "goal" = a state of the world the
     // batch is for, checkable via `condition` above.
     kind: v.optional(v.union(v.literal("task"), v.literal("goal"))),
+    // The batch this row belongs to (batches table). Absent = batch-less.
+    batchId: v.optional(v.id("batches")),
     // Dependency edges: this todo is READY only once every id here is done
     // (done or archived both count — ttsShared.buildDoneSet). Bounded at
     // MAX_NEEDS (ttsShared); every id must name a todo in the SAME batch (or a
@@ -812,6 +809,7 @@ export default defineSchema({
     // dated ones only.
     .index("by_status_and_due", ["status", "dueAt"])
     .index("by_readiness", ["readiness"])
+    .index("by_batch", ["batchId"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
     // generator find their own rows by source ("canvas" / "repeating") +
     // provenance match, without scanning the whole table. The source alone is
@@ -853,9 +851,10 @@ export default defineSchema({
     .index("by_start", ["start"])
     .index("by_feed", ["feed"]),
 
-  // calendar: the plain-named home of ttsCalendarEvents's rows (the record's core tables,
-  // 2026-09-26). Same fields and indexes; ttsCalendarEvents above empties once
-  // convex/jarvis/tables.ts has copied it, and then goes.
+  // calendar: the plain-named home of ttsCalendarEvents's rows (the record's
+  // core tables, 2026-09-26). Its payload and source indexes match; legacyId
+  // and by_legacy preserve lookup by the old id. ttsCalendarEvents above
+  // empties once convex/jarvis/tables.ts has copied it.
   calendar: defineTable({
     feed: v.string(), // feed name from TTS_ICS_FEEDS ("google", "outlook", …)
     uid: v.string(), // source event uid (shared by a recurrence's occurrences)
@@ -914,9 +913,10 @@ export default defineSchema({
     updatedAt: v.number(),
   }),
 
-  // repeats: the plain-named home of ttsRepeats's rows (the record's core tables,
-  // 2026-09-26). Same fields and indexes; ttsRepeats above empties once
-  // convex/jarvis/tables.ts has copied it, and then goes.
+  // repeats: the plain-named home of ttsRepeats's rows (the record's core
+  // tables, 2026-09-26). Its payload matches; legacyId and by_legacy preserve
+  // lookup by the old id. ttsRepeats above empties once convex/jarvis/tables.ts
+  // has copied it.
   repeats: defineTable({
     statement: v.string(), // instance display text, copied verbatim
     // Plain lowercase weekday words (naming rules: no abbreviations).
@@ -971,8 +971,9 @@ export default defineSchema({
   }).index("by_start", ["start"]),
 
   // blocks: the plain-named home of dtsBlocks's rows (the record's core tables,
-  // 2026-09-26). Same fields and indexes; dtsBlocks above empties once
-  // convex/jarvis/tables.ts has copied it, and then goes.
+  // 2026-09-26). todoId still names dtsTodos because copied rows hold dts ids
+  // until the switch pull request remaps them with remapTodoRefs and changes
+  // the type then. legacyId and by_legacy preserve lookup by the old id.
   blocks: defineTable({
     start: v.number(), // epoch ms
     end: v.number(), // epoch ms, > start
@@ -1019,9 +1020,11 @@ export default defineSchema({
     resolvedAt: v.optional(v.number()),
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
-  // timeNotes: the plain-named home of dtsTimeNotes's rows (the record's core tables,
-  // 2026-09-26). Same fields and indexes; dtsTimeNotes above empties once
-  // convex/jarvis/tables.ts has copied it, and then goes.
+  // timeNotes: the plain-named home of dtsTimeNotes's rows (the record's core
+  // tables, 2026-09-26). todoId still names dtsTodos; blockId names blocks, as
+  // deployed. Copied rows hold dts ids until the switch pull request remaps
+  // them with remapTodoRefs and changes the types then. legacyId and by_legacy
+  // preserve lookup by the old id.
   timeNotes: defineTable({
     text: v.string(),
     todoId: v.optional(v.id("dtsTodos")),
@@ -1054,6 +1057,11 @@ export default defineSchema({
   //             code todos are archived upstream by the worker
   // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
   // reschedule, not a ruling.)
+  //
+  // NARROWED after read-only production counts on 2026-09-27: dtsRulings and
+  // rulings each held 5 rows, with zero `batch` or `elevation` subjectType,
+  // zero `answer` verdict, and zero batchId or elevationId fields. Their
+  // by_batch and by_elevation indexes were therefore removed with the fields.
   dtsRulings: defineTable({
     subjectType: v.union(
       v.literal("life"),
@@ -1107,9 +1115,10 @@ export default defineSchema({
     .index("by_provenance_inboundId", ["provenance.inboundId"])
     .index("by_ask", ["askId"]),
 
-  // rulings: the plain-named home of dtsRulings's rows (the record's core tables,
-  // 2026-09-26). Same fields and indexes; dtsRulings above empties once
-  // convex/jarvis/tables.ts has copied it, and then goes.
+  // rulings: the plain-named home of dtsRulings's rows (the record's core
+  // tables, 2026-09-26). Its payload and source indexes match; legacyId and
+  // by_legacy preserve lookup by the old id. dtsRulings above empties once
+  // convex/jarvis/tables.ts has copied it.
   rulings: defineTable({
     subjectType: v.union(
       v.literal("life"),
@@ -1497,9 +1506,10 @@ export default defineSchema({
     })),
   }).index("by_key", ["key"]),
 
-  // vocabulary: the plain-named home of ttsVocabulary's rows (the record's core tables,
-  // 2026-09-26). Same fields and indexes; ttsVocabulary above empties once
-  // convex/jarvis/tables.ts has copied it, and then goes.
+  // vocabulary: the plain-named home of ttsVocabulary's rows (the record's
+  // core tables, 2026-09-26). Its payload and source index match; legacyId and
+  // by_legacy preserve lookup by the old id. ttsVocabulary above empties once
+  // convex/jarvis/tables.ts has copied it.
   vocabulary: defineTable({
     key: v.literal("current"),
     version: v.string(), // the generator's own content hash of the render
