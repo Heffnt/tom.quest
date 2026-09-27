@@ -127,6 +127,20 @@ describe("<Frame>", () => {
     expect(center.outerHTML).toBe(before);
   });
 
+  it("switches the closed-drawer variant with keys 1 to 4, not while typing, and stores it", () => {
+    renderFrame();
+    const root = document.querySelector("[data-frame]")!;
+    expect(root.getAttribute("data-frame-variant")).toBe("A");
+    act(() => fireEvent.keyDown(window, { key: "3" }));
+    expect(root.getAttribute("data-frame-variant")).toBe("C");
+    act(() => fireEvent.keyDown(screen.getByLabelText("Navigate to a page"), { key: "2" }));
+    expect(root.getAttribute("data-frame-variant")).toBe("C");
+    act(() => fireEvent.click(screen.getByRole("radio", { name: "D" })));
+    expect(root.getAttribute("data-frame-variant")).toBe("D");
+    expect(JSON.parse(localStorage.getItem("tom-quest-frame-variant") ?? "{}").state.variant).toBe("D");
+    act(() => fireEvent.keyDown(window, { key: "1" }));
+  });
+
   it("persists the open drawers per page", () => {
     renderFrame();
     act(() => fireEvent.keyDown(window, { key: "a" }));

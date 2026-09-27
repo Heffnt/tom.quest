@@ -109,11 +109,14 @@ export default function SiteBar({
   title,
   explainer,
   state,
+  after,
   topToggle,
 }: {
   title: string;
   explainer: ExplainerId;
   state?: string;
+  /** Anything the page segment holds after the state line. */
+  after?: ReactNode;
   /** The top drawer's toggle, which fills the rail between the page name and navigate. */
   topToggle: ReactNode;
 }) {
@@ -130,6 +133,7 @@ export default function SiteBar({
         <h1 className="truncate text-[13px] font-semibold text-text">{title}</h1>
         <Info explainer={explainer} />
         {state && <span className="hidden truncate text-[12px] text-text-muted sm:inline">{state}</span>}
+        {after}
       </div>
       {topToggle}
       <div className="flex shrink-0 items-center gap-2 pl-2 pr-1">

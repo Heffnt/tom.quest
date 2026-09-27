@@ -57,6 +57,57 @@ test("drawers overlay the center and stack right over left over bottom over top"
   }
 });
 
+// Round 1 of the mockups: four looks for a closed drawer (frame/variants.tsx).
+// Whichever is chosen, the center keeps its box with every drawer closed and
+// open, nothing scrolls sideways, every handle is on top where it sits, and no
+// title in a rail is cut short.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`every closed-drawer variant keeps the center still at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.goto("/tts");
+    await page.waitForFunction(() => document.querySelector("[data-frame]")?.getAttribute("data-hydrated") === "true");
+    const center = page.locator("[data-frame-center]");
+    for (const [i, variant] of ["A", "B", "C", "D"].entries()) {
+      await page.keyboard.press(String(i + 1));
+      await expect(page.locator("[data-frame]")).toHaveAttribute("data-frame-variant", variant);
+      await page.waitForTimeout(200);
+      const closed = await center.boundingBox();
+      expect(await noSideScroll(page)).toBe(true);
+
+      const handles = await page.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>("[data-frame-toggle]")]
+          .filter((el) => el.offsetParent !== null || getComputedStyle(el).position === "absolute")
+          .filter((el) => el.getBoundingClientRect().width > 0)
+          .map((el) => {
+            const r = el.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            const label = el.querySelector<HTMLElement>("[data-frame-rail-label]");
+            return {
+              edge: el.getAttribute("data-frame-toggle"),
+              onTop: !!hit && el.contains(hit),
+              inside: r.left >= 0 && r.right <= window.innerWidth + 0.5,
+              titleWhole: !label || el.hasAttribute("data-frame-rail") || label.scrollWidth <= label.clientWidth + 1,
+            };
+          }),
+      );
+      for (const h of handles) expect(h, `${variant} ${h.edge}`).toEqual({ edge: h.edge, onTop: true, inside: true, titleWhole: true });
+
+      for (const key of ["s", "d", "a", "w"]) {
+        await page.keyboard.press(key);
+        await page.waitForTimeout(200);
+        expect(await center.boundingBox(), `${variant} after ${key}`).toEqual(closed);
+        expect(await noSideScroll(page)).toBe(true);
+      }
+      for (let n = 0; n < 4; n++) await page.keyboard.press("Escape");
+      expect(await openDrawers(page)).toEqual([]);
+    }
+    await page.keyboard.press("1");
+  });
+}
+
 test("the (i) after the page name opens the frame explainer full screen, dark, and Escape closes it", async ({ page }) => {
   await page.goto("/tts");
   await page.getByRole("button", { name: /^Explainer:/ }).click();

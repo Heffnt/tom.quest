@@ -1,0 +1,197 @@
+/* MOCKUP ROUND 1 (variants.tsx): how a closed drawer looks. Variant A is
+   globals.css as it stands; B, C and D are the overrides below. Each changes
+   only the rails' own sizes and looks: the drawers and the center read the
+   same --frame-rail-* sizes, so the center keeps its box whichever drawers
+   are open. Once Tom picks, the chosen block moves into globals.css and this
+   file goes. */
+
+/* ── B: 44px side rails, everything upright and stacked ─────────────────── */
+[data-frame][data-frame-variant="B"] { --frame-rail-side: 44px; }
+@media (max-width: 639.98px) {
+  [data-frame][data-frame-variant="B"] { --frame-rail-side: 0px; }
+}
+[data-frame-variant="B"] [data-frame-rail="left"] [data-frame-rail-tab],
+[data-frame-variant="B"] [data-frame-rail="right"] [data-frame-rail-tab] {
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 0 4px;
+  writing-mode: horizontal-tb;
+  transform: none;
+}
+[data-frame-variant="B"] [data-frame-rail-tab] [data-frame-rail-label] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+[data-frame-variant="B"] [data-frame-rail-tab] [data-frame-rail-signals] {
+  flex-direction: column;
+  gap: 4px;
+}
+/* The phone's bottom bar: each cell's title over its signals. */
+@media (max-width: 639.98px) {
+  [data-frame-variant="B"] [data-frame-rail="bottom"] [data-frame-toggle] {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+  }
+}
+/* Where a rail's parts stack, the notch lies across them. */
+[data-frame-variant="B"] [data-frame-rail-tab] [data-frame-notch] { width: 10px; height: 2px; }
+@media (max-width: 639.98px) {
+  [data-frame-variant="B"] [data-frame-rail="bottom"] [data-frame-notch] { width: 10px; height: 2px; }
+}
+
+/* ── C: 6px strips in their most urgent signal's colour, with pull tabs ── */
+[data-frame][data-frame-variant="C"] {
+  --frame-rail-side: 6px;
+  --frame-rail-bottom: 6px;
+  --frame-corner: 40px;
+}
+@media (max-width: 639.98px) {
+  [data-frame][data-frame-variant="C"] {
+    --frame-rail-side: 0px;
+    --frame-rail-bottom: calc(6px + env(safe-area-inset-bottom));
+  }
+}
+[data-frame-variant="C"] [data-frame-rail="left"],
+[data-frame-variant="C"] [data-frame-rail="right"],
+[data-frame-variant="C"] [data-frame-rail="bottom"] {
+  padding-top: 0;
+  border-width: 0;
+  background: var(--color-text-faint);
+}
+/* The strip takes the colour of its most urgent signal: later rules win. */
+[data-frame-variant="C"] [data-frame-rail]:is([data-frame-rail="left"], [data-frame-rail="right"]):has([data-tone="ok"]),
+[data-frame-variant="C"] [data-frame-rail="bottom"]:has([data-frame-toggle="bottom"] [data-tone="ok"]) { background: var(--color-success); }
+[data-frame-variant="C"] [data-frame-rail]:is([data-frame-rail="left"], [data-frame-rail="right"]):has([data-tone="accent"]),
+[data-frame-variant="C"] [data-frame-rail="bottom"]:has([data-frame-toggle="bottom"] [data-tone="accent"]) { background: var(--color-accent); }
+[data-frame-variant="C"] [data-frame-rail]:is([data-frame-rail="left"], [data-frame-rail="right"]):has([data-tone="warn"]),
+[data-frame-variant="C"] [data-frame-rail="bottom"]:has([data-frame-toggle="bottom"] [data-tone="warn"]) { background: var(--color-warning); }
+[data-frame-variant="C"] [data-frame-rail]:is([data-frame-rail="left"], [data-frame-rail="right"]):has([data-tone="error"]),
+[data-frame-variant="C"] [data-frame-rail="bottom"]:has([data-frame-toggle="bottom"] [data-tone="error"]) { background: var(--color-error); }
+[data-frame-variant="C"] [data-frame-rail="left"]:hover,
+[data-frame-variant="C"] [data-frame-rail="right"]:hover { filter: brightness(1.3); }
+[data-frame-variant="C"] [data-frame-rail="left"][data-open="true"],
+[data-frame-variant="C"] [data-frame-rail="right"][data-open="true"] { box-shadow: none; }
+
+/* A side strip's tab hangs off its inner edge near the top and rides the
+   drawer's edge while it is open. */
+[data-frame-variant="C"] [data-frame-rail="left"] [data-frame-rail-tab],
+[data-frame-variant="C"] [data-frame-rail="right"] [data-frame-rail-tab] {
+  position: absolute;
+  top: 12px;
+  max-height: min(calc(100% - 24px), 360px);
+  padding: 10px 5px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  transition: transform var(--frame-motion) ease-out, border-color var(--frame-motion);
+}
+[data-frame-variant="C"] [data-frame-rail="left"] [data-frame-rail-tab] {
+  /* Rotated half a turn, so its physical left edge is the one on the right. */
+  left: 100%;
+  border-right-width: 0;
+  border-radius: 6px 0 0 6px;
+}
+[data-frame-variant="C"] [data-frame-rail="right"] [data-frame-rail-tab] {
+  right: 100%;
+  border-right-width: 0;
+  border-radius: 6px 0 0 6px;
+}
+[data-frame-variant="C"] [data-frame-rail]:hover [data-frame-rail-tab] { background: var(--color-surface-alt); color: var(--color-text); }
+[data-frame-variant="C"] [data-frame-rail="left"][data-open="true"] [data-frame-rail-tab] {
+  transform: translateX(var(--frame-drawer-left)) rotate(180deg);
+  border-color: var(--color-accent);
+}
+[data-frame-variant="C"] [data-frame-rail="right"][data-open="true"] [data-frame-rail-tab] {
+  transform: translateX(calc(-1 * var(--frame-drawer-right)));
+  border-color: var(--color-accent);
+}
+
+/* The bottom strip's tabs stand on it: the events tab (with the lists and
+   detail tabs on a phone) and the diagnostics dot at the far right. */
+[data-frame-variant="C"] [data-frame-rail="bottom"] {
+  align-items: flex-end;
+  gap: 6px;
+  padding-left: 0;
+  padding-right: 12px;
+}
+[data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-toggle],
+[data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-diagnostics] {
+  flex: 0 0 auto;
+  height: 24px;
+  margin-bottom: 6px;
+  padding: 0 10px;
+  width: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-bottom-width: 0;
+  border-radius: 6px 6px 0 0;
+}
+[data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-toggle]:hover,
+[data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-diagnostics]:hover { background: var(--color-surface-alt); }
+[data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-toggle="bottom"] { margin-left: 12px; }
+[data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-diagnostics] { margin-left: auto; }
+[data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-toggle][aria-expanded="true"] {
+  box-shadow: none;
+  border-color: var(--color-accent);
+}
+@media (max-width: 639.98px) {
+  [data-frame-variant="C"] [data-frame-rail="bottom"] { gap: 4px; padding-left: 6px; padding-right: 6px; }
+  [data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-toggle],
+  [data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-diagnostics] { padding: 0 8px; }
+  [data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-toggle="bottom"] { margin-left: 0; }
+  [data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-toggle],
+  [data-frame-variant="C"] [data-frame-rail="bottom"] [data-frame-rail-signals] { gap: 4px; }
+}
+
+/* ── D: no rails; handles in the bottom corners, over the center ─────── */
+[data-frame][data-frame-variant="D"] {
+  --frame-rail-side: 0px;
+  --frame-rail-bottom: 0px;
+  --frame-corner: 40px;
+}
+[data-frame-variant="D"] [data-frame-rail="left"],
+[data-frame-variant="D"] [data-frame-rail="right"] { display: none; }
+[data-frame-variant="D"] [data-frame-rail="bottom"] {
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  height: 28px;
+  padding: 0;
+  gap: 6px;
+  background: transparent;
+  border-width: 0;
+  pointer-events: none;
+}
+[data-frame-variant="D"] [data-frame-rail="bottom"] > [aria-hidden] { display: none; }
+[data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-toggle],
+[data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-diagnostics] {
+  display: flex;
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0 10px;
+  pointer-events: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 9999px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+[data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-toggle]:hover,
+[data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-diagnostics]:hover { background: var(--color-surface-alt); }
+[data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-toggle="right"] { margin-left: auto; }
+@media (max-width: 639.98px) {
+  [data-frame-variant="D"] [data-frame-rail="bottom"] { left: 8px; right: 8px; gap: 4px; }
+  [data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-toggle],
+  [data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-rail-signals] { gap: 4px; }
+  [data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-toggle],
+  [data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-diagnostics] { padding: 0 8px; }
+}
+[data-frame-variant="D"] [data-frame-rail="bottom"] [data-frame-toggle][aria-expanded="true"] {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  border-color: var(--color-accent);
+}

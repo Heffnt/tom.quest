@@ -25,6 +25,7 @@ import Info from "./info";
 import { EDGE_FOR_KEY, isTextTarget, nextOpenState, topmostOpen, type Edge, type OpenState } from "./rules";
 import RailSignals, { signalSignature, type RailSignal } from "./rail-signals";
 import SiteBar from "./site-bar";
+import { useFrameVariant, VariantPicker } from "./variants";
 
 type DrawerSpec = {
   title: string;
@@ -212,6 +213,7 @@ export default function Frame({
   center: ReactNode;
 } & Drawers) {
   const { isTom } = useAuth();
+  const variant = useFrameVariant();
   const drawers: Drawers = useMemo(() => ({ top, bottom, left, right }), [top, bottom, left, right]);
   const open = useFrameStore((s) => s.open[page]) ?? EMPTY;
   const seen = useFrameStore((s) => s.seen[page]);
@@ -308,7 +310,7 @@ export default function Frame({
   );
 
   return (
-    <div ref={rootRef} data-frame={page} data-hydrated={hydrated}>
+    <div ref={rootRef} data-frame={page} data-frame-variant={variant} data-hydrated={hydrated}>
       <div data-frame-center>{center}</div>
 
       {anyOpen && <button type="button" aria-label="Close drawers" data-frame-scrim onClick={() => setOpenState(page, {})} />}
@@ -328,7 +330,13 @@ export default function Frame({
       <Drawer edge="right" spec={right} open={!!open.right} onClose={() => setEdge("right", false)} drawerRef={refFor("right")} />
 
       <header data-frame-rail="top" data-open={!!open.top}>
-        <SiteBar title={title} explainer={explainer} state={state} topToggle={railToggle("top", "flex-1")} />
+        <SiteBar
+          title={title}
+          explainer={explainer}
+          state={state}
+          after={<VariantPicker />}
+          topToggle={railToggle("top", "flex-1")}
+        />
       </header>
       <div data-frame-rail="bottom" data-open={!!open.bottom} className="flex items-stretch">
         <span aria-hidden className="hidden w-(--frame-rail-side) shrink-0 sm:block" />
