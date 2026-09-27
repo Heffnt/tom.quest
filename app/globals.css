@@ -28,10 +28,37 @@
   --text-4xl:  2.25rem;
   --text-5xl:  3rem;
 
+  /* Radius: 4px on a control, 6px on a panel; dots and the (i) are rounded-full. */
+  --radius-control: 4px;
+  --radius-panel:   6px;
+
+  /* Row heights. The rest of the spacing scale (2, 4, 8, 12, 16, 24 px) is
+     Tailwind's own: 0.5, 1, 2, 3, 4 and 6. */
+  --spacing-row-dense: 24px;
+  --spacing-row:       32px;
+
   /* Perfume "real vs. hypothetical" ingredient tokens (the Perfumer). */
   /* --pf-real: parchment tan sampled from Joe's ingredient PDF ground (Byobu extract_art.py page-ground sample). */
   --pf-real:         #ebd3b6;
   --pf-hypothetical: #111827; /* reuse --color-surface, tom.quest's slate surface */
+}
+
+/* The z layers, the one list every fixed or stacked surface takes its layer
+   from. A drawer's layer is fixed by its edge, not by the order it opened:
+   right over left over bottom over top, so the most specific panel is never
+   covered by a more general one. Rails sit above every drawer. */
+:root {
+  --z-center: 0;
+  --z-menu: 10;
+  --z-drawer-top: 20;
+  --z-drawer-bottom: 21;
+  --z-drawer-left: 22;
+  --z-drawer-right: 23;
+  --z-rail: 30;
+  --z-nav-menu: 40;
+  --z-dialog: 50;
+  --z-explainer: 60;
+  --z-toast: 70;
 }
 
 body {
@@ -105,4 +132,129 @@ button, input, select, textarea {
 @media (prefers-reduced-motion: reduce) {
   .pf-float, .pf-bubble, .pf-steam, .pf-glow, .pf-pop { animation: none !important; }
   .pf-slot { transition: none !important; }
+}
+
+/* ===== The frame (app/components/frame) =====
+   A center and four drawers inside a ring of rails. Everything here is fixed
+   to the viewport, so the center's box never changes when a drawer opens: a
+   drawer overlays, it never pushes. Sizes are the design's defaults clamped to
+   its bounds. Below 640px the side rails go and the top and bottom bars grow
+   to phone sizes; drawers become sheets, one at a time. */
+[data-frame] {
+  --frame-rail-top: 40px;
+  --frame-rail-bottom: 28px;
+  --frame-rail-side: 28px;
+  --frame-drawer-top: clamp(160px, 240px, 45vh);
+  --frame-drawer-bottom: clamp(200px, 320px, 60vh);
+  --frame-drawer-left: clamp(280px, 360px, 40vw);
+  --frame-drawer-right: clamp(320px, 440px, 50vw);
+  --frame-motion: 150ms;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
+}
+/* No Syne inside the frame: headings are Plex Sans, semibold. */
+[data-frame] h1, [data-frame] h2, [data-frame] h3 {
+  font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
+  letter-spacing: normal;
+}
+@media (max-width: 639.98px) {
+  [data-frame] {
+    --frame-rail-top: 44px;
+    --frame-rail-bottom: calc(48px + env(safe-area-inset-bottom));
+    --frame-rail-side: 0px;
+    --frame-drawer-top: min(240px, 85dvh);
+    --frame-drawer-bottom: min(320px, 85dvh);
+    --frame-drawer-left: 88vw;
+    --frame-drawer-right: 88vw;
+  }
+}
+[data-frame-center] {
+  position: absolute;
+  top: var(--frame-rail-top);
+  bottom: var(--frame-rail-bottom);
+  left: var(--frame-rail-side);
+  right: var(--frame-rail-side);
+  overflow: auto;
+  z-index: var(--z-center);
+}
+[data-frame-drawer] {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  border-color: var(--color-border);
+  transition: transform var(--frame-motion) ease-out, visibility 0s linear var(--frame-motion);
+  visibility: hidden;
+}
+[data-frame-drawer][data-open="true"] {
+  transform: none;
+  visibility: visible;
+  transition: transform var(--frame-motion) ease-out, visibility 0s;
+}
+[data-frame-drawer="top"] {
+  top: var(--frame-rail-top); left: var(--frame-rail-side); right: var(--frame-rail-side);
+  height: var(--frame-drawer-top);
+  border-bottom-width: 1px;
+  z-index: var(--z-drawer-top);
+  transform: translateY(calc(-100% - var(--frame-rail-top)));
+}
+[data-frame-drawer="bottom"] {
+  bottom: var(--frame-rail-bottom); left: var(--frame-rail-side); right: var(--frame-rail-side);
+  height: var(--frame-drawer-bottom);
+  border-top-width: 1px;
+  z-index: var(--z-drawer-bottom);
+  transform: translateY(calc(100% + var(--frame-rail-bottom)));
+}
+[data-frame-drawer="left"] {
+  top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); left: var(--frame-rail-side);
+  width: var(--frame-drawer-left);
+  border-right-width: 1px;
+  z-index: var(--z-drawer-left);
+  transform: translateX(calc(-100% - var(--frame-rail-side)));
+}
+[data-frame-drawer="right"] {
+  top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); right: var(--frame-rail-side);
+  width: var(--frame-drawer-right);
+  border-left-width: 1px;
+  z-index: var(--z-drawer-right);
+  transform: translateX(calc(100% + var(--frame-rail-side)));
+}
+/* The phone scrim sits under the drawers and over the center. */
+[data-frame-scrim] {
+  position: absolute;
+  inset: var(--frame-rail-top) 0 var(--frame-rail-bottom) 0;
+  z-index: calc(var(--z-drawer-top) - 1);
+  background: rgba(10, 14, 23, 0.6);
+}
+[data-frame-rail] {
+  position: absolute;
+  z-index: var(--z-rail);
+  background: var(--color-surface);
+  border-color: var(--color-border);
+}
+[data-frame-rail="top"]    { top: 0; left: 0; right: 0; height: var(--frame-rail-top); border-bottom-width: 1px; }
+[data-frame-rail="bottom"] { bottom: 0; left: 0; right: 0; height: var(--frame-rail-bottom); border-top-width: 1px; padding-bottom: env(safe-area-inset-bottom); }
+[data-frame-rail="left"]   { top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); left: 0; width: var(--frame-rail-side); border-right-width: 1px; }
+[data-frame-rail="right"]  { top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); right: 0; width: var(--frame-rail-side); border-left-width: 1px; }
+@media (max-width: 639.98px) {
+  [data-frame-rail="left"], [data-frame-rail="right"] { display: none; }
+}
+/* An open drawer's rail carries an accent inner edge. */
+[data-frame-rail="bottom"] [data-frame-toggle][aria-expanded="true"] { box-shadow: inset 0 2px 0 var(--color-accent); }
+[data-frame-rail="top"] [data-frame-toggle][aria-expanded="true"]    { box-shadow: inset 0 -2px 0 var(--color-accent); }
+[data-frame-rail="left"][data-open="true"]                       { box-shadow: inset -2px 0 0 var(--color-accent); }
+[data-frame-rail="right"][data-open="true"]                      { box-shadow: inset 2px 0 0 var(--color-accent); }
+/* Side rail labels: the left reads bottom to top, the right top to bottom. */
+[data-frame-rail="left"] [data-frame-rail-label]  { writing-mode: vertical-rl; transform: rotate(180deg); }
+[data-frame-rail="right"] [data-frame-rail-label] { writing-mode: vertical-rl; }
+/* Before the persisted open state is read, nothing animates, so a drawer
+   restored open does not slide in on load. */
+[data-frame][data-hydrated="false"] [data-frame-drawer] { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  [data-frame-drawer], [data-frame-drawer][data-open="true"] { transition: none; }
+}
+@media (min-width: 640px) {
+  [data-frame-scrim] { display: none; }
 }

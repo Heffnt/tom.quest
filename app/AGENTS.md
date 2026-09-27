@@ -6,7 +6,8 @@
 - A numeric interval is a text input, not a number spinner.
 - Clickable text not styled as a button is underlined at rest; non-clickable text is never underlined. Accent colour alone never signals clickability; it also marks state.
 - Everything clickable changes visibly on hover (background or brightness at minimum); a block-level clickable (row, card, paragraph) signals through that, not an underline.
-- One info mechanism: a tap-to-open popover (never hover-only or native `title=`; both are dead on touch) holding a plain-language line on what the control does on the backend, plus the function call in small mono. New surfaces use it; an existing one migrates when otherwise touched.
+- One info mechanism: the (i) right after a component's name (`app/components/frame/info.tsx`), one per component, opening its `<name>.explainer.html` full screen. The per-control popovers (`app/tts/components/info.tsx`) retire as their surfaces move into the frame. Never hover-only or native `title=`; both are dead on touch.
+- A jarvis page is registered `frame: true` and renders `<Frame>`; it sets no position, z-index or colour of its own.
 - No explainer text in product UI. A page is data plus actions; explanation happens in conversation.
 - An interaction never shifts layout. No inline form between controls; anything composed (note, ruling, schedule) opens in a fixed dialog.
 - Actions sit near the top of an item's detail; each label names its backend effect.

@@ -19,6 +19,7 @@
     "test:pages": "vitest run app/components/page-routes.test.ts && playwright test e2e/page-visibility.spec.ts",
     "test:auth": "playwright test e2e/auth-flow.spec.ts",
     "test:observability": "vitest run app/lib/__tests__/debug.test.ts",
+    "gen:explainers": "node scripts/gen-explainers.mjs",
     "check:agents": "node scripts/check-agents-md.mjs",
     "check:auth-boundary": "node scripts/check-auth-boundary.mjs",
     "check:heavy-libs": "node scripts/check-heavy-libs.mjs",
