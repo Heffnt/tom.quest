@@ -15,6 +15,7 @@ import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
+import { follow } from "./jarvis/tables";
 import {
   nyCalendarDayBoundsUtc,
   nyTimeUtcMs,
@@ -303,6 +304,7 @@ export const internalGenerateRepeats = internalMutation({
         createdAt: now,
         updatedAt: now,
       });
+      await follow(ctx, "todos", id);
       await logEvent(ctx, "created", id, {
         source: "repeating",
         repeatId: rule._id,

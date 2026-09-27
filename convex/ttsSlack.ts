@@ -26,6 +26,7 @@ import {
 } from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 import { needsYouNumber, openNeedsYou } from "./jarvis/outbox";
+import { follow } from "./jarvis/tables";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -89,6 +90,7 @@ export async function recordSlackSent(
         slackRepliedAt: Date.now(),
         slackReplyTs: ts,
       });
+      await follow(ctx, "todos", todoId);
     }
   }
 }

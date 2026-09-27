@@ -203,6 +203,50 @@ describe("the dual write: each writer of the old core tables writes the plain ro
     await followed(t);
   });
 
+  it("recordRuling (insertRuling's Tom touch and revise)", async () => {
+    const { t, tom, id } = await setup();
+    await tom.mutation(api.ttsRulings.recordRuling, { todoId: id, verdict: "approve" });
+    expect(await plainOf(t, "todos", id)).toMatchObject({ tomTouchedAt: expect.any(Number) });
+    await followed(t);
+    await tom.mutation(api.ttsRulings.recordRuling, { todoId: id, verdict: "revise", sentence: "shorter" });
+    expect(await plainOf(t, "todos", id)).toMatchObject({ readiness: "unprepared" });
+    await followed(t);
+  });
+
+  it("internalRecordSlackSent (recordSlackSent)", async () => {
+    const { t, id } = await setup();
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
+      channel: "C-dump",
+      ts: "9000.1",
+      subject: { kind: "todo", id },
+      text: "captured",
+    });
+    expect(await plainOf(t, "todos", id)).toMatchObject({ slackReplyTs: "9000.1", slackRepliedAt: expect.any(Number) });
+    await followed(t);
+  });
+
+  it("internalSyncCanvasTodos (its insert and its moved due date)", async () => {
+    const t = convexTest({ schema, modules });
+    const dueAt = Date.now() + 4 * DAY_MS;
+    const assignment = { externalId: "77", courseCode: "CS 101", name: "Lab 3", htmlUrl: "https://canvas.example/77", dueAt, submitted: false };
+    await t.mutation(internal.ttsCanvas.internalSyncCanvasTodos, { assignments: [assignment] });
+    const [row] = await t.run((ctx) => ctx.db.query("dtsTodos").collect());
+    expect(await plainOf(t, "todos", row._id)).toMatchObject({ statement: "CS 101: Lab 3", dueAt });
+    await t.mutation(internal.ttsCanvas.internalSyncCanvasTodos, { assignments: [{ ...assignment, dueAt: dueAt + DAY_MS }] });
+    expect(await plainOf(t, "todos", row._id)).toMatchObject({ dueAt: dueAt + DAY_MS });
+    await followed(t);
+  });
+
+  it("internalGenerateRepeats", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await tom.mutation(api.ttsRepeats.createRepeat, { statement: "stretch", daysOfWeek: ["monday"], timeOfDay: "18:30" });
+    expect(await t.mutation(internal.ttsRepeats.internalGenerateRepeats, { day: "2026-09-07" })).toEqual({ day: "2026-09-07", created: 1 });
+    const [row] = await t.run((ctx) => ctx.db.query("dtsTodos").collect());
+    expect(await plainOf(t, "todos", row._id)).toMatchObject({ statement: "stretch", source: "repeating" });
+    await followed(t);
+  });
+
   it("keeps leftToRemap at zero across a run of writes through several doors", async () => {
     const { t, tom, id } = await setup();
     const other = await tom.mutation(api.tts.createTodo, { statement: "sign it", dueAt: Date.now() + 2 * DAY_MS });
@@ -211,6 +255,7 @@ describe("the dual write: each writer of the old core tables writes the plain ro
     await tom.mutation(api.tts.updateBlock, { id: blockId, end: 30 });
     const noteId = await tom.mutation(api.tts.createTimeNote, { text: "later", todoId: other });
     await t.mutation(internal.tts.internalApplyTimeNote, { id: noteId, status: "needs-session", result: "ambiguous" });
+    await tom.mutation(api.ttsRulings.recordRuling, { todoId: other, verdict: "archive" });
     await tom.mutation(api.tts.setStatus, { id, status: "done" });
     await tom.mutation(api.tts.deleteBlock, { id: blockId });
     await followed(t);
