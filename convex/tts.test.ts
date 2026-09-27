@@ -14,7 +14,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { follow, resolveId } from "./jarvis/tables";
+import { resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -522,7 +522,7 @@ describe("TTS blocks and category", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "gone" });
-    await t.run(async (ctx) => ctx.db.delete(todoId));
+    await t.run(async (ctx) => ctx.db.delete((await resolveId(ctx, "todos", todoId))!));
     const start = Date.now();
     await expect(
       tom.mutation(api.tts.createBlock, { start, end: start + HOUR, todoId }),
@@ -548,11 +548,11 @@ describe("TTS blocks and category", () => {
     const blocks = await tom.query(api.tts.listBlocks, {});
     expect(blocks).toHaveLength(2);
     const plainTodo = await plainId(t, "todos", todoId);
-    const perTodo = blocks.find((b) => b.legacyId === todoBlock);
+    const perTodo = blocks.find((b) => b._id === todoBlock);
     expect(perTodo?.todoId).toBe(plainTodo);
     expect(perTodo?.category).toBeUndefined();
     expect(perTodo?.note).toBe("Tue 9-11");
-    const perCategory = blocks.find((b) => b.legacyId === categoryBlock);
+    const perCategory = blocks.find((b) => b._id === categoryBlock);
     expect(perCategory?.category).toBe("chores");
     expect(perCategory?.todoId).toBeUndefined();
     const events = await tom.query(api.tts.listRecentEvents, {});
@@ -929,7 +929,7 @@ describe("TTS time notes", () => {
       todoId,
     });
     const [note] = await tom.query(api.tts.listTimeNotes, {});
-    expect(note.legacyId).toBe(id);
+    expect(note._id).toBe(id);
     expect(note.text).toBe("next wednesday");
     expect(note.status).toBe("pending");
   });
@@ -961,18 +961,16 @@ describe("TTS time notes", () => {
     // Age the stale one past the window by hand (nothing deletes it — an
     // applied note is kept forever as instrumentation).
     await t.run(async (ctx) => {
-      const id = ctx.db.normalizeId("dtsTimeNotes", stale)!;
-      await ctx.db.patch(id, {
+      await ctx.db.patch(stale, {
         status: "applied",
         result: "long ago",
         resolvedAt: Date.now() - 2 * DAY,
       });
-      await follow(ctx, "timeNotes", id);
     });
     const listed = await tom.query(api.tts.listTimeNotes, {});
     expect(listed.map((n) => n.text).sort()).toEqual(["fresh", "sometime-ish"]);
     expect(
-      await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect()),
+      await t.run(async (ctx) => ctx.db.query("timeNotes").collect()),
     ).toHaveLength(3);
   });
 
@@ -1028,7 +1026,7 @@ describe("TTS time notes", () => {
     [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.dueAt).toBe(due);
     const notes = await tom.query(api.tts.listTimeNotes, {});
-    expect(notes.find((n) => n.legacyId === second)?.status).toBe("pending");
+    expect(notes.find((n) => n._id === second)?.status).toBe("pending");
   });
 
   // witness: drop the now < dueAt check from applyDateOutcome (or stop routing

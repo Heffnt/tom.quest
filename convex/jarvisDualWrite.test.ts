@@ -6,11 +6,12 @@ import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-// The dual write (convex/jarvis/tables.ts, `follow`): every writer of
-// dtsTodos, dtsBlocks and dtsTimeNotes writes the plain row in the same
-// mutation. Each test drives one writer through its own door and reads the
-// plain row back; `followed` is leftToRemap reading zero, which holds only when
-// every plain row matches its old row, stamp included.
+// The dual write (convex/jarvis/tables.ts): a writer of an old core table
+// writes the plain row in the same mutation (`follow`), and a writer moved to
+// the plain tables writes the old row back (`back`, step C). Each test drives
+// one writer through its own door and reads the plain row back; `followed` is
+// leftToRemap reading zero, which holds only when every plain row matches its
+// old row, stamp included.
 
 type T = ReturnType<typeof convexTest>;
 type Core = "todos" | "blocks" | "timeNotes";
@@ -20,10 +21,12 @@ async function withTom(t: T) {
   return t.withIdentity({ subject: tomId });
 }
 
-const plainOf = (t: T, table: Core, legacyId: string) =>
+/** The plain row a door's id names: the door answers the old id until its
+ *  writer moves to the plain table (step C), the plain id after. */
+const plainOf = (t: T, table: Core, id: string) =>
   t.run(async (ctx) => {
     const rows = (await ctx.db.query(table).collect()) as Array<Record<string, unknown> & { _id: string }>;
-    return rows.find((row) => row.legacyId === legacyId) ?? null;
+    return rows.find((row) => row._id === id || row.legacyId === id) ?? null;
   });
 
 async function followed(t: T) {
@@ -111,6 +114,24 @@ describe("the dual write: each writer of the old core tables writes the plain ro
     await tom.mutation(api.tts.deleteBlock, { id: blockId });
     expect(await plainOf(t, "blocks", blockId)).toBeNull();
     expect(await plainOf(t, "timeNotes", noteId)).not.toHaveProperty("blockId");
+    await followed(t);
+  });
+
+  it("a block and a time note are written plain first: the door answers the plain id, and the old row is written back", async () => {
+    const { t, tom, id } = await setup();
+    const plainTodo = (await plainOf(t, "todos", id))!;
+    const blockId = await tom.mutation(api.tts.createBlock, { start: 1_000, end: 2_000, todoId: id });
+    const noteId = await tom.mutation(api.tts.createTimeNote, { text: "longer", blockId });
+    await t.run(async (ctx) => {
+      const block = (await ctx.db.get(blockId))!;
+      const note = (await ctx.db.get(noteId))!;
+      expect(block).toMatchObject({ todoId: plainTodo._id, legacyId: expect.any(String) });
+      expect(note).toMatchObject({ blockId, legacyId: expect.any(String) });
+      expect(await ctx.db.get(ctx.db.normalizeId("dtsBlocks", block.legacyId!)!)).toMatchObject({ start: 1_000, todoId: plainTodo.legacyId });
+      expect(await ctx.db.get(ctx.db.normalizeId("dtsTimeNotes", note.legacyId!)!)).toMatchObject({ blockId: block.legacyId });
+    });
+    await tom.mutation(api.tts.deleteTimeNote, { id: noteId });
+    expect(await t.run(async (ctx) => (await ctx.db.query("dtsTimeNotes").collect()).length)).toBe(0);
     await followed(t);
   });
 
