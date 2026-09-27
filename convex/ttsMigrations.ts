@@ -37,6 +37,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
+import { follow } from "./jarvis/tables";
 
 /** The unarchiveCondition the retired v1 → graph migration
  * (tts.internalMigrateToGraph, deleted with batches on 2026-09-24 after it had
@@ -162,7 +163,10 @@ export const internalMigrateReadiness = internalMutation({
           return;
         }
         page[`${stored}-to-${target}`]++;
-        if (!dryRun) await ctx.db.patch(row._id, { readiness: target });
+        if (!dryRun) {
+          await ctx.db.patch(row._id, { readiness: target });
+          await follow(ctx, "todos", row._id);
+        }
       },
     );
   },
@@ -284,6 +288,7 @@ export const internalMigrateTiming = internalMutation({
         if (statement !== row.statement) patch.statement = statement;
         if (!dryRun && Object.keys(patch).length > 0) {
           await ctx.db.patch(row._id, patch);
+          await follow(ctx, "todos", row._id);
           if (row.status === "waiting") {
             await logEvent(ctx, "status-changed", row._id, {
               from: "waiting",
@@ -531,6 +536,7 @@ export const internalClearRetiredFields = internalMutation({
           }
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(row._id, patch as Partial<Doc<"dtsTodos">>);
+            await follow(ctx, "todos", row._id);
           }
         }
         ({ isDone, continueCursor } = result);
@@ -915,6 +921,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
       changes.push({ todoId: row._id, entry, oldStatement: row.statement, action: "archived", reason });
       if (!dryRun) {
         await ctx.db.patch(row._id, { status: "archived", archivedAt: Date.now() });
+        await follow(ctx, "todos", row._id);
       }
     };
 
@@ -962,6 +969,7 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
           readiness: "unprepared",
           status,
         });
+        await follow(ctx, "todos", kept._id);
       }
       for (const row of copies) {
         await archive(row, entry, duplicateArchiveReason(entry, kept._id), "duplicate-archived");
