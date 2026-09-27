@@ -132,9 +132,13 @@ export const counts = internalAction({
 // stamps as it copies. Readers still read the old tables.
 //
 // THE WAY BACK before the switch: nothing reads the plain tables, so it is the
-// previous head, once refsPage {direction: "back"} has pointed every blocks
-// and timeNotes todoId back at its dtsTodos id (that head's schema takes no
-// other, and a deploy checks every stored row).
+// previous head, whose schema has no legacyVersion and whose todoIds name
+// dtsTodos only (a deploy checks every stored row). Stop nothing; run, in
+// order: `unstamp` (legacyVersion off dtsTodos, dtsBlocks, dtsTimeNotes,
+// todos, blocks, timeNotes); refsPage {direction: "back"} over blocks, then
+// timeNotes, each page's continueCursor until isDone; then deploy the
+// previous head. A write in between stamps again and the deploy says so:
+// run the two again right before it.
 
 type Direction = "forward" | "back";
 
@@ -277,14 +281,24 @@ export async function follow(ctx: MutationCtx, table: Core, id: string): Promise
   }
   const copy = await copyOf(ctx, table, id);
   if (copy === null) return;
-  if (table === "blocks") {
-    const blockId = copy._id as Id<"blocks">;
-    for (const note of await ctx.db.query("timeNotes").withIndex("by_block", (q) => q.eq("blockId", blockId)).collect()) {
-      await ctx.db.patch(note._id, { blockId: undefined });
-    }
-  }
+  if (table === "blocks") await clearBlock(ctx, copy._id as Id<"blocks">);
   await ctx.db.delete(copy._id as Id<Core>);
 }
+
+/** One page of the plain time notes naming a deleted block's copy, taken off
+ *  it; the rest go to clearBlockPage, which runs until none is left. Each
+ *  patched note leaves the by_block range, so every page reads from its
+ *  start. Until then leftToRemap counts each note still naming it as stale. */
+async function clearBlock(ctx: MutationCtx, blockId: Id<"blocks">) {
+  const notes = await ctx.db.query("timeNotes").withIndex("by_block", (q) => q.eq("blockId", blockId)).take(PAGE + 1);
+  for (const note of notes.slice(0, PAGE)) await ctx.db.patch(note._id, { blockId: undefined });
+  if (notes.length > PAGE) await ctx.scheduler.runAfter(0, internal.jarvis.tables.clearBlockPage, { blockId });
+}
+
+export const clearBlockPage = internalMutation({
+  args: { blockId: v.id("blocks") },
+  handler: async (ctx, { blockId }) => await clearBlock(ctx, blockId),
+});
 
 /** One page of the old table, copied into the plain one. */
 async function syncOnePage(ctx: MutationCtx, table: Core, cursor: string | null) {
@@ -327,6 +341,24 @@ export const prunePage = internalMutation({
       deleted += 1;
     }
     return { deleted, isDone: page.isDone, continueCursor: page.continueCursor };
+  },
+});
+
+const STAMPED = ["dtsTodos", "dtsBlocks", "dtsTimeNotes", "todos", "blocks", "timeNotes"] as const;
+
+/** One page of a table with legacyVersion taken off each row: the way back
+ *  before the switch, whose schema has no such field. */
+export const unstampPage = internalMutation({
+  args: { table: v.union(...STAMPED.map((table) => v.literal(table))), cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { table, cursor }) => {
+    const page = await ctx.db.query(table).paginate({ cursor, numItems: PAGE });
+    let unstamped = 0;
+    for (const row of page.page) {
+      if (row.legacyVersion === undefined) continue;
+      await ctx.db.patch(row._id, { legacyVersion: undefined });
+      unstamped += 1;
+    }
+    return { unstamped, isDone: page.isDone, continueCursor: page.continueCursor };
   },
 });
 
@@ -402,6 +434,21 @@ export const remapTodoRefs = internalAction({
         (cursor): Promise<Paged> =>
           ctx.runMutation(internal.jarvis.tables.refsPage, { table, direction: "forward", cursor }),
       );
+    }
+    return out;
+  },
+});
+
+/** unstampPage over all six tables, every page. */
+export const unstamp = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const out: Record<string, number> = {};
+    for (const table of STAMPED) {
+      const sums = await drain(
+        (cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.unstampPage, { table, cursor }),
+      );
+      out[table] = sums.unstamped ?? 0;
     }
     return out;
   },

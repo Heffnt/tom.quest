@@ -78,6 +78,7 @@ describe("rulings under their plain name", () => {
 
   it("exports exactly the rulings count and the core tables' copy; no retired copy or remap returns", () => {
     expect(Object.keys(tablesModule).sort()).toEqual([
+      "clearBlockPage",
       "countPage",
       "counts",
       "follow",
@@ -89,6 +90,8 @@ describe("rulings under their plain name", () => {
       "resolveId",
       "sync",
       "syncPage",
+      "unstamp",
+      "unstampPage",
     ]);
   });
 });
@@ -256,6 +259,28 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
         expect(row.todoId).toBe(a);
       }
     });
+  });
+
+  it("unstamp takes legacyVersion off every row of the six tables", async () => {
+    const t = convexTest({ schema, modules });
+    await seed(t);
+    await syncAll(t);
+    const stamped = (ctx: Parameters<Parameters<T["run"]>[0]>[0]) =>
+      Promise.all(
+        (["dtsTodos", "dtsBlocks", "dtsTimeNotes", "todos", "blocks", "timeNotes"] as const).map(async (table) =>
+          (await ctx.db.query(table).collect()).filter((row) => row.legacyVersion !== undefined).length,
+        ),
+      );
+    expect(await t.run(stamped)).toEqual([2, 1, 1, 2, 1, 1]);
+    expect(await t.action(internal.jarvis.tables.unstamp, {})).toEqual({
+      dtsTodos: 2,
+      dtsBlocks: 1,
+      dtsTimeNotes: 1,
+      todos: 2,
+      blocks: 1,
+      timeNotes: 1,
+    });
+    expect(await t.run(stamped)).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
   it("takes a todos id in a plain todoId (the widening, until the switch narrows it)", async () => {

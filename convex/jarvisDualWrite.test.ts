@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -111,6 +111,28 @@ describe("the dual write: each writer of the old core tables writes the plain ro
     await tom.mutation(api.tts.deleteBlock, { id: blockId });
     expect(await plainOf(t, "blocks", blockId)).toBeNull();
     expect(await plainOf(t, "timeNotes", noteId)).not.toHaveProperty("blockId");
+    await followed(t);
+  });
+
+  it("deleteBlock with more than a page of notes: the rest are cleared by scheduled pages", async () => {
+    const { t, tom, id } = await setup();
+    const blockId = await tom.mutation(api.tts.createBlock, { start: 1_000, end: 2_000, todoId: id });
+    for (let i = 0; i < 230; i++) await tom.mutation(api.tts.createTimeNote, { text: `note ${i}`, blockId });
+    const named = () =>
+      t.run(async (ctx) => (await ctx.db.query("timeNotes").collect()).filter((note) => note.blockId !== undefined).length);
+    expect(await named()).toBe(230);
+    vi.useFakeTimers();
+    try {
+      await tom.mutation(api.tts.deleteBlock, { id: blockId });
+      // One page in the deletion itself; the check counts the rest until the
+      // scheduled pages have run.
+      expect(await named()).toBe(130);
+      expect((await t.action(internal.jarvis.tables.leftToRemap, {})).left.timeNotes.stale).toBe(130);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await named()).toBe(0);
     await followed(t);
   });
 
