@@ -476,11 +476,13 @@ export type ThreadReplyOutcome =
  *              note); a bare date is a time note on the todo; anything else
  *              is a "tom-note" event on the todo.
  *   digest   → a "tom-note" event with the day — a fact, per the brief;
- *   hourly   → a "tom-note" event with the hour and day — a fact. For both,
  *              a reply that names a todo (link or id) and otherwise says only
- *              "done" or a date is that todo's reply, as above; and a reply
- *              that names a model-of-Tom line by the id the digest printed
- *              is a "learning-objection" to that line.
+ *              "done" or a date is that todo's reply, as above; a reply that
+ *              names a model-of-Tom line by the id the digest printed is a
+ *              "learning-objection" to that line; "revert <n>" is an
+ *              objection to the digest's line n; and a reply to a needs-you
+ *              under the digest is that needs-you's answer.
+ *   job      → a "tom-note" event with the job — a fact (the silence alarm).
  *   learning → a "learning-objection" event with the learning change's id
  *              (the nightly job applies the inverse the next night).
  *   unknown  → a new todo whose provenance names the thread.
@@ -587,9 +589,8 @@ async function routeReply(
     case "todo":
       return await todoReply(ctx, subject.id, text, at);
     case "today":
-    case "digest":
-    case "hourly": {
-      // A reply to the morning message or an hourly line is a fact (the brief's
+    case "digest": {
+      // A reply to the morning message is a fact (the brief's
       // "captured as a fact") — the thread has no one todo for a date or a
       // "done" to land on. The one exception: a reply that NAMES a todo (its
       // link or id) and otherwise says only "done" or a date is that todo's
@@ -605,19 +606,16 @@ async function routeReply(
       // obvious. Both can be true of one reply, and both then happen.
       // THE WEEKLY EVALS THREAD HAS NO SUBJECT KIND of its own yet
       // (convex/ttsShared.ts SLACK_SUBJECT), so the confirmation grammar is
-      // read here, beside the objection grammar and under the same gate: the
-      // weekly gather posts into the morning's channel, and a reply to it
-      // resolves as a `today`/`digest` thread. When the evals thread gets its
-      // own subject, this branch moves there unchanged.
+      // read here, beside the objection grammar: the weekly gather posts into
+      // the morning's channel, and a reply to it resolves as a
+      // `today`/`digest` thread. When the evals thread gets its own subject,
+      // this branch moves there unchanged.
       //
       // FIRST, and it ends the reply: "confirm <id> <id>" says one thing and
       // says it anchored. The grammars cannot collide — an objection is a
       // leading number, a golden id is a word — and nothing else in this
       // branch would read a confirmation as anything but a fact.
-      const confirmed =
-        subject.kind === "today" || subject.kind === "digest"
-          ? parseConfirmReply(text)
-          : [];
+      const confirmed = parseConfirmReply(text);
       if (confirmed.length > 0) {
         // ONE ROW PER ID, because the mined items are confirmed one at a time
         // and a row carrying a list would make "which ones did he confirm" a
@@ -627,10 +625,7 @@ async function routeReply(
         }
         return { outcome: "golden-confirmed", ids: confirmed };
       }
-      const objectedDecision =
-        subject.kind === "today" || subject.kind === "digest"
-          ? await namedObjection(ctx, text, subject.day, at)
-          : undefined;
+      const objectedDecision = await namedObjection(ctx, text, subject.day, at);
       const objected = await namedLearningChange(ctx, text);
       if (objected !== undefined) {
         await logEvent(ctx, "learning-objection", undefined, {
@@ -657,18 +652,11 @@ async function routeReply(
       // is the next turn of the needs-you it names by number; unnumbered, of
       // the one needs-you still open; with several open, the thread is asked
       // which (needsYouReply).
-      if (named === undefined && (subject.kind === "today" || subject.kind === "digest")) {
+      if (named === undefined) {
         const answered = await needsYouReply(ctx, text, subject.day, at);
         if (answered !== null) return answered;
       }
-      await logEvent(ctx, "tom-note", named?.todoId, {
-        text,
-        ...at,
-        subject,
-        ...(subject.kind === "hourly"
-          ? { hour: subject.hour, day: subject.hour.slice(0, 10) }
-          : { day: subject.day }),
-      });
+      await logEvent(ctx, "tom-note", named?.todoId, { text, ...at, subject, day: subject.day });
       return { outcome: "tom-note", subject };
     }
     case "learning":
@@ -678,27 +666,6 @@ async function routeReply(
         ...at,
       });
       return { outcome: "learning-objection", id: subject.id };
-    case "ask": {
-      // THE THREAD IS THE DECISION, so no number is parsed: a reply in a
-      // decisions-channel thread is an objection to that ONE decision. A reply
-      // that opens with "revert" says "not that"; anything else says what
-      // instead. Silence, here as in the morning message, means it stands.
-      //
-      // Same row, same askId key as the morning message's numbered branch
-      // (namedObjection below) — two doors, ONE implementation: ttsAsk's
-      // mutation is the only writer, so an objection always lands on the
-      // decision's own todo timeline, where internalAskContext reads it back.
-      const revert = /^revert\b[.!]?/i.test(text.trim());
-      const sentence = revert ? null : text.trim() === "" ? null : text.trim();
-      await ctx.runMutation(internal.ttsAsk.internalRecordDelegateObjection, {
-        askId: subject.id,
-        text,
-        revert,
-        sentence,
-        ...at,
-      });
-      return { outcome: "delegate-objection", id: subject.id };
-    }
     case "job":
       // A reply about a failure is a fact, and nothing else: the failure is
       // the box's to fix, not a row with a status Tom can set.

@@ -12,7 +12,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 /** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
 const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
 
-const NEEDS_YOU = "C0NEEDSYOU";
+const ELSEWHERE = "C0ELSEWHERE";
 const TTS_TODAY = "C0TTS";
 
 async function events(t: ReturnType<typeof convexTest>, kind: string) {
@@ -55,7 +55,6 @@ describe("POST /tts/capture: needing Tom today", () => {
 
   it("stores the judgement and its reason on the todo, and opens no thread", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
     const t = convexTest(schema, modules);
     const urgent = await capture(t, { statement: "Pay the invoice", needsTomToday: true, why: " it is due tomorrow " });
     const plain = await capture(t, { statement: "Read the newsletter" });
@@ -924,7 +923,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
     const t = convexTest(schema, modules);
     await aMorning(t);
     expect(await react(t, { user: OTHER })).toMatchObject({ ignored: true });
-    expect(await react(t, { channel: NEEDS_YOU })).toMatchObject({ ignored: true });
+    expect(await react(t, { channel: ELSEWHERE })).toMatchObject({ ignored: true });
     expect(await labels(t)).toEqual([]);
   });
 
