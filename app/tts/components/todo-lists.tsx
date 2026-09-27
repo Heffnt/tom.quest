@@ -4,7 +4,7 @@
 // each a row naming its statement; pressing a todo's row selects it, and the
 // right drawer shows it whole. A code todo awaiting him is listed by its
 // statement and is not a dtsTodos row, so it has no detail yet. The rows come
-// from the same selectors as the left rail's counts (tts-client.tsx), so a
+// from the same selectors as the left handle's counts (tts-client.tsx), so a
 // count and its list cannot drift.
 
 import type { Id } from "@/convex/_generated/dataModel";

@@ -19,7 +19,8 @@ export type Page = {
   agentReadable?: boolean;
   /**
    * The page renders inside the frame (app/components/frame): a centre and
-   * four drawers inside a ring of rails, with the site bar in the top rail.
+   * four drawers, each pulled out by its handle, with the site's controls on
+   * the top handle.
    * AppShell then renders no NavTerm, no top padding and no pushing debug
    * panel for it. Absent means the page keeps NavTerm and its own layout.
    */

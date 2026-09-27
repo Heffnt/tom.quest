@@ -1,10 +1,10 @@
 "use client";
 
-// A rail's live signals. A rail holds only these typed values, never free
-// markup, so every rail reads the same way: a count, a status dot, or the age
-// of the newest thing, each coloured by a tone the page chooses. An age turns
-// to the warning tone past the page's stale limit. Each carries its tone as
-// data-tone too, so a rail's own colour can follow its most urgent signal.
+// A drawer handle's live signals. A handle holds only these typed values
+// beside its label, never free markup, so every handle reads the same way: a
+// count, a status dot, or the age of the newest thing, each coloured by a tone
+// the page chooses. An age turns to the warning tone past the page's stale
+// limit. Each carries its tone as data-tone too.
 
 import { useEffect, useState } from "react";
 
@@ -48,7 +48,7 @@ function formatAge(ms: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-/** The signature a rail compares against the one stored when its drawer closed. */
+/** The signature a handle compares against the one stored when its drawer closed. */
 export function signalSignature(signals: readonly RailSignal[]): string {
   return signals.map((s) => `${s.kind}:${s.value}`).join("|");
 }

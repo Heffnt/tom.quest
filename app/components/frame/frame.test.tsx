@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EDGES_TOPMOST_FIRST, nextOpenState, topmostOpen } from "./rules";
+import { dragSize, layerOrder, pullDistance, releaseDrag, resolveBounds, topmostOpen } from "./rules";
 import { useFrameStore } from "./frame-store";
 import { prepareExplainer } from "./info";
 import Frame from "./frame";
@@ -14,40 +14,48 @@ vi.mock("@/app/lib/auth", () => ({
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }), usePathname: () => "/tts" }));
 vi.mock("../debug-panel", () => ({ Diagnostics: () => null, useDiagnosticsStatus: () => ({ convex: "connected", events: [] }) }));
 
-const desktop = { width: 1440, railSide: 28, leftWidth: 360, rightWidth: 440 };
-
 describe("frame layout rules", () => {
-  it("stacks drawers in the order globals.css gives their z layers", () => {
+  it("stacks drawers in the order globals.css gives their z layers: top, sides, bottom", () => {
     const css = fs.readFileSync(path.resolve(__dirname, "../../globals.css"), "utf8");
-    const z = (edge: string) => Number(new RegExp(`--z-drawer-${edge}:\\s*(\\d+)`).exec(css)?.[1]);
-    const byLayer = [...EDGES_TOPMOST_FIRST].sort((a, b) => z(b) - z(a));
-    expect(byLayer).toEqual(["right", "left", "bottom", "top"]);
-    expect(EDGES_TOPMOST_FIRST).toEqual(byLayer);
-    const rail = Number(/--z-rail:\s*(\d+)/.exec(css)?.[1]);
-    expect(EDGES_TOPMOST_FIRST.every((edge) => z(edge) < rail)).toBe(true);
+    const z = (name: string) => Number(new RegExp(`--z-drawer-${name}:\\s*(\\d+)`).exec(css)?.[1]);
+    expect(z("top")).toBeGreaterThan(z("side-raised"));
+    expect(z("side-raised")).toBeGreaterThan(z("side"));
+    expect(z("side")).toBeGreaterThan(z("bottom"));
+    expect(layerOrder("left")).toEqual(["top", "left", "right", "bottom"]);
+    expect(layerOrder("right")).toEqual(["top", "right", "left", "bottom"]);
   });
 
-  it("closes the topmost open drawer first, by edge and not by opening order", () => {
-    expect(topmostOpen({ top: true, right: true, bottom: true })).toBe("right");
-    expect(topmostOpen({ top: true, bottom: true })).toBe("bottom");
+  it("closes the topmost open drawer first: top, the side opened last, the other side, bottom", () => {
+    expect(topmostOpen({ top: true, right: true, bottom: true }, "right")).toBe("top");
+    expect(topmostOpen({ left: true, right: true, bottom: true }, "left")).toBe("left");
+    expect(topmostOpen({ left: true, right: true, bottom: true }, "right")).toBe("right");
+    expect(topmostOpen({ bottom: true })).toBe("bottom");
     expect(topmostOpen({})).toBeNull();
   });
 
-  it("keeps both sides open on a wide screen and one side under 1024px", () => {
-    expect(nextOpenState({ left: true }, "right", true, desktop)).toEqual({ left: true, right: true });
-    expect(nextOpenState({ left: true }, "right", true, { ...desktop, width: 1000 })).toEqual({ left: false, right: true });
+  it("resolves bounds in pixels and never lets a drawer reach the opposite handle", () => {
+    expect(resolveBounds({ min: 160, max: "50%" }, 1440, 28)).toEqual({ min: 160, max: 720 });
+    // 390 - 3 * 44 = 258: the page's 85% gives way to the room there is.
+    expect(resolveBounds({ min: 160, max: "85%" }, 390, 44)).toEqual({ min: 160, max: 258 });
+    expect(resolveBounds({ min: 300, max: 200 }, 1440, 28)).toEqual({ min: 300, max: 300 });
   });
 
-  it("closes the other side when both would leave the center under 160px", () => {
-    // 1100 - 56 = 1044 inner; 400 + 500 = 900 > 1044 - 160 = 884.
-    expect(nextOpenState({ left: true }, "right", true, { ...desktop, width: 1100, leftWidth: 400, rightWidth: 500 })).toEqual({
-      left: false,
-      right: true,
-    });
+  it("pulls toward the center as positive on every edge", () => {
+    expect(pullDistance("left", 30, 5)).toBe(30);
+    expect(pullDistance("right", -30, 5)).toBe(30);
+    expect(pullDistance("top", 5, 30)).toBe(30);
+    expect(pullDistance("bottom", 5, -30)).toBe(30);
   });
 
-  it("opens one sheet at a time on a phone", () => {
-    expect(nextOpenState({ left: true, top: true }, "bottom", true, { ...desktop, width: 390 })).toEqual({ bottom: true });
+  it("follows the pointer from shut to the maximum, and on release shuts under half the minimum", () => {
+    const b = { min: 160, max: 600 };
+    expect(dragSize(-40, b)).toBe(0);
+    expect(dragSize(250, b)).toBe(250);
+    expect(dragSize(900, b)).toBe(600);
+    expect(releaseDrag(79, b)).toEqual({ open: false, size: 79 });
+    expect(releaseDrag(100, b)).toEqual({ open: true, size: 160 });
+    expect(releaseDrag(300, b)).toEqual({ open: true, size: 300 });
+    expect(releaseDrag(900, b)).toEqual({ open: true, size: 600 });
   });
 });
 
@@ -69,7 +77,7 @@ describe("explainer viewer head", () => {
 });
 
 function renderFrame() {
-  const spec = (title: string) => ({ title, body: <p>{title} body</p> });
+  const spec = (label: string) => ({ handle: { label }, body: <p>{label} body</p> });
   return render(
     <Frame
       page="test"
@@ -85,11 +93,33 @@ function renderFrame() {
 }
 
 const drawer = (edge: string) => document.querySelector(`[data-frame-drawer="${edge}"]`)!;
+const handle = (edge: string) => document.querySelector<HTMLElement>(`[data-frame-handle="${edge}"]`)!;
+
+/** A press on a handle: down and up at one point, as a pointer gives it. */
+function press(el: HTMLElement, at = { clientX: 10, clientY: 10 }) {
+  fireEvent.pointerDown(el, { pointerId: 1, button: 0, ...at });
+  fireEvent.pointerUp(el, { pointerId: 1, button: 0, ...at });
+}
+
+// jsdom has no PointerEvent, so a fired pointer event would carry no
+// position, button or pointer id.
+if (typeof window !== "undefined" && !("PointerEvent" in window)) {
+  class PointerEventShim extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  (window as unknown as { PointerEvent: unknown }).PointerEvent = PointerEventShim;
+}
 
 describe("<Frame>", () => {
   beforeEach(() => {
     localStorage.clear();
-    useFrameStore.setState({ open: {}, seen: {} });
+    useFrameStore.setState({ open: {}, size: {}, lastSide: {}, seen: {} });
+    // jsdom has no pointer capture.
+    HTMLElement.prototype.setPointerCapture = () => {};
   });
 
   it("toggles drawers with W A S D and closes them with Escape, topmost first", () => {
@@ -97,17 +127,17 @@ describe("<Frame>", () => {
     act(() => {
       fireEvent.keyDown(window, { key: "s" });
       fireEvent.keyDown(window, { key: "d" });
+      fireEvent.keyDown(window, { key: "a" });
       fireEvent.keyDown(window, { key: "w" });
     });
-    expect(drawer("bottom").getAttribute("data-open")).toBe("true");
-    expect(drawer("right").getAttribute("data-open")).toBe("true");
-    expect(drawer("top").getAttribute("data-open")).toBe("true");
-    act(() => fireEvent.keyDown(window, { key: "Escape" }));
-    expect(drawer("right").getAttribute("data-open")).toBe("false");
-    expect(drawer("bottom").getAttribute("data-open")).toBe("true");
-    act(() => fireEvent.keyDown(window, { key: "Escape" }));
-    expect(drawer("bottom").getAttribute("data-open")).toBe("false");
-    expect(drawer("top").getAttribute("data-open")).toBe("true");
+    for (const edge of ["top", "left", "right", "bottom"]) expect(drawer(edge).getAttribute("data-open")).toBe("true");
+    const order: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      act(() => fireEvent.keyDown(window, { key: "Escape" }));
+      order.push(["top", "left", "right", "bottom"].find((e) => drawer(e).getAttribute("data-open") === "false" && !order.includes(e))!);
+    }
+    // The left side opened last, so it lies over the right and closes first.
+    expect(order).toEqual(["top", "left", "right", "bottom"]);
   });
 
   it("ignores the keys while a text field has focus", () => {
@@ -117,28 +147,54 @@ describe("<Frame>", () => {
     expect(drawer("bottom").getAttribute("data-open")).toBe("false");
   });
 
-  it("toggles a drawer from its rail and leaves the center element untouched", () => {
+  it("opens a drawer from a press anywhere on its handle, shuts it from the next, and leaves the center untouched", () => {
     renderFrame();
     const center = document.querySelector("[data-frame-center]")!;
     const before = center.outerHTML;
-    act(() => fireEvent.click(document.querySelector("button[data-frame-rail=\"left\"]")!));
+    act(() => press(handle("left")));
     expect(drawer("left").getAttribute("data-open")).toBe("true");
     expect(document.querySelector("[data-frame-center]")).toBe(center);
     expect(center.outerHTML).toBe(before);
+    act(() => press(handle("left")));
+    expect(drawer("left").getAttribute("data-open")).toBe("false");
   });
 
-  it("switches the closed-drawer variant with keys 1 to 4, not while typing, and stores it", () => {
+  it("keeps a press on a handle's buttons from moving its drawer", () => {
     renderFrame();
-    const root = document.querySelector("[data-frame]")!;
+    act(() => press(screen.getByRole("radio", { name: "A" })));
+    act(() => fireEvent.click(screen.getByRole("radio", { name: "A" })));
+    expect(drawer("top").getAttribute("data-open")).toBe("false");
+  });
+
+  it("opens a drawer to the size it was dragged to and remembers it", () => {
+    renderFrame();
+    const el = handle("right");
+    act(() => {
+      fireEvent.pointerDown(el, { pointerId: 1, button: 0, clientX: 1000, clientY: 300 });
+      fireEvent.pointerMove(el, { pointerId: 1, clientX: 900, clientY: 300 });
+      fireEvent.pointerMove(el, { pointerId: 1, clientX: 700, clientY: 300 });
+    });
+    expect(drawer("right").getAttribute("data-dragging")).toBe("true");
+    expect((drawer("right") as HTMLElement).style.getPropertyValue("--frame-s")).toBe("300px");
+    act(() => fireEvent.pointerUp(el, { pointerId: 1, button: 0, clientX: 700, clientY: 300 }));
+    expect(drawer("right").getAttribute("data-open")).toBe("true");
+    expect(drawer("right").getAttribute("data-dragging")).toBe("false");
+    expect(useFrameStore.getState().size.test?.right).toBe(300);
+  });
+
+  it("switches the handle variant with keys 1 and 2, not while typing, and stores it", () => {
+    renderFrame();
+    const root = document.querySelector<HTMLElement>("[data-frame]")!;
     expect(root.getAttribute("data-frame-variant")).toBe("A");
-    act(() => fireEvent.keyDown(window, { key: "3" }));
-    expect(root.getAttribute("data-frame-variant")).toBe("C");
-    act(() => fireEvent.keyDown(screen.getByLabelText("Navigate to a page"), { key: "2" }));
-    expect(root.getAttribute("data-frame-variant")).toBe("C");
-    act(() => fireEvent.click(screen.getByRole("radio", { name: "D" })));
-    expect(root.getAttribute("data-frame-variant")).toBe("D");
-    expect(JSON.parse(localStorage.getItem("tom-quest-frame-variant") ?? "{}").state.variant).toBe("D");
-    act(() => fireEvent.keyDown(window, { key: "1" }));
+    expect(root.style.getPropertyValue("--frame-handle")).toBe("28px");
+    act(() => fireEvent.keyDown(window, { key: "2" }));
+    expect(root.getAttribute("data-frame-variant")).toBe("B");
+    expect(root.style.getPropertyValue("--frame-handle")).toBe("44px");
+    act(() => fireEvent.keyDown(screen.getByLabelText("Navigate to a page"), { key: "1" }));
+    expect(root.getAttribute("data-frame-variant")).toBe("B");
+    act(() => fireEvent.click(screen.getByRole("radio", { name: "A" })));
+    expect(root.getAttribute("data-frame-variant")).toBe("A");
+    expect(JSON.parse(localStorage.getItem("tom-quest-frame-variant") ?? "{}").state.variant).toBe("A");
   });
 
   it("persists the open drawers per page", () => {

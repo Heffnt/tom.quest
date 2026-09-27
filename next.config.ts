@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
   // cannot bundle into server chunks; load it at runtime instead.
   serverExternalPackages: ["@earendil-works/pi-coding-agent"],
   // The dev-tools badge floats in a viewport corner over the page, and every
-  // corner holds a frame control (the drawer handles, the top rail), so under
+  // corner holds a frame control (the drawer handles), so under
   // `next dev` it covered the bottom-left handle and failed the frame e2e,
   // which CI runs against `next dev`. Errors still open the dev overlay.
   devIndicators: false,

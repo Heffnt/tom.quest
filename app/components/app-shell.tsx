@@ -27,8 +27,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
     [debugActive, debugWidth],
   );
 
-  /* A page registered `frame: true` renders its own <Frame>, whose top rail
-     is the site bar, so it gets no NavTerm and no padding. DebugPanel still
+  /* A page registered `frame: true` renders its own <Frame>, whose top handle
+     carries the site's controls, so it gets no NavTerm and no padding. DebugPanel still
      mounts (its effects feed Copy diagnostics) but draws nothing there: the
      frame's bottom drawer holds the diagnostics. */
   if (isFramePath(pathname)) {

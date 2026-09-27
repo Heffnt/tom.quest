@@ -44,17 +44,16 @@
 }
 
 /* The z layers, the one list every fixed or stacked surface takes its layer
-   from. A drawer's layer is fixed by its edge, not by the order it opened:
-   right over left over bottom over top, so the most specific panel is never
-   covered by a more general one. Rails sit above every drawer. */
+   from. Drawers stack as their corners go: the top over the sides, the sides
+   over the bottom; of the two sides the one opened last (data-raised) is on
+   top. A drawer's handle is part of it and shares its layer. */
 :root {
   --z-center: 0;
   --z-menu: 10;
-  --z-drawer-top: 20;
-  --z-drawer-bottom: 21;
-  --z-drawer-left: 22;
-  --z-drawer-right: 23;
-  --z-rail: 30;
+  --z-drawer-bottom: 20;
+  --z-drawer-side: 22;
+  --z-drawer-side-raised: 23;
+  --z-drawer-top: 24;
   --z-nav-menu: 40;
   --z-dialog: 50;
   --z-explainer: 60;
@@ -135,25 +134,25 @@ button, input, select, textarea {
 }
 
 /* ===== The frame (app/components/frame) =====
-   A center and four drawers inside a ring of rails. Everything here is fixed
-   to the viewport, so the center's box never changes when a drawer opens: a
-   drawer overlays, it never pushes. Sizes are the design's defaults clamped to
-   its bounds. Below 640px the side rails go and the top and bottom bars grow
-   to phone sizes; drawers become sheets, one at a time. */
+   A center and up to four drawers, one per edge. A drawer is a body and a
+   handle; shut, only the handle shows, flush with the screen edge; open, the
+   handle rides the body's inner edge. Everything is fixed to the viewport and
+   a drawer only overlays, so the center's box never changes.
+
+   Per drawer, --frame-s is the size it shows (written by frame.tsx, and live
+   during a drag), --frame-min its minimum. Its box is max(s, min) plus the
+   handle: pulled out less than its minimum, it slides rather than squeezes,
+   and past it, it grows. Open and shut move by transform only; a drag moves
+   without transition. --frame-handle and the --frame-inset-* are set on the
+   frame by frame.tsx. */
 [data-frame] {
-  --frame-rail-top: 40px;
-  --frame-rail-bottom: 28px;
-  --frame-rail-side: 28px;
-  /* The corner cells (logo, account, diagnostics) line up with the side rails. */
-  --frame-corner: var(--frame-rail-side);
-  --frame-drawer-top: clamp(160px, 240px, 45vh);
-  --frame-drawer-bottom: clamp(200px, 320px, 60vh);
-  --frame-drawer-left: clamp(280px, 360px, 40vw);
-  --frame-drawer-right: clamp(320px, 440px, 50vw);
   --frame-motion: 150ms;
   position: fixed;
   inset: 0;
-  overflow: hidden;
+  /* clip, not just hidden: the shut drawers lie past the screen's edges, and
+     a hidden overflow is still a scroll container that scrollIntoView or a
+     focus can scroll, which would move the center. A clip cannot scroll. */
+  overflow: clip;
   font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
 }
 /* No Syne inside the frame: headings are Plex Sans, semibold. */
@@ -161,125 +160,128 @@ button, input, select, textarea {
   font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
   letter-spacing: normal;
 }
-@media (max-width: 639.98px) {
-  [data-frame] {
-    --frame-rail-top: 44px;
-    --frame-rail-bottom: calc(48px + env(safe-area-inset-bottom));
-    --frame-rail-side: 0px;
-    --frame-drawer-top: min(240px, 85dvh);
-    --frame-drawer-bottom: min(320px, 85dvh);
-    --frame-drawer-left: 88vw;
-    --frame-drawer-right: 88vw;
-  }
-}
 [data-frame-center] {
   position: absolute;
-  top: var(--frame-rail-top);
-  bottom: var(--frame-rail-bottom);
-  left: var(--frame-rail-side);
-  right: var(--frame-rail-side);
+  top: var(--frame-inset-top);
+  bottom: var(--frame-inset-bottom);
+  left: var(--frame-inset-left);
+  right: var(--frame-inset-right);
   overflow: auto;
   z-index: var(--z-center);
 }
 [data-frame-drawer] {
+  --frame-extent: calc(max(var(--frame-s, 0px), var(--frame-min)) + var(--frame-handle));
   position: absolute;
   display: flex;
-  flex-direction: column;
-  background: var(--color-bg);
-  border-color: var(--color-border);
-  transition: transform var(--frame-motion) ease-out, visibility 0s linear var(--frame-motion);
-  visibility: hidden;
+  transition: transform var(--frame-motion) cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
 }
-[data-frame-drawer][data-open="true"] {
-  transform: none;
-  visibility: visible;
-  transition: transform var(--frame-motion) ease-out, visibility 0s;
-}
+[data-frame-drawer][data-open="true"] { box-shadow: 0 0 24px rgba(0, 0, 0, 0.45); }
+[data-frame-drawer][data-dragging="true"] { transition: none; }
+[data-frame-drawer-body] { background: var(--color-bg); }
+
+/* Corners: top, then sides, then bottom. */
 [data-frame-drawer="top"] {
-  top: var(--frame-rail-top); left: var(--frame-rail-side); right: var(--frame-rail-side);
-  height: var(--frame-drawer-top);
-  border-bottom-width: 1px;
+  top: 0; left: 0; right: 0;
+  height: var(--frame-extent);
+  flex-direction: column;
   z-index: var(--z-drawer-top);
-  transform: translateY(calc(-100% - var(--frame-rail-top)));
+  transform: translateY(calc(var(--frame-handle) - 100%));
 }
-[data-frame-drawer="bottom"] {
-  bottom: var(--frame-rail-bottom); left: var(--frame-rail-side); right: var(--frame-rail-side);
-  height: var(--frame-drawer-bottom);
-  border-top-width: 1px;
-  z-index: var(--z-drawer-bottom);
-  transform: translateY(calc(100% + var(--frame-rail-bottom)));
-}
+[data-frame-drawer="top"][data-open="true"] { transform: translateY(min(0px, calc(var(--frame-s) - var(--frame-min)))); }
 [data-frame-drawer="left"] {
-  top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); left: var(--frame-rail-side);
-  width: var(--frame-drawer-left);
-  border-right-width: 1px;
-  z-index: var(--z-drawer-left);
-  transform: translateX(calc(-100% - var(--frame-rail-side)));
+  top: var(--frame-inset-top); bottom: 0; left: 0;
+  width: var(--frame-extent);
+  flex-direction: row;
+  z-index: var(--z-drawer-side);
+  transform: translateX(calc(var(--frame-handle) - 100%));
 }
+[data-frame-drawer="left"][data-open="true"] { transform: translateX(min(0px, calc(var(--frame-s) - var(--frame-min)))); }
 [data-frame-drawer="right"] {
-  top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); right: var(--frame-rail-side);
-  width: var(--frame-drawer-right);
-  border-left-width: 1px;
-  z-index: var(--z-drawer-right);
-  transform: translateX(calc(100% + var(--frame-rail-side)));
+  top: var(--frame-inset-top); bottom: 0; right: 0;
+  width: var(--frame-extent);
+  flex-direction: row-reverse;
+  z-index: var(--z-drawer-side);
+  transform: translateX(calc(100% - var(--frame-handle)));
 }
-/* The phone scrim sits under the drawers and over the center. */
-[data-frame-scrim] {
-  position: absolute;
-  inset: var(--frame-rail-top) 0 var(--frame-rail-bottom) 0;
-  z-index: calc(var(--z-drawer-top) - 1);
-  background: rgba(10, 14, 23, 0.6);
+[data-frame-drawer="right"][data-open="true"] { transform: translateX(max(0px, calc(var(--frame-min) - var(--frame-s)))); }
+[data-frame-drawer="bottom"] {
+  bottom: 0; left: var(--frame-inset-left); right: var(--frame-inset-right);
+  height: var(--frame-extent);
+  flex-direction: column-reverse;
+  z-index: var(--z-drawer-bottom);
+  transform: translateY(calc(100% - var(--frame-handle)));
 }
-[data-frame-rail] {
-  position: absolute;
-  z-index: var(--z-rail);
+[data-frame-drawer="bottom"][data-open="true"] { transform: translateY(max(0px, calc(var(--frame-min) - var(--frame-s)))); }
+[data-frame-drawer][data-raised="true"]:is([data-frame-drawer="left"], [data-frame-drawer="right"]) { z-index: var(--z-drawer-side-raised); }
+
+/* The handle: the same on every edge but for its orientation. The whole of
+   it is pressable and draggable; its buttons keep their own presses. */
+[data-frame-handle] {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: 8px;
   background: var(--color-surface);
   border-color: var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color 80ms, border-color 80ms;
 }
-[data-frame-rail="top"]    { top: 0; left: 0; right: 0; height: var(--frame-rail-top); border-bottom-width: 1px; }
-[data-frame-rail="bottom"] { bottom: 0; left: 0; right: 0; height: var(--frame-rail-bottom); border-top-width: 1px; padding-bottom: env(safe-area-inset-bottom); }
-[data-frame-rail="left"]   { top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); left: 0; width: var(--frame-rail-side); border-right-width: 1px; }
-[data-frame-rail="right"]  { top: var(--frame-rail-top); bottom: var(--frame-rail-bottom); right: 0; width: var(--frame-rail-side); border-left-width: 1px; }
-@media (max-width: 639.98px) {
-  [data-frame-rail="left"], [data-frame-rail="right"] { display: none; }
-}
-/* An open drawer's rail carries an accent inner edge. */
-[data-frame-rail="bottom"] [data-frame-toggle][aria-expanded="true"] { box-shadow: inset 0 2px 0 var(--color-accent); }
-[data-frame-rail="top"] [data-frame-toggle][aria-expanded="true"]    { box-shadow: inset 0 -2px 0 var(--color-accent); }
-[data-frame-rail="left"][data-open="true"]                       { box-shadow: inset -2px 0 0 var(--color-accent); }
-[data-frame-rail="right"][data-open="true"]                      { box-shadow: inset 2px 0 0 var(--color-accent); }
-/* A side rail's one line (notch, label, signals) runs along the rail: the
-   left reads bottom to top, the right top to bottom. A long label (the
-   selected item's name) ends in an ellipsis where the rail does. */
-[data-frame-rail="left"] [data-frame-rail-tab],
-[data-frame-rail="right"] [data-frame-rail-tab] {
+[data-frame-handle-orient="horizontal"] { height: var(--frame-handle); flex-direction: row; padding-right: 4px; }
+[data-frame-handle-orient="vertical"] { width: var(--frame-handle); flex-direction: column; align-items: center; padding: 8px 0; }
+[data-frame-handle="top"]    { border-bottom-width: 1px; cursor: ns-resize; }
+[data-frame-handle="bottom"] { border-top-width: 1px; cursor: ns-resize; padding-left: 10px; }
+[data-frame-handle="left"]   { border-right-width: 1px; cursor: ew-resize; }
+[data-frame-handle="right"]  { border-left-width: 1px; cursor: ew-resize; }
+[data-frame-handle][data-inert-handle] { cursor: default; }
+[data-frame-handle]:not([data-inert-handle]):hover { background: var(--color-surface-alt); color: var(--color-text); }
+[data-frame-drawer][data-open="true"] > [data-frame-handle] { border-color: var(--color-accent); }
+[data-frame-drawer][data-dragging="true"] > [data-frame-handle] { background: var(--color-surface-alt); color: var(--color-text); }
+[data-frame-handle-control] { cursor: pointer; }
+[data-frame-handle-control] input { cursor: text; }
+/* Between the site's controls and the drawer's own label. */
+[data-frame-handle-sep] { flex: none; align-self: center; width: 1px; height: 14px; background: var(--color-border); }
+/* The empty stretch of a handle takes whatever length is left. */
+[data-frame-handle-fill] { flex: 1 1 0; min-width: 0; min-height: 0; }
+
+/* A handle's line: notch, label, signals and buttons. On a top or bottom
+   handle it reads across; on a side handle it runs along the handle, the
+   left reading bottom to top and the right top to bottom. A long label (the
+   selected item's name) ends in an ellipsis where the handle does. */
+[data-frame-handle-line] {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   min-height: 0;
-  max-height: 100%;
-  writing-mode: vertical-rl;
 }
-[data-frame-rail="left"] [data-frame-rail-tab] { transform: rotate(180deg); }
-[data-frame-rail-tab] [data-frame-rail-label] {
+[data-frame-handle-orient="horizontal"] [data-frame-handle-line] { flex: 0 1 auto; }
+[data-frame-handle-orient="vertical"] [data-frame-handle-line] { max-height: 100%; writing-mode: vertical-rl; }
+[data-frame-handle="left"] [data-frame-handle-line] { transform: rotate(180deg); }
+[data-frame-handle-label] {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: inherit;
+  color: inherit;
 }
-[data-frame-rail-tab] [data-frame-rail-signals] {
+[data-frame-handle-label]:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 2px; }
+[data-frame-handle-signals] {
   display: flex;
   flex-shrink: 0;
   align-items: center;
   gap: 6px;
 }
-/* Before the persisted open state is read, nothing animates, so a drawer
-   restored open does not slide in on load. */
+/* Before the stored state is read, nothing animates, so a drawer restored
+   open does not slide in on load. */
 [data-frame][data-hydrated="false"] [data-frame-drawer] { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  [data-frame-drawer], [data-frame-drawer][data-open="true"] { transition: none; }
-}
-@media (min-width: 640px) {
-  [data-frame-scrim] { display: none; }
+  [data-frame-drawer] { transition: none; }
 }

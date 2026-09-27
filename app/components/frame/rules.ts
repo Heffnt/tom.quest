@@ -1,57 +1,95 @@
 // The frame's rules as pure functions, so the page and its tests read the same
 // ones: which edge a key names, which key is text, which open drawer is on
-// top, and what else closes when a drawer opens.
+// top, how big a drawer may be, and what a drag of its handle does.
 
 export type Edge = "top" | "bottom" | "left" | "right";
 
 export type OpenState = Partial<Record<Edge, boolean>>;
 
-/**
- * The layer order, topmost first: right over left over bottom over top. It is
- * fixed by edge, never by the order drawers opened, so the most specific panel
- * (one item, on the right) is never covered by a more general one. Escape
- * closes open drawers in this order. globals.css holds the same order as the
- * --z-drawer-* tokens; frame.test.tsx holds the two together.
- */
-export const EDGES_TOPMOST_FIRST: readonly Edge[] = ["right", "left", "bottom", "top"];
+export const EDGES: readonly Edge[] = ["top", "left", "right", "bottom"];
 
 /** W, A, S and D toggle the top, left, bottom and right drawers. */
 export const EDGE_FOR_KEY: Readonly<Record<string, Edge>> = { w: "top", a: "left", s: "bottom", d: "right" };
 
-/** Below this width the frame is a phone: no side rails, one sheet at a time. */
-const PHONE_MAX_WIDTH = 640;
-/** Below this width only one side drawer is open at a time. */
-const ONE_SIDE_MAX_WIDTH = 1024;
-/** The narrowest center two open side drawers may leave. */
-const MIN_CENTER_WIDTH = 160;
+/**
+ * The layer order, topmost first. Corners go top, then sides, then bottom
+ * (the way VS Code lays out its title bar, side bars and panel): the top
+ * drawer spans the full width over the sides, the sides run the full height
+ * below it over the bottom's ends, and the bottom sits between them. Between
+ * the two sides, the one opened last lies on top. globals.css holds the same
+ * order as the --z-drawer-* tokens; frame.test.tsx holds the two together.
+ */
+export function layerOrder(lastSide: "left" | "right"): Edge[] {
+  return ["top", lastSide, lastSide === "left" ? "right" : "left", "bottom"];
+}
 
 /** The open drawer an Escape closes, or null when none is open. */
-export function topmostOpen(open: OpenState): Edge | null {
-  return EDGES_TOPMOST_FIRST.find((edge) => open[edge]) ?? null;
+export function topmostOpen(open: OpenState, lastSide: "left" | "right" = "right"): Edge | null {
+  return layerOrder(lastSide).find((edge) => open[edge]) ?? null;
+}
+
+/** A length along a drawer's axis: pixels, or a percentage of the viewport along that axis. */
+export type Length = number | `${number}%`;
+
+export type Bounds = { min: Length; max: Length };
+
+export const DEFAULT_BOUNDS: Bounds = { min: 160, max: "85%" };
+export const DEFAULT_SIZE = 320;
+
+/** Movement under this many pixels is a click on the handle, not a drag. */
+export const CLICK_SLOP = 4;
+
+function px(length: Length, axis: number): number {
+  return typeof length === "number" ? length : (parseFloat(length) / 100) * axis;
 }
 
 /**
- * The open state after one drawer opens or closes. Opening on a phone closes
- * every other drawer (sheets come one at a time). Opening a side drawer closes
- * the other side when the viewport is under 1024px, or when the two together
- * would leave the center narrower than 160px.
+ * A drawer's bounds in pixels for a viewport `axis` pixels long in its
+ * direction, with handles `handle` pixels thick. However the page set them, a
+ * drawer never grows past the point where its own handle and the opposite
+ * one would touch, and its minimum never exceeds its maximum.
  */
-export function nextOpenState(
-  open: OpenState,
-  edge: Edge,
-  want: boolean,
-  viewport: { width: number; railSide: number; leftWidth: number; rightWidth: number },
-): OpenState {
-  if (!want) return { ...open, [edge]: false };
-  if (viewport.width < PHONE_MAX_WIDTH) return { [edge]: true };
-  const next: OpenState = { ...open, [edge]: true };
-  if (edge === "left" || edge === "right") {
-    const other: Edge = edge === "left" ? "right" : "left";
-    const inner = viewport.width - 2 * viewport.railSide;
-    const tooNarrow = viewport.leftWidth + viewport.rightWidth > inner - MIN_CENTER_WIDTH;
-    if (viewport.width < ONE_SIDE_MAX_WIDTH || tooNarrow) next[other] = false;
+export function resolveBounds(bounds: Bounds, axis: number, handle: number): { min: number; max: number } {
+  const hardMax = Math.max(0, axis - 3 * handle);
+  const max = Math.min(Math.max(px(bounds.max, axis), px(bounds.min, axis)), hardMax);
+  const min = Math.min(px(bounds.min, axis), max);
+  return { min: Math.round(min), max: Math.round(max) };
+}
+
+export function clamp(size: number, { min, max }: { min: number; max: number }): number {
+  return Math.round(Math.min(max, Math.max(min, size)));
+}
+
+/**
+ * How far a pointer has pulled a drawer out from its edge, from where the drag
+ * started. Pulling toward the center is positive on every edge.
+ */
+export function pullDistance(edge: Edge, dx: number, dy: number): number {
+  switch (edge) {
+    case "left":
+      return dx;
+    case "right":
+      return -dx;
+    case "top":
+      return dy;
+    case "bottom":
+      return -dy;
   }
-  return next;
+}
+
+/** The size a drawer shows mid-drag: it follows the pointer from fully shut up to its maximum. */
+export function dragSize(raw: number, bounds: { min: number; max: number }): number {
+  return Math.round(Math.min(bounds.max, Math.max(0, raw)));
+}
+
+/**
+ * Where a released drag leaves a drawer. Let go under half its minimum and it
+ * shuts; anywhere else it stays open, at the pointer's size clamped to its
+ * bounds.
+ */
+export function releaseDrag(raw: number, bounds: { min: number; max: number }): { open: boolean; size: number } {
+  if (raw < bounds.min / 2) return { open: false, size: Math.max(0, Math.round(raw)) };
+  return { open: true, size: clamp(raw, bounds) };
 }
 
 /** A key typed into a field is text, never a frame shortcut. */

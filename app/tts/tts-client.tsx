@@ -126,7 +126,7 @@ export default function TtsClient() {
     return selectToday(todos ?? [], [], { start: start.getTime(), end: end.getTime() });
   }, [todos]);
 
-  // The left drawer's rows, from the same selectors as its rail's counts.
+  // The left drawer's rows, from the same selectors as its handle's counts.
   const lists = useMemo(() => {
     const todoRow = (t: Todo): ListRow => ({ key: t._id, statement: t.statement, todoId: t._id });
     return {
@@ -138,7 +138,7 @@ export default function TtsClient() {
     };
   }, [needsMe, today]);
 
-  // The selected todo, shown whole in the right drawer and named on its rail.
+  // The selected todo, shown whole in the right drawer and named on its handle.
   // Until a row is pressed, an ?item= link's todo is the selected one.
   const [pickedId, setPickedId] = useState<Id<"dtsTodos"> | null>(null);
   const selectedId = pickedId ?? ((link?.item as Id<"dtsTodos"> | undefined) ?? null);
@@ -169,7 +169,7 @@ export default function TtsClient() {
     ];
   }, [selected, today, needsMe]);
 
-  // The bottom drawer: the event stream, and its rail's signals from the same
+  // The bottom drawer: the event stream, and its handle's signals from the same
   // subscription — how many rows are loaded and how old the newest is.
   const events = useQuery(api.tts.listRecentEvents, canRead ? {} : "skip");
   const statements = useMemo(
@@ -228,7 +228,7 @@ export default function TtsClient() {
   // The frame: the centre is the page as it was; the left drawer lists what
   // awaits Tom and what is overdue, the right shows the selected todo, the
   // bottom is the event stream, and the top holds the calendar (where the
-  // calendar goes). Every rail's signals come from the same subscriptions.
+  // calendar goes). Every handle's signals come from the same subscriptions.
   return (
     <Frame
       page="tts"
@@ -237,27 +237,26 @@ export default function TtsClient() {
       state={canRead && todos !== undefined ? `${awaitingCount} awaiting` : undefined}
       center={center}
       top={{
-        title: "calendar",
-        signals: calendarSignals,
+        handle: { label: "calendar", signals: calendarSignals },
         body: canRead ? <div className="p-3"><CalendarTab onOpenItem={openFromCalendar} /></div> : null,
+        defaultSize: 360,
       }}
       left={{
-        title: "lists",
-        signals: listSignals,
+        handle: { label: "lists", signals: listSignals },
         body: canRead ? (
           <TodoLists awaiting={lists.awaiting} overdue={lists.overdue} selected={selectedId} onSelect={setPickedId} />
         ) : null,
+        defaultSize: 360,
       }}
       right={{
-        title: "detail",
-        label: selected?.statement,
-        signals: detailSignals,
+        handle: { label: selected?.statement ?? "detail", signals: detailSignals },
         body: canRead ? <TodoDetail todo={selected} now={now} /> : null,
+        defaultSize: 440,
       }}
       bottom={{
-        title: "events",
-        signals: streamSignals,
+        handle: { label: "events", signals: streamSignals },
         body: canRead ? <EventStream rows={events} statements={statements} /> : null,
+        defaultSize: 320,
       }}
     />
   );
