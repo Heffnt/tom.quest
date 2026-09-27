@@ -357,7 +357,12 @@ describe("POST /tts/ask — the delegate's record", () => {
         data: { ...body({ job: "poll-gmail" }), sessionId: null, todoId: legacy, attended: false },
       }),
     );
+    const decision = async (askId: string) =>
+      (await t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect()))
+        .find((row) => row.subject === askId)?.data as { todoId?: string } | undefined;
     expect((await (await post(t, body({ job: "poll-gmail", todoId }))).json()).existing).toBe(true);
+    // The retry's decision row names the plain todo, though the ask stored the old id.
+    expect((await decision("3f9c1a22"))!.todoId).toBe(todoId);
     expect((await (await post(t, body({ job: "poll-gmail", todoId: legacy }))).json()).existing).toBe(true);
     expect((await post(t, body({ job: "poll-gmail", todoId: other }))).status).toBe(400);
     expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(400);
@@ -365,6 +370,22 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect((await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId }))).status).toBe(200);
     expect((await rows(t)).find((row) => row.key === "cdcdcdcd")!.data.todoId).toBe(todoId);
     expect((await (await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId: legacy }))).json()).existing).toBe(true);
+    // An ask recorded before step B had its id checked for form only: a stored
+    // id naming no row names no todo, and its retry's decision row carries none.
+    const gone = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("dtsTodos", fields);
+      await ctx.db.delete(id);
+      return id;
+    });
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(), kind: DELEGATE_DECISION, key: "efefefef",
+        data: { ...body({ job: "poll-gmail", askId: "efefefef" }), sessionId: null, todoId: gone, attended: false },
+      }),
+    );
+    expect((await post(t, body({ job: "poll-gmail", askId: "efefefef", todoId: gone }))).status).toBe(400);
+    expect((await (await post(t, body({ job: "poll-gmail", askId: "efefefef" }))).json()).existing).toBe(true);
+    expect(await decision("efefefef")).not.toHaveProperty("todoId");
   });
 
   it("refuses an unauthenticated caller", async () => {

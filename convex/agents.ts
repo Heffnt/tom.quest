@@ -409,9 +409,11 @@ export const internalIngest = internalMutation({
     // box run launched is depth 2 here and depth 1 in its own file, and the
     // check that refused a row at any other depth than its run's dead-lettered
     // six such children on 2026-09-19.
-    // A run names its todo in either id form; the row stores the plain one
-    // (an id naming no row is stored as given, in its own form).
-    const todoId = args.run.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", args.run.todoId)) ?? ctx.db.normalizeId("todos", args.run.todoId) ?? ctx.db.normalizeId("dtsTodos", args.run.todoId) ?? undefined);
+    // A run names its todo in either id form; the row stores the plain one.
+    // An id naming no row is dropped, as the delegate's objection drops one:
+    // no todo is ever deleted, so it names nothing a reader could find, and
+    // refusing it would dead-letter the whole run.
+    const todoId = args.run.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", args.run.todoId)) ?? undefined);
     let linked = { ...args.run, todoId, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs

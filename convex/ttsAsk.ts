@@ -203,10 +203,11 @@ export const internalRecordAsk = internalMutation({
       // resolve to "no todo" and so match an ask recorded without one.
       // The recorded todo is a stored reference: the old row's id on an ask
       // recorded before this step, the plain row's since. Both sides are
-      // compared as the plain todo they name (one naming no row, as stored).
+      // compared as the plain todo they name. A stored id naming no row (an
+      // ask recorded before step B had its id checked for form only) names
+      // no todo, as a stored reference's reader reads it.
       const todoId = args.todoId === undefined ? null : await resolveId(ctx, "todos", args.todoId);
-      const storedTodoId =
-        typeof stored.todoId === "string" ? ((await resolveId(ctx, "todos", stored.todoId)) ?? stored.todoId) : null;
+      const storedTodoId = typeof stored.todoId === "string" ? await resolveId(ctx, "todos", stored.todoId) : null;
       if (
         (args.todoId !== undefined && todoId === null) ||
         args.question !== stored.question ||
@@ -220,15 +221,16 @@ export const internalRecordAsk = internalMutation({
       // A RETRY OF A RECORDED ASK still gets its decision row: an ask
       // recorded before this mutation wrote the row had it posted separately,
       // a post the generic routes now refuse, so the retry is its one way in.
-      // The row is built from the ask as recorded, and one per ask: none is
-      // written when one already stands.
+      // The row is built from the ask as recorded, its todo the plain one the
+      // check above resolved, and one per ask: none is written when one
+      // already stands.
       const took = stored.decision !== null && stored.decision !== undefined && stored.attended !== true && stored.refusedBecause !== CAP_REFUSAL;
       if (took) {
         const written = await ctx.db
           .query("events")
           .withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", args.askId))
           .first();
-        if (written === null) await insertDecision(ctx, stored);
+        if (written === null) await insertDecision(ctx, { ...stored, todoId: storedTodoId });
       }
       return { id: existing._id, existing: true, attended: false, capped: false };
     }
