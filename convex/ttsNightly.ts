@@ -30,7 +30,7 @@ import { BOX_CHANGE, boxChangeEvent, boxChangeFaults, type BoxChange } from "./b
 import { recordEvent } from "./jarvis/events";
 import { listForDigest } from "./jarvis/outbox";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
-import { SEND_AS_TOM_FAILED, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
+import { SEND_AS_TOM_FAILED, SEND_AS_TOM_UNKNOWN, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
 
 // ── The export ───────────────────────────────────────────────────────────────
 // Every table in the schema except the auth ones (the six @convex-dev/auth
@@ -592,6 +592,7 @@ export const RESERVED_EVENT_KINDS = new Set([
   SEND_PROPOSAL,
   SENT_AS_TOM,
   SEND_AS_TOM_FAILED,
+  SEND_AS_TOM_UNKNOWN,
 ]);
 /** The nightly job's failure row (data { day, step, error }); the worker's
  * spelling is worker/jobs/nightly.mjs NIGHTLY_FAILURE, shared by name. */

@@ -19,6 +19,7 @@ import {
   CALENDAR_CHANNEL,
   NO_SIGNOFF,
   SEND_AS_TOM_FAILED,
+  SEND_AS_TOM_UNKNOWN,
   SEND_PROPOSAL,
   SENT_AS_TOM,
   calendarRecipient,
@@ -260,9 +261,25 @@ describe("a signed send goes out at most once", () => {
     expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
     const [signoff] = await signoffs(t);
     expect(signoff.usedAt).toBeTypeOf("number");
+    // Recorded as unknown, not failed, and put in front of Tom.
+    const [proposal] = await kinds(t, SEND_PROPOSAL);
+    expect(proposal.data).toMatchObject({ status: "unknown" });
+    expect(await kinds(t, SEND_AS_TOM_FAILED)).toHaveLength(0);
+    expect(await kinds(t, SEND_AS_TOM_UNKNOWN)).toHaveLength(1);
+    const broken = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "digest-line")).collect(),
+    );
+    expect(broken.map((row) => (row.data as { section: string; statement: string }))).toEqual([
+      expect.objectContaining({ section: "broken", statement: expect.stringContaining(`to ${RECIPIENT} may or may not have gone out`) }),
+    ]);
+    // He cannot sign it again (no fresh sign-off is minted), and a stray send is refused.
+    expect(await tom.mutation(api.ttsSignoff.signAndSend, { proposalId })).toEqual({ signed: false, status: "unknown" });
+    expect(await signoffs(t)).toHaveLength(1);
     const again = await t.action(internal.ttsSignoff.internalSendProposal, { proposalId });
     expect(again.error).toContain(NO_SIGNOFF);
     expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
+    // Clearing it sends nothing.
+    expect(await tom.mutation(api.ttsSignoff.decline, { proposalId })).toEqual({ declined: true, status: "declined" });
   });
 
   it("Slack's own refusal releases the claim: nothing went out", async () => {
@@ -408,6 +425,8 @@ describe("a calendar event with guests is a message in his name", () => {
       await t.finishAllScheduledFunctions(vi.runAllTimers);
       const [signoff] = await signoffs(t);
       expect(signoff.usedAt !== undefined).toBe(kept);
+      const [proposal] = await kinds(t, SEND_PROPOSAL);
+      expect(proposal.data).toMatchObject({ status: kept ? "unknown" : "failed" });
       vi.unstubAllGlobals();
     }
   });
