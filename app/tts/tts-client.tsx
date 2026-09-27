@@ -18,7 +18,11 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
+import Frame from "@/app/components/frame/frame";
+import type { RailSignal } from "@/app/components/frame/rail-signals";
+import type { Id } from "@/convex/_generated/dataModel";
 import CalendarTab from "./components/calendar-tab";
+import EventStream from "./components/event-stream";
 import EverythingTab from "./components/everything-tab";
 import { selectNeedsMe, type LinkIntent } from "./lib";
 
@@ -113,7 +117,28 @@ export default function TtsClient() {
     return lifeRows.length + codeRows.length;
   }, [todos, mirror, codeBriefs, rulings]);
 
-  return (
+  // The bottom drawer: the event stream, and its rail's signals from the same
+  // subscription — how many rows are loaded and how old the newest is.
+  const events = useQuery(api.tts.listRecentEvents, canRead ? {} : "skip");
+  const statements = useMemo(
+    () => new Map<Id<"dtsTodos">, string>((todos ?? []).map((t) => [t._id, t.statement])),
+    [todos],
+  );
+  const streamSignals = useMemo<RailSignal[]>(() => {
+    if (!events) return [];
+    const signals: RailSignal[] = [{ kind: "count", value: events.length, tone: "faint", label: "events loaded" }];
+    if (events[0]) {
+      signals.push({ kind: "age", value: events[0].at, tone: "ok", label: "newest event", staleAfterMs: 6 * 60 * 60 * 1000 });
+    }
+    return signals;
+  }, [events]);
+
+  const openFromCalendar = (id: string) => {
+    setLink({ item: id, intent: null });
+    setTab("everything");
+  };
+
+  const center = (
     <TomGate label="TTS">
       <div className="max-w-5xl mx-auto px-6 pb-16">
         <div className="flex items-end gap-1 border-b border-border mt-4">
@@ -139,19 +164,36 @@ export default function TtsClient() {
         </div>
 
         <div className="mt-4">
-          {tab === "calendar" && (
-            <CalendarTab
-              onOpenItem={(id) => {
-                setLink({ item: id, intent: null });
-                setTab("everything");
-              }}
-            />
-          )}
+          {tab === "calendar" && <CalendarTab onOpenItem={openFromCalendar} />}
           {tab === "everything" && (
             <EverythingTab link={link} onLinkCleared={clearLink} />
           )}
         </div>
       </div>
     </TomGate>
+  );
+
+  // Round 0 of the frame: the centre is the page as it was, the bottom drawer
+  // is the event stream, and the other three drawers are placeholders (the
+  // top one holds the calendar, which is where the calendar goes).
+  return (
+    <Frame
+      page="tts"
+      title="TTS"
+      explainer="frame"
+      state={canRead && todos !== undefined ? `${awaitingCount} awaiting` : undefined}
+      center={center}
+      top={{
+        title: "calendar",
+        body: canRead ? <div className="p-3"><CalendarTab onOpenItem={openFromCalendar} /></div> : null,
+      }}
+      left={{ title: "lists", body: null }}
+      right={{ title: "detail", body: null }}
+      bottom={{
+        title: "events",
+        signals: streamSignals,
+        body: canRead ? <EventStream rows={events} statements={statements} /> : null,
+      }}
+    />
   );
 }

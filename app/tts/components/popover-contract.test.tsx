@@ -77,6 +77,7 @@ vi.mock("@/app/lib/auth", () => ({
 
 import CalendarTab from "./calendar-tab";
 import CodeTodoRow from "./code-todo-row";
+import EventStream from "./event-stream";
 import EverythingTab from "./everything-tab";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
@@ -431,6 +432,17 @@ const CASES: { file: string; render: () => void }[] = [
           now={NOW}
           expanded
           onToggle={noop}
+        />,
+      ),
+  },
+  {
+    // Its rows only expand to show their JSON; none fires anything.
+    file: "app/tts/components/event-stream.tsx",
+    render: () =>
+      void render(
+        <EventStream
+          rows={[{ _id: "e1", _creationTime: 1, at: NOW, kind: "captured", todoId: "t1" } as never]}
+          statements={new Map([["t1" as never, "a todo"]])}
         />,
       ),
   },

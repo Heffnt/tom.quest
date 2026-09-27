@@ -17,6 +17,13 @@ export type Page = {
    * The Convex-side twin of this flag is convex/agentSurfaces.ts.
    */
   agentReadable?: boolean;
+  /**
+   * The page renders inside the frame (app/components/frame): a centre and
+   * four drawers inside a ring of rails, with the site bar in the top rail.
+   * AppShell then renders no NavTerm, no top padding and no pushing debug
+   * panel for it. Absent means the page keeps NavTerm and its own layout.
+   */
+  frame?: true;
 };
 
 export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
@@ -31,7 +38,7 @@ export const PAGES: Page[] = [
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
   { slug: "agents", title: "Agents", blurb: "TTS — every agent, at every depth", priority: 9, visibility: "tom" },
   { slug: OBSERVE_SLUG, title: "Observe", blurb: "Everything that ran and every ruling, by window", priority: 9, visibility: "tom" },
-  { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true },
+  { slug: "tts",    title: "TTS",    blurb: "Tom's Todo System",             priority: 9, visibility: "tom", agentReadable: true, frame: true },
   { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, and what each line rests on", priority: 8, visibility: "tom" },
   { slug: "vocabulary", title: "Vocabulary", blurb: "Every word TTS uses, as tts search prints it", priority: 7, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
@@ -43,6 +50,12 @@ export const PAGES: Page[] = [
   { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2, visibility: "public" },
   { slug: "help",   title: "Help",   blurb: "How tom.quest works",          priority: 1, visibility: "public" },
 ];
+
+/** True when the path's page is registered `frame: true`. */
+export function isFramePath(pathname: string): boolean {
+  const slug = pathname.split("/")[1] ?? "";
+  return PAGES.some((page) => page.frame === true && page.slug === slug);
+}
 
 export function canSeePage(role: PageRole, page: Page): boolean {
   // `agent` reads ONLY its own flag and never falls through to the rank
