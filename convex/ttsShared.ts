@@ -78,7 +78,7 @@ export function mergeKey(repo: string, sha: string): string {
  *                        the nightly job could not apply, and it belongs to
  *                        the model-of-Tom line it is about.
  *
- * Spelled here, not in convex/tts.ts where the #tts-broken writer applies it,
+ * Spelled here, not in convex/ttsDigest.ts where the broken section applies it,
  * because the observation page asks the same question of the same events and a
  * second list of the exceptions is a second answer waiting to drift.
  */

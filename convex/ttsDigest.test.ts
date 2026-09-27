@@ -882,11 +882,9 @@ describe("internalComposeToday", () => {
     expect(objectionAskIds).toEqual([""]);
   });
 
-  // THE WEEKLY SIMPLIFICATION PASS reports each line it means to remove in
-  // #tts-decisions as it records it; this list is the last call on the same
-  // row. Unlike a merge its number DOES name an askId — the proposal's key is
-  // the askId of its own thread — so "revert 1" in the morning resolves the
-  // same row a reply in that thread would.
+  // THE WEEKLY SIMPLIFICATION PASS's proposals are lines on this list. Unlike
+  // a merge its number DOES name an askId — the proposal's key — so "revert 1"
+  // in the digest's thread resolves the proposal's own row.
   it("lists a simplification proposal, names its key, and leaves a dry run out", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
@@ -925,7 +923,7 @@ describe("internalComposeToday", () => {
   });
 
   // THE REMOVAL LOOP's pull request closes its window on "a digest sent a day
-  // after it", so the digest carries it, keyed like its #tts-simplify thread.
+  // after it", so the digest carries it, keyed `loop:<number>`.
   it("lists a removal-loop pull request under its thread's key, and leaves a dry run out", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
@@ -1156,7 +1154,7 @@ describe("internalComposeToday", () => {
 
   // These two cases exist only because the morning message narrowed: the
   // delivery check and the evals result used to have a section of their own,
-  // and now a PROBLEM in either is a #tts-broken line while a clean run is the
+  // and now a PROBLEM in either is a broken-section line while a clean run is the
   // weekly's fact. Both halves are asserted, because "prints nothing" is the
   // half that goes wrong silently.
   it("reports a stale prelude delivery as broken, and says nothing about a clean one", async () => {

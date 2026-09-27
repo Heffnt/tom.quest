@@ -933,7 +933,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   // 7. What changed on the box (plan-root T1, guarantee G4): the last run,
   //    so the first `fit` reduces. No reply invitation: a change is objected
   //    to where it happened, and a change to who can act already has its own
-  //    #tts-decisions thread.
+  //    line on the objection list.
   if ((f.boxChanges ?? []).length > 0) {
     pushRun(
       lines,

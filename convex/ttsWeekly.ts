@@ -83,12 +83,12 @@ export const SURFACED_THRESHOLD = 3;
 // It GATES NOTHING: it is arithmetic over rows the record already holds, and
 // the merge gate reads none of it.
 //
-/** The audit's score reaches four weeks back while every other fact here reaches
- * seven days, and the reason is the shape of an objection: Tom objects to a
- * merge DAYS AFTER it lands, in the #tts-decisions thread, so a seven-day window
- * would score the audit on merges whose objections had not arrived yet and read
- * every recent merge as unobjected. Four weeks is the shortest window in which a
- * merge's objection has had time to show up. */
+/** The audit's score reaches four weeks back while every other fact here
+ * reaches seven days, and the reason is the shape of an objection: Tom objects
+ * to a merge DAYS AFTER it lands, in the thread of the digest that listed it,
+ * so a seven-day window would score the audit on merges whose objections had
+ * not arrived yet and read every recent merge as unobjected. Four weeks is the
+ * shortest window in which a merge's objection has had time to show up. */
 export const AUDIT_OBJECTION_WEEKS = 4;
 /** The word an audit answers when it refuses a head (convex/ttsMerge.ts reads
  * the word itself and only compares against AUDIT_APPROVED, so this spelling is
@@ -687,9 +687,9 @@ export async function gatherWeeklyFacts(
   // the index they are already on, joined on the keys they are already keyed by
   // (convex/ttsMerge.ts commitKey and mergeKey). No new row, no new field.
   //
-  // A merge is reported to #tts-decisions with its own mergeKey as the askId
-  // (internalRecordMerge), and an objection in that thread is recorded with the
-  // same askId (convex/ttsAsk.ts internalRecordDelegateObjection) — so an
+  // A merge is listed on the digest's objection list with its own mergeKey as
+  // the askId (internalRecordMerge), and "revert <n>" on that line is recorded
+  // with the same askId (convex/ttsAsk.ts internalRecordDelegateObjection) — so an
   // objection whose askId equals a merge's key IS his objection to that merge.
   const auditSince = until - AUDIT_OBJECTION_WEEKS * WEEK_MS;
   const approvedAt = new Map<string, number>();

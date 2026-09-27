@@ -1268,11 +1268,11 @@ export const roots = query({
 
 /**
  * Everything Tom did about this run, oldest first — a ruling on the row it
- * wrote, an objection in #tts-decisions, a reply he typed at it, an emoji on
- * the morning it wrote. The run page draws one strip from this under the
- * outcome, and DRAWS NO BAND AT ALL when the answer is empty: an empty strip
- * on every run is clutter that displays nothing, which is why the strip was
- * deferred until there were rows to put in it.
+ * wrote, an objection on the digest's objection list, a reply he typed at it,
+ * an emoji on the morning it wrote. The run page draws one strip from this
+ * under the outcome, and DRAWS NO BAND AT ALL when the answer is empty: an
+ * empty strip on every run is clutter that displays nothing, which is why the
+ * strip was deferred until there were rows to put in it.
  *
  * Unpaginated on purpose. A run collects a handful of labels at human pace —
  * the table's whole write path is four doors Tom himself goes through — so a

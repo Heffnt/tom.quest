@@ -670,9 +670,9 @@ http.route({
 //   { channel: "slack:<conversation id>", recipient, text, why?, agentId? }
 //   { channel: "calendar", event: { title, start, end, guests, description?,
 //     location?, recurrence? }, why?, agentId? }
-// It writes one "send-proposal" row and opens one #tts-needs-you thread that
-// names the recipient and the channel, never the text. Nothing else: no
-// sign-off (the worker key cannot write one; only his press of "sign and
+// It writes one "send-proposal" row and opens one needs-you reply under the
+// digest that names the recipient and the channel, never the text. Nothing
+// else: no sign-off (the worker key cannot write one; only his press of "sign and
 // send" on /tts does) and no send (that happens from Convex once he has
 // signed, and only then). The answer names where he signs.
 //
@@ -1657,7 +1657,7 @@ http.route({ path: "/tts/merge-gate", method: "GET", handler: ttsMergeGate });
 
 // POST /tts/merge records a merge that has already happened. It is not a
 // delegate decision: a mechanically gated merge is reported in the objection
-// list and posted to #tts-decisions, keyed by repo+sha so a retry stays one
+// list on the digest, keyed by repo+sha so a retry stays one
 // event. The gate runs again inside the mutation, so a merge that reached the
 // default branch some other way cannot be laundered into a reported one; the
 // answer is then 409 naming which checks are missing.

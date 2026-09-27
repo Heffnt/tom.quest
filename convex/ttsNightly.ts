@@ -599,10 +599,9 @@ export const RESERVED_EVENT_KINDS = new Set([
 export const NIGHTLY_FAILURE = "nightly-failure";
 
 /** A line the nightly job wrote about Tom is a decision taken in his name, so
- *  it goes to #tts-decisions as it is written rather than waiting for the
- *  morning (slack-design.md §1.2, §4.3). The raw `[change-id]` prefix he was
- *  expected to type back is gone with it: in #tts-decisions the THREAD is the
- *  subject, so a reply needs no id. */
+ *  it is a line on the digest's objection list (internalRecordWorkerEvent,
+ *  listForDigest), its id printed: "revert <n>" or a reply naming the id in
+ *  the digest's thread objects to it. */
 export const LEARNING_CHANGE = "learning-change";
 
 /**
