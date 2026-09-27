@@ -591,3 +591,109 @@ export const copyBack = internalAction({
     return out;
   },
 });
+
+// ── the old tables are emptied ──────────────────────────────────────────────
+//
+// dtsTodos, dtsBlocks and dtsTimeNotes after step C: nothing writes them, and
+// nothing reads them once the pull request that drops them from the schema
+// lands. Dropping a table from the schema deletes none of its rows (Convex
+// validates only the tables the schema lists, and a push's schema diff has no
+// table deletion, only index removals: AGENTS.md, "schema"), so the rows stay
+// on the deployment undeclared until this empties them.
+//
+// It runs once, by hand (`tts-convex run jarvis/tables:purgeOldTables`), and
+// only after WikiTom tts/snapshot holds each table's final state: the first
+// nightly copy after the old writes stopped. `expect` is that copy's row
+// count per table (the lines of dtsTodos.jsonl, dtsBlocks.jsonl and
+// dtsTimeNotes.jsonl). The tables are counted first, and nothing is deleted
+// unless every count equals the copy's, so a row the copy does not hold is
+// never deleted. The old ids stay readable after: each plain row keeps its
+// old row's _id as legacyId, and resolveId maps it.
+//
+// The tables are named through a loose view of the database, so this runs
+// the same whether or not the schema still declares them: Convex reads and
+// deletes an undeclared table's rows like any other's.
+
+const OLD_TABLES = ["dtsTimeNotes", "dtsBlocks", "dtsTodos"] as const;
+type OldTable = (typeof OLD_TABLES)[number];
+const OLD_TABLE = v.union(...OLD_TABLES.map((table) => v.literal(table)));
+
+/** Rows per page of the count and the purge: a dtsTodos row runs to ~5 KB. */
+const PURGE_PAGE = 200;
+
+/** The database as the purge reads it: any table by name. */
+type LooseDb = {
+  query(table: string): {
+    paginate(opts: { cursor: string | null; numItems: number }): Promise<{
+      page: Array<{ _id: string }>;
+      isDone: boolean;
+      continueCursor: string;
+    }>;
+    take(n: number): Promise<Array<{ _id: string }>>;
+  };
+  delete(id: string): Promise<void>;
+};
+const loose = (ctx: QueryCtx | MutationCtx) => ctx.db as unknown as LooseDb;
+
+/** One page of an old table's count. */
+export const oldCountPage = internalQuery({
+  args: { table: OLD_TABLE, cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { table, cursor }) => {
+    const page = await loose(ctx).query(table).paginate({ cursor, numItems: PURGE_PAGE });
+    return { rows: page.page.length, isDone: page.isDone, continueCursor: page.continueCursor };
+  },
+});
+
+/** One page of an old table deleted, from its start: every row a page
+ *  deletes leaves the table, so the next page reads the rows after it. */
+export const purgeOldPage = internalMutation({
+  args: { table: OLD_TABLE },
+  handler: async (ctx, { table }) => {
+    const rows = await loose(ctx).query(table).take(PURGE_PAGE);
+    for (const row of rows) await loose(ctx).delete(row._id);
+    return { deleted: rows.length, isDone: rows.length < PURGE_PAGE };
+  },
+});
+
+/** The purge's one row in the record: what each table held and what went,
+ *  as the migrations record a finished run. */
+export const recordPurge = internalMutation({
+  args: { counted: v.record(v.string(), v.number()), deleted: v.record(v.string(), v.number()) },
+  handler: async (ctx, data) => {
+    await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "old-tables-purged", data });
+  },
+});
+
+/**
+ * Empties dtsTodos, dtsBlocks and dtsTimeNotes, once each table's row count
+ * equals `expect` (the off-box copy's). Answers each table's count and, when
+ * every count matched, what was deleted; when one did not, deletes nothing.
+ */
+export const purgeOldTables = internalAction({
+  args: { expect: v.object({ dtsTodos: v.number(), dtsBlocks: v.number(), dtsTimeNotes: v.number() }) },
+  handler: async (ctx, { expect }) => {
+    const counted = {} as Record<OldTable, number>;
+    for (const table of OLD_TABLES) {
+      const sums = await drain(
+        (cursor): Promise<Paged> => ctx.runQuery(internal.jarvis.tables.oldCountPage, { table, cursor }),
+      );
+      counted[table] = sums.rows ?? 0;
+    }
+    const mismatched = OLD_TABLES.filter((table) => counted[table] !== expect[table]);
+    if (mismatched.length > 0) return { purged: false as const, counted, expect, mismatched };
+    const deleted = {} as Record<OldTable, number>;
+    for (const table of OLD_TABLES) {
+      deleted[table] = 0;
+      for (;;) {
+        const page: { deleted: number; isDone: boolean } = await ctx.runMutation(
+          internal.jarvis.tables.purgeOldPage,
+          { table },
+        );
+        deleted[table] += page.deleted;
+        if (page.isDone) break;
+      }
+    }
+    await ctx.runMutation(internal.jarvis.tables.recordPurge, { counted, deleted });
+    return { purged: true as const, counted, deleted };
+  },
+});

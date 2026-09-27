@@ -86,7 +86,7 @@ describe("rulings under their plain name", () => {
     expect(await t.action(internal.jarvis.tables.counts, {})).toEqual({ rulings: { old: 2, new: 2, copied: 1, whole: false } });
   });
 
-  it("exports exactly the rulings count, the readers' helpers, the check and copyBack; no copy, remap, follow, oldId or write back returns", () => {
+  it("exports exactly the rulings count, the readers' helpers, the check, copyBack and the purge; no copy, remap, follow, oldId or write back returns", () => {
     expect(Object.keys(tablesModule).sort()).toEqual([
       "clearBlock",
       "clearBlockPage",
@@ -99,6 +99,10 @@ describe("rulings under their plain name", () => {
       "leftPage",
       "leftToRemap",
       "newestTodoEvents",
+      "oldCountPage",
+      "purgeOldPage",
+      "purgeOldTables",
+      "recordPurge",
       "resolveId",
       "todoEvents",
       "todoHasEventSince",
