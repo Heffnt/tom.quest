@@ -20,7 +20,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
-import { eitherId, follow, oldId, resolveId, withPlainTodoIds } from "./jarvis/tables";
+import { back, backDelete, clearBlock, eitherId, follow, oldId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -595,7 +595,7 @@ export async function insertBlock(
   }: {
     start: number;
     end: number;
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     category?: string;
     note?: string;
   },
@@ -609,7 +609,7 @@ export async function insertBlock(
     const todo = await ctx.db.get(todoId);
     if (!todo) throw new Error("TTS todo not found");
   }
-  const id = await ctx.db.insert("dtsBlocks", {
+  const id = await ctx.db.insert("blocks", {
     start,
     end,
     todoId,
@@ -617,7 +617,7 @@ export async function insertBlock(
     note,
     createdAt: Date.now(),
   });
-  await follow(ctx, "blocks", id);
+  await back(ctx, "blocks", id);
   await logEvent(ctx, "block-created", todoId, {
     start,
     end,
@@ -628,7 +628,7 @@ export async function insertBlock(
 
 export async function patchBlock(
   ctx: MutationCtx,
-  block: Doc<"dtsBlocks">,
+  block: Doc<"blocks">,
   { start, end, note }: { start?: number; end?: number; note?: string | null },
 ) {
   const nextStart = start ?? block.start;
@@ -639,7 +639,7 @@ export async function patchBlock(
     end: nextEnd,
     note: note === null ? undefined : (note ?? block.note),
   });
-  await follow(ctx, "blocks", block._id);
+  await back(ctx, "blocks", block._id);
   // block-moved only when the span actually changed — a note-only edit is
   // not a move and must not fake one in the event stream.
   if (nextStart !== block.start || nextEnd !== block.end) {
@@ -651,9 +651,11 @@ export async function patchBlock(
   }
 }
 
-export async function removeBlock(ctx: MutationCtx, block: Doc<"dtsBlocks">) {
+export async function removeBlock(ctx: MutationCtx, block: Doc<"blocks">) {
   await ctx.db.delete(block._id);
-  await follow(ctx, "blocks", block._id);
+  await backDelete(ctx, "blocks", block);
+  // A time note naming the block is taken off it.
+  await clearBlock(ctx, block._id);
   await logEvent(ctx, "block-deleted", block.todoId, {
     start: block.start,
     end: block.end,
@@ -671,9 +673,9 @@ export const createBlock = mutation({
   },
   handler: async (ctx, { todoId, ...args }) => {
     await requireTomId(ctx);
-    const old = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
-    if (old === null) throw new Error("TTS todo not found");
-    return await insertBlock(ctx, { ...args, todoId: old });
+    const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
+    if (plain === null) throw new Error("TTS todo not found");
+    return await insertBlock(ctx, { ...args, todoId: plain });
   },
 });
 
@@ -686,8 +688,8 @@ export const updateBlock = mutation({
   },
   handler: async (ctx, { id, ...args }) => {
     await requireTomId(ctx);
-    const old = await oldId(ctx, "blocks", id);
-    const block = old === null ? null : await ctx.db.get(old);
+    const plain = await resolveId(ctx, "blocks", id);
+    const block = plain === null ? null : await ctx.db.get(plain);
     if (!block) throw new Error("Block not found");
     await patchBlock(ctx, block, args);
   },
@@ -697,8 +699,8 @@ export const deleteBlock = mutation({
   args: { id: eitherId.blocks },
   handler: async (ctx, { id }) => {
     await requireTomId(ctx);
-    const old = await oldId(ctx, "blocks", id);
-    const block = old === null ? null : await ctx.db.get(old);
+    const plain = await resolveId(ctx, "blocks", id);
+    const block = plain === null ? null : await ctx.db.get(plain);
     if (!block) throw new Error("Block not found");
     await removeBlock(ctx, block);
   },
@@ -792,18 +794,18 @@ async function createTimeNoteFrom(
     blockId?: string;
     day?: string;
   },
-): Promise<Id<"dtsTimeNotes">> {
+): Promise<Id<"timeNotes">> {
   const trimmed = text.trim();
   if (trimmed === "") throw new Error("A time note needs text");
   requireOneTimeNoteContext(todoId, blockId, day);
   if (day !== undefined && !DAY_KEY_RE.test(day)) {
     throw new Error(`A day is a calendar date, YYYY-MM-DD — got ${day}`);
   }
-  const todo = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
+  const todo = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
   if (todo === null) throw new Error("TTS todo not found");
-  const block = blockId === undefined ? undefined : await oldId(ctx, "blocks", blockId);
+  const block = blockId === undefined ? undefined : await resolveId(ctx, "blocks", blockId);
   if (block === null) throw new Error("Block not found");
-  const id = await ctx.db.insert("dtsTimeNotes", {
+  const id = await ctx.db.insert("timeNotes", {
     text: trimmed,
     todoId: todo,
     blockId: block,
@@ -811,7 +813,7 @@ async function createTimeNoteFrom(
     status: "pending",
     createdAt: Date.now(),
   });
-  await follow(ctx, "timeNotes", id);
+  await back(ctx, "timeNotes", id);
   await logEvent(ctx, "time-note", todo, { text: trimmed, blockId: block, day });
   return id;
 }
@@ -836,14 +838,14 @@ export const deleteTimeNote = mutation({
   args: { id: eitherId.timeNotes },
   handler: async (ctx, { id: given }) => {
     await requireTomId(ctx);
-    const id = await oldId(ctx, "timeNotes", given);
+    const id = await resolveId(ctx, "timeNotes", given);
     const note = id === null ? null : await ctx.db.get(id);
     if (id === null || !note) throw new Error("Time note not found");
     if (note.status === "applied") {
       throw new Error("An applied time note is history — it is not deleted");
     }
     await ctx.db.delete(id);
-    await follow(ctx, "timeNotes", id);
+    await backDelete(ctx, "timeNotes", note);
     await logEvent(ctx, "time-note-deleted", note.todoId, { text: note.text });
   },
 });
@@ -1009,7 +1011,7 @@ export const internalApplyTimeNote = internalMutation({
     actions: v.optional(v.array(TIME_NOTE_ACTION)),
   },
   handler: async (ctx, { id, status, result, actions }) => {
-    const normalized = await oldId(ctx, "timeNotes", id);
+    const normalized = await resolveId(ctx, "timeNotes", id);
     if (!normalized) throw new Error(`Unknown time note id: ${id}`);
     const note = await ctx.db.get(normalized);
     if (!note) throw new Error(`Unknown time note id: ${id}`);
@@ -1029,15 +1031,19 @@ export const internalApplyTimeNote = internalMutation({
     // Tuesday, do it Friday"), and a Convex read sees this mutation's own
     // earlier writes, so action N validates against action N−1's RESULT rather
     // than against a snapshot from before the loop.
+    // A note names its todo in either form: the plain row for a block it
+    // asks for, the old row the todo writers below still write.
+    const noteTodo = note.todoId === undefined ? null : await resolveId(ctx, "todos", note.todoId);
     const requireSubject = async (kind: string) => {
-      const subject = note.todoId ? await ctx.db.get(note.todoId) : null;
+      const oldTodo = note.todoId === undefined ? null : await oldId(ctx, "todos", note.todoId);
+      const subject = oldTodo ? await ctx.db.get(oldTodo) : null;
       if (!subject) {
         throw new Error(`${kind} needs a time note written on a todo`);
       }
       return subject;
     };
     const getBlock = async (raw: string) => {
-      const blockId = await oldId(ctx, "blocks", raw);
+      const blockId = await resolveId(ctx, "blocks", raw);
       const block = blockId && (await ctx.db.get(blockId));
       if (!block) throw new Error(`Unknown block id: ${raw}`);
       return block;
@@ -1149,14 +1155,14 @@ export const internalApplyTimeNote = internalMutation({
           break;
         }
         case "create-block": {
-          let blockTodoId: Id<"dtsTodos"> | undefined;
+          let blockTodoId: Id<"todos"> | undefined;
           if (action.todoId !== undefined) {
-            const t = await oldId(ctx, "todos", action.todoId);
+            const t = await resolveId(ctx, "todos", action.todoId);
             if (!t) throw new Error(`Unknown todo id: ${action.todoId}`);
             blockTodoId = t;
-          } else if (action.category === undefined && note.todoId) {
+          } else if (action.category === undefined && noteTodo) {
             // A block asked for from a todo's own note defaults to that todo.
-            blockTodoId = note.todoId;
+            blockTodoId = noteTodo;
           }
           await insertBlock(ctx, {
             start: action.start,
@@ -1186,7 +1192,7 @@ export const internalApplyTimeNote = internalMutation({
       result: result.trim(),
       resolvedAt: now,
     });
-    await follow(ctx, "timeNotes", normalized);
+    await back(ctx, "timeNotes", normalized);
     await logEvent(ctx, "time-note-resolved", note.todoId, {
       status,
       result: result.trim(),

@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
 import { oldId, resolveId, todoEvents, todoRulings } from "./jarvis/tables";
 import { newestTodoEvents, todoHasEventSince } from "./jarvis/tables";
 
@@ -27,18 +28,25 @@ async function withTom(t: T) {
 const DAY = 86_400_000;
 
 /** A todo, a block on it and a time note on the block, written through the
- *  doors (so the dual write made their plain rows), with both ids of each. */
+ *  doors (so each has its plain row and its old row, whichever a door
+ *  writes and whichever it answers), with both ids of each. */
 async function seed(t: T) {
   const tom = await withTom(t);
   const todo = await tom.mutation(api.tts.createTodo, { statement: "renew the lease", dueAt: Date.now() + 3 * DAY });
   const block = await tom.mutation(api.tts.createBlock, { start: Date.now() + DAY, end: Date.now() + DAY + 3_600_000, todoId: todo });
   const note = await tom.mutation(api.tts.createTimeNote, { text: "move it to Friday", blockId: block });
-  const plain = await t.run(async (ctx) => ({
-    todo: (await resolveId(ctx, "todos", todo))!,
-    block: (await resolveId(ctx, "blocks", block))!,
-    note: (await resolveId(ctx, "timeNotes", note))!,
-  }));
-  return { tom, old: { todo, block, note }, plain };
+  const [a, b, c] = await t.run(async (ctx) => {
+    const both = async <C extends "todos" | "blocks" | "timeNotes">(table: C, id: string) => {
+      const plain = (await resolveId(ctx, table, id))!;
+      return { plain, old: (await ctx.db.get(plain))!.legacyId! };
+    };
+    return [await both("todos", todo), await both("blocks", block), await both("timeNotes", note)] as const;
+  });
+  return {
+    tom,
+    old: { todo: a.old as Id<"dtsTodos">, block: b.old as Id<"dtsBlocks">, note: c.old as Id<"dtsTimeNotes"> },
+    plain: { todo: a.plain, block: b.plain, note: c.plain },
+  };
 }
 
 async function followed(t: T) {
@@ -74,7 +82,9 @@ describe("an id in either form", () => {
       const t = convexTest({ schema, modules });
       const { tom, old, plain } = await seed(t);
       const ids = form === "old" ? old : plain;
-      const row = () => t.run(async (ctx) => (await ctx.db.get(old.todo))!);
+      const row = () => t.run(async (ctx) => (await ctx.db.get(plain.todo))!);
+      /** The todo a stored reference names, as the plain row's id. */
+      const named = (id: string | undefined) => t.run(async (ctx) => await resolveId(ctx, "todos", id!));
 
       await tom.mutation(api.tts.updateTodo, { id: ids.todo, body: "the landlord's terms" });
       expect((await row()).body).toBe("the landlord's terms");
@@ -84,30 +94,30 @@ describe("an id in either form", () => {
       await t.mutation(internal.tts.internalBulkUpdate, { updates: [{ id: ids.todo, category: "home" }] });
       expect((await row()).category).toBe("home");
 
-      // A ruling, a block and a time note store the old id, as they did.
+      // A ruling names the todo; a block and a time note store its plain id.
       const rulingId = await tom.mutation(api.ttsRulings.recordRuling, { todoId: ids.todo, verdict: "approve" });
-      expect(await t.run(async (ctx) => (await ctx.db.get(rulingId))!.todoId)).toBe(old.todo);
+      expect(await named(await t.run(async (ctx) => (await ctx.db.get(rulingId))!.todoId))).toBe(plain.todo);
       const second = await tom.mutation(api.tts.createBlock, { start: Date.now() + 2 * DAY, end: Date.now() + 2 * DAY + 60_000, todoId: ids.todo });
-      expect(await t.run(async (ctx) => (await ctx.db.get(second))!.todoId)).toBe(old.todo);
+      expect(await t.run(async (ctx) => (await ctx.db.get(second))!.todoId)).toBe(plain.todo);
       await tom.mutation(api.tts.updateBlock, { id: ids.block, note: "bring the forms" });
-      expect(await t.run(async (ctx) => (await ctx.db.get(old.block))!.note)).toBe("bring the forms");
+      expect(await t.run(async (ctx) => (await ctx.db.get(plain.block))!.note)).toBe("bring the forms");
       const onTodo = await tom.mutation(api.tts.createTimeNote, { text: "friday", todoId: ids.todo });
-      expect(await t.run(async (ctx) => (await ctx.db.get(onTodo))!.todoId)).toBe(old.todo);
+      expect(await t.run(async (ctx) => (await ctx.db.get(onTodo))!.todoId)).toBe(plain.todo);
       await t.mutation(internal.tts.internalApplyTimeNote, {
         id: ids.note,
         status: "applied",
         result: "moved the block",
         actions: [{ kind: "update-block", blockId: ids.block, start: Date.now() + 3 * DAY, end: Date.now() + 3 * DAY + 60_000 }],
       });
-      expect(await t.run(async (ctx) => (await ctx.db.get(old.note))!.status)).toBe("applied");
-      const onTodoPlain = await t.run(async (ctx) => (await resolveId(ctx, "timeNotes", onTodo))!);
-      await tom.mutation(api.tts.deleteTimeNote, { id: form === "old" ? onTodo : onTodoPlain });
+      expect(await t.run(async (ctx) => (await ctx.db.get(plain.note))!.status)).toBe("applied");
+      const onTodoOld = await t.run(async (ctx) => (await ctx.db.get(onTodo))!.legacyId as Id<"dtsTimeNotes">);
+      await tom.mutation(api.tts.deleteTimeNote, { id: form === "old" ? onTodoOld : onTodo });
       expect(await t.run(async (ctx) => await ctx.db.get(onTodo))).toBeNull();
 
       await tom.mutation(api.tts.setStatus, { id: ids.todo, status: "done" });
       expect((await row()).status).toBe("done");
       await tom.mutation(api.tts.deleteBlock, { id: ids.block });
-      expect(await t.run(async (ctx) => await ctx.db.get(old.block))).toBeNull();
+      expect(await t.run(async (ctx) => await ctx.db.get(plain.block))).toBeNull();
       await followed(t);
     });
   }

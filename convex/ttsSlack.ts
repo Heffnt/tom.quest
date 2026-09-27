@@ -434,7 +434,7 @@ export type ThreadReplyOutcome =
       sessionId: Id<"claudeSessions">;
     }
   | { outcome: "done"; todoId: Id<"dtsTodos"> }
-  | { outcome: "time-note"; timeNoteId: Id<"dtsTimeNotes"> }
+  | { outcome: "time-note"; timeNoteId: Id<"timeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }

@@ -21,13 +21,17 @@
 // takes both; `resolveId` answers the plain row a reader reads, `oldId` the
 // old row a writer writes, since the write path does not move in this step.
 //
-// STEP C, THE OLD WRITES STOP, lands in two pull requests. The first (this
-// one) readies the readers: a stored reference to a todo (rulings.todoId,
-// dtsEvents.todoId, claudeSessions.todoId, runs.todoId, a Slack thread's todo
-// subject) takes either id, and every reader of a stored reference reads both
-// forms as the one todo (todoIdForms, todoEvents, todoRulings; withPlainTodoIds before
-// liveRulings). It also brings copyBack (below), the second pull request's way
-// back, so it is deployed before anything needs it.
+// STEP C, THE OLD WRITES STOP, lands as a stack. First the readers: a stored
+// reference to a todo (rulings.todoId, dtsEvents.todoId, claudeSessions.todoId,
+// runs.todoId, a Slack thread's todo subject) takes either id, and every
+// reader of a stored reference reads both forms as the one todo (todoIdForms,
+// todoEvents, todoRulings; withPlainTodoIds before liveRulings); copyBack
+// (below) arrives with them, the way back from what follows. Then the writers
+// move to the plain tables a group at a time (blocks and time notes first),
+// each writing its old row back (`back`, `backDelete`), so a writer not yet
+// moved, which writes the old row and `follow`s, finds it current, and
+// leftToRemap stays at zero throughout. The last pull request of the stack
+// takes `back`, `follow` and the copy out.
 
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
@@ -453,7 +457,7 @@ export async function follow(ctx: MutationCtx, table: Core, id: string): Promise
  *  it; the rest go to clearBlockPage, which runs until none is left. Each
  *  patched note leaves the by_block range, so every page reads from its
  *  start. Until then leftToRemap counts each note still naming it as stale. */
-async function clearBlock(ctx: MutationCtx, blockId: Id<"blocks">) {
+export async function clearBlock(ctx: MutationCtx, blockId: Id<"blocks">) {
   const notes = await ctx.db.query("timeNotes").withIndex("by_block", (q) => q.eq("blockId", blockId)).take(PAGE + 1);
   for (const note of notes.slice(0, PAGE)) await ctx.db.patch(note._id, { blockId: undefined });
   if (notes.length > PAGE) await ctx.scheduler.runAfter(0, internal.jarvis.tables.clearBlockPage, { blockId });
@@ -715,6 +719,25 @@ async function copyBackRow(ctx: MutationCtx, table: Core, row: Row) {
   }
   if (row.legacyVersion !== version) await ctx.db.patch(row._id as Id<Core>, { legacyVersion: version } as never);
   return { outcome, unresolved, dangling };
+}
+
+/**
+ * The write back, while step C moves the writers: a writer moved to the plain
+ * tables calls this right after its write, with the plain row's id, so its
+ * old row holds the same (stamped, as copyBack stamps it) and a writer not
+ * yet moved, which writes the old row and `follow`s, finds it current. Every
+ * plain row it writes carries a legacyId from then on. The last step C pull
+ * request takes it out with `follow`.
+ */
+export async function back(ctx: MutationCtx, table: Core, id: string): Promise<void> {
+  const row = (await ctx.db.get(id as Id<Core>)) as Row | null;
+  if (row !== null) await copyBackRow(ctx, table, row);
+}
+
+/** A deleted plain row's old row, deleted with it (a moved writer's delete). */
+export async function backDelete(ctx: MutationCtx, table: Core, row: { legacyId?: string }): Promise<void> {
+  const old = typeof row.legacyId === "string" ? ctx.db.normalizeId(CORE[table], row.legacyId) : null;
+  if (old !== null && (await ctx.db.get(old)) !== null) await ctx.db.delete(old);
 }
 
 /** One page of copyBack over a plain table. */

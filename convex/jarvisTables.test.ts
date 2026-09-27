@@ -78,6 +78,9 @@ describe("rulings under their plain name", () => {
 
   it("exports exactly the rulings count and the core tables' copy; no retired copy or remap returns", () => {
     expect(Object.keys(tablesModule).sort()).toEqual([
+      "back",
+      "backDelete",
+      "clearBlock",
       "clearBlockPage",
       "copyBack",
       "copyBackPage",
