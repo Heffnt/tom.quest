@@ -1363,24 +1363,30 @@ async function newestRunRow(
 // once). Why the check cannot be deleted instead: a request is made against the
 // state of the world at its creation; after a day that state no longer holds,
 // and nothing else stops a replay, since the host keeps no memory across restarts.
+// A "requested" row is judged by its creation age. Since the poll expires every
+// requested row older than this before returning it, no row older than this can
+// be claimed, so a "starting" row (claimed, no sdkSessionId yet) is judged by how
+// long it has been starting, from statusChangedAt: a host that died mid-start
+// leaves it there, and a restarted host would claim it again.
 const AUTONOMOUS_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 const AUTONOMOUS_REQUEST_EXPIRED_REASON = "autonomous request expired before claim";
 
-// Ends a stale unclaimed autonomous request as a session that never ran: the
-// same terminal facts internalIngest records for a daemon-reported failure (the
-// status edge, its session-ended row, the pending inbound settled). Returns
-// whether it ended the row. Interactive rows and claimed rows are never touched.
+// Ends a stale autonomous request (requested, or stuck starting) as a session
+// that never ran: the same terminal facts internalIngest records for a
+// daemon-reported failure (the status edge, its session-ended row, the pending
+// inbound settled). Returns whether it ended the row. Interactive rows and rows
+// with an sdkSessionId are never touched.
 async function expireStaleAutonomousRequest(
   ctx: MutationCtx,
   s: Doc<"claudeSessions">,
   now: number,
 ): Promise<boolean> {
   if (s.mode !== "autonomous") return false;
-  const unclaimed =
-    s.status === "requested" ||
-    (s.status === "starting" && s.sdkSessionId === undefined);
-  if (!unclaimed) return false;
-  if (now - (s.createdAt ?? s._creationTime) <= AUTONOMOUS_REQUEST_TTL_MS) return false;
+  let since: number;
+  if (s.status === "requested") since = s.createdAt ?? s._creationTime;
+  else if (s.status === "starting" && s.sdkSessionId === undefined) since = s.statusChangedAt;
+  else return false;
+  if (now - since <= AUTONOMOUS_REQUEST_TTL_MS) return false;
   await ctx.db.patch(s._id, {
     status: "failed",
     statusChangedAt: now,

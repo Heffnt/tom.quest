@@ -1249,6 +1249,8 @@ describe("stale autonomous requests", () => {
       mode: "autonomous" | "interactive";
       status: "requested" | "starting" | "running";
       ageHours: number;
+      // Hours since the row entered its status; defaults to ageHours.
+      statusHours?: number;
       sdkSessionId?: string;
     },
   ) {
@@ -1258,6 +1260,7 @@ describe("stale autonomous requests", () => {
         mode: patch.mode,
         status: patch.status,
         createdAt: Date.now() - patch.ageHours * HOUR,
+        statusChangedAt: Date.now() - (patch.statusHours ?? patch.ageHours) * HOUR,
         ...(patch.sdkSessionId !== undefined ? { sdkSessionId: patch.sdkSessionId } : {}),
       }),
     );
@@ -1321,7 +1324,7 @@ describe("stale autonomous requests", () => {
     expect(row?.endedReason).toBeUndefined();
   });
 
-  it("ends an autonomous starting row with no sdkSessionId older than a day", async () => {
+  it("ends an autonomous row starting for more than a day with no sdkSessionId", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await sessionAged(t, tom, { mode: "autonomous", status: "starting", ageHours: 25 });
@@ -1330,6 +1333,24 @@ describe("stale autonomous requests", () => {
     const row = await t.run((ctx) => ctx.db.get(sessionId));
     expect(row?.status).toBe("failed");
     expect(row?.endedReason).toBe("autonomous request expired before claim");
+  });
+
+  // A request claimed just before the TTL is still starting its SDK process:
+  // its creation age does not end it, only its time in starting would.
+  it("leaves a day-old autonomous row that entered starting a minute ago", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await sessionAged(t, tom, {
+      mode: "autonomous",
+      status: "starting",
+      ageHours: 25,
+      statusHours: 1 / 60,
+    });
+
+    expect(await poll(t)).toContain(sessionId);
+    const row = await t.run((ctx) => ctx.db.get(sessionId));
+    expect(row?.status).toBe("starting");
+    expect(row?.endedReason).toBeUndefined();
   });
 
   it("leaves an already-running autonomous row alone", async () => {
