@@ -201,7 +201,7 @@ ${WHAT_TTS_IS}
 
 <p>Each of these controls writes the field, writes one entry of kind <span class="mono">status-changed</span> carrying the old and new values, and stops. Nothing else is scheduled and no message is sent.</p>
 
-<p>After that: an active todo is a candidate for the picker that starts agent sessions every five minutes, and appears in today's column on the calendar when it is due, overdue, scheduled, ready or waking today; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom.</p>
+<p>After that: an active todo is one the box's work queue may list for an agent, and appears in today's column on the calendar when it is due, overdue, scheduled, ready or waking today; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom.</p>
 `,
 );
 
@@ -291,7 +291,7 @@ ${WHAT_TTS_IS}
   <tr><td class="mono">focus-item</td><td>Any other todo.</td><td>That Tom chose to begin this item now: open with the smallest concrete first step and work it with him.</td></tr>
   <tr><td class="mono">block</td><td>A placed span of calendar time that targets a category rather than one todo.</td><td>That Tom committed this span to the category, followed by a list of every active todo carrying that category, one line each with its timing, date, entry action and work description.</td></tr>
   <tr><td class="mono">weekly</td><td>The session list page only.</td><td>Nothing extra — the prompt is whatever was typed.</td></tr>
-  <tr><td class="mono">adhoc</td><td>The session list page, and every automatic exploration agent.</td><td>Nothing extra, or the exploration prompt.</td></tr>
+  <tr><td class="mono">adhoc</td><td>The session list page.</td><td>Nothing extra — the prompt is whatever was typed.</td></tr>
 </table>
 
 <p>The button beside a todo picks between the first two by that todo's readiness alone. There is one exception to the block prompt: for the category <span class="mono">code</span> no list is printed, because the work there is the mirror of code todos and their prepared briefs rather than a list in a prompt.</p>
@@ -432,9 +432,9 @@ ${WHAT_TTS_IS}
 
 <h2>What a block causes</h2>
 
-<p>The picker that starts agent sessions by itself, every five minutes, looks ahead 48 hours for blocks. A block targeting one todo makes that todo the work of the session; a block targeting a category makes the session take the todo in that category that has gone longest without being touched. The category <span class="mono">code</span> is excluded from that, having its own pipeline.</p>
+<p>No job starts a session from a block. A session on a category's block opens when Tom presses Open block session on it in the calendar.</p>
 
-<p>A block also appears in the message composed each hour describing what Tom is scheduled to be doing, alongside the mirrored calendar events. That message is composed but not sent: outbound messaging to Slack, the chat service, is switched off in TTS at present.</p>
+<p>A block overlapping a day is read into the calendar part of that day's morning digest, alongside the mirrored calendar events.</p>
 
 <h2>What deleting one does</h2>
 
@@ -444,7 +444,7 @@ ${WHAT_TTS_IS}
 
 <h2>What happens next, and who does it</h2>
 
-<p>The stroke disappears from the week grid immediately. The todo it was for goes back to having no time set aside for it, which means the session picker will no longer reach for it through a block, and the hourly schedule message will no longer mention it. Placing time for it again is another time note.</p>
+<p>The stroke disappears from the week grid immediately. The todo it was for goes back to having no time set aside for it, and the morning digest no longer reads the span. Placing time for it again is another time note.</p>
 `,
 );
 
@@ -495,7 +495,7 @@ ${WHAT_TTS_IS}
   <tr><td class="mono">source</td><td class="mono">repeating</td></tr>
 </table>
 
-<p>The two rows worth pausing on are readiness and actor. A minted instance arrives already at <span class="mono">prepared</span> and marked as Tom's own work, which means no agent is sent to prepare it: it is a thing he already knows how to do, and the picker that hands todos to agents leaves it alone.</p>
+<p>The two rows worth pausing on are readiness and actor. A minted instance arrives already at <span class="mono">prepared</span> and marked as Tom's own work, which means no agent is sent to prepare it: it is a thing he already knows how to do, and the box's work queue, which lists only todos marked for an agent, leaves it alone.</p>
 
 <h2>Why a rule cannot mint twice for the same day</h2>
 
