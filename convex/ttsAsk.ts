@@ -258,7 +258,7 @@ export const internalRecordDelegateObjection = internalMutation({
     // or "revert <n>" throws on a line he was offered: a `jarvis decide`
     // decision is an events row of kind "decision" whose subject is its askId
     // (convex/jarvis/intent.ts), and a line a producer put on the digest
-    // (ruling:, learning:, repo-proposal:, box-change:, golden:, ablation:)
+    // (ruling:, learning:, repo-proposal:, box-change:)
     // is an events row of kind "digest-line" whose subject is its askId
     // (convex/jarvis/outbox.ts listForDigest).
     const legacy =

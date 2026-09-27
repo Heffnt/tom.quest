@@ -40,14 +40,11 @@ import { EVALS_RUN, PRELUDE_DELIVERY, scoredNothing } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
-// NEW IN THIS FILE THIS PHASE. Nothing here was redacted before the verifiers
-// block, because every string this gather carried came off a row a worker had
-// already put through the filter. The scorecard's strings are prose out of a
-// model run and an objection's sentence is Slack text Tom typed, so both go
-// through the one choke point the rest of Convex uses (convex/ttsMerge.ts,
-// convex/ttsSearch.ts).
+// Every other string this gather carries came off a row a worker had already
+// put through the filter. An objection's sentence is Slack text Tom typed, so
+// it goes through the one choke point the rest of Convex uses
+// (convex/ttsMerge.ts, convex/ttsSearch.ts).
 import { redactSecrets } from "../shared/redact.mjs";
-import { listForDigest } from "./jarvis/outbox";
 
 export const WEEK_MS = 7 * DAY_MS;
 
@@ -81,13 +78,9 @@ const FAILURE_KINDS: readonly string[] = [
  * over the week. */
 export const SURFACED_THRESHOLD = 3;
 
-// ── The three verifiers, and how far back the audit's own score reaches ───────
-// THE THREE VERIFIERS ARE checks, the audit AND the evals; the merge gate
-// reads two of them, the tests and the audit, as its head rows. What follows measures two of them and says
-// so; NONE OF IT GATES ANYTHING. There is no new event kind, no new index, no
-// new row on any table: the judge's and the planted faults' numbers ride on the
-// weekly "evals-run" row the runner already writes, and the audit's own score is
-// arithmetic over rows the record already holds.
+// ── The audit's own score, and how far back it reaches ───────────────────────
+// It GATES NOTHING: it is arithmetic over rows the record already holds, and
+// the merge gate reads none of it.
 //
 /** The audit's score reaches four weeks back while every other fact here reaches
  * seven days, and the reason is the shape of an objection: Tom objects to a
@@ -100,77 +93,11 @@ export const AUDIT_OBJECTION_WEEKS = 4;
  * the word itself and only compares against AUDIT_APPROVED, so this spelling is
  * needed here and nowhere else). */
 const AUDIT_REFUSED = "REFUSED";
-/** How many rows of any one verifier list are kept, and how much of any one
- * string: a weekly fact is a report, not an archive, and the run that produced
- * these numbers still holds the whole of them. */
-export const VERIFIER_LIST_MAX = 20;
-export const VERIFIER_TEXT_MAX_CHARS = 300;
-
-// ── The ablation rule, kept in step with the runner ───────────────────────────
-// THE OTHER HOME IS worker/jobs/evals.mjs (MIN_ABLATION_CASES and
-// ablationFindings). One rule, two spellings, and that is a deliberate cost
-// rather than an oversight: that file imports node:child_process to drive git
-// and the model, and a Convex query that imported it would not bundle at all.
-// The constant and the formula below are copied from it verbatim; a change to
-// either belongs in both files in one commit.
-//
-/** One name's ablation over the week's set. `earned` is the finding itself:
- * false means the set passed more often WITHOUT the name than with it. */
-export type AblationFinding = {
-  name: string;
-  cases: number;
-  withPass: number;
-  withoutPass: number;
-  earned: boolean;
-};
-
-// How many cases a name needs behind it before its ablation is worth reading.
-// Below this the comparison is noise, and a removal proposal resting on two
-// cases is exactly the confident-and-wrong simplification this whole layer is
-// written against.
-export const MIN_ABLATION_CASES = 5;
-
-/**
- * Which names did not earn their tokens, computed over the WEEKLY SET and
- * never per case: a name that one case passes without is a coin toss, and the
- * question is whether the name is carrying its cases at all.
- *
- * REPORTED, NEVER GATED. The golden set is mined out of Tom's rulings rather
- * than designed for coverage, so a name whose cases pass without it may still
- * be preventing a failure mode the set does not contain. This says what the
- * set shows; what to remove is his.
- */
-export function ablationFindings(
-  ablation: readonly unknown[],
-): AblationFinding[] {
-  // KEYED ON THE KIND AND THE NAME TOGETHER, AND THE KIND DOES NOT TRAVEL.
-  // A layer and a skill can carry one name — `write` was a layer and is now a
-  // skill — and one key would add the two counts together and report a finding
-  // about neither, so the kind belongs in the key. It does NOT belong on the
-  // finding: these go to POST /tts/weekly-decisions, whose argument check is
-  // an exact object, and Convex refuses a field that check does not list. A
-  // finding carrying `kind` returns 400 and the week posts nothing to
-  // #tts-decisions — no unearned name and no graduated case, since both ride
-  // one request. The runner's copy (worker/jobs/evals.mjs) keys and emits the
-  // same way, which is the rule those two files carry between them.
-  const byName = new Map<string, AblationFinding>();
-  for (const raw of ablation) {
-    if (raw === null || typeof raw !== "object") continue;
-    const row = raw as Record<string, unknown>;
-    const name = str(row.name);
-    if (name === null) continue;
-    const key = `${str(row.kind) ?? ""}|${name}`;
-    const entry = byName.get(key) ?? { name, cases: 0, withPass: 0, withoutPass: 0, earned: false };
-    entry.cases += 1;
-    if (row.withPass === true) entry.withPass += 1;
-    if (row.withoutPass === true) entry.withoutPass += 1;
-    byName.set(key, entry);
-  }
-  return [...byName.values()]
-    .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
-    .map((entry) => ({ ...entry, earned: entry.withoutPass / entry.cases < entry.withPass / entry.cases }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
+/** How many rows of the audit's lists are kept, and how much of any one
+ * string: a weekly fact is a report, not an archive, and the record still
+ * holds the whole of them. */
+const VERIFIER_LIST_MAX = 20;
+const VERIFIER_TEXT_MAX_CHARS = 300;
 
 // ── What counts as Tom touching an item ──────────────────────────────────────
 // ONE HOME. "Surfaced three times and untouched" means Tom did nothing with
@@ -268,51 +195,15 @@ type WeeklyFacts = {
     clean: number;
     regressions: { day: string; repo: string; sha: string; pass: number; items: number; failure: { id: string; partition: string } | null }[];
   };
-  // ── The two evals facts that live on the run row ───────────────────────────
-  // ABSENT IS ABSENT, NEVER ZERO. Both are read off an "evals-run" row, and a
-  // row written before phase 7 carries neither — the same posture the runner
-  // takes with `regressions: null` (Jarvis's worker/jobs/evals.mjs
-  // stampAgainstBase): a
-  // run that was never asked the question has no answer to it, and a zero here
-  // would read as "the arm ran and found nothing".
-  //
-  // The THIRD new evals fact, the golden set itself, is NOT here. Graduation is
-  // a file rewrite in the Jarvis repository's evals/golden/** (its
-  // scripts/graduate-golden.mjs) that never reaches Convex, and this gather has
-  // no filesystem — so the weekly job reads it off a checkout and puts it on the
-  // facts it renders, the way it already reads last week's agenda out of the
-  // WikiTom checkout (Jarvis's worker/jobs/weekly.mjs readGoldenSet).
-  /** The names whose ablation the week's run scored, one entry per name with
-   * at least MIN_ABLATION_CASES cases behind it; null when no run row in the
-   * window carried an ablation arm at all. */
-  ablation: AblationFinding[] | null;
-  /** The cases that cost more tokens at head than at base; null when no run
-   * row in the window carried the comparison. */
-  efficiency: { rises: { id: string; headTokens: number; baseTokens: number }[] } | null;
-  // ── What the three verifiers are worth, this week ──────────────────────────
-  // ALWAYS PRESENT, each member independently null. The key is always here so
-  // the renderer has one thing to look for; each member is null when its own
-  // measurement was not made, for the reason `ablation` is null above — a
-  // measurement nobody took has no number, and a zero would read as one.
-  //
-  // REPORTS AND NEVER GATES. Not one of these numbers is read by
-  // convex/ttsMerge.ts: the gate keeps its two head rows, and a judge that
-  // agreed with eighteen of twenty of Tom's labels is evidence about the judge,
-  // not a verdict on anything it scored.
+  // ── What the audit is worth, this week ─────────────────────────────────────
+  // The key is always here, so the renderer (Jarvis worker/jobs/weekly.mjs)
+  // has one thing to look for. REPORTS AND NEVER GATES: convex/ttsMerge.ts
+  // reads none of it.
   verifiers: {
-    /** The evals judge replayed against Tom's own labels — how often the judge
-     * agreed with him, and every case where it did not. Read off the weekly
-     * run row's `verifierScorecard` (worker/jobs/evals.mjs --weekly). */
-    judge: {
-      items: number;
-      agreed: number;
-      skipped: number;
-      disagreements: { runId: string; tom: "good" | "bad"; judge: "pass" | "fail"; reason: string }[];
-      skips: { runId: string; reason: string }[];
-    } | null;
     /** The audit against Tom's later objections — computed here (below), not
      * read off a row: it is arithmetic over the event record and the record is
-     * here. */
+     * here. Null when there was nothing to score: a measurement nobody took has
+     * no number, and a zero would read as one. */
     audit: {
       weeks: number;
       merges: number;
@@ -320,19 +211,6 @@ type WeeklyFacts = {
       objections: { sha: string; approvedAt: number; objectedAt: number; sentence: string }[];
       landedAnyway: { sha: string; refusedAt: number; mergedAt: number }[];
     } | null;
-    /** The planted-fault audits: heads with a known defect in them, and what
-     * the audit answered. Read off the same scorecard. */
-    faults: {
-      ran: boolean;
-      reason: string;
-      items: number;
-      refused: number;
-      results: { id: string; verdict: string }[];
-    } | null;
-    /** The one sentence the run wrote about what these numbers do and do not
-     * mean; null when the row carried none, and the renderer then prints its
-     * own standing one. */
-    caveat: string | null;
   };
   jobFailures: { job: string; count: number; lines: { at: number; error: string }[] }[];
   threads: {
@@ -362,81 +240,6 @@ function verifierText(value: unknown): string | null {
   return s === null ? null : redactSecrets(s).slice(0, VERIFIER_TEXT_MAX_CHARS);
 }
 
-/** A row's `data` is `v.any()`, so every member below is checked rather than
- * trusted and an unreadable one is DROPPED rather than carried out half-read.
- * A malformed scorecard costs its own lines, never the whole gather. */
-function rowsOf(value: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(value)) return [];
-  const rows: Record<string, unknown>[] = [];
-  for (const raw of value) {
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
-    rows.push(raw as Record<string, unknown>);
-  }
-  return rows;
-}
-
-/** The judge half of a run's `verifierScorecard`, or null when the row has
- * nothing readable there. */
-function readJudgeScorecard(raw: unknown): WeeklyFacts["verifiers"]["judge"] {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const j = raw as Record<string, unknown>;
-  const disagreements: NonNullable<WeeklyFacts["verifiers"]["judge"]>["disagreements"] = [];
-  for (const row of rowsOf(j.disagreements)) {
-    // THE CAP IS ON WHAT IS KEPT, not on what is read: a list whose first rows
-    // are unreadable still reports twenty readable ones.
-    if (disagreements.length >= VERIFIER_LIST_MAX) break;
-    const runId = verifierText(row.runId);
-    const tom = str(row.tom);
-    const judge = str(row.judge);
-    // His label is one of two words and the judge's is one of two others; a
-    // third word is a row this gather cannot read and does not report.
-    if (runId === null || (tom !== "good" && tom !== "bad") || (judge !== "pass" && judge !== "fail")) continue;
-    disagreements.push({ runId, tom, judge, reason: verifierText(row.reason) ?? "" });
-  }
-  const skips: NonNullable<WeeklyFacts["verifiers"]["judge"]>["skips"] = [];
-  for (const row of rowsOf(j.skips)) {
-    if (skips.length >= VERIFIER_LIST_MAX) break;
-    const runId = verifierText(row.runId);
-    const reason = verifierText(row.reason);
-    // ONE SKIP IS NOT ABOUT A RUN AT ALL: the runner writes `runId: null` when
-    // the label door itself could not be read (worker/jobs/evals.mjs
-    // judgeAgreement), and that is the loudest thing the judge arm can say —
-    // the whole measurement failed. It is kept with an empty id, and the
-    // renderer prints it without one, rather than dropped as unreadable.
-    if (runId === null && reason === null) continue;
-    skips.push({ runId: runId ?? "", reason: reason ?? "" });
-  }
-  return {
-    items: num(j.items) ?? 0,
-    agreed: num(j.agreed) ?? 0,
-    skipped: num(j.skipped) ?? 0,
-    disagreements,
-    skips,
-  };
-}
-
-/** The planted-fault half of the same object, or null. */
-export function readFaultsScorecard(raw: unknown): WeeklyFacts["verifiers"]["faults"] {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const f = raw as Record<string, unknown>;
-  const results: NonNullable<WeeklyFacts["verifiers"]["faults"]>["results"] = [];
-  for (const row of rowsOf(f.results)) {
-    if (results.length >= VERIFIER_LIST_MAX) break;
-    const id = verifierText(row.id);
-    const verdict = verifierText(row.verdict);
-    if (id === null || verdict === null) continue;
-    results.push({ id, verdict });
-  }
-  return {
-    // `ran` is the arm saying it ran, and anything but `true` is it saying it
-    // did not — the same fail-closed reading the merge gate takes of a check.
-    ran: f.ran === true,
-    reason: verifierText(f.reason) ?? "",
-    items: num(f.items) ?? 0,
-    refused: num(f.refused) ?? 0,
-    results,
-  };
-}
 
 /** YYYY-MM-DD from a frontmatter value, or null when it is not one — a real
  * day, round-tripped by isIsoDay, so "2026-02-30" is not one. */
@@ -832,65 +635,17 @@ export async function gatherWeeklyFacts(
   instructionsLoaded.missingProjectAgents.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
 
   const evals: WeeklyFacts["evals"] = { runs: 0, clean: 0, regressions: [] };
-  // ONE RUN'S ARM, NOT THE WEEK'S ROWS ADDED UP. The ablation arm and the
-  // efficiency comparison are properties of a single run over a single set, so
-  // the newest row that carries each is the one reported. Adding a week's runs
-  // together would count one case once per run and could carry a name over
-  // MIN_ABLATION_CASES on nothing but a rerun.
-  let ablation: WeeklyFacts["ablation"] = null;
-  let ablationAt = -1;
-  let efficiency: WeeklyFacts["efficiency"] = null;
-  let efficiencyAt = -1;
-  // The verifier scorecard rides on the SAME rows and is read the same way and
-  // for the same reason: it is one run's measurement of the judge and of the
-  // planted faults, not the week's runs added together.
-  let verifierJudge: WeeklyFacts["verifiers"]["judge"] = null;
-  let verifierFaults: WeeklyFacts["verifiers"]["faults"] = null;
-  let verifierCaveat: string | null = null;
-  let scorecardAt = -1;
   for (const e of await eventsOfKind(EVALS_RUN)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
-    // A ROW IS NOT A RUN. Counting the three rows that score nothing said three
-    // untrue things at once — they were runs the week did, they were CLEAN runs
-    // (`regressions: null` fell through `?? 0` to zero), and, being the newest
-    // rows, their empty `ablation: []` and `efficiency.rises: []` replaced the
-    // real measurement off the last run that actually scored the set. The
-    // superseded row is the frequent one and is what made this visible, but the
-    // other two were already doing it.
+    // A ROW IS NOT A RUN. Counting the three rows that score nothing said two
+    // untrue things at once — they were runs the week did, and they were CLEAN
+    // runs (`regressions: null` fell through `?? 0` to zero).
     //
     // The shared helper is also what Convex uses for merge evidence and the box
     // uses for baselines: a second spelling here could count a row either side
     // had already refused.
     if (scoredNothing(d)) continue;
     evals.runs++;
-    if (Array.isArray(d.ablation) && e.at > ablationAt) {
-      ablation = ablationFindings(d.ablation);
-      ablationAt = e.at;
-    }
-    const eff = d.efficiency;
-    if (eff !== null && typeof eff === "object" && Array.isArray((eff as Record<string, unknown>).rises) && e.at > efficiencyAt) {
-      const rises: WeeklyFacts["efficiency"] = { rises: [] };
-      for (const raw of (eff as Record<string, unknown>).rises as unknown[]) {
-        if (raw === null || typeof raw !== "object") continue;
-        const row = raw as Record<string, unknown>;
-        const id = str(row.id);
-        const headTokens = num(row.headTokens);
-        const baseTokens = num(row.baseTokens);
-        if (id === null || headTokens === null || baseTokens === null) continue;
-        rises.rises.push({ id, headTokens, baseTokens });
-      }
-      rises.rises.sort((a, b) => a.id.localeCompare(b.id));
-      efficiency = rises;
-      efficiencyAt = e.at;
-    }
-    const card = d.verifierScorecard;
-    if (card !== null && typeof card === "object" && !Array.isArray(card) && e.at > scorecardAt) {
-      const c = card as Record<string, unknown>;
-      verifierJudge = readJudgeScorecard(c.judge);
-      verifierFaults = readFaultsScorecard(c.faults);
-      verifierCaveat = verifierText(c.caveat);
-      scorecardAt = e.at;
-    }
     const regressions = num(d.regressions);
     // Null is not zero: a partial runner failure has scored some items but no
     // trustworthy comparison, and --weekly or a by-hand run with no base has
@@ -998,8 +753,7 @@ export async function gatherWeeklyFacts(
   }
   landedAnyway.sort((a, b) => a.mergedAt - b.mergedAt);
   // NULL WHEN THERE IS NOTHING TO SCORE. A window with no audited merge in it
-  // renders no line at all, rather than a line saying zero of zero — the same
-  // absent-is-not-zero rule the ablation arm above is written under.
+  // renders no line at all, rather than a line saying zero of zero.
   const verifierAudit: WeeklyFacts["verifiers"]["audit"] =
     auditedCount === 0
       ? null
@@ -1080,14 +834,7 @@ export async function gatherWeeklyFacts(
     preludes,
     instructionsLoaded,
     evals,
-    ablation,
-    efficiency,
-    verifiers: {
-      judge: verifierJudge,
-      audit: verifierAudit,
-      faults: verifierFaults,
-      caveat: verifierCaveat,
-    },
+    verifiers: { audit: verifierAudit },
     jobFailures,
     threads,
     readiness: { prepared, unprepared },
@@ -1147,84 +894,5 @@ export const internalRecordAreaReviewed = internalMutation({
       key: path,
       data: { path, reviewedOn },
     });
-  },
-});
-
-// ── The week's two decisions, into #tts-decisions ────────────────────────────
-// A capability case graduating into the regression set, and a name whose cases
-// the week says pass without it, are both decisions taken without him: the
-// first changes what gates every later merge, the second is what the next
-// simplification pass will act on. They go where every decision taken without
-// him goes — ttsSync.sendDecision, the ONE #tts-decisions door — so "revert" in
-// the thread is already wired to internalRecordDelegateObjection and the
-// morning's objection list already picks them up. No new channel, no new
-// poster, no new Slack subject kind.
-//
-// THE askId IS THE IDEMPOTENCY KEY AND THERE IS NO SECOND ONE. sendDecision
-// claims `object:<askId>` for the TTS DAY before it posts, so the same
-// graduation offered twice on one day posts once — which is exactly the repeat
-// this has: a `--overwrite` rerun of the Friday job. It is a DAY claim and not
-// a forever claim; a graduation re-offered a week later would post again, and
-// the item ids are stable, so the caller offers each set once per run.
-//
-// NEITHER FINDING GATES ANYTHING. The ablation line is a candidate for the
-// weekly simplification pass to read, not an instruction to remove a name: the
-// golden set is mined out of Tom's rulings rather than designed for coverage,
-// so a name whose cases pass without it may still be preventing a failure mode
-// the set does not contain.
-//
-// ITS DOOR IS NOT YET CUT. Every other worker-facing mutation here is reached
-// through a route in convex/http.ts; this one needs
-// `POST /tts/weekly-decisions` there, which is another agent's file this round.
-// The Friday job posts to that path already (worker/jobs/weekly.mjs), so until
-// the route lands the post is one recorded weekly-failure a week naming exactly
-// what is missing — which is the loudest quiet way to carry a seam.
-export const internalRecordWeeklyEvalsDecisions = internalMutation({
-  args: {
-    // The week the ablation finding is about, and the half of its askId that
-    // makes one week's finding a different thread from the next week's.
-    isoWeek: v.string(),
-    graduated: v.optional(v.array(v.object({ id: v.string(), sentence: v.string() }))),
-    ablation: v.optional(
-      v.array(
-        v.object({
-          name: v.string(),
-          cases: v.number(),
-          withPass: v.number(),
-          withoutPass: v.number(),
-          earned: v.boolean(),
-        }),
-      ),
-    ),
-  },
-  handler: async (ctx, { isoWeek, graduated, ablation }) => {
-    if (isoWeek.trim() === "") throw new Error("isoWeek (non-empty) is what makes one week's ablation thread its own");
-    let sent = 0;
-    for (const item of graduated ?? []) {
-      const graduatedLine = await listForDigest(ctx, {
-        section: "decisions",
-        askId: `golden:${item.id}`,
-        decision: `a capability case graduated into the regression set: ${item.sentence}`,
-        reason: "it passed every trial of the weekly run, so from now on a merge that breaks it is a regression",
-      });
-      if (graduatedLine.listed) sent++;
-    }
-    // Only the names that did NOT earn their tokens are a decision. A name
-    // whose cases need it is the system working, and the objection list is for
-    // what he might want reverted.
-    for (const finding of (ablation ?? []).filter((f) => !f.earned)) {
-      const ablationLine = await listForDigest(ctx, {
-        section: "decisions",
-        askId: `ablation:${finding.name}:${isoWeek}`,
-        decision:
-          `${finding.name} did not earn its tokens this week: ${finding.cases} cases, ` +
-          `${finding.withPass} pass with it, ${finding.withoutPass} without`,
-        reason:
-          "the weekly simplification pass reads this as a candidate to drop; it gates nothing, and a name the " +
-          "golden set passes without may still be holding up a failure mode the set does not contain",
-      });
-      if (ablationLine.listed) sent++;
-    }
-    return { sent };
   },
 });

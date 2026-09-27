@@ -1,6 +1,5 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
@@ -9,10 +8,6 @@ import {
   AUDIT_OBJECTION_WEEKS,
   EVALS_RUN,
   INSTRUCTIONS_LOADED,
-  MIN_ABLATION_CASES,
-  VERIFIER_LIST_MAX,
-  VERIFIER_TEXT_MAX_CHARS,
-  ablationFindings,
   LEARNING_REVERTED,
   LEARNING_REVERT_FAILED,
   SURFACED_THRESHOLD,
@@ -139,13 +134,9 @@ describe("gatherWeeklyFacts", () => {
       missingWikiTomSessions: [], missingProjectAgents: [],
     });
     expect(f.evals).toEqual({ runs: 0, clean: 0, regressions: [] });
-    // ABSENT, NOT ZERO: no run row was asked the question, so there is no
-    // answer — an empty array here would read as "the arm ran and found none".
-    expect(f.ablation).toBeNull();
-    expect(f.efficiency).toBeNull();
-    // The key is always there; each of the three measurements is absent, not
-    // zero, and the renderer prints no line for any of them.
-    expect(f.verifiers).toEqual({ judge: null, audit: null, faults: null, caveat: null });
+    // The key is always there; the audit's score is absent, not zero, and the
+    // renderer prints no line for it.
+    expect(f.verifiers).toEqual({ audit: null });
     expect(f.jobFailures).toEqual([]);
     expect(f.threads).toEqual([]);
     expect(f.readiness).toEqual({ prepared: 0, unprepared: 0 });
@@ -503,88 +494,22 @@ describe("gatherWeeklyFacts", () => {
     expect(f.learning.changes).toBe(0);
   });
 
-  // ── The two evals facts that ride on the run row ───────────────────────────
-  it("names only the layers with enough cases behind them, and says which earned their tokens", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    const rows = [
-      // `know`: five cases, four pass with it and two without — it earns them.
-      ...Array.from({ length: 5 }, (_, i) => ({
-        id: `c${i}`, name: "know", kind: "layer", withPass: i < 4, withoutPass: i < 2,
-      })),
-      // `write`: five cases, and the set passes more often WITHOUT it.
-      ...Array.from({ length: 5 }, (_, i) => ({
-        id: `c${i}`, name: "write", kind: "layer", withPass: i < 2, withoutPass: i < 4,
-      })),
-      // `operate`: four cases, one short of the threshold — noise, and not said.
-      ...Array.from({ length: 4 }, (_, i) => ({
-        id: `c${i}`, name: "operate", kind: "layer", withPass: false, withoutPass: true,
-      })),
-    ];
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - DAY, { data: { weekly: true, regressions: 0, ablation: rows } });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.ablation).toEqual([
-      { name: "know", cases: 5, withPass: 4, withoutPass: 2, earned: true },
-      { name: "write", cases: 5, withPass: 2, withoutPass: 4, earned: false },
-    ]);
-  });
-
-  it("reads the ablation arm and the token rises off the NEWEST run row, never the week's rows added up", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    const arm = (pass: boolean) =>
-      Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, name: "know", kind: "layer", withPass: pass, withoutPass: false }));
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - 3 * DAY, {
-        data: { weekly: true, regressions: 0, ablation: arm(false), efficiency: { cases: 6, unknown: 0, rises: [{ id: "old", headTokens: 9, baseTokens: 1 }] } },
-      });
-      await event(ctx, EVALS_RUN, now - DAY, {
-        data: { weekly: true, regressions: 0, ablation: arm(true), efficiency: { cases: 6, unknown: 0, rises: [{ id: "new", headTokens: 1400, baseTokens: 900 }] } },
-      });
-    });
-    const f = await gather(t, now + 1000);
-    // Six cases, not twelve: the newer run's arm stands alone.
-    expect(f.ablation).toEqual([{ name: "know", cases: 6, withPass: 6, withoutPass: 0, earned: true }]);
-    expect(f.efficiency).toEqual({ rises: [{ id: "new", headTokens: 1400, baseTokens: 900 }] });
-  });
-
-  it("leaves both null when the week's only run row is an older one that carries neither", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - DAY, { data: { day: "2026-09-10", repo: "tom.quest", regressions: 0, pass: 40, items: 40 } });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.evals.runs).toBe(1);
-    expect(f.ablation).toBeNull();
-    expect(f.efficiency).toBeNull();
-  });
-
   // A ROW IS NOT A RUN. Three kinds of evals-run row are written in a POST
   // each and score nothing: a branch that touched no watched path, a head a
   // later push replaced, and a sha the box could not check out. Counted, they
-  // said three untrue things at once — runs the week did, CLEAN runs (their
-  // `regressions: null` fell through to zero), and, being newest, their empty
-  // arrays replaced the real ablation and token measurements.
-  it("counts no row that scored nothing, and lets none of them erase the week's measurement", async () => {
+  // said two untrue things at once — runs the week did, and CLEAN runs (their
+  // `regressions: null` fell through to zero).
+  it("counts no row that scored nothing", async () => {
     const t = convexTest({ schema, modules });
     const now = Date.now();
-    const arm = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, name: "know", kind: "layer", withPass: true, withoutPass: false }));
     await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - 3 * DAY, {
-        data: { weekly: true, regressions: 0, ablation: arm, efficiency: { cases: 6, unknown: 0, rises: [{ id: "real", headTokens: 1400, baseTokens: 900 }] } },
-      });
-      // The three that scored nothing, every one of them NEWER than the real run.
-      await event(ctx, EVALS_RUN, now - 2 * DAY, { data: { sha: "aaa", unaffected: true, regressions: 0, ablation: [], efficiency: { cases: 0, unknown: 0, rises: [] } } });
-      await event(ctx, EVALS_RUN, now - DAY, { data: { sha: "bbb", superseded: true, supersededBy: "ccc", error: "superseded by ccc", regressions: null, ablation: [], efficiency: { cases: 0, unknown: 0, rises: [] } } });
-      await event(ctx, EVALS_RUN, now - DAY + 1, { data: { sha: "ddd", error: "could not fetch ddd", regressions: null, ablation: [], efficiency: { cases: 0, unknown: 0, rises: [] } } });
+      await event(ctx, EVALS_RUN, now - 3 * DAY, { data: { weekly: true, regressions: 0 } });
+      await event(ctx, EVALS_RUN, now - 2 * DAY, { data: { sha: "aaa", unaffected: true, regressions: 0 } });
+      await event(ctx, EVALS_RUN, now - DAY, { data: { sha: "bbb", superseded: true, supersededBy: "ccc", error: "superseded by ccc", regressions: null } });
+      await event(ctx, EVALS_RUN, now - DAY + 1, { data: { sha: "ddd", error: "could not fetch ddd", regressions: null } });
     });
     const f = await gather(t, now + 1000);
     expect(f.evals).toEqual({ runs: 1, clean: 1, regressions: [] });
-    expect(f.ablation).toEqual([{ name: "know", cases: 6, withPass: 6, withoutPass: 0, earned: true }]);
-    expect(f.efficiency).toEqual({ rises: [{ id: "real", headTokens: 1400, baseTokens: 900 }] });
   });
 
   it("counts a partial runner failure without calling its comparison clean", async () => {
@@ -597,177 +522,6 @@ describe("gatherWeeklyFacts", () => {
     });
     const f = await gather(t, now + 1000);
     expect(f.evals).toEqual({ runs: 1, clean: 0, regressions: [] });
-  });
-
-  // ── The three verifiers ───────────────────────────────────────────────────
-  // The judge's and the planted faults' numbers ride on the weekly run row
-  // (worker/jobs/evals.mjs --weekly writes `verifierScorecard`); the audit's
-  // own score is computed here out of rows the record already holds. Not one
-  // of these numbers reaches the merge gate.
-  const SCORECARD = {
-    at: 1,
-    caveat: "twenty of his labels is what the judge's number rests on",
-    judge: {
-      items: 20,
-      agreed: 18,
-      skipped: 2,
-      disagreements: [{ runId: "run-a", tom: "good", judge: "fail", reason: "it wanted a citation" }],
-      skips: [{ runId: "run-b", reason: "the transcript was gone" }],
-    },
-    faults: {
-      ran: true,
-      reason: "the first Saturday of the month",
-      items: 3,
-      refused: 2,
-      results: [{ id: "fault-1", verdict: "REFUSED" }, { id: "fault-2", verdict: "APPROVED" }],
-    },
-  };
-
-  it("reads the judge and the planted faults off the weekly run row's scorecard", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - DAY, {
-        data: { weekly: true, regressions: 0, verifierScorecard: SCORECARD },
-      });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.verifiers.judge).toEqual({
-      items: 20,
-      agreed: 18,
-      skipped: 2,
-      disagreements: [{ runId: "run-a", tom: "good", judge: "fail", reason: "it wanted a citation" }],
-      skips: [{ runId: "run-b", reason: "the transcript was gone" }],
-    });
-    expect(f.verifiers.faults).toEqual({
-      ran: true,
-      reason: "the first Saturday of the month",
-      items: 3,
-      refused: 2,
-      results: [{ id: "fault-1", verdict: "REFUSED" }, { id: "fault-2", verdict: "APPROVED" }],
-    });
-    expect(f.verifiers.caveat).toBe("twenty of his labels is what the judge's number rests on");
-  });
-
-  // ONE RUN'S MEASUREMENT, the rule the ablation arm above is read under: two
-  // runs in one window are not forty labels, they are one run's twenty twice.
-  it("reads the scorecard off the NEWEST row that carries one", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - 3 * DAY, {
-        data: { weekly: true, regressions: 0, verifierScorecard: SCORECARD },
-      });
-      await event(ctx, EVALS_RUN, now - DAY, {
-        data: {
-          weekly: true,
-          regressions: 0,
-          verifierScorecard: {
-            ...SCORECARD,
-            caveat: "the newer run",
-            judge: { ...SCORECARD.judge, items: 20, agreed: 5, skipped: 0, disagreements: [], skips: [] },
-            faults: { ...SCORECARD.faults, refused: 3, results: [] },
-          },
-        },
-      });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.verifiers.judge).toMatchObject({ agreed: 5, items: 20, disagreements: [] });
-    expect(f.verifiers.faults).toMatchObject({ refused: 3, results: [] });
-    expect(f.verifiers.caveat).toBe("the newer run");
-  });
-
-  // The arm's one skip that names no run — the label door itself unreadable
-  // (worker/jobs/evals.mjs judgeAgreement writes `runId: null` there). It is
-  // the whole measurement failing and must not be dropped as unreadable.
-  it("keeps the skip that names no run, with an empty id", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - DAY, {
-        data: {
-          weekly: true,
-          regressions: 0,
-          verifierScorecard: {
-            caveat: "nothing was measured",
-            judge: {
-              items: 0, agreed: 0, skipped: 0, disagreements: [],
-              skips: [{ runId: null, reason: "the label door could not be read: 503" }, { runId: null, reason: null }],
-            },
-            faults: { ran: false, reason: "not the first Saturday", items: 0, refused: 0, results: [] },
-          },
-        },
-      });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.verifiers.judge?.skips).toEqual([{ runId: "", reason: "the label door could not be read: 503" }]);
-  });
-
-  it("leaves the judge and the faults null when no run row in the window carried a scorecard", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - DAY, { data: { weekly: true, regressions: 0, pass: 40, items: 40 } });
-      // One with a scorecard, but a week too old for this window.
-      await event(ctx, EVALS_RUN, now - 9 * DAY, {
-        data: { weekly: true, regressions: 0, verifierScorecard: SCORECARD },
-      });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.evals.runs).toBe(1);
-    expect(f.verifiers.judge).toBeNull();
-    expect(f.verifiers.faults).toBeNull();
-    expect(f.verifiers.caveat).toBeNull();
-  });
-
-  // A row's data is v.any(): the gather must come back with what it can read
-  // and nothing else, never throw, and never carry an unbounded list out.
-  it("reads a malformed scorecard without throwing, capped and with its unreadable members dropped", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    const long = "x".repeat(500);
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - DAY, {
-        data: {
-          weekly: true,
-          regressions: 0,
-          verifierScorecard: {
-            caveat: 7,
-            judge: {
-              items: "twenty",
-              agreed: null,
-              skipped: 2,
-              // The first row's label is a word this gather cannot read; the
-              // cap is on what is kept, so twenty readable ones still come out.
-              disagreements: [
-                { runId: "r-bad", tom: "maybe", judge: "fail", reason: "an unreadable label" },
-                ...Array.from({ length: 25 }, (_, i) => ({
-                  runId: `r${i}`, tom: "good", judge: "fail", reason: long,
-                })),
-              ],
-              skips: "not a list at all",
-              somethingElse: "not a member of this shape",
-            },
-            faults: [1, 2, 3],
-          },
-        },
-      });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.verifiers.judge).not.toBeNull();
-    expect(f.verifiers.judge?.items).toBe(0);
-    expect(f.verifiers.judge?.agreed).toBe(0);
-    expect(f.verifiers.judge?.skipped).toBe(2);
-    expect(f.verifiers.judge?.disagreements).toHaveLength(VERIFIER_LIST_MAX);
-    expect(f.verifiers.judge?.disagreements.map((d) => d.runId)).not.toContain("r-bad");
-    expect(f.verifiers.judge?.disagreements[0].reason).toHaveLength(VERIFIER_TEXT_MAX_CHARS);
-    expect(f.verifiers.judge?.skips).toEqual([]);
-    expect(f.verifiers.judge?.disagreements[0].runId).toBe("r0");
-    expect(f.verifiers.faults).toBeNull();
-    expect(f.verifiers.caveat).toBeNull();
-    expect(Object.keys(f.verifiers.judge ?? {}).sort()).toEqual(
-      ["agreed", "disagreements", "items", "skipped", "skips"],
-    );
   });
 
   // ── The audit against his later objections ────────────────────────────────
@@ -875,22 +629,6 @@ describe("gatherWeeklyFacts", () => {
     });
     const f = await gather(t, now + 1000);
     expect(f.verifiers.audit).toMatchObject({ merges: 1, objected: 0, objections: [] });
-  });
-});
-
-describe("ablationFindings", () => {
-  it("is the runner's own rule: the weekly set, and nothing under the threshold", () => {
-    const rows = Array.from({ length: MIN_ABLATION_CASES - 1 }, (_, i) => ({
-      id: `c${i}`, name: "know", kind: "layer", withPass: true, withoutPass: false,
-    }));
-    expect(ablationFindings(rows)).toEqual([]);
-    expect(
-      ablationFindings([...rows, { id: "last", name: "know", kind: "layer", withPass: true, withoutPass: false }]),
-    ).toEqual([{ name: "know", cases: MIN_ABLATION_CASES, withPass: MIN_ABLATION_CASES, withoutPass: 0, earned: true }]);
-  });
-
-  it("reads a row that is not a row as no row at all", () => {
-    expect(ablationFindings([null, 7, {}, { name: "" }])).toEqual([]);
   });
 });
 
@@ -1149,114 +887,5 @@ describe("GET /tts/weekly-input", () => {
     // skills line, and nothing else. The assembler's
     // exact output is pinned in convex/ttsContext.test.ts.
     expect(body.writingStandard).toBe("published map + operate\n\noperate layer\n\n── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
-  });
-});
-
-// ── The week's two decisions ─────────────────────────────────────────────────
-// What is pinned here is that each finding becomes exactly ONE digest-line
-// row on the digest's objection list, keyed on its askId, that a name whose
-// cases need it is not a decision at all, that nothing posts to Slack, and
-// that the askId is the whole idempotency key — offered twice in one day, it
-// is listed once.
-describe("internalRecordWeeklyEvalsDecisions", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
-  });
-
-  // The decisions a week's run put on the digest's objection list: its
-  // digest-line rows (convex/jarvis/outbox.ts listForDigest), oldest first.
-  // Nothing posts to Slack, so every read also checks no send was scheduled.
-  function decisions(t: ReturnType<typeof convexTest>) {
-    return t.run(async (ctx) => {
-      const slack = (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-        job.name.includes("ttsSync"),
-      );
-      expect(slack).toEqual([]);
-      const rows = (await ctx.db.query("events").collect()).filter((row) => row.kind === "digest-line");
-      return rows.map((row) => {
-        expect(row.subject).toBe((row.data as { askId: string }).askId);
-        return row.data as { section: string; askId: string; decision: string; reason?: string };
-      });
-    });
-  }
-
-  it("lists one decision per graduation in the digest, naming the case and Tom's own sentence", async () => {
-    const t = convexTest(schema, modules);
-    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
-      isoWeek: "2026-W37",
-      graduated: [
-        { id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" },
-        { id: "run-ruling-k97x2m4bq1zp", sentence: "name the cost of each side" },
-      ],
-    });
-    const sent = await decisions(t);
-    expect(sent).toHaveLength(2);
-    expect(sent.map((line) => line.section)).toEqual(["decisions", "decisions"]);
-    expect(sent[0].askId).toBe("golden:run-ruling-8fb2d10a4c3e");
-    expect(sent[0].decision).toBe(
-      "a capability case graduated into the regression set: say what the batch is for before you list its tasks",
-    );
-    expect(sent[0].reason).toBe(
-      "it passed every trial of the weekly run, so from now on a merge that breaks it is a regression",
-    );
-    expect(sent[1].askId).toBe("golden:run-ruling-k97x2m4bq1zp");
-  });
-
-  it("lists a decision in the digest for a name that did not earn its tokens, and none for one that did", async () => {
-    const t = convexTest(schema, modules);
-    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
-      isoWeek: "2026-W37",
-      ablation: [
-        { name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false },
-        { name: "write", cases: 9, withPass: 8, withoutPass: 2, earned: true },
-      ],
-    });
-    const sent = await decisions(t);
-    expect(sent).toHaveLength(1);
-    expect(sent[0].section).toBe("decisions");
-    // The week is half the ask id: next week's finding about `know` is its own
-    // line, not a repeat of this one.
-    expect(sent[0].askId).toBe("ablation:know:2026-W37");
-    expect(sent[0].decision).toBe("know did not earn its tokens this week: 7 cases, 5 pass with it, 6 without");
-    expect(sent[0].reason).toContain("the weekly simplification pass");
-    expect(sent[0].reason).toContain("gates nothing");
-  });
-
-  it("lists nothing when the week graduated nothing and every name earned its tokens", async () => {
-    const t = convexTest(schema, modules);
-    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
-      isoWeek: "2026-W37",
-      graduated: [],
-      ablation: [{ name: "know", cases: 7, withPass: 6, withoutPass: 1, earned: true }],
-    });
-    expect(await decisions(t)).toEqual([]);
-  });
-
-  it("refuses a week with no name, because the ablation thread is keyed on it", async () => {
-    const t = convexTest(schema, modules);
-    await expect(
-      t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, { isoWeek: "  " }),
-    ).rejects.toThrow(/isoWeek/);
-  });
-
-  // THE askId IS THE IDEMPOTENCY KEY. A graduation offered twice in a day — a
-  // `--overwrite` rerun of the Friday job — is one line on the digest
-  // (convex/jarvis/outbox.ts listForDigest), and nothing is posted.
-  it("lists a graduation offered twice in a day once, and posts nothing", async () => {
-    const t = convexTest(schema, modules);
-    const args = {
-      isoWeek: "2026-W39",
-      graduated: [{ id: "run-ruling-8fb2d10a4c3e", sentence: "name the cost of each side" }],
-    };
-    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, args);
-    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, args);
-    const lines = await t.run(async (ctx) =>
-      (await ctx.db.query("events").collect()).filter((row) => row.kind === "digest-line"),
-    );
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ subject: "golden:run-ruling-8fb2d10a4c3e", data: { section: "decisions" } });
-    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(scheduled.filter((job) => job.name.includes("ttsSync"))).toEqual([]);
   });
 });
