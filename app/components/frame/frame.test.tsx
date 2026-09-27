@@ -3,7 +3,8 @@ import path from "node:path";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dragSize, layerOrder, pullDistance, releaseDrag, resolveBounds, topmostOpen } from "./rules";
-import { useFrameStore } from "./frame-store";
+import { storedFrameState, useFrameStore } from "./frame-store";
+import { storedVariant } from "./variants";
 import { prepareExplainer } from "./info";
 import Frame from "./frame";
 
@@ -202,5 +203,65 @@ describe("<Frame>", () => {
     act(() => fireEvent.keyDown(window, { key: "a" }));
     expect(useFrameStore.getState().open.test).toEqual({ left: true });
     expect(JSON.parse(localStorage.getItem("tom-quest-frame") ?? "{}").state.open.test).toEqual({ left: true });
+  });
+
+  // Earlier rounds on the same preview origin wrote other shapes under the
+  // same keys; a stored value is never trusted to be the current shape.
+  const STORED: [string, string, string][] = [
+    ["round 0 and 1", '{"state":{"open":{"test":{"left":true}},"seen":{"test":{"right":"x"}}},"version":0}', '{"state":{"variant":"D"},"version":0}'],
+    ["not JSON", "not json{", "{"],
+    ["wrong types", '{"state":{"open":null,"size":"x","lastSide":3,"seen":[1]},"version":2}', '{"state":null,"version":2}'],
+    ["wrong leaves", '{"state":{"open":{"test":"yes"},"size":{"test":{"left":"wide","top":-5}},"lastSide":{"test":"up"},"seen":{"test":7}},"version":2}', '{"state":{"variant":"C"},"version":2}'],
+  ];
+  for (const [name, frame, variant] of STORED) {
+    it(`reads a stored state that is ${name} as the defaults, without throwing`, async () => {
+      localStorage.setItem("tom-quest-frame", frame);
+      localStorage.setItem("tom-quest-frame-variant", variant);
+      renderFrame();
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+      const root = document.querySelector<HTMLElement>("[data-frame]")!;
+      expect(root.getAttribute("data-frame-variant")).toBe("A");
+      expect(document.querySelectorAll("[data-frame-drawer][data-open=true]")).toHaveLength(0);
+      act(() => fireEvent.keyDown(window, { key: "d" }));
+      expect(JSON.parse(localStorage.getItem("tom-quest-frame")!).state.open.test).toEqual({ right: true });
+    });
+  }
+
+  it("restores a well-formed stored state", async () => {
+    localStorage.setItem(
+      "tom-quest-frame",
+      JSON.stringify({ state: { open: { test: { left: true } }, size: { test: { left: 240 } }, lastSide: { test: "left" }, seen: {} }, version: 2 }),
+    );
+    localStorage.setItem("tom-quest-frame-variant", JSON.stringify({ state: { variant: "B" }, version: 2 }));
+    renderFrame();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(document.querySelector("[data-frame]")!.getAttribute("data-frame-variant")).toBe("B");
+    expect(drawer("left").getAttribute("data-open")).toBe("true");
+    expect(useFrameStore.getState().size.test).toEqual({ left: 240 });
+  });
+});
+
+describe("stored frame state", () => {
+  it("keeps only well-formed entries", () => {
+    expect(
+      storedFrameState({
+        open: { a: { left: true, right: "yes", middle: true }, b: null },
+        size: { a: { left: 300, right: Number.NaN, top: -1, bottom: "9" } },
+        lastSide: { a: "left", b: "up" },
+        seen: { a: { top: "sig", left: 4 } },
+      }),
+    ).toEqual({ open: { a: { left: true } }, size: { a: { left: 300 } }, lastSide: { a: "left" }, seen: { a: { top: "sig" } } });
+    for (const junk of [undefined, null, 3, "x", [], { open: [] }]) {
+      expect(storedFrameState(junk)).toEqual({ open: {}, size: {}, lastSide: {}, seen: {} });
+    }
+  });
+
+  it("reads an unknown variant as A", () => {
+    expect(storedVariant({ variant: "B" })).toBe("B");
+    for (const junk of [undefined, null, {}, { variant: "C" }, { variant: "D" }, { variant: 2 }]) expect(storedVariant(junk)).toBe("A");
   });
 });

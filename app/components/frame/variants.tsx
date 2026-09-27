@@ -26,12 +26,20 @@ type FrameVariant = (typeof VARIANTS)[number];
 /** Each variant's handle thickness in pixels, the one number the geometry reads. */
 export const HANDLE_PX: Record<FrameVariant, number> = { A: 28, B: 44 };
 
+/** The variant storage names, or A for anything else. */
+export function storedVariant(stored: unknown): FrameVariant {
+  const v = typeof stored === "object" && stored !== null ? (stored as { variant?: unknown }).variant : undefined;
+  return VARIANTS.find((x) => x === v) ?? "A";
+}
+
 const useVariantStore = create<{ variant: FrameVariant; setVariant: (v: FrameVariant) => void }>()(
   persist((set) => ({ variant: "A", setVariant: (variant) => set({ variant }) }), {
     name: "tom-quest-frame-variant",
     version: 2,
     skipHydration: true,
     migrate: () => ({ variant: "A" }) as { variant: FrameVariant; setVariant: (v: FrameVariant) => void },
+    // Storage is untrusted (frame-store.ts): an unknown variant reads as A.
+    merge: (stored, current) => ({ ...current, variant: storedVariant(stored) }),
   }),
 );
 
@@ -51,7 +59,7 @@ export function useFrameVariant(): FrameVariant {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  return VARIANTS.includes(variant) ? variant : "A";
+  return variant;
 }
 
 export function VariantPicker() {
