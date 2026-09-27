@@ -9,17 +9,17 @@
 // to `rulings`. dtsRulings stays whole until `counts` confirms the copy, then
 // a later commit empties it and drops it from the schema.
 //
-// TODOS, BLOCKS AND TIME NOTES move the same way: the copy machinery below
-// the rulings count, then the dual write (every writer of the old tables
-// calls `follow`), then step B, the readers. calendar, repeats and
-// vocabulary stay declared and untouched.
+// TODOS, BLOCKS AND TIME NOTES move the same way: the copy and the dual write
+// (step A: every writer wrote the old row, then `follow` copied it into the
+// plain one), the readers (step B), and the writers (step C). calendar,
+// repeats and vocabulary stay declared and untouched.
 //
 // STEP B, THE READERS. An id reaches the record from outside in either form:
 // the plain row's, or the old one's (an old link, a Slack thread, a box file,
 // and every reference rulings, claudeSessions, runs and dtsEvents store,
 // which keep the ids they hold). `eitherId` is the argument validator that
-// takes both; `resolveId` answers the plain row a reader reads, `oldId` the
-// old row a writer writes, since the write path does not move in this step.
+// takes both; `resolveId` answers the plain row a reader reads (and, since
+// step C, a writer writes).
 //
 // STEP C, THE OLD WRITES STOP, lands as a stack. First the readers: a stored
 // reference to a todo (rulings.todoId, dtsEvents.todoId, claudeSessions.todoId,
@@ -34,8 +34,12 @@
 // objection, the digest's surfaced marks and needs-you subject),
 // each writing its old row back (`back`, `backDelete`), so a writer not yet
 // moved, which writes the old row and `follow`s, finds it current, and
-// leftToRemap stays at zero throughout. The last pull request of the stack
-// takes `back`, `follow` and the copy out.
+// leftToRemap stays at zero throughout. Then `follow`, `oldId` and the copy
+// go: nothing calls them, and `sync`, `remapTodoRefs` and their pages copied
+// the old tables over the plain ones, which once the write back stops would
+// overwrite every write since with a stale old row; they are deleted rather
+// than left to refuse (`unstamp` and `refsPage`, step A's way back, with
+// them). The last pull request of the stack takes `back` out.
 
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
@@ -73,7 +77,7 @@ type Plain = keyof typeof OLD;
 
 /** A core id as a function argument takes it from outside the record: the
  *  plain row's id, or the id its row had in the old table (an old link, a
- *  Slack thread, a box file, a stored reference). resolveId or oldId reads it. */
+ *  Slack thread, a box file, a stored reference). resolveId reads it. */
 export const eitherId = {
   todos: v.union(v.id("todos"), v.id("dtsTodos")),
   blocks: v.union(v.id("blocks"), v.id("dtsBlocks")),
@@ -101,22 +105,6 @@ export async function resolveId<T extends Plain>(
   if (ctx.db.normalizeId(OLD[table], id) === null) return null;
   const copied = await copyOf(ctx, table, id);
   return copied === null ? null : (copied._id as Id<T>);
-}
-
-/**
- * The old row an id in either form names: what a writer writes, and what
- * rulings, sessions, runs and events store, until the write path moves. null
- * when neither names a row.
- */
-export async function oldId<T extends Core>(
-  ctx: QueryCtx | MutationCtx,
-  table: T,
-  id: string,
-): Promise<Id<(typeof CORE)[T]> | null> {
-  const plain = ctx.db.normalizeId(table, id);
-  const row = plain === null ? null : ((await ctx.db.get(plain)) as Row | null);
-  const old = ctx.db.normalizeId(CORE[table], row === null ? id : String(row.legacyId));
-  return old !== null && (await ctx.db.get(old)) !== null ? old : null;
 }
 
 /**
@@ -279,41 +267,20 @@ export const counts = internalAction({
   },
 });
 
-// ── todos, blocks and timeNotes: the copy, the remap, the check ─────────────
+// ── todos, blocks and timeNotes: the check ────────────────────────────────
 //
-// sync {table} makes the plain table hold what its old table holds: a row the
-// copy has not seen is inserted with legacyId (the old _id), a copy that
-// differs from its old row is written over (a field the old row lost is
-// cleared), and prune deletes a copy whose old row is gone. The old table is
-// the truth until the switch: nothing writes the plain tables before it, so
-// a copy that differs is an edit the old code made. Run todos, then blocks,
-// then timeNotes (a time note names a block, and both name a todo).
+// leftToRemap compares each old table with its plain one: an old row with no
+// plain copy (`notCopied`), one whose copy differs (`stale`), one whose stamp
+// is not its fingerprint or its copy's (`version`), a plain row no old row
+// holds (`orphaned`), and each reference field's ids still naming an old
+// table. While step C writes the old rows back it stays at zero; once the
+// write back stops it reads as what the way back would carry, and copyBack
+// brings it to zero.
 //
-// REFERENCES are copied pointing at the plain row: todos.needs at todos,
+// REFERENCES in the comparison point at the plain row: todos.needs at todos,
 // timeNotes.blockId at blocks, and a block's or time note's todoId at todos.
-// A reference whose row has no copy yet is "unresolved": todoId keeps its
-// dtsTodos id (the schema takes either until the switch narrows it), and a
-// need or a blockId is left off until a later pass finds the copy. One that
-// names a deleted row is "dangling" and left off. remapTodoRefs points the
-// todoIds an earlier copy left as dtsTodos ids at todos. leftToRemap is the
-// check: every count under `left` is 0 once the copy is whole and remapped.
-//
-// THE DUAL WRITE. Every writer of dtsTodos, dtsBlocks and dtsTimeNotes calls
-// `follow` right after its write, so the plain row is written in the same
-// transaction. Each old row carries legacyVersion, a fingerprint of its other
-// fields, and its copy carries the same stamp: leftToRemap's `version` counts
-// an old row whose stamp is not its fingerprint (a write that went around
-// `follow`) or whose copy's stamp differs. sync stays the catch-up, and
-// stamps as it copies. Step B moves the readers (the header above).
-//
-// THE WAY BACK before the switch: nothing reads the plain tables, so it is the
-// previous head, whose schema has no legacyVersion and whose todoIds name
-// dtsTodos only (a deploy checks every stored row). Stop nothing; run, in
-// order: `unstamp` (legacyVersion off dtsTodos, dtsBlocks, dtsTimeNotes,
-// todos, blocks, timeNotes); refsPage {direction: "back"} over blocks, then
-// timeNotes, each page's continueCursor until isDone; then deploy the
-// previous head. A write in between stamps again and the deploy says so:
-// run the two again right before it.
+// A reference whose row has no copy is "unresolved", one that names a
+// deleted row "dangling".
 
 type Direction = "forward" | "back";
 
@@ -418,50 +385,6 @@ function versionOf(row: Row): string {
   return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
 }
 
-/** One old row, stamped with its version and copied into its plain table:
- *  inserted with legacyId, or written over where it differs (a field the
- *  old row lost is cleared). */
-async function syncRow(ctx: MutationCtx, table: Core, row: Row) {
-  const version = versionOf(row);
-  let old = row;
-  if (row.legacyVersion !== version) {
-    await ctx.db.patch(row._id as Id<(typeof CORE)[Core]>, { legacyVersion: version });
-    old = { ...row, legacyVersion: version };
-  }
-  const { fields, unresolved, dangling } = await mirror(ctx, table, old);
-  const existing = await copyOf(ctx, table, old._id);
-  let outcome: "inserted" | "patched" | "unchanged" = "unchanged";
-  if (existing === null) {
-    await ctx.db.insert(table, { ...fields, legacyId: old._id } as never);
-    outcome = "inserted";
-  } else if (!same(payload(existing), fields)) {
-    for (const key of Object.keys(existing)) if (!key.startsWith("_") && key !== "legacyId" && !(key in fields)) fields[key] = undefined;
-    await ctx.db.patch(existing._id as Id<Core>, fields as never);
-    outcome = "patched";
-  }
-  return { outcome, unresolved, dangling };
-}
-
-/**
- * The dual write: every writer of an old core table calls this right after
- * its write, with the row's id. The old row is stamped and copied as sync
- * copies it; a deleted old row takes its copy with it, and a deleted block's
- * copy is taken off the plain time notes that named it (their old notes now
- * name a block that is gone, which the copy leaves off).
- */
-export async function follow(ctx: MutationCtx, table: Core, id: string): Promise<void> {
-  const oldId = ctx.db.normalizeId(CORE[table], id);
-  const old = oldId === null ? null : ((await ctx.db.get(oldId)) as Row | null);
-  if (old !== null) {
-    await syncRow(ctx, table, old);
-    return;
-  }
-  const copy = await copyOf(ctx, table, id);
-  if (copy === null) return;
-  if (table === "blocks") await clearBlock(ctx, copy._id as Id<"blocks">);
-  await ctx.db.delete(copy._id as Id<Core>);
-}
-
 /** One page of the plain time notes naming a deleted block's copy, taken off
  *  it; the rest go to clearBlockPage, which runs until none is left. Each
  *  patched note leaves the by_block range, so every page reads from its
@@ -475,97 +398,6 @@ export async function clearBlock(ctx: MutationCtx, blockId: Id<"blocks">) {
 export const clearBlockPage = internalMutation({
   args: { blockId: v.id("blocks") },
   handler: async (ctx, { blockId }) => await clearBlock(ctx, blockId),
-});
-
-/** One page of the old table, copied into the plain one. */
-async function syncOnePage(ctx: MutationCtx, table: Core, cursor: string | null) {
-  const page = await ctx.db.query(CORE[table]).order("asc").paginate({ cursor, numItems: PAGE });
-  const done = { inserted: 0, patched: 0, unchanged: 0, unresolved: 0, dangling: 0 };
-  for (const row of page.page as unknown as Row[]) {
-    const { outcome, unresolved, dangling } = await syncRow(ctx, table, row);
-    done[outcome] += 1;
-    done.unresolved += unresolved;
-    done.dangling += dangling;
-  }
-  return { ...done, isDone: page.isDone, continueCursor: page.continueCursor };
-}
-
-/** One page of sync; `npx convex run` it with each answer's continueCursor
- *  until isDone, or run `sync`, which does that. */
-export const syncPage = internalMutation({
-  args: { table: CORE_TABLE, cursor: v.union(v.string(), v.null()) },
-  handler: async (ctx, { table, cursor }) => await syncOnePage(ctx, table, cursor),
-});
-
-/**
- * One page of the plain table: a copy whose old row is gone is deleted. An
- * EMPTY old table deletes nothing and says so: it reads as the table emptied
- * after its switch, not as every row deleted.
- */
-export const prunePage = internalMutation({
-  args: { table: CORE_TABLE, cursor: v.union(v.string(), v.null()) },
-  handler: async (ctx, { table, cursor }) => {
-    if ((await ctx.db.query(CORE[table]).first()) === null) {
-      return { deleted: 0, skipped: `${CORE[table]} is empty; nothing pruned`, isDone: true, continueCursor: "" };
-    }
-    const page = await ctx.db.query(table).paginate({ cursor, numItems: PAGE });
-    let deleted = 0;
-    for (const row of page.page as unknown as Row[]) {
-      if (typeof row.legacyId !== "string") continue;
-      const old = ctx.db.normalizeId(CORE[table], row.legacyId);
-      if (old !== null && (await ctx.db.get(old)) !== null) continue;
-      await ctx.db.delete(row._id as Id<Core>);
-      deleted += 1;
-    }
-    return { deleted, isDone: page.isDone, continueCursor: page.continueCursor };
-  },
-});
-
-const STAMPED = ["dtsTodos", "dtsBlocks", "dtsTimeNotes", "todos", "blocks", "timeNotes"] as const;
-
-/** One page of a table with legacyVersion taken off each row: the way back
- *  before the switch, whose schema has no such field. */
-export const unstampPage = internalMutation({
-  args: { table: v.union(...STAMPED.map((table) => v.literal(table))), cursor: v.union(v.string(), v.null()) },
-  handler: async (ctx, { table, cursor }) => {
-    const page = await ctx.db.query(table).paginate({ cursor, numItems: PAGE });
-    let unstamped = 0;
-    for (const row of page.page) {
-      if (row.legacyVersion === undefined) continue;
-      await ctx.db.patch(row._id, { legacyVersion: undefined });
-      unstamped += 1;
-    }
-    return { unstamped, isDone: page.isDone, continueCursor: page.continueCursor };
-  },
-});
-
-/**
- * One page of the todoIds in `blocks` or `timeNotes`, moved: forward to the
- * todos copy (what remapTodoRefs runs), back to the dtsTodos id (this pull
- * request's way back, run by hand before the previous head deploys). One
- * with no counterpart is counted and left.
- */
-export const refsPage = internalMutation({
-  args: {
-    table: v.union(v.literal("blocks"), v.literal("timeNotes")),
-    direction: v.union(v.literal("forward"), v.literal("back")),
-    cursor: v.union(v.string(), v.null()),
-  },
-  handler: async (ctx, { table, direction, cursor }) => {
-    const page = await ctx.db.query(table).paginate({ cursor, numItems: PAGE });
-    let patched = 0;
-    let unresolved = 0;
-    for (const row of page.page) {
-      if (row.todoId === undefined) continue;
-      const ref = await moveRef(ctx, "todos", row.todoId, direction);
-      if (typeof ref !== "string") unresolved += 1;
-      else if (ref !== row.todoId) {
-        await ctx.db.patch(row._id, { todoId: ref as Id<"todos"> | Id<"dtsTodos"> });
-        patched += 1;
-      }
-    }
-    return { patched, unresolved, isDone: page.isDone, continueCursor: page.continueCursor };
-  },
 });
 
 type Paged = { isDone: boolean; continueCursor: string };
@@ -583,57 +415,9 @@ async function drain<T extends Paged>(step: (cursor: string | null) => Promise<T
   }
 }
 
-/** The whole copy of one table into its plain table, then the prune. A second
- *  pass runs when the first left references unresolved (a todo's need on a
- *  todo later in the table). */
-export const sync = internalAction({
-  args: { table: CORE_TABLE },
-  handler: async (ctx, { table }) => {
-    const pass = () =>
-      drain((cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.syncPage, { table, cursor }));
-    const first = await pass();
-    const passes = first.unresolved > 0 ? [first, await pass()] : [first];
-    const pruned = await drain(
-      (cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.prunePage, { table, cursor }),
-    );
-    return { table, passes, pruned: pruned.deleted ?? 0 };
-  },
-});
-
-/** Every todoId in blocks and timeNotes that names a copied dtsTodos row,
- *  pointed at its todos copy. Run after sync todos, blocks, timeNotes. */
-export const remapTodoRefs = internalAction({
-  args: {},
-  handler: async (ctx) => {
-    const out: Record<string, Record<string, number>> = {};
-    for (const table of ["blocks", "timeNotes"] as const) {
-      out[table] = await drain(
-        (cursor): Promise<Paged> =>
-          ctx.runMutation(internal.jarvis.tables.refsPage, { table, direction: "forward", cursor }),
-      );
-    }
-    return out;
-  },
-});
-
-/** unstampPage over all six tables, every page. */
-export const unstamp = internalAction({
-  args: {},
-  handler: async (ctx) => {
-    const out: Record<string, number> = {};
-    for (const table of STAMPED) {
-      const sums = await drain(
-        (cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.unstampPage, { table, cursor }),
-      );
-      out[table] = sums.unstamped ?? 0;
-    }
-    return out;
-  },
-});
-
 /**
  * One page of the check. side "old": the old table's rows with no copy,
- * those whose copy differs from what sync would write now, and (`version`)
+ * those whose copy differs from their old row (references moved), and (`version`)
  * those whose stamp is not their fingerprint or not their copy's. side
  * "plain": the rows no old row holds (gone, or never had one), and each
  * reference field's ids still naming an old table.
@@ -734,9 +518,9 @@ async function copyBackRow(ctx: MutationCtx, table: Core, row: Row) {
  * The write back, while step C moves the writers: a writer moved to the plain
  * tables calls this right after its write, with the plain row's id, so its
  * old row holds the same (stamped, as copyBack stamps it) and a writer not
- * yet moved, which writes the old row and `follow`s, finds it current. Every
+ * yet moved, which wrote the old row and `follow`ed, found it current. Every
  * plain row it writes carries a legacyId from then on. The last step C pull
- * request takes it out with `follow`.
+ * request takes it out.
  */
 export async function back(ctx: MutationCtx, table: Core, id: string): Promise<void> {
   const row = (await ctx.db.get(id as Id<Core>)) as Row | null;

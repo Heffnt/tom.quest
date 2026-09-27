@@ -51,3 +51,20 @@ export async function patchTodo(ctx: MutationCtx, id: Id<"todos">, fields: Parti
   await ctx.db.patch(id, fields);
   await back(ctx, "todos", id);
 }
+
+type Core = "todos" | "blocks" | "timeNotes";
+const OLD = { todos: "dtsTodos", blocks: "dtsBlocks", timeNotes: "dtsTimeNotes" } as const;
+
+/** A row from before step C: the old row and its plain copy, which carries
+ *  the old id as legacyId (the copy's references are the caller's to give in
+ *  the plain table's terms). Answers both ids. */
+export async function insertCopied<C extends Core>(
+  ctx: MutationCtx,
+  table: C,
+  fields: Omit<Doc<C>, "_id" | "_creationTime" | "legacyId">,
+  oldFields: Record<string, unknown> = fields,
+): Promise<{ old: Id<(typeof OLD)[C]>; plain: Id<C> }> {
+  const old = (await ctx.db.insert(OLD[table], oldFields as never)) as Id<(typeof OLD)[C]>;
+  const plain = (await ctx.db.insert(table, { ...fields, legacyId: old } as never)) as Id<C>;
+  return { old, plain };
+}

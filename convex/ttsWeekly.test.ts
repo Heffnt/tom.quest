@@ -27,8 +27,8 @@ import { JOB_FAILED, JOB_RECOVERED } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM } from "./ttsSlack";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { follow } from "./jarvis/tables";
 import { inOldTerms } from "../test/core-tables";
+import { insertCopied } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -74,7 +74,7 @@ async function todo(
   }> = {},
 ): Promise<Id<"dtsTodos">> {
   const now = Date.now();
-  const id = await ctx.db.insert("dtsTodos", {
+  const id = (await insertCopied(ctx, "todos", {
     statement: fields.statement ?? "a todo",
     status: fields.status ?? "active",
     readiness: fields.readiness ?? "unprepared",
@@ -84,9 +84,8 @@ async function todo(
     doneAt: fields.doneAt,
     createdAt: fields.createdAt ?? now,
     updatedAt: fields.updatedAt ?? now,
-  });
+  })).old;
   // The plain copy, as the dual write makes it (convex/jarvis/tables.ts).
-  await follow(ctx, "todos", id);
   return id;
 }
 

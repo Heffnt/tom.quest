@@ -5,7 +5,8 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { follow, resolveId } from "./jarvis/tables";
+import { resolveId } from "./jarvis/tables";
+import { insertCopied } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -1339,7 +1340,7 @@ describe("a ruling from Tom's words", () => {
     const { tom, todoId } = await sessionWithTurns(t, "adhoc");
     const { paperId, otherId } = await t.run(async (ctx) => {
       const now = Date.now();
-      const paperId = await ctx.db.insert("dtsTodos", {
+      const paperId = (await insertCopied(ctx, "todos", {
         statement: "submit the paper",
         status: "active",
         readiness: "prepared",
@@ -1347,8 +1348,8 @@ describe("a ruling from Tom's words", () => {
         source: "tom",
         createdAt: now,
         updatedAt: now,
-      });
-      const otherId = await ctx.db.insert("dtsTodos", {
+      })).old;
+      const otherId = (await insertCopied(ctx, "todos", {
         statement: "renew the passport",
         status: "active",
         readiness: "unprepared",
@@ -1356,10 +1357,8 @@ describe("a ruling from Tom's words", () => {
         source: "tom",
         createdAt: now,
         updatedAt: now,
-      });
+      })).old;
       // Each with its plain copy, as the dual write stores a todo.
-      await follow(ctx, "todos", paperId);
-      await follow(ctx, "todos", otherId);
       return { paperId, otherId };
     });
     // The job's pen: the agenda names the dentist todo and the paper todo.

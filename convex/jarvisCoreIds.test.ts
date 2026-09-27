@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { oldId, resolveId, todoEvents, todoRulings } from "./jarvis/tables";
+import { resolveId, todoEvents, todoRulings } from "./jarvis/tables";
 import { newestTodoEvents, todoHasEventSince, withPlainTodoIds } from "./jarvis/tables";
 import { logEvent } from "./tts";
 
@@ -55,7 +55,7 @@ async function followed(t: T) {
 }
 
 describe("an id in either form", () => {
-  it("resolves to the plain row and to the old row, from either form; anything else is null", async () => {
+  it("resolves to the plain row from either form; anything else is null", async () => {
     const t = convexTest({ schema, modules });
     const { old, plain } = await seed(t);
     await t.run(async (ctx) => {
@@ -67,14 +67,11 @@ describe("an id in either form", () => {
       ] as const) {
         expect(await resolveId(ctx, table, o)).toBe(p);
         expect(await resolveId(ctx, table, p)).toBe(p);
-        expect(await oldId(ctx, table, o)).toBe(o);
-        expect(await oldId(ctx, table, p)).toBe(o);
         expect(await resolveId(ctx, table, "not-an-id")).toBeNull();
-        expect(await oldId(ctx, table, "not-an-id")).toBeNull();
       }
       // An id of another table names nothing here.
       expect(await resolveId(ctx, "todos", old.block)).toBeNull();
-      expect(await oldId(ctx, "blocks", plain.todo)).toBeNull();
+      expect(await resolveId(ctx, "blocks", plain.todo)).toBeNull();
     });
   });
 
