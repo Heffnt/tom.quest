@@ -33,11 +33,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body
-        className={`${syne.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} antialiased`}
-        suppressHydrationWarning
-      >
+    // The next/font variable classes sit on <html>, not <body>: globals.css
+    // reads --font-ibm-plex-sans and friends at :root, and a variable set
+    // only on <body> resolves to nothing there, so text falls back to system sans.
+    <html
+      lang="en"
+      className={`${syne.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable}`}
+      suppressHydrationWarning
+    >
+      <body className="antialiased" suppressHydrationWarning>
         <AuthProvider>
           <AppShell>{children}</AppShell>
         </AuthProvider>
