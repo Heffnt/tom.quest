@@ -1094,7 +1094,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
-    await ctx.runMutation(internal.tts.internalPrepareTodo, {
+    const result = await ctx.runMutation(internal.tts.internalPrepareTodo, {
       id: b.id,
       brief: str(b.brief),
       entryAction: str(b.entryAction),
@@ -1112,7 +1112,9 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       runToken: str(agentToken),
       doorFaults,
     });
-    return jsonResponse(200, { ok: true });
+    // A refused completion is a 409 carrying the why: a worker told ok would
+    // report as landed a todo that is still open.
+    return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
   } catch (e) {
     return jsonResponse(400, {
       error: e instanceof Error ? e.message : String(e),
@@ -1305,11 +1307,10 @@ http.route({
 // superseded by a newer ruling on the same subject), from the unified
 // ttsRulings table. Both subject types ride the one feed: rows carry
 // subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
-// own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
-// pass — consuming only what it served. A
-// "code" approve or archive rides the feed too, for the box's work-queue
-// job. Each row carries its _id, which the
-// planner echoes back to /tts/ruling-applied.
+// own kind — a "life" revise → its prepare pass — consuming only what it
+// served. A "code" approve or archive rides the feed too and stays pending
+// there: nothing consumes it. Each row carries its _id, which the planner
+// echoes back to /tts/ruling-applied.
 const ttsRulingsFeed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;

@@ -826,6 +826,39 @@ describe("TTS annotations and the preparer", () => {
     vi.unstubAllEnvs();
   });
 
+  // witness: answer 200 {ok:true} from ttsPrepareTodo in convex/http.ts
+  // whatever internalPrepareTodo returns — a worker whose completion was
+  // refused would report as landed a todo that is still open.
+  it("the prepare door answers a refused completion 409 with the why", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.tts.createTodo, { statement: "draft the landlord questions" });
+    const post = (body: Record<string, unknown>) =>
+      t.fetch("/tts/prepare-todo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+        body: JSON.stringify({ id, ...body }),
+      });
+    const refused = await post({ status: "done", brief: "Eight questions." });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toBe(
+      "not completed: a todo is completed by the pen only with its evidence recorded",
+    );
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.status).toBe("active");
+    // The write-up is not what was refused: it stands, and the refusal is on
+    // the record as its event.
+    expect(row?.brief).toBe("Eight questions.");
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
+    expect(events.some((e) => e.kind === "done-skipped")).toBe(true);
+    const closed = await post({ status: "done", evidence: "questions.md" });
+    expect(closed.status).toBe(200);
+    expect(await closed.json()).toEqual({ ok: true });
+    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("done");
+    vi.unstubAllEnvs();
+  });
+
   // The prepare door reads agentToken only and stores it as the todo's
   // producedByRunToken. A body still sending runToken is refused rather than
   // having its token dropped without the caller learning it.
@@ -1191,6 +1224,75 @@ describe("TTS time notes", () => {
     });
     await apply(t, drop, [{ kind: "delete-block", blockId: block._id }], "gone");
     expect(await tom.query(api.tts.listBlocks, {})).toHaveLength(0);
+  });
+
+  // witness: drop the inContext checks from getBlock and requireContextTodo
+  // in internalApplyTimeNote (convex/tts.ts) — a note about one block moves
+  // another, and a note about one todo places time for another.
+  it("block actions touch only the blocks and todos the note's context names", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const gym = await tom.mutation(api.tts.createTodo, { statement: "gym" });
+    const rent = await tom.mutation(api.tts.createTodo, { statement: "rent" });
+    const asleep = await tom.mutation(api.tts.createTodo, { statement: "asleep" });
+    await tom.mutation(api.tts.setStatus, { id: asleep, status: "waiting" });
+    // 08:00 New York two days out, so every block below but nextDay starts
+    // on the same calendar day whatever the clock reads.
+    const hour = 3_600_000;
+    const day = nyCalendarDayKey(Date.now() + 2 * DAY);
+    const start = nyCalendarDayBoundsUtc(day).start + 8 * hour;
+    const mine = await tom.mutation(api.tts.createBlock, { start, end: start + hour, todoId: gym });
+    const other = await tom.mutation(api.tts.createBlock, {
+      start: start + 2 * hour,
+      end: start + 3 * hour,
+      category: "chores",
+    });
+    const nextDay = await tom.mutation(api.tts.createBlock, {
+      start: start + DAY,
+      end: start + DAY + hour,
+      category: "chores",
+    });
+    const noteOn = (ctxArgs: Record<string, unknown>) =>
+      tom.mutation(api.tts.createTimeNote, { text: "move it", ...ctxArgs });
+    const refused = /not in this time note's context/;
+
+    // A block note moves its own block only.
+    const onBlock = await noteOn({ blockId: mine });
+    await expect(
+      apply(t, onBlock, [{ kind: "delete-block", blockId: other }]),
+    ).rejects.toThrow(refused);
+    await expect(
+      apply(t, onBlock, [{ kind: "create-block", start, end: start + hour, todoId: rent }]),
+    ).rejects.toThrow(refused);
+    await apply(t, onBlock, [
+      { kind: "update-block", blockId: mine, start: start + hour, end: start + 2 * hour },
+      { kind: "create-block", start: start + 4 * hour, end: start + 5 * hour, todoId: gym },
+    ]);
+
+    // A todo note shows no block, and places time for its own todo only.
+    const onTodo = await noteOn({ todoId: gym });
+    await expect(
+      apply(t, onTodo, [{ kind: "delete-block", blockId: mine }]),
+    ).rejects.toThrow(refused);
+    await expect(
+      apply(t, onTodo, [{ kind: "create-block", start, end: start + hour, todoId: rent }]),
+    ).rejects.toThrow(refused);
+
+    // A day note reaches that day's blocks and the active todos, nothing else.
+    const onDay = await noteOn({ day });
+    await expect(
+      apply(t, onDay, [{ kind: "delete-block", blockId: nextDay }]),
+    ).rejects.toThrow(refused);
+    await expect(
+      apply(t, onDay, [{ kind: "create-block", start, end: start + hour, todoId: asleep }]),
+    ).rejects.toThrow(refused);
+    await apply(t, onDay, [
+      { kind: "delete-block", blockId: other },
+      { kind: "create-block", start: start + 6 * hour, end: start + 7 * hour, todoId: rent },
+    ]);
+    const left = await tom.query(api.tts.listBlocks, {});
+    expect(left.map((b) => b._id)).not.toContain(other);
+    expect(left.map((b) => b._id)).toContain(nextDay);
   });
 
   // witness: drop the note.status !== "pending" throw — a retried POST would

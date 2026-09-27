@@ -40,10 +40,9 @@ import { listForDigest } from "./jarvis/outbox";
 //            moment Tom opens an interactive session on the todo
 //            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
 //   code   — the repo is the system of record, so the effect is work in the
-//            repo: approve and archive were admitted by the auto-session
-//            scheduler as worker missions until it was deleted (2026-09-26);
-//            the box's work-queue job is their consumer now, and until it
-//            takes them they stay pending on the feed;
+//            repo: an approve or archive is recorded and stays pending on
+//            the feed, and nothing consumes it (the work queue,
+//            internalWorkQueue, lists only rows of the plain todos table);
 //            revise was consumed by the planner's brief pass, which is
 //            retired with ComplexMultiTrigger's registry (ruling 70) — a code
 //            ruling needs a brief and nothing writes one now; session applies
@@ -153,8 +152,7 @@ export async function insertRuling(
     }
     // A repo taken off the code-todo list keeps its mirror rows and briefs as
     // records, so an open, briefed row of it still exists — and a ruling on
-    // it would be recorded here and refused by the scheduler, with no session
-    // ever opened. ComplexMultiTrigger is the case: Tom's ruling of 2026-09-22
+    // it would be recorded here and stay pending, with nothing to act on it. ComplexMultiTrigger is the case: Tom's ruling of 2026-09-22
     // (CMT adoption ruling 70) moved its todos into TTS, where they are ruled
     // as todos. One check for every pen: the page's buttons, the session CLI
     // pen and the ruling from Tom's words all arrive here. A ruling on a
@@ -396,8 +394,8 @@ export const internalRecordRuling = internalMutation({
 //
 // approve on a code subject is NOT further gated here: a code todo has no
 // readiness field — its brief IS the prepared state (check 4 requires one),
-// and what approve triggers (a worker mission admitted by the auto-session
-// scheduler) is a PR whose merge is still Tom's own hand.
+// and an approve on it triggers nothing: it is recorded and stays pending,
+// and nothing consumes it.
 
 const SUBJECT_TYPE = v.union(v.literal("life"), v.literal("code"));
 
@@ -766,26 +764,34 @@ export async function markCodeSessionRulingsApplied(
 // The rulings a box job should act on: appliedAt unset AND not superseded
 // (a newer ruling on the same subject makes the older one dead history). Every
 // subject type rides the same feed — the planner filters by kind (a life
-// revise → its prepare pass) and consumes only what it served. Code approve and archive
-// rulings ride it too, for the box's work-queue job.
+// revise → its prepare pass) and consumes only what it served. A code approve
+// or archive rides it too and stays on it: nothing consumes one.
 export const internalPendingRulings = internalQuery({
   args: {},
-  handler: async (ctx) => {
-    // Each carries the plain todo id: a todo's rulings name it in either
-    // form, and are one subject; the box joins them to the plain todos.
-    const all = await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
-    const newest = liveRulings(all);
-    return all.filter(
-      (row) =>
-        row.appliedAt === undefined &&
-        newest.get(subjectKey(row))?._id === row._id,
-    );
-  },
+  handler: async (ctx) => await pendingRulings(ctx),
 });
+
+// The feed's one predicate, shared with the apply callback below so the set a
+// box job is handed and the set it may consume are the same set. Each row
+// carries the plain todo id: a todo's rulings name it in either form, and are
+// one subject; the box joins them to the plain todos.
+async function pendingRulings(ctx: QueryCtx | MutationCtx) {
+  const all = await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
+  const newest = liveRulings(all);
+  return all.filter(
+    (row) =>
+      row.appliedAt === undefined &&
+      newest.get(subjectKey(row))?._id === row._id,
+  );
+}
 
 // Apply callback: the worker reports what it did (commit sha / PR url) or how
 // it failed (error text) — either way the ruling is consumed (appliedAt set),
-// with the outcome on record in applyResult.
+// with the outcome on record in applyResult. Only a ruling the feed above
+// would hand out is consumed: an applied one already has its outcome, and a
+// superseded one is dead history whose newer ruling is the one to act on, so
+// stamping either would overwrite a record or report work on a verdict Tom
+// has replaced.
 export const internalMarkRulingApplied = internalMutation({
   args: { id: v.string(), result: v.string() },
   handler: async (ctx, { id, result }) => {
@@ -795,6 +801,12 @@ export const internalMarkRulingApplied = internalMutation({
     if (!normalized) throw new Error(`Unknown ruling id: ${id}`);
     const ruling = await ctx.db.get(normalized);
     if (!ruling) throw new Error(`Unknown ruling id: ${id}`);
+    if (ruling.appliedAt !== undefined) {
+      throw new Error(`refused: ruling ${id} is already applied (${ruling.applyResult ?? "no result"})`);
+    }
+    if (!(await pendingRulings(ctx)).some((row) => row._id === normalized)) {
+      throw new Error(`refused: ruling ${id} is superseded by a newer ruling on its subject`);
+    }
     await ctx.db.patch(normalized, { appliedAt: Date.now(), applyResult: result });
     await logEvent(ctx, "ruling-applied", ruling.todoId, {
       verdict: ruling.verdict,
