@@ -88,6 +88,7 @@ describe("rulings under their plain name", () => {
       "follow",
       "leftPage",
       "leftToRemap",
+      "newestTodoEvents",
       "oldId",
       "prunePage",
       "refsPage",

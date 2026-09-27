@@ -189,6 +189,21 @@ export async function todoEvents(
   return out.sort((a, b) => a.at - b.at || a._creationTime - b._creationTime);
 }
 
+/** The newest `n` events on a todo under either id they store it by, newest
+ *  first: `n` read through the index for each form, merged, cut to `n`. The
+ *  bounded read for a history that only grows. */
+export async function newestTodoEvents(
+  ctx: QueryCtx | MutationCtx,
+  id: string,
+  n: number,
+): Promise<Doc<"dtsEvents">[]> {
+  const out: Doc<"dtsEvents">[] = [];
+  for (const form of await todoIdForms(ctx, id)) {
+    out.push(...(await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", form)).order("desc").take(n)));
+  }
+  return out.sort((a, b) => b.at - a.at || b._creationTime - a._creationTime).slice(0, n);
+}
+
 /** The rulings on a todo under either id they store it by, each handed out
  *  with the plain id, so liveRulings keys them as one subject. */
 export async function todoRulings(ctx: QueryCtx | MutationCtx, id: string): Promise<Doc<"rulings">[]> {

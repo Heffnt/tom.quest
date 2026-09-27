@@ -7,7 +7,7 @@ import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
-import { oldId, todoEvents } from "./jarvis/tables";
+import { newestTodoEvents, oldId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 
@@ -302,8 +302,8 @@ export const internalAskContext = internalQuery({
     const asked = await callerAsks(ctx, args, capFor(args) + 1);
     const priorObjections: { askId: string; at: number; revert: boolean; sentence: string | null; decision: string | null }[] = [];
     if (args.todoId !== undefined) {
-      // The todo's rows under either id, newest first.
-      const events = (await todoEvents(ctx, args.todoId)).reverse().slice(0, 100);
+      // The todo's newest 100 rows under either id, read through the index.
+      const events = await newestTodoEvents(ctx, args.todoId, 100);
       for (const event of events) {
         if (event.kind !== DELEGATE_OBJECTION || priorObjections.length >= 5) continue;
         const data = (event.data ?? {}) as { askId?: unknown; revert?: unknown; sentence?: unknown };

@@ -35,7 +35,7 @@ import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, SESSION_OUTCOME, isPrepared } from "./ttsShared";
-import { todoEvents, todoReader } from "./jarvis/tables";
+import { todoEvents, todoIdForms, todoReader } from "./jarvis/tables";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
@@ -332,11 +332,17 @@ async function lastGoalEvaluation(
   until: number,
 ): Promise<number | null> {
   let last: number | null = null;
-  // The session rows name the goal by either id (convex/jarvis/tables.ts).
-  for (const e of (await todoEvents(ctx, goal._id, 0, until)).reverse()) {
-    if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) {
-      last = e.at;
-      break;
+  // The session rows name the goal by either id (convex/jarvis/tables.ts):
+  // each form read newest first, stopped at its first hit.
+  for (const form of await todoIdForms(ctx, goal._id)) {
+    for await (const e of ctx.db
+      .query("dtsEvents")
+      .withIndex("by_todo", (q) => q.eq("todoId", form).lt("at", until))
+      .order("desc")) {
+      if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) {
+        if (last === null || e.at > last) last = e.at;
+        break;
+      }
     }
   }
   const worked = await ctx.db

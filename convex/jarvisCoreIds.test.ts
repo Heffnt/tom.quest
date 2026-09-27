@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { oldId, resolveId, todoEvents, todoRulings } from "./jarvis/tables";
+import { newestTodoEvents } from "./jarvis/tables";
 
 // Step B of the core tables' move (convex/jarvis/tables.ts): a todo, block or
 // time note id reaches the record from outside in either form, the old
@@ -143,5 +144,36 @@ describe("a stored todo reference in either form", () => {
     });
     const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
     expect(pending.map((r) => [r._id, r.todoId])).toEqual([[revise, plain.todo]]);
+  });
+});
+
+describe("the newest events on a todo", () => {
+  it("reads the newest n under each form through the index, merged newest first", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 150; i++) {
+        await ctx.db.insert("dtsEvents", { at: 1_000 + 2 * i, kind: "old-form", todoId: old.todo });
+        await ctx.db.insert("dtsEvents", { at: 1_001 + 2 * i, kind: "plain-form", todoId: plain.todo });
+      }
+      const newest = await newestTodoEvents(ctx, old.todo, 100);
+      expect(newest).toHaveLength(100);
+      // The seed's own rows (written now) first, then the newest fixtures.
+      const fixtures = newest.filter((e) => e.at < 10_000);
+      expect(fixtures[0].at).toBe(1_299);
+      expect(fixtures.map((e) => e.at)).toEqual([...fixtures.map((e) => e.at)].sort((a, b) => b - a));
+      expect(new Set(fixtures.map((e) => e.kind))).toEqual(new Set(["old-form", "plain-form"]));
+      expect(await newestTodoEvents(ctx, plain.todo, 100)).toEqual(newest);
+    });
+  });
+
+  it("the ask context finds an objection stored under either id", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "delegate-objection", todoId: plain.todo, data: { askId: "a1", revert: true } });
+    });
+    const context = await t.query(internal.ttsAsk.internalAskContext, { todoId: old.todo });
+    expect(context.priorObjections.map((o) => o.askId)).toEqual(["a1"]);
   });
 });
