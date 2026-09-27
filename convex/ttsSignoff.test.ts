@@ -31,6 +31,18 @@ import { checkMessage, composeProposalAsk } from "./ttsCompose";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+// A switch that makes the record of a finished send throw, so a test can
+// show that a send which went out is never classified by its record's fault.
+const sentRecord = vi.hoisted(() => ({ fails: false }));
+vi.mock("./tts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./tts")>();
+  const logEvent: typeof actual.logEvent = async (ctx, kind, ...rest) => {
+    if (sentRecord.fails && kind === "sent-as-tom") throw new Error("the record is down");
+    return await actual.logEvent(ctx, kind, ...rest);
+  };
+  return { ...actual, logEvent };
+});
+
 const KEY = "s3cret";
 const TEXT = "Hi Sarah — Thursday at 3 works for the lab meeting. See you then.\nTom";
 const RECIPIENT = "Sarah Chen";
@@ -280,6 +292,46 @@ describe("a signed send goes out at most once", () => {
     expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
     // Clearing it sends nothing.
     expect(await tom.mutation(api.ttsSignoff.decline, { proposalId })).toEqual({ declined: true, status: "declined" });
+  });
+
+  it("a send that went out but whose record failed is unknown, never failed, and is not signed again", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const posts = stubNetwork();
+    const proposalId = await proposeSlack(t);
+    sentRecord.fails = true;
+    try {
+      await tom.mutation(api.ttsSignoff.signAndSend, { proposalId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      sentRecord.fails = false;
+    }
+    expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
+    const [proposal] = await kinds(t, SEND_PROPOSAL);
+    expect(proposal.data).toMatchObject({ status: "unknown" });
+    expect(await kinds(t, SEND_AS_TOM_UNKNOWN)).toHaveLength(1);
+    expect(await tom.mutation(api.ttsSignoff.signAndSend, { proposalId })).toEqual({ signed: false, status: "unknown" });
+    expect(await signoffs(t)).toHaveLength(1);
+  });
+
+  it("two unknown sends of one text to two recipients are two digest lines", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    stubSlack(() => {
+      throw new Error("socket hang up");
+    });
+    for (const recipient of ["Sarah Chen", "Bob Li"]) {
+      const res = await propose(t, { channel: CHANNEL, recipient, text: TEXT, agentId: "claude:box:abcdef0123456789" });
+      await tom.mutation(api.ttsSignoff.signAndSend, { proposalId: res.json.proposalId as Id<"dtsEvents"> });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    }
+    const lines = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "digest-line")).collect(),
+    );
+    expect(lines.map((row) => (row.data as { statement: string }).statement)).toEqual([
+      expect.stringContaining("to Sarah Chen may or may not"),
+      expect.stringContaining("to Bob Li may or may not"),
+    ]);
   });
 
   it("Slack's own refusal releases the claim: nothing went out", async () => {

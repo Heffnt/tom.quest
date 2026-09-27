@@ -459,12 +459,20 @@ export const internalRecordSent = internalMutation({
 });
 
 export const internalRecordUnknown = internalMutation({
-  args: { recipient: v.string(), channel: v.string(), sha256: v.string(), error: v.string() },
+  args: {
+    signoffId: v.id("signoffs"),
+    recipient: v.string(),
+    channel: v.string(),
+    sha256: v.string(),
+    error: v.string(),
+  },
   handler: async (ctx, args) => {
     await logEvent(ctx, SEND_AS_TOM_UNKNOWN, undefined, { job: "send-as-tom", ...args });
+    // Keyed by the sign-off: each unknown send is its own line, whatever
+    // text it shares with another (the digest lists a key once a day).
     await listForDigest(ctx, {
       section: "broken",
-      job: `send-as-tom:${args.sha256.slice(0, 12)}`,
+      job: `send-as-tom:${args.signoffId}`,
       statement: `A message in your name to ${args.recipient} may or may not have gone out: the send's answer was lost. Check the conversation before sending it again.`,
     });
   },
@@ -524,16 +532,38 @@ export async function deliverAsTom<T>(
       await ctx.runMutation(internal.ttsSignoff.internalRecordFailed, outcome);
       throw e;
     }
-    await ctx.runMutation(internal.ttsSignoff.internalRecordUnknown, outcome);
+    await recordUnknown(ctx, { ...outcome, signoffId: claim.signoffId });
     throw new Error(`${OUTCOME_UNKNOWN}: ${error}`);
   }
-  await ctx.runMutation(internal.ttsSignoff.internalRecordSent, {
-    recipient: target.recipient,
-    channel: target.channel,
-    sha256: claim.sha256,
-    signedAt: claim.signedAt,
-  });
+  // THE SEND RETURNED. Recording it is not the send: a throw here leaves the
+  // message out and its claim spent, so the outcome is unknown, never failed.
+  try {
+    await ctx.runMutation(internal.ttsSignoff.internalRecordSent, {
+      recipient: target.recipient,
+      channel: target.channel,
+      sha256: claim.sha256,
+      signedAt: claim.signedAt,
+    });
+  } catch (e) {
+    const error = `it went out, but its record failed: ${e instanceof Error ? e.message : String(e)}`;
+    await recordUnknown(ctx, { recipient: target.recipient, channel: target.channel, sha256: claim.sha256, error, signoffId: claim.signoffId });
+    throw new Error(`${OUTCOME_UNKNOWN}: ${error}`);
+  }
   return delivered;
+}
+
+/** Record an unknown outcome and its digest line. A throw while recording it
+ *  changes nothing about the outcome: the caller still throws OUTCOME_UNKNOWN,
+ *  so the proposal is marked unknown and its sign-off stays spent. */
+async function recordUnknown(
+  ctx: ActionCtx,
+  args: { signoffId: Id<"signoffs">; recipient: string; channel: string; sha256: string; error: string },
+): Promise<void> {
+  try {
+    await ctx.runMutation(internal.ttsSignoff.internalRecordUnknown, args);
+  } catch (e) {
+    console.error(`send-as-tom: the unknown outcome for ${args.recipient} was not recorded: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 export const internalFinishProposal = internalMutation({
