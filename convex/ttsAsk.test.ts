@@ -6,6 +6,7 @@ import { nyCalendarDayKey } from "./ttsShared";
 import {
   CAP_REFUSAL,
   DELEGATE_DECISION,
+  DELEGATE_MAX_PER_JOB,
   DELEGATE_MAX_PER_SESSION,
   objectionRank,
   stripNarrowListId,
@@ -173,6 +174,20 @@ describe("POST /tts/ask — the delegate's record", () => {
     }
     const other = await post(t, body({ sessionId: b, askId: "bbbbbbbb" }));
     expect((await other.json()).capped).toBe(false);
+  });
+
+  it("counts a caller's asks behind 200 older asks of other callers in the day", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 200; i += 1) {
+        await ctx.db.insert("dtsEvents", { at: Date.now() - 60_000, kind: DELEGATE_DECISION, key: `other${i}`, data: { job: "poll-canvas" } });
+      }
+    });
+    for (let i = 0; i < DELEGATE_MAX_PER_JOB; i += 1) {
+      expect((await (await post(t, body({ job: "poll-gmail", askId: `2222222${i}` }))).json()).capped).toBe(false);
+    }
+    expect((await (await post(t, body({ job: "poll-gmail", askId: "ffffffff" }))).json()).capped).toBe(true);
   });
 
   it("400s a refusal whose refusedBecause names no narrow-list id", async () => {

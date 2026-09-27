@@ -108,6 +108,26 @@ function sameCaller(data: unknown, args: { sessionId?: string; job?: string }): 
   return row.job === args.job;
 }
 
+/** How many asks this caller made in the last day, newest first, reading
+ *  past every other caller's rows in the window (not a global first page, which
+ *  a busy day of other callers would fill), and stopping once `stopAt` is
+ *  reached: past the cap the exact count changes nothing. */
+async function callerAsks(
+  ctx: QueryCtx,
+  args: { sessionId?: string; job?: string },
+  stopAt = Number.POSITIVE_INFINITY,
+): Promise<number> {
+  let count = 0;
+  for await (const event of ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
+    .order("desc")) {
+    if (sameCaller(event.data, args)) count += 1;
+    if (count >= stopAt) break;
+  }
+  return count;
+}
+
 function capFor(args: { sessionId?: string }): number {
   if (args.sessionId !== undefined) return DELEGATE_MAX_PER_SESSION;
   return DELEGATE_MAX_PER_JOB;
@@ -136,12 +156,8 @@ export const internalRecordAsk = internalMutation({
       if (!session) throw new Error(`Unknown session id: ${args.sessionId}`);
     }
 
-    const recent = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
-      .take(200);
-    const callerCount = recent.filter((event) => sameCaller(event.data, args)).length;
     const cap = capFor(args);
+    const callerCount = await callerAsks(ctx, args, cap);
     const attended = session !== null && session.mode !== "autonomous";
     const capped = callerCount >= cap;
     // The cap is the delegate's spend wall: past it, no answer is acted on.
@@ -189,10 +205,7 @@ export async function recordedDecision(ctx: QueryCtx, askId: string): Promise<Do
 export const internalAskContext = internalQuery({
   args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const recent = await ctx.db.query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
-      .order("desc").take(200);
-    const asked = recent.filter((event) => sameCaller(event.data, args)).length;
+    const asked = await callerAsks(ctx, args);
     const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
     const priorObjections: { askId: string; at: number; revert: boolean; sentence: string | null; decision: string | null }[] = [];
     if (todoId !== null) {
