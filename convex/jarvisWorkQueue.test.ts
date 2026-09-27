@@ -3,7 +3,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
-import { follow, resolveId } from "./jarvis/tables";
+import { resolveId } from "./jarvis/tables";
+import { insertCopied } from "../test/core-tables";
 
 // GET /jarvis/context?for=work-queue: the todos an unattended agent may work
 // now, computed by the record's own rules (convex/ttsRulings.ts
@@ -30,7 +31,7 @@ afterEach(() => {
 
 type Verdict = "approve" | "revise" | "session" | "archive";
 
-/** One todo as the dual write stores it (old row, then its plain copy),
+/** One todo from before step C (its old row and its plain copy),
  *  eligible unless `fields` says otherwise, with its rulings, oldest first. */
 async function todo(
   ctx: MutationCtx,
@@ -38,7 +39,7 @@ async function todo(
   fields: Record<string, unknown> = {},
   rulings: { verdict: Verdict; at: number; sentence?: string }[] = [{ verdict: "approve", at: UPDATED + 1000 }],
 ) {
-  const old = await ctx.db.insert("dtsTodos", {
+  const row = {
     statement,
     brief: `the brief for ${statement}`,
     readiness: "prepared",
@@ -49,8 +50,11 @@ async function todo(
     createdAt: UPDATED,
     updatedAt: UPDATED,
     ...fields,
-  } as never);
-  await follow(ctx, "todos", old);
+  };
+  // A need names the old row in the old table and the plain one in the copy.
+  const needs = (row as { needs?: string[] }).needs;
+  const plainNeeds = needs === undefined ? undefined : await Promise.all(needs.map(async (id) => (await resolveId(ctx, "todos", id))!));
+  const old = (await insertCopied(ctx, "todos", { ...row, ...(needs === undefined ? {} : { needs: plainNeeds }) } as never, row)).old;
   const ids: Id<"rulings">[] = [];
   for (const r of rulings) {
     ids.push(

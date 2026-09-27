@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { follow } from "./jarvis/tables";
+import { insertCopied } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -13,7 +13,7 @@ async function insertTodo(
 ) {
   // The old row and its plain copy, as the dual write stores a todo.
   return await t.run(async (ctx) => {
-    const id = await ctx.db.insert("dtsTodos", {
+    const id = (await insertCopied(ctx, "todos", {
       statement,
       readiness: "unprepared",
       status: overrides.status ?? "active",
@@ -22,8 +22,7 @@ async function insertTodo(
       category: overrides.category,
       createdAt: 100,
       updatedAt: 200,
-    });
-    await follow(ctx, "todos", id);
+    })).old;
     return id;
   });
 }

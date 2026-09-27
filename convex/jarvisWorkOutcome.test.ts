@@ -3,10 +3,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { follow, resolveId } from "./jarvis/tables";
+import { resolveId } from "./jarvis/tables";
 import { gatherTodayFacts } from "./ttsDigest";
 import { gatherWeeklyFacts, WEEK_MS } from "./ttsWeekly";
 import { nyCalendarDayKey } from "./ttsShared";
+import { insertCopied } from "../test/core-tables";
 
 // The box's work queue posts each finished agent's outcome to POST
 // /jarvis/event with the todo as subject, in either id form (convex/jarvis/
@@ -147,7 +148,7 @@ describe("a work-queue outcome on its todo", () => {
     const { plain } = await seed(t);
     const now = Date.now();
     const newest = await t.run(async (ctx) => {
-      const other = await ctx.db.insert("dtsTodos", {
+      const other = (await insertCopied(ctx, "todos", {
         statement: "the last one worked",
         readiness: "prepared",
         status: "active",
@@ -155,8 +156,7 @@ describe("a work-queue outcome on its todo", () => {
         source: "test",
         createdAt: now,
         updatedAt: now,
-      });
-      await follow(ctx, "todos", other);
+      })).old;
       const otherPlain = (await resolveId(ctx, "todos", other))!;
       for (let n = 0; n < 2000; n += 1) {
         await ctx.db.insert("events", { kind: "session-outcome", at: now - 5 * 3_600_000 + n, provenance: {}, subject: plain.todo, data: { outcome: "completed" } });
@@ -179,7 +179,7 @@ describe("a work-queue outcome on its todo", () => {
     const now = Date.now();
     const goals = await t.run(async (ctx) => {
       const make = async (statement: string) => {
-        const id = await ctx.db.insert("dtsTodos", {
+        const id = (await insertCopied(ctx, "todos", {
           statement,
           kind: "goal",
           readiness: "unprepared",
@@ -188,8 +188,7 @@ describe("a work-queue outcome on its todo", () => {
           source: "test",
           createdAt: now - 20 * DAY,
           updatedAt: now - 20 * DAY,
-        });
-        await follow(ctx, "todos", id);
+        })).old;
         return { old: id, plain: (await resolveId(ctx, "todos", id)) as Id<"todos"> };
       };
       return { worked: await make("paper submitted"), idle: await make("lease signed") };
