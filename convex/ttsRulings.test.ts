@@ -676,6 +676,34 @@ describe("TTS unified rulings", () => {
     ).rejects.toThrow(/Unknown ruling id/);
   });
 
+  // witness: drop the two refusals at the top of internalMarkRulingApplied in
+  // convex/ttsRulings.ts — an applied ruling gets a second outcome stamped
+  // over its first, and a superseded one is consumed in its successor's place
+  it("consumes only a pending ruling: never an applied or superseded one", async () => {
+    const t = testDb();
+    const tom = await withTom(t);
+    const older = await tom.mutation(api.ttsRulings.recordRuling, {
+      repo: "tom.quest",
+      externalId: "tq-005",
+      verdict: "approve",
+    });
+    const newer = await tom.mutation(api.ttsRulings.recordRuling, {
+      repo: "tom.quest",
+      externalId: "tq-005",
+      verdict: "archive",
+    });
+    await expect(
+      t.mutation(internal.ttsRulings.internalMarkRulingApplied, { id: older, result: "late" }),
+    ).rejects.toThrow(/superseded/);
+    await t.mutation(internal.ttsRulings.internalMarkRulingApplied, { id: newer, result: "first" });
+    await expect(
+      t.mutation(internal.ttsRulings.internalMarkRulingApplied, { id: newer, result: "second" }),
+    ).rejects.toThrow(/already applied/);
+    const rows = await tom.query(api.ttsRulings.listRulings, {});
+    expect(rows.find((r) => r._id === older)?.appliedAt).toBeUndefined();
+    expect(rows.find((r) => r._id === newer)?.applyResult).toBe("first");
+  });
+
   // witness: count ALL briefs (drop the `!ruled.has` filter) in
   // internalAwaitingRulingCount in convex/ttsRulings.ts
   it("awaiting-ruling count covers briefed code items with no ruling at all", async () => {

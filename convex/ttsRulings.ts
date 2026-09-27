@@ -770,22 +770,30 @@ export async function markCodeSessionRulingsApplied(
 // rulings ride it too, for the box's work-queue job.
 export const internalPendingRulings = internalQuery({
   args: {},
-  handler: async (ctx) => {
-    // Each carries the plain todo id: a todo's rulings name it in either
-    // form, and are one subject; the box joins them to the plain todos.
-    const all = await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
-    const newest = liveRulings(all);
-    return all.filter(
-      (row) =>
-        row.appliedAt === undefined &&
-        newest.get(subjectKey(row))?._id === row._id,
-    );
-  },
+  handler: async (ctx) => await pendingRulings(ctx),
 });
+
+// The feed's one predicate, shared with the apply callback below so the set a
+// box job is handed and the set it may consume are the same set. Each row
+// carries the plain todo id: a todo's rulings name it in either form, and are
+// one subject; the box joins them to the plain todos.
+async function pendingRulings(ctx: QueryCtx | MutationCtx) {
+  const all = await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
+  const newest = liveRulings(all);
+  return all.filter(
+    (row) =>
+      row.appliedAt === undefined &&
+      newest.get(subjectKey(row))?._id === row._id,
+  );
+}
 
 // Apply callback: the worker reports what it did (commit sha / PR url) or how
 // it failed (error text) — either way the ruling is consumed (appliedAt set),
-// with the outcome on record in applyResult.
+// with the outcome on record in applyResult. Only a ruling the feed above
+// would hand out is consumed: an applied one already has its outcome, and a
+// superseded one is dead history whose newer ruling is the one to act on, so
+// stamping either would overwrite a record or report work on a verdict Tom
+// has replaced.
 export const internalMarkRulingApplied = internalMutation({
   args: { id: v.string(), result: v.string() },
   handler: async (ctx, { id, result }) => {
@@ -795,6 +803,12 @@ export const internalMarkRulingApplied = internalMutation({
     if (!normalized) throw new Error(`Unknown ruling id: ${id}`);
     const ruling = await ctx.db.get(normalized);
     if (!ruling) throw new Error(`Unknown ruling id: ${id}`);
+    if (ruling.appliedAt !== undefined) {
+      throw new Error(`refused: ruling ${id} is already applied (${ruling.applyResult ?? "no result"})`);
+    }
+    if (!(await pendingRulings(ctx)).some((row) => row._id === normalized)) {
+      throw new Error(`refused: ruling ${id} is superseded by a newer ruling on its subject`);
+    }
     await ctx.db.patch(normalized, { appliedAt: Date.now(), applyResult: result });
     await logEvent(ctx, "ruling-applied", ruling.todoId, {
       verdict: ruling.verdict,
