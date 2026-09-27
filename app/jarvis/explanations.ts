@@ -240,7 +240,7 @@ ${WHAT_TTS_IS}
   <tr>
     <td class="mono">revise</td>
     <td>The todo's readiness back to <span class="mono">unprepared</span>. The ruling row stays unapplied.</td>
-    <td>A job on the Jarvis Box — Tom's always-on machine — runs every two minutes, finds unapplied revise rulings, re-prepares the brief with the sentence in its prompt, and then marks the ruling applied. The sentence is the whole instruction the agent receives about what to change, so it has to stand on its own.</td>
+    <td>The planner on the Jarvis Box — Tom's always-on machine — runs every half hour, finds unapplied revise rulings, re-prepares the brief with the sentence in its prompt, and then marks the ruling applied. The sentence is the whole instruction the agent receives about what to change, so it has to stand on its own.</td>
   </tr>
   <tr>
     <td class="mono">session</td>
@@ -476,7 +476,7 @@ ${WHAT_TTS_IS}
 
 <h2>The job that mints</h2>
 
-<p>One job, once a day, at 4:30 in the morning New York time. It runs at that hour year-round: the scheduler underneath understands only universal time, so the job is registered at both possible universal times and its own check of the local hour lets exactly one of the two proceed. Daylight saving therefore needs no change to anything.</p>
+<p>One task of the record, once a day, from 4:30 in the morning New York time. The box's record-tick job calls the record every minute, and the record starts the task at the first call at or after 4:30, unless a calendar refresh is starting or still running, until it has run clean that New York day; a failed run is retried at the next call. The record reads the hour in New York time itself, so daylight saving needs no change to anything.</p>
 
 <p>4:30 is half an hour before the 5 a.m. digest reads the record. That ordering is the reason for the time: a repeat that minted after the digest was composed would not be in the morning it belongs to.</p>
 

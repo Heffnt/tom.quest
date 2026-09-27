@@ -541,7 +541,7 @@ export default function TodoRow({
                 <div className="space-y-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-text-faint">readiness</span>
-                    <Caption explains="Sets whether this item has been written up, and nothing else. Dropping it to unprepared hands it back to an agent, which re-writes the brief within a couple of minutes and returns it as prepared — the item, and what you have already decided about it, are untouched. Whether a prepared item is ready for you is computed from it: active, awake, and nothing it needs still open.">
+                    <Caption explains="Sets whether this item has been written up, and nothing else. Dropping it to unprepared hands an active item back to the planner on the Jarvis Box, which re-writes the brief at one of its half-hourly runs and returns it as prepared — the item, and what you have already decided about it, are untouched. Whether a prepared item is ready for you is computed from it: active, awake, and nothing it needs still open.">
                       {"tts.updateTodo({ readiness })"}
                     </Caption>
                   </div>
