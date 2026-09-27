@@ -200,3 +200,16 @@ describe("an event of one kind on a todo since a time", () => {
     });
   });
 });
+
+describe("a Slack send on a todo named by its plain id", () => {
+  it("stamps the reply through the old row, so the plain row and the old one agree", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, { channel: "C-dump", ts: "9000.1", subject: { kind: "todo", id: plain.todo }, text: "captured" });
+    await t.run(async (ctx) => {
+      expect(await ctx.db.get(old.todo)).toMatchObject({ slackReplyTs: "9000.1" });
+      expect(await ctx.db.get(plain.todo)).toMatchObject({ slackReplyTs: "9000.1" });
+    });
+    expect((await t.action(internal.jarvis.tables.leftToRemap, {})).zero).toBe(true);
+  });
+});
