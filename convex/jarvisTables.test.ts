@@ -85,9 +85,9 @@ describe("rulings under their plain name", () => {
 // old tables stay the truth, and the plain tables follow them.
 describe("todos, blocks and time notes copied into their plain tables", () => {
   type T = ReturnType<typeof convexTest>;
-  const syncAll = async (t: T, pageSize?: number) => {
+  const syncAll = async (t: T) => {
     for (const table of ["todos", "blocks", "timeNotes"] as const) {
-      await t.action(internal.jarvis.tables.sync, { table, pageSize });
+      await t.action(internal.jarvis.tables.sync, { table });
     }
   };
   const left = (t: T) => t.action(internal.jarvis.tables.leftToRemap, {});
@@ -100,6 +100,13 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
     todos: { notCopied: 0, stale: 0, orphaned: 0, needs: 0 },
     blocks: { notCopied: 0, stale: 0, orphaned: 0, todoId: 0 },
     timeNotes: { notCopied: 0, stale: 0, orphaned: 0, todoId: 0, blockId: 0 },
+  };
+  /** The way back's check after a whole copy: one remapped todoId per table. */
+  const remappedOnly = {
+    zero: false,
+    todos: { newSinceSwitch: 0 },
+    blocks: { newSinceSwitch: 0, remapped: 1 },
+    timeNotes: { newSinceSwitch: 0, remapped: 1 },
   };
 
   /** Two todos (the first needs the second, later in the table), a block on
@@ -125,7 +132,7 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
     expect(ta).toMatchObject({ statement: "a", needs: [tb!._id] });
     expect(pb).toMatchObject({ todoId: ta!._id, start: 1 });
     expect(pn).toMatchObject({ todoId: ta!._id, blockId: pb!._id, text: "move it" });
-    expect(await left(t)).toEqual({ zero: true, left: zeros, remapped: { blocks: 1, timeNotes: 1 } });
+    expect(await left(t)).toEqual({ zero: true, left: zeros, rollback: remappedOnly });
   });
 
   it("is idempotent: a second run changes nothing", async () => {
@@ -201,28 +208,24 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
     });
     expect(await t.run((ctx) => ctx.db.get(pb))).toMatchObject({ todoId: ta._id });
     expect(await t.run((ctx) => ctx.db.get(pn))).toMatchObject({ todoId: ta._id });
-    expect(await left(t)).toEqual({ zero: true, left: zeros, remapped: { blocks: 1, timeNotes: 1 } });
+    expect(await left(t)).toEqual({ zero: true, left: zeros, rollback: remappedOnly });
   });
 
-  it("pages: each page hands on a cursor, and a small page size copies the same rows", async () => {
+  it("pages: each page is 100 rows and hands on a cursor, and sync walks every page", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
-      for (let i = 0; i < 5; i++) await ctx.db.insert("dtsTodos", { ...todo, statement: `t${i}` });
+      for (let i = 0; i < 205; i++) await ctx.db.insert("dtsTodos", { ...todo, statement: `t${i}` });
     });
-    const first = await t.mutation(internal.jarvis.tables.syncPage, { table: "todos", cursor: null, pageSize: 2 });
-    expect(first).toMatchObject({ inserted: 2, isDone: false });
-    let cursor = first.continueCursor;
-    let inserted = first.inserted;
-    for (;;) {
-      const page = await t.mutation(internal.jarvis.tables.syncPage, { table: "todos", cursor, pageSize: 2 });
-      inserted += page.inserted;
-      if (page.isDone) break;
-      cursor = page.continueCursor;
-    }
-    expect(inserted).toBe(5);
+    const first = await t.mutation(internal.jarvis.tables.syncPage, { table: "todos", cursor: null });
+    expect(first).toMatchObject({ inserted: 100, isDone: false });
+    const second = await t.mutation(internal.jarvis.tables.syncPage, { table: "todos", cursor: first.continueCursor });
+    expect(second).toMatchObject({ inserted: 100, isDone: false });
     await seed(t);
-    await syncAll(t, 1);
-    expect(await t.run((ctx) => ctx.db.query("todos").collect())).toHaveLength(7);
+    const all = await t.action(internal.jarvis.tables.sync, { table: "todos" });
+    expect(all.passes[0]).toMatchObject({ inserted: 7, unchanged: 200 });
+    await t.action(internal.jarvis.tables.sync, { table: "blocks" });
+    await t.action(internal.jarvis.tables.sync, { table: "timeNotes" });
+    expect(await t.run((ctx) => ctx.db.query("todos").collect())).toHaveLength(207);
     expect((await left(t)).zero).toBe(true);
   });
 
@@ -239,6 +242,8 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
       await ctx.db.patch(copied._id, { note: "moved" });
       return { born, bornBlock };
     });
+    const before = (await left(t)).rollback;
+    expect(before).toMatchObject({ zero: false, todos: { newSinceSwitch: 1 }, blocks: { newSinceSwitch: 1, remapped: 2 } });
     const todos = await t.action(internal.jarvis.tables.copyBack, { table: "todos" });
     expect(todos.passes[0]).toMatchObject({ inserted: 1, patched: 0, orphaned: 0 });
     await t.action(internal.jarvis.tables.copyBack, { table: "blocks" });
@@ -247,7 +252,12 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
       blocks: expect.objectContaining({ patched: 2, unresolved: 0 }),
       timeNotes: expect.objectContaining({ patched: 1, unresolved: 0 }),
     });
-    expect((await left(t)).remapped).toEqual({ blocks: 0, timeNotes: 0 });
+    expect((await left(t)).rollback).toEqual({
+      zero: true,
+      todos: { newSinceSwitch: 0 },
+      blocks: { newSinceSwitch: 0, remapped: 0 },
+      timeNotes: { newSinceSwitch: 0, remapped: 0 },
+    });
     await t.run(async (ctx) => {
       const bornRow = (await ctx.db.get(born))!;
       expect(await ctx.db.get(bornRow.legacyId as Id<"dtsTodos">)).toMatchObject({ statement: "born" });
@@ -256,9 +266,12 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
       expect(await ctx.db.get(bornBlockRow.legacyId as Id<"dtsBlocks">)).toMatchObject({ start: 7, todoId: bornRow.legacyId });
       expect(await ctx.db.get(block)).toMatchObject({ note: "moved", todoId: a });
     });
-    // The way back is idempotent too.
+    // The way back is idempotent too: a second copyBack makes no second row.
     const again = await t.action(internal.jarvis.tables.copyBack, { table: "blocks" });
     expect(again.passes[0]).toMatchObject({ inserted: 0, patched: 0, unchanged: 2 });
+    expect((await t.action(internal.jarvis.tables.copyBack, { table: "todos" })).passes[0]).toMatchObject({ inserted: 0 });
+    expect(await t.run((ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(3);
+    expect(await t.run((ctx) => ctx.db.query("dtsBlocks").collect())).toHaveLength(2);
   });
 
   it("takes a todos id in a plain todoId (the widening, until the switch narrows it)", async () => {
