@@ -1751,7 +1751,10 @@ export const internalIngest = internalMutation({
 
     for (const upd of args.inboundUpdates ?? []) {
       const row = await ctx.db.get(upd.id);
-      if (row && row.sessionId === args.sessionId) {
+      // ONLY FORWARD: pending → delivered → done | interrupted | failed. A
+      // settled row keeps its settlement, and a delivered row its first
+      // deliveredAt, whatever a late or replayed flush says.
+      if (row && row.sessionId === args.sessionId && !inboundSettled(row.status) && !(row.status === "delivered" && upd.status === "delivered")) {
         // A turn Tom typed becomes a session-reply label when the agent
         // file's user row for it lands (convex/agents.ts internalIngest),
         // not here: the row the label names is the file's.
@@ -1813,6 +1816,11 @@ export const internalIngest = internalMutation({
   },
 });
 
+/** An inbound row past delivery: nothing moves it again. */
+function inboundSettled(status: Doc<"claudeInbound">["status"]): boolean {
+  return status === "done" || status === "interrupted" || status === "failed";
+}
+
 // ── Session outcomes (ratified 2026-08-28) ───────────────────────────────────
 // Every session ends with a written outcome record: "completed" (purpose met —
 // including ending by recording rulings that hand work back to the pipeline)
@@ -1835,10 +1843,15 @@ export const internalRecordOutcome = internalMutation({
     const session = await ctx.db.get(normalized);
     if (!session) throw new Error(`Unknown session id: ${id}`);
     // Read the PRE-patch value: unlike the daemon's stamp in internalIngest,
-    // this pen overwrites freely (the agent may re-record a sharper summary,
-    // or correct completed → errored after a late failure), so the row itself
-    // stops being an edge after the first write.
+    // this pen may re-record (a sharper summary of the same verdict, or a
+    // correction completed → errored after a late failure), so the row itself
+    // stops being an edge after the first write. It never turns a recorded
+    // failure into a success: the pen is worker-key authed and names its
+    // session by id, so any key holder could otherwise erase an errored.
     const firstRecord = session.outcome === undefined;
+    if (!firstRecord && session.outcome !== outcome && outcome !== "errored") {
+      throw new Error(`session ${id} already recorded ${session.outcome}; only a correction to errored changes it`);
+    }
     // A CORRECTION TO ERRORED is a failure the record has not said yet: the
     // first errored word of a session is written as its own event even after
     // a completed one, so the digest (which reads events, one line per

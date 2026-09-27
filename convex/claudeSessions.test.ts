@@ -832,6 +832,39 @@ describe("claude sessions", () => {
     );
   });
 
+  it("an inbound row only moves forward: a late flush never un-settles it or re-dates its delivery", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await tom.mutation(api.claudeSessions.sendMessage, { sessionId, text: "second" });
+    const [first, second] = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "running",
+      inboundUpdates: [
+        { id: first._id, status: "delivered" as const },
+        { id: second._id, status: "delivered" as const },
+      ],
+    });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      inboundUpdates: [{ id: first._id, status: "done" as const }],
+    });
+    const deliveredAt = (await t.run(async (ctx) => ctx.db.get(second._id)))!.deliveredAt;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // A replayed flush from before the settlement.
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      inboundUpdates: [
+        { id: first._id, status: "delivered" as const },
+        { id: second._id, status: "delivered" as const },
+      ],
+    });
+    const after = await t.run(async (ctx) => Promise.all([ctx.db.get(first._id), ctx.db.get(second._id)]));
+    expect(after[0]!.status).toBe("done");
+    expect(after[1]!.deliveredAt).toBe(deliveredAt);
+  });
+
   // witness: drop the `author` argument from sendMessageFrom / reopenSessionFrom
   // in convex/claudeSessions.ts, or pass "tom" from the internal pen. Ruling 15
   // (2026-09-05): only a turn Tom typed in the browser can become a ruling in
@@ -908,6 +941,19 @@ describe("claude sessions", () => {
         summary: "x",
       }),
     ).rejects.toThrow(/Unknown session id/);
+  });
+
+  it("the outcome pen never turns a recorded errored into completed", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalRecordOutcome, { id: sessionId, outcome: "errored", summary: "tests red" });
+    await expect(
+      t.mutation(internal.claudeSessions.internalRecordOutcome, { id: sessionId, outcome: "completed", summary: "all good" }),
+    ).rejects.toThrow(/only a correction to errored/);
+    const session = await tom.query(api.claudeSessions.getSession, { id: sessionId });
+    expect(session?.outcome).toBe("errored");
+    expect(session?.outcomeSummary).toBe("tests red");
   });
 
   // witness: delete the `outcomePenFooter(sessionId)` append from createSession
