@@ -33,7 +33,7 @@ import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { applyDateOutcome, applyStatusChange, logEvent } from "./tts";
-import { follow } from "./jarvis/tables";
+import { follow, todoEvents } from "./jarvis/tables";
 
 export const ASSIGNMENT_INPUT = v.object({
   externalId: v.string(), // Canvas assignment id, as a string
@@ -79,16 +79,14 @@ export function provenanceExternalId(provenance: string | undefined): string | n
  * is Tom's, and once he has said so his answer is the newer one.
  *
  * Read on by_todo, which is (todoId, at) — this row's own events, in time
- * order, and no more.
+ * order, and no more (both id forms, merged in time order).
  */
 async function reopenedSinceCompletion(
   ctx: MutationCtx,
-  todoId: Id<"dtsTodos">,
+  todoId: Id<"todos"> | Id<"dtsTodos">,
 ): Promise<boolean> {
-  const events = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_todo", (q) => q.eq("todoId", todoId))
-    .collect();
+  // Under either id the rows store it by (convex/jarvis/tables.ts).
+  const events = await todoEvents(ctx, todoId);
   // The FIRST completion, either door: applyStatusChange logs "status-changed"
   // (to "done"), applyDateOutcome logs "date-outcome" (outcome "done") and
   // logs no status change at all, though it sets the status.

@@ -43,7 +43,7 @@ import {
 import { redactSecrets } from "../shared/redact.mjs";
 import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
-import { oldId, resolveId, todoReader } from "./jarvis/tables";
+import { resolveId, todoEvents, todoReader } from "./jarvis/tables";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -417,13 +417,10 @@ export async function gatherTodayFacts(
   );
   const unshown: typeof flagged = [];
   for (const t of flagged) {
-    // The surfaced rows name the todo by its old id.
-    const old = await oldId(ctx, "todos", t._id);
-    const shown =
-      old !== null &&
-      (await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", old)).collect()).some(
-        (e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest",
-      );
+    // The surfaced rows name the todo by either id.
+    const shown = (await todoEvents(ctx, t._id)).some(
+      (e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest",
+    );
     if (!shown) unshown.push(t);
   }
   const needsYou = unshown
@@ -466,7 +463,7 @@ export async function gatherTodayFacts(
     .withIndex("by_kind_at", (q) => q.eq("kind", SESSION_OUTCOME).gte("at", since).lt("at", now))
     .order("desc")
     .take(EVENT_SCAN)) {
-    const todoId = w.subject === undefined ? null : await oldId(ctx, "todos", w.subject);
+    const todoId = w.subject === undefined ? null : await resolveId(ctx, "todos", w.subject);
     if (todoId !== null) worked.push({ at: w.at, kind: w.kind, todoId, data: w.data, key: undefined });
   }
   const events: NightRow[] = [...scanned.filter((e) => !objectionKinds.has(e.kind)), ...byKind.flat(), ...worked].sort(

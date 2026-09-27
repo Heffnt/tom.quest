@@ -2,7 +2,8 @@ import { convexTest } from "convex-test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { oldId, resolveId } from "./jarvis/tables";
+import { oldId, resolveId, todoEvents, todoRulings } from "./jarvis/tables";
+import { newestTodoEvents, todoHasEventSince } from "./jarvis/tables";
 
 // Step B of the core tables' move (convex/jarvis/tables.ts): a todo, block or
 // time note id reaches the record from outside in either form, the old
@@ -110,4 +111,105 @@ describe("an id in either form", () => {
       await followed(t);
     });
   }
+});
+
+// Step C: a stored reference (a ruling's, an event's, a session's, a run's)
+// holds a todo's old id when it was written before the step and the plain id
+// after it. Readers read both as the one todo.
+describe("a stored todo reference in either form", () => {
+  it("a todo's events and rulings are read under both ids", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, old, plain } = await seed(t);
+    await tom.mutation(api.tts.recordEvent, { kind: "opened", todoId: old.todo });
+    // "session" stays pending until its session exists.
+    const approve = await tom.mutation(api.ttsRulings.recordRuling, { todoId: plain.todo, verdict: "session" });
+    const revise = await t.run(async (ctx) => {
+      // The door stored the old id; a row written after step C, the plain one.
+      await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "plain-form", todoId: plain.todo });
+      for (const id of [old.todo, plain.todo]) {
+        expect((await todoEvents(ctx, id)).map((e) => e.kind)).toEqual(expect.arrayContaining(["opened", "plain-form"]));
+      }
+      // A newer ruling stored under the other form is the same subject's.
+      const stored = (await ctx.db.get(approve))!.todoId;
+      return await ctx.db.insert("rulings", {
+        subjectType: "life",
+        todoId: stored === old.todo ? plain.todo : old.todo,
+        verdict: "revise",
+        sentence: "ask the landlord first",
+        ruledAt: Date.now() + 1,
+      });
+    });
+    await t.run(async (ctx) => {
+      expect((await todoRulings(ctx, old.todo)).map((r) => r.todoId)).toEqual([plain.todo, plain.todo]);
+    });
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => [r._id, r.todoId])).toEqual([[revise, plain.todo]]);
+  });
+});
+
+describe("the newest events on a todo", () => {
+  it("reads the newest n under each form through the index, merged newest first", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 150; i++) {
+        await ctx.db.insert("dtsEvents", { at: 1_000 + 2 * i, kind: "old-form", todoId: old.todo });
+        await ctx.db.insert("dtsEvents", { at: 1_001 + 2 * i, kind: "plain-form", todoId: plain.todo });
+      }
+      const newest = await newestTodoEvents(ctx, old.todo, 100);
+      expect(newest).toHaveLength(100);
+      // The seed's own rows (written now) first, then the newest fixtures.
+      const fixtures = newest.filter((e) => e.at < 10_000);
+      expect(fixtures[0].at).toBe(1_299);
+      expect(fixtures.map((e) => e.at)).toEqual([...fixtures.map((e) => e.at)].sort((a, b) => b - a));
+      expect(new Set(fixtures.map((e) => e.kind))).toEqual(new Set(["old-form", "plain-form"]));
+      expect(await newestTodoEvents(ctx, plain.todo, 100)).toEqual(newest);
+    });
+  });
+
+  it("the ask context finds an objection stored under either id", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "delegate-objection", todoId: plain.todo, data: { askId: "a1", revert: true } });
+    });
+    const context = await t.query(internal.ttsAsk.internalAskContext, { todoId: old.todo });
+    expect(context.priorObjections.map((o) => o.askId)).toEqual(["a1"]);
+  });
+});
+
+describe("an event of one kind on a todo since a time", () => {
+  it("is found under either id through by_todo_kind, from the time on, and no other kind counts", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 500; i++) await ctx.db.insert("dtsEvents", { at: 2_000 + i, kind: "surfaced", todoId: old.todo });
+      await ctx.db.insert("dtsEvents", { at: 1_000, kind: "slack-event", todoId: old.todo });
+      for (const id of [old.todo, plain.todo]) {
+        expect(await todoHasEventSince(ctx, id, "slack-event", 1_000)).toBe(true);
+        expect(await todoHasEventSince(ctx, id, "slack-event", 1_001)).toBe(false);
+        expect(await todoHasEventSince(ctx, id, "surfaced", 2_499)).toBe(true);
+      }
+      await ctx.db.insert("dtsEvents", { at: 3_000, kind: "slack-event", todoId: plain.todo });
+      expect(await todoHasEventSince(ctx, old.todo, "slack-event", 1_001)).toBe(true);
+      const direct = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_todo_kind", (q) => q.eq("todoId", plain.todo).eq("kind", "slack-event").gte("at", 1_001))
+        .collect();
+      expect(direct.map((e) => e.at)).toEqual([3_000]);
+    });
+  });
+});
+
+describe("a Slack send on a todo named by its plain id", () => {
+  it("stamps the reply through the old row, so the plain row and the old one agree", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, { channel: "C-dump", ts: "9000.1", subject: { kind: "todo", id: plain.todo }, text: "captured" });
+    await t.run(async (ctx) => {
+      expect(await ctx.db.get(old.todo)).toMatchObject({ slackReplyTs: "9000.1" });
+      expect(await ctx.db.get(plain.todo)).toMatchObject({ slackReplyTs: "9000.1" });
+    });
+    expect((await t.action(internal.jarvis.tables.leftToRemap, {})).zero).toBe(true);
+  });
 });

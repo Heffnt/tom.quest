@@ -7,7 +7,7 @@ import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
-import { oldId } from "./jarvis/tables";
+import { newestTodoEvents, oldId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 
@@ -300,10 +300,10 @@ export const internalAskContext = internalQuery({
   args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const asked = await callerAsks(ctx, args, capFor(args) + 1);
-    const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
     const priorObjections: { askId: string; at: number; revert: boolean; sentence: string | null; decision: string | null }[] = [];
-    if (todoId !== null) {
-      const events = await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", todoId)).order("desc").take(100);
+    if (args.todoId !== undefined) {
+      // The todo's newest 100 rows under either id, read through the index.
+      const events = await newestTodoEvents(ctx, args.todoId, 100);
       for (const event of events) {
         if (event.kind !== DELEGATE_OBJECTION || priorObjections.length >= 5) continue;
         const data = (event.data ?? {}) as { askId?: unknown; revert?: unknown; sentence?: unknown };

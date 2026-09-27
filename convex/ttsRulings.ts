@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
-import { eitherId, follow, oldId, resolveId, todoReader, withPlainTodoIds } from "./jarvis/tables";
+import { eitherId, follow, oldId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -533,19 +533,21 @@ async function refuseUnlessSessionSubject(
   ctx: MutationCtx,
   session: Doc<"claudeSessions">,
   subjectType: "life" | "code",
-  subject: { todoId?: Id<"dtsTodos"> },
+  subject: { todoId?: Id<"todos"> | Id<"dtsTodos"> },
 ): Promise<void> {
   let about = false;
+  // Ids compared as the plain row each names: the agenda, the session and
+  // the subject each hold a todo's id in either form.
+  const todoOf = todoReader(ctx);
   if (session.kind === "weekly") {
-    // The agenda names its todos as the Friday job read them, in either form.
-    const id = subjectType === "life" ? subject.todoId : undefined;
+    const id = subjectType === "life" && subject.todoId !== undefined ? (await todoOf(subject.todoId))?._id : undefined;
     for (const named of session.agendaSubjects ?? []) {
-      if (id !== undefined && (await oldId(ctx, "todos", named)) === id) about = true;
+      if (id !== undefined && (await todoOf(named))?._id === id) about = true;
     }
   } else if (subjectType === "life" && subject.todoId !== undefined) {
-    const todo = await todoReader(ctx)(subject.todoId);
+    const todo = await todoOf(subject.todoId);
     about =
-      session.todoId === subject.todoId ||
+      (todo !== null && session.todoId !== undefined && (await todoOf(session.todoId))?._id === todo._id) ||
       (session.blockCategory !== undefined &&
         session.blockCategory !== "code" &&
         todo?.category === session.blockCategory);
@@ -621,13 +623,18 @@ export const internalRecordRulingFromTomWords = internalMutation({
     if (!session) throw new Error(`Unknown session id: ${row.sessionId}`);
     await refuseUnlessSessionSubject(ctx, session, subjectType, subject);
     // 6. one ruling per row per subject
-    const key = subjectKey({ subjectType, ...subject });
-    const prior = await ctx.db
-      .query("rulings")
-      .withIndex("by_provenance_inboundId", (q) =>
-        q.eq("provenance.inboundId", rowId),
-      )
-      .collect();
+    //    Keyed by the plain id: a prior ruling holds its todo in either form.
+    const plainTodo = subject.todoId === undefined ? undefined : (await resolveId(ctx, "todos", subject.todoId)) ?? undefined;
+    const key = subjectKey({ subjectType, ...subject, todoId: plainTodo });
+    const prior = await withPlainTodoIds(
+      ctx,
+      await ctx.db
+        .query("rulings")
+        .withIndex("by_provenance_inboundId", (q) =>
+          q.eq("provenance.inboundId", rowId),
+        )
+        .collect(),
+    );
     if (prior.some((r) => subjectKey(r) === key)) {
       throw new Error(
         "refused: that turn has already ruled on this subject",
@@ -700,15 +707,13 @@ export function liveRulings(
  */
 export async function markLiveSessionRulingApplied(
   ctx: MutationCtx,
-  todoId: Id<"dtsTodos">,
+  todoId: Id<"todos"> | Id<"dtsTodos">,
   sessionId: string,
 ): Promise<void> {
-  const rulings = await ctx.db
-    .query("rulings")
-    .withIndex("by_todo", (q) => q.eq("todoId", todoId))
-    .collect();
-  const live = liveRulings(rulings).get(
-    subjectKey({ subjectType: "life", todoId }),
+  // Either form in, every ruling on the todo out, each keyed by the plain id.
+  const rulings = await todoRulings(ctx, todoId);
+  const live = rulings.length === 0 ? undefined : liveRulings(rulings).get(
+    subjectKey({ subjectType: "life", todoId: rulings[0].todoId }),
   );
   if (live && live.verdict === "session" && live.appliedAt === undefined) {
     await ctx.db.patch(live._id, {
@@ -766,17 +771,14 @@ export async function markCodeSessionRulingsApplied(
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const all = await ctx.db.query("rulings").collect();
+    // Each carries the plain todo id: a todo's rulings name it in either
+    // form, and are one subject; the box joins them to the plain todos.
+    const all = await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
     const newest = liveRulings(all);
-    // The box joins these to the plain todos it reads, so each carries the
-    // plain todo id.
-    return await withPlainTodoIds(
-      ctx,
-      all.filter(
-        (row) =>
-          row.appliedAt === undefined &&
-          newest.get(subjectKey(row))?._id === row._id,
-      ),
+    return all.filter(
+      (row) =>
+        row.appliedAt === undefined &&
+        newest.get(subjectKey(row))?._id === row._id,
     );
   },
 });
@@ -886,12 +888,10 @@ export const internalWorkQueue = internalQuery({
     }[] = [];
     for (const todo of todos) {
       if (todo.actor !== "agent" || !isReadyForTom(todo, doneSet, now)) continue;
-      // Rulings name a todo by its old id (convex/jarvis/tables.ts).
-      const old = await oldId(ctx, "todos", todo._id);
-      if (old === null) continue;
-      const live = liveRulings(
-        await ctx.db.query("rulings").withIndex("by_todo", (q) => q.eq("todoId", old)).collect(),
-      ).get(subjectKey({ subjectType: "life", todoId: old }));
+      // Rulings name a todo by either id (convex/jarvis/tables.ts).
+      const live = liveRulings(await todoRulings(ctx, todo._id)).get(
+        subjectKey({ subjectType: "life", todoId: todo._id }),
+      );
       if (live === undefined || live.verdict !== "approve" || !rulingAnswers(live, todo)) continue;
       if ((todo.brief ?? "").trim() === "") continue;
       if (await workedUnder(ctx, todo._id, live._id, now)) continue;

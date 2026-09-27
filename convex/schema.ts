@@ -1154,7 +1154,10 @@ export default defineSchema({
       v.literal("life"),
       v.literal("code"),
     ),
-    todoId: v.optional(v.id("dtsTodos")), // life subjects
+    // Either id: a row written before step C of the core tables' move
+    // (convex/jarvis/tables.ts) holds its todo's old id, one written since
+    // the plain one.
+    todoId: v.optional(v.union(v.id("dtsTodos"), v.id("todos"))), // life subjects
     repo: v.optional(v.string()), // code subjects…
     externalId: v.optional(v.string()), // …(repo, externalId)
     verdict: v.union(
@@ -1215,7 +1218,8 @@ export default defineSchema({
   dtsEvents: defineTable({
     at: v.number(),
     kind: v.string(),
-    todoId: v.optional(v.id("dtsTodos")),
+    // Either id, as rulings.todoId: old before step C, plain since.
+    todoId: v.optional(v.union(v.id("dtsTodos"), v.id("todos"))),
     data: v.optional(v.any()),
     // Set on the ONE event kind that was an instruction rather than a record:
     // "plan-repair" (a worker found a `needs` edge wrong). The planner read
@@ -1289,6 +1293,10 @@ export default defineSchema({
   })
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"])
+    // One kind on one todo from a time on: whether his reply followed a
+    // needs-you (convex/jarvis/tables.ts todoHasEventSince), read to its
+    // first row with no filter over the todo's other rows.
+    .index("by_todo_kind", ["todoId", "kind", "at"])
     // The row for one thread, event id, producer id or box condition:
     // eq(kind), eq(key) — and with `key` pinned, `at` orders what comes back.
     .index("by_kind_key", ["kind", "key", "at"])
@@ -1610,7 +1618,8 @@ export default defineSchema({
       // session owns the mental-health page itself.
       v.literal("therapy"),
     ),
-    todoId: v.optional(v.id("dtsTodos")), // for gate / focus-item sessions
+    // Either id, as rulings.todoId: old before step C, plain since.
+    todoId: v.optional(v.union(v.id("dtsTodos"), v.id("todos"))), // for gate / focus-item sessions
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
     // The CODE subject (the lifeos update, phase 7): a worker mission for
     // Tom's approve or archive ruling on a code todo — an entry in a repo's vqc/todos.yaml, addressed by (repo,
@@ -1940,7 +1949,8 @@ export default defineSchema({
     // Tool-result sidecars are pointers only in phase 2: their bytes stay on
     // the host until the phase-3 sweeper assigns them their own store objects.
     attachments: v.array(v.object({ file: v.string(), bytes: v.number(), sha256: v.string() })),
-    todoId: v.optional(v.id("dtsTodos")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+    // todoId: either id, as rulings.todoId: old before step C, plain since.
+    todoId: v.optional(v.union(v.id("dtsTodos"), v.id("todos"))), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
     // The registration token from this run's envelope — the exact edge from a
     // row an agent wrote for Tom back to the run that wrote it.
     //

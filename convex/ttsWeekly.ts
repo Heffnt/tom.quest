@@ -24,7 +24,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import { AREA_REVIEWED, LEARNING_CHANGE, SLACK_FAILED } from "./ttsDigest";
 import {
   INTEGRATIONS,
@@ -35,7 +35,7 @@ import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, SESSION_OUTCOME, isPrepared } from "./ttsShared";
-import { oldId, todoReader } from "./jarvis/tables";
+import { todoEvents, todoIdForms, todoReader } from "./jarvis/tables";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
@@ -332,15 +332,15 @@ async function lastGoalEvaluation(
   until: number,
 ): Promise<number | null> {
   let last: number | null = null;
-  // The session rows name the goal by its old id (convex/jarvis/tables.ts).
-  const old = await oldId(ctx, "todos", goal._id);
-  if (old !== null) {
+  // The session rows name the goal by either id (convex/jarvis/tables.ts):
+  // each form read newest first, stopped at its first hit.
+  for (const form of await todoIdForms(ctx, goal._id)) {
     for await (const e of ctx.db
       .query("dtsEvents")
-      .withIndex("by_todo", (q) => q.eq("todoId", old).lt("at", until))
+      .withIndex("by_todo", (q) => q.eq("todoId", form).lt("at", until))
       .order("desc")) {
       if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) {
-        last = e.at;
+        if (last === null || e.at > last) last = e.at;
         break;
       }
     }
@@ -442,21 +442,20 @@ export async function gatherWeeklyFacts(
   // 4. Surfaced three times and untouched: the digest's "surfaced" rows per
   // todo; touched = a later row on that todo of a kind Tom's own hand writes
   // (TOM_TOUCH_KINDS above) — the system's rows on it do not count.
-  const surfacings = new Map<Id<"dtsTodos">, { count: number; firstAt: number }>();
+  // Keyed by the plain id: a todo's rows name it in either form.
+  const surfacings = new Map<string, { count: number; firstAt: number }>();
   for (const e of await eventsOfKind("surfaced")) {
     if (e.todoId === undefined) continue;
-    const s = surfacings.get(e.todoId) ?? { count: 0, firstAt: e.at };
+    const key = (await todoOf(e.todoId))?._id ?? e.todoId;
+    const s = surfacings.get(key) ?? { count: 0, firstAt: e.at };
     s.count++;
     s.firstAt = Math.min(s.firstAt, e.at);
-    surfacings.set(e.todoId, s);
+    surfacings.set(key, s);
   }
   const surfacedUntouched: WeeklyFacts["surfacedUntouched"] = [];
   for (const [todoId, s] of surfacings) {
     if (s.count < SURFACED_THRESHOLD) continue;
-    const later = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_todo", (q) => q.eq("todoId", todoId).gte("at", s.firstAt))
-      .collect();
+    const later = await todoEvents(ctx, todoId, s.firstAt);
     if (later.some(isTomTouch)) continue;
     const todo = await todoOf(todoId);
     surfacedUntouched.push({
@@ -811,10 +810,7 @@ export async function gatherWeeklyFacts(
   const threads: WeeklyFacts["threads"] = [];
   for (const e of await eventsOfKind(NEEDS_TOM)) {
     if (e.todoId === undefined) continue;
-    const later = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_todo", (q) => q.eq("todoId", e.todoId).gte("at", e.at))
-      .collect();
+    const later = await todoEvents(ctx, e.todoId, e.at);
     const reply = later.find((r) => r.kind === "slack-event");
     const todo = await todoOf(e.todoId);
     threads.push({

@@ -79,12 +79,16 @@ describe("rulings under their plain name", () => {
   it("exports exactly the rulings count and the core tables' copy; no retired copy or remap returns", () => {
     expect(Object.keys(tablesModule).sort()).toEqual([
       "clearBlockPage",
+      "copyBack",
+      "copyBackPage",
+      "copyBackPrunePage",
       "countPage",
       "counts",
       "eitherId",
       "follow",
       "leftPage",
       "leftToRemap",
+      "newestTodoEvents",
       "oldId",
       "prunePage",
       "refsPage",
@@ -92,7 +96,11 @@ describe("rulings under their plain name", () => {
       "resolveId",
       "sync",
       "syncPage",
+      "todoEvents",
+      "todoHasEventSince",
+      "todoIdForms",
       "todoReader",
+      "todoRulings",
       "unstamp",
       "unstampPage",
       "withPlainTodoIds",
@@ -294,5 +302,77 @@ describe("todos, blocks and time notes copied into their plain tables", () => {
       const blockId = await ctx.db.insert("blocks", { start: 1, end: 2, todoId, createdAt: 1 });
       await ctx.db.insert("timeNotes", { text: "t", todoId, blockId, status: "pending", createdAt: 1 });
     });
+  });
+});
+
+// copyBack, the way back from step C: after writes that went to the plain
+// tables only (what step C's writers do), each old table is made to hold what
+// its plain table holds, so the code before step C can deploy again.
+describe("copyBack: the old tables made to hold what the plain ones do", () => {
+  type T = ReturnType<typeof convexTest>;
+  const left = (t: T) => t.action(internal.jarvis.tables.leftToRemap, {});
+
+  it("carries plain inserts, edits and deletions back, references moved back, until leftToRemap reads zero", async () => {
+    const t = convexTest({ schema, modules });
+    // Before step C: an old todo, block and note, each with its copy.
+    const old = await t.run(async (ctx) => {
+      const todoId = await ctx.db.insert("dtsTodos", { ...todo, statement: "old", body: "a body" });
+      const blockId = await ctx.db.insert("dtsBlocks", { start: 1, end: 2, todoId, createdAt: 1 });
+      const noteId = await ctx.db.insert("dtsTimeNotes", { text: "n", todoId, blockId, status: "pending" as const, createdAt: 1 });
+      for (const [table, id] of [["todos", todoId], ["blocks", blockId], ["timeNotes", noteId]] as const) {
+        await tablesModule.follow(ctx, table, id);
+      }
+      return { todoId, blockId, noteId };
+    });
+    expect((await left(t)).zero).toBe(true);
+    // Step C's writes, to the plain rows only: a new todo needing the old one
+    // (and a later one), the old todo edited and its body cleared, a block on
+    // the new todo, a note on that block, and the old block deleted.
+    const plain = await t.run(async (ctx) => {
+      const oldTodo = (await resolveId(ctx, "todos", old.todoId))!;
+      const oldBlock = (await resolveId(ctx, "blocks", old.blockId))!;
+      const fresh = await ctx.db.insert("todos", { ...todo, statement: "new", needs: [oldTodo] });
+      const later = await ctx.db.insert("todos", { ...todo, statement: "later" });
+      await ctx.db.patch(fresh, { needs: [oldTodo, later] });
+      await ctx.db.patch(oldTodo, { statement: "old, edited", body: undefined });
+      const block = await ctx.db.insert("blocks", { start: 3, end: 4, todoId: fresh, createdAt: 3 });
+      const note = await ctx.db.insert("timeNotes", { text: "m", todoId: fresh, blockId: block, status: "pending" as const, createdAt: 3 });
+      // A block's deletion takes it off the notes that named it.
+      const oldNote = (await resolveId(ctx, "timeNotes", old.noteId))!;
+      await ctx.db.patch(oldNote, { blockId: undefined });
+      await ctx.db.delete(oldBlock);
+      return { oldTodo, fresh, later, block, note };
+    });
+    expect((await left(t)).zero).toBe(false);
+
+    const out = await t.action(internal.jarvis.tables.copyBack, {});
+    // Two passes over todos: "new" needs "later", which the first pass had not
+    // yet copied back; the answer is the second pass's.
+    expect(out.todos).toMatchObject({ inserted: 0, patched: 1, unresolved: 0, pruned: 0 });
+    expect(out.blocks).toMatchObject({ inserted: 1, pruned: 1 });
+    expect(out.timeNotes).toMatchObject({ inserted: 1, patched: 1, pruned: 0 });
+    expect(await left(t)).toMatchObject({ zero: true });
+
+    await t.run(async (ctx) => {
+      const fresh = (await ctx.db.get(plain.fresh))!;
+      const later = (await ctx.db.get(plain.later))!;
+      const oldFresh = (await ctx.db.get(ctx.db.normalizeId("dtsTodos", fresh.legacyId!)!))!;
+      expect(oldFresh).toMatchObject({ statement: "new", needs: [old.todoId, later.legacyId] });
+      expect(await ctx.db.get(old.todoId)).toMatchObject({ statement: "old, edited" });
+      expect(await ctx.db.get(old.todoId)).not.toHaveProperty("body");
+      expect(await ctx.db.get(old.blockId)).toBeNull();
+      const block = (await ctx.db.get(plain.block))!;
+      expect(await ctx.db.get(ctx.db.normalizeId("dtsBlocks", block.legacyId!)!)).toMatchObject({ start: 3, todoId: fresh.legacyId });
+      const note = (await ctx.db.get(plain.note))!;
+      expect(await ctx.db.get(ctx.db.normalizeId("dtsTimeNotes", note.legacyId!)!)).toMatchObject({
+        text: "m",
+        todoId: fresh.legacyId,
+        blockId: block.legacyId,
+      });
+      // The code before step C finds the new todo's old row by either id.
+      expect(await tablesModule.oldId(ctx, "todos", plain.fresh)).toBe(fresh.legacyId);
+    });
+    // A second run has nothing left to carry.
+    expect((await t.action(internal.jarvis.tables.copyBack, {})).todos).toMatchObject({ inserted: 0, patched: 0 });
   });
 });

@@ -958,7 +958,9 @@ export const SLACK_SUBJECT = v.union(
   v.object({ kind: v.literal("today"), day: v.string() }),
   v.object({ kind: v.literal("digest"), day: v.string() }),
   v.object({ kind: v.literal("hourly"), hour: v.string() }),
-  v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
+  // Either id: a thread posted before step C of the core tables' move names
+  // its todo's old id, one posted since the plain one.
+  v.object({ kind: v.literal("todo"), id: v.union(v.id("dtsTodos"), v.id("todos")) }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
   // ONE DELEGATED DECISION (an "ask"), posted to the decisions channel as it
@@ -988,9 +990,9 @@ export function slackHourKey(utcMs: number): string {
 // #dump is where his words come in; everything the record says to him goes to
 // one channel: the digest, the needs-you replies in its thread, the silence
 // alarm. It is #tts-today until the morning rename to #jarvis, which keeps the
-// id, so its variable keeps its name tonight. The rooms that were each one
-// purpose (#tts-decisions, #tts-needs-you, #tts-hourly, #tts-broken,
-// #tts-simplify, #tts-runners) are sections of the digest now.
+// id, so its variable keeps its name tonight. The single-purpose #tts- rooms
+// that came before it (the decisions, needs-you, hourly, broken, simplify and
+// runners rooms) are sections of the digest now.
 //
 // Here rather than in convex/ttsSync.ts, which owns the Slack door, because
 // that file is "use node" and the plain-runtime record areas ask it too.

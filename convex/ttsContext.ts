@@ -20,7 +20,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { modelOfTomState, modelOfTomText, withoutModelOfTomPrelude, WRITE_PAGES } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
-import { oldId, resolveId } from "./jarvis/tables";
+import { todoIdForms } from "./jarvis/tables";
 
 /** What the run is about. `none` is every caller with no subject (the HTTP
  * doors, the laptop): its prompt carries no record facts. */
@@ -138,14 +138,15 @@ async function subjectFacts(
       : [];
 
   if (subject.kind === "todo") {
-    // The plain row; a ruling names it by its old id.
-    const plain = await resolveId(ctx, "todos", subject.todoId);
-    const old = plain === null ? null : await oldId(ctx, "todos", plain);
-    if (old === null) throw new Error(`context subject todo ${subject.todoId} does not exist`);
-    const own = await ctx.db
-      .query("rulings")
-      .withIndex("by_todo", (q) => q.eq("todoId", old))
-      .take(RULINGS_PER_SUBJECT);
+    // A ruling names its todo by either id: the oldest RULINGS_PER_SUBJECT
+    // under each form, through by_todo, merged oldest first and cut.
+    const forms = await todoIdForms(ctx, subject.todoId);
+    if (forms.length === 0) throw new Error(`context subject todo ${subject.todoId} does not exist`);
+    const own = [];
+    for (const form of forms) {
+      own.push(...(await ctx.db.query("rulings").withIndex("by_todo", (q) => q.eq("todoId", form)).take(RULINGS_PER_SUBJECT)));
+    }
+    own.sort((a, b) => a._creationTime - b._creationTime).splice(RULINGS_PER_SUBJECT);
     for (const ruling of own) {
       record.rulings.push({
         verdict: ruling.verdict,
@@ -207,8 +208,8 @@ async function writePages(ctx: QueryCtx | MutationCtx): Promise<string> {
  *
  *   modelOfTomPublication by_key                     1
  *   modelOfTomFiles by_name                          2  (reaching Tom only)
- *   todos get (by_legacy for an old id), its old row ≤  3
- *   rulings by_todo                             ≤  5
+ *   todos get (by_legacy for an old id)           ≤  2
+ *   rulings by_todo, 5 under each id form          ≤ 10
  *   claudeSessions by_status ×2, filtered in memory ≤ 60 (SESSION_SCAN_MAX)
  *
  * FAILS CLOSED, like every other reader of the publication: a deployment with

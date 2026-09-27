@@ -42,7 +42,7 @@ import {
 import { NEEDS_TOM } from "./ttsSlack";
 import { BOX_CHANGE, DEPLOY, redactedBoxChange, type BoxChange } from "./boxChanges";
 import { EVENT_KINDS } from "../shared/jarvis-events.mjs";
-import { todoReader } from "./jarvis/tables";
+import { todoHasEventSince, todoReader } from "./jarvis/tables";
 
 /** The label every gate in this module names, so a denial says which surface. */
 const SURFACE = "Agents";
@@ -458,12 +458,9 @@ export const waitingOnTom = query({
       // His reply itself, not a page of the todo's events that might not
       // reach it: a busy todo can carry any number of rows after the thread
       // was opened, and a cutoff there counts a settled todo as still waiting.
-      const replied = await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_todo", (q) => q.eq("todoId", todoId).gte("at", event.at))
-        .filter((q) => q.eq(q.field("kind"), "slack-event"))
-        .first();
-      if (replied !== null) continue;
+      // Under either id the rows store the todo by (convex/jarvis/tables.ts).
+      // Stopped at the first reply for each form, as the one read was.
+      if (await todoHasEventSince(ctx, todoId, "slack-event", event.at)) continue;
       waiting += 1;
       if (oldestAt === null || event.at < oldestAt) oldestAt = event.at;
     }

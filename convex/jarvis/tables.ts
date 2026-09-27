@@ -20,6 +20,14 @@
 // which keep the ids they hold). `eitherId` is the argument validator that
 // takes both; `resolveId` answers the plain row a reader reads, `oldId` the
 // old row a writer writes, since the write path does not move in this step.
+//
+// STEP C, THE OLD WRITES STOP, lands in two pull requests. The first (this
+// one) readies the readers: a stored reference to a todo (rulings.todoId,
+// dtsEvents.todoId, claudeSessions.todoId, runs.todoId, a Slack thread's todo
+// subject) takes either id, and every reader of a stored reference reads both
+// forms as the one todo (todoIdForms, todoEvents, todoRulings; withPlainTodoIds before
+// liveRulings). It also brings copyBack (below), the second pull request's way
+// back, so it is deployed before anything needs it.
 
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
@@ -140,6 +148,81 @@ export async function withPlainTodoIds<R extends { todoId?: string }>(
     out.push({ ...row, todoId: plain });
   }
   return out;
+}
+
+/**
+ * Every id a stored reference to this todo may hold, the plain row's first:
+ * a ruling, event, session or run written before step C holds the old row's
+ * id, one written since holds the plain one. A read of an index on a stored
+ * todoId reads each form. [] when neither form names a row.
+ */
+export async function todoIdForms(
+  ctx: QueryCtx | MutationCtx,
+  id: string,
+): Promise<Array<Id<"todos"> | Id<"dtsTodos">>> {
+  const plain = await resolveId(ctx, "todos", id);
+  const row = plain === null ? null : await ctx.db.get(plain);
+  if (row === null) return [];
+  const old = row.legacyId === undefined ? null : ctx.db.normalizeId("dtsTodos", row.legacyId);
+  return old === null ? [row._id] : [row._id, old];
+}
+
+/** The events on a todo under either id they store it by, oldest first:
+ *  those at or after `from`. */
+export async function todoEvents(
+  ctx: QueryCtx | MutationCtx,
+  id: string,
+  from = 0,
+): Promise<Doc<"dtsEvents">[]> {
+  const out: Doc<"dtsEvents">[] = [];
+  for (const form of await todoIdForms(ctx, id)) {
+    out.push(...(await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", form).gte("at", from)).collect()));
+  }
+  return out.sort((a, b) => a.at - b.at || a._creationTime - b._creationTime);
+}
+
+/** Whether a todo has an event of `kind` at or after `from`, under either id
+ *  it is stored by: each form read through by_todo_kind to its first row, so
+ *  no other kind of row on the todo is read. */
+export async function todoHasEventSince(
+  ctx: QueryCtx | MutationCtx,
+  id: string,
+  kind: string,
+  from: number,
+): Promise<boolean> {
+  for (const form of await todoIdForms(ctx, id)) {
+    const hit = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_todo_kind", (q) => q.eq("todoId", form).eq("kind", kind).gte("at", from))
+      .first();
+    if (hit !== null) return true;
+  }
+  return false;
+}
+
+/** The newest `n` events on a todo under either id they store it by, newest
+ *  first: `n` read through the index for each form, merged, cut to `n`. The
+ *  bounded read for a history that only grows. */
+export async function newestTodoEvents(
+  ctx: QueryCtx | MutationCtx,
+  id: string,
+  n: number,
+): Promise<Doc<"dtsEvents">[]> {
+  const out: Doc<"dtsEvents">[] = [];
+  for (const form of await todoIdForms(ctx, id)) {
+    out.push(...(await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", form)).order("desc").take(n)));
+  }
+  return out.sort((a, b) => b.at - a.at || b._creationTime - a._creationTime).slice(0, n);
+}
+
+/** The rulings on a todo under either id they store it by, each handed out
+ *  with the plain id, so liveRulings keys them as one subject. */
+export async function todoRulings(ctx: QueryCtx | MutationCtx, id: string): Promise<Doc<"rulings">[]> {
+  const out: Doc<"rulings">[] = [];
+  for (const form of await todoIdForms(ctx, id)) {
+    out.push(...(await ctx.db.query("rulings").withIndex("by_todo", (q) => q.eq("todoId", form)).collect()));
+  }
+  return await withPlainTodoIds(ctx, out);
 }
 
 /** One page of a count: rows, and (in `rulings`) rows carrying a legacyId. */
@@ -275,8 +358,10 @@ async function moveRef(ctx: QueryCtx | MutationCtx, to: Core, id: string, direct
   return typeof row.legacyId === "string" ? row.legacyId : { miss: "unresolved" };
 }
 
-/** An old row as its plain table stores it: its fields, references moved. */
-async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row) {
+/** An old row as its plain table stores it: its fields, references moved.
+ *  Back (copyBack): a plain row as its old table stores it; an unresolved
+ *  reference is left off, since no old field takes a plain id. */
+async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row, direction: Direction = "forward") {
   const fields = payload(row);
   let unresolved = 0;
   let dangling = 0;
@@ -285,12 +370,12 @@ async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row) {
     if (value === undefined) continue;
     const moved: string[] = [];
     for (const id of (Array.isArray(value) ? value : [value]) as string[]) {
-      const ref = await moveRef(ctx, to, id, "forward");
+      const ref = await moveRef(ctx, to, id, direction);
       if (typeof ref === "string") moved.push(ref);
       else if (ref.miss === "dangling") dangling += 1;
       else {
         unresolved += 1;
-        if (either) moved.push(id);
+        if (either && direction === "forward") moved.push(id);
       }
     }
     if (Array.isArray(value)) fields[field] = moved;
@@ -592,5 +677,94 @@ export const leftToRemap = internalAction({
     }
     const zero = Object.values(left).every((counts) => Object.values(counts).every((n) => n === 0));
     return { zero, left };
+  },
+});
+
+// ── copyBack: the way back from step C ──────────────────────────────────────
+//
+// Step C's writers write only the plain tables, so after it the old tables go
+// stale, and the code before it (whose writers write an old row, then
+// `follow`) would find no old row for a todo created since and would copy a
+// stale old row over a newer plain one. copyBack makes each old table hold
+// what its plain table holds, so that code can deploy again: a plain row with
+// no old row gets one (and its legacyId), an old row that differs is written
+// over (a field the plain row lost is cleared), both carry the same stamp, and
+// an old row whose plain row is gone (a block or time note deleted since) is
+// deleted with it. References move back to old ids. Run todos (twice when the
+// first pass left a need unresolved: a need on a todo later in the table),
+// then blocks, then timeNotes; leftToRemap then reads zero.
+
+/** One plain row copied into its old table. */
+async function copyBackRow(ctx: MutationCtx, table: Core, row: Row) {
+  const { fields, unresolved, dangling } = await mirror(ctx, table, row, "back");
+  delete fields.legacyVersion;
+  const version = versionOf({ ...fields, _id: row._id });
+  fields.legacyVersion = version;
+  const oldRef = typeof row.legacyId === "string" ? ctx.db.normalizeId(CORE[table], row.legacyId) : null;
+  const old = oldRef === null ? null : ((await ctx.db.get(oldRef)) as Row | null);
+  let outcome: "inserted" | "patched" | "unchanged" = "unchanged";
+  if (old === null) {
+    const id = await ctx.db.insert(CORE[table], fields as never);
+    await ctx.db.patch(row._id as Id<Core>, { legacyId: id, legacyVersion: version } as never);
+    return { outcome: "inserted" as const, unresolved, dangling };
+  }
+  if (!same(payload(old), fields)) {
+    for (const key of Object.keys(old)) if (!key.startsWith("_") && !(key in fields)) fields[key] = undefined;
+    await ctx.db.patch(old._id as Id<(typeof CORE)[Core]>, fields as never);
+    outcome = "patched";
+  }
+  if (row.legacyVersion !== version) await ctx.db.patch(row._id as Id<Core>, { legacyVersion: version } as never);
+  return { outcome, unresolved, dangling };
+}
+
+/** One page of copyBack over a plain table. */
+export const copyBackPage = internalMutation({
+  args: { table: CORE_TABLE, cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { table, cursor }) => {
+    const page = await ctx.db.query(table).order("asc").paginate({ cursor, numItems: PAGE });
+    const done = { inserted: 0, patched: 0, unchanged: 0, unresolved: 0, dangling: 0 };
+    for (const row of page.page as unknown as Row[]) {
+      const { outcome, unresolved, dangling } = await copyBackRow(ctx, table, row);
+      done[outcome] += 1;
+      done.unresolved += unresolved;
+      done.dangling += dangling;
+    }
+    return { ...done, isDone: page.isDone, continueCursor: page.continueCursor };
+  },
+});
+
+/** One page of an old table: a row whose plain row is gone is deleted. */
+export const copyBackPrunePage = internalMutation({
+  args: { table: CORE_TABLE, cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { table, cursor }) => {
+    const page = await ctx.db.query(CORE[table]).paginate({ cursor, numItems: PAGE });
+    let deleted = 0;
+    for (const row of page.page as unknown as Row[]) {
+      if ((await copyOf(ctx, table, row._id)) !== null) continue;
+      await ctx.db.delete(row._id as Id<(typeof CORE)[Core]>);
+      deleted += 1;
+    }
+    return { deleted, isDone: page.isDone, continueCursor: page.continueCursor };
+  },
+});
+
+/** copyBack over all three tables, in order, then the prune of each. */
+export const copyBack = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const out: Record<string, Record<string, number>> = {};
+    for (const table of ["todos", "blocks", "timeNotes"] as const) {
+      const pass = () =>
+        drain((cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.copyBackPage, { table, cursor }));
+      const first = await pass();
+      out[table] = first.unresolved > 0 ? await pass() : first;
+    }
+    for (const table of ["timeNotes", "blocks", "todos"] as const) {
+      const pruned = await drain(
+        (cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.copyBackPrunePage, { table, cursor }),
+      );
+      out[table].pruned = pruned.deleted ?? 0;
+    }
+    return out;
   },
 });

@@ -84,13 +84,17 @@ export async function recordSlackSent(
     data: { channel, ts, threadTs, subject, text },
   });
   if (todoId !== undefined) {
-    const todo = await ctx.db.get(todoId);
-    if (todo && todo.slackRepliedAt === undefined) {
-      await ctx.db.patch(todoId, {
+    // The subject may name the todo in either form; the writers write the old
+    // row and `follow` it (convex/jarvis/tables.ts), so a plain id is written
+    // through its old row too, never patched alone.
+    const old = await oldId(ctx, "todos", todoId);
+    const todo = old === null ? null : await ctx.db.get(old);
+    if (old !== null && todo && todo.slackRepliedAt === undefined) {
+      await ctx.db.patch(old, {
         slackRepliedAt: Date.now(),
         slackReplyTs: ts,
       });
-      await follow(ctx, "todos", todoId);
+      await follow(ctx, "todos", old);
     }
   }
 }
@@ -994,13 +998,15 @@ async function namedTodo(
  * read it off the reply with the todo's name taken out (namedTodo). */
 async function todoReply(
   ctx: MutationCtx,
-  todoId: Id<"dtsTodos">,
+  given: Id<"todos"> | Id<"dtsTodos">,
   text: string,
   at: { channel: string; ts: string; threadTs: string },
   shape: ReplyShape = replyShape(text),
 ): Promise<ThreadReplyOutcome> {
-  const todo = await ctx.db.get(todoId);
-  if (!todo) throw new Error(`Unknown todo id: ${todoId}`);
+  // A thread names its todo in either form (convex/jarvis/tables.ts).
+  const todoId = await oldId(ctx, "todos", given);
+  const todo = todoId === null ? null : await ctx.db.get(todoId);
+  if (todoId === null || !todo) throw new Error(`Unknown todo id: ${given}`);
   const subject: SlackSubject = { kind: "todo", id: todoId };
   switch (shape) {
     case "done":
