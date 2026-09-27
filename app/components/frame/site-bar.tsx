@@ -122,7 +122,7 @@ export default function SiteBar({
       <Link
         href="/"
         aria-label="tom.Quest home"
-        className="flex w-10 shrink-0 items-center justify-center hover:bg-surface-alt sm:w-(--frame-rail-side)"
+        className="flex w-10 shrink-0 items-center justify-center hover:bg-surface-alt sm:w-(--frame-corner)"
       >
         <TomQuestSymbol size={20} />
       </Link>

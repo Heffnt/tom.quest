@@ -22,12 +22,14 @@ import { Diagnostics, useDiagnosticsStatus } from "../debug-panel";
 import type { ExplainerId } from "./explainer-registry.generated";
 import { useFrameStore } from "./frame-store";
 import Info from "./info";
-import { EDGE_FOR_KEY, nextOpenState, topmostOpen, type Edge, type OpenState } from "./rules";
+import { EDGE_FOR_KEY, isTextTarget, nextOpenState, topmostOpen, type Edge, type OpenState } from "./rules";
 import RailSignals, { signalSignature, type RailSignal } from "./rail-signals";
 import SiteBar from "./site-bar";
 
 type DrawerSpec = {
   title: string;
+  /** What a side rail reads while the drawer is closed, when not its title (the selected item's name). */
+  label?: string;
   explainer?: ExplainerId;
   signals?: readonly RailSignal[];
   body: ReactNode;
@@ -38,27 +40,20 @@ type Drawers = Record<Edge, DrawerSpec>;
 const EMPTY: OpenState = {};
 const NO_SIGNALS: readonly RailSignal[] = [];
 
-/** A key typed into a field is text, never a drawer shortcut. */
-function isTextTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  const tag = target.tagName;
-  if (tag === "TEXTAREA" || tag === "SELECT") return true;
-  if (tag !== "INPUT") return false;
-  const type = (target as HTMLInputElement).type;
-  return !["button", "checkbox", "radio", "range", "submit", "reset", "color", "file"].includes(type);
-}
-
 /** An open dialog owns Escape and the keyboard until it closes. */
 function dialogOpen(): boolean {
   return document.querySelector('[aria-modal="true"]') !== null;
 }
 
 function Notch() {
-  return <span role="img" aria-label="changed since last closed" className="h-2.5 w-0.5 shrink-0 rounded-full bg-accent" />;
+  return <span role="img" aria-label="changed since last closed" data-frame-notch className="h-2.5 w-0.5 shrink-0 rounded-full bg-accent" />;
 }
 
-/** A horizontal rail's toggle: the drawer's title and its signals. */
+/**
+ * A horizontal rail's toggle: the drawer's title and its signals. The phone's
+ * bottom bar holds three of these, one per drawer, and each keeps its whole
+ * title: the title never shrinks, the signals clip first.
+ */
 function RailToggle({
   edge,
   spec,
@@ -84,8 +79,12 @@ function RailToggle({
       className={`flex min-w-0 items-center gap-1.5 px-2 text-[12px] text-text-muted hover:bg-surface-alt hover:text-text ${className}`}
     >
       {notch && <Notch />}
-      <span className="truncate">{spec.title}</span>
-      <RailSignals signals={spec.signals ?? NO_SIGNALS} />
+      <span data-frame-rail-label className="shrink-0 whitespace-nowrap">
+        {spec.title}
+      </span>
+      <span data-frame-rail-signals className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+        <RailSignals signals={spec.signals ?? NO_SIGNALS} />
+      </span>
     </button>
   );
 }
@@ -112,14 +111,16 @@ function SideRail({
       aria-expanded={open}
       aria-controls={`frame-drawer-${edge}`}
       onClick={onToggle}
-      className="flex flex-col items-center gap-2 py-2 text-[12px] text-text-muted hover:bg-surface-alt hover:text-text"
+      className="flex flex-col items-center py-2 text-[12px] text-text-muted hover:bg-surface-alt hover:text-text"
     >
-      {notch && <Notch />}
-      <span data-frame-rail-label className="whitespace-nowrap">
-        {spec.title}
-      </span>
-      <span className="flex flex-col items-center gap-1">
-        <RailSignals signals={spec.signals ?? NO_SIGNALS} />
+      {/* The rail's one line: its layout (rotated, stacked, a tab, a handle)
+          is globals.css's, so every rail carries the same parts. */}
+      <span data-frame-rail-tab>
+        {notch && <Notch />}
+        <span data-frame-rail-label>{spec.label ?? spec.title}</span>
+        <span data-frame-rail-signals>
+          <RailSignals signals={spec.signals ?? NO_SIGNALS} />
+        </span>
       </span>
     </button>
   );
@@ -133,9 +134,10 @@ function DiagnosticsDot({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
+      data-frame-diagnostics
       onClick={onOpen}
       aria-label={`Diagnostics: Convex ${convex}, ${errors} console errors`}
-      className="flex w-10 shrink-0 items-center justify-center hover:bg-surface-alt sm:w-(--frame-rail-side)"
+      className="flex w-10 shrink-0 items-center justify-center hover:bg-surface-alt sm:w-(--frame-corner)"
     >
       <span className={`h-2 w-2 rounded-full ${tone}`} />
     </button>
@@ -330,9 +332,9 @@ export default function Frame({
       </header>
       <div data-frame-rail="bottom" data-open={!!open.bottom} className="flex items-stretch">
         <span aria-hidden className="hidden w-(--frame-rail-side) shrink-0 sm:block" />
-        {railToggle("left", "flex-1 justify-center border-r border-border sm:hidden")}
-        {railToggle("bottom", "flex-1 justify-center sm:justify-start")}
-        {railToggle("right", "flex-1 justify-center border-l border-border sm:hidden")}
+        {railToggle("left", "flex-auto justify-center border-r border-border sm:hidden")}
+        {railToggle("bottom", "flex-auto justify-center sm:justify-start")}
+        {railToggle("right", "flex-auto justify-center border-l border-border sm:hidden")}
         {isTom && <DiagnosticsDot onOpen={() => setEdge("bottom", true)} />}
       </div>
       <SideRail edge="left" spec={left} open={!!open.left} notch={notch("left")} onToggle={() => toggle("left")} />

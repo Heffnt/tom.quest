@@ -3,7 +3,8 @@
 // A rail's live signals. A rail holds only these typed values, never free
 // markup, so every rail reads the same way: a count, a status dot, or the age
 // of the newest thing, each coloured by a tone the page chooses. An age turns
-// to the warning tone past the page's stale limit.
+// to the warning tone past the page's stale limit. Each carries its tone as
+// data-tone too, so a rail's own colour can follow its most urgent signal.
 
 import { useEffect, useState } from "react";
 
@@ -72,6 +73,7 @@ export default function RailSignals({ signals }: { signals: readonly RailSignal[
               key={s.label}
               role="img"
               aria-label={s.label}
+              data-tone={s.tone}
               className={`inline-block h-2 w-2 shrink-0 rounded-full ${DOT_CLASS[s.tone]}`}
             />
           );
@@ -80,13 +82,13 @@ export default function RailSignals({ signals }: { signals: readonly RailSignal[
           const age = now - s.value;
           const tone = s.staleAfterMs !== undefined && age > s.staleAfterMs ? "warn" : s.tone;
           return (
-            <span key={s.label} aria-label={`${s.label}: ${formatAge(age)}`} className={`font-mono text-[12px] ${TONE_CLASS[tone]}`}>
+            <span key={s.label} aria-label={`${s.label}: ${formatAge(age)}`} data-tone={tone} className={`font-mono text-[12px] ${TONE_CLASS[tone]}`}>
               {formatAge(age)}
             </span>
           );
         }
         return (
-          <span key={s.label} aria-label={`${s.label}: ${s.value}`} className={`font-mono text-[12px] ${TONE_CLASS[s.tone]}`}>
+          <span key={s.label} aria-label={`${s.label}: ${s.value}`} data-tone={s.tone} className={`font-mono text-[12px] ${TONE_CLASS[s.tone]}`}>
             {s.value}
           </span>
         );

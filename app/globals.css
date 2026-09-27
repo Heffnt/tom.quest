@@ -144,6 +144,8 @@ button, input, select, textarea {
   --frame-rail-top: 40px;
   --frame-rail-bottom: 28px;
   --frame-rail-side: 28px;
+  /* The corner cells (logo, account, diagnostics) line up with the side rails. */
+  --frame-corner: var(--frame-rail-side);
   --frame-drawer-top: clamp(160px, 240px, 45vh);
   --frame-drawer-bottom: clamp(200px, 320px, 60vh);
   --frame-drawer-left: clamp(280px, 360px, 40vw);
@@ -246,9 +248,32 @@ button, input, select, textarea {
 [data-frame-rail="top"] [data-frame-toggle][aria-expanded="true"]    { box-shadow: inset 0 -2px 0 var(--color-accent); }
 [data-frame-rail="left"][data-open="true"]                       { box-shadow: inset -2px 0 0 var(--color-accent); }
 [data-frame-rail="right"][data-open="true"]                      { box-shadow: inset 2px 0 0 var(--color-accent); }
-/* Side rail labels: the left reads bottom to top, the right top to bottom. */
-[data-frame-rail="left"] [data-frame-rail-label]  { writing-mode: vertical-rl; transform: rotate(180deg); }
-[data-frame-rail="right"] [data-frame-rail-label] { writing-mode: vertical-rl; }
+/* A side rail's one line (notch, label, signals) runs along the rail: the
+   left reads bottom to top, the right top to bottom. A long label (the
+   selected item's name) ends in an ellipsis where the rail does. */
+[data-frame-rail="left"] [data-frame-rail-tab],
+[data-frame-rail="right"] [data-frame-rail-tab] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  max-height: 100%;
+  writing-mode: vertical-rl;
+}
+[data-frame-rail="left"] [data-frame-rail-tab] { transform: rotate(180deg); }
+[data-frame-rail-tab] [data-frame-rail-label] {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-frame-rail-tab] [data-frame-rail-signals] {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
 /* Before the persisted open state is read, nothing animates, so a drawer
    restored open does not slide in on load. */
 [data-frame][data-hydrated="false"] [data-frame-drawer] { transition: none; }

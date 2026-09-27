@@ -1,6 +1,6 @@
 // The frame's rules as pure functions, so the page and its tests read the same
-// ones: which edge a key names, which open drawer is on top, and what else
-// closes when a drawer opens.
+// ones: which edge a key names, which key is text, which open drawer is on
+// top, and what else closes when a drawer opens.
 
 export type Edge = "top" | "bottom" | "left" | "right";
 
@@ -52,4 +52,15 @@ export function nextOpenState(
     if (viewport.width < ONE_SIDE_MAX_WIDTH || tooNarrow) next[other] = false;
   }
   return next;
+}
+
+/** A key typed into a field is text, never a frame shortcut. */
+export function isTextTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag !== "INPUT") return false;
+  const type = (target as HTMLInputElement).type;
+  return !["button", "checkbox", "radio", "range", "submit", "reset", "color", "file"].includes(type);
 }
