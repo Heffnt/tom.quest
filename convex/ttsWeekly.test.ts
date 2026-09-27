@@ -6,7 +6,6 @@ import schema from "./schema";
 import {
   AREA_REVIEWED,
   AUDIT_OBJECTION_WEEKS,
-  EVALS_RUN,
   INSTRUCTIONS_LOADED,
   LEARNING_REVERTED,
   LEARNING_REVERT_FAILED,
@@ -20,6 +19,7 @@ import {
   gatherWeeklyFacts,
 } from "./ttsWeekly";
 import { LEARNING_CHANGE } from "./ttsDigest";
+import { EVAL_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { INTEGRATION_SOURCE, integrationStatement } from "./ttsIntegrations";
@@ -133,7 +133,7 @@ describe("gatherWeeklyFacts", () => {
       daysReported: 0, sessions: 0, files: [], missingWikiTom: 0,
       missingWikiTomSessions: [], missingProjectAgents: [],
     });
-    expect(f.evals).toEqual({ runs: 0, clean: 0, regressions: [] });
+    expect(f.evals).toEqual([]);
     // The key is always there; the audit's score is absent, not zero, and the
     // renderer prints no line for it.
     expect(f.verifiers).toEqual({ audit: null });
@@ -494,34 +494,31 @@ describe("gatherWeeklyFacts", () => {
     expect(f.learning.changes).toBe(0);
   });
 
-  // A ROW IS NOT A RUN. Three kinds of evals-run row are written in a POST
-  // each and score nothing: a branch that touched no watched path, a head a
-  // later push replaced, and a sha the box could not check out. Counted, they
-  // said two untrue things at once — runs the week did, and CLEAN runs (their
-  // `regressions: null` fell through to zero).
-  it("counts no row that scored nothing", async () => {
+  // One eval-run event per set per run (Jarvis worker/jobs/evals.mjs), in the
+  // record's events table with the set as its subject.
+  it("counts each set's eval-run events and reads passed and failed off its newest run", async () => {
     const t = convexTest({ schema, modules });
     const now = Date.now();
     await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - 3 * DAY, { data: { weekly: true, regressions: 0 } });
-      await event(ctx, EVALS_RUN, now - 2 * DAY, { data: { sha: "aaa", unaffected: true, regressions: 0 } });
-      await event(ctx, EVALS_RUN, now - DAY, { data: { sha: "bbb", superseded: true, supersededBy: "ccc", error: "superseded by ccc", regressions: null } });
-      await event(ctx, EVALS_RUN, now - DAY + 1, { data: { sha: "ddd", error: "could not fetch ddd", regressions: null } });
+      const run = (set: string, at: number, passed: number, failed: number) =>
+        ctx.db.insert("events", {
+          kind: EVAL_RUN, at, provenance: { job: "evals" }, subject: set,
+          data: { set, passed, failed, total: passed + failed },
+        });
+      await run("wall", now - 3 * DAY, 8, 2);
+      await run("wall", now - DAY, 10, 0);
+      await run("role/classify", now - 2 * DAY, 5, 1);
+      // A candidate run is its own subject, apart from the set's own runs.
+      await run("role/classify candidate:other-model", now - DAY, 3, 3);
+      // Outside the week.
+      await run("wall", now - 9 * DAY, 0, 10);
     });
     const f = await gather(t, now + 1000);
-    expect(f.evals).toEqual({ runs: 1, clean: 1, regressions: [] });
-  });
-
-  it("counts a partial runner failure without calling its comparison clean", async () => {
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    await t.run(async (ctx) => {
-      await event(ctx, EVALS_RUN, now - DAY, {
-        data: { sha: "partial", pass: 7, items: 10, errored: 3, regressions: null },
-      });
-    });
-    const f = await gather(t, now + 1000);
-    expect(f.evals).toEqual({ runs: 1, clean: 0, regressions: [] });
+    expect(f.evals).toEqual([
+      { set: "role/classify", runs: 1, passed: 5, failed: 1 },
+      { set: "role/classify candidate:other-model", runs: 1, passed: 3, failed: 3 },
+      { set: "wall", runs: 2, passed: 10, failed: 0 },
+    ]);
   });
 
   // ── The audit against his later objections ────────────────────────────────

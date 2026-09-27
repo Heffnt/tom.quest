@@ -36,7 +36,7 @@ import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
-import { EVALS_RUN, PRELUDE_DELIVERY, scoredNothing } from "./ttsEvals";
+import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
@@ -61,7 +61,7 @@ export const WEEKLY_FAILURE = "weekly-failure";
  * on the day so a rerun finds it (GET /tts/weekly-run). */
 export const WEEKLY_RUN = "weekly-run";
 export const INSTRUCTIONS_LOADED = "instructions-loaded";
-export { PRELUDE_DELIVERY, EVALS_RUN } from "./ttsEvals";
+export { PRELUDE_DELIVERY } from "./ttsEvals";
 export { AREA_REVIEWED };
 
 /** The failure kinds the gather groups by job. "job-failed" carries the job
@@ -190,11 +190,8 @@ type WeeklyFacts = {
     missingWikiTomSessions: { day: string; session: string }[];
     missingProjectAgents: { day: string; session: string; cwd: string }[];
   };
-  evals: {
-    runs: number;
-    clean: number;
-    regressions: { day: string; repo: string; sha: string; pass: number; items: number; failure: { id: string; partition: string } | null }[];
-  };
+  /** Per eval set: the week's runs, and the newest run's passed and failed. */
+  evals: { set: string; runs: number; passed: number; failed: number }[];
   // ── What the audit is worth, this week ─────────────────────────────────────
   // The key is always here, so the renderer (Jarvis worker/jobs/weekly.mjs)
   // has one thing to look for. REPORTS AND NEVER GATES: convex/ttsMerge.ts
@@ -634,42 +631,28 @@ export async function gatherWeeklyFacts(
   instructionsLoaded.missingWikiTomSessions.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
   instructionsLoaded.missingProjectAgents.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
 
-  const evals: WeeklyFacts["evals"] = { runs: 0, clean: 0, regressions: [] };
-  for (const e of await eventsOfKind(EVALS_RUN)) {
-    const d = (e.data ?? {}) as Record<string, unknown>;
-    // A ROW IS NOT A RUN. Counting the three rows that score nothing said two
-    // untrue things at once — they were runs the week did, and they were CLEAN
-    // runs (`regressions: null` fell through `?? 0` to zero).
-    //
-    // The shared helper is also what Convex uses for merge evidence and the box
-    // uses for baselines: a second spelling here could count a row either side
-    // had already refused.
-    if (scoredNothing(d)) continue;
-    evals.runs++;
-    const regressions = num(d.regressions);
-    // Null is not zero: a partial runner failure has scored some items but no
-    // trustworthy comparison, and --weekly or a by-hand run with no base has
-    // the same shape. It remains a run above, but cannot be clean or a
-    // regression row. We do not surface a third tally because the existing
-    // weekly facts readers only distinguish clean runs from listed regressions.
-    if (regressions === null) continue;
-    if (regressions === 0) {
-      evals.clean++;
+  // The evals (Jarvis worker/jobs/evals.mjs): one eval-run event per set per
+  // run, in the record's events table, its subject the set. A candidate run's
+  // subject names the candidate too, so it is counted apart from the set's own
+  // runs; the record refuses an eval-run with no subject (shared/
+  // jarvis-events.mjs SUBJECT_REQUIRED). Read newest first, so the first row
+  // of a subject is its newest run.
+  const evalSets = new Map<string, WeeklyFacts["evals"][number]>();
+  for (const e of await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", EVAL_RUN).gte("at", since).lt("at", until))
+    .order("desc")
+    .collect()) {
+    const set = e.subject as string;
+    const held = evalSets.get(set);
+    if (held !== undefined) {
+      held.runs++;
       continue;
     }
-    const failure = (Array.isArray(d.failures) ? d.failures : []).find((raw) =>
-      raw !== null && typeof raw === "object" && (raw as Record<string, unknown>).regression === true,
-    ) as Record<string, unknown> | undefined;
-    evals.regressions.push({
-      day: str(d.day) ?? new Date(e.at).toISOString().slice(0, 10),
-      repo: str(d.repo) ?? "",
-      sha: str(d.sha) ?? "",
-      pass: num(d.pass) ?? 0,
-      items: num(d.items) ?? 0,
-      failure: failure === undefined ? null : { id: str(failure.id) ?? "?", partition: str(failure.partition) ?? "?" },
-    });
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    evalSets.set(set, { set, runs: 1, passed: num(d.passed) ?? 0, failed: num(d.failed) ?? 0 });
   }
-  evals.regressions.sort((a, b) => a.day.localeCompare(b.day) || a.repo.localeCompare(b.repo));
+  const evals = [...evalSets.values()].sort((a, b) => a.set.localeCompare(b.set));
 
   // ── The audit, scored against Tom's later objections ──────────────────────
   // THE AUDIT IS CHECKED BY EXACTLY ONE THING: whether what it let through
