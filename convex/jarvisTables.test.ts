@@ -97,6 +97,7 @@ describe("rulings under their plain name", () => {
       "sync",
       "syncPage",
       "todoEvents",
+      "todoHasEventSince",
       "todoIdForms",
       "todoReader",
       "todoRulings",

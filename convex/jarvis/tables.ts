@@ -168,25 +168,37 @@ export async function todoIdForms(
 }
 
 /** The events on a todo under either id they store it by, oldest first:
- *  those at or after `from` and, when given, before `until`. */
+ *  those at or after `from`. */
 export async function todoEvents(
   ctx: QueryCtx | MutationCtx,
   id: string,
   from = 0,
-  until?: number,
 ): Promise<Doc<"dtsEvents">[]> {
   const out: Doc<"dtsEvents">[] = [];
   for (const form of await todoIdForms(ctx, id)) {
-    out.push(
-      ...(await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_todo", (q) =>
-          until === undefined ? q.eq("todoId", form).gte("at", from) : q.eq("todoId", form).gte("at", from).lt("at", until),
-        )
-        .collect()),
-    );
+    out.push(...(await ctx.db.query("dtsEvents").withIndex("by_todo", (q) => q.eq("todoId", form).gte("at", from)).collect()));
   }
   return out.sort((a, b) => a.at - b.at || a._creationTime - b._creationTime);
+}
+
+/** Whether a todo has an event of `kind` at or after `from`, under either id
+ *  it is stored by: each form read through by_todo from `from`, stopping at
+ *  the first match rather than collecting what comes after. */
+export async function todoHasEventSince(
+  ctx: QueryCtx | MutationCtx,
+  id: string,
+  kind: string,
+  from: number,
+): Promise<boolean> {
+  for (const form of await todoIdForms(ctx, id)) {
+    const hit = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_todo", (q) => q.eq("todoId", form).gte("at", from))
+      .filter((q) => q.eq(q.field("kind"), kind))
+      .first();
+    if (hit !== null) return true;
+  }
+  return false;
 }
 
 /** The newest `n` events on a todo under either id they store it by, newest

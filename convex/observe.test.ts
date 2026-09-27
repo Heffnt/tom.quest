@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { insertTodo } from "../test/core-tables";
+import { resolveId } from "./jarvis/tables";
 import { isFailureKind } from "./observe";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -274,6 +275,30 @@ describe("waiting on Tom", () => {
     const answer = await tom.query(api.observe.waitingOnTom, {});
     expect(answer.waiting).toBe(1);
     expect(answer.oldestAt).toBe(now - 3_000);
+  });
+
+  // witness: collect every later event before looking for the reply; a busy
+  // todo's history outgrows the read limit. The read stops at the reply.
+  it("finds his reply past many later rows, under either id, and counts a busy todo with none", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const answered = await insertTodo(ctx, todo("answered"));
+      const open = await insertTodo(ctx, todo("open"));
+      const answeredPlain = (await resolveId(ctx, "todos", answered))!;
+      await ctx.db.insert("dtsEvents", { at: now - 900_000, kind: "needs-tom", todoId: answered });
+      await ctx.db.insert("dtsEvents", { at: now - 800_000, kind: "needs-tom", todoId: open });
+      for (let i = 0; i < 1_500; i++) {
+        await ctx.db.insert("dtsEvents", { at: now - 700_000 + i, kind: "surfaced", todoId: answered });
+        await ctx.db.insert("dtsEvents", { at: now - 700_000 + i, kind: "surfaced", todoId: open });
+      }
+      // The reply, stored under the plain id after the old-id rows.
+      await ctx.db.insert("dtsEvents", { at: now - 1_000, kind: "slack-event", todoId: answeredPlain });
+    });
+    const answer = await tom.query(api.observe.waitingOnTom, {});
+    expect(answer.waiting).toBe(1);
+    expect(answer.oldestAt).toBe(now - 800_000);
   });
 });
 
