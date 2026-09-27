@@ -21,7 +21,8 @@ function fmtAt(ms: number): string {
 function EventLine({ row, statement }: { row: EventRow; statement: string | undefined }) {
   const [open, setOpen] = useState(false);
   return (
-    <li className="border-b border-border/60">
+    // Off screen, a row skips layout, so dragging the drawer's size re-lays out only what shows.
+    <li className="border-b border-border/60 [contain-intrinsic-size:auto_25px] [content-visibility:auto]">
       <button
         type="button"
         aria-expanded={open}

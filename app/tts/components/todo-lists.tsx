@@ -34,7 +34,10 @@ function Section({
         {rows.map((r) => {
           const id = r.todoId;
           return (
-            <li key={r.key}>
+            // A row off screen skips layout: the lists run past a thousand
+            // rows, and without this every frame of a drawer drag re-lays
+            // them all out (40-100 ms each on the box).
+            <li key={r.key} className="[contain-intrinsic-size:auto_24px] [content-visibility:auto]">
               {id ? (
                 <button
                   type="button"
