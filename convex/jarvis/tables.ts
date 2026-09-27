@@ -123,13 +123,18 @@ export const counts = internalAction({
 // todoIds an earlier copy left as dtsTodos ids at todos. leftToRemap is the
 // check: every count under `left` is 0 once the copy is whole and remapped.
 //
-// THE WAY BACK from this pull request: nothing reads the plain tables yet, so
-// the previous head is the whole of it, once refsPage {direction: "back"} has
-// pointed every blocks and timeNotes todoId back at its dtsTodos id (that
-// head's schema takes no other, and a deploy checks every stored row). The
-// way back from the switch is built in the switch pull request, where every
-// plain row carries the version its old row must match; only that proves an
-// edit made through the new code reached the old tables.
+// THE DUAL WRITE. Every writer of dtsTodos, dtsBlocks and dtsTimeNotes calls
+// `follow` right after its write, so the plain row is written in the same
+// transaction. Each old row carries legacyVersion, a fingerprint of its other
+// fields, and its copy carries the same stamp: leftToRemap's `version` counts
+// an old row whose stamp is not its fingerprint (a write that went around
+// `follow`) or whose copy's stamp differs. sync stays the catch-up, and
+// stamps as it copies. Readers still read the old tables.
+//
+// THE WAY BACK before the switch: nothing reads the plain tables, so it is the
+// previous head, once refsPage {direction: "back"} has pointed every blocks
+// and timeNotes todoId back at its dtsTodos id (that head's schema takes no
+// other, and a deploy checks every stored row).
 
 type Direction = "forward" | "back";
 
@@ -212,28 +217,84 @@ async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row) {
   return { fields, unresolved, dangling };
 }
 
+/**
+ * An old row's version: its fields less its own stamp, in canonical JSON,
+ * through FNV-1a in two 32-bit lanes. Change detection, not security; a
+ * clock would miss a write that leaves updatedAt alone (a Slack reply ts),
+ * and a block has none.
+ */
+function versionOf(row: Row): string {
+  const fields = payload(row);
+  delete fields.legacyVersion;
+  const text = JSON.stringify(canonical(fields));
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x811c9dc5) >>> 0;
+  }
+  return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+}
+
+/** One old row, stamped with its version and copied into its plain table:
+ *  inserted with legacyId, or written over where it differs (a field the
+ *  old row lost is cleared). */
+async function syncRow(ctx: MutationCtx, table: Core, row: Row) {
+  const version = versionOf(row);
+  let old = row;
+  if (row.legacyVersion !== version) {
+    await ctx.db.patch(row._id as Id<(typeof CORE)[Core]>, { legacyVersion: version });
+    old = { ...row, legacyVersion: version };
+  }
+  const { fields, unresolved, dangling } = await mirror(ctx, table, old);
+  const existing = await copyOf(ctx, table, old._id);
+  let outcome: "inserted" | "patched" | "unchanged" = "unchanged";
+  if (existing === null) {
+    await ctx.db.insert(table, { ...fields, legacyId: old._id } as never);
+    outcome = "inserted";
+  } else if (!same(payload(existing), fields)) {
+    for (const key of Object.keys(existing)) if (!key.startsWith("_") && key !== "legacyId" && !(key in fields)) fields[key] = undefined;
+    await ctx.db.patch(existing._id as Id<Core>, fields as never);
+    outcome = "patched";
+  }
+  return { outcome, unresolved, dangling };
+}
+
+/**
+ * The dual write: every writer of an old core table calls this right after
+ * its write, with the row's id. The old row is stamped and copied as sync
+ * copies it; a deleted old row takes its copy with it, and a deleted block's
+ * copy is taken off the plain time notes that named it (their old notes now
+ * name a block that is gone, which the copy leaves off).
+ */
+export async function follow(ctx: MutationCtx, table: Core, id: string): Promise<void> {
+  const oldId = ctx.db.normalizeId(CORE[table], id);
+  const old = oldId === null ? null : ((await ctx.db.get(oldId)) as Row | null);
+  if (old !== null) {
+    await syncRow(ctx, table, old);
+    return;
+  }
+  const copy = await copyOf(ctx, table, id);
+  if (copy === null) return;
+  if (table === "blocks") {
+    const blockId = copy._id as Id<"blocks">;
+    for (const note of await ctx.db.query("timeNotes").withIndex("by_block", (q) => q.eq("blockId", blockId)).collect()) {
+      await ctx.db.patch(note._id, { blockId: undefined });
+    }
+  }
+  await ctx.db.delete(copy._id as Id<Core>);
+}
+
 /** One page of the old table, copied into the plain one. */
 async function syncOnePage(ctx: MutationCtx, table: Core, cursor: string | null) {
   const page = await ctx.db.query(CORE[table]).order("asc").paginate({ cursor, numItems: PAGE });
   const done = { inserted: 0, patched: 0, unchanged: 0, unresolved: 0, dangling: 0 };
   for (const row of page.page as unknown as Row[]) {
-    const { fields, unresolved, dangling } = await mirror(ctx, table, row);
+    const { outcome, unresolved, dangling } = await syncRow(ctx, table, row);
+    done[outcome] += 1;
     done.unresolved += unresolved;
     done.dangling += dangling;
-    const existing = await copyOf(ctx, table, row._id);
-    if (existing === null) {
-      await ctx.db.insert(table, { ...fields, legacyId: row._id } as never);
-      done.inserted += 1;
-      continue;
-    }
-    const current = payload(existing);
-    if (same(current, fields)) {
-      done.unchanged += 1;
-      continue;
-    }
-    for (const key of Object.keys(current)) if (!(key in fields)) fields[key] = undefined;
-    await ctx.db.patch(existing._id as Id<Core>, fields as never);
-    done.patched += 1;
   }
   return { ...done, isDone: page.isDone, continueCursor: page.continueCursor };
 }
@@ -347,10 +408,11 @@ export const remapTodoRefs = internalAction({
 });
 
 /**
- * One page of the check. side "old": the old table's rows with no copy, and
- * those whose copy differs from what sync would write now. side "plain": the
- * copies whose old row is gone, and each reference field's ids still naming
- * an old table.
+ * One page of the check. side "old": the old table's rows with no copy,
+ * those whose copy differs from what sync would write now, and (`version`)
+ * those whose stamp is not their fingerprint or not their copy's. side
+ * "plain": the rows no old row holds (gone, or never had one), and each
+ * reference field's ids still naming an old table.
  */
 export const leftPage = internalQuery({
   args: { table: CORE_TABLE, side: v.union(v.literal("old"), v.literal("plain")), cursor: v.union(v.string(), v.null()) },
@@ -363,9 +425,11 @@ export const leftPage = internalQuery({
         const copy = await copyOf(ctx, table, row._id);
         if (copy === null) add("notCopied");
         else if (!same(payload(copy), (await mirror(ctx, table, row)).fields)) add("stale");
+        if (row.legacyVersion !== versionOf(row) || (copy !== null && copy.legacyVersion !== row.legacyVersion)) add("version");
         continue;
       }
-      if (typeof row.legacyId === "string") {
+      if (typeof row.legacyId !== "string") add("orphaned");
+      else {
         const old = ctx.db.normalizeId(CORE[table], row.legacyId);
         if (old === null || (await ctx.db.get(old)) === null) add("orphaned");
       }
@@ -381,7 +445,7 @@ export const leftPage = internalQuery({
 });
 
 /**
- * What is left before the switch, per table: notCopied, stale, orphaned and,
+ * What is left before the switch, per table: notCopied, stale, version, orphaned and,
  * per reference field, the ids still naming an old table. `zero` is true when
  * every one is 0.
  */
@@ -390,7 +454,7 @@ export const leftToRemap = internalAction({
   handler: async (ctx) => {
     const left: Record<string, Record<string, number>> = {};
     for (const table of ["todos", "blocks", "timeNotes"] as const) {
-      const counts: Record<string, number> = { notCopied: 0, stale: 0, orphaned: 0 };
+      const counts: Record<string, number> = { notCopied: 0, stale: 0, version: 0, orphaned: 0 };
       for (const { field } of REFS[table]) counts[field] = 0;
       for (const side of ["old", "plain"] as const) {
         const sums = await drain(
