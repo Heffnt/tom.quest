@@ -13,6 +13,14 @@ export type Page = {
    * The Convex-side twin of this flag is convex/agentSurfaces.ts.
    */
   agentReadable?: boolean;
+  /**
+   * The page renders inside the frame (app/components/frame): the site
+   * header across the top, and under it a centre and four drawers, each
+   * pulled out by its handle.
+   * AppShell then renders no NavTerm, no top padding and no pushing debug
+   * panel for it. Absent means the page keeps NavTerm and its own layout.
+   */
+  frame?: true;
 };
 
 export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
@@ -37,6 +45,12 @@ export const PAGES: Page[] = [
   { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2, visibility: "public" },
   { slug: "help",   title: "Help",   blurb: "How tom.quest works",          priority: 1, visibility: "public" },
 ];
+
+/** True when the path's page is registered `frame: true`. */
+export function isFramePath(pathname: string): boolean {
+  const slug = pathname.split("/")[1] ?? "";
+  return PAGES.some((page) => page.frame === true && page.slug === slug);
+}
 
 export function canSeePage(role: PageRole, page: Page): boolean {
   // `agent` reads ONLY its own flag and never falls through to the rank

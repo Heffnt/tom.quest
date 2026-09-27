@@ -7,6 +7,7 @@ import { getUsername, useAuth } from "../lib/auth";
 import { debug } from "../lib/debug";
 import { useServer } from "../lib/hooks/use-server";
 import { uiSnapshot, useUIStore } from "../lib/stores/ui-store";
+import { isFramePath } from "./page-routes";
 
 function formatConnectionState(value: unknown): string {
   if (typeof value === "object" && value !== null && "hasInflightRequests" in value) {
@@ -34,14 +35,73 @@ function useDebugVersion(): number {
   return version;
 }
 
+/** The Convex connection and the captured console warnings and errors, live. */
+export function useDiagnosticsStatus() {
+  const connectionState = useConvexConnectionState();
+  useDebugVersion();
+  return { convex: formatConnectionState(connectionState), events: debug.getConsoleEvents() };
+}
+
+/**
+ * The diagnostics themselves. Outside the frame they fill the pushing side
+ * panel below; inside the frame they are a section of the bottom drawer, which
+ * the Tom-only dot at the right end of the site header opens.
+ */
+export function Diagnostics() {
+  const pathname = usePathname();
+  const { role } = useAuth();
+  const viewport = useViewport();
+  const { convex, events } = useDiagnosticsStatus();
+  return (
+    <div className="space-y-4 text-sm">
+      <section>
+        <h3 className="mb-2 font-mono text-xs uppercase tracking-[0.16em] text-text-faint">state</h3>
+        <dl className="space-y-1 text-text-muted">
+          <div className="flex justify-between gap-3"><dt>route</dt><dd className="font-mono">{pathname}</dd></div>
+          <div className="flex justify-between gap-3"><dt>auth</dt><dd className="font-mono">{role}</dd></div>
+          <div className="flex justify-between gap-3"><dt>convex</dt><dd className="font-mono">{convex}</dd></div>
+          <div className="flex justify-between gap-3"><dt>viewport</dt><dd className="font-mono">{viewport}</dd></div>
+        </dl>
+      </section>
+      <section>
+        <h3 className="mb-2 font-mono text-xs uppercase tracking-[0.16em] text-text-faint">events</h3>
+        {events.length === 0 ? (
+          <p className="text-text-faint">No captured warnings or errors.</p>
+        ) : (
+          <ul className="space-y-2">
+            {events.slice(-5).map((event) => (
+              <li key={`${event.timestamp}-${event.message}`} className="rounded border border-border bg-surface p-2 font-mono text-xs text-text-muted">
+                {event.level}: {event.message}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <button
+        type="button"
+        onClick={() => navigator.clipboard.writeText(debug.snapshot())}
+        className="w-full rounded-lg bg-accent px-3 py-2 font-medium text-bg hover:opacity-90"
+      >
+        Copy diagnostics
+      </button>
+      <a
+        href="https://dashboard.convex.dev/"
+        target="_blank"
+        rel="noreferrer"
+        className="block rounded-lg border border-border px-3 py-2 text-center text-text-muted hover:border-text-muted hover:text-text"
+      >
+        Open Convex Dashboard
+      </a>
+    </div>
+  );
+}
+
 export default function DebugPanel() {
   const pathname = usePathname();
   const { user, role, isTom } = useAuth();
   const connectionState = useConvexConnectionState();
   const viewport = useViewport();
   const turing = useServer();
-  useDebugVersion();
-  const events = debug.getConsoleEvents();
   const debugOpen = useUIStore((state) => state.debugOpen);
   const debugWidth = useUIStore((state) => state.debugWidth);
   const closeDebug = useUIStore((state) => state.closeDebug);
@@ -85,7 +145,10 @@ export default function DebugPanel() {
     return () => debug.unregisterState("turing");
   }, [turing.status.connected, turing.status.fresh, turing.status.error]);
 
-  if (!isTom) return null;
+  // Inside the frame the diagnostics live in the bottom drawer, and a panel
+  // that pushes the page would break the frame's one rule: nothing moves the
+  // centre. The effects above still run there, so Copy diagnostics has state.
+  if (!isTom || isFramePath(pathname)) return null;
 
   return (
     <>
@@ -105,44 +168,7 @@ export default function DebugPanel() {
               </button>
             </div>
             <div className="space-y-4 overflow-auto p-4 text-sm">
-              <section>
-                <h3 className="mb-2 font-mono text-xs uppercase tracking-[0.16em] text-text-faint">state</h3>
-                <dl className="space-y-1 text-text-muted">
-                  <div className="flex justify-between gap-3"><dt>route</dt><dd className="font-mono">{pathname}</dd></div>
-                  <div className="flex justify-between gap-3"><dt>auth</dt><dd className="font-mono">{role}</dd></div>
-                  <div className="flex justify-between gap-3"><dt>convex</dt><dd className="font-mono">{convexLabel}</dd></div>
-                  <div className="flex justify-between gap-3"><dt>viewport</dt><dd className="font-mono">{viewport}</dd></div>
-                </dl>
-              </section>
-              <section>
-                <h3 className="mb-2 font-mono text-xs uppercase tracking-[0.16em] text-text-faint">events</h3>
-                {events.length === 0 ? (
-                  <p className="text-text-faint">No captured warnings or errors.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {events.slice(-5).map((event) => (
-                      <li key={`${event.timestamp}-${event.message}`} className="rounded border border-border bg-surface p-2 font-mono text-xs text-text-muted">
-                        {event.level}: {event.message}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-              <button
-                type="button"
-                onClick={() => navigator.clipboard.writeText(debug.snapshot())}
-                className="w-full rounded-lg bg-accent px-3 py-2 font-medium text-bg hover:opacity-90"
-              >
-                Copy diagnostics
-              </button>
-              <a
-                href="https://dashboard.convex.dev/"
-                target="_blank"
-                rel="noreferrer"
-                className="block rounded-lg border border-border px-3 py-2 text-center text-text-muted hover:border-text-muted hover:text-text"
-              >
-                Open Convex Dashboard
-              </a>
+              <Diagnostics />
               <label className="block text-xs text-text-faint">
                 Width
                 <input
