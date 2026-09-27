@@ -201,14 +201,19 @@ export const internalRecordAsk = internalMutation({
       // stands, and nothing is written from the new body.
       // A todo id that names no todo is itself a contradiction: it must not
       // resolve to "no todo" and so match an ask recorded without one.
-      const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
+      // The recorded todo is a stored reference: the old row's id on an ask
+      // recorded before this step, the plain row's since. Both sides are
+      // compared as the plain todo they name (one naming no row, as stored).
+      const todoId = args.todoId === undefined ? null : await resolveId(ctx, "todos", args.todoId);
+      const storedTodoId =
+        typeof stored.todoId === "string" ? ((await resolveId(ctx, "todos", stored.todoId)) ?? stored.todoId) : null;
       if (
         (args.todoId !== undefined && todoId === null) ||
         args.question !== stored.question ||
         args.decision !== stored.decision ||
         (args.sessionId ?? null) !== (stored.sessionId ?? null) ||
         (args.job ?? null) !== (stored.job ?? null) ||
-        todoId !== (stored.todoId ?? null)
+        todoId !== storedTodoId
       ) {
         throw new Error(`askId ${args.askId} is already recorded for a different ask`);
       }

@@ -340,6 +340,33 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect(await decisions()).toHaveLength(1);
   });
 
+  it("a retry names the recorded todo in either id form, whichever form the ask stored", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    // A todo from before step C: its old row, and the plain copy naming it.
+    const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: Date.now(), updatedAt: Date.now() };
+    const { todoId, legacy } = await t.run(async (ctx) => {
+      const legacy = await ctx.db.insert("dtsTodos", fields);
+      return { legacy, todoId: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
+    });
+    const other = await seedTodo(t, "book the dentist");
+    // An ask recorded before the stored references went plain: the old id.
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: Date.now(), kind: DELEGATE_DECISION, key: "3f9c1a22",
+        data: { ...body({ job: "poll-gmail" }), sessionId: null, todoId: legacy, attended: false },
+      }),
+    );
+    expect((await (await post(t, body({ job: "poll-gmail", todoId }))).json()).existing).toBe(true);
+    expect((await (await post(t, body({ job: "poll-gmail", todoId: legacy }))).json()).existing).toBe(true);
+    expect((await post(t, body({ job: "poll-gmail", todoId: other }))).status).toBe(400);
+    expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(400);
+    // An ask recorded now stores the plain id, and its retry may name the old.
+    expect((await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId }))).status).toBe(200);
+    expect((await rows(t)).find((row) => row.key === "cdcdcdcd")!.data.todoId).toBe(todoId);
+    expect((await (await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId: legacy }))).json()).existing).toBe(true);
+  });
+
   it("refuses an unauthenticated caller", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
