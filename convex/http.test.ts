@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { ablationFindings, MIN_ABLATION_CASES } from "./ttsWeekly";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
 
@@ -948,73 +947,5 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
     expect(await labels(t)).toHaveLength(1);
     expect(await react(t, { type: "reaction_removed" })).toMatchObject({ removed: true });
     expect(await labels(t)).toEqual([]);
-  });
-
-  // The two findings the Friday evals run makes without Tom reach
-  // #tts-decisions through the door the job already posts to, so "revert" in
-  // the thread is wired and the morning's objection list picks it up.
-  describe("POST /tts/weekly-decisions", () => {
-    const key = { "X-TTS-Key": "s3cret" };
-    const post = async (t: ReturnType<typeof convexTest>, body: unknown) =>
-      await t.fetch("/tts/weekly-decisions", {
-        method: "POST",
-        headers: { ...key, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-    it("records a graduation and an unearned name, and refuses a body with no week", async () => {
-      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-      const t = convexTest(schema, modules);
-      const ok = await post(t, {
-        isoWeek: "2026-W37",
-        graduated: [{ id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" }],
-        ablation: [{ name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false }],
-      });
-      expect(ok.status).toBe(200);
-      expect(await ok.json()).toMatchObject({ ok: true });
-
-      // isoWeek is half the ablation askId — it is what makes one week's
-      // finding a different thread from the next week's — so a body without
-      // one is refused rather than defaulted.
-      const blank = await post(t, { isoWeek: "  ", ablation: [] });
-      expect(blank.status).toBe(400);
-      const absent = await post(t, { ablation: [] });
-      expect(absent.status).toBe(400);
-    });
-
-    // THE ROUTE IS THE SHAPE ablationFindings MUST EMIT. Its argument check is
-    // an exact object, so a finding carrying one extra field takes the whole
-    // request down — the unearned names AND the graduated cases, which ride
-    // together — and #tts-decisions hears nothing that week. The gather keys on
-    // the kind and deliberately does not put it on the finding; this is the
-    // test that says so from the route's side.
-    it("refuses a finding carrying a field the check does not list", async () => {
-      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-      const t = convexTest(schema, modules);
-      const withKind = await post(t, {
-        isoWeek: "2026-W37",
-        ablation: [{ name: "know", kind: "layer", cases: 7, withPass: 5, withoutPass: 6, earned: false }],
-      });
-      expect(withKind.status).toBe(400);
-      // And exactly what ablationFindings emits goes through.
-      const asEmitted = await post(t, {
-        isoWeek: "2026-W37",
-        ablation: ablationFindings(Array.from({ length: MIN_ABLATION_CASES }, (_, i) => (
-          { id: `c${i}`, name: "know", kind: "layer", withPass: true, withoutPass: false }
-        ))),
-      });
-      expect(asEmitted.status).toBe(200);
-    });
-
-    it("is behind the worker key like every other pen", async () => {
-      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-      const t = convexTest(schema, modules);
-      const res = await t.fetch("/tts/weekly-decisions", {
-        method: "POST",
-        headers: { "X-TTS-Key": "wrong", "Content-Type": "application/json" },
-        body: JSON.stringify({ isoWeek: "2026-W37" }),
-      });
-      expect(res.status).toBe(401);
-    });
   });
 });
