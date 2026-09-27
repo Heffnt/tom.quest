@@ -287,9 +287,14 @@ describe("a signed send goes out at most once", () => {
     // He cannot sign it again (no fresh sign-off is minted), and a stray send is refused.
     expect(await tom.mutation(api.ttsSignoff.signAndSend, { proposalId })).toEqual({ signed: false, status: "unknown" });
     expect(await signoffs(t)).toHaveLength(1);
+    // A rerun of the send changes nothing: the proposal stays unknown, so no
+    // fresh sign-off can be minted for it.
     const again = await t.action(internal.ttsSignoff.internalSendProposal, { proposalId });
-    expect(again.error).toContain(NO_SIGNOFF);
+    expect(again.error).toBe("not sendable: the proposal is unknown");
     expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
+    expect((await kinds(t, SEND_PROPOSAL))[0].data).toMatchObject({ status: "unknown" });
+    expect(await tom.mutation(api.ttsSignoff.signAndSend, { proposalId })).toEqual({ signed: false, status: "unknown" });
+    expect(await signoffs(t)).toHaveLength(1);
     // Clearing it sends nothing.
     expect(await tom.mutation(api.ttsSignoff.decline, { proposalId })).toEqual({ declined: true, status: "declined" });
   });

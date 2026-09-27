@@ -594,7 +594,14 @@ export const internalSendProposal = internalAction({
   handler: async (ctx, { proposalId }): Promise<{ sent: boolean; error?: string }> => {
     const p = await ctx.runQuery(internal.ttsSignoff.internalProposal, { proposalId });
     if (p === null) return { sent: false, error: "no such proposal" };
-    if (p.status === "sent") return { sent: false, error: "already sent" };
+    // ONLY A NEVER-SENT PROPOSAL IS SENT: "sending" (his press scheduled
+    // this) or "proposed" (refused at the gate below without his sign-off).
+    // A rerun on anything else — sent, unknown, failed, declined — changes
+    // nothing: rewriting an unknown one to failed would let a fresh sign-off
+    // resend a message that may have gone out. Only his clear moves it on.
+    if (p.status !== "sending" && p.status !== "proposed") {
+      return { sent: false, error: `not sendable: the proposal is ${p.status}` };
+    }
     const door = parseChannel(p.channel);
     try {
       if (door === null) throw new Error(`not a channel a message can be sent on: ${p.channel}`);
