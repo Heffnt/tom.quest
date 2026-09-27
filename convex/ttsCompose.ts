@@ -527,10 +527,10 @@ export type TodayFacts = {
 };
 
 /** One settlement of a disagreement: the event's id and the line settle wrote. */
-export type SettledFact = { id: string; text: string };
+type SettledFact = { id: string; text: string };
 
 /** The /intent page, where every settlement was made and can be read. */
-export const INTENT_URL = "https://tom.quest/intent";
+const INTENT_URL = "https://tom.quest/intent";
 /** The settled run's lead. */
 export const SETTLED_LEAD = "What you settled on the intent page since the last digest.";
 
