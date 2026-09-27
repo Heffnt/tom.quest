@@ -71,7 +71,7 @@ async function seedRun(
 async function seedTodo(
   t: ReturnType<typeof convexTest>,
   over: Record<string, unknown> = {},
-): Promise<Id<"dtsTodos">> {
+): Promise<Id<"todos">> {
   return await t.run((ctx) =>
     insertTodo(ctx, {
       statement: "renew the visa",

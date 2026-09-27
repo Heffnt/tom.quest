@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
-import { eitherId, follow, oldId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
+import { back, eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -57,7 +57,7 @@ import { listForDigest } from "./jarvis/outbox";
 // the same subject supersedes an older unapplied one (append-only, history
 // kept).
 //
-// TWO SUBJECT TYPES: life (a dtsTodos row) and code (repo + externalId). The
+// TWO SUBJECT TYPES: life (a todos row) and code (repo + externalId). The
 // third, a batch, went with batches (Tom's ruling of 2026-09-24: "I dont want
 // to have batches at all anymore"); its declaration went with the table on
 // 2026-09-26.
@@ -132,7 +132,7 @@ export async function insertRuling(
     unarchiveCondition,
     provenance,
   }: {
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     repo?: string;
     externalId?: string;
     verdict: RulingVerdict;
@@ -188,7 +188,7 @@ export async function insertRuling(
       // one verdict that hands the subject BACK to the preparing agent.
       if (verdict !== "revise") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
-        await follow(ctx, "todos", todoId);
+        await back(ctx, "todos", todoId);
       }
       if (verdict === "revise") {
         // Two readiness values (ruling 18): revise hands the write-up back, so
@@ -196,7 +196,7 @@ export async function insertRuling(
         // preparer returns it as prepared. It is therefore not ready for Tom
         // in the meantime (ttsShared.isReadyForTom).
         await ctx.db.patch(todoId, { readiness: "unprepared", updatedAt: now });
-        await follow(ctx, "todos", todoId);
+        await back(ctx, "todos", todoId);
       }
       if (verdict === "archive") {
         await applyStatusChange(ctx, todo, {
@@ -293,7 +293,7 @@ export async function insertRuling(
 async function ruledSubjectName(
   ctx: MutationCtx,
   subject: {
-    todoId?: Id<"dtsTodos">;
+    todoId?: Id<"todos">;
     repo?: string;
     externalId?: string;
   },
@@ -320,9 +320,9 @@ export const recordRuling = mutation({
   },
   handler: async (ctx, { todoId, ...args }) => {
     await requireTom(ctx, "TTS");
-    const old = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
-    if (old === null) throw new Error("TTS todo not found");
-    return await insertRuling(ctx, { ...args, todoId: old });
+    const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
+    if (plain === null) throw new Error("TTS todo not found");
+    return await insertRuling(ctx, { ...args, todoId: plain });
   },
 });
 
@@ -341,9 +341,9 @@ export const internalRecordRuling = internalMutation({
     unarchiveCondition: v.optional(v.string()),
   },
   handler: async (ctx, { todoId, ...rest }) => {
-    let normalized: Id<"dtsTodos"> | undefined;
+    let normalized: Id<"todos"> | undefined;
     if (todoId !== undefined) {
-      const id = await oldId(ctx, "todos", todoId);
+      const id = await resolveId(ctx, "todos", todoId);
       if (!id) throw new Error(`Unknown todo id: ${todoId}`);
       normalized = id;
     }
@@ -374,7 +374,7 @@ export const internalRecordRuling = internalMutation({
 //      at least two words — a substring check with no floor let "ok" pass
 //      against almost any turn, which made the pen the agent's. Matching
 //      ignores the terminator; the STORED quote is the turn's own substring;
-//   4. the subject EXISTS: a dtsTodos row or a code todo that
+//   4. the subject EXISTS: a todos row or a code todo that
 //      is open in the mirror and has a brief — a well-formed id from another
 //      table, an unknown repo, or an unmirrored externalId is refused, so no
 //      ruling (and no execute-approved run) can name a subject Tom never saw;
@@ -468,12 +468,12 @@ async function resolveSubject(
   subjectType: "life" | "code",
   subjectId: string,
 ): Promise<{
-  todoId?: Id<"dtsTodos">;
+  todoId?: Id<"todos">;
   repo?: string;
   externalId?: string;
 }> {
   if (subjectType === "life") {
-    const todoId = await oldId(ctx, "todos", subjectId);
+    const todoId = await resolveId(ctx, "todos", subjectId);
     if (!todoId) {
       throw new Error(`Unknown todo id: ${subjectId}`);
     }

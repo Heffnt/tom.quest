@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { listForDigest } from "./jarvis/outbox";
+import { insertTodo } from "../test/core-tables";
 
 // The digest area (convex/jarvis/digest.ts): the box asks whether a digest is
 // due, posts it, records digest-sent; a needs-you is opened here and posted by
@@ -51,7 +52,7 @@ const ofKind = async (t: ReturnType<typeof convexTest>, table: "events" | "dtsEv
 
 async function aTodo(t: ReturnType<typeof convexTest>, statement = "Answer the landlord about the lease") {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    insertTodo(ctx, {
       statement,
       readiness: "unprepared",
       status: "active",

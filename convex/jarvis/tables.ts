@@ -27,7 +27,9 @@
 // reader of a stored reference reads both forms as the one todo (todoIdForms,
 // todoEvents, todoRulings; withPlainTodoIds before liveRulings); copyBack
 // (below) arrives with them, the way back from what follows. Then the writers
-// move to the plain tables a group at a time (blocks and time notes first),
+// move to the plain tables a group at a time (blocks and time notes, then
+// every writer of a todo but the repeats generator and the migrations, whose
+// rows are their own; tts.logEvent stores the plain id from then on),
 // each writing its old row back (`back`, `backDelete`), so a writer not yet
 // moved, which writes the old row and `follow`s, finds it current, and
 // leftToRemap stays at zero throughout. The last pull request of the stack

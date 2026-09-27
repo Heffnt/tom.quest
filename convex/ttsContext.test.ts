@@ -39,7 +39,7 @@ const PREFIX = expectedPrefix(COMMIT, { write: false });
 const WRITE = "── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n";
 const OUTCOMES = "RECENT SESSION OUTCOMES\n- 2026-09-08 completed: the prelude landed\n- 2026-09-07 errored: the daemon died\n- 2026-09-06 completed: the search tool landed";
 
-type Ids = { todos: Record<string, Id<"dtsTodos">> };
+type Ids = { todos: Record<string, Id<"todos">> };
 
 /** The fixture as rows: the base publication (operate alone), one
  * modelOfTomFiles row per page, the repo rules, and the record. */
@@ -79,7 +79,7 @@ async function seed(t: ReturnType<typeof convexTest>, { without = [] as string[]
         syncedAt: COMMITTED_AT,
       });
     }
-    const todos: Record<string, Id<"dtsTodos">> = {};
+    const todos: Record<string, Id<"todos">> = {};
     for (const todo of record.todos) {
       todos[todo.id] = await insertTodo(ctx, {
         statement: todo.id,
@@ -267,7 +267,7 @@ describe("assembleContext", () => {
   it("refuses a todo subject that does not exist", async () => {
     const t = convexTest({ schema, modules });
     await seed(t);
-    await expect(assemble(t, { kind: "todo", todoId: "x".repeat(32) as Id<"dtsTodos"> })).rejects.toThrow();
+    await expect(assemble(t, { kind: "todo", todoId: "x".repeat(32) as Id<"todos"> })).rejects.toThrow();
   });
 
   it("fails closed while no publication is stored", async () => {

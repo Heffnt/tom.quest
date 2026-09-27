@@ -305,7 +305,7 @@ describe("TTS unified rulings", () => {
   it("life: approve ratifies, archive archives, revise hands back, session waits for Tom's session", async () => {
     const t = testDb();
     const tom = await withTom(t);
-    const ids: Record<string, Id<"dtsTodos">> = {};
+    const ids: Record<string, Id<"todos">> = {};
     for (const verdict of ["approve", "archive", "revise", "session"] as const) {
       ids[verdict] = await tom.mutation(api.tts.createTodo, { statement: verdict });
       await tom.mutation(api.ttsRulings.recordRuling, {
@@ -797,7 +797,7 @@ describe("TTS unified rulings", () => {
       unarchiveCondition: "the explicit one",
     });
     const todos = await tom.query(api.tts.listTodos, {});
-    expect(todos.find((x) => x.legacyId === other)?.unarchiveCondition).toBe(
+    expect(todos.find((x) => x._id === other)?.unarchiveCondition).toBe(
       "the explicit one",
     );
   });

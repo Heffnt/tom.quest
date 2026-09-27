@@ -50,7 +50,23 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 describe("the dual write: each writer of the old core tables writes the plain row", () => {
   it("createTodo", async () => {
     const { t, id } = await setup();
-    expect(await plainOf(t, "todos", id)).toMatchObject({ statement: "renew the lease", legacyId: id });
+    expect(await plainOf(t, "todos", id)).toMatchObject({ statement: "renew the lease", legacyId: expect.any(String) });
+    await followed(t);
+  });
+
+  it("a todo is written plain first: the door answers the plain id, and what stores a reference stores it", async () => {
+    const { t, tom, id } = await setup();
+    const rulingId = await tom.mutation(api.ttsRulings.recordRuling, { todoId: id, verdict: "revise", sentence: "shorter" });
+    const noteId = await tom.mutation(api.tts.createTimeNote, { text: "friday", todoId: id });
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.get(id))!;
+      expect(row).toMatchObject({ statement: "renew the lease", readiness: "unprepared", legacyId: expect.any(String) });
+      expect(await ctx.db.get(ctx.db.normalizeId("dtsTodos", row.legacyId!)!)).toMatchObject({ statement: "renew the lease" });
+      expect((await ctx.db.get(rulingId))!.todoId).toBe(id);
+      expect((await ctx.db.get(noteId))!.todoId).toBe(id);
+      const events = (await ctx.db.query("dtsEvents").collect()).filter((e) => e.todoId !== undefined);
+      expect(new Set(events.map((e) => e.todoId))).toEqual(new Set([id]));
+    });
     await followed(t);
   });
 

@@ -15,7 +15,7 @@ import {
   markLiveSessionRulingApplied,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
-import { eitherId, oldId, todoReader } from "./jarvis/tables";
+import { eitherId, resolveId, todoReader } from "./jarvis/tables";
 import { appendNotes, inboundRowIdOf, NOTES, rowSource } from "./sessionRows";
 import { isIsoDay } from "../shared/markdown-sections.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
@@ -504,7 +504,9 @@ export async function insertSession(
     kind: seed.kind,
     repos,
     repo: repos[0] ?? NO_REPO,
-    todoId: seed.todoId,
+    // The plain id, whichever form the seed holds (a fork inherits its
+    // session's, which may be old: convex/jarvis/tables.ts).
+    todoId: seed.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", seed.todoId)) ?? seed.todoId),
     blockCategory: seed.kind === "block" ? seed.blockCategory : undefined,
     codeRepo: seed.codeSubject?.repo,
     codeExternalId: seed.codeSubject?.externalId,
@@ -798,10 +800,10 @@ async function createSessionFrom(
   if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
   // A todo-scoped session with no repos named falls back to the word guess
   // over the todo rather than silently landing on an empty scratch workspace.
-  // The session row stores the old id; the word guess reads the plain row.
-  const old = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
-  if (old === null) throw new Error(`Unknown todo id: ${todoId}`);
-  const todo = old === undefined ? null : await todoReader(ctx)(old);
+  // The session row stores the plain id; the word guess reads its row.
+  const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
+  if (plain === null) throw new Error(`Unknown todo id: ${todoId}`);
+  const todo = plain === undefined ? null : await todoReader(ctx)(plain);
   return await insertSession(
     ctx,
     {
@@ -813,7 +815,7 @@ async function createSessionFrom(
         explicit: repos ?? repo ?? (kind === "therapy" ? [] : undefined),
         todo,
       }),
-      todoId: old,
+      todoId: plain,
       blockCategory,
       model,
       agendaDay,
