@@ -10,6 +10,7 @@ import {
   linesRestedOn,
   openDisagreements,
   passRate,
+  rulingLineHasSuffix,
   segmentBullets,
   sourcesOf,
   type IntentLine,
@@ -198,6 +199,32 @@ describe("linesRestedOn", () => {
     expect(linesRestedOn("model-of-tom/intent.md#Nowhere", lines)).toEqual([]);
     expect(linesRestedOn("just words", lines)).toEqual([]);
     expect(linesRestedOn("model-of-tom/evidence/repos/CMT.md:commands", lines)).toEqual([]);
+  });
+});
+
+// witness: a ruling copied from dtsRulings answered only to its new id, so
+// the delegate's `ruling:<old id>` and a rule item named from the old id
+// attached to no line.
+describe("a ruling copied from dtsRulings", () => {
+  const copied = line({ id: "rulings/kn2new0000aaaa", kind: "ruling", source: "rulings", locator: "kn2new0000aaaa", legacyId: "jd7old00fe3kq2x9" });
+  const lines = [line(), copied];
+
+  it("is the line a reference by its old id rests on, as by its new one", () => {
+    expect(linesRestedOn("ruling:jd7old00fe3kq2x9", lines).map((l) => l.id)).toEqual(["rulings/kn2new0000aaaa"]);
+    expect(linesRestedOn("ruling:kn2new0000aaaa", lines).map((l) => l.id)).toEqual(["rulings/kn2new0000aaaa"]);
+    expect(linesRestedOn("ruling:jd7old00", lines)).toEqual([]);
+  });
+
+  it("is the line an eval item named from either id's last eight names", () => {
+    const items = [
+      { name: "rule/ruling-fe3kq2x9", passed: 1, runs: 2 },
+      { name: "rule/ruling-000aaaa0", passed: 1, runs: 1 },
+      { name: "rule/ruling-0000aaaa", passed: 3, runs: 3 },
+    ];
+    expect(evalItemsForLine(copied, items).map((i) => i.name)).toEqual(["rule/ruling-fe3kq2x9", "rule/ruling-0000aaaa"]);
+    expect(rulingLineHasSuffix(copied, "fe3kq2x9")).toBe(true);
+    // Another kind of line never answers to a ruling's suffix, old or new.
+    expect(rulingLineHasSuffix(line({ id: "model-of-tom/intent.md#fe3kq2x9", legacyId: "fe3kq2x9" }), "fe3kq2x9")).toBe(false);
   });
 });
 

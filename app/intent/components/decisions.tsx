@@ -19,7 +19,7 @@ import type { Decision, EvalItem } from "@/convex/jarvis/intent";
 import Info from "@/app/jarvis/components/info";
 import { errMessage } from "@/app/jarvis/lib";
 import RulingDialog from "@/app/jarvis/components/ruling-dialog";
-import { evalItemLineSuffix, linesRestedOn, type IntentLine } from "../lib";
+import { evalItemLineSuffix, linesRestedOn, rulingLineHasSuffix, type IntentLine } from "../lib";
 
 type Verdict = "approve" | "revise";
 
@@ -108,7 +108,7 @@ export default function Decisions({
         <ul>
           {failing.map((item) => {
             const suffix = evalItemLineSuffix(item.name);
-            const line = suffix === null ? undefined : lines.find((one) => one.kind === "ruling" && one.id.endsWith(suffix));
+            const line = suffix === null ? undefined : lines.find((one) => rulingLineHasSuffix(one, suffix));
             return (
               <li key={`${item.set}:${item.name}`} className="border-b border-border/50 px-2 py-2">
                 <p className="flex flex-wrap items-baseline gap-x-2 text-[11px] font-mono text-text-faint">

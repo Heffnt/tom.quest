@@ -23,7 +23,8 @@
 // planner and the delegate read it where they read every ruling. A decision
 // with no todo (a job's question) and an eval item have no ruling subject
 // the rulings table takes tonight, so the event is the record of the
-// settlement; the digest prints its text.
+// settlement; the next digest prints its text, one line each, in the run
+// after the objection list (convex/ttsCompose.ts, "settled").
 
 import { v } from "convex/values";
 import { mutation, query } from "../_generated/server";
@@ -34,6 +35,10 @@ import { insertRuling } from "../ttsRulings";
 import { insertEvent } from "./record";
 
 const SURFACE = "Intent";
+
+/** The kind his settlement is recorded as; the digest prints each one's text
+ *  in its settled run (convex/ttsDigest.ts, convex/ttsCompose.ts). */
+export const DISAGREEMENT_SETTLED = "disagreement-settled";
 
 /** The most decisions, settlements and eval runs one read takes. */
 const DECISIONS_MAX = 200;
@@ -93,7 +98,7 @@ const evalSubject = (runId: string, itemName: string) => `eval:${runId}:${itemNa
 async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
   const rows = await ctx.db
     .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", "disagreement-settled"))
+    .withIndex("by_kind_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED))
     .order("desc")
     .take(SETTLED_MAX);
   const bySubject = new Map<string, Settlement>();
@@ -260,7 +265,7 @@ export const settle = mutation({
         : `Tom ruled on eval item ${item}: ${sentence}`;
     }
     const id = await insertEvent(ctx, {
-      kind: "disagreement-settled",
+      kind: DISAGREEMENT_SETTLED,
       provenance: { user: "tom" },
       subject: args.subject,
       data: { subject: args.subject, verdict: args.verdict, sentence: sentence === "" ? null : sentence, rulingId },

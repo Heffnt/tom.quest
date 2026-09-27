@@ -579,10 +579,13 @@ export async function insertSession(
   // commit, which makes it the cache boundary and the transcript's first line.
   //
   // The subject is the seed's todo, else its first repo, else nothing. A
-  // therapy session's subject is never its todo (Tom's ruling 2026-09-25: it
-  // is about the mental-health area whatever todo it was opened on), so it
-  // carries no todo's rulings. The opener's output reaches Tom (the outcome, the digest, the transcript), so
-  // its prompt carries the write pages.
+  // therapy session's subject is the mental-health area, never its todo
+  // (Tom's ruling 2026-09-25: it is about that area whatever todo it was
+  // opened on), so it carries no todo's rulings and its facts name the area
+  // (ttsContext areaSubjectLine); the Jarvis session-start hook routes the
+  // same subject when the session host hands it TTS_SESSION_KIND=therapy.
+  // The opener's output reaches Tom (the outcome, the digest, the
+  // transcript), so its prompt carries the write pages.
   //
   // Publication fails closed: with no posted base, assembleContext throws and
   // this mutation publishes neither the session nor its opener.
@@ -600,11 +603,13 @@ export async function insertSession(
   // back with the throw.
   const prompt = seed.prompt(sessionId, repos);
   const subject: ContextSubject =
-    seed.todoId !== undefined && seed.kind !== "therapy"
-      ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
-      : repos.length > 0 && repos[0] !== NO_REPO
-        ? { kind: "repo", repo: repos[0] }
-        : { kind: "none" };
+    seed.kind === "therapy"
+      ? { kind: "area", area: "mental-health" }
+      : seed.todoId !== undefined
+        ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
+        : repos.length > 0 && repos[0] !== NO_REPO
+          ? { kind: "repo", repo: repos[0] }
+          : { kind: "none" };
   const context = await assembleContext(ctx, subject, { reachesTom: true });
   const body = withoutPastedContext(prompt, context);
   if (body === null) {

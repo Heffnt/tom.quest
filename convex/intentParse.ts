@@ -54,6 +54,10 @@ export type IntentLine = {
   /** That date as the source spells it. */
   dateText: string | null;
   evidence: EvidenceEntry[];
+  /** A ruling copied from dtsRulings: its id there (rulings.legacyId). A
+   *  `ruling:<id>` reference or an eval item named before the copy names the
+   *  ruling by this id, so the line answers to it as to its own. */
+  legacyId?: string;
 };
 
 /** The model-of-tom pages whose lines are intent, and which kind each is. Each

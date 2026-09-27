@@ -123,6 +123,22 @@ describe("the box-change door", () => {
     expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(2);
   });
 
+  // witness: the hook deleted the resend's row and both doors answered with
+  // that deleted row's id, which names nothing in the record.
+  it("answers a resend with the id of the row that stands, through either door", async () => {
+    const t = convexTest({ schema, modules });
+    const first = change({ agentId: AGENT, id: "s=1;i=s1" });
+    const kept = (await (await recordEvent(t, eventOf(first))).json()) as { id: string };
+    const again = (await (await recordEvent(t, eventOf(first))).json()) as { id: string; duplicate: boolean };
+    expect(again).toMatchObject({ ok: true, duplicate: true, id: kept.id });
+    const second = change({ agentId: AGENT, id: "s=1;i=s2", at: AT + 1 });
+    const legacyKept = (await (await postEvent(t, { kind: "box-change", key: AGENT, data: second })).json()) as { id: string };
+    const legacyAgain = (await (await postEvent(t, { kind: "box-change", key: AGENT, data: second })).json()) as { id: string };
+    expect(legacyAgain).toMatchObject({ ok: true, duplicate: true, id: legacyKept.id });
+    const ids = (await t.run(async (ctx) => ctx.db.query("events").collect())).map((row) => row._id as string);
+    expect(ids.sort()).toEqual([kept.id, legacyKept.id].sort());
+  });
+
   it("records two identical changes in one millisecond as two, when their ids differ or they carry none", async () => {
     const t = convexTest({ schema, modules });
     expect(await (await recordEvent(t, eventOf(change({ agentId: AGENT, id: "s=1;i=b1" })))).json()).toMatchObject({ duplicate: false });
@@ -309,6 +325,51 @@ describe("the /agents read", () => {
     expect(rows[1].command).toContain("[redacted:github]");
     expect(rows[1].command).not.toContain(TOKEN);
     await expect(t.query(api.boxChanges.forAgent, { agentId: AGENT })).rejects.toThrow();
+  });
+
+  // witness: the read walked every row the agent wrote (events.by_agent_at)
+  // and kept the box changes, so an agent with enough other rows passed the
+  // query's read limit and its /agents chat failed to load.
+  // convex-test counts only the rows a query returns toward the read limit,
+  // where Convex counts every row a filter looked at, so the test records the
+  // queries the read makes: an index range that is all box changes, with no
+  // filter after it, is one whose rows read are the rows returned.
+  it("reads an agent's box changes without reading the agent's other rows", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 700; n += 1) {
+        await ctx.db.insert("events", { kind: "job-ok", at: AT - 1_000 + n, provenance: { agentId: AGENT }, subject: `j${n}`, data: {} });
+      }
+    });
+    await recordEvent(t, eventOf(change({ agentId: AGENT })));
+    const tom = await withTom(t);
+    const runtime = globalThis as unknown as { Convex: { syscall: (op: string, args: string) => string } };
+    const convexGlobal = runtime.Convex;
+    const queries: { source: { indexName?: string; range?: unknown[] }; operators: Record<string, unknown>[] }[] = [];
+    runtime.Convex = {
+      get asyncSyscall() {
+        return (convexGlobal as unknown as { asyncSyscall: unknown }).asyncSyscall;
+      },
+      get jsSyscall() {
+        return (convexGlobal as unknown as { jsSyscall: unknown }).jsSyscall;
+      },
+      syscall: (op: string, args: string) => {
+        if (op === "1.0/queryStream") queries.push((JSON.parse(args) as { query: (typeof queries)[number] }).query);
+        return convexGlobal.syscall(op, args);
+      },
+    } as unknown as typeof convexGlobal;
+    let rows;
+    try {
+      rows = await tom.query(api.boxChanges.forAgent, { agentId: AGENT });
+    } finally {
+      runtime.Convex = convexGlobal;
+    }
+    expect(rows.map((row) => row.at)).toEqual([AT]);
+    const reads = queries.filter((query) => query.source.indexName?.startsWith("events."));
+    expect(reads).toHaveLength(1);
+    expect(reads[0].source.indexName).toBe("events.by_kind_agent_at");
+    expect(JSON.stringify(reads[0].source.range)).toContain('"box-change"');
+    expect(reads[0].operators.filter((operator) => "filter" in operator)).toEqual([]);
   });
 });
 

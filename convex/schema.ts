@@ -97,6 +97,10 @@ export default defineSchema({
     .index("by_kind_job_at", ["kind", "provenance.job", "at"])
     // One agent's rows: the /agents chat draws them among the transcript.
     .index("by_agent_at", ["provenance.agentId", "at"])
+    // One agent's rows of one kind: the /agents chat's box changes
+    // (convex/boxChanges.ts forAgent), which a filter over by_agent_at would
+    // find only by reading every other row that agent wrote.
+    .index("by_kind_agent_at", ["kind", "provenance.agentId", "at"])
     // One condition's rows of one kind: the jobs area's standing check (a
     // job-failed not closed by a later job-recovered under the same subject)
     // and the digest's read of one condition, without a scan of every job's

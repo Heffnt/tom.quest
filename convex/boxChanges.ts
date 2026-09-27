@@ -39,7 +39,7 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../shared/redact.mjs";
 import type { BoxChangeFact } from "./ttsCompose";
@@ -206,7 +206,10 @@ function boxChangeSubject(id: string): string {
   return `box-change-id:${id}`;
 }
 
-export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise<{ duplicate: boolean }> {
+export async function onBoxChange(
+  ctx: MutationCtx,
+  row: Doc<"events">,
+): Promise<{ duplicate: boolean; survivorId?: Id<"events"> }> {
   const faults = boxChangeFaults(row.data);
   if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
   const change = row.data as BoxChange;
@@ -224,8 +227,11 @@ export async function onBoxChange(ctx: MutationCtx, row: Doc<"events">): Promise
       .filter((q) => q.and(q.eq(q.field("kind"), BOX_CHANGE), q.neq(q.field("_id"), row._id)))
       .first();
     if (earlier !== null) {
+      // The resend's row goes; the row that stands for the change is the
+      // earlier one, and that is the id both doors answer
+      // (convex/jarvis/events.ts recordEvent reads survivorId).
       await ctx.db.delete(row._id);
-      return { duplicate: true };
+      return { duplicate: true, survivorId: earlier._id };
     }
     if (row.subject !== subject) await ctx.db.patch(row._id, { subject });
   }
@@ -279,8 +285,9 @@ const AGENT_MAX = 500;
 
 /**
  * One agent's box changes, oldest first, for the marked rows in its chat, off
- * the agent's rows of the record (events.by_agent_at). `at` is when the
- * change happened on the box.
+ * the kind's rows for that agent (events.by_kind_agent_at), so no number of
+ * the agent's other rows is read to find them. `at` is when the change
+ * happened on the box.
  *
  * NOTHING OLDER IS MISSING FROM IT. The one-time history copy (w4's
  * convex/jarvis/history.ts, run in production on 2026-09-26 and deleted in
@@ -296,9 +303,8 @@ export const forAgent = query({
     await requireTom(ctx, "Agents");
     const rows = await ctx.db
       .query("events")
-      .withIndex("by_agent_at", (q) => q.eq("provenance.agentId", agentId))
+      .withIndex("by_kind_agent_at", (q) => q.eq("kind", BOX_CHANGE).eq("provenance.agentId", agentId))
       .order("asc")
-      .filter((q) => q.eq(q.field("kind"), BOX_CHANGE))
       .take(AGENT_MAX);
     return rows.map((row) => ({ ...redactedBoxChange(row.data as BoxChange), id: row._id }));
   },

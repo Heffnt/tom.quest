@@ -1,7 +1,8 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { SETTLED_LEAD } from "./ttsCompose";
 
 // From the convex root, as every other test: convex-test names modules by
 // their path under convex/, so a glob from a subdirectory finds none of them.
@@ -200,5 +201,41 @@ describe("jarvis/intent", () => {
     await t.run(async (ctx) => ctx.db.insert("events", { kind: "decision", at: 1, provenance: {}, data: { ...DECISION, askId: "unfiled" } }));
     const tom = await asTom(t);
     expect((await tom.query(api.jarvis.intent.decisions, {})).map((one) => one.askId)).toEqual(["filed1"]);
+  });
+});
+
+// witness: settle wrote its line only as a disagreement-settled event, which
+// no reader of the digest looked at, so the settlement text the page promised
+// never reached him.
+describe("the digest's settled run", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("prints a settlement made in its window, one line each, and none made before it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const before = Date.UTC(2026, 8, 26, 3);
+    const since = Date.UTC(2026, 8, 26, 9);
+    const inside = Date.UTC(2026, 8, 26, 20);
+    const now = Date.UTC(2026, 8, 27, 9, 30);
+    const t = convexTest({ schema, modules });
+    await event(t, "decision", "0ld5e771", { ...DECISION, askId: "0ld5e771", decision: "Three." }, before - 1_000);
+    await event(t, "decision", "86f2f341", DECISION, since + 1_000);
+    const tom = await asTom(t);
+    vi.setSystemTime(before);
+    await tom.mutation(api.jarvis.intent.settle, { subject: "decision:0ld5e771", verdict: "approve" });
+    vi.setSystemTime(inside);
+    const settled = await tom.mutation(api.jarvis.intent.settle, { subject: "decision:86f2f341", verdict: "revise", sentence: "Two, in worktrees." });
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: "2026-09-27", now, since });
+    const lines = text.split("\n");
+    const lead = lines.findIndex((line) => line.includes(SETTLED_LEAD));
+    expect(lead).toBeGreaterThan(-1);
+    const line = `Tom objected to the delegate's decision "One." (86f2f341): Two, in worktrees.`;
+    expect(lines[lead + 1]).toContain(line);
+    expect(lines[lead + 1]).toContain("https://tom.quest/intent");
+    expect(text).not.toContain("0ld5e771");
+    expect((facts as { facts: { id: string; text: string }[] }).facts.filter((one) => one.id.startsWith("settled:"))).toEqual([
+      expect.objectContaining({ id: `settled:${settled.id}`, text: line }),
+    ]);
   });
 });

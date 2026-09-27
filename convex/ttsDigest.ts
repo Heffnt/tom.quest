@@ -41,6 +41,7 @@ import {
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
 import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
+import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -845,6 +846,21 @@ export async function gatherTodayFacts(
     });
   }
 
+  // His settlements on /intent (convex/jarvis/intent.ts settle, kind
+  //    "disagreement-settled"): one line each, the text settle wrote, read on
+  //    the kind's own index over the same window, oldest first.
+  const settledRows = await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED).gte("at", since).lt("at", now))
+    .order("desc")
+    .take(OBJECTION_SCAN);
+  const settled = settledRows
+    .reverse()
+    .flatMap((row) => {
+      const text = safeStr(row.text);
+      return text === undefined ? [] : [{ id: row._id as string, text }];
+    });
+
   // 5. Ready for Tom (not already dated) — ruling 18's computation
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
   //    so the scan is the prepared list itself. §4.3: the ready SECTION is
@@ -944,6 +960,7 @@ export async function gatherTodayFacts(
       .map(({ n }) => n),
     overnightByTodo,
     broken: [...failures.values()],
+    settled,
     boxChanges,
   };
 }

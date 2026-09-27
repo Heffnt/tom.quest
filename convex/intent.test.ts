@@ -202,6 +202,23 @@ describe("intent.lines", () => {
     expect(sources.find((row) => row.name === "rulings")?.lines).toBe(1);
   });
 
+  // witness: a ruling copied from dtsRulings reached the page with its new
+  // id alone, so nothing that cites it by the old id could find its line.
+  it("carries a copied ruling's old id on its line, and none on a ruling written since", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const old = await ctx.db.insert("dtsRulings", { subjectType: "life", verdict: "archive", ruledAt: 1 });
+      await ctx.db.insert("rulings", { subjectType: "life", verdict: "approve", sentence: "copied", ruledAt: 2, legacyId: old });
+      await ctx.db.insert("rulings", { subjectType: "life", verdict: "approve", sentence: "new", ruledAt: 3 });
+    });
+    const { lines } = await (await asTom(t)).query(api.intent.lines, {});
+    const dts = await t.run(async (ctx) => await ctx.db.query("dtsRulings").first());
+    const copied = lines.find((line) => line.text === "copied")!;
+    expect(copied.legacyId).toBe(dts!._id);
+    expect(copied.id).not.toBe(`rulings/${dts!._id}`);
+    expect(lines.find((line) => line.text === "new")!.legacyId).toBeUndefined();
+  });
+
   it("renders a page whose evidence file has not been posted, with nothing claimed about it", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {

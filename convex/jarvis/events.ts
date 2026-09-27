@@ -49,7 +49,15 @@ export async function recordEvent(
   if (hook === undefined) return { id };
   const row = await ctx.db.get(id);
   if (row === null) return { id };
-  return { id, result: await hook(ctx, row) };
+  const result = await hook(ctx, row);
+  // A hook that deleted the row as a resend of an earlier one names the row
+  // that stands for it (boxChanges.ts onBoxChange): the caller is answered
+  // with that id, never the id of a row that no longer exists.
+  if (typeof result === "object" && result !== null && "survivorId" in result) {
+    const { survivorId, ...rest } = result as { survivorId: Id<"events"> };
+    return { id: survivorId, result: rest };
+  }
+  return { id, result };
 }
 
 /** POST /jarvis/event's mutation, and any Convex reporter's. */

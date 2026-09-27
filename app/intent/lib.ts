@@ -198,9 +198,10 @@ export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
 export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
   const trimmed = ref.trim();
   if (trimmed.startsWith("ruling:")) {
-    // The delegate cites the ruling spelling its prompt prints.
-    const id = `rulings/${trimmed.slice("ruling:".length)}`;
-    return lines.filter((line) => line.id === id);
+    // The delegate cites the ruling spelling its prompt prints: the ruling's
+    // id, or for a ruling copied from dtsRulings, the id it had there.
+    const cited = trimmed.slice("ruling:".length);
+    return lines.filter((line) => line.kind === "ruling" && (line.id === `rulings/${cited}` || line.legacyId === cited));
   }
   const cut = trimmed.search(/[#:]/);
   if (cut === -1) return [];
@@ -232,12 +233,20 @@ export function evalItemLineSuffix(name: string): string | null {
   return match === null ? null : match[1];
 }
 
+/** Whether a ruling line is the one an eval item's suffix names: the last 8
+ *  of its id, or of the id it had in dtsRulings when it was copied from there
+ *  (an item named before the copy). */
+export function rulingLineHasSuffix(line: IntentLine, suffix: string): boolean {
+  if (line.kind !== "ruling") return false;
+  return line.id.endsWith(suffix) || (line.legacyId !== undefined && line.legacyId.endsWith(suffix));
+}
+
 /** Every eval item that names this line: rule items name a ruling by its id's last 8 characters. */
 export function evalItemsForLine<T extends { name: string }>(line: IntentLine, items: T[]): T[] {
   if (line.kind !== "ruling") return [];
   return items.filter((item) => {
     const suffix = evalItemLineSuffix(item.name);
-    return suffix !== null && line.id.endsWith(suffix);
+    return suffix !== null && rulingLineHasSuffix(line, suffix);
   });
 }
 

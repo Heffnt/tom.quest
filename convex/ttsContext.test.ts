@@ -7,7 +7,9 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
+  areaSubjectLine,
   assembleContext,
+  CONTEXT_END,
   joinContext,
   OUTCOMES_BYTES,
   RULINGS_BYTES,
@@ -351,6 +353,37 @@ describe("insertSession's context", () => {
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
     expect(inbound[0].text).toContain(`${PREFIX}\n\n${WRITE}\n\n${SKILLS_LINE}`);
     expect(inbound[0].text).not.toContain("RULINGS ON THIS SUBJECT");
+  });
+
+  // witness: the opener stopped giving a therapy session the mental-health
+  // area subject origin/main gave it, so nothing in its prompt said what it
+  // was about once it was opened on a todo (or on none).
+  it("gives every therapy session the mental-health area subject, whatever its todo", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    const tom = await withTom(t);
+    const area = areaSubjectLine("mental-health");
+    for (const todoId of [ids.todos[IDS.oversize], undefined]) {
+      const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+        title: "therapy",
+        kind: "therapy",
+        ...(todoId === undefined ? {} : { todoId }),
+        initialPrompt: "THE MISSION BODY",
+      });
+      const text = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId }))[0].text ?? "";
+      expect(text).toContain(`${SKILLS_LINE}\n\n${area}`);
+      expect(text.indexOf(area)).toBeLessThan(text.indexOf(CONTEXT_END));
+      expect(text).not.toContain("RULINGS ON THIS SUBJECT");
+    }
+    // A session of another kind on the same todo is about the todo, not the area.
+    const focus = await tom.mutation(api.claudeSessions.createSession, {
+      title: "focus",
+      kind: "focus-item",
+      todoId: ids.todos[IDS.oversize],
+      initialPrompt: "THE MISSION BODY",
+    });
+    const focusText = (await tom.query(api.claudeSessions.getPendingInbound, { sessionId: focus }))[0].text ?? "";
+    expect(focusText).not.toContain("THIS RUN'S SUBJECT");
   });
 
   it("refuses a therapy session that names a repo, and inserts nothing", async () => {

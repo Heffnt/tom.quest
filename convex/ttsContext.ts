@@ -28,7 +28,17 @@ export type ContextSubject =
   // session's resolved repos).
   | { kind: "todo"; todoId: Id<"dtsTodos">; repos?: readonly string[] }
   | { kind: "repo"; repo: string }
+  // A model-of-tom area: a therapy session's subject is the mental-health
+  // area whatever todo it was opened on (Tom's ruling 2026-09-25). It carries
+  // no todo's rulings; its facts name the area and its page.
+  | { kind: "area"; area: string }
   | { kind: "none" };
+
+/** The line an area subject's facts open with: which area the run is about,
+ *  and the page it reads for it. */
+export function areaSubjectLine(area: string): string {
+  return `THIS RUN'S SUBJECT: the ${area} area (model-of-tom/areas/${area}.md), whatever todo it was opened on.`;
+}
 
 /** The one line every prompt carries in place of a list of skills. */
 export const SKILLS_LINE = "Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.";
@@ -162,7 +172,9 @@ async function subjectFacts(
       if (row !== null) record.sessions.push(row);
     }
   }
-  return renderFacts(record);
+  const facts = renderFacts(record);
+  if (subject.kind !== "area") return facts;
+  return [areaSubjectLine(subject.area), facts].filter((part) => part !== "").join("\n");
 }
 
 /** The write pages the last post stored, each rendered the way the prelude

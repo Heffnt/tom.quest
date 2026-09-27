@@ -252,6 +252,9 @@ export const lines = query({
       evidence: row.provenance === undefined
         ? []
         : [{ form: "quote", text: row.provenance.quote, date: null }],
+      // A copied production ruling is still cited by its old id (the
+      // delegate's `ruling:<id>`, the rule set's `ruling-<last 8>`).
+      ...(row.legacyId === undefined ? {} : { legacyId: row.legacyId }),
     }));
     record("rulings", "record", null, rulings[0]?.ruledAt ?? null, ruled);
 
