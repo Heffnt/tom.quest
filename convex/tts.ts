@@ -1041,11 +1041,56 @@ export const internalApplyTimeNote = internalMutation({
       }
       return subject;
     };
+    // A block action touches only a block the note's context showed the job
+    // (internalPendingTimeNotes): a block note's own block, or a block that
+    // starts on a day note's day. A todo note shows no block at all. The
+    // sameDayBlocks a block note carries are there to judge a move against
+    // the day's shape, not to be moved.
     const getBlock = async (raw: string) => {
       const blockId = await resolveId(ctx, "blocks", raw);
       const block = blockId && (await ctx.db.get(blockId));
       if (!block) throw new Error(`Unknown block id: ${raw}`);
+      const inContext =
+        note.blockId !== undefined
+          ? block._id === note.blockId
+          : note.day !== undefined && nyCalendarDayKey(block.start) === note.day;
+      if (!inContext) {
+        throw new Error(`Block ${raw} is not in this time note's context`);
+      }
       return block;
+    };
+    // Likewise a new block's todo is one the context named: a todo note's
+    // todo, a block note's block's todo, or on a day note an active todo or
+    // the todo of a block that starts that day.
+    const requireContextTodo = async (raw: string): Promise<Id<"todos">> => {
+      const t = await resolveId(ctx, "todos", raw);
+      if (!t) throw new Error(`Unknown todo id: ${raw}`);
+      const plain = async (stored: string | undefined) =>
+        stored === undefined ? null : await resolveId(ctx, "todos", stored);
+      let inContext = false;
+      if (noteTodo) {
+        inContext = t === noteTodo;
+      } else if (note.blockId !== undefined) {
+        const block = await ctx.db.get(note.blockId);
+        inContext = block !== null && (await plain(block.todoId)) === t;
+      } else if (note.day !== undefined) {
+        const row = await ctx.db.get(t);
+        inContext = row?.status === "active";
+        if (!inContext && DAY_KEY_RE.test(note.day)) {
+          const { start, end } = nyCalendarDayBoundsUtc(note.day);
+          const dayRows = await ctx.db
+            .query("blocks")
+            .withIndex("by_start", (q) => q.gte("start", start).lt("start", end))
+            .collect();
+          for (const b of dayRows) {
+            if ((await plain(b.todoId)) === t) inContext = true;
+          }
+        }
+      }
+      if (!inContext) {
+        throw new Error(`Todo ${raw} is not in this time note's context`);
+      }
+      return t;
     };
     // A time note is Tom's own written instruction, so an action that lands
     // through it is a Tom touch — stamped exactly where the equivalent public
@@ -1156,9 +1201,7 @@ export const internalApplyTimeNote = internalMutation({
         case "create-block": {
           let blockTodoId: Id<"todos"> | undefined;
           if (action.todoId !== undefined) {
-            const t = await resolveId(ctx, "todos", action.todoId);
-            if (!t) throw new Error(`Unknown todo id: ${action.todoId}`);
-            blockTodoId = t;
+            blockTodoId = await requireContextTodo(action.todoId);
           } else if (action.category === undefined && noteTodo) {
             // A block asked for from a todo's own note defaults to that todo.
             blockTodoId = noteTodo;
