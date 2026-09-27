@@ -767,14 +767,13 @@ export const SESSION_REPO_NAMES = Object.keys(
 // Rules Tom set:
 //   - He can always choose the model for his own sessions, at creation and
 //     mid-session (setSessionModel; a cross-family change is a "reopen as").
-//   - Workers use a todo's tagged model if it has one, else the
-//     fleet default (claudeAutoConfig.defaultModel), which starts at the
-//     strongest Codex model.
-//   - When Codex's WEEKLY usage is at or past CODEX_WEEKLY_CAP_PERCENT, the
-//     fleet starts no Codex session: untagged todos fall back to "opus",
-//     Codex-tagged todos wait. The 5-hour window is not gated.
 //   - Codex subagents inherit the parent's model unless the parent asks for
 //     a cheaper one; "gpt-5.6-terra" is the cheap tier. No luna.
+//
+// A session whose creator names no model runs DEFAULT_SESSION_MODEL
+// (claudeSessions.insertSession). The auto-session scheduler, which chose a
+// model for the sessions it started (a todo's tag, else a fleet default, with
+// a gate on Codex's weekly usage), was deleted by pull request 282.
 //
 // `id` is what the runner passes on the command line; null means the
 // account default (today's behaviour for an ordinary Claude session).
@@ -786,7 +785,8 @@ export const SESSION_MODEL_NAMES = Object.keys(
   SESSION_MODELS,
 ) as SessionModel[];
 /** The strongest Codex model Tom has access to — the default for new
- * sessions and the fleet default's starting value. */
+ * sessions: the /agents form's first choice, and insertSession's model when
+ * the caller names none. */
 export const DEFAULT_SESSION_MODEL: SessionModel = "gpt-5.6-sol";
 /**
  * Whether Fable answers on the box, as the session daemon reports it on its
