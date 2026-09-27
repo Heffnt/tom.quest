@@ -182,8 +182,8 @@ export async function todoEvents(
 }
 
 /** Whether a todo has an event of `kind` at or after `from`, under either id
- *  it is stored by: each form read through by_todo from `from`, stopping at
- *  the first match rather than collecting what comes after. */
+ *  it is stored by: each form read through by_todo_kind to its first row, so
+ *  no other kind of row on the todo is read. */
 export async function todoHasEventSince(
   ctx: QueryCtx | MutationCtx,
   id: string,
@@ -193,8 +193,7 @@ export async function todoHasEventSince(
   for (const form of await todoIdForms(ctx, id)) {
     const hit = await ctx.db
       .query("dtsEvents")
-      .withIndex("by_todo", (q) => q.eq("todoId", form).gte("at", from))
-      .filter((q) => q.eq(q.field("kind"), kind))
+      .withIndex("by_todo_kind", (q) => q.eq("todoId", form).eq("kind", kind).gte("at", from))
       .first();
     if (hit !== null) return true;
   }

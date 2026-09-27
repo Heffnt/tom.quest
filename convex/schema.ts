@@ -1293,6 +1293,10 @@ export default defineSchema({
   })
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"])
+    // One kind on one todo from a time on: whether his reply followed a
+    // needs-you (convex/jarvis/tables.ts todoHasEventSince), read to its
+    // first row with no filter over the todo's other rows.
+    .index("by_todo_kind", ["todoId", "kind", "at"])
     // The row for one thread, event id, producer id or box condition:
     // eq(kind), eq(key) — and with `key` pinned, `at` orders what comes back.
     .index("by_kind_key", ["kind", "key", "at"])
