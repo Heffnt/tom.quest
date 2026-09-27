@@ -28,7 +28,7 @@ async function withUser(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({ subject: userId });
 }
 
-/** The fields dtsTodos requires, so a fixture names only what it is about. */
+/** The fields todos requires, so a fixture names only what it is about. */
 const todo = (statement: string) => ({
   statement,
   kind: "task" as const,

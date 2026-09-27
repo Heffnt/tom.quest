@@ -15,7 +15,7 @@ import {
   markLiveSessionRulingApplied,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
-import { eitherId, resolveId, todoReader } from "./jarvis/tables";
+import { coreId, resolveId, todoReader } from "./jarvis/tables";
 import { appendNotes, inboundRowIdOf, NOTES, rowSource } from "./sessionRows";
 import { isIsoDay } from "../shared/markdown-sections.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
@@ -440,7 +440,7 @@ type SessionSeed = {
   /** Already through resolveSessionRepos. Empty = the empty-scratch posture.
    * Kind "therapy" must name none: insertSession refuses it otherwise. */
   repos: string[];
-  todoId?: Id<"todos"> | Id<"dtsTodos">;
+  todoId?: string;
   blockCategory?: string;
   /** The code todo a worker mission was admitted for (schema: codeRepo /
    * codeExternalId) — both or neither. */
@@ -765,7 +765,7 @@ const CREATE_SESSION_ARGS = {
   // saved link) keeps working; both go through the same resolver.
   repos: v.optional(v.array(v.string())),
   repo: v.optional(v.string()),
-  todoId: v.optional(eitherId.todos),
+  todoId: v.optional(coreId),
   blockCategory: v.optional(v.string()),
   // Tom picks the model for his own sessions (ratified 2026-09-04). Absent
   // takes DEFAULT_SESSION_MODEL, which insertSession supplies.

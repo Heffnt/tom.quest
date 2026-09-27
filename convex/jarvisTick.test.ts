@@ -223,7 +223,7 @@ describe("the daily tasks: repeats and eviction", () => {
       });
       vi.setSystemTime(nyAt("09:15"));
       expect(await t.action(internal.jarvis.tick.runTask, { name: "repeats", leaseId: await lease(t, "repeats") })).toEqual({ ok: true });
-      const minted = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+      const minted = await t.run(async (ctx) => ctx.db.query("todos").collect());
       expect(minted.map((row) => row.statement)).toEqual(["water the plants"]);
     } finally {
       vi.useRealTimers();

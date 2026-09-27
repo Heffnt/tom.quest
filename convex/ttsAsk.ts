@@ -201,7 +201,7 @@ export const internalRecordAsk = internalMutation({
       // stands, and nothing is written from the new body.
       // A todo id that names no todo is itself a contradiction: it must not
       // resolve to "no todo" and so match an ask recorded without one.
-      // The recorded todo is a stored reference: the old row's id on an ask
+      // The recorded todo is a stored reference: the old todo id on an ask
       // recorded before this step, the plain row's since. Both sides are
       // compared as the plain todo they name.
       const todoId = args.todoId === undefined ? null : await resolveId(ctx, "todos", args.todoId);

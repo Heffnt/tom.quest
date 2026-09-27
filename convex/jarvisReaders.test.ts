@@ -7,8 +7,8 @@ import { insertCopied } from "../test/core-tables";
 // The readers of todos, blocks and timeNotes (convex/jarvis/tables.ts): each
 // reads the plain rows, which since step C every writer writes, and hands
 // out plain ids, whichever form a stored reference holds. The fixtures are
-// written through the doors, plus one todo from before step C: an old row
-// and its plain copy, with a ruling and an event that store its old id.
+// written through the doors, plus one todo from before step C: a plain row
+// carrying its old id, with a ruling and an event that store the old id.
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 

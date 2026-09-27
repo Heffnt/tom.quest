@@ -1,6 +1,5 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
 import {
@@ -72,7 +71,7 @@ async function todo(
     createdAt: number;
     updatedAt: number;
   }> = {},
-): Promise<Id<"dtsTodos">> {
+): Promise<string> {
   const now = Date.now();
   const id = (await insertCopied(ctx, "todos", {
     statement: fields.statement ?? "a todo",
@@ -85,7 +84,7 @@ async function todo(
     createdAt: fields.createdAt ?? now,
     updatedAt: fields.updatedAt ?? now,
   })).old;
-  // The plain copy, as the dual write makes it (convex/jarvis/tables.ts).
+  // A todo from before step C: the plain row, named by its old id.
   return id;
 }
 
@@ -93,7 +92,7 @@ async function event(
   ctx: MutationCtx,
   kind: string,
   at: number,
-  extra: { todoId?: Id<"dtsTodos">; key?: string; data?: unknown } = {},
+  extra: { todoId?: string; key?: string; data?: unknown } = {},
 ) {
   // A job's report lives in the record's events table (convex/jarvis/jobs.ts),
   // its condition as the subject; every other kind still in dtsEvents.
@@ -806,7 +805,7 @@ describe("POST /tts/area-reviewed", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].data).toEqual({ path: "model-of-tom/areas/research.md", reviewedOn: today });
     // The row wrote nothing else: no todo, no page body.
-    expect(await t.run(async (ctx) => (await ctx.db.query("dtsTodos").collect()).length)).toBe(0);
+    expect(await t.run(async (ctx) => (await ctx.db.query("todos").collect()).length)).toBe(0);
     const f = await gather(t);
     expect(f.areaPages[0]).toMatchObject({ reviewedOn: today, reviewedAgeDays: 0, pastWindow: false });
   });

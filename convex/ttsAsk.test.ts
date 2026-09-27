@@ -13,7 +13,7 @@ import {
   stripNarrowListId,
   type ObjectionFact,
 } from "./ttsAsk";
-import { insertTodo } from "../test/core-tables";
+import { insertTodo, oldId } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -344,10 +344,10 @@ describe("POST /tts/ask — the delegate's record", () => {
   it("a retry names the recorded todo in either id form, whichever form the ask stored", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
-    // A todo from before step C: its old row, and the plain copy naming it.
+    // A todo from before step C: the plain row, carrying its old id.
     const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: Date.now(), updatedAt: Date.now() };
     const { todoId, legacy } = await t.run(async (ctx) => {
-      const legacy = await ctx.db.insert("dtsTodos", fields);
+      const legacy = oldId();
       return { legacy, todoId: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
     });
     const other = await seedTodo(t, "book the dentist");
@@ -378,9 +378,9 @@ describe("POST /tts/ask — the delegate's record", () => {
     const t = convexTest({ schema, modules });
     const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: Date.now(), updatedAt: Date.now() };
     const { todoId, legacy, gone } = await t.run(async (ctx) => {
-      const legacy = await ctx.db.insert("dtsTodos", fields);
-      const gone = await ctx.db.insert("dtsTodos", fields);
-      await ctx.db.delete(gone);
+      const legacy = oldId();
+      // An old id no plain row carries.
+      const gone = oldId();
       return { legacy, gone, todoId: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
     });
     // Asks recorded before the stored references went plain: the old id, and

@@ -30,10 +30,9 @@
 
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { applyDateOutcome, applyStatusChange, logEvent } from "./tts";
-import { back, todoEvents } from "./jarvis/tables";
+import { todoEvents } from "./jarvis/tables";
 
 export const ASSIGNMENT_INPUT = v.object({
   externalId: v.string(), // Canvas assignment id, as a string
@@ -83,7 +82,7 @@ export function provenanceExternalId(provenance: string | undefined): string | n
  */
 async function reopenedSinceCompletion(
   ctx: MutationCtx,
-  todoId: Id<"todos"> | Id<"dtsTodos">,
+  todoId: string,
 ): Promise<boolean> {
   // Under either id the rows store it by (convex/jarvis/tables.ts).
   const events = await todoEvents(ctx, todoId);
@@ -164,7 +163,6 @@ export const internalSyncCanvasTodos = internalMutation({
           createdAt: now,
           updatedAt: now,
         });
-        await back(ctx, "todos", id);
         await logEvent(ctx, "captured", id, { source: ASSIGNMENT_SOURCE });
         created++;
         continue;
@@ -185,7 +183,6 @@ export const internalSyncCanvasTodos = internalMutation({
           timingClass: "dated",
           updatedAt: now,
         });
-        await back(ctx, "todos", todo._id);
         await logEvent(ctx, "updated", todo._id, {
           fields: ["dueAt"],
           via: "canvas-sync",

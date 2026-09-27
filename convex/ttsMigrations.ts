@@ -37,7 +37,6 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { back } from "./jarvis/tables";
 
 /** The unarchiveCondition the retired v1 → graph migration
  * (tts.internalMigrateToGraph, deleted with batches on 2026-09-24 after it had
@@ -52,7 +51,7 @@ import {
   type StoredRecommendation,
 } from "./ttsShared";
 
-/** Rows per transaction. dtsTodos is a few hundred rows; this keeps one page
+/** Rows per transaction. todos is a few thousand rows; this keeps one page
  * far inside Convex's per-transaction read and write limits. */
 export const PAGE_SIZE = 200;
 
@@ -92,7 +91,7 @@ type MigrationReport = {
 };
 
 /**
- * One page of a dtsTodos walk: map each row, add the page to the totals,
+ * One page of a todos walk: map each row, add the page to the totals,
  * then either record the finished totals as one event or schedule `self`
  * with the cursor and the totals.
  */
@@ -165,7 +164,6 @@ export const internalMigrateReadiness = internalMutation({
         page[`${stored}-to-${target}`]++;
         if (!dryRun) {
           await ctx.db.patch(row._id, { readiness: target });
-          await back(ctx, "todos", row._id);
         }
       },
     );
@@ -288,7 +286,6 @@ export const internalMigrateTiming = internalMutation({
         if (statement !== row.statement) patch.statement = statement;
         if (!dryRun && Object.keys(patch).length > 0) {
           await ctx.db.patch(row._id, patch);
-          await back(ctx, "todos", row._id);
           if (row.status === "waiting") {
             await logEvent(ctx, "status-changed", row._id, {
               from: "waiting",
@@ -394,7 +391,7 @@ export const internalMigrateRecommendations = internalMutation({
 // the second step, for the seven shapes the narrow removes, and it is the
 // prerequisite of that pull request:
 //
-//   dtsTodos        latestSafeAt, wakeCondition, importance  → unset
+//   todos           latestSafeAt, wakeCondition, importance  → unset
 //                   members, plan (the v1 batch fields)      → unset
 //   (batches        path → unset, until the table went on 2026-09-26)
 //   claudeSessions  status "awaiting-permission"             → ended
@@ -426,14 +423,14 @@ export const CLEAR_PAGE_SIZE = 250;
  * pageSize larger than the biggest table walks all four and reports the whole
  * totals as one event. */
 export const CLEAR_TABLES = [
-  "dtsTodos",
+  "todos",
   "claudeSessions",
   "dtsCodeBriefs",
 ] as const;
 export type ClearTable = (typeof CLEAR_TABLES)[number];
 
-/** The retired fields on dtsTodos, cleared one event each carrying the whole
- * value. `members` and `plan` are the V1 BATCH pair: a dtsTodos row carrying
+/** The retired fields on todos, cleared one event each carrying the whole
+ * value. `members` and `plan` are the V1 BATCH pair: a todo carrying
  * `members` WAS a batch, and `plan` was its ordered completion steps. The
  * graph migration (tts.internalMigrateToGraph) has already turned every one of
  * them into a `batches` row with its steps as task todos and its members bound
@@ -520,12 +517,10 @@ export const internalClearRetiredFields = internalMutation({
     let isDone: boolean;
     let continueCursor: string;
     switch (table) {
-      case "dtsTodos": {
-        // Its name when the walk was written; since step C of the core
-        // tables' move (convex/jarvis/tables.ts) the todos live in `todos`.
+      case "todos": {
         const result = await ctx.db.query("todos").paginate(opts);
         for (const row of result.page) {
-          page["dtsTodos-scanned"]++;
+          page["todos-scanned"]++;
           const retired = row as unknown as RetiredFields;
           const patch: Record<string, undefined> = {};
           for (const field of RETIRED_TODO_FIELDS) {
@@ -538,7 +533,6 @@ export const internalClearRetiredFields = internalMutation({
           }
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(row._id, patch as Partial<Doc<"todos">>);
-            await back(ctx, "todos", row._id);
           }
         }
         ({ isDone, continueCursor } = result);
@@ -923,7 +917,6 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
       changes.push({ todoId: row._id, entry, oldStatement: row.statement, action: "archived", reason });
       if (!dryRun) {
         await ctx.db.patch(row._id, { status: "archived", archivedAt: Date.now() });
-        await back(ctx, "todos", row._id);
       }
     };
 
@@ -971,7 +964,6 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
           readiness: "unprepared",
           status,
         });
-        await back(ctx, "todos", kept._id);
       }
       for (const row of copies) {
         await archive(row, entry, duplicateArchiveReason(entry, kept._id), "duplicate-archived");

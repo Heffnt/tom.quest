@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
-import { back, eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
+import { coreId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -23,7 +23,7 @@ import { listForDigest } from "./jarvis/outbox";
 //   session — this needs conversation
 //   archive — set aside
 // "defer" is not a verdict: not ruling IS deferring; timing changes are a
-// reschedule (dtsBlocks / a time note), not a ruling.
+// reschedule (a block / a time note), not a ruling.
 //
 // SENTENCE ON ANY VERDICT (2026-08-29): all four verdicts accept the optional
 // `sentence`. Required only on revise; on archive it is the unarchive
@@ -104,7 +104,7 @@ export const subjectKey = (row: {
 
 // Everything, always: append-only at human pace — a full collect is fine and
 // lets the client find the live (newest ruledAt) ruling per subject. A row
-// stores its todo's old id; the page is handed the plain one it joins on.
+// names its todo in either form; the page is handed the plain one it joins on.
 export const listRulings = query({
   args: {},
   handler: async (ctx) => {
@@ -186,7 +186,6 @@ export async function insertRuling(
       // one verdict that hands the subject BACK to the preparing agent.
       if (verdict !== "revise") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
-        await back(ctx, "todos", todoId);
       }
       if (verdict === "revise") {
         // Two readiness values (ruling 18): revise hands the write-up back, so
@@ -194,7 +193,6 @@ export async function insertRuling(
         // preparer returns it as prepared. It is therefore not ready for Tom
         // in the meantime (ttsShared.isReadyForTom).
         await ctx.db.patch(todoId, { readiness: "unprepared", updatedAt: now });
-        await back(ctx, "todos", todoId);
       }
       if (verdict === "archive") {
         await applyStatusChange(ctx, todo, {
@@ -307,7 +305,7 @@ async function ruledSubjectName(
 
 export const recordRuling = mutation({
   args: {
-    todoId: v.optional(eitherId.todos),
+    todoId: v.optional(coreId),
     repo: v.optional(v.string()),
     externalId: v.optional(v.string()),
     verdict: VERDICT,
@@ -531,7 +529,7 @@ async function refuseUnlessSessionSubject(
   ctx: MutationCtx,
   session: Doc<"claudeSessions">,
   subjectType: "life" | "code",
-  subject: { todoId?: Id<"todos"> | Id<"dtsTodos"> },
+  subject: { todoId?: string },
 ): Promise<void> {
   let about = false;
   // Ids compared as the plain row each names: the agenda, the session and
@@ -705,7 +703,7 @@ export function liveRulings(
  */
 export async function markLiveSessionRulingApplied(
   ctx: MutationCtx,
-  todoId: Id<"todos"> | Id<"dtsTodos">,
+  todoId: string,
   sessionId: string,
 ): Promise<void> {
   // Either form in, every ruling on the todo out, each keyed by the plain id.

@@ -10,7 +10,7 @@ import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { slackHourKey, slackThreadKey, ttsDayKey } from "./ttsShared";
 import { composeCaptured, renderSlack } from "./ttsCompose";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { insertTodo } from "../test/core-tables";
+import { insertTodo, oldId } from "../test/core-tables";
 
 /** The one reply line at capture, as convex/ttsCompose.ts writes it. */
 const captureLine = (statement: string, todoId: string) =>
@@ -1586,9 +1586,9 @@ describe("a todo taken from a Slack subject", () => {
     const t = convexTest({ schema, modules });
     const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: 1, updatedAt: 1 };
     const { plain, legacy, gone } = await t.run(async (ctx) => {
-      const legacy = await ctx.db.insert("dtsTodos", fields);
-      const gone = await ctx.db.insert("dtsTodos", fields);
-      await ctx.db.delete(gone);
+      const legacy = oldId();
+      // An old id no plain row carries.
+      const gone = oldId();
       return { legacy, gone, plain: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
     });
     // Two threads opened before step C: one on the old id, one on an id naming no row.

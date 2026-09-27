@@ -34,25 +34,20 @@ async function withTom(t: T) {
 
 const DAY = 86_400_000;
 
-/** A todo, a block on it and a time note on the block, written through the
- *  doors (so the dual write made their plain rows), with both ids of each. */
+/** A todo from before step C (a plain row carrying its old id) and a block
+ *  on it, with both ids of each. */
 async function seed(t: T) {
   const tom = await withTom(t);
-  const todo = await tom.mutation(api.tts.createTodo, { statement: "renew the lease", dueAt: Date.now() + 3 * DAY });
-  const block = await tom.mutation(api.tts.createBlock, { start: Date.now() + DAY, end: Date.now() + DAY + 3_600_000, todoId: todo });
-  const note = await tom.mutation(api.tts.createTimeNote, { text: "move it to Friday", blockId: block });
-  // The doors answer plain ids; the old ids are the rows written back.
-  const [a, b, c] = await t.run(async (ctx) => {
-    const both = async <C extends "todos" | "blocks" | "timeNotes">(table: C, id: string) => {
-      const plain = (await resolveId(ctx, table, id))!;
-      return { plain, old: (await ctx.db.get(plain))!.legacyId as string };
-    };
-    return [await both("todos", todo), await both("blocks", block), await both("timeNotes", note)] as const;
+  const ids = await t.run(async (ctx) => {
+    const todo = await insertCopied(ctx, "todos", { statement: "renew the lease", readiness: "unprepared", status: "active", timingClass: "dated", dueAt: Date.now() + 3 * DAY, source: "manual", createdAt: 1, updatedAt: 1 });
+    const span = { start: Date.now() + DAY, end: Date.now() + DAY + 3_600_000, createdAt: 1 };
+    const block = await insertCopied(ctx, "blocks", { ...span, todoId: todo.plain });
+    return { todo, block };
   });
   return {
     tom,
-    old: { todo: a.old as Id<"dtsTodos">, block: b.old as Id<"dtsBlocks">, note: c.old as Id<"dtsTimeNotes"> },
-    plain: { todo: a.plain, block: b.plain, note: c.plain },
+    old: { todo: ids.todo.old, block: ids.block.old },
+    plain: { todo: ids.todo.plain, block: ids.block.plain },
   };
 }
 

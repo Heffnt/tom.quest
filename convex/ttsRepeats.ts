@@ -4,7 +4,7 @@
 // dated, self-imposed, source "repeating" — so every instance gets the full
 // kept-dates treatment: doing it records done, skipping it records a miss,
 // and the weekly session reads the honest record. The rule itself is
-// schedule mechanics (like dtsBlocks): editable and deletable freely, with
+// schedule mechanics (like blocks): editable and deletable freely, with
 // every change logged to dtsEvents.
 //
 // The generator runs at 4:30, BEFORE the 5 a.m. digest (jarvis/tick.ts), so the
@@ -15,7 +15,6 @@ import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
-import { back } from "./jarvis/tables";
 import {
   nyCalendarDayBoundsUtc,
   nyTimeUtcMs,
@@ -174,7 +173,7 @@ export const updateRepeat = mutation({
   },
 });
 
-// A rule is schedule mechanics, so hard delete is legal (the dtsBlocks
+// A rule is schedule mechanics, so hard delete is legal (the blocks
 // precedent) — but the full rule goes into the event record first, so the
 // deletion leaves a readable fact, and every already-minted instance is a
 // real todo that keeps living under nothing-ever-lost.
@@ -304,7 +303,6 @@ export const internalGenerateRepeats = internalMutation({
         createdAt: now,
         updatedAt: now,
       });
-      await back(ctx, "todos", id);
       await logEvent(ctx, "created", id, {
         source: "repeating",
         repeatId: rule._id,
