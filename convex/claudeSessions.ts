@@ -1427,8 +1427,11 @@ export const internalPoll = internalMutation({
     // (review finding: a dropped write must be visible on the surface, not
     // only in journald).
     lastIngestError: v.optional(v.string()),
-    // Jarvis Box load snapshot — the scheduler's load-based admission input.
+    // Jarvis Box load snapshot, shown on /agents (agent-list.tsx BoxLoadStrip).
     // Stored on the same throttled heartbeat writes (no extra patch cadence).
+    // codexUsage, codexModels, fableAvailability and usageLimit below are
+    // stored here and read by name by nothing on main (schema.ts
+    // claudeDaemonHealth names the search that shows it).
     load: v.optional(
       v.object({
         loadavg1: v.number(),
@@ -1438,8 +1441,8 @@ export const internalPoll = internalMutation({
         liveSessions: v.number(),
       }),
     ),
-    // Codex account usage, read off the Codex CLI by the daemon and stored
-    // for the pages. Reported on the same throttled heartbeat as `load`. The
+    // Codex account usage, read off the Codex CLI by the daemon and stored.
+    // Reported on the same throttled heartbeat as `load`. The
     // five-hour figure is absent when the account reports no such window
     // (schema.ts says which plans).
     codexUsage: v.optional(
@@ -1450,7 +1453,7 @@ export const internalPoll = internalMutation({
         readAt: v.number(),
       }),
     ),
-    // The model slugs the box's Codex CLI lists, stored for the pages.
+    // The model slugs the box's Codex CLI lists, stored.
     codexModels: v.optional(v.array(v.string())),
     // Accepted and ignored: the daemon on the box still sends both (Jarvis
     // worker/session-host/session-host.mjs, for the hosted runs of the
@@ -1460,8 +1463,8 @@ export const internalPoll = internalMutation({
     hosts: v.optional(v.array(v.string())),
     held: v.optional(v.array(v.string())),
     // Whether Fable answers on the box (ttsShared FABLE_AVAILABILITY), absent
-    // while the daemon has none recorded. Stored for the pages; nothing here
-    // gates on it — the launcher reads its own file.
+    // while the daemon has none recorded. Stored; nothing here gates on it —
+    // the launcher reads its own file.
     fableAvailability: v.optional(FABLE_AVAILABILITY),
     // The latest usage limit a Claude session hit that was not a Fable
     // refusal (ttsShared USAGE_LIMIT_REPORT). Recorded, never acted on.

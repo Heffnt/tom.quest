@@ -766,19 +766,16 @@ export default defineSchema({
     needs: v.optional(v.array(v.id("todos"))),
     // tasks: who does it. Same meaning as the plan-step actor it succeeds.
     actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
-    // STAYS DECLARED past the phase-7 narrow: the planner writes it
-    // (tts.internalStorePlanGraph) and the auto-session scheduler reads it
-    // (claudeSessions.resolveFleetModel), where a tagged task WAITS rather
-    // than falling back when the Codex door is shut. Dropping it would
-    // silently re-dispatch tagged work to the fleet default.
-    //
-    // The model an agent task needs, from the one union in ttsShared
-    // (SESSION_MODELS: opus | sonnet | fable | gpt-5.6-sol | gpt-5.6-terra).
-    // ABSENT IS THE NORM: the scheduler falls back to the fleet default
-    // (claudeAutoConfig.defaultModel) for an untagged task, so the planner
-    // writes here only when THIS task needs a particular model. A closed union
-    // rather than a free string: an unrecognized name would be a silent
-    // mis-dispatch (the planner route drops one instead of carrying it).
+    // The model the planner tagged an agent task with, from the one union in
+    // ttsShared (SESSION_MODELS). STORED, AND NO CODE ON MAIN READS OR WRITES
+    // IT BY NAME: its writer, the planner's pen tts.internalStorePlanGraph,
+    // went with batches (pull request 241), and its reader, the auto-session
+    // scheduler's claudeSessions.resolveFleetModel, was deleted by pull
+    // request 282. `git grep -nE 'todo\??\.model|resolveFleetModel' -- convex
+    // app shared scripts` finds only this comment. Only whole-row copies carry
+    // it: `back` (convex/jarvis/tables.ts copyBackRow) into dtsTodos, until
+    // pull request 306, and the nightly export. Declared because rows written
+    // before then may still carry a tag; a candidate for deletion.
     model: v.optional(SESSION_MODEL),
     // Completion evidence — the artifact that shows the work happened (branch,
     // PR, brief). The plan-step field of the same name, per row.
@@ -1600,8 +1597,8 @@ export default defineSchema({
   // daemon persists SDK events via key-authed /sessions/* routes,
   // SESSIONS_WORKER_KEY; the browser renders reactively); the two-tier
   // transcript (claudeMessages rows are FINALIZED, written once, seq-ordered;
-  // claudeStreamBuf is the one small live-tail row, ~400ms throttle, segment-
-  // finalized every ~16KB); failure honesty is DERIVED at render (heartbeat
+  // claudeStreamBuf is the one small live-tail row, ~400ms throttle, a turn's
+  // last 16,384 UTF-16 code units); failure honesty is DERIVED at render (heartbeat
   // staleness), never written as a diagnosis.
 
   claudeSessions: defineTable({
@@ -2110,7 +2107,9 @@ export default defineSchema({
     // through.
     .index("by_ref", ["ref"]),
 
-  // The live tail: ONE row per session, ≤ ~16KB text by construction.
+  // The live tail: ONE row per session. The box's session daemon sends at
+  // most 16,384 UTF-16 code units of text (at most 49,152 bytes of UTF-8),
+  // and only whole lines while a turn runs; this server does not cap it.
   claudeStreamBuf: defineTable({
     sessionId: v.id("claudeSessions"),
     turn: v.number(),
@@ -2178,8 +2177,18 @@ export default defineSchema({
         liveSessions: v.number(),
       }),
     ),
+    // codexUsage, codexModels, fableAvailability and usageLimit below are
+    // WRITTEN ONLY BY internalPoll AND READ BY NAME BY NOTHING ON MAIN:
+    // `git grep -nE 'codexUsage|codexModels|fableAvailability|usageLimit'
+    // -- app shared scripts` finds nothing. Two whole-row reads carry them:
+    // getDaemonHealth, to /agents, whose code reads only lastSeenAt,
+    // lastIngestError and load; and the nightly export. The first three lost
+    // their readers by name, the auto-session scheduler and the orchestrator's
+    // model choice, in pull request 282; usageLimit has had none since pull
+    // request 225 added it. Candidates for deletion.
+    //
     // Codex account usage, read off the Codex CLI by the daemon and reported
-    // with the heartbeat; stored for the pages. The five-hour figure is absent
+    // with the heartbeat. The five-hour figure is absent
     // when the account reports no five-hour window at all (codex-cli 0.153 on
     // a "prolite" plan reports only the weekly one). `readAt` is the instant
     // the reading was TAKEN, not the instant it was reported: the daemon keeps
