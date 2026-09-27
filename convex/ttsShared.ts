@@ -987,6 +987,13 @@ export function slackHourKey(utcMs: number): string {
  *  the producer's own id for the thing that needs Tom. */
 export const NEEDS_TOM = "needs-tom";
 
+/** A finished agent's outcome on a todo. A session's is a dtsEvents row on
+ *  its todo (convex/claudeSessions.ts); the box's work queue posts its own to
+ *  POST /jarvis/event, into the record's events table, with the todo's id in
+ *  either form as the subject (convex/jarvis/events.ts keeps the plain id).
+ *  The digest and the weekly read both. */
+export const SESSION_OUTCOME = "session-outcome";
+
 /** THE ONE CONFIG CHECK. A message says "reply here" only when a reply would
  *  actually reach TTS: POST /slack/events answers 503 without
  *  SLACK_SIGNING_SECRET, and ignores every message without TOM_SLACK_USER_ID.

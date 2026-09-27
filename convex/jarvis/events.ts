@@ -29,6 +29,8 @@ import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
 import { onBoxChange } from "../boxChanges";
 import { onDigestSent, onNeedsYouPosted } from "./digest";
+import { resolveId } from "./tables";
+import { SESSION_OUTCOME } from "../ttsShared";
 
 /** What runs after a row of each kind lands, inside the same mutation. */
 const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Promise<unknown>> = {
@@ -44,6 +46,13 @@ export async function recordEvent(
   ctx: MutationCtx,
   input: EventInput,
 ): Promise<{ id: Id<"events">; result?: unknown }> {
+  // An outcome is counted on its todo by subject, so it names one that
+  // exists, in either id form, and the row keeps the plain id.
+  if (input.kind === SESSION_OUTCOME) {
+    const todo = input.subject === undefined ? null : await resolveId(ctx, "todos", input.subject);
+    if (todo === null) throw new Error(`a ${SESSION_OUTCOME} event names its todo as its subject`);
+    input = { ...input, subject: todo };
+  }
   const id = await insertEvent(ctx, input);
   const hook = AFTER_RECORD[input.kind];
   if (hook === undefined) return { id };

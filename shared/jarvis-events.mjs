@@ -56,6 +56,11 @@ export const EVENT_KINDS = [
   // digest reads from no row of its own. What #tts-decisions and #tts-broken
   // carried as it happened.
   "digest-line",
+  // An agent's outcome on a todo, posted by the box's work queue (Jarvis
+  // worker/jobs/work-queue.mjs): subject is the todo's id, data what the
+  // queue knows (outcome "completed" or "errored", summary, cost). The digest
+  // and the weekly count it on its todo (convex/ttsDigest.ts, ttsWeekly.ts).
+  "session-outcome",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
