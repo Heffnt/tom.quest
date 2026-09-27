@@ -12,6 +12,7 @@ import {
   stripNarrowListId,
   type ObjectionFact,
 } from "./ttsAsk";
+import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -19,7 +20,7 @@ const KEY = "worker-key";
 
 async function seedTodo(t: TestConvex<typeof schema>, statement: string) {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    insertTodo(ctx, {
       statement,
       status: "active",
       readiness: "prepared",

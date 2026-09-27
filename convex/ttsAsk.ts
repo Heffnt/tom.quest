@@ -7,7 +7,7 @@ import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
-import { newestTodoEvents, oldId } from "./jarvis/tables";
+import { newestTodoEvents, resolveId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 
@@ -228,7 +228,7 @@ export const internalRecordAsk = internalMutation({
       return { id: existing._id, existing: true, attended: false, capped: false };
     }
 
-    const todoId = args.todoId === undefined ? undefined : await oldId(ctx, "todos", args.todoId);
+    const todoId = args.todoId === undefined ? undefined : await resolveId(ctx, "todos", args.todoId);
     if (args.todoId !== undefined && todoId === null) throw new Error(`Unknown todo id: ${args.todoId}`);
     let session: Doc<"claudeSessions"> | null = null;
     if (args.sessionId !== undefined) {
@@ -391,7 +391,7 @@ export const internalRecordDelegateObjection = internalMutation({
       const recorded = await recordedDecision(ctx, args.askId);
       if (recorded === null) throw new Error(`Delegate decision not found: ${args.askId}`);
       const named = (recorded.data as { todoId?: unknown } | undefined)?.todoId;
-      todoId = typeof named === "string" ? ((await oldId(ctx, "todos", named)) ?? undefined) : undefined;
+      todoId = typeof named === "string" ? ((await resolveId(ctx, "todos", named)) ?? undefined) : undefined;
     }
     const eventId = await logEvent(ctx, DELEGATE_OBJECTION, todoId, args, args.askId);
     // AN OBJECTION IS A JUDGMENT ABOUT THE RUN THAT TOOK THE DECISION, and the

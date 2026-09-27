@@ -8,7 +8,7 @@ import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { inboundRowIdOf } from "./sessionRows";
-import { eitherId, oldId } from "./jarvis/tables";
+import { eitherId, resolveId } from "./jarvis/tables";
 
 const AGENT_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
@@ -409,9 +409,9 @@ export const internalIngest = internalMutation({
     // box run launched is depth 2 here and depth 1 in its own file, and the
     // check that refused a row at any other depth than its run's dead-lettered
     // six such children on 2026-09-19.
-    // A run names its todo in either id form (the box reads plain ids); the
-    // row stores the old one, as runs.todoId does until the write path moves.
-    const todoId = args.run.todoId === undefined ? undefined : ((await oldId(ctx, "todos", args.run.todoId)) ?? ctx.db.normalizeId("dtsTodos", args.run.todoId) ?? undefined);
+    // A run names its todo in either id form; the row stores the plain one
+    // (an id naming no row is stored as given, in its own form).
+    const todoId = args.run.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", args.run.todoId)) ?? ctx.db.normalizeId("todos", args.run.todoId) ?? ctx.db.normalizeId("dtsTodos", args.run.todoId) ?? undefined);
     let linked = { ...args.run, todoId, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
