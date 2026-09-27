@@ -283,10 +283,22 @@ describe("POST /tts/ask — the delegate's record", () => {
         data: { ...body({ job: "poll-gmail" }), sessionId: null, todoId: null, attended: false },
       }),
     );
-    expect((await (await post(t, body({ job: "poll-gmail", restedOn: ["ruling:abc"] }))).json()).existing).toBe(true);
+    // A retry that contradicts the recorded ask is refused and writes nothing.
+    const contradicts = await post(t, body({ job: "poll-gmail", decision: "Leave it Wednesday and warn him it may be shut." }));
+    expect(contradicts.status).toBe(400);
+    expect((await contradicts.json()).error).toContain("already recorded for a different ask");
+    expect((await post(t, body({ job: "poll-canvas" }))).status).toBe(400);
+    expect(await decisions()).toEqual([]);
+    // The same ask again: its decision row, built from the ask as recorded,
+    // whatever else the retry's body carries.
+    expect((await (await post(t, body({ job: "poll-gmail", restedOn: ["ruling:abc"], reason: "another reason" }))).json()).existing).toBe(true);
     await post(t, body({ job: "poll-gmail" }));
     expect(await decisions()).toEqual([
-      expect.objectContaining({ subject: "3f9c1a22", data: expect.objectContaining({ restedOn: ["ruling:abc"] }) }),
+      expect.objectContaining({
+        subject: "3f9c1a22",
+        provenance: { job: "poll-gmail" },
+        data: expect.objectContaining({ caller: "job:poll-gmail", decision: "Move it to Thursday morning.", reason: body().reason, restedOn: [] }),
+      }),
     ]);
     // A capped ask took nothing in his name: its retry writes no decision.
     await t.run(async (ctx) =>

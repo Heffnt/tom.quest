@@ -24,10 +24,10 @@ import { internalMutation, internalQuery, query } from "../_generated/server";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
-import { eventArgs, insertEvent } from "./record";
+import { checkEvent, eventArgs, insertEvent } from "./record";
 import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
-import { BOX_CHANGE, boxChangeSubject, onBoxChange } from "../boxChanges";
+import { assertBoxChange, BOX_CHANGE, boxChangeSubject, onBoxChange } from "../boxChanges";
 import { onDigestSent, onNeedsYouPosted } from "./digest";
 import { resolveId } from "./tables";
 import { SESSION_OUTCOME } from "../ttsShared";
@@ -47,6 +47,9 @@ export async function recordEvent(
   ctx: MutationCtx,
   input: EventInput,
 ): Promise<{ id: Id<"events">; result?: unknown }> {
+  // A box change is checked whole before anything else, a resend's lookup
+  // below included: a malformed post is refused whatever id it reuses.
+  if (input.kind === BOX_CHANGE) assertBoxChange(input);
   // An outcome is counted on its todo by subject, so it names one that
   // exists, in either id form, and the row keeps the plain id.
   if (input.kind === SESSION_OUTCOME) {
@@ -68,8 +71,13 @@ export async function recordEvent(
   // a row of the kind with the same data.id already stands for it (one point
   // read on events.by_kind_data_id), and the caller is answered with that
   // row's id. A box change with an id is filed under that id as its subject.
+  const repeats = (REPEATS_BY_DATA_ID as readonly string[]).includes(input.kind);
   const repeatId = (input.data as { id?: unknown } | undefined)?.id;
-  if ((REPEATS_BY_DATA_ID as readonly string[]).includes(input.kind) && typeof repeatId === "string" && repeatId !== "") {
+  if (repeats && typeof repeatId === "string" && repeatId !== "") {
+    // The whole event is valid before it is matched: a retry is the same
+    // well-formed event, never a malformed one that reuses an id.
+    const checked = checkEvent(input);
+    if (!checked.ok) throw new Error(checked.error);
     const kind = input.kind;
     const earlier = await ctx.db
       .query("events")
@@ -80,7 +88,7 @@ export async function recordEvent(
   }
   const id = await insertEvent(ctx, input);
   const hook = AFTER_RECORD[input.kind];
-  if (hook === undefined) return { id, result: { duplicate: false } };
+  if (hook === undefined) return repeats ? { id, result: { duplicate: false } } : { id };
   const row = await ctx.db.get(id);
   if (row === null) return { id };
   return { id, result: await hook(ctx, row) };
@@ -177,7 +185,10 @@ export const forAgent = query({
  * together or neither does. Not validated against the kinds list: the row is
  * already in the record; the list governs what is posted.
  */
-export async function copyDtsRow(ctx: MutationCtx, row: Doc<"dtsEvents">): Promise<Id<"events">> {
+export async function copyDtsRow(
+  ctx: MutationCtx,
+  row: Pick<Doc<"dtsEvents">, "kind" | "at" | "key" | "data">,
+): Promise<Id<"events">> {
   return await ctx.db.insert("events", {
     kind: row.kind,
     at: row.at,

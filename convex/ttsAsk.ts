@@ -1,4 +1,4 @@
-import { v, type ObjectType } from "convex/values";
+import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -124,28 +124,47 @@ function capFor(args: { sessionId?: string }): number {
 /** The reason a capped ask carries: the caller took its own fallback. */
 export const CAP_REFUSAL = "cap: the delegate ask cap for this caller is spent, so the agent took its own fallback";
 
+/** An ask as its delegate-decision row stores it (the fields the decision
+ *  row reads), with what only the decision row carries when the caller sent
+ *  it. The caller is exactly one of sessionId and job. */
+type StoredAsk = {
+  askId: string;
+  question: string;
+  options: string[];
+  decision: string | null;
+  reason: string;
+  refused: boolean;
+  refusedBecause: string | null;
+  model: string;
+  sessionId: string | null;
+  job: string | null;
+  todoId: string | null;
+  restedOn?: string[];
+  wouldChange?: string | null;
+  nearMissed?: unknown;
+};
+
 /** The decision row (events kind "decision", convex/jarvis/intent.ts) for one
- *  answered ask; only internalRecordAsk calls it. */
-async function insertDecision(ctx: MutationCtx, args: ObjectType<typeof ASK_ARGS>): Promise<void> {
-  const { restedOn, wouldChange, nearMissed } = args;
+ *  answered ask, built from the ask as recorded; only internalRecordAsk calls it. */
+async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
   await insertEvent(ctx, {
     kind: "decision",
-    provenance: args.sessionId !== undefined ? { session: args.sessionId } : { job: args.job },
-    subject: args.askId,
+    provenance: ask.sessionId !== null ? { session: ask.sessionId } : { job: ask.job ?? undefined },
+    subject: ask.askId,
     data: {
-      question: args.question,
-      options: args.options,
-      decision: args.decision,
-      reason: args.reason,
-      restedOn: restedOn ?? [],
-      wouldChange: wouldChange ?? null,
-      refused: args.refused,
-      refusedBecause: args.refusedBecause,
-      caller: args.sessionId !== undefined ? `session:${args.sessionId}` : `job:${args.job}`,
-      askId: args.askId,
-      ...(args.todoId === undefined ? {} : { todoId: args.todoId }),
-      model: args.model,
-      ...(nearMissed === undefined ? {} : { nearMissed }),
+      question: ask.question,
+      options: ask.options,
+      decision: ask.decision,
+      reason: ask.reason,
+      restedOn: ask.restedOn ?? [],
+      wouldChange: ask.wouldChange ?? null,
+      refused: ask.refused,
+      refusedBecause: ask.refusedBecause,
+      caller: ask.sessionId !== null ? `session:${ask.sessionId}` : `job:${ask.job}`,
+      askId: ask.askId,
+      ...(ask.todoId === null ? {} : { todoId: ask.todoId }),
+      model: ask.model,
+      ...(ask.nearMissed === undefined ? {} : { nearMissed: ask.nearMissed }),
     },
   });
 }
@@ -160,18 +179,32 @@ export const internalRecordAsk = internalMutation({
       .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", args.askId))
       .first();
     if (existing) {
+      const stored = (existing.data ?? {}) as StoredAsk & { attended?: unknown };
+      // A RETRY IS THE SAME ASK. One that names another question, decision,
+      // caller or todo under a recorded askId is refused: the recorded ask
+      // stands, and nothing is written from the new body.
+      const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
+      if (
+        args.question !== stored.question ||
+        args.decision !== stored.decision ||
+        (args.sessionId ?? null) !== (stored.sessionId ?? null) ||
+        (args.job ?? null) !== (stored.job ?? null) ||
+        todoId !== (stored.todoId ?? null)
+      ) {
+        throw new Error(`askId ${args.askId} is already recorded for a different ask`);
+      }
       // A RETRY OF A RECORDED ASK still gets its decision row: an ask
       // recorded before this mutation wrote the row had it posted separately,
       // a post the generic routes now refuse, so the retry is its one way in.
-      // One row per ask: none is written when one already stands.
-      const stored = (existing.data ?? {}) as { decision?: unknown; attended?: unknown; refusedBecause?: unknown };
+      // The row is built from the ask as recorded, and one per ask: none is
+      // written when one already stands.
       const took = stored.decision !== null && stored.decision !== undefined && stored.attended !== true && stored.refusedBecause !== CAP_REFUSAL;
-      if (took && args.decision !== null) {
+      if (took) {
         const written = await ctx.db
           .query("events")
           .withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", args.askId))
           .first();
-        if (written === null) await insertDecision(ctx, args);
+        if (written === null) await insertDecision(ctx, stored);
       }
       return { id: existing._id, existing: true, attended: false, capped: false };
     }
@@ -204,13 +237,15 @@ export const internalRecordAsk = internalMutation({
         ? CAP_REFUSAL
         : args.refusedBecause;
     // The dts row keeps the ask; what only the decision row carries stays off it.
-    const ask: Record<string, unknown> = { ...args };
-    for (const field of ["restedOn", "wouldChange", "nearMissed"]) delete ask[field];
-    const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
+    const { restedOn, wouldChange, nearMissed, ...ask } = args;
+    const stored = {
       ...ask,
       sessionId: args.sessionId ?? null,
       job: args.job ?? null,
       todoId: todoId ?? null,
+    };
+    const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
+      ...stored,
       refused,
       refusedBecause,
       attended,
@@ -220,7 +255,9 @@ export const internalRecordAsk = internalMutation({
     // included, written here and nowhere else, in the ask's own transaction,
     // so a decision row exists only for an ask that passed the attended check
     // and the cap. Silence, attended and capped asks took nothing in his name.
-    if (args.decision !== null && !attended && !capped) await insertDecision(ctx, args);
+    if (args.decision !== null && !attended && !capped) {
+      await insertDecision(ctx, { ...stored, restedOn, wouldChange, nearMissed });
+    }
 
     // The digest's objection list reads this delegate-decision row itself
     // (convex/ttsDigest.ts); there is no live line (one output channel).

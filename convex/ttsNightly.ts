@@ -635,12 +635,12 @@ export const internalRecordWorkerEvent = internalMutation({
     // A box change is a row of the record's events table, not of this one
     // (internalRecordBoxChange below; POST /tts/event hands it there).
     if (kind === BOX_CHANGE) throw new Error("a box change is recorded through POST /jarvis/event");
-    const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    const row = { at: Date.now(), kind, data, key };
+    const id = await ctx.db.insert("dtsEvents", row);
     // The same row in the one record, in this transaction (jarvis/events.ts
     // copyDtsRow): a second mutation could fail or be retried after the first
     // committed, leaving one table without the row or the other with two.
-    const written = await ctx.db.get(id);
-    if (written !== null) await copyDtsRow(ctx, written);
+    await copyDtsRow(ctx, row);
     // A failure row written here (the nightly's, the weekly's) is a line in
     // the digest's broken section, which reads every "-failed"/"-failure" row
     // of its window (convex/ttsDigest.ts); the decisions below are lines on

@@ -206,17 +206,26 @@ export function boxChangeSubject(id: string): string {
   return `box-change-id:${id}`;
 }
 
+/** Throws unless the event is a well-formed box change: the fixed data
+ *  shape, provenance.agentId its data.agentId, and `at` its data.at. Run by
+ *  recordEvent before anything else, a resend's lookup included, so a
+ *  malformed post is refused whatever id it carries. */
+export function assertBoxChange(event: { at?: number; provenance?: { agentId?: string }; data?: unknown }): void {
+  const faults = boxChangeFaults(event.data);
+  if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
+  const change = event.data as BoxChange;
+  if (event.provenance?.agentId !== change.agentId) {
+    throw new Error("a box change's provenance.agentId is its data.agentId, and it has none when data.agentId is absent");
+  }
+  if (event.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
+}
+
 export async function onBoxChange(
   ctx: MutationCtx,
   row: Doc<"events">,
 ): Promise<{ duplicate: boolean }> {
-  const faults = boxChangeFaults(row.data);
-  if (faults.length > 0) throw new Error(`not a box change: ${faults.join("; ")}`);
+  // The shape was checked before the insert (assertBoxChange, recordEvent).
   const change = row.data as BoxChange;
-  if (row.provenance.agentId !== change.agentId) {
-    throw new Error("a box change's provenance.agentId is its data.agentId, and it has none when data.agentId is absent");
-  }
-  if (row.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
   // A resend (the same data.id) never reaches this hook: recordEvent answers
   // it with the earlier row (shared/jarvis-events.mjs REPEATS_BY_DATA_ID),
   // and files a change with an id under boxChangeSubject(id).
