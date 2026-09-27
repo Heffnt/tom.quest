@@ -1094,7 +1094,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
-    await ctx.runMutation(internal.tts.internalPrepareTodo, {
+    const result = await ctx.runMutation(internal.tts.internalPrepareTodo, {
       id: b.id,
       brief: str(b.brief),
       entryAction: str(b.entryAction),
@@ -1112,7 +1112,9 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       runToken: str(agentToken),
       doorFaults,
     });
-    return jsonResponse(200, { ok: true });
+    // A refused completion is a 409 carrying the why: a worker told ok would
+    // report as landed a todo that is still open.
+    return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
   } catch (e) {
     return jsonResponse(400, {
       error: e instanceof Error ? e.message : String(e),

@@ -1489,7 +1489,7 @@ export const internalPrepareTodo = internalMutation({
     // same call is already on it.
     if (status === "done") {
       const fresh = await ctx.db.get(normalized);
-      if (!fresh) return;
+      if (!fresh) return { ok: true as const };
       // THE THREE BARS, most specific first. Each is a NAMED refusal rather
       // than a silent skip: a worker that thinks it closed a todo and did not
       // would report work as landed that is still open, and only this row
@@ -1524,15 +1524,22 @@ export const internalPrepareTodo = internalMutation({
             : fresh.tomTouchedAt !== undefined && fresh.kind !== "goal"
               ? "Tom-touched (frozen) — only he closes a row he has ruled on"
               : null;
+      // A refusal is answered, not swallowed: the caller gets it back (the
+      // route answers 409 with the why) and the event keeps it on the record.
+      // The fields written above stand — they are the write-up, which is not
+      // what was refused — so the answer names only the completion.
       if (why !== null) {
         await logEvent(ctx, "done-skipped", normalized, { why });
-      } else if (fresh.status !== "done") {
+        return { ok: false as const, reason: `not completed: ${why}` };
+      }
+      if (fresh.status !== "done") {
         await applyStatusChange(ctx, fresh, {
           status: "done",
           note: "worker: task completed",
         });
       }
     }
+    return { ok: true as const };
   },
 });
 

@@ -826,6 +826,39 @@ describe("TTS annotations and the preparer", () => {
     vi.unstubAllEnvs();
   });
 
+  // witness: answer 200 {ok:true} from ttsPrepareTodo in convex/http.ts
+  // whatever internalPrepareTodo returns — a worker whose completion was
+  // refused would report as landed a todo that is still open.
+  it("the prepare door answers a refused completion 409 with the why", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.tts.createTodo, { statement: "draft the landlord questions" });
+    const post = (body: Record<string, unknown>) =>
+      t.fetch("/tts/prepare-todo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+        body: JSON.stringify({ id, ...body }),
+      });
+    const refused = await post({ status: "done", brief: "Eight questions." });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toBe(
+      "not completed: a todo is completed by the pen only with its evidence recorded",
+    );
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.status).toBe("active");
+    // The write-up is not what was refused: it stands, and the refusal is on
+    // the record as its event.
+    expect(row?.brief).toBe("Eight questions.");
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
+    expect(events.some((e) => e.kind === "done-skipped")).toBe(true);
+    const closed = await post({ status: "done", evidence: "questions.md" });
+    expect(closed.status).toBe(200);
+    expect(await closed.json()).toEqual({ ok: true });
+    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("done");
+    vi.unstubAllEnvs();
+  });
+
   // The prepare door reads agentToken only and stores it as the todo's
   // producedByRunToken. A body still sending runToken is refused rather than
   // having its token dropped without the caller learning it.
