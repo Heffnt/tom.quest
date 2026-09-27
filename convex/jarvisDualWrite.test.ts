@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { slackThreadKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -259,6 +260,34 @@ describe("the dual write: each writer of the old core tables writes the plain ro
       text: "captured",
     });
     expect(await plainOf(t, "todos", id)).toMatchObject({ slackReplyTs: "9000.1", slackRepliedAt: expect.any(Number) });
+    await followed(t);
+  });
+
+  it("a Slack send and a thread reply store the plain todo id, given a thread that names the old one", async () => {
+    const { t, id } = await setup();
+    const legacy = (await plainOf(t, "todos", id))!.legacyId as Id<"dtsTodos">;
+    // A needs-you post supplies the old id: the row stores the plain one.
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, { channel: "C-today", ts: "9100.1", subject: { kind: "todo", id: legacy }, text: "needs you" });
+    // A thread opened before step C, whose row names the old id.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() - 1_000,
+        kind: "slack-sent",
+        key: slackThreadKey("C-dump", "9000.1"),
+        todoId: legacy,
+        data: { channel: "C-dump", ts: "9000.1", subject: { kind: "todo", id: legacy }, text: "captured" },
+      });
+    });
+    await t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId: "Ev1", channel: "C-dump", threadTs: "9000.1", ts: "9000.2", text: "the landlord called back", user: "UTOM" });
+    await t.run(async (ctx) => {
+      const rows = (await ctx.db.query("dtsEvents").collect()).filter((e) => ["slack-sent", "slack-event", "tom-note"].includes(e.kind));
+      const fresh = rows.filter((e) => !(e.kind === "slack-sent" && e.key === slackThreadKey("C-dump", "9000.1")));
+      expect(fresh.map((e) => e.kind).sort()).toEqual(["slack-event", "slack-sent", "tom-note"]);
+      for (const e of fresh) {
+        expect(e.todoId).toBe(id);
+        expect((e.data as { subject: { id: string } }).subject.id).toBe(id);
+      }
+    });
     await followed(t);
   });
 

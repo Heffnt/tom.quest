@@ -59,6 +59,15 @@ const RECORD_SLACK_SENT_ARGS = {
  * reply only, never re-pointed: the reply that exists in Slack is the first
  * one (Tom's ruling 2026-08-30: exactly one reply per #dump message).
  */
+/** A subject as a new row stores it: a todo named by its plain id, whichever
+ *  form the thread or the caller holds (step C, convex/jarvis/tables.ts). A
+ *  todo id naming no row is kept as given. */
+async function plainSubject<S extends { kind: string }>(ctx: MutationCtx, subject: S): Promise<S> {
+  if (subject.kind !== "todo") return subject;
+  const plain = await resolveId(ctx, "todos", (subject as unknown as { id: string }).id);
+  return plain === null ? subject : ({ ...subject, id: plain } as S);
+}
+
 export async function recordSlackSent(
   ctx: MutationCtx,
   {
@@ -75,7 +84,9 @@ export async function recordSlackSent(
     text: string;
   },
 ): Promise<void> {
-  // A subject names its todo in either form; the row stores the plain id.
+  // A subject names its todo in either form; the row stores the plain id,
+  // in its todoId and in its subject.
+  subject = await plainSubject(ctx, subject);
   const todoId = subject.kind === "todo" ? ((await resolveId(ctx, "todos", subject.id)) ?? undefined) : undefined;
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
@@ -486,7 +497,9 @@ export async function slackThreadReplyFrom(
     return { outcome: "duplicate", duplicates };
   }
   const trimmed = text.trim();
-  const subject = await threadSubject(ctx, channel, threadTs);
+  // A thread opened before step C names its todo by the old id; the rows
+  // written from here name it by the plain one.
+  const subject = await plainSubject(ctx, await threadSubject(ctx, channel, threadTs));
   const at = { channel, ts, threadTs };
   // NOTHING IS EVER LOST. Routing runs as a sub-mutation so a throw anywhere
   // in it (a session row gone, a refused turn, a seed that fails validation)
@@ -788,7 +801,7 @@ async function needsYouReply(
     at: Date.now(),
     kind: NEEDS_YOU_ANSWERED,
     key: item.answeredKey,
-    data: { n: item.n, subject: item.subject, text, ...at },
+    data: { n: item.n, subject: await plainSubject(ctx, item.subject), text, ...at },
   });
   // The number named the item; what follows it is the answer ("4 done").
   const answer = numbered !== null && said !== "" ? said : text;
