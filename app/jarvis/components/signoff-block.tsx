@@ -99,8 +99,18 @@ function ProposalRow({ proposal: p, now }: { proposal: Proposal; now: number }) 
           )}
         </span>
         {/* Kept: shows his press landed, in place of a button the server would now refuse. */}
-        {p.status === "sending" ? (
+        {p.status === "sending" || p.status === "delivering" ? (
           <span className="text-xs text-text-faint">signed · sending</span>
+        ) : p.status === "unknown" ? (
+          /* Kept: an unknown outcome may have gone out, so it is never signed again, only cleared. */
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => decline({ proposalId: p.id }))}
+            className="rounded-md border border-border px-2.5 py-1 text-xs text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50"
+          >
+            clear
+          </button>
         ) : (
           <span className="flex items-center gap-2">
             <span className="inline-flex items-center gap-0.5">
@@ -149,6 +159,11 @@ function ProposalRow({ proposal: p, now }: { proposal: Proposal; now: number }) 
       </pre>
       {p.status === "failed" && p.error !== null && (
         <p className="text-xs text-error">not sent: {p.error}</p>
+      )}
+      {p.status === "unknown" && (
+        <p className="text-xs text-error">
+          may have gone out ({p.error}): check the conversation; it will not be sent again
+        </p>
       )}
       {error !== null && <p className="text-xs text-error">{error}</p>}
     </div>

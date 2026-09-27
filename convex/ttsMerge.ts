@@ -503,9 +503,15 @@ export const internalPostGateStatus = internalAction({
     // Both go into a GitHub URL, and a status takes the full commit sha.
     if (!slug) return { posted: [], why: `${repo} is not a repository the record knows` };
     if (!/^[0-9a-f]{40}$/i.test(sha)) return { posted: [], why: `${sha} is not a full commit sha` };
-    const token = process.env.GITHUB_MIRROR_TOKEN;
-    if (!token) return { posted: [], why: "the record holds no GitHub credential" };
     const key = `${GATE_STATUS_JOB}:${repo}`;
+    const token = process.env.GITHUB_MIRROR_TOKEN;
+    // A missing credential is a failure like a refusal: without the status the
+    // ruleset keeps every pull request closed, and silence would hide why.
+    if (!token) {
+      const why = `the ${GATE_STATUS_CONTEXT} status was not posted on ${repo}@${sha.slice(0, 7)}: GITHUB_MIRROR_TOKEN is not set in the Convex env`;
+      await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, { job: GATE_STATUS_JOB, error: why, key });
+      return { posted: [], why };
+    }
     const posted: GateStatus[] = [];
     let status = await ctx.runQuery(internal.ttsMerge.internalGateStatus, { repo, sha });
     for (let attempt = 0; attempt < GATE_STATUS_POSTS_MAX; attempt += 1) {

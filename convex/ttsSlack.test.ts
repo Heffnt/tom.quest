@@ -268,7 +268,7 @@ describe("the reply at capture", () => {
       text: "digest",
       subject: { kind: "digest", day: "2026-09-05" },
     });
-    expect(result).toEqual({ ok: false, error: "channel_not_found" });
+    expect(result).toEqual({ ok: false, error: "channel_not_found", refused: true });
     expect(await events(t, "slack-sent")).toHaveLength(0);
     const failed = await events(t, "slack-send-failed");
     expect(failed).toHaveLength(1);

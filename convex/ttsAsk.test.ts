@@ -6,6 +6,7 @@ import { nyCalendarDayKey } from "./ttsShared";
 import {
   CAP_REFUSAL,
   DELEGATE_DECISION,
+  DELEGATE_MAX_PER_JOB,
   DELEGATE_MAX_PER_SESSION,
   objectionRank,
   stripNarrowListId,
@@ -173,6 +174,31 @@ describe("POST /tts/ask — the delegate's record", () => {
     }
     const other = await post(t, body({ sessionId: b, askId: "bbbbbbbb" }));
     expect((await other.json()).capped).toBe(false);
+  });
+
+  it("counts a caller's asks among many other callers' asks in the day, before and after its own", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const others = (from: number) =>
+      t.run(async (ctx) => {
+        for (let i = 0; i < 300; i += 1) {
+          await ctx.db.insert("dtsEvents", { at: Date.now() - 60_000, kind: DELEGATE_DECISION, key: `other${from + i}`, data: { job: `poll-${i % 7}`, sessionId: null } });
+        }
+      });
+    await others(0);
+    for (let i = 0; i < DELEGATE_MAX_PER_JOB; i += 1) {
+      expect((await (await post(t, body({ job: "poll-gmail", askId: `2222222${i}` }))).json()).capped).toBe(false);
+    }
+    await others(300);
+    expect((await (await post(t, body({ job: "poll-gmail", askId: "ffffffff" }))).json()).capped).toBe(true);
+    // A day-old ask of its own no longer counts.
+    const fresh = convexTest({ schema, modules });
+    await fresh.run(async (ctx) => {
+      for (let i = 0; i < DELEGATE_MAX_PER_JOB; i += 1) {
+        await ctx.db.insert("dtsEvents", { at: Date.now() - 2 * 86_400_000, kind: DELEGATE_DECISION, key: `old${i}`, data: { job: "poll-gmail", sessionId: null } });
+      }
+    });
+    expect((await (await post(fresh, body({ job: "poll-gmail" }))).json()).capped).toBe(false);
   });
 
   it("400s a refusal whose refusedBecause names no narrow-list id", async () => {

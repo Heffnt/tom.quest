@@ -49,7 +49,7 @@ import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import { logEvent } from "./tts";
 import { NEEDS_TOM, nyCalendarDayKey, nyHhmm } from "./ttsShared";
-import { openNeedsYou } from "./jarvis/outbox";
+import { listForDigest, openNeedsYou } from "./jarvis/outbox";
 import { composeProposalAsk, renderSlack } from "./ttsCompose";
 
 /** The label the gates name: the sign-off control lives on the TTS page. */
@@ -62,6 +62,14 @@ export const SENT_AS_TOM = "sent-as-tom";
 /** A send that was refused (no matching sign-off) or failed on delivery. The
  *  "-failed" suffix is what makes it a #tts-broken line. */
 export const SEND_AS_TOM_FAILED = "send-as-tom-failed";
+/** A send whose outcome is unknown (a dropped answer, a 5xx, a network error):
+ *  it may have gone out. Its sign-off stays spent, nothing retries it, and it
+ *  is a broken line in the digest for Tom to check. Not a "-failed" kind: the
+ *  digest line is its own, written with it (internalRecordUnknown). */
+export const SEND_AS_TOM_UNKNOWN = "send-as-tom-unknown";
+/** The mark an unknown delivery's error carries across an action boundary,
+ *  where an error's class does not survive. */
+const OUTCOME_UNKNOWN = "outcome unknown";
 
 /** The channel of a calendar event with guests: the calendar door. */
 export const CALENDAR_CHANNEL = "calendar";
@@ -101,7 +109,12 @@ const CALENDAR_INVITE = v.object({
 });
 
 // Kept: "sending" refuses a second press before the scheduled send finishes, which would otherwise schedule a second send that the spent sign-off refuses and records as a failure.
-type ProposalStatus = "proposed" | "sending" | "sent" | "failed" | "declined";
+// "sending": his press queued the send, no sign-off claimed yet.
+// "delivering": the sign-off was claimed (in the same mutation) and the
+// delivery is under way; a send found here stopped mid-delivery, so its
+// outcome is unknown, never failed.
+// "unknown": the send may have gone out; it is never signed again, only declined.
+type ProposalStatus = "proposed" | "sending" | "delivering" | "sent" | "failed" | "unknown" | "declined";
 
 /** What a "send-proposal" row's `data` holds. */
 type ProposalData = {
@@ -116,6 +129,8 @@ type ProposalData = {
   signedAt?: number;
   sentAt?: number;
   error?: string;
+  /** The sign-off a delivery claimed, set with "delivering". */
+  signoffId?: Id<"signoffs">;
 };
 
 /** sha256 of the text's UTF-8 bytes, lower-case hex. Exact bytes: nothing is
@@ -389,7 +404,9 @@ export const decline = mutation({
     const row = await ctx.db.get(proposalId);
     const p = proposalOf(row);
     if (row === null || p === null) throw new Error("no such proposal");
-    if (p.status !== "proposed" && p.status !== "failed") return { declined: false as const, status: p.status };
+    if (p.status !== "proposed" && p.status !== "failed" && p.status !== "unknown") {
+      return { declined: false as const, status: p.status };
+    }
     await ctx.db.patch(proposalId, { data: { ...p, status: "declined" } });
     return { declined: true as const, status: "declined" as const };
   },
@@ -405,10 +422,18 @@ export const internalProposal = internalQuery({
 /** Take the sign-off that matches, or say there is none. Atomic: two sends of
  *  one signed text race for one row and one of them is refused. */
 export const internalClaimSignoff = internalMutation({
-  args: { text: v.string(), recipient: v.string(), channel: v.string() },
+  args: {
+    text: v.string(),
+    recipient: v.string(),
+    channel: v.string(),
+    // The proposal the claim delivers: marked "delivering" in this same
+    // mutation, so no moment exists where the sign-off is spent and the
+    // proposal still reads as merely queued.
+    proposalId: v.optional(v.id("dtsEvents")),
+  },
   handler: async (
     ctx,
-    { text, recipient, channel },
+    { text, recipient, channel, proposalId },
   ): Promise<
     | { ok: true; signoffId: Id<"signoffs">; sha256: string; signedAt: number }
     | { ok: false; sha256: string }
@@ -427,6 +452,10 @@ export const internalClaimSignoff = internalMutation({
     ).find((s) => s.usedAt === undefined && s.signedBy === "tom" && s.text === text);
     if (match === undefined) return { ok: false, sha256 };
     await ctx.db.patch(match._id, { usedAt: Date.now() });
+    if (proposalId !== undefined) {
+      const p = proposalOf(await ctx.db.get(proposalId));
+      if (p !== null) await ctx.db.patch(proposalId, { data: { ...p, status: "delivering", signoffId: match._id } });
+    }
     return { ok: true, signoffId: match._id, sha256, signedAt: match.signedAt };
   },
 });
@@ -447,6 +476,26 @@ export const internalRecordSent = internalMutation({
   },
 });
 
+export const internalRecordUnknown = internalMutation({
+  args: {
+    signoffId: v.id("signoffs"),
+    recipient: v.string(),
+    channel: v.string(),
+    sha256: v.string(),
+    error: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await logEvent(ctx, SEND_AS_TOM_UNKNOWN, undefined, { job: "send-as-tom", ...args });
+    // Keyed by the sign-off: each unknown send is its own line, whatever
+    // text it shares with another (the digest lists a key once a day).
+    await listForDigest(ctx, {
+      section: "broken",
+      job: `send-as-tom:${args.signoffId}`,
+      statement: `A message in your name to ${args.recipient} may or may not have gone out: the send's answer was lost. Check the conversation before sending it again.`,
+    });
+  },
+});
+
 export const internalRecordFailed = internalMutation({
   args: { recipient: v.string(), channel: v.string(), sha256: v.string(), error: v.string() },
   handler: async (ctx, args) => {
@@ -454,23 +503,31 @@ export const internalRecordFailed = internalMutation({
   },
 });
 
+/** A delivery the far side definitely did not take: nothing went out, so the
+ *  sign-off's claim may be released for another attempt. Any other throw from
+ *  a delivery may have followed a send (a dropped answer, a failed write after
+ *  the post), and keeps the claim, so the same signed text cannot go twice. */
+export class DeliveryRefused extends Error {}
+
 /**
  * THE GATE. Every send to a human other than Tom runs its delivery inside
  * this: a sign-off that matches sha256(text) + recipient + channel is claimed
  * first, the delivery runs only if one was, and the outcome is recorded —
- * "sent-as-tom" when it went, "send-as-tom-failed" when it was refused or
- * failed (and the claim is released on a failure, not on a refusal: there is
- * nothing to release).
+ * "sent-as-tom" when it went, "send-as-tom-failed" when it was refused
+ * (DeliveryRefused, which alone releases the claim), "send-as-tom-unknown"
+ * for any other throw: it may have gone out, so the claim stays spent, the
+ * error thrown on carries OUTCOME_UNKNOWN, and Tom is told in the digest.
  */
 export async function deliverAsTom<T>(
   ctx: ActionCtx,
-  target: { text: string; recipient: string; channel: string },
+  target: { text: string; recipient: string; channel: string; proposalId?: Id<"dtsEvents"> },
   deliver: () => Promise<T>,
 ): Promise<T> {
   const claim = await ctx.runMutation(internal.ttsSignoff.internalClaimSignoff, {
     text: target.text,
     recipient: target.recipient,
     channel: target.channel,
+    proposalId: target.proposalId,
   });
   // Kept, not deletable: this refusal is the wall for I5. Without it a text he
   // never signed goes out in his name, and the record is the only trace.
@@ -487,33 +544,61 @@ export async function deliverAsTom<T>(
   try {
     delivered = await deliver();
   } catch (e) {
-    await ctx.runMutation(internal.ttsSignoff.internalReleaseSignoff, { signoffId: claim.signoffId });
-    await ctx.runMutation(internal.ttsSignoff.internalRecordFailed, {
+    const error = e instanceof Error ? e.message : String(e);
+    const outcome = { recipient: target.recipient, channel: target.channel, sha256: claim.sha256, error };
+    if (e instanceof DeliveryRefused) {
+      await ctx.runMutation(internal.ttsSignoff.internalReleaseSignoff, { signoffId: claim.signoffId });
+      await ctx.runMutation(internal.ttsSignoff.internalRecordFailed, outcome);
+      throw e;
+    }
+    await recordUnknown(ctx, { ...outcome, signoffId: claim.signoffId });
+    throw new Error(`${OUTCOME_UNKNOWN}: ${error}`);
+  }
+  // THE SEND RETURNED. Recording it is not the send: a throw here leaves the
+  // message out and its claim spent, so the outcome is unknown, never failed.
+  try {
+    await ctx.runMutation(internal.ttsSignoff.internalRecordSent, {
       recipient: target.recipient,
       channel: target.channel,
       sha256: claim.sha256,
-      error: e instanceof Error ? e.message : String(e),
+      signedAt: claim.signedAt,
     });
-    throw e;
+  } catch (e) {
+    const error = `it went out, but its record failed: ${e instanceof Error ? e.message : String(e)}`;
+    await recordUnknown(ctx, { recipient: target.recipient, channel: target.channel, sha256: claim.sha256, error, signoffId: claim.signoffId });
+    throw new Error(`${OUTCOME_UNKNOWN}: ${error}`);
   }
-  await ctx.runMutation(internal.ttsSignoff.internalRecordSent, {
-    recipient: target.recipient,
-    channel: target.channel,
-    sha256: claim.sha256,
-    signedAt: claim.signedAt,
-  });
   return delivered;
 }
 
+/** Record an unknown outcome and its digest line. A throw while recording it
+ *  changes nothing about the outcome: the caller still throws OUTCOME_UNKNOWN,
+ *  so the proposal is marked unknown and its sign-off stays spent. */
+async function recordUnknown(
+  ctx: ActionCtx,
+  args: { signoffId: Id<"signoffs">; recipient: string; channel: string; sha256: string; error: string },
+): Promise<void> {
+  try {
+    await ctx.runMutation(internal.ttsSignoff.internalRecordUnknown, args);
+  } catch (e) {
+    console.error(`send-as-tom: the unknown outcome for ${args.recipient} was not recorded: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 export const internalFinishProposal = internalMutation({
-  args: { proposalId: v.id("dtsEvents"), sent: v.boolean(), error: v.optional(v.string()) },
-  handler: async (ctx, { proposalId, sent, error }) => {
+  args: {
+    proposalId: v.id("dtsEvents"),
+    outcome: v.union(v.literal("sent"), v.literal("failed"), v.literal("unknown")),
+    error: v.optional(v.string()),
+  },
+  handler: async (ctx, { proposalId, outcome, error }) => {
     const row = await ctx.db.get(proposalId);
     const p = proposalOf(row);
     if (p === null) return;
-    const next: ProposalData = sent
-      ? { ...p, status: "sent", sentAt: Date.now() }
-      : { ...p, status: "failed", error: error ?? "the send failed" };
+    const next: ProposalData =
+      outcome === "sent"
+        ? { ...p, status: "sent", sentAt: Date.now() }
+        : { ...p, status: outcome, error: error ?? "the send failed" };
     await ctx.db.patch(proposalId, { data: next });
   },
 });
@@ -528,32 +613,53 @@ export const internalSendProposal = internalAction({
   handler: async (ctx, { proposalId }): Promise<{ sent: boolean; error?: string }> => {
     const p = await ctx.runQuery(internal.ttsSignoff.internalProposal, { proposalId });
     if (p === null) return { sent: false, error: "no such proposal" };
-    if (p.status === "sent") return { sent: false, error: "already sent" };
+    // ONLY A NEVER-SENT PROPOSAL IS SENT: "sending" (his press scheduled
+    // this) or "proposed" (refused at the gate below without his sign-off).
+    // A rerun on anything else — sent, unknown, failed, declined — changes
+    // nothing: rewriting an unknown one to failed would let a fresh sign-off
+    // resend a message that may have gone out. Only his clear moves it on.
+    // A SEND FOUND DELIVERING stopped after its sign-off was claimed and
+    // before its outcome was written: it may have gone out. Unknown, surfaced,
+    // its sign-off left spent.
+    if (p.status === "delivering") {
+      const error = "the send stopped after its sign-off was claimed, before its outcome was written";
+      if (p.signoffId !== undefined) {
+        await recordUnknown(ctx, { signoffId: p.signoffId, recipient: p.recipient, channel: p.channel, sha256: p.sha256, error });
+      }
+      await ctx.runMutation(internal.ttsSignoff.internalFinishProposal, { proposalId, outcome: "unknown", error });
+      return { sent: false, error: `${OUTCOME_UNKNOWN}: ${error}` };
+    }
+    if (p.status !== "sending" && p.status !== "proposed") {
+      return { sent: false, error: `not sendable: the proposal is ${p.status}` };
+    }
     const door = parseChannel(p.channel);
     try {
       if (door === null) throw new Error(`not a channel a message can be sent on: ${p.channel}`);
       if (door.via === "slack") {
-        await deliverAsTom(ctx, p, async () => {
+        await deliverAsTom(ctx, { ...p, proposalId }, async () => {
           const posted = await ctx.runAction(internal.ttsSync.sendSlack, {
             text: p.text,
             channel: door.conversation,
             subject: { kind: "job", id: SENT_AS_TOM },
+            once: true,
           });
-          if (!posted.ok) throw new Error(`Slack refused the message: ${posted.error}`);
+          if (!posted.ok && posted.refused) throw new DeliveryRefused(`Slack refused the message: ${posted.error}`);
+          if (!posted.ok) throw new Error(`the Slack post's outcome is unknown: ${posted.error}`);
           return posted;
         });
       } else {
         if (p.event === undefined) throw new Error("a calendar proposal without its event");
         // The calendar door checks the sign-off itself, from the event it is
         // about to create; the text it derives is this proposal's text.
-        await ctx.runAction(internal.ttsCalendarWrite.internalCreateEvent, p.event);
+        await ctx.runAction(internal.ttsCalendarWrite.internalCreateEvent, { ...p.event, proposalId });
       }
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
-      await ctx.runMutation(internal.ttsSignoff.internalFinishProposal, { proposalId, sent: false, error });
+      const outcome = error.includes(OUTCOME_UNKNOWN) ? "unknown" : "failed";
+      await ctx.runMutation(internal.ttsSignoff.internalFinishProposal, { proposalId, outcome, error });
       return { sent: false, error };
     }
-    await ctx.runMutation(internal.ttsSignoff.internalFinishProposal, { proposalId, sent: true });
+    await ctx.runMutation(internal.ttsSignoff.internalFinishProposal, { proposalId, outcome: "sent" });
     return { sent: true };
   },
 });

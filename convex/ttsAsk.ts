@@ -108,12 +108,28 @@ type AskData = {
   runToken?: string;
 };
 
-/** Who asked: a session or a job, exactly one. The
- *  cap and the count are both per caller, and both read this. */
-function sameCaller(data: unknown, args: { sessionId?: string; job?: string }): boolean {
-  const row = (data ?? {}) as { sessionId?: unknown; job?: unknown };
-  if (args.sessionId !== undefined) return row.sessionId === args.sessionId;
-  return row.job === args.job;
+
+/** How many asks this caller made in the last day, read on the caller's own
+ *  index (dtsEvents.by_kind_session_at or by_kind_job_at), so other callers'
+ *  rows are never read, and at most `limit` rows: the cap needs only to know
+ *  whether cap is reached, so cap + 1 bounds it. */
+async function callerAsks(
+  ctx: QueryCtx,
+  args: { sessionId?: string; job?: string },
+  limit: number,
+): Promise<number> {
+  const since = Date.now() - DAY_MS;
+  const rows =
+    args.sessionId !== undefined
+      ? ctx.db
+          .query("dtsEvents")
+          .withIndex("by_kind_session_at", (q) =>
+            q.eq("kind", DELEGATE_DECISION).eq("data.sessionId", args.sessionId).gte("at", since),
+          )
+      : ctx.db
+          .query("dtsEvents")
+          .withIndex("by_kind_job_at", (q) => q.eq("kind", DELEGATE_DECISION).eq("data.job", args.job).gte("at", since));
+  return (await rows.take(limit)).length;
 }
 
 function capFor(args: { sessionId?: string }): number {
@@ -221,12 +237,8 @@ export const internalRecordAsk = internalMutation({
       if (!session) throw new Error(`Unknown session id: ${args.sessionId}`);
     }
 
-    const recent = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
-      .take(200);
-    const callerCount = recent.filter((event) => sameCaller(event.data, args)).length;
     const cap = capFor(args);
+    const callerCount = await callerAsks(ctx, args, cap + 1);
     const attended = session !== null && session.mode !== "autonomous";
     const capped = callerCount >= cap;
     // The cap is the delegate's spend wall: past it, no answer is acted on.
@@ -287,10 +299,7 @@ export async function recordedDecision(ctx: QueryCtx, askId: string): Promise<Do
 export const internalAskContext = internalQuery({
   args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const recent = await ctx.db.query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION).gte("at", Date.now() - DAY_MS))
-      .order("desc").take(200);
-    const asked = recent.filter((event) => sameCaller(event.data, args)).length;
+    const asked = await callerAsks(ctx, args, capFor(args) + 1);
     const todoId = args.todoId === undefined ? null : await oldId(ctx, "todos", args.todoId);
     const priorObjections: { askId: string; at: number; revert: boolean; sentence: string | null; decision: string | null }[] = [];
     if (todoId !== null) {
