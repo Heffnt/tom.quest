@@ -409,9 +409,8 @@ export const internalIngest = internalMutation({
     // box run launched is depth 2 here and depth 1 in its own file, and the
     // check that refused a row at any other depth than its run's dead-lettered
     // six such children on 2026-09-19.
-    // A run names its todo in either id form; the row stores the plain one.
-    // An id naming no row is dropped, as the delegate's objection drops one:
-    // no todo is ever deleted, so it names nothing a reader could find, and
+    // A run names its todo in either id form; the row stores the plain one,
+    // and none for an id naming no row (convex/jarvis/tables.ts resolveId):
     // refusing it would dead-letter the whole run.
     const todoId = args.run.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", args.run.todoId)) ?? undefined);
     let linked = { ...args.run, todoId, rootRunId, depth };

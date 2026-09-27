@@ -70,11 +70,12 @@ export async function logEvent(
   // A failure row (convex/ttsShared.ts isFailureKind) is a line in the
   // digest's broken section, which reads its window; nothing posts here.
   // The row names its todo by the plain id, whichever form it was handed (a
-  // session or a Slack thread may hold the old one; convex/jarvis/tables.ts).
+  // session or a Slack thread may hold the old one); an id naming no row
+  // names no todo (convex/jarvis/tables.ts resolveId).
   const id = await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,
-    todoId: todoId === undefined ? undefined : ((await resolveId(ctx, "todos", todoId)) ?? todoId),
+    todoId: todoId === undefined ? undefined : ((await resolveId(ctx, "todos", todoId)) ?? undefined),
     data: data === undefined ? undefined : data,
     key,
   });

@@ -60,8 +60,10 @@ const RECORD_SLACK_SENT_ARGS = {
  * one (Tom's ruling 2026-08-30: exactly one reply per #dump message).
  */
 /** A subject as a new row stores it: a todo named by its plain id, whichever
- *  form the thread or the caller holds (step C, convex/jarvis/tables.ts). A
- *  todo id naming no row is kept as given. */
+ *  form the thread or the caller holds (step C, convex/jarvis/tables.ts).
+ *  A todo id naming no row stays in the subject, and only there: a subject is
+ *  the thread's identity, which every message must carry and a todo subject
+ *  has no todo-less form of, so the row's todoId column stores no todo. */
 async function plainSubject<S extends { kind: string }>(ctx: MutationCtx, subject: S): Promise<S> {
   if (subject.kind !== "todo") return subject;
   const plain = await resolveId(ctx, "todos", (subject as unknown as { id: string }).id);

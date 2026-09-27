@@ -85,6 +85,11 @@ export const eitherId = {
  * or the id its row had in the old one (the box's files, a Slack thread, a
  * label's ref, the evidence, a reference another table stores). The one
  * reader of legacyId; null when neither names a row.
+ *
+ * A TODO REFERENCE NAMING NO ROW NAMES NO TODO. No todo is ever deleted, so
+ * such an id (one checked for form only before step B, or a caller's typo)
+ * names nothing a reader could find: a writer stores no todo for it, and a
+ * reader of a stored one hands out none.
  */
 export async function resolveId<T extends Plain>(
   ctx: QueryCtx | MutationCtx,
@@ -140,20 +145,20 @@ export async function withPlainTodoIds<R extends { todoId?: string }>(
   ctx: QueryCtx | MutationCtx,
   rows: R[],
 ): Promise<Array<Omit<R, "todoId"> & { todoId?: Id<"todos"> }>> {
-  const seen = new Map<string, Id<"todos">>();
+  const seen = new Map<string, Id<"todos"> | null>();
   const out: Array<Omit<R, "todoId"> & { todoId?: Id<"todos"> }> = [];
   for (const row of rows) {
-    if (row.todoId === undefined) {
-      out.push(row as Omit<R, "todoId">);
+    const stored = row.todoId;
+    if (stored !== undefined && !seen.has(stored)) seen.set(stored, await resolveId(ctx, "todos", stored));
+    const plain = stored === undefined ? null : (seen.get(stored) ?? null);
+    if (plain !== null) {
+      out.push({ ...row, todoId: plain });
       continue;
     }
-    let plain = seen.get(row.todoId);
-    if (plain === undefined) {
-      // A reference naming no row (none is deleted) is handed out as stored.
-      plain = (await resolveId(ctx, "todos", row.todoId)) ?? (row.todoId as Id<"todos">);
-      seen.set(row.todoId, plain);
-    }
-    out.push({ ...row, todoId: plain });
+    // No reference, or one naming no row: handed out as no todo (resolveId above).
+    const copy = { ...row };
+    delete copy.todoId;
+    out.push(copy as Omit<R, "todoId">);
   }
   return out;
 }

@@ -907,9 +907,10 @@ export async function gatherTodayFacts(
   //    no decision — the rows may not exist yet: the delegate is built on
   //    branch uac/delegate and this reads by kind if present.
   // An objection names its todo as its row stored it; the facts hand the
-  // plain id, which the ready and dated sets above are keyed on.
+  // plain id, which the ready and dated sets above are keyed on, and none
+  // for an id naming no row.
   for (const o of rawObjections) {
-    if (o.todoId !== undefined) o.todoId = (await resolveId(ctx, "todos", o.todoId)) ?? o.todoId;
+    if (o.todoId !== undefined) o.todoId = (await resolveId(ctx, "todos", o.todoId)) ?? undefined;
   }
   const objections = rawObjections
     // The newest OBJECTION_SCAN of every source together: the reads above

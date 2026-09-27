@@ -1,5 +1,6 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import { gatherTodayFacts } from "./ttsDigest";
 import { nyCalendarDayKey } from "./ttsShared";
@@ -370,22 +371,36 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect((await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId }))).status).toBe(200);
     expect((await rows(t)).find((row) => row.key === "cdcdcdcd")!.data.todoId).toBe(todoId);
     expect((await (await post(t, body({ job: "poll-gmail", askId: "cdcdcdcd", todoId: legacy }))).json()).existing).toBe(true);
-    // An ask recorded before step B had its id checked for form only: a stored
-    // id naming no row names no todo, and its retry's decision row carries none.
-    const gone = await t.run(async (ctx) => {
-      const id = await ctx.db.insert("dtsTodos", fields);
-      await ctx.db.delete(id);
-      return id;
+  });
+
+  it("an objection lands on the ask's todo as the plain row, and on none when the stored id names no row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const fields = { statement: "renew passport", status: "active" as const, readiness: "prepared" as const, timingClass: "whenever" as const, source: "tom", createdAt: Date.now(), updatedAt: Date.now() };
+    const { todoId, legacy, gone } = await t.run(async (ctx) => {
+      const legacy = await ctx.db.insert("dtsTodos", fields);
+      const gone = await ctx.db.insert("dtsTodos", fields);
+      await ctx.db.delete(gone);
+      return { legacy, gone, todoId: await ctx.db.insert("todos", { ...fields, legacyId: legacy }) };
     });
-    await t.run(async (ctx) =>
-      ctx.db.insert("dtsEvents", {
-        at: Date.now(), kind: DELEGATE_DECISION, key: "efefefef",
-        data: { ...body({ job: "poll-gmail", askId: "efefefef" }), sessionId: null, todoId: gone, attended: false },
-      }),
-    );
-    expect((await post(t, body({ job: "poll-gmail", askId: "efefefef", todoId: gone }))).status).toBe(400);
-    expect((await (await post(t, body({ job: "poll-gmail", askId: "efefefef" }))).json()).existing).toBe(true);
-    expect(await decision("efefefef")).not.toHaveProperty("todoId");
+    // Asks recorded before the stored references went plain: the old id, and
+    // one whose id was checked for form only.
+    for (const [askId, stored] of [["aaaa0001", legacy], ["aaaa0002", gone]] as const) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("dtsEvents", {
+          at: Date.now(), kind: DELEGATE_DECISION, key: askId, todoId: stored,
+          data: { ...body({ job: "poll-gmail", askId }), sessionId: null, todoId: stored, attended: false },
+        }),
+      );
+    }
+    const objected = async (askId: string) => {
+      const eventId = await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+        askId, text: "revert", revert: true, sentence: null, channel: "C", ts: "1.2", threadTs: "1.1",
+      });
+      return await t.run(async (ctx) => (await ctx.db.get(eventId))!.todoId ?? null);
+    };
+    expect(await objected("aaaa0001")).toBe(todoId);
+    expect(await objected("aaaa0002")).toBeNull();
   });
 
   it("refuses an unauthenticated caller", async () => {

@@ -4,7 +4,8 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { oldId, resolveId, todoEvents, todoRulings } from "./jarvis/tables";
-import { newestTodoEvents, todoHasEventSince } from "./jarvis/tables";
+import { newestTodoEvents, todoHasEventSince, withPlainTodoIds } from "./jarvis/tables";
+import { logEvent } from "./tts";
 
 // Step B of the core tables' move (convex/jarvis/tables.ts): a todo, block or
 // time note id reaches the record from outside in either form, the old
@@ -154,6 +155,22 @@ describe("a stored todo reference in either form", () => {
     });
     const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
     expect(pending.map((r) => [r._id, r.todoId])).toEqual([[revise, plain.todo]]);
+  });
+});
+
+describe("a todo reference naming no row", () => {
+  it("names no todo: a written event stores none, and a stored one is handed out as none", async () => {
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    await t.run(async (ctx) => {
+      const gone = await ctx.db.insert("todos", { statement: "gone", status: "active", readiness: "prepared", timingClass: "whenever", source: "tom", createdAt: 1, updatedAt: 1 });
+      await ctx.db.delete(gone);
+      const written = await logEvent(ctx, "opened", gone);
+      expect((await ctx.db.get(written))!.todoId).toBeUndefined();
+      expect((await ctx.db.get(await logEvent(ctx, "opened", old.todo)))!.todoId).toBe(plain.todo);
+      const handed = await withPlainTodoIds(ctx, [{ n: 1, todoId: gone as string }, { n: 2, todoId: old.todo as string }, { n: 3 }]);
+      expect(handed).toEqual([{ n: 1 }, { n: 2, todoId: plain.todo }, { n: 3 }]);
+    });
   });
 });
 

@@ -203,9 +203,7 @@ export const internalRecordAsk = internalMutation({
       // resolve to "no todo" and so match an ask recorded without one.
       // The recorded todo is a stored reference: the old row's id on an ask
       // recorded before this step, the plain row's since. Both sides are
-      // compared as the plain todo they name. A stored id naming no row (an
-      // ask recorded before step B had its id checked for form only) names
-      // no todo, as a stored reference's reader reads it.
+      // compared as the plain todo they name.
       const todoId = args.todoId === undefined ? null : await resolveId(ctx, "todos", args.todoId);
       const storedTodoId = typeof stored.todoId === "string" ? await resolveId(ctx, "todos", stored.todoId) : null;
       if (

@@ -499,14 +499,16 @@ export async function insertSession(
       `a therapy session opens on no repo; this one named ${repos.join(", ")}`,
     );
   }
+  // The plain id, whichever form the seed holds (a fork inherits its
+  // session's, which may be old); an id naming no row names no todo
+  // (convex/jarvis/tables.ts resolveId).
+  const todoId = seed.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", seed.todoId)) ?? undefined);
   const sessionId = await ctx.db.insert("claudeSessions", {
     title: seed.title.trim() || "Untitled session",
     kind: seed.kind,
     repos,
     repo: repos[0] ?? NO_REPO,
-    // The plain id, whichever form the seed holds (a fork inherits its
-    // session's, which may be old: convex/jarvis/tables.ts).
-    todoId: seed.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", seed.todoId)) ?? seed.todoId),
+    todoId,
     blockCategory: seed.kind === "block" ? seed.blockCategory : undefined,
     codeRepo: seed.codeSubject?.repo,
     codeExternalId: seed.codeSubject?.externalId,
@@ -533,8 +535,8 @@ export async function insertSession(
   // autonomous mission that happened to claim the same todo would otherwise
   // consume that ruling, and the conversation Tom asked for would never
   // happen while the ruling read as satisfied.
-  if (seed.todoId !== undefined && seed.mode !== "autonomous") {
-    await markLiveSessionRulingApplied(ctx, seed.todoId, sessionId);
+  if (todoId !== undefined && seed.mode !== "autonomous") {
+    await markLiveSessionRulingApplied(ctx, todoId, sessionId);
   }
   // The code twin: a "session" verdict on a code todo is applied when Tom
   // opens the CODE BLOCK session — the interactive session whose turns are
@@ -608,8 +610,8 @@ export async function insertSession(
   const subject: ContextSubject =
     seed.kind === "therapy"
       ? { kind: "area", area: "mental-health" }
-      : seed.todoId !== undefined
-        ? { kind: "todo", todoId: seed.todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
+      : todoId !== undefined
+        ? { kind: "todo", todoId, repos: repos.filter((repo) => repo !== NO_REPO) }
         : repos.length > 0 && repos[0] !== NO_REPO
           ? { kind: "repo", repo: repos[0] }
           : { kind: "none" };
@@ -651,7 +653,7 @@ export async function insertSession(
   // plan repairs crossed over from the session world — so a night of fleet
   // work left no trace there at all. One home for the creation event, now that
   // there is one home for the creation.
-  await logEvent(ctx, "session-created", seed.todoId, {
+  await logEvent(ctx, "session-created", todoId, {
     sessionId,
     title: seed.title,
     kind: seed.kind,
