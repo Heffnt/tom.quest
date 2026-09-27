@@ -532,7 +532,7 @@ export default function TodoRow({
                 <FieldEditor
                   label="category"
                   caption="tts.updateTodo({category})"
-                  explains="A free-text tag. It is what lets one span of calendar time cover a set of todos at once. The single reserved value is “code”, which removes the todo from the picker that starts sessions on its own."
+                  explains="A free-text tag. It is what lets one span of calendar time cover a set of todos at once. The single reserved value is “code”: a block session on “code” works from the code-todo mirror, and its opening prompt lists no todo carrying the tag."
                   value={todo.category}
                   onSave={(v) =>
                     updateTodo({ id: todo._id, category: v.trim() || null })
