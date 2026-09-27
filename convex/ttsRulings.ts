@@ -6,11 +6,11 @@ import {
   query,
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
-import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
+import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
 import { eitherId, follow, oldId, resolveId } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
@@ -840,6 +840,89 @@ export const internalRecentRulings = internalQuery({
       .take(Math.min(limit ?? 200, 1000));
   },
 });
+
+/** How long a todo whose work-queue run under an approve did not complete
+ *  waits before the queue is offered it again under the same approve. */
+const WORK_RETRY_MS = DAY_MS;
+
+/**
+ * The todos an unattended agent may work now (GET /jarvis/context?for=
+ * work-queue), so the box's work queue holds no eligibility rule of its own.
+ * Eligible: ready for Tom (ttsShared.isReadyForTom: active, awake, every need
+ * done or archived, prepared), marked for an agent (actor "agent"), a
+ * non-empty brief, Tom's live ruling on it (liveRulings) an approve that
+ * still answers it (rulingAnswers: ruled after the todo last changed), and
+ * not already worked under that approve: a session-outcome the queue posted
+ * on the todo (events, subject the plain id) naming the approve as
+ * data.rulingId leaves it out for good when it completed, and for
+ * WORK_RETRY_MS after it when it did not. No live approve, no work: Tom's
+ * delegate decision of 2026-09-27, only ruled todos.
+ *
+ * In need order: dated todos soonest due first, then the rest stalest
+ * (oldest updatedAt) first, the walk the work queue took. Each carries the
+ * plain id, the statement, the whole prepared instruction (null where not
+ * set; the brief never is), and the approve's id and sentence (verbatim,
+ * null when he wrote none).
+ */
+export const internalWorkQueue = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const todos = await ctx.db.query("todos").collect();
+    const doneSet = buildDoneSet(todos);
+    const out: {
+      todo: Doc<"todos">;
+      ruling: Doc<"rulings">;
+    }[] = [];
+    for (const todo of todos) {
+      if (todo.actor !== "agent" || !isReadyForTom(todo, doneSet, now)) continue;
+      // Rulings name a todo by its old id (convex/jarvis/tables.ts).
+      const old = await oldId(ctx, "todos", todo._id);
+      if (old === null) continue;
+      const live = liveRulings(
+        await ctx.db.query("rulings").withIndex("by_todo", (q) => q.eq("todoId", old)).collect(),
+      ).get(subjectKey({ subjectType: "life", todoId: old }));
+      if (live === undefined || live.verdict !== "approve" || !rulingAnswers(live, todo)) continue;
+      if ((todo.brief ?? "").trim() === "") continue;
+      if (await workedUnder(ctx, todo._id, live._id, now)) continue;
+      out.push({ todo, ruling: live });
+    }
+    const dated = (t: Doc<"todos">) => t.timingClass === "dated" && t.dueAt !== undefined;
+    out.sort((a, b) => {
+      if (dated(a.todo) !== dated(b.todo)) return dated(a.todo) ? -1 : 1;
+      if (dated(a.todo)) return (a.todo.dueAt as number) - (b.todo.dueAt as number);
+      return a.todo.updatedAt - b.todo.updatedAt;
+    });
+    return out.map(({ todo, ruling }) => ({
+      id: todo._id,
+      title: todo.statement,
+      brief: todo.brief as string,
+      entryAction: todo.entryAction ?? null,
+      workDescription: todo.workDescription ?? null,
+      doneWhen: todo.condition ?? null,
+      mustNotBreak: todo.mustNotBreak ?? null,
+      approve: { rulingId: ruling._id, sentence: ruling.sentence ?? null },
+    }));
+  },
+});
+
+/** Whether the work queue already ran on this todo under this approve: an
+ *  outcome that completed settles it; one that did not holds it back for
+ *  WORK_RETRY_MS. */
+async function workedUnder(ctx: QueryCtx, todoId: Id<"todos">, rulingId: Id<"rulings">, now: number): Promise<boolean> {
+  const outcomes = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", SESSION_OUTCOME).eq("subject", todoId))
+    .order("desc")
+    .collect();
+  for (const row of outcomes) {
+    const d = (row.data ?? {}) as { rulingId?: unknown; outcome?: unknown };
+    if (d.rulingId !== rulingId) continue;
+    if (d.outcome === "completed") return true;
+    if (now - row.at < WORK_RETRY_MS) return true;
+  }
+  return false;
+}
 
 export const internalAwaitingRulingCount = internalQuery({
   args: {},

@@ -66,6 +66,7 @@ import {
   buildDoneSet,
   isPrepared,
   isReadyForTom,
+  rulingAnswers,
   wakeAtPassed,
 } from "@/convex/ttsShared";
 export {
@@ -138,7 +139,7 @@ export function selectNeedsMe(
     const ruling = live.get(
       rulingSubjectKey({ subjectType: "life", todoId: t._id }),
     );
-    return ruling === undefined || ruling.ruledAt <= t.updatedAt;
+    return ruling === undefined || !rulingAnswers(ruling, t);
   });
 
   const briefByKey = new Map(
