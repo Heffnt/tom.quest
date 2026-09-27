@@ -27,6 +27,8 @@ import { JOB_FAILED, JOB_RECOVERED } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM } from "./ttsSlack";
 import { writePageRows } from "../scripts/context-fixture.mjs";
+import { follow } from "./jarvis/tables";
+import { inOldTerms } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -38,10 +40,11 @@ function get(t: ReturnType<typeof convexTest>, path: string, key = KEY) {
   return t.fetch(path, { method: "GET", headers: { "X-TTS-Key": key } });
 }
 
-// Rows are read on _creationTime for the captures fact, and convex-test
-// stamps the real clock, so the window ends a moment after the seeding.
+// Rows are stamped with the real clock, so the window ends a moment after the
+// seeding. The gather hands out plain todo ids; read in the old tables' terms
+// (test/core-tables.ts), its answer is the one these tests asserted before.
 async function gather(t: ReturnType<typeof convexTest>, until = Date.now() + 1000) {
-  return await t.run(async (ctx) => await gatherWeeklyFacts(ctx, { since: until - WEEK_MS, until }));
+  return await t.run(async (ctx) => await inOldTerms(ctx, await gatherWeeklyFacts(ctx, { since: until - WEEK_MS, until })));
 }
 
 async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
@@ -71,7 +74,7 @@ async function todo(
   }> = {},
 ): Promise<Id<"dtsTodos">> {
   const now = Date.now();
-  return await ctx.db.insert("dtsTodos", {
+  const id = await ctx.db.insert("dtsTodos", {
     statement: fields.statement ?? "a todo",
     status: fields.status ?? "active",
     readiness: fields.readiness ?? "unprepared",
@@ -82,6 +85,9 @@ async function todo(
     createdAt: fields.createdAt ?? now,
     updatedAt: fields.updatedAt ?? now,
   });
+  // The plain copy, as the dual write makes it (convex/jarvis/tables.ts).
+  await follow(ctx, "todos", id);
+  return id;
 }
 
 async function event(

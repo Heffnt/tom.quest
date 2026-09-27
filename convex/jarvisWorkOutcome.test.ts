@@ -95,7 +95,7 @@ describe("a work-queue outcome on its todo", () => {
     });
     const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY }));
     expect(facts.overnightByTodo).toEqual([
-      expect.objectContaining({ todoId: old.todo, statement: "renew the lease", finished: 2 }),
+      expect.objectContaining({ todoId: plain.todo, statement: "renew the lease", finished: 2 }),
     ]);
     expect(facts.broken.filter((row) => row.statement.startsWith("A session ended in an error"))).toHaveLength(1);
   });
@@ -104,7 +104,7 @@ describe("a work-queue outcome on its todo", () => {
   // busy night left its newest outcomes out of the digest.
   it("counts the night's newest outcome however many came before it", async () => {
     const t = convexTest({ schema, modules });
-    const { old, plain } = await seed(t);
+    const { plain } = await seed(t);
     const now = Date.now();
     const newest = await t.run(async (ctx) => {
       const other = await ctx.db.insert("dtsTodos", {
@@ -122,13 +122,13 @@ describe("a work-queue outcome on its todo", () => {
         await ctx.db.insert("events", { kind: "session-outcome", at: now - 5 * 3_600_000 + n, provenance: {}, subject: plain.todo, data: { outcome: "completed" } });
       }
       await ctx.db.insert("events", { kind: "session-outcome", at: now - 60_000, provenance: {}, subject: otherPlain, data: { outcome: "completed" } });
-      return other;
+      return otherPlain;
     });
     const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY }));
     expect(facts.overnightByTodo).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ todoId: newest, statement: "the last one worked", finished: 1 }),
-        expect.objectContaining({ todoId: old.todo, finished: 1999 }),
+        expect.objectContaining({ todoId: plain.todo, finished: 1999 }),
       ]),
     );
   });

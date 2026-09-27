@@ -19,8 +19,24 @@ import {
 import { MESSAGE_MAX_CHARS, TAB_EVERYTHING } from "./ttsCompose";
 import { nyCalendarDayBoundsUtc, ttsItemLink, ttsSessionLink } from "./ttsShared";
 import { resolveId } from "./jarvis/tables";
+import { inOldTerms, insertTodo, patchTodo } from "../test/core-tables";
+import type { QueryCtx } from "./_generated/server";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+// The digest reads the plain tables and hands out plain ids; read in the old
+// tables' terms (test/core-tables.ts), its answer is the one asserted before.
+async function composeToday(
+  t: ReturnType<typeof convexTest>,
+  args: { day: string; now: number; since?: number; canReply?: boolean },
+) {
+  const out = await t.query(internal.ttsDigest.internalComposeToday, args);
+  const old = await t.run(async (ctx) => await inOldTerms(ctx, out));
+  return { ...old, surfacedTodoIds: old.surfacedTodoIds as string[] };
+}
+async function gatherInOldTerms(ctx: QueryCtx, args: Parameters<typeof gatherTodayFacts>[1]) {
+  return await inOldTerms(ctx, await gatherTodayFacts(ctx, args));
+}
 
 /** The plain row's id for the id a door answered with (its old table's): the
  *  readers hand out plain ids (convex/jarvis/tables.ts). */
@@ -127,7 +143,7 @@ describe("the missed rollover", () => {
     // A legacy row carrying a date and no dateKind at all — the row the old
     // applyDateOutcome path silently relabelled "self-imposed".
     const unlabelled = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "file the form",
         status: "active",
         readiness: "unprepared",
@@ -237,7 +253,7 @@ describe("the missed rollover", () => {
       await t.mutation(internal.ttsDigest.internalRollMissed, { day: "2026-09-04" }),
     ).toEqual([]);
     // …and it is still listed as due that day.
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text } = await composeToday(t, {
       day: "2026-09-04",
       now: Date.UTC(2026, 8, 4, 9),
     });
@@ -322,15 +338,15 @@ describe("internalComposeToday", () => {
     await t.mutation(internal.ttsDigest.internalRollMissed, { day: DAY_KEY });
     const ready = await tom.mutation(api.tts.createTodo, { statement: "sign the form" });
     await t.run(async (ctx) => {
-      await ctx.db.patch(ready, { readiness: "prepared" });
+      await patchTodo(ctx, ready, { readiness: "prepared" });
       await ctx.db.insert("dtsEvents", {
         at: Date.now(),
         kind: "poll-gmail-failed",
         data: { job: "poll-gmail", error: "token expired" },
       });
     });
-    const { text, surfacedTodoIds, facts } = await t.query(
-      internal.ttsDigest.internalComposeToday,
+    const { text, surfacedTodoIds, facts } = await composeToday(
+      t,
       { day: DAY_KEY, now: Date.now() + 1 },
     );
     expect(text).toContain(`- <${ttsItemLink(late)}|Pay rent: open the bank app. One day late.>`);
@@ -362,22 +378,22 @@ describe("internalComposeToday", () => {
     const asleep = await tom.mutation(api.tts.createTodo, { statement: "asleep till tomorrow" });
     const plain = await tom.mutation(api.tts.createTodo, { statement: "sign the form" });
     await t.run(async (ctx) => {
-      await ctx.db.patch(half, { readiness: "unprepared" });
-      await ctx.db.patch(blocked, { readiness: "prepared", needs: [need] });
-      await ctx.db.patch(asleep, { readiness: "prepared", wakeAt: Date.now() + DAY });
-      await ctx.db.patch(plain, { readiness: "prepared" });
+      await patchTodo(ctx, half, { readiness: "unprepared" });
+      await patchTodo(ctx, blocked, { readiness: "prepared", needs: [need] });
+      await patchTodo(ctx, asleep, { readiness: "prepared", wakeAt: Date.now() + DAY });
+      await patchTodo(ctx, plain, { readiness: "prepared" });
     });
-    const first = await t.query(internal.ttsDigest.internalComposeToday, {
+    const first = await composeToday(t, {
       day: DAY_KEY,
       now: Date.now() + 1,
     });
     expect(first.text).toContain("1 other todo is ready");
     // The need closes and the sleep passes: both count.
     await t.run(async (ctx) => {
-      await ctx.db.patch(need, { status: "done", doneAt: Date.now() });
-      await ctx.db.patch(asleep, { wakeAt: Date.now() - 1 });
+      await patchTodo(ctx, need, { status: "done", doneAt: Date.now() });
+      await patchTodo(ctx, asleep, { wakeAt: Date.now() - 1 });
     });
-    const later = await t.query(internal.ttsDigest.internalComposeToday, {
+    const later = await composeToday(t, {
       day: DAY_KEY,
       now: Date.now() + 1,
     });
@@ -405,9 +421,9 @@ describe("internalComposeToday", () => {
       needsTomToday: { why: "a person is waiting" },
     });
     await t.mutation(internal.tts.internalCapture, { statement: "Read the newsletter", source: "email" });
-    await t.run(async (ctx) => ctx.db.patch(done, { status: "done" }));
+    await t.run(async (ctx) => patchTodo(ctx, done, { status: "done" }));
     vi.setSystemTime(FIVE_AM);
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, facts } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
@@ -430,9 +446,9 @@ describe("internalComposeToday", () => {
       source: "email",
       needsTomToday: { why: "the invoice is due tomorrow" },
     });
-    await t.run(async (ctx) => ctx.db.patch(dated, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+    await t.run(async (ctx) => patchTodo(ctx, dated, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
     vi.setSystemTime(FIVE_AM);
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const { text, facts } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM + 1 });
     expect(text.split("Pay the lab deposit invoice")).toHaveLength(2);
     // Said in the needs-you run, with its reason and its lateness, and its
     // one fact is the needs-you one.
@@ -451,11 +467,11 @@ describe("internalComposeToday", () => {
     });
     const plain = await t.mutation(internal.tts.internalCapture, { statement: "Read the newsletter", source: "slack-capture" });
     await t.run(async (ctx) => {
-      await ctx.db.patch(flagged, { readiness: "prepared", entryAction: "open the invoice" });
-      await ctx.db.patch(plain, { readiness: "prepared", entryAction: "open it" });
+      await patchTodo(ctx, flagged, { readiness: "prepared", entryAction: "open the invoice" });
+      await patchTodo(ctx, plain, { readiness: "prepared", entryAction: "open it" });
     });
     vi.setSystemTime(FIVE_AM);
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const { text, facts } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM + 1 });
     const ready = facts.facts.find((f) => f.id === "ready:beyond");
     expect(text).toContain("Pay the lab deposit invoice, which needs you today");
     expect(ready?.numbers).toContain("1");
@@ -469,12 +485,12 @@ describe("internalComposeToday", () => {
     const flagged = await t.mutation(internal.tts.internalCapture, {
       statement: "Pay the lab deposit invoice", source: "email", needsTomToday: { why: "the invoice is due tomorrow" },
     });
-    await t.run(async (ctx) => ctx.db.patch(flagged, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+    await t.run(async (ctx) => patchTodo(ctx, flagged, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
     const undated = await t.mutation(internal.tts.internalCapture, {
       statement: "Answer the registrar", source: "email", needsTomToday: { why: "a person is waiting" },
     });
     vi.setSystemTime(FIVE_AM);
-    const { surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const { surfacedTodoIds } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM + 1 });
     expect(surfacedTodoIds.filter((id) => id === flagged)).toHaveLength(1);
     expect(surfacedTodoIds).toContain(undated);
   });
@@ -492,7 +508,7 @@ describe("internalComposeToday", () => {
       }));
     }
     vi.setSystemTime(FIVE_AM);
-    const { text, surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const { text, surfacedTodoIds } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM + 1 });
     const printed = ids.filter((id) => text.includes(ttsItemLink(id)));
     expect(printed.length).toBeLessThan(40);
     expect(ids.filter((id) => surfacedTodoIds.includes(id)).sort()).toEqual(printed.sort());
@@ -511,7 +527,7 @@ describe("internalComposeToday", () => {
       }));
     }
     vi.setSystemTime(FIVE_AM);
-    const first = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const first = await composeToday(t, { day: DAY_KEY, now: FIVE_AM + 1 });
     // The box records the digest it posted; the hook marks what it showed.
     await t.mutation(internal.jarvis.events.record, {
       kind: "digest-sent",
@@ -520,7 +536,7 @@ describe("internalComposeToday", () => {
     const shownFirst = ids.filter((id) => first.text.includes(ttsItemLink(id)));
     expect(shownFirst.length).toBeLessThan(40);
     vi.setSystemTime(FIVE_AM + DAY);
-    const second = await t.query(internal.ttsDigest.internalComposeToday, { day: "2026-09-06", now: FIVE_AM + DAY + 1 });
+    const second = await composeToday(t, { day: "2026-09-06", now: FIVE_AM + DAY + 1 });
     const shownSecond = ids.filter((id) => second.text.includes(ttsItemLink(id)));
     expect(shownSecond.length).toBeGreaterThan(0);
     expect(shownSecond.some((id) => shownFirst.includes(id))).toBe(false);
@@ -539,11 +555,11 @@ describe("internalComposeToday", () => {
         needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
       });
       // The LAST captured carries the OLDEST date, so capture order and date order disagree.
-      await t.run(async (ctx) => ctx.db.patch(id, { timingClass: "dated", dueAt: Date.UTC(2026, 7, 1, 16) + (39 - i) * 3_600_000, dateKind: "external" }));
+      await t.run(async (ctx) => patchTodo(ctx, id, { timingClass: "dated", dueAt: Date.UTC(2026, 7, 1, 16) + (39 - i) * 3_600_000, dateKind: "external" }));
       ids.push(id);
     }
     vi.setSystemTime(FIVE_AM);
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const { text } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM + 1 });
     const firstLine = text.split("\n")[0];
     const named = ids.find((id, i) => firstLine.toLowerCase().includes(`form number ${i} `));
     expect(named).toBeDefined();
@@ -561,11 +577,11 @@ describe("internalComposeToday", () => {
         source: "email",
         needsTomToday: { why: "a person in the registrar's office is waiting on your reply" },
       });
-      await t.run(async (ctx) => ctx.db.patch(id, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
+      await t.run(async (ctx) => patchTodo(ctx, id, { timingClass: "dated", dueAt: Date.UTC(2026, 8, 4, 16), dateKind: "external" }));
       ids.push(id);
     }
     vi.setSystemTime(FIVE_AM);
-    const { text, surfacedTodoIds } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM + 1 });
+    const { text, surfacedTodoIds } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM + 1 });
     const printed = ids.filter((id) => text.includes(ttsItemLink(id)));
     expect(printed.length).toBeLessThan(40);
     expect(ids.filter((id) => surfacedTodoIds.includes(id)).sort()).toEqual(printed.sort());
@@ -593,10 +609,10 @@ describe("internalComposeToday", () => {
     });
     const undated = await tom.mutation(api.tts.createTodo, { statement: "read the newsletter" });
     await t.run(async (ctx) => {
-      await ctx.db.patch(dated, { source: "email" });
-      await ctx.db.patch(undated, { source: "email" });
+      await patchTodo(ctx, dated, { source: "email" });
+      await patchTodo(ctx, undated, { source: "email" });
     });
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
@@ -614,7 +630,7 @@ describe("internalComposeToday", () => {
     const t = convexTest(schema, modules);
     await withTom(t);
     const { todo, ended, live, loose } = await t.run(async (ctx) => {
-      const todo = await ctx.db.insert("dtsTodos", {
+      const todo = await insertTodo(ctx, {
         statement: "walk the research critical path",
         readiness: "unprepared",
         status: "active",
@@ -634,7 +650,7 @@ describe("internalComposeToday", () => {
       await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3400_000, kind: "session-outcome", data: { sessionId: loose, outcome: "completed" } });
       return { todo, ended, live, loose };
     });
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, facts } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
@@ -668,7 +684,7 @@ describe("internalComposeToday", () => {
         });
       }
     });
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, facts } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
@@ -718,7 +734,7 @@ describe("internalComposeToday", () => {
         { name: "family", url: "https://example.invalid/f.ics", private: true },
       ]),
     );
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, facts } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
@@ -748,7 +764,7 @@ describe("internalComposeToday", () => {
       });
     });
     vi.stubEnv("TTS_ICS_FEEDS", "{not json");
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
@@ -788,7 +804,7 @@ describe("internalComposeToday", () => {
         },
       });
     });
-    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, objectionAskIds } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: true,
@@ -825,7 +841,7 @@ describe("internalComposeToday", () => {
         },
       });
     });
-    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, objectionAskIds } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: true,
@@ -856,7 +872,7 @@ describe("internalComposeToday", () => {
         },
       });
     });
-    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, objectionAskIds } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: true,
@@ -897,7 +913,7 @@ describe("internalComposeToday", () => {
         data: { id: "s2", sentence: "removed a line nobody proposed for real", dryRun: true },
       });
     });
-    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, objectionAskIds } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: true,
@@ -936,7 +952,7 @@ describe("internalComposeToday", () => {
         data: { pr: 8, url: "https://github.com/Heffnt/tom.quest/pull/8", subject: "removed nothing for real", dryRun: true },
       });
     });
-    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, objectionAskIds } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: true,
@@ -967,7 +983,7 @@ describe("internalComposeToday", () => {
         });
       }
     });
-    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, objectionAskIds } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: true,
@@ -1001,7 +1017,7 @@ describe("internalComposeToday", () => {
         data: { question: "q", decision: `used ${secret}`, reason: `because ${secret}`, refused: true, refusedBecause: `it holds ${secret}` },
       });
     });
-    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
+    const facts = await t.run(async (ctx) => gatherInOldTerms(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
     const askIds = facts.objections.map((o) => o.askId);
     expect(askIds).toContain("d-200");
     expect(askIds).not.toContain("d-0");
@@ -1023,7 +1039,7 @@ describe("internalComposeToday", () => {
       await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3590_000, kind: "session-outcome", data: { sessionId: "sess-a", outcome: "errored", summary: "the flush broke" } });
       await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3000_000, kind: "session-ended", data: { sessionId: "sess-b", status: "failed", endedReason: "out of memory" } });
     });
-    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
+    const facts = await t.run(async (ctx) => gatherInOldTerms(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
     const sessions = facts.broken.filter((row) => row.url?.includes("sess-"));
     expect(sessions).toHaveLength(2);
     expect(sessions.map((row) => [row.url, row.detail, row.count])).toEqual([
@@ -1050,7 +1066,7 @@ describe("internalComposeToday", () => {
       await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3600_000, kind: "session-outcome", todoId, data: { sessionId, outcome: "completed", summary: "done" } });
       await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3500_000, kind: "session-outcome", todoId, data: { sessionId, outcome: "errored", summary: "the source was unavailable" } });
     });
-    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, {
+    const facts = await t.run(async (ctx) => gatherInOldTerms(ctx, {
       day: DAY_KEY,
       now: FIVE_AM,
       since: FIVE_AM - 86_400_000,
@@ -1082,7 +1098,7 @@ describe("internalComposeToday", () => {
         await ctx.db.insert("dtsEvents", { at: FIVE_AM - 3 * 3600_000 + n, kind: "agents-ingest", data: {} });
       }
     });
-    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
+    const facts = await t.run(async (ctx) => gatherInOldTerms(ctx, { day: DAY_KEY, now: FIVE_AM, since: FIVE_AM - 86_400_000 }));
     expect(facts.objections.map((o) => o.askId)).toContain("buried1");
   }, 60_000);
 
@@ -1122,8 +1138,8 @@ describe("internalComposeToday", () => {
         });
       }
     });
-    const { text, truncated, objectionAskIds } = await t.query(
-      internal.ttsDigest.internalComposeToday,
+    const { text, truncated, objectionAskIds } = await composeToday(
+      t,
       { day: DAY_KEY, now: FIVE_AM },
     );
     expect(truncated).toBe(true);
@@ -1175,7 +1191,7 @@ describe("internalComposeToday", () => {
         },
       });
     });
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
@@ -1215,7 +1231,7 @@ describe("internalComposeToday", () => {
         { name: "rule/ruling-td8dkhd8", pass: true, note: "" },
       ]));
     });
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: FIVE_AM });
+    const { text } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM });
     expect(text).toContain("The rule evals failed 1 of 2 items in their newest run.");
     expect(text).toContain("rule/ruling-758ddm40");
     expect(text).not.toContain("The wall evals");
@@ -1224,7 +1240,7 @@ describe("internalComposeToday", () => {
   it("renders nothing at all when there are no delegate rows", async () => {
     const t = convexTest(schema, modules);
     await withTom(t);
-    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, objectionAskIds } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
@@ -1241,13 +1257,13 @@ describe("internalComposeToday", () => {
       statement: "pay rent",
       dueAt: Date.UTC(2026, 8, 4, 16),
     });
-    const dead = await t.query(internal.ttsDigest.internalComposeToday, {
+    const dead = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: false,
     });
     expect(dead.text).not.toContain("reply");
-    const live = await t.query(internal.ttsDigest.internalComposeToday, {
+    const live = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
       canReply: true,
@@ -1278,7 +1294,7 @@ describe("internalComposeToday", () => {
         data: { job: "poll-gmail", error: "token expired" },
       });
     });
-    const { since, text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { since, text } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
@@ -1302,7 +1318,7 @@ describe("internalComposeToday", () => {
         data: { day: "2026-08-29" },
       });
     });
-    const { since } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { since } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
@@ -1329,7 +1345,7 @@ describe("internalComposeToday", () => {
         data: { job: "poll-canvas", error: "canvas token expired" },
       });
     });
-    const { since, text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { since, text } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
@@ -1350,7 +1366,7 @@ describe("internalComposeToday", () => {
         data: { job: "poll-canvas", error: "Canvas rejected the access token (HTTP 401)" },
       });
     });
-    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
@@ -1377,7 +1393,7 @@ describe("internalComposeToday", () => {
         },
       });
     });
-    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+    const { text, facts } = await composeToday(t, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
@@ -1397,7 +1413,7 @@ describe("internalComposeToday", () => {
 describe("the channels' lines, in the digest", () => {
   const COMPOSE_AT = FIVE_AM + 60_000;
   const compose = (t: ReturnType<typeof convexTest>) =>
-    t.query(internal.ttsDigest.internalComposeToday, { day: DAY_KEY, now: COMPOSE_AT, since: FIVE_AM - DAY });
+    composeToday(t, { day: DAY_KEY, now: COMPOSE_AT, since: FIVE_AM - DAY });
 
   it("a model-of-Tom line and a failed learning night are lines on the digest, and nothing is posted", async () => {
     vi.useFakeTimers();
