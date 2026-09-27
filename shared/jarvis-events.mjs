@@ -90,6 +90,21 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  */
 export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run"];
 
+/**
+ * The kinds whose writer retries with a stable `data.id`: a second row of the
+ * kind with the same subject and data.id is that retry, not a new fact, and is
+ * not recorded again (convex/jarvis/events.ts recordEvent answers the first
+ * row's id with duplicate: true).
+ */
+export const REPEATS_BY_DATA_ID = [
+  // The box-change reader's outbox is at-least-once; data.id is the change's
+  // journal cursor (Jarvis worker/jobs/box-watch.mjs).
+  "box-change",
+  // The work queue re-posts a run's outcome until it is answered; data.id is
+  // "work-queue:<todo id>:<ruling id>:<run start ms>" (Jarvis worker/jobs/work-queue.mjs).
+  "session-outcome",
+];
+
 /** The provenance fields an event may carry, and nothing else. */
 export const PROVENANCE_FIELDS = ["agentId", "job", "session", "user"];
 

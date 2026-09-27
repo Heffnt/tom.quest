@@ -27,10 +27,11 @@ import { requireTom } from "../authRoles";
 import { eventArgs, insertEvent } from "./record";
 import type { EventInput } from "./record";
 import { onJobFailed, onJobOk } from "./jobs";
-import { onBoxChange } from "../boxChanges";
+import { BOX_CHANGE, boxChangeSubject, onBoxChange } from "../boxChanges";
 import { onDigestSent, onNeedsYouPosted } from "./digest";
 import { resolveId } from "./tables";
 import { SESSION_OUTCOME } from "../ttsShared";
+import { REPEATS_BY_DATA_ID } from "../../shared/jarvis-events.mjs";
 
 /** What runs after a row of each kind lands, inside the same mutation. */
 const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Promise<unknown>> = {
@@ -62,20 +63,31 @@ export async function recordEvent(
       input = { ...input, data: { ...data, rulingId: ruling } };
     }
   }
+  // A RETRY IS NOT A SECOND FACT. A kind whose writer re-posts with a stable
+  // data.id (shared/jarvis-events.mjs REPEATS_BY_DATA_ID) is recorded once:
+  // a row of the kind with the same subject and data.id already stands for
+  // it, and the caller is answered with that row's id. A box change's id is
+  // also its subject, so its lookup is one point read.
+  const repeatId = (input.data as { id?: unknown } | undefined)?.id;
+  if ((REPEATS_BY_DATA_ID as readonly string[]).includes(input.kind) && typeof repeatId === "string" && repeatId !== "") {
+    if (input.kind === BOX_CHANGE) input = { ...input, subject: boxChangeSubject(repeatId) };
+    const subject = input.subject;
+    if (subject !== undefined) {
+      for await (const earlier of ctx.db
+        .query("events")
+        .withIndex("by_subject_kind_at", (q) => q.eq("subject", subject).eq("kind", input.kind))) {
+        if ((earlier.data as { id?: unknown } | undefined)?.id === repeatId) {
+          return { id: earlier._id, result: { duplicate: true } };
+        }
+      }
+    }
+  }
   const id = await insertEvent(ctx, input);
   const hook = AFTER_RECORD[input.kind];
-  if (hook === undefined) return { id };
+  if (hook === undefined) return { id, result: { duplicate: false } };
   const row = await ctx.db.get(id);
   if (row === null) return { id };
-  const result = await hook(ctx, row);
-  // A hook that deleted the row as a resend of an earlier one names the row
-  // that stands for it (boxChanges.ts onBoxChange): the caller is answered
-  // with that id, never the id of a row that no longer exists.
-  if (typeof result === "object" && result !== null && "survivorId" in result) {
-    const { survivorId, ...rest } = result as { survivorId: Id<"events"> };
-    return { id: survivorId, result: rest };
-  }
-  return { id, result };
+  return { id, result: await hook(ctx, row) };
 }
 
 /** POST /jarvis/event's mutation, and any Convex reporter's. */

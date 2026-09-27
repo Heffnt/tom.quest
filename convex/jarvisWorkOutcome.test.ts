@@ -66,6 +66,25 @@ describe("a work-queue outcome on its todo", () => {
     data: { job: "work-queue", outcome: result, summary: "called the landlord", costUsd: 0.4 },
   });
 
+  it("a retry with the same data.id is not recorded again: ok, duplicate, and the first row's id", async () => {
+    vi.stubEnv("JARVIS_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const { old, plain } = await seed(t);
+    const runId = `work-queue:${plain.todo}:r1:1700000000000`;
+    const sent = { ...outcome(plain.todo, Date.now()), data: { ...outcome(plain.todo, 0).data, id: runId } };
+    const first = await (await post(t, sent)).json();
+    expect(first).toMatchObject({ ok: true, duplicate: false });
+    // The retry, with the todo in its other id form: the same run.
+    const again = await post(t, { ...sent, subject: old.todo });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ ok: true, id: first.id, duplicate: true });
+    // Another run of the same todo is another outcome.
+    const next = await (await post(t, { ...sent, data: { ...sent.data, id: `${runId}1` } })).json();
+    expect(next).toMatchObject({ ok: true, duplicate: false });
+    const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(rows.filter((r) => r.kind === "session-outcome").map((r) => r._id)).toEqual([first.id, next.id]);
+  });
+
   it("is taken with the todo as subject in either form, kept under the plain id; any other subject is refused", async () => {
     vi.stubEnv("JARVIS_KEY", KEY);
     const t = convexTest({ schema, modules });
