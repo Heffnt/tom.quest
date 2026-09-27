@@ -79,16 +79,8 @@ export const internalSearchEvals = internalQuery({
 // protocol is gone; its rows stay in the log. What follows is only what other
 // modules still import, over those rows.
 
-// kept for convex/ttsDigest.ts, ttsWeekly.ts and ttsSimplify.ts; that stream cuts it
+// kept for convex/ttsSimplify.ts; that stream cuts it
 export const EVALS_RUN = "evals-run";
 
 // kept for convex/ttsDigest.ts and ttsWeekly.ts; that stream cuts it
 export const PRELUDE_DELIVERY = "prelude-delivery";
-
-// kept for convex/ttsWeekly.ts; that stream cuts it
-/** A historic row that scored nothing: an unaffected, superseded or failed run. */
-export function scoredNothing(data: unknown): boolean {
-  const row = (data !== null && typeof data === "object" ? data : {}) as Record<string, unknown>;
-  return row.unaffected === true || row.superseded === true || row.error === true ||
-    (typeof row.error === "string" && row.error !== "");
-}
