@@ -14,22 +14,18 @@
 // comes back with nothing and the drawer says where its definition lives
 // instead of showing an empty panel.
 //
-// Fixed, so opening it moves nothing on the page behind it.
+// Fixed, so opening it moves nothing on the page behind it. The definition
+// itself is `Definition`, which the frame page (app/frame) shows in its right
+// drawer instead.
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 
-export default function DefinitionDrawer({
-  term,
-  onClose,
-}: {
-  term: string | null;
-  onClose: () => void;
-}) {
-  const answer = useQuery(api.observe.define, term === null ? "skip" : { term });
-  if (term === null) return null;
+/** A word's definition: its name, a close button, and the lines that define it. */
+export function Definition({ term, onClose }: { term: string; onClose: () => void }) {
+  const answer = useQuery(api.observe.define, { term });
   return (
-    <aside className="fixed inset-y-0 right-0 z-40 flex w-[min(28rem,100vw)] flex-col border-l border-border bg-surface shadow-2xl">
+    <>
       <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2">
         <h2 className="text-[15px] font-semibold text-text">{term}</h2>
         <button
@@ -65,6 +61,21 @@ export default function DefinitionDrawer({
           </>
         )}
       </div>
+    </>
+  );
+}
+
+export default function DefinitionDrawer({
+  term,
+  onClose,
+}: {
+  term: string | null;
+  onClose: () => void;
+}) {
+  if (term === null) return null;
+  return (
+    <aside className="fixed inset-y-0 right-0 z-40 flex w-[min(28rem,100vw)] flex-col border-l border-border bg-surface shadow-2xl">
+      <Definition term={term} onClose={onClose} />
     </aside>
   );
 }
