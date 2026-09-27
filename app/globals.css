@@ -145,6 +145,13 @@ button, input, select, textarea {
    and past it, it grows. Open and shut move by transform only; a drag moves
    without transition. --frame-handle and the --frame-inset-* are set on the
    frame by frame.tsx. */
+/* A drawer's sizes are registered as not inherited. A drag changes
+   --frame-s every frame, and an inherited custom property would make every
+   element inside the drawer recompute its style each time (20-30 ms a frame
+   for the /tts lists on the box, against 3 ms registered). */
+@property --frame-s { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --frame-min { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --frame-extent { syntax: "<length>"; inherits: false; initial-value: 0px; }
 [data-frame] {
   --frame-motion: 150ms;
   position: fixed;
