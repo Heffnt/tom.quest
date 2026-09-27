@@ -35,6 +35,7 @@
 // clean repository, which is the one wrong answer this check cannot see
 // otherwise.
 
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -63,6 +64,34 @@ const REMEDY = Object.freeze({
  *  on a laptop and in CI; `main` in the box's bare mirror, where the remote's
  *  branches ARE the local ones. */
 const MAIN_REFS = ["origin/main", "main"];
+
+/**
+ * Main's baseline, through `git`. A push to main is compared with the commit
+ * it replaced, the event's `before`: when a stack of pull requests merges
+ * seconds apart, main when the job runs is already a later merge with a
+ * shorter list, and an earlier merge read against it looked regenerated
+ * upward. A new branch's all-zero `before`, one that cannot be fetched, and
+ * every run that is not a push read MAIN_REFS.
+ */
+export function readMainBaseline(git, env = process.env, readEvent = (file) => fs.readFileSync(file, "utf8")) {
+  if (env.GITHUB_EVENT_NAME === "push") {
+    let before = null;
+    try {
+      before = JSON.parse(readEvent(env.GITHUB_EVENT_PATH)).before;
+    } catch {
+      before = null;
+    }
+    if (/^[0-9a-f]{40}$/.test(before ?? "") && /[1-9a-f]/.test(before) && git(["fetch", "--no-tags", "--depth=1", "origin", before]).ok) {
+      const shown = git(["show", `${before}:${BASELINE_PATH}`]);
+      if (shown.ok) return shown.stdout;
+    }
+  }
+  for (const ref of MAIN_REFS) {
+    const shown = git(["show", `${ref}:${BASELINE_PATH}`]);
+    if (shown.ok) return shown.stdout;
+  }
+  return null;
+}
 
 /**
  * The lines of `keys` that main's baseline lacks, less the ones a file move
@@ -197,13 +226,7 @@ function realCheckIo(root) {
         return null;
       }
     },
-    mainBaseline: () => {
-      for (const ref of MAIN_REFS) {
-        const shown = sensor.git(["show", `${ref}:${BASELINE_PATH}`]);
-        if (shown.ok) return shown.stdout;
-      }
-      return null;
-    },
+    mainBaseline: () => readMainBaseline(sensor.git),
   };
 }
 
