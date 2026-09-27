@@ -198,3 +198,50 @@ export function redactSecrets(text) {
   out = out.replace(BEARER, `$1[redacted:bearer]`);
   return redactNamedSecrets(out);
 }
+
+/**
+ * The kinds of rule in this file that can match text spanning a line break:
+ * the private-key block ("pem"), an AWS access key id with its secret on the
+ * next line ("aws-pair"), and a secret's name with its value on the next line
+ * ("named": the JSON, escaped-JSON, assignment and spaced forms). Every other
+ * rule (REDACTED_SHAPES, the Bearer header) matches within one line. A caller
+ * that sends text a line at a time reads this list to know which secrets a line
+ * break can split; __tests__/redact.test.mjs holds each listed rule to a case
+ * it redacts across a line break, and the others to none.
+ */
+export const LINE_CROSSING_RULES = Object.freeze(["pem", "aws-pair", "named"]);
+
+// A last line that closes any private key block, appended below so that the
+// filter's own rule (PEM_PRIVATE_KEY) marks the block the text leaves open.
+// Spelled in pieces so that no line of this file is a key block's edge.
+const CLOSING_LINE = `\n${["-----END", "PRIVATE KEY-----"].join(" ")}`;
+
+/**
+ * For a caller that sends a text only up to where it is safe: where the text
+ * holds a private key block that this filter leaves open (a first line with no
+ * last line after it, so redactSecrets would not replace it), the last line
+ * start at which no block is open; -1 where it leaves none open. Everything
+ * before that position redacts with every block in it closed.
+ *
+ * Read with PEM_PRIVATE_KEY itself, so it cannot disagree with the filter: the
+ * text is matched with a closing line appended, the one match that reaches the
+ * appended line is the block left open, and every other match is a block the
+ * filter closes in the text as it is. A line start inside a closed block is
+ * not a place with no block open, so the answer moves back past it.
+ */
+export function openPrivateKeyLineStart(text) {
+  const s = String(text);
+  const closed = [];
+  let open = -1;
+  for (const match of (s + CLOSING_LINE).matchAll(PEM_PRIVATE_KEY)) {
+    if (match.index + match[0].length > s.length) open = match.index;
+    else closed.push(match);
+  }
+  if (open === -1) return -1;
+  let at = s.lastIndexOf("\n", open - 1) + 1;
+  for (let i = closed.length - 1; i >= 0; i -= 1) {
+    const { index, 0: block } = closed[i];
+    if (index < at && at < index + block.length) at = s.lastIndexOf("\n", index - 1) + 1;
+  }
+  return at;
+}

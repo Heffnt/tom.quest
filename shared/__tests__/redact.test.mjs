@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { redactSecrets } from "../redact.mjs";
+import { LINE_CROSSING_RULES, openPrivateKeyLineStart, REDACTED_SHAPES, redactSecrets } from "../redact.mjs";
 
 // The parser's cut, TRUNCATE_LIMIT, is 32KB and lives in the Jarvis
 // repository (worker/agents/cut.mjs). Here it is a fixture: what these cases state is
@@ -272,5 +272,87 @@ describe("the marker and the 32KB cut", () => {
     const head = "y".repeat(TRUNCATE_LIMIT - 20) + token;
     const out = redactSecrets(head.slice(0, TRUNCATE_LIMIT));
     expect(out).not.toContain(token);
+  });
+});
+
+// openPrivateKeyLineStart is how a caller that sends text a line at a time
+// (the Jarvis box's live tail) knows where a private key block the filter
+// would leave open begins, without spelling the filter's rule a second time.
+// Held to the filter on the cases the Jarvis fence test uses: every armour
+// label, and every arrangement of first and last lines. For each, the answer
+// is -1 exactly when the filter closes every block; otherwise it is a line
+// start, the text before it redacts with no block left open, and every later
+// line start leaves one open.
+describe("openPrivateKeyLineStart agrees with the filter's private-key rule", () => {
+  const edge = (kind, label) => t("-----", kind, label, " PRIVATE KEY-----");
+  const opener = /-----BEGIN[^\n]*PRIVATE KEY-----/;
+  const leftOpen = (text) => opener.test(redactSecrets(text));
+  const lineStarts = (text) => [0, ...[...text.matchAll(/\n/g)].map((m) => m.index + 1)];
+  for (const label of ["", " RSA", " EC", " DSA", " OPENSSH", " ENCRYPTED", " X9 62"]) {
+    const [b, e] = [edge("BEGIN", label), edge("END", label)];
+    const arrangements = [
+      [b, "MIIbody0123", e],
+      [b, "MIIbody0123"],
+      [`see ${b} here`, "MIIbody0123", `and ${e} there`],
+      [`see ${b} here`, "MIIbody0123"],
+      [b, "MIIbody", b, "MIIbody", e],
+      [b, "MIIbody", e, "text", b, "MIIbody"],
+      [b, "MIIbody", e, b, "MIIbody", e],
+      [e, "text"],
+      [e, b, "MIIbody"],
+      [b, "MIIbody", edge("END", " OTHER LABEL")],
+      [`${b} MIIbody ${e}`],
+      [`${b} MIIbody`, `${e} ${b}`],
+    ];
+    for (const lines of arrangements) {
+      it(`label "${label.trim()}": ${JSON.stringify(lines).slice(0, 80)}`, () => {
+        const whole = `before\n${lines.join("\n")}\nafter\n`;
+        const at = openPrivateKeyLineStart(whole);
+        expect(at === -1).toBe(!leftOpen(whole));
+        if (at === -1) return;
+        expect(lineStarts(whole)).toContain(at);
+        expect(leftOpen(whole.slice(0, at))).toBe(false);
+        for (const later of lineStarts(whole).filter((start) => start > at)) {
+          expect(leftOpen(whole.slice(0, later)), `line start ${later}`).toBe(true);
+        }
+      });
+    }
+  }
+});
+
+// LINE_CROSSING_RULES names the rules a line break can split. Each listed rule
+// is shown redacting a secret whose parts sit on two lines; the rules not
+// listed are shown not to: every REDACTED_SHAPES pattern has no construct that
+// matches a line break, and a Bearer value on the line after its header is left
+// alone.
+describe("LINE_CROSSING_RULES lists the rules that match across a line break", () => {
+  it("lists pem, aws-pair and named", () => {
+    expect(LINE_CROSSING_RULES).toEqual(["pem", "aws-pair", "named"]);
+  });
+
+  const crossing = {
+    pem: [t("-----BEGIN", " PRIVATE KEY-----"), t("MIIE", "vFakeKeyMaterial0123"), t("-----END", " PRIVATE KEY-----")].join("\n"),
+    "aws-pair": `${t("AK", "IA", "FEDCBA0987654321")}\n${t("Qw1eR2tY3uI4oP5a", "Sd6fG7hJ8kL9zX0c", "Vb2nM3qW")}`,
+    named: `AUTH_TOKEN:\n  ${t("Zx9Yw8Vu7", "Ts6Rq5Po4Nm")}`,
+  };
+  for (const kind of ["pem", "aws-pair", "named"]) {
+    it(`${kind} redacts a secret split across two lines`, () => {
+      const text = crossing[kind];
+      const out = redactSecrets(text);
+      expect(out).not.toBe(text);
+      expect(out).toContain("[redacted:");
+      for (const line of text.split("\n").slice(1)) expect(out).not.toContain(line.trim());
+    });
+  }
+
+  it("no REDACTED_SHAPES pattern can match a line break", () => {
+    for (const { pattern } of REDACTED_SHAPES) {
+      expect(/\\s|\\n|\\r|\[\\s\\S\]|(^|[^\\])\.|\[\^/.test(pattern.source), pattern.source).toBe(false);
+    }
+  });
+
+  it("a Bearer value on the line after its header is left alone", () => {
+    const text = `Authorization: Bearer\n${t("abcdefgh", "12345678")}`;
+    expect(redactSecrets(text)).toBe(text);
   });
 });
