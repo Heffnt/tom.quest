@@ -31,9 +31,16 @@ const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 // are a rate limit or a dropped connection that the second attempt fixes, and
 // the digest is the one message Tom's morning depends on. The failure row is
 // written once, after the retry, and says how many attempts it took.
+//
+// EXCEPT A MESSAGE IN TOM'S NAME (`once`): a dropped connection may have
+// dropped only Slack's answer, and a second attempt would then post his words
+// twice. Such a send tries once, and says whether Slack itself refused it
+// (`refused`: Slack answered ok:false, so nothing was posted) or the outcome
+// is unknown, which the sign-off gate (convex/ttsSignoff.ts deliverAsTom)
+// reads to decide whether the claim may be released.
 type SlackSendResult =
   | { ok: true; ts: string }
-  | { ok: false; error: string };
+  | { ok: false; error: string; refused: boolean };
 
 // The pause before the retry. Long enough for a rate limit or a dropped
 // connection to clear, short enough that a 5 a.m. action does not sit waiting.
@@ -43,7 +50,7 @@ async function postOnce(
   token: string,
   target: string,
   { text, threadTs }: { text: string; threadTs?: string },
-): Promise<{ ok: boolean; ts?: string; error?: string }> {
+): Promise<{ ok: boolean; ts?: string; error?: string; refused?: boolean }> {
   try {
     const res = await fetch(SLACK_POST_URL, {
       method: "POST",
@@ -58,7 +65,9 @@ async function postOnce(
         ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
       }),
     });
-    return (await res.json()) as { ok: boolean; ts?: string; error?: string };
+    const answer = (await res.json()) as { ok: boolean; ts?: string; error?: string };
+    // Slack's own ok:false is a definite refusal; anything else unknown.
+    return answer.ok === false ? { ...answer, refused: true } : answer;
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -72,6 +81,7 @@ async function postSlack(
     channel,
     threadTs,
     windowEnd,
+    once = false,
   }: {
     text: string;
     subject: SlackSubject;
@@ -84,6 +94,7 @@ async function postSlack(
     // written at. Composing, retrying and recording take seconds, and every
     // event inside them would otherwise fall between two digests.
     windowEnd?: number;
+    once?: boolean;
   },
 ): Promise<SlackSendResult> {
   const token = process.env.SLACK_BOT_TOKEN;
@@ -92,11 +103,11 @@ async function postSlack(
     console.error(
       `TTS slack (${subject.kind}): SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured`,
     );
-    return { ok: false, error: "not configured" };
+    return { ok: false, error: "not configured", refused: true };
   }
   let result = await postOnce(token, target, { text, threadTs });
   let attempts = 1;
-  if (!result.ok || typeof result.ts !== "string") {
+  if (!once && (!result.ok || typeof result.ts !== "string")) {
     console.error(
       `TTS slack (${subject.kind}): Slack rejected the post: ${result.error ?? "no ts in Slack's answer"} — retrying once`,
     );
@@ -118,7 +129,7 @@ async function postSlack(
       attempts,
       windowEnd,
     });
-    return { ok: false, error };
+    return { ok: false, error, refused: result.refused === true };
   }
   await ctx.runMutation(internal.ttsSlack.internalRecordSlackSent, {
     channel: target,
@@ -138,6 +149,7 @@ export const sendSlack = internalAction({
     subject: SLACK_SUBJECT,
     channel: v.optional(v.string()),
     threadTs: v.optional(v.string()),
+    once: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<SlackSendResult> =>
     await postSlack(ctx, args),

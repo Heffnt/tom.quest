@@ -454,13 +454,19 @@ export const internalRecordFailed = internalMutation({
   },
 });
 
+/** A delivery the far side definitely did not take: nothing went out, so the
+ *  sign-off's claim may be released for another attempt. Any other throw from
+ *  a delivery may have followed a send (a dropped answer, a failed write after
+ *  the post), and keeps the claim, so the same signed text cannot go twice. */
+export class DeliveryRefused extends Error {}
+
 /**
  * THE GATE. Every send to a human other than Tom runs its delivery inside
  * this: a sign-off that matches sha256(text) + recipient + channel is claimed
  * first, the delivery runs only if one was, and the outcome is recorded —
  * "sent-as-tom" when it went, "send-as-tom-failed" when it was refused or
- * failed (and the claim is released on a failure, not on a refusal: there is
- * nothing to release).
+ * failed. The claim is released only when the delivery threw DeliveryRefused;
+ * on the gate's own refusal there is nothing to release.
  */
 export async function deliverAsTom<T>(
   ctx: ActionCtx,
@@ -487,7 +493,9 @@ export async function deliverAsTom<T>(
   try {
     delivered = await deliver();
   } catch (e) {
-    await ctx.runMutation(internal.ttsSignoff.internalReleaseSignoff, { signoffId: claim.signoffId });
+    if (e instanceof DeliveryRefused) {
+      await ctx.runMutation(internal.ttsSignoff.internalReleaseSignoff, { signoffId: claim.signoffId });
+    }
     await ctx.runMutation(internal.ttsSignoff.internalRecordFailed, {
       recipient: target.recipient,
       channel: target.channel,
@@ -538,8 +546,10 @@ export const internalSendProposal = internalAction({
             text: p.text,
             channel: door.conversation,
             subject: { kind: "job", id: SENT_AS_TOM },
+            once: true,
           });
-          if (!posted.ok) throw new Error(`Slack refused the message: ${posted.error}`);
+          if (!posted.ok && posted.refused) throw new DeliveryRefused(`Slack refused the message: ${posted.error}`);
+          if (!posted.ok) throw new Error(`the Slack post's outcome is unknown: ${posted.error}`);
           return posted;
         });
       } else {

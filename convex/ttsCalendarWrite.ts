@@ -27,7 +27,7 @@ import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { CALENDAR_CHANNEL, calendarRecipient, deliverAsTom, invitationText } from "./ttsSignoff";
+import { CALENDAR_CHANNEL, calendarRecipient, deliverAsTom, DeliveryRefused, invitationText } from "./ttsSignoff";
 
 export type CreateEventArgs = {
   title: string;
@@ -112,7 +112,7 @@ async function createEvent(
   const clientSecret = process.env.GOOGLE_CALENDAR_CLIENT_SECRET;
   const refreshToken = process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
   if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error(
+    throw new DeliveryRefused(
       "Calendar write is not configured — GOOGLE_CALENDAR_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN missing from the Convex env (mint them with worker/jobs/calendar-auth.mjs)",
     );
   }
@@ -128,7 +128,7 @@ async function createEvent(
     }),
   });
   if (!tokenRes.ok) {
-    throw new Error(
+    throw new DeliveryRefused(
       `calendar token refresh -> HTTP ${tokenRes.status}: ${(await tokenRes.text()).slice(0, 200)}`,
     );
   }
@@ -149,9 +149,10 @@ async function createEvent(
     },
   );
   if (!res.ok) {
-    throw new Error(
-      `calendar insert -> HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`,
-    );
+    // A 4xx is Google's refusal: no event, no invitation. A 5xx may have
+    // come after the insert, so it keeps the sign-off's claim.
+    const said = `calendar insert -> HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`;
+    throw res.status >= 400 && res.status < 500 ? new DeliveryRefused(said) : new Error(said);
   }
   const created = (await res.json()) as { id: string; htmlLink: string };
 

@@ -232,6 +232,52 @@ describe("the worker key cannot sign", () => {
   });
 });
 
+describe("a signed send goes out at most once", () => {
+  /** Slack's post behaves as `slack` says; everything else as stubNetwork. */
+  function stubSlack(slack: () => Response): Post[] {
+    const posts = stubNetwork();
+    const answer = vi.mocked(fetch).getMockImplementation()!;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        if (!String(url).includes("slack.com")) return await answer(url, init);
+        posts.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+        return slack();
+      }),
+    );
+    return posts;
+  }
+
+  it("a dropped answer is not retried, and the claim is kept, so the text cannot go again", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const posts = stubSlack(() => {
+      throw new Error("socket hang up");
+    });
+    const proposalId = await proposeSlack(t);
+    await tom.mutation(api.ttsSignoff.signAndSend, { proposalId });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
+    const [signoff] = await signoffs(t);
+    expect(signoff.usedAt).toBeTypeOf("number");
+    const again = await t.action(internal.ttsSignoff.internalSendProposal, { proposalId });
+    expect(again.error).toContain(NO_SIGNOFF);
+    expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
+  });
+
+  it("Slack's own refusal releases the claim: nothing went out", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const posts = stubSlack(() => Response.json({ ok: false, error: "channel_not_found" }));
+    const proposalId = await proposeSlack(t);
+    await tom.mutation(api.ttsSignoff.signAndSend, { proposalId });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(slackPosts(posts).filter((p) => p.body.channel === "C0SARAH01")).toHaveLength(1);
+    const [signoff] = await signoffs(t);
+    expect(signoff.usedAt).toBeUndefined();
+  });
+});
+
 describe("a signature covers one exact message", () => {
   it("is spent by its send: the same text again, unsigned, is refused", async () => {
     const t = convexTest(schema, modules);
@@ -343,6 +389,27 @@ describe("a calendar event with guests is a message in his name", () => {
     expect(insert?.body.attendees).toEqual([{ email: "Sarah@example.com" }, { email: "bob@example.com" }]);
     const [event] = await kinds(t, SENT_AS_TOM);
     expect(event.data).toMatchObject({ recipient: calendarRecipient(EVENT.guests), channel: CALENDAR_CHANNEL });
+  });
+
+  it("a Google 5xx on the insert keeps the claim, a 4xx releases it", async () => {
+    for (const [status, kept] of [[503, true], [400, false]] as const) {
+      const t = convexTest(schema, modules);
+      const tom = await withTom(t);
+      stubNetwork();
+      const answer = vi.mocked(fetch).getMockImplementation()!;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+          String(url).includes("googleapis.com/calendar") ? new Response("no", { status }) : await answer(url, init),
+        ),
+      );
+      const res = await propose(t, { channel: CALENDAR_CHANNEL, event: EVENT });
+      await tom.mutation(api.ttsSignoff.signAndSend, { proposalId: res.json.proposalId as Id<"dtsEvents"> });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const [signoff] = await signoffs(t);
+      expect(signoff.usedAt !== undefined).toBe(kept);
+      vi.unstubAllGlobals();
+    }
   });
 
   it("an event with no guests needs no sign-off, as before", async () => {
