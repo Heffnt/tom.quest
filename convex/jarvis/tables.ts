@@ -18,7 +18,7 @@
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { internalAction, internalMutation, internalQuery } from "../_generated/server";
-import type { ActionCtx, MutationCtx, QueryCtx } from "../_generated/server";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 
 /** Each plain-named core table and the table its rows come from. */
@@ -104,7 +104,7 @@ export const counts = internalAction({
   },
 });
 
-// ── todos, blocks and timeNotes: the copy, the remap, the check, the way back ─
+// ── todos, blocks and timeNotes: the copy, the remap, the check ─────────────
 //
 // sync {table} makes the plain table hold what its old table holds: a row the
 // copy has not seen is inserted with legacyId (the old _id), a copy that
@@ -123,14 +123,13 @@ export const counts = internalAction({
 // todoIds an earlier copy left as dtsTodos ids at todos. leftToRemap is the
 // check: every count under `left` is 0 once the copy is whole and remapped.
 //
-// THE WAY BACK. unmapTodoRefs points every todoId back at its dtsTodos id,
-// which the schema before this one requires. copyBack {table} is sync the
-// other way, for after the switch, when the plain tables are the truth: a
-// row born in a plain table is inserted into the old one and given that id as
-// its legacyId, and a copy that differs is written over its old row. It never
-// deletes: an old row with no copy is left, and a copy whose old row is gone
-// is counted as orphaned. leftToRemap's `rollback.zero` is the way back's
-// check: no plain row without an old row, no todoId naming todos.
+// THE WAY BACK from this pull request: nothing reads the plain tables yet, so
+// the previous head is the whole of it, once refsPage {direction: "back"} has
+// pointed every blocks and timeNotes todoId back at its dtsTodos id (that
+// head's schema takes no other, and a deploy checks every stored row). The
+// way back from the switch is built in the switch pull request, where every
+// plain row carries the version its old row must match; only that proves an
+// edit made through the new code reached the old tables.
 
 type Direction = "forward" | "back";
 
@@ -188,8 +187,8 @@ async function moveRef(ctx: QueryCtx | MutationCtx, to: Core, id: string, direct
   return typeof row.legacyId === "string" ? row.legacyId : { miss: "unresolved" };
 }
 
-/** A row as the other side stores it: its fields with every reference moved. */
-async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row, direction: Direction) {
+/** An old row as its plain table stores it: its fields, references moved. */
+async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row) {
   const fields = payload(row);
   let unresolved = 0;
   let dangling = 0;
@@ -198,12 +197,12 @@ async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row, direct
     if (value === undefined) continue;
     const moved: string[] = [];
     for (const id of (Array.isArray(value) ? value : [value]) as string[]) {
-      const ref = await moveRef(ctx, to, id, direction);
+      const ref = await moveRef(ctx, to, id, "forward");
       if (typeof ref === "string") moved.push(ref);
       else if (ref.miss === "dangling") dangling += 1;
       else {
         unresolved += 1;
-        if (either && direction === "forward") moved.push(id);
+        if (either) moved.push(id);
       }
     }
     if (Array.isArray(value)) fields[field] = moved;
@@ -213,31 +212,17 @@ async function mirror(ctx: QueryCtx | MutationCtx, table: Core, row: Row, direct
   return { fields, unresolved, dangling };
 }
 
-/** One page of the copy, either way: forward reads the old table and writes
- *  the plain one, back the reverse. */
-async function mirrorPage(ctx: MutationCtx, table: Core, direction: Direction, cursor: string | null) {
-  const source = direction === "forward" ? CORE[table] : table;
-  const target = direction === "forward" ? table : CORE[table];
-  const page = await ctx.db.query(source).order("asc").paginate({ cursor, numItems: PAGE });
-  const done = { inserted: 0, patched: 0, unchanged: 0, orphaned: 0, unresolved: 0, dangling: 0 };
+/** One page of the old table, copied into the plain one. */
+async function syncOnePage(ctx: MutationCtx, table: Core, cursor: string | null) {
+  const page = await ctx.db.query(CORE[table]).order("asc").paginate({ cursor, numItems: PAGE });
+  const done = { inserted: 0, patched: 0, unchanged: 0, unresolved: 0, dangling: 0 };
   for (const row of page.page as unknown as Row[]) {
-    const { fields, unresolved, dangling } = await mirror(ctx, table, row, direction);
+    const { fields, unresolved, dangling } = await mirror(ctx, table, row);
     done.unresolved += unresolved;
     done.dangling += dangling;
-    let existing: Row | null;
-    if (direction === "forward") existing = await copyOf(ctx, table, row._id);
-    else if (typeof row.legacyId !== "string") existing = null;
-    else {
-      const old = ctx.db.normalizeId(CORE[table], row.legacyId);
-      existing = old === null ? null : ((await ctx.db.get(old)) as Row | null);
-      if (existing === null) {
-        done.orphaned += 1;
-        continue;
-      }
-    }
+    const existing = await copyOf(ctx, table, row._id);
     if (existing === null) {
-      if (direction === "forward") await ctx.db.insert(target, { ...fields, legacyId: row._id } as never);
-      else await ctx.db.patch(row._id as Id<Core>, { legacyId: await ctx.db.insert(target, fields as never) });
+      await ctx.db.insert(table, { ...fields, legacyId: row._id } as never);
       done.inserted += 1;
       continue;
     }
@@ -253,22 +238,11 @@ async function mirrorPage(ctx: MutationCtx, table: Core, direction: Direction, c
   return { ...done, isDone: page.isDone, continueCursor: page.continueCursor };
 }
 
-const PAGE_ARGS = {
-  table: CORE_TABLE,
-  cursor: v.union(v.string(), v.null()),
-};
-
 /** One page of sync; `npx convex run` it with each answer's continueCursor
  *  until isDone, or run `sync`, which does that. */
 export const syncPage = internalMutation({
-  args: PAGE_ARGS,
-  handler: async (ctx, { table, cursor }) => await mirrorPage(ctx, table, "forward", cursor),
-});
-
-/** One page of copyBack, paged as syncPage is. */
-export const copyBackPage = internalMutation({
-  args: PAGE_ARGS,
-  handler: async (ctx, { table, cursor }) => await mirrorPage(ctx, table, "back", cursor),
+  args: { table: CORE_TABLE, cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { table, cursor }) => await syncOnePage(ctx, table, cursor),
 });
 
 /**
@@ -297,8 +271,9 @@ export const prunePage = internalMutation({
 
 /**
  * One page of the todoIds in `blocks` or `timeNotes`, moved: forward to the
- * todos copy (remapTodoRefs), back to the dtsTodos id (unmapTodoRefs). One
- * with no counterpart yet is counted and left.
+ * todos copy (what remapTodoRefs runs), back to the dtsTodos id (this pull
+ * request's way back, run by hand before the previous head deploys). One
+ * with no counterpart is counted and left.
  */
 export const refsPage = internalMutation({
   args: {
@@ -338,67 +313,44 @@ async function drain<T extends Paged>(step: (cursor: string | null) => Promise<T
   }
 }
 
-type MirrorAnswer = Paged & Record<"inserted" | "patched" | "unchanged" | "orphaned" | "unresolved" | "dangling", number>;
-
-/** Copy passes over a table: a second when the first left references
- *  unresolved (a todo's need on a todo later in the table). */
-async function passes(step: (cursor: string | null) => Promise<MirrorAnswer>) {
-  const first = await drain(step);
-  return first.unresolved > 0 ? [first, await drain(step)] : [first];
-}
-
-/** The whole copy of one table into its plain table, then the prune. */
+/** The whole copy of one table into its plain table, then the prune. A second
+ *  pass runs when the first left references unresolved (a todo's need on a
+ *  todo later in the table). */
 export const sync = internalAction({
   args: { table: CORE_TABLE },
   handler: async (ctx, { table }) => {
-    const copied = await passes(
-      (cursor): Promise<MirrorAnswer> => ctx.runMutation(internal.jarvis.tables.syncPage, { table, cursor }),
-    );
+    const pass = () =>
+      drain((cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.syncPage, { table, cursor }));
+    const first = await pass();
+    const passes = first.unresolved > 0 ? [first, await pass()] : [first];
     const pruned = await drain(
-      (cursor): Promise<Paged & { deleted: number }> => ctx.runMutation(internal.jarvis.tables.prunePage, { table, cursor }),
+      (cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.prunePage, { table, cursor }),
     );
-    return { table, passes: copied, pruned: pruned.deleted };
+    return { table, passes, pruned: pruned.deleted ?? 0 };
   },
 });
 
-/** The whole way back of one table: todos, then blocks, then timeNotes. */
-export const copyBack = internalAction({
-  args: { table: CORE_TABLE },
-  handler: async (ctx, { table }) => ({
-    table,
-    passes: await passes(
-      (cursor): Promise<MirrorAnswer> => ctx.runMutation(internal.jarvis.tables.copyBackPage, { table, cursor }),
-    ),
-  }),
-});
-
-async function moveTodoRefs(ctx: ActionCtx, direction: Direction) {
-  const out: Record<string, Record<string, number>> = {};
-  for (const table of ["blocks", "timeNotes"] as const) {
-    out[table] = await drain(
-      (cursor): Promise<Paged & { patched: number; unresolved: number }> =>
-        ctx.runMutation(internal.jarvis.tables.refsPage, { table, direction, cursor }),
-    );
-  }
-  return out;
-}
-
 /** Every todoId in blocks and timeNotes that names a copied dtsTodos row,
  *  pointed at its todos copy. Run after sync todos, blocks, timeNotes. */
-export const remapTodoRefs = internalAction({ args: {}, handler: async (ctx) => await moveTodoRefs(ctx, "forward") });
-
-/** remapTodoRefs undone: every todoId naming a todos row, pointed back at its
- *  dtsTodos id (after copyBack todos, for a row born in todos). */
-export const unmapTodoRefs = internalAction({ args: {}, handler: async (ctx) => await moveTodoRefs(ctx, "back") });
+export const remapTodoRefs = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const out: Record<string, Record<string, number>> = {};
+    for (const table of ["blocks", "timeNotes"] as const) {
+      out[table] = await drain(
+        (cursor): Promise<Paged> =>
+          ctx.runMutation(internal.jarvis.tables.refsPage, { table, direction: "forward", cursor }),
+      );
+    }
+    return out;
+  },
+});
 
 /**
  * One page of the check. side "old": the old table's rows with no copy, and
  * those whose copy differs from what sync would write now. side "plain": the
- * copies whose old row is gone, each reference field's ids still naming an
- * old table, and the way back's two counts, which must be 0 before the schema
- * before this one deploys again: `rollback.remapped`, the todoIds naming
- * todos, and `rollback.newSinceSwitch`, the rows with no legacyId (written
- * to a plain table after the switch; copyBack gives each an old row).
+ * copies whose old row is gone, and each reference field's ids still naming
+ * an old table.
  */
 export const leftPage = internalQuery({
   args: { table: CORE_TABLE, side: v.union(v.literal("old"), v.literal("plain")), cursor: v.union(v.string(), v.null()) },
@@ -410,19 +362,17 @@ export const leftPage = internalQuery({
       if (side === "old") {
         const copy = await copyOf(ctx, table, row._id);
         if (copy === null) add("notCopied");
-        else if (!same(payload(copy), (await mirror(ctx, table, row, "forward")).fields)) add("stale");
+        else if (!same(payload(copy), (await mirror(ctx, table, row)).fields)) add("stale");
         continue;
       }
-      if (typeof row.legacyId !== "string") add("rollback.newSinceSwitch");
-      else {
+      if (typeof row.legacyId === "string") {
         const old = ctx.db.normalizeId(CORE[table], row.legacyId);
         if (old === null || (await ctx.db.get(old)) === null) add("orphaned");
       }
-      for (const { field, to, either } of REFS[table]) {
+      for (const { field, to } of REFS[table]) {
         const value = row[field];
         for (const id of (Array.isArray(value) ? value : value === undefined ? [] : [value]) as string[]) {
           if (ctx.db.normalizeId(CORE[to], id) !== null) add(field);
-          else if (either && ctx.db.normalizeId(to, id) !== null) add("rollback.remapped");
         }
       }
     }
@@ -433,36 +383,24 @@ export const leftPage = internalQuery({
 /**
  * What is left before the switch, per table: notCopied, stale, orphaned and,
  * per reference field, the ids still naming an old table. `zero` is true when
- * every one is 0. `rollback` is the way back's check: per table the rows
- * no old row holds yet (newSinceSwitch, 0 once copyBack has run) and the
- * todoIds naming todos (remapped, 0 once unmapTodoRefs has run); its `zero`
- * is true when all are 0.
+ * every one is 0.
  */
 export const leftToRemap = internalAction({
   args: {},
   handler: async (ctx) => {
     const left: Record<string, Record<string, number>> = {};
-    const rollback: Record<string, Record<string, number>> = {};
     for (const table of ["todos", "blocks", "timeNotes"] as const) {
       const counts: Record<string, number> = { notCopied: 0, stale: 0, orphaned: 0 };
-      const back: Record<string, number> = { newSinceSwitch: 0 };
-      if (table !== "todos") back.remapped = 0;
       for (const { field } of REFS[table]) counts[field] = 0;
       for (const side of ["old", "plain"] as const) {
         const sums = await drain(
-          (cursor): Promise<Paged> =>
-            ctx.runQuery(internal.jarvis.tables.leftPage, { table, side, cursor }),
+          (cursor): Promise<Paged> => ctx.runQuery(internal.jarvis.tables.leftPage, { table, side, cursor }),
         );
-        for (const [key, value] of Object.entries(sums)) {
-          if (key.startsWith("rollback.")) back[key.slice("rollback.".length)] += value;
-          else counts[key] += value;
-        }
+        for (const [key, value] of Object.entries(sums)) counts[key] += value;
       }
       left[table] = counts;
-      rollback[table] = back;
     }
-    const allZero = (tables: Record<string, Record<string, number>>) =>
-      Object.values(tables).every((counts) => Object.values(counts).every((n) => n === 0));
-    return { zero: allZero(left), left, rollback: { zero: allZero(rollback), ...rollback } };
+    const zero = Object.values(left).every((counts) => Object.values(counts).every((n) => n === 0));
+    return { zero, left };
   },
 });
