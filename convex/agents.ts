@@ -8,6 +8,7 @@ import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { inboundRowIdOf } from "./sessionRows";
+import { eitherId, oldId } from "./jarvis/tables";
 
 const AGENT_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
@@ -81,7 +82,7 @@ const AGENT = v.object({
   environment: v.optional(AGENT_ENVIRONMENT),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: AGENT_KIND, status: AGENT_STATUS,
   mode: v.optional(AGENT_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
-  todoId: v.optional(v.id("dtsTodos")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  todoId: v.optional(eitherId.todos), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
   regToken: v.optional(v.string()),
   envelopeKey: v.optional(v.string()), abandonedAt: v.optional(v.number()), file: FILE,
 });
@@ -408,7 +409,10 @@ export const internalIngest = internalMutation({
     // box run launched is depth 2 here and depth 1 in its own file, and the
     // check that refused a row at any other depth than its run's dead-lettered
     // six such children on 2026-09-19.
-    let linked = { ...args.run, rootRunId, depth };
+    // A run names its todo in either id form (the box reads plain ids); the
+    // row stores the old one, as runs.todoId does until the write path moves.
+    const todoId = args.run.todoId === undefined ? undefined : ((await oldId(ctx, "todos", args.run.todoId)) ?? ctx.db.normalizeId("dtsTodos", args.run.todoId) ?? undefined);
+    let linked = { ...args.run, todoId, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
     // itself without a second worker round trip.

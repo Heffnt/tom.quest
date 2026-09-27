@@ -9,11 +9,17 @@
 // to `rulings`. dtsRulings stays whole until `counts` confirms the copy, then
 // a later commit empties it and drops it from the schema.
 //
-// TODOS, BLOCKS AND TIME NOTES move the same way in three pull requests. This
-// file holds the first: the copy machinery below the rulings count, which
-// changes no reader or writer (every one still names dtsTodos, dtsBlocks and
-// dtsTimeNotes until the switch). calendar, repeats and vocabulary stay
-// declared and untouched.
+// TODOS, BLOCKS AND TIME NOTES move the same way: the copy machinery below
+// the rulings count, then the dual write (every writer of the old tables
+// calls `follow`), then step B, the readers. calendar, repeats and
+// vocabulary stay declared and untouched.
+//
+// STEP B, THE READERS. An id reaches the record from outside in either form:
+// the plain row's, or the old one's (an old link, a Slack thread, a box file,
+// and every reference rulings, claudeSessions, runs and dtsEvents store,
+// which keep the ids they hold). `eitherId` is the argument validator that
+// takes both; `resolveId` answers the plain row a reader reads, `oldId` the
+// old row a writer writes, since the write path does not move in this step.
 
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
@@ -45,22 +51,51 @@ async function copyOf(ctx: QueryCtx | MutationCtx, table: "rulings" | Core, lega
     .first();
 }
 
+/** Each table under its plain name and the table its rows were copied from. */
+const OLD = { rulings: "dtsRulings", ...CORE } as const;
+type Plain = keyof typeof OLD;
+
+/** A core id as a function argument takes it from outside the record: the
+ *  plain row's id, or the id its row had in the old table (an old link, a
+ *  Slack thread, a box file, a stored reference). resolveId or oldId reads it. */
+export const eitherId = {
+  todos: v.union(v.id("todos"), v.id("dtsTodos")),
+  blocks: v.union(v.id("blocks"), v.id("dtsBlocks")),
+  timeNotes: v.union(v.id("timeNotes"), v.id("dtsTimeNotes")),
+} as const;
+
 /**
- * A ruling id as anything outside the record spells it: an id of `rulings`,
- * or the id its row had in dtsRulings (the box's files, a Slack thread, a
- * label's ref, the evidence). The one reader of legacyId; null when neither
- * names a row.
+ * An id as anything outside the record spells it: an id of the plain table,
+ * or the id its row had in the old one (the box's files, a Slack thread, a
+ * label's ref, the evidence, a reference another table stores). The one
+ * reader of legacyId; null when neither names a row.
  */
-export async function resolveId(
+export async function resolveId<T extends Plain>(
   ctx: QueryCtx | MutationCtx,
-  table: "rulings",
+  table: T,
   id: string,
-): Promise<Id<"rulings"> | null> {
+): Promise<Id<T> | null> {
   const direct = ctx.db.normalizeId(table, id);
   if (direct !== null) return (await ctx.db.get(direct)) === null ? null : direct;
-  if (ctx.db.normalizeId("dtsRulings", id) === null) return null;
+  if (ctx.db.normalizeId(OLD[table], id) === null) return null;
   const copied = await copyOf(ctx, table, id);
-  return copied === null ? null : (copied._id as Id<"rulings">);
+  return copied === null ? null : (copied._id as Id<T>);
+}
+
+/**
+ * The old row an id in either form names: what a writer writes, and what
+ * rulings, sessions, runs and events store, until the write path moves. null
+ * when neither names a row.
+ */
+export async function oldId<T extends Core>(
+  ctx: QueryCtx | MutationCtx,
+  table: T,
+  id: string,
+): Promise<Id<(typeof CORE)[T]> | null> {
+  const plain = ctx.db.normalizeId(table, id);
+  const row = plain === null ? null : ((await ctx.db.get(plain)) as Row | null);
+  const old = ctx.db.normalizeId(CORE[table], row === null ? id : String(row.legacyId));
+  return old !== null && (await ctx.db.get(old)) !== null ? old : null;
 }
 
 /** One page of a count: rows, and (in `rulings`) rows carrying a legacyId. */

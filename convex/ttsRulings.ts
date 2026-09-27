@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { isChangeSubject, tracksCodeTodos } from "./ttsShared";
-import { follow, resolveId } from "./jarvis/tables";
+import { eitherId, follow, oldId, resolveId } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -308,7 +308,7 @@ async function ruledSubjectName(
 
 export const recordRuling = mutation({
   args: {
-    todoId: v.optional(v.id("dtsTodos")),
+    todoId: v.optional(eitherId.todos),
     repo: v.optional(v.string()),
     externalId: v.optional(v.string()),
     verdict: VERDICT,
@@ -317,9 +317,11 @@ export const recordRuling = mutation({
     // proposed back (same field setStatus carries).
     unarchiveCondition: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, { todoId, ...args }) => {
     await requireTom(ctx, "TTS");
-    return await insertRuling(ctx, args);
+    const old = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
+    if (old === null) throw new Error("TTS todo not found");
+    return await insertRuling(ctx, { ...args, todoId: old });
   },
 });
 
@@ -340,7 +342,7 @@ export const internalRecordRuling = internalMutation({
   handler: async (ctx, { todoId, ...rest }) => {
     let normalized: Id<"dtsTodos"> | undefined;
     if (todoId !== undefined) {
-      const id = ctx.db.normalizeId("dtsTodos", todoId);
+      const id = await oldId(ctx, "todos", todoId);
       if (!id) throw new Error(`Unknown todo id: ${todoId}`);
       normalized = id;
     }
@@ -470,8 +472,8 @@ async function resolveSubject(
   externalId?: string;
 }> {
   if (subjectType === "life") {
-    const todoId = ctx.db.normalizeId("dtsTodos", subjectId);
-    if (!todoId || !(await ctx.db.get(todoId))) {
+    const todoId = await oldId(ctx, "todos", subjectId);
+    if (!todoId) {
       throw new Error(`Unknown todo id: ${subjectId}`);
     }
     return { todoId };
@@ -534,8 +536,11 @@ async function refuseUnlessSessionSubject(
 ): Promise<void> {
   let about = false;
   if (session.kind === "weekly") {
+    // The agenda names its todos as the Friday job read them, in either form.
     const id = subjectType === "life" ? subject.todoId : undefined;
-    about = id !== undefined && (session.agendaSubjects ?? []).includes(id);
+    for (const named of session.agendaSubjects ?? []) {
+      if (id !== undefined && (await oldId(ctx, "todos", named)) === id) about = true;
+    }
   } else if (subjectType === "life" && subject.todoId !== undefined) {
     const todo = await ctx.db.get(subject.todoId);
     about =
