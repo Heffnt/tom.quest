@@ -46,7 +46,7 @@ export function trackedFiles(run = execFileSync) {
 // Keep this in step with search-lib.mjs: the laptop wrapper supplies this
 // default, while the box reads WIKITOM_DIR before using its own default.
 export const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
-export const BOX_WIKITOM_DIR = "/root/wikitom";
+export const BOX_WIKITOM_DIR = "/home/jarvis/wikitom";
 
 /** The terms of one `categories:` line, lowercased, as a set. */
 export function categoryTerms(line) {
@@ -130,7 +130,16 @@ export function wikiTomCategoryLines(root, { exists = existsSync, readdir = read
 }
 
 /**
- * EVERY 40-CHARACTER WINDOW OF THE OPERATE PAGE, not its whole lines.
+ * EVERY 40-CHARACTER WINDOW OF EVERY MODEL-OF-TOM PAGE, not its whole lines.
+ *
+ * EVERY TOP-LEVEL PAGE, NOT ONLY THE OPERATE PAGE. This began with
+ * agent-rules.md alone, and a retrospective then found six fragments of two
+ * other model-of-tom pages sitting in this tree, quoted in comments and docs,
+ * that the check had never been shown. Every `model-of-tom/*.md` is private
+ * alike, so each is cut the same way. What stays out is what always did: the
+ * area pages under areas/ (whose bodies never enter this check; their category
+ * lines are compared by the rule above) and the evidence/ tree, which is
+ * searched, never loaded.
  *
  * The first version of this took whole lines and asked whether each appeared in
  * a tracked file. That caught four copies and missed ten more, because the way
@@ -154,22 +163,30 @@ export function wikiTomCategoryLines(root, { exists = existsSync, readdir = read
  * scan asks one Set lookup per position of the FILE either way, so the work is
  * the tree's size and not the set's.
  *
- * BOUNDED BY THE PAGE, NOT BY THE TREE: a 7 KB operate page yields ~4,300
- * windows whatever the repository does.
+ * BOUNDED BY THE PAGES, NOT BY THE TREE: ~40 KB of model-of-tom yields a
+ * few tens of thousands of windows whatever the repository does, and the scan
+ * still costs one Set lookup per position of each file.
  */
 export const OPERATE_LINE_MIN = 40;
 export const OPERATE_WINDOW_STEP = 1;
-export function operateWindows(root, { exists = existsSync, readFile = readFileSync } = {}) {
-  const file = path.join(root, "model-of-tom", "agent-rules.md");
-  if (!exists(file)) return null;
+export function operateWindows(root, { exists = existsSync, readdir = readdirSync, readFile = readFileSync } = {}) {
+  const dir = path.join(root, "model-of-tom");
+  if (!exists(dir)) return null;
+  const pages = readdir(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
+  if (pages.length === 0) return null;
   const windows = new Set();
-  for (const raw of readFile(file, "utf8").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (line.length < OPERATE_LINE_MIN) continue;
-    for (let at = 0; at + OPERATE_LINE_MIN <= line.length; at += OPERATE_WINDOW_STEP) {
-      windows.add(line.slice(at, at + OPERATE_LINE_MIN));
+  for (const page of pages) {
+    for (const raw of readFile(path.join(dir, page), "utf8").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line.length < OPERATE_LINE_MIN) continue;
+      for (let at = 0; at + OPERATE_LINE_MIN <= line.length; at += OPERATE_WINDOW_STEP) {
+        windows.add(line.slice(at, at + OPERATE_LINE_MIN));
+      }
+      windows.add(line.slice(-OPERATE_LINE_MIN));
     }
-    windows.add(line.slice(-OPERATE_LINE_MIN));
   }
   return [...windows];
 }
@@ -219,7 +236,7 @@ export function contentFindings(tracked, { categoryLines = null, windows = null 
       findings.push({ file, rule: "WikiTom area-category content" });
     }
     if (wanted !== null && hitsOperate(text, wanted)) {
-      findings.push({ file, rule: "model-of-tom operate content" });
+      findings.push({ file, rule: "model-of-tom page content" });
     }
   }
   return findings.sort((a, b) => a.file.localeCompare(b.file) || a.rule.localeCompare(b.rule));
@@ -243,18 +260,47 @@ export function wikiTomRoot({ env = process.env, platform = process.platform, ex
   return exists(path.join(root, "model-of-tom", "areas")) ? root : null;
 }
 
-export function checkPrivatePaths(run = execFileSync, { notice = () => {}, root = wikiTomRoot(), fs, cwd } = {}) {
+/**
+ * WHETHER A MISSING WIKITOM IS A FAILURE rather than a skip.
+ *
+ * REQUIRE_WIKITOM says so outright, and so does a WIKITOM_DIR that names a
+ * directory holding no checkout: whoever names a directory expects the check
+ * to read it, and the box's pre-push hook and pull-request checks name one.
+ *
+ * CI IS NOT REQUIRED, ONLY LOUD. The Guardrails workflow has no WikiTom
+ * checkout (the repository is private and the workflow holds no token that
+ * reads it), so requiring it there would fail every pull request. A CI skip is
+ * a warning annotation on the run instead of a line in the log.
+ */
+export function wikiTomRequired(env = process.env) {
+  return Boolean(env.REQUIRE_WIKITOM) || Boolean(env.WIKITOM_DIR);
+}
+
+export function checkPrivatePaths(
+  run = execFileSync,
+  { notice = () => {}, root = wikiTomRoot(), fs, cwd, env = process.env } = {},
+) {
   const tracked = trackedFiles(run);
   const findings = privatePathFindings(tracked);
   // A checkout with no area page carries no line to compare, and a check with
   // nothing to compare must say so rather than pass silently.
   const categoryLines = root === null ? null : wikiTomCategoryLines(root, fs);
   const operate = root === null ? null : operateWindows(root, fs);
+  const required = wikiTomRequired(env);
+  // `::warning::` is GitHub's annotation syntax: in CI the skip lands on the
+  // run's summary, where a reader counting green checks sees it.
+  const skipped = (what) => `${env.CI && !required ? "::warning::" : ""}private-paths: WikiTom checkout unavailable; ${what} content check skipped\n`;
+  const missing = [];
   if (categoryLines === null || categoryLines.length === 0) {
-    notice("private-paths: WikiTom checkout unavailable; area-category content check skipped\n");
+    notice(skipped("area-category"));
+    missing.push("area-category");
   }
   if (operate === null || operate.length === 0) {
-    notice("private-paths: WikiTom checkout unavailable; operate content check skipped\n");
+    notice(skipped("model-of-tom page"));
+    missing.push("model-of-tom page");
+  }
+  if (required && missing.length > 0) {
+    findings.push({ file: root ?? env.WIKITOM_DIR ?? "(WikiTom)", rule: `WikiTom required but absent (${missing.join(", ")})` });
   }
   return [
     ...findings,
