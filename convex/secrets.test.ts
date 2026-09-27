@@ -91,6 +91,25 @@ describe("secrets.set and secrets.list", () => {
     expect(String(err)).not.toContain(VALUE);
   });
 
+  it("keeps a value as pasted but for one trailing newline", async () => {
+    const { t, tom } = await setup();
+    await tom.mutation(api.secrets.set, { name: "SPACED", value: "  not-a-key \t\n" });
+    await tom.mutation(api.secrets.set, { name: "CRLF", value: "not-a-key\r\n" });
+    const byName = Object.fromEntries((await rows(t)).map((row) => [row.name, row.value]));
+    expect(byName).toEqual({ SPACED: "  not-a-key \t", CRLF: "not-a-key" });
+  });
+
+  it("a report of a value replaced in the same millisecond does not delete the new one", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-24T12:00:00Z"));
+    const { t, tom } = await setup();
+    await tom.mutation(api.secrets.set, { name: "HF_TOKEN", value: "old-value" });
+    const [read] = await rows(t);
+    await tom.mutation(api.secrets.set, { name: "HF_TOKEN", value: "new-value" });
+    expect((await taken(t, { name: "HF_TOKEN", setAt: read.setAt })).status).toBe(409);
+    expect((await rows(t))[0].value).toBe("new-value");
+  });
+
   it("keeps one row per name: a second set replaces the value and clears the taken date", async () => {
     const { t, tom } = await setup();
     await tom.mutation(api.secrets.set, { name: "HF_TOKEN", value: "first-value" });

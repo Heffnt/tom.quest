@@ -34,17 +34,23 @@ export const set = mutation({
     if (!SECRET_NAME.test(name)) {
       throw new Error("name must be upper-case letters, digits and underscores, not starting with a digit");
     }
-    // A pasted value usually carries a trailing newline. Any line break or
-    // NUL left inside would split the env file's NAME=value line in two.
-    const trimmed = value.trim();
-    if (trimmed === "") throw new Error(`${name}: value is empty`);
+    // A pasted value usually carries one trailing newline, and only that is
+    // dropped: a space or tab at either end may be part of the secret, so the
+    // value is otherwise kept exactly as pasted. Any line break or NUL left
+    // inside would split the env file's NAME=value line in two.
+    const trimmed = value.replace(/\r?\n$/, "");
+    if (trimmed.trim() === "") throw new Error(`${name}: value is empty`);
     if (/[\r\n\0]/.test(trimmed)) throw new Error(`${name}: value contains a line break`);
     if (trimmed.length > SECRET_VALUE_MAX) throw new Error(`${name}: value is longer than ${SECRET_VALUE_MAX} characters`);
-    const now = Date.now();
     const row = await ctx.db
       .query("secretMailbox")
       .withIndex("by_name", (q) => q.eq("name", name))
       .unique();
+    // `setAt` is the delivery's generation as well as its date: the taken
+    // report deletes the value only when it names this one. Two sets in one
+    // millisecond would share Date.now(), so a new value always takes a later
+    // setAt than the row's last, and a report of the old one cannot delete it.
+    const now = Math.max(Date.now(), (row?.setAt ?? 0) + 1);
     if (row) {
       // A new value replaces a waiting one, and a taken date belongs to the
       // value that was taken, so it goes.
