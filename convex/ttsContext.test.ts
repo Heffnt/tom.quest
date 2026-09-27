@@ -7,6 +7,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { insertTodo, patchTodo } from "../test/core-tables";
+import { resolveId } from "./jarvis/tables";
 import {
   areaSubjectLine,
   assembleContext,
@@ -162,6 +163,24 @@ describe("assembleContext", () => {
     expect(context.facts).toBe(
       "RULINGS ON THIS SUBJECT\n- 2026-09-05 revise: narrow it first\n- 2026-09-04 session: talk it through",
     );
+  });
+
+  // The read is five under each id form, through by_todo, merged and cut
+  // (not the todo's whole ruling history); the answer is the oldest five of
+  // both forms together.
+  it("reads the oldest five rulings under each id form, merged, of a todo with many", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seed(t);
+    const old = ids.todos[IDS.member1];
+    await t.run(async (ctx) => {
+      const plain = (await resolveId(ctx, "todos", old))!;
+      for (let i = 0; i < 40; i++) {
+        await ctx.db.insert("rulings", { subjectType: "life", todoId: i % 2 === 0 ? old : plain, verdict: "session", sentence: `ruling ${i}`, ruledAt: at("2026-09-01") + i });
+      }
+    });
+    const context = await assemble(t, { kind: "todo", todoId: old });
+    const lines = context.facts.split("RULINGS ON THIS SUBJECT\n")[1].split("\n\n")[0].split("\n");
+    expect(lines).toEqual([4, 3, 2, 1, 0].map((i) => `- 2026-09-01 session: ruling ${i}`));
   });
 
   it("carries a repository subject's prior outcomes", async () => {
