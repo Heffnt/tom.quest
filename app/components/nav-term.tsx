@@ -3,12 +3,9 @@
 import Link from "next/link";
 import TomLogo from "./tom-logo";
 import TomQuestSymbol from "./tom-quest-symbol";
-import { useRouter } from "next/navigation";
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -16,7 +13,7 @@ import { useAuth, getUsername } from "../lib/auth";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
 import DebugToggle from "./debug-toggle";
-import { rankPages, type PageRole } from "./page-routes";
+import { useNavSearch } from "./use-nav-search";
 
 /* Responsive cut-points. */
 const COMPACT_PX = 480;  // below: logo collapses to bare tom symbol
@@ -43,8 +40,7 @@ export default function NavTerm({
   offsets?: NavOffsets;
   animateOffsets?: boolean;
 }) {
-  const router = useRouter();
-  const { user, isTom, role } = useAuth();
+  const { user, isTom } = useAuth();
   const displayName = getUsername(user);
   const vw = useViewportWidth();
   const compact = vw < COMPACT_PX;
@@ -53,56 +49,9 @@ export default function NavTerm({
   const [loginOpen, setLoginOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
 
-  const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
-  const [open, setOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const { query, setQuery, cursor, setCursor, open, setOpen, ranked, suggestion, submit, onKeyDown, inputRef } =
+    useNavSearch();
   const pillRef  = useRef<HTMLDivElement>(null);
-
-  const pageRole: PageRole = user ? role : "guest";
-  const ranked = useMemo(() => rankPages(query, pageRole), [query, pageRole]);
-  const suggestion = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q || !ranked[0]) return "";
-    return ranked[0].slug.startsWith(q) && ranked[0].slug !== q ? ranked[0].slug : "";
-  }, [query, ranked]);
-
-  useEffect(() => { setCursor(0); }, [query]);
-
-  const submit = useCallback(
-    (override?: string) => {
-      const target = (override ?? ranked[cursor]?.slug ?? query).trim().toLowerCase();
-      if (!target) return;
-      router.push(`/${encodeURIComponent(target)}`);
-      setQuery("");
-      setOpen(false);
-    },
-    [ranked, cursor, query, router],
-  );
-
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setOpen(true);
-        setCursor((c) => Math.min(ranked.length - 1, c + 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setCursor((c) => Math.max(0, c - 1));
-      } else if (e.key === "Tab") {
-        e.preventDefault();
-        if (suggestion) setQuery(suggestion);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        submit();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        setOpen(false);
-        inputRef.current?.blur();
-      }
-    },
-    [ranked.length, suggestion, submit],
-  );
 
   /* Dropdown is absolutely positioned below the pill. Measure on open +
      resize — the pill doesn't move in this simplified bar so no rAF tracker. */
@@ -136,7 +85,7 @@ export default function NavTerm({
     };
     window.addEventListener("mousedown", onDocDown);
     return () => window.removeEventListener("mousedown", onDocDown);
-  }, [open]);
+  }, [open, setOpen]);
 
   const dockedLogo = compact ? (
     <TomQuestSymbol size={32} />
