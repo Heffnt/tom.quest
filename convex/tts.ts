@@ -61,7 +61,7 @@ const DATE_OUTCOME = v.union(
 export async function logEvent(
   ctx: MutationCtx,
   kind: string,
-  todoId?: Id<"dtsTodos">,
+  todoId?: Id<"todos"> | Id<"dtsTodos">,
   data?: unknown,
   // The indexed lookup key (schema: dtsEvents.key) — set on the kinds the
   // schema comment lists, and on no other.
@@ -69,6 +69,8 @@ export async function logEvent(
 ) {
   // A failure row (convex/ttsShared.ts isFailureKind) is a line in the
   // digest's broken section, which reads its window; nothing posts here.
+  // The row names its todo in the form it was handed (convex/jarvis/tables.ts);
+  // a reader reads both.
   const id = await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,

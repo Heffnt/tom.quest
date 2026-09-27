@@ -994,13 +994,15 @@ async function namedTodo(
  * read it off the reply with the todo's name taken out (namedTodo). */
 async function todoReply(
   ctx: MutationCtx,
-  todoId: Id<"dtsTodos">,
+  given: Id<"todos"> | Id<"dtsTodos">,
   text: string,
   at: { channel: string; ts: string; threadTs: string },
   shape: ReplyShape = replyShape(text),
 ): Promise<ThreadReplyOutcome> {
-  const todo = await ctx.db.get(todoId);
-  if (!todo) throw new Error(`Unknown todo id: ${todoId}`);
+  // A thread names its todo in either form (convex/jarvis/tables.ts).
+  const todoId = await oldId(ctx, "todos", given);
+  const todo = todoId === null ? null : await ctx.db.get(todoId);
+  if (todoId === null || !todo) throw new Error(`Unknown todo id: ${given}`);
   const subject: SlackSubject = { kind: "todo", id: todoId };
   switch (shape) {
     case "done":

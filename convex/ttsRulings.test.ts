@@ -5,7 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { resolveId } from "./jarvis/tables";
+import { follow, resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -1357,6 +1357,9 @@ describe("a ruling from Tom's words", () => {
         createdAt: now,
         updatedAt: now,
       });
+      // Each with its plain copy, as the dual write stores a todo.
+      await follow(ctx, "todos", paperId);
+      await follow(ctx, "todos", otherId);
       return { paperId, otherId };
     });
     // The job's pen: the agenda names the dentist todo and the paper todo.

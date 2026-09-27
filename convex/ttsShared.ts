@@ -958,7 +958,9 @@ export const SLACK_SUBJECT = v.union(
   v.object({ kind: v.literal("today"), day: v.string() }),
   v.object({ kind: v.literal("digest"), day: v.string() }),
   v.object({ kind: v.literal("hourly"), hour: v.string() }),
-  v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
+  // Either id: a thread posted before step C of the core tables' move names
+  // its todo's old id, one posted since the plain one.
+  v.object({ kind: v.literal("todo"), id: v.union(v.id("dtsTodos"), v.id("todos")) }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
   // ONE DELEGATED DECISION (an "ask"), posted to the decisions channel as it

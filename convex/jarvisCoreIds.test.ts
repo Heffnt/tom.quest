@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { oldId, resolveId } from "./jarvis/tables";
+import { oldId, resolveId, todoEvents, todoRulings } from "./jarvis/tables";
 
 // Step B of the core tables' move (convex/jarvis/tables.ts): a todo, block or
 // time note id reaches the record from outside in either form, the old
@@ -110,4 +110,38 @@ describe("an id in either form", () => {
       await followed(t);
     });
   }
+});
+
+// Step C: a stored reference (a ruling's, an event's, a session's, a run's)
+// holds a todo's old id when it was written before the step and the plain id
+// after it. Readers read both as the one todo.
+describe("a stored todo reference in either form", () => {
+  it("a todo's events and rulings are read under both ids", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, old, plain } = await seed(t);
+    await tom.mutation(api.tts.recordEvent, { kind: "opened", todoId: old.todo });
+    // "session" stays pending until its session exists.
+    const approve = await tom.mutation(api.ttsRulings.recordRuling, { todoId: plain.todo, verdict: "session" });
+    const revise = await t.run(async (ctx) => {
+      // The door stored the old id; a row written after step C, the plain one.
+      await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "plain-form", todoId: plain.todo });
+      for (const id of [old.todo, plain.todo]) {
+        expect((await todoEvents(ctx, id)).map((e) => e.kind)).toEqual(expect.arrayContaining(["opened", "plain-form"]));
+      }
+      // A newer ruling stored under the other form is the same subject's.
+      const stored = (await ctx.db.get(approve))!.todoId;
+      return await ctx.db.insert("rulings", {
+        subjectType: "life",
+        todoId: stored === old.todo ? plain.todo : old.todo,
+        verdict: "revise",
+        sentence: "ask the landlord first",
+        ruledAt: Date.now() + 1,
+      });
+    });
+    await t.run(async (ctx) => {
+      expect((await todoRulings(ctx, old.todo)).map((r) => r.todoId)).toEqual([plain.todo, plain.todo]);
+    });
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => [r._id, r.todoId])).toEqual([[revise, plain.todo]]);
+  });
 });

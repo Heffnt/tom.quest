@@ -440,7 +440,7 @@ type SessionSeed = {
   /** Already through resolveSessionRepos. Empty = the empty-scratch posture.
    * Kind "therapy" must name none: insertSession refuses it otherwise. */
   repos: string[];
-  todoId?: Id<"dtsTodos">;
+  todoId?: Id<"todos"> | Id<"dtsTodos">;
   blockCategory?: string;
   /** The code todo a worker mission was admitted for (schema: codeRepo /
    * codeExternalId) — both or neither. */

@@ -20,7 +20,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { modelOfTomState, modelOfTomText, withoutModelOfTomPrelude, WRITE_PAGES } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
-import { oldId, resolveId } from "./jarvis/tables";
+import { resolveId, todoRulings } from "./jarvis/tables";
 
 /** What the run is about. `none` is every caller with no subject (the HTTP
  * doors, the laptop): its prompt carries no record facts. */
@@ -138,14 +138,13 @@ async function subjectFacts(
       : [];
 
   if (subject.kind === "todo") {
-    // The plain row; a ruling names it by its old id.
-    const plain = await resolveId(ctx, "todos", subject.todoId);
-    const old = plain === null ? null : await oldId(ctx, "todos", plain);
-    if (old === null) throw new Error(`context subject todo ${subject.todoId} does not exist`);
-    const own = await ctx.db
-      .query("rulings")
-      .withIndex("by_todo", (q) => q.eq("todoId", old))
-      .take(RULINGS_PER_SUBJECT);
+    // A ruling names its todo by either id; the oldest first, as by_todo.
+    if ((await resolveId(ctx, "todos", subject.todoId)) === null) {
+      throw new Error(`context subject todo ${subject.todoId} does not exist`);
+    }
+    const own = (await todoRulings(ctx, subject.todoId))
+      .sort((a, b) => a._creationTime - b._creationTime)
+      .slice(0, RULINGS_PER_SUBJECT);
     for (const ruling of own) {
       record.rulings.push({
         verdict: ruling.verdict,
