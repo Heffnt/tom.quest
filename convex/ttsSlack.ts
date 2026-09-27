@@ -26,7 +26,7 @@ import {
 } from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 import { needsYouNumber, openNeedsYou } from "./jarvis/outbox";
-import { follow, oldId, resolveId } from "./jarvis/tables";
+import { back, resolveId, todoIdForms } from "./jarvis/tables";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -59,6 +59,15 @@ const RECORD_SLACK_SENT_ARGS = {
  * reply only, never re-pointed: the reply that exists in Slack is the first
  * one (Tom's ruling 2026-08-30: exactly one reply per #dump message).
  */
+/** A subject as a new row stores it: a todo named by its plain id, whichever
+ *  form the thread or the caller holds (step C, convex/jarvis/tables.ts). A
+ *  todo id naming no row is kept as given. */
+async function plainSubject<S extends { kind: string }>(ctx: MutationCtx, subject: S): Promise<S> {
+  if (subject.kind !== "todo") return subject;
+  const plain = await resolveId(ctx, "todos", (subject as unknown as { id: string }).id);
+  return plain === null ? subject : ({ ...subject, id: plain } as S);
+}
+
 export async function recordSlackSent(
   ctx: MutationCtx,
   {
@@ -75,7 +84,10 @@ export async function recordSlackSent(
     text: string;
   },
 ): Promise<void> {
-  const todoId = subject.kind === "todo" ? subject.id : undefined;
+  // A subject names its todo in either form; the row stores the plain id,
+  // in its todoId and in its subject.
+  subject = await plainSubject(ctx, subject);
+  const todoId = subject.kind === "todo" ? ((await resolveId(ctx, "todos", subject.id)) ?? undefined) : undefined;
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: "slack-sent",
@@ -84,17 +96,14 @@ export async function recordSlackSent(
     data: { channel, ts, threadTs, subject, text },
   });
   if (todoId !== undefined) {
-    // The subject may name the todo in either form; the writers write the old
-    // row and `follow` it (convex/jarvis/tables.ts), so a plain id is written
-    // through its old row too, never patched alone.
-    const old = await oldId(ctx, "todos", todoId);
-    const todo = old === null ? null : await ctx.db.get(old);
-    if (old !== null && todo && todo.slackRepliedAt === undefined) {
-      await ctx.db.patch(old, {
+    // The plain row, then its old row written back (convex/jarvis/tables.ts).
+    const todo = await ctx.db.get(todoId);
+    if (todo && todo.slackRepliedAt === undefined) {
+      await ctx.db.patch(todoId, {
         slackRepliedAt: Date.now(),
         slackReplyTs: ts,
       });
-      await follow(ctx, "todos", old);
+      await back(ctx, "todos", todoId);
     }
   }
 }
@@ -129,11 +138,13 @@ export const internalRecordSlackFailed = internalMutation({
     ctx,
     { channel, threadTs, subject, error, text, attempts, windowEnd },
   ) => {
+    // A todo subject is stored by its plain id, whichever form the caller holds.
+    const stored = await plainSubject(ctx, subject);
     await logEvent(
       ctx,
       "slack-send-failed",
-      subject.kind === "todo" ? subject.id : undefined,
-      { channel, threadTs, subject, error, text, attempts, windowEnd },
+      stored.kind === "todo" ? stored.id : undefined,
+      { channel, threadTs, subject: stored, error, text, attempts, windowEnd },
     );
   },
 });
@@ -184,10 +195,12 @@ export const internalClaimSlackItem = internalMutation({
     ctx,
     { day, ask, itemId, channel },
   ): Promise<{ claimed: boolean; by: string | null }> => {
-    // A todo is claimed under its old id whichever form the caller holds, so
-    // a claim made before the readers moved still dedupes one made after.
-    const todoId = await oldId(ctx, "todos", itemId);
-    const key = claimKey(day, ask as "act" | "object", todoId ?? itemId);
+    // A todo is claimed under its old id when it has one (else its plain id),
+    // whichever form the caller holds, so a claim made before the readers
+    // moved still dedupes one made after; the row stores the plain id.
+    const forms = await todoIdForms(ctx, itemId);
+    const todoId = forms.length === 0 ? null : (forms[0] as Id<"todos">);
+    const key = claimKey(day, ask as "act" | "object", forms.at(-1) ?? itemId);
     const seen = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", SLACK_CLAIMED).eq("key", key))
@@ -230,7 +243,7 @@ export const internalOpenNeedsTomThread = internalMutation({
   ): Promise<{ opened: boolean; key: string; reason?: string }> => {
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
-    const id = await oldId(ctx, "todos", todoId);
+    const id = await resolveId(ctx, "todos", todoId);
     const todo = id === null ? null : await ctx.db.get(id);
     if (id === null || !todo) throw new Error(`Unknown todo id: ${todoId}`);
     const seen = await ctx.db
@@ -407,7 +420,7 @@ async function threadSubject(
       : sent.subject;
   if (subject !== undefined) return subject;
   const todo = await ctx.db
-    .query("dtsTodos")
+    .query("todos")
     .withIndex("by_slackTs", (q) => q.eq("slackTs", threadTs))
     .first();
   if (todo && (todo.slackChannel === undefined || todo.slackChannel === channel)) {
@@ -433,14 +446,14 @@ export type ThreadReplyOutcome =
       endedSessionId: Id<"claudeSessions">;
       sessionId: Id<"claudeSessions">;
     }
-  | { outcome: "done"; todoId: Id<"dtsTodos"> }
+  | { outcome: "done"; todoId: Id<"todos"> }
   | { outcome: "time-note"; timeNoteId: Id<"timeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }
   | { outcome: "golden-confirmed"; ids: string[] }
   | { outcome: "asked-which"; numbers: number[] }
-  | { outcome: "captured"; todoId: Id<"dtsTodos"> };
+  | { outcome: "captured"; todoId: Id<"todos"> };
 
 /**
  * One transaction per reply event. Dedupe first (Slack delivers at least
@@ -486,7 +499,9 @@ export async function slackThreadReplyFrom(
     return { outcome: "duplicate", duplicates };
   }
   const trimmed = text.trim();
-  const subject = await threadSubject(ctx, channel, threadTs);
+  // A thread opened before step C names its todo by the old id; the rows
+  // written from here name it by the plain one.
+  const subject = await plainSubject(ctx, await threadSubject(ctx, channel, threadTs));
   const at = { channel, ts, threadTs };
   // NOTHING IS EVER LOST. Routing runs as a sub-mutation so a throw anywhere
   // in it (a session row gone, a refused turn, a seed that fails validation)
@@ -788,7 +803,7 @@ async function needsYouReply(
     at: Date.now(),
     kind: NEEDS_YOU_ANSWERED,
     key: item.answeredKey,
-    data: { n: item.n, subject: item.subject, text, ...at },
+    data: { n: item.n, subject: await plainSubject(ctx, item.subject), text, ...at },
   });
   // The number named the item; what follows it is the answer ("4 done").
   const answer = numbered !== null && said !== "" ? said : text;
@@ -806,7 +821,7 @@ async function captureUnknown(
   ctx: MutationCtx,
   text: string,
   at: { channel: string; ts: string; threadTs: string },
-): Promise<{ outcome: "captured"; todoId: Id<"dtsTodos"> }> {
+): Promise<{ outcome: "captured"; todoId: Id<"todos"> }> {
   const todoId = await ctx.runMutation(internal.tts.internalCapture, {
     statement: text,
     source: "slack-reply",
@@ -980,11 +995,11 @@ async function namedObjection(
 async function namedTodo(
   ctx: MutationCtx,
   text: string,
-): Promise<{ todoId: Id<"dtsTodos">; rest: string } | undefined> {
+): Promise<{ todoId: Id<"todos">; rest: string } | undefined> {
   for (const token of text.split(/\s+/)) {
     const bare = token.replace(/^<|>$/g, "").split("|")[0];
     const candidate = /[?&]item=([A-Za-z0-9]+)/.exec(bare)?.[1] ?? bare.replace(/[.,;:!)]+$/, "");
-    const todoId = await oldId(ctx, "todos", candidate);
+    const todoId = await resolveId(ctx, "todos", candidate);
     if (todoId === null) continue;
     return { todoId, rest: text.replace(token, " ").replace(/\s+/g, " ").trim() };
   }
@@ -1004,7 +1019,7 @@ async function todoReply(
   shape: ReplyShape = replyShape(text),
 ): Promise<ThreadReplyOutcome> {
   // A thread names its todo in either form (convex/jarvis/tables.ts).
-  const todoId = await oldId(ctx, "todos", given);
+  const todoId = await resolveId(ctx, "todos", given);
   const todo = todoId === null ? null : await ctx.db.get(todoId);
   if (todoId === null || !todo) throw new Error(`Unknown todo id: ${given}`);
   const subject: SlackSubject = { kind: "todo", id: todoId };

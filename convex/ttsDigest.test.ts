@@ -19,23 +19,22 @@ import {
 import { MESSAGE_MAX_CHARS, TAB_EVERYTHING } from "./ttsCompose";
 import { nyCalendarDayBoundsUtc, ttsItemLink, ttsSessionLink } from "./ttsShared";
 import { resolveId } from "./jarvis/tables";
-import { inOldTerms, insertTodo, patchTodo } from "../test/core-tables";
+import { insertTodo, patchTodo } from "../test/core-tables";
 import type { QueryCtx } from "./_generated/server";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-// The digest reads the plain tables and hands out plain ids; read in the old
-// tables' terms (test/core-tables.ts), its answer is the one asserted before.
+// The digest reads the plain tables and hands out plain ids, the ids the
+// doors and the fixtures (test/core-tables.ts) answer.
 async function composeToday(
   t: ReturnType<typeof convexTest>,
   args: { day: string; now: number; since?: number; canReply?: boolean },
 ) {
   const out = await t.query(internal.ttsDigest.internalComposeToday, args);
-  const old = await t.run(async (ctx) => await inOldTerms(ctx, out));
-  return { ...old, surfacedTodoIds: old.surfacedTodoIds as string[] };
+  return { ...out, surfacedTodoIds: out.surfacedTodoIds as string[] };
 }
 async function gatherInOldTerms(ctx: QueryCtx, args: Parameters<typeof gatherTodayFacts>[1]) {
-  return await inOldTerms(ctx, await gatherTodayFacts(ctx, args));
+  return await gatherTodayFacts(ctx, args);
 }
 
 /** The plain row's id for the id a door answered with (its old table's): the
@@ -106,17 +105,17 @@ describe("the missed rollover", () => {
     expect(second).toEqual([]);
 
     const todos = await tom.query(api.tts.listTodos, {});
-    const rolled = todos.find((x) => x.legacyId === late)!;
+    const rolled = todos.find((x) => x._id === late)!;
     expect(rolled.dueAt).toBe(passed); // the original date is kept
     expect(rolled.status).toBe("active");
     expect(rolled.dateOutcomes).toEqual([
       { dueAt: passed, outcome: "missed", recordedAt: expect.any(Number), note: ROLLOVER_NOTE },
     ]);
-    expect(todos.find((x) => x.legacyId === today)!.dateOutcomes).toBeUndefined();
-    expect(todos.find((x) => x.legacyId === undated)!.dateOutcomes).toBeUndefined();
+    expect(todos.find((x) => x._id === today)!.dateOutcomes).toBeUndefined();
+    expect(todos.find((x) => x._id === undated)!.dateOutcomes).toBeUndefined();
     // The met date resolved as done when the item completed; the rollover
     // left it alone.
-    expect(todos.find((x) => x.legacyId === met)!.dateOutcomes).toEqual([
+    expect(todos.find((x) => x._id === met)!.dateOutcomes).toEqual([
       { dueAt: passed, outcome: "done", recordedAt: expect.any(Number) },
     ]);
     const events = await tom.query(api.tts.listRecentEvents, {});

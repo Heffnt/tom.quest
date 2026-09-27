@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
-import { follow, oldId } from "./jarvis/tables";
+import { back, oldId } from "./jarvis/tables";
 
 // Step B of the core tables' move (convex/jarvis/tables.ts): a reader that
 // moved to todos, blocks or timeNotes returns what it returned from the old
@@ -64,7 +64,7 @@ async function seed(t: T) {
   await tom.mutation(api.tts.setStatus, { id: forms, status: "done" });
   await t.run(async (ctx) => {
     await ctx.db.patch(lease, { needs: [call] });
-    await follow(ctx, "todos", lease);
+    await back(ctx, "todos", lease);
   });
   const onTodo = await tom.mutation(api.tts.createBlock, { start: now - 3_600_000, end: now + 3_600_000, todoId: lease, note: "the hour" });
   await tom.mutation(api.tts.createBlock, { start: now + DAY, end: now + DAY + 3_600_000, category: "home" });
@@ -143,11 +143,10 @@ describe("the readers moved to the plain tables answer as the old tables did", (
           dateOutcomes: [],
         },
       });
-      expect(await oldId(ctx, "todos", onTodo.todoId!)).toBe(lease);
+      expect(onTodo.todoId).toBe(lease);
       const onBlock = pending.find((n) => n.text === "an hour later")! as unknown as { context: { kind: string; block: Row; sameDayBlocks: Row[] } };
       expect(onBlock.context.kind).toBe("block");
-      const block = await asOld(ctx, "blocks", onBlock.context.block);
-      expect(block).toMatchObject({ todoId: lease, note: "the hour" });
+      expect(onBlock.context.block).toMatchObject({ todoId: lease, note: "the hour" });
     });
   });
 
@@ -162,7 +161,8 @@ describe("the readers moved to the plain tables answer as the old tables did", (
   it("listRulings, listRecentEvents and the box's rulings feeds hand out the plain todo id", async () => {
     const t = convexTest({ schema, modules });
     const { tom, call } = await seed(t);
-    const plainCall = (await tom.query(api.tts.listTodos, {})).find((row) => row.legacyId === call)!._id;
+    // The door answers the plain id.
+    const plainCall = call;
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling.todoId).toBe(plainCall);
     const recent = await t.query(internal.ttsRulings.internalRecentRulings, {});
@@ -175,7 +175,7 @@ describe("the readers moved to the plain tables answer as the old tables did", (
     const events = await tom.query(api.tts.listRecentEvents, {});
     const rulingEvents = events.filter((e) => e.kind === "ruling");
     expect(rulingEvents.map((e) => e.todoId)).toEqual([plainCall, plainCall]);
-    // The rows themselves still store the old id.
+    // The rows store the plain id since the rulings writer moved (step C).
     await t.run(async (ctx) => {
       expect((await ctx.db.query("rulings").collect()).map((r) => r.todoId)).toEqual([call, call]);
     });

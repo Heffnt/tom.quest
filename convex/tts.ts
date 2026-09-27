@@ -20,7 +20,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
-import { back, backDelete, clearBlock, eitherId, follow, oldId, resolveId, withPlainTodoIds } from "./jarvis/tables";
+import { back, backDelete, clearBlock, eitherId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -69,12 +69,12 @@ export async function logEvent(
 ) {
   // A failure row (convex/ttsShared.ts isFailureKind) is a line in the
   // digest's broken section, which reads its window; nothing posts here.
-  // The row names its todo in the form it was handed (convex/jarvis/tables.ts);
-  // a reader reads both.
+  // The row names its todo by the plain id, whichever form it was handed (a
+  // session or a Slack thread may hold the old one; convex/jarvis/tables.ts).
   const id = await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,
-    todoId,
+    todoId: todoId === undefined ? undefined : ((await resolveId(ctx, "todos", todoId)) ?? todoId),
     data: data === undefined ? undefined : data,
     key,
   });
@@ -161,7 +161,7 @@ export const createTodo = mutation({
     await requireTomId(ctx);
     const now = Date.now();
     const timingClass = args.timingClass ?? (args.dueAt ? "dated" : "whenever");
-    const id = await ctx.db.insert("dtsTodos", {
+    const id = await ctx.db.insert("todos", {
       statement: args.statement.trim(),
       body: args.body,
       readiness: "unprepared",
@@ -177,7 +177,7 @@ export const createTodo = mutation({
       createdAt: now,
       updatedAt: now,
     });
-    await follow(ctx, "todos", id);
+    await back(ctx, "todos", id);
     await logEvent(ctx, "created", id, { source: "manual" });
     return id;
   },
@@ -207,7 +207,7 @@ export const updateTodo = mutation({
   },
   handler: async (ctx, { id: given, ...fields }) => {
     await requireTomId(ctx);
-    const id = await oldId(ctx, "todos", given);
+    const id = await resolveId(ctx, "todos", given);
     const todo = id === null ? null : await ctx.db.get(id);
     if (id === null || !todo) throw new Error("TTS todo not found");
     if (fields.mustNotBreak !== undefined && todo.kind !== "goal") {
@@ -244,7 +244,7 @@ export const updateTodo = mutation({
       }
     }
     await ctx.db.patch(id, patch);
-    await follow(ctx, "todos", id);
+    await back(ctx, "todos", id);
     await logEvent(ctx, "updated", id, { fields: Object.keys(fields) });
   },
 });
@@ -253,7 +253,7 @@ export const updateTodo = mutation({
 // by setStatus(done) and recordDateOutcome(done) so the kept-dates side
 // effects cannot drift between the two paths (review finding).
 function resolveDateAsDone(
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   now: number,
   note: string | undefined,
   patch: Record<string, unknown>,
@@ -276,7 +276,7 @@ function resolveDateAsDone(
 // the only terminal states, both kept and visible.
 export async function applyStatusChange(
   ctx: MutationCtx,
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   args: {
     status: "active" | "waiting" | "archived" | "done";
     wakeAt?: number;
@@ -310,7 +310,7 @@ export async function applyStatusChange(
     resolveDateAsDone(todo, now, note, patch);
   }
   await ctx.db.patch(todo._id, patch);
-  await follow(ctx, "todos", todo._id);
+  await back(ctx, "todos", todo._id);
   await logEvent(ctx, "status-changed", todo._id, {
     from: todo.status,
     to: status,
@@ -328,7 +328,7 @@ export const setStatus = mutation({
   },
   handler: async (ctx, { id: given, ...args }) => {
     await requireTomId(ctx);
-    const id = await oldId(ctx, "todos", given);
+    const id = await resolveId(ctx, "todos", given);
     const todo = id === null ? null : await ctx.db.get(id);
     if (id === null || !todo) throw new Error("TTS todo not found");
     await applyStatusChange(ctx, todo, args);
@@ -337,7 +337,7 @@ export const setStatus = mutation({
     // and an agent action must not stamp a Tom touch (tomTouchedAt freezes the
     // row to every agent pen).
     await ctx.db.patch(id, { tomTouchedAt: Date.now() });
-    await follow(ctx, "todos", id);
+    await back(ctx, "todos", id);
   },
 });
 
@@ -359,7 +359,7 @@ export const internalTriage = internalMutation({
     note: v.optional(v.string()),
   },
   handler: async (ctx, { id, status, dueAt, ...rest }) => {
-    const normalized = await oldId(ctx, "todos", id);
+    const normalized = await resolveId(ctx, "todos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
     const todo = await ctx.db.get(normalized);
     if (!todo) throw new Error(`Unknown todo id: ${id}`);
@@ -375,7 +375,7 @@ export const internalTriage = internalMutation({
         timingClass: "dated",
         updatedAt: Date.now(),
       });
-      await follow(ctx, "todos", normalized);
+      await back(ctx, "todos", normalized);
       await logEvent(ctx, "updated", normalized, { fields: ["dueAt"], via: "triage" });
     }
     if (status !== undefined) {
@@ -387,7 +387,7 @@ export const internalTriage = internalMutation({
     // must not freeze a row.
     if (status !== undefined || dueAt !== undefined) {
       await ctx.db.patch(normalized, { tomTouchedAt: Date.now() });
-      await follow(ctx, "todos", normalized);
+      await back(ctx, "todos", normalized);
     }
   },
 });
@@ -410,7 +410,7 @@ export const internalBulkUpdate = internalMutation({
   },
   handler: async (ctx, { updates }) => {
     for (const u of updates) {
-      const normalized = await oldId(ctx, "todos", u.id);
+      const normalized = await resolveId(ctx, "todos", u.id);
       if (!normalized) throw new Error(`Unknown todo id: ${u.id}`);
       const todo = await ctx.db.get(normalized);
       if (!todo) throw new Error(`Unknown todo id: ${u.id}`);
@@ -434,7 +434,7 @@ export const internalBulkUpdate = internalMutation({
       // would resurface an already-ruled gate).
       if (fields.length > 0) patch.updatedAt = now;
       await ctx.db.patch(normalized, patch);
-      await follow(ctx, "todos", normalized);
+      await back(ctx, "todos", normalized);
       await logEvent(ctx, "bulk-updated", normalized, { fields });
     }
   },
@@ -450,7 +450,7 @@ export const internalBulkUpdate = internalMutation({
 // whenever with the miss on record).
 export async function applyDateOutcome(
   ctx: MutationCtx,
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   {
     outcome,
     newDueAt,
@@ -490,7 +490,7 @@ export async function applyDateOutcome(
     patch.timingClass = "whenever";
   }
   await ctx.db.patch(todo._id, patch);
-  await follow(ctx, "todos", todo._id);
+  await back(ctx, "todos", todo._id);
   await logEvent(ctx, "date-outcome", todo._id, { outcome, newDueAt, note });
 }
 
@@ -508,7 +508,7 @@ export async function applyDateOutcome(
 // The outcome row itself is written in the one shape every reader knows.
 export async function recordMissedKeepingDate(
   ctx: MutationCtx,
-  todo: Doc<"dtsTodos">,
+  todo: Doc<"todos">,
   note?: string,
 ) {
   if (todo.dueAt === undefined) throw new Error("Todo has no date to resolve");
@@ -519,7 +519,7 @@ export async function recordMissedKeepingDate(
       { dueAt: todo.dueAt, outcome: "missed" as const, recordedAt: now, note },
     ],
   });
-  await follow(ctx, "todos", todo._id);
+  await back(ctx, "todos", todo._id);
   // `rollover: true` marks the row as the system's, not Tom's: the weekly
   // gather counts a date outcome as a touch of his unless it carries this
   // (convex/ttsWeekly.ts isTomTouch).
@@ -540,8 +540,8 @@ export const recordDateOutcome = mutation({
   },
   handler: async (ctx, { id, ...args }) => {
     await requireTomId(ctx);
-    const old = await oldId(ctx, "todos", id);
-    const todo = old === null ? null : await ctx.db.get(old);
+    const plain = await resolveId(ctx, "todos", id);
+    const todo = plain === null ? null : await ctx.db.get(plain);
     if (!todo) throw new Error("TTS todo not found");
     await applyDateOutcome(ctx, todo, args);
   },
@@ -1031,12 +1031,10 @@ export const internalApplyTimeNote = internalMutation({
     // Tuesday, do it Friday"), and a Convex read sees this mutation's own
     // earlier writes, so action N validates against action N−1's RESULT rather
     // than against a snapshot from before the loop.
-    // A note names its todo in either form: the plain row for a block it
-    // asks for, the old row the todo writers below still write.
+    // A note names its todo in either form; the plain row is the subject.
     const noteTodo = note.todoId === undefined ? null : await resolveId(ctx, "todos", note.todoId);
     const requireSubject = async (kind: string) => {
-      const oldTodo = note.todoId === undefined ? null : await oldId(ctx, "todos", note.todoId);
-      const subject = oldTodo ? await ctx.db.get(oldTodo) : null;
+      const subject = noteTodo ? await ctx.db.get(noteTodo) : null;
       if (!subject) {
         throw new Error(`${kind} needs a time note written on a todo`);
       }
@@ -1052,9 +1050,9 @@ export const internalApplyTimeNote = internalMutation({
     // through it is a Tom touch — stamped exactly where the equivalent public
     // mutation stamps it (updateTodo and setStatus do; recordDateOutcome and
     // the block mutations do not).
-    const touch = async (todoId: Id<"dtsTodos">) => {
+    const touch = async (todoId: Id<"todos">) => {
       await ctx.db.patch(todoId, { tomTouchedAt: now });
-      await follow(ctx, "todos", todoId);
+      await back(ctx, "todos", todoId);
     };
 
     for (const action of list) {
@@ -1074,7 +1072,7 @@ export const internalApplyTimeNote = internalMutation({
             updatedAt: now,
             tomTouchedAt: now,
           });
-          await follow(ctx, "todos", todo._id);
+          await back(ctx, "todos", todo._id);
           await logEvent(ctx, "updated", todo._id, {
             fields: ["dueAt"],
             via: "time-note",
@@ -1123,7 +1121,7 @@ export const internalApplyTimeNote = internalMutation({
             updatedAt: now,
             tomTouchedAt: now,
           });
-          await follow(ctx, "todos", todo._id);
+          await back(ctx, "todos", todo._id);
           await logEvent(ctx, "updated", todo._id, {
             fields: ["dateKind"],
             via: "time-note",
@@ -1225,8 +1223,8 @@ export const recordEvent = mutation({
   },
   handler: async (ctx, { kind, todoId, data }) => {
     await requireTomId(ctx);
-    const old = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
-    await logEvent(ctx, kind, old ?? undefined, data);
+    const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
+    await logEvent(ctx, kind, plain ?? undefined, data);
   },
 });
 
@@ -1259,7 +1257,7 @@ export const internalCapture = internalMutation({
     // push route answer 200 to a retry, which is what stops Slack retrying.
     if (slackTs !== undefined) {
       const existing = await ctx.db
-        .query("dtsTodos")
+        .query("todos")
         .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
         .first();
       if (existing) return existing._id;
@@ -1273,7 +1271,7 @@ export const internalCapture = internalMutation({
     // the handful of rows under that source rather than the whole archive.
     const declaredSource =
       integrationName(statement) === null ? source : INTEGRATION_SOURCE;
-    const id = await ctx.db.insert("dtsTodos", {
+    const id = await ctx.db.insert("todos", {
       statement: statement.trim(),
       readiness: "unprepared",
       status: "active",
@@ -1288,7 +1286,7 @@ export const internalCapture = internalMutation({
       createdAt: now,
       updatedAt: now,
     });
-    await follow(ctx, "todos", id);
+    await back(ctx, "todos", id);
     await logEvent(ctx, "captured", id, { source: declaredSource });
     // The one reply line at capture, in the thread of the #dump message this
     // came from. Scheduled INSIDE the insert's transaction, after the dedupe
@@ -1379,7 +1377,7 @@ export const internalPrepareTodo = internalMutation({
     ctx,
     { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status, runToken, doorFaults },
   ) => {
-    const normalized = await oldId(ctx, "todos", id);
+    const normalized = await resolveId(ctx, "todos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
     const todo = await ctx.db.get(normalized);
     if (!todo) throw new Error(`Unknown todo id: ${id}`);
@@ -1434,7 +1432,7 @@ export const internalPrepareTodo = internalMutation({
       patch.producedByRunToken = runToken;
     }
     await ctx.db.patch(normalized, patch);
-    await follow(ctx, "todos", normalized);
+    await back(ctx, "todos", normalized);
     await logEvent(ctx, "prepared", normalized, {
       readiness: patch.readiness,
       fields: written,
@@ -1603,7 +1601,7 @@ export const internalReplaceMirror = internalMutation({
       rows.filter((r) => r.status === "closed").map((r) => r.externalId),
     );
     if (closed.size > 0) {
-      const all = await ctx.db.query("dtsTodos").collect();
+      const all = await ctx.db.query("todos").collect();
       for (const goal of all) {
         if (goal.kind !== "goal" || goal.status !== "active") continue;
         if (goal.codeRepo !== repo || goal.codeExternalId === undefined) continue;

@@ -9,7 +9,7 @@
 
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import type { Doc, Id } from "../convex/_generated/dataModel";
-import { follow } from "../convex/jarvis/tables";
+import { back } from "../convex/jarvis/tables";
 
 /** `value` with every plain todo, block or time-note id in it replaced by
  *  that row's old id, at any depth. Anything else is left as it is. */
@@ -35,19 +35,19 @@ export async function inOldTerms<V>(ctx: QueryCtx, value: V): Promise<V> {
   return map(value) as V;
 }
 
-/** A todo inserted as the dual write stores one: the old row, then its plain
- *  copy. Answers the old id, as a door does. */
+/** A todo inserted as a door stores one: the plain row, with its old row
+ *  written back while step C moves the writers. Answers the plain id. */
 export async function insertTodo(
   ctx: MutationCtx,
-  fields: Omit<Doc<"dtsTodos">, "_id" | "_creationTime">,
-): Promise<Id<"dtsTodos">> {
-  const id = await ctx.db.insert("dtsTodos", fields);
-  await follow(ctx, "todos", id);
+  fields: Omit<Doc<"todos">, "_id" | "_creationTime">,
+): Promise<Id<"todos">> {
+  const id = await ctx.db.insert("todos", fields);
+  await back(ctx, "todos", id);
   return id;
 }
 
-/** A todo patched by hand, and its plain copy with it. */
-export async function patchTodo(ctx: MutationCtx, id: Id<"dtsTodos">, fields: Partial<Doc<"dtsTodos">>): Promise<void> {
+/** A todo patched by hand, and its old row with it. */
+export async function patchTodo(ctx: MutationCtx, id: Id<"todos">, fields: Partial<Doc<"todos">>): Promise<void> {
   await ctx.db.patch(id, fields);
-  await follow(ctx, "todos", id);
+  await back(ctx, "todos", id);
 }

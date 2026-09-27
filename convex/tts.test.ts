@@ -162,7 +162,7 @@ describe("TTS todos", () => {
     });
     const todos = await tom.query(api.tts.listTodos, {});
     expect(todos).toHaveLength(1);
-    expect(todos[0].legacyId).toBe(id);
+    expect(todos[0]._id).toBe(id);
     expect(todos[0].statement).toBe("email Ana Maria");
     expect(todos[0].timingClass).toBe("dated"); // dueAt implies dated
     expect(todos[0].dateKind).toBe("self-imposed");
@@ -1049,7 +1049,7 @@ describe("TTS time notes", () => {
     const newDueAt = Date.now() + 9 * DAY;
     await apply(t, ok, [{ kind: "renegotiate", newDueAt, note: "trip" }], "moved");
     const todos = await tom.query(api.tts.listTodos, {});
-    const moved = todos.find((x) => x.legacyId === ahead)!;
+    const moved = todos.find((x) => x._id === ahead)!;
     expect(moved.dueAt).toBe(newDueAt);
     expect(moved.dateOutcomes).toHaveLength(1);
     expect(moved.dateOutcomes?.[0].outcome).toBe("renegotiated");
@@ -1075,7 +1075,7 @@ describe("TTS time notes", () => {
     });
     await apply(t, missed, [{ kind: "record-missed" }], "recorded as missed");
     const after = (await tom.query(api.tts.listTodos, {})).find(
-      (x) => x.legacyId === past,
+      (x) => x._id === past,
     )!;
     expect(after.dueAt).toBeUndefined();
     expect(after.timingClass).toBe("whenever");
@@ -1299,7 +1299,7 @@ describe("TTS time notes", () => {
       "recorded the miss and set Friday",
     );
     let todo = (await tom.query(api.tts.listTodos, {})).find(
-      (x) => x.legacyId === past,
+      (x) => x._id === past,
     )!;
     expect(todo.dateOutcomes).toHaveLength(1);
     expect(todo.dateOutcomes?.[0].outcome).toBe("missed");
@@ -1327,7 +1327,7 @@ describe("TTS time notes", () => {
       ],
       "moved to Friday",
     );
-    todo = (await tom.query(api.tts.listTodos, {})).find((x) => x.legacyId === ahead)!;
+    todo = (await tom.query(api.tts.listTodos, {})).find((x) => x._id === ahead)!;
     expect(todo.dueAt).toBe(second);
     expect(todo.dateOutcomes).toHaveLength(2);
     // The second row records the date the SECOND move replaced — the first
@@ -1482,7 +1482,7 @@ describe("TTS time notes", () => {
       "marked as someone else's deadline",
     );
     const todos = await tom.query(api.tts.listTodos, {});
-    const after = todos.find((x) => x.legacyId === dated)!;
+    const after = todos.find((x) => x._id === dated)!;
     expect(after.dateKind).toBe("external");
     expect(after.dueAt).toBe(dueAt); // the date itself never moved
     const nothing = await tom.mutation(api.tts.createTimeNote, {

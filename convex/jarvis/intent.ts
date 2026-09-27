@@ -33,7 +33,7 @@ import type { Doc } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
 import { insertRuling } from "../ttsRulings";
 import { insertEvent } from "./record";
-import { oldId } from "./tables";
+import { resolveId } from "./tables";
 
 const SURFACE = "Intent";
 
@@ -252,7 +252,7 @@ export const settle = mutation({
       if (args.verdict === "approve" && (data.refused === true || typeof data.decision !== "string")) {
         throw new Error(`decision ${askId} was refused or not answered; there is nothing to accept`);
       }
-      const todoId = typeof data.todoId === "string" ? await oldId(ctx, "todos", data.todoId) : null;
+      const todoId = typeof data.todoId === "string" ? await resolveId(ctx, "todos", data.todoId) : null;
       if (todoId !== null) {
         rulingId = await insertRuling(ctx, { todoId, verdict: args.verdict, ...(sentence === "" ? {} : { sentence }) });
       }

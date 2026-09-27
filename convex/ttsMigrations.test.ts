@@ -39,6 +39,7 @@ import {
   buildDoneSet,
   isReady,
 } from "./ttsShared";
+import { resolveId } from "./jarvis/tables";
 
 // The phase-7 row mappings (convex/ttsMigrations.ts): resumable, dry-runnable,
 // idempotent, and counted. These tests are the local harness the design says
@@ -562,7 +563,9 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     expect(visa.condition).toBe("the passport arrives");
     // Both events, from the one write: the status change and the mapping,
     // whose `after` is the whole patch.
-    const mapped = (await eventsOfKind(t, "timing-mapped")).find((e) => e.todoId === visa._id);
+    // The event names the todo by its plain id (tts.logEvent).
+    const visaPlain = await t.run(async (ctx) => await resolveId(ctx, "todos", visa._id));
+    const mapped = (await eventsOfKind(t, "timing-mapped")).find((e) => e.todoId === visaPlain);
     expect((mapped!.data as { after: Partial<Doc<"dtsTodos">> }).after).toEqual({
       status: "active",
       kind: "task",
@@ -570,7 +573,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
       wakeAt: LATEST_SAFE - CONDITION_WINDOW_MS,
       statement: visa.statement,
     });
-    expect((await eventsOfKind(t, "status-changed")).some((e) => e.todoId === visa._id)).toBe(true);
+    expect((await eventsOfKind(t, "status-changed")).some((e) => e.todoId === visaPlain)).toBe(true);
   });
 
   it("keeps a wakeAt Tom set, and writes no sleep on a finished row", async () => {

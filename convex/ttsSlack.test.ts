@@ -10,6 +10,7 @@ import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { slackHourKey, slackThreadKey, ttsDayKey } from "./ttsShared";
 import { composeCaptured, renderSlack } from "./ttsCompose";
 import { writePageRows } from "../scripts/context-fixture.mjs";
+import { insertTodo } from "../test/core-tables";
 
 /** The one reply line at capture, as convex/ttsCompose.ts writes it. */
 const captureLine = (statement: string, todoId: string) =>
@@ -137,7 +138,7 @@ async function posted(
     | { kind: "today"; day: string }
     | { kind: "digest"; day: string }
     | { kind: "hourly"; hour: string }
-    | { kind: "todo"; id: Id<"dtsTodos"> }
+    | { kind: "todo"; id: Id<"todos"> }
     | { kind: "session"; id: Id<"claudeSessions"> }
     | { kind: "learning"; id: string }
     | { kind: "ask"; id: string }
@@ -211,7 +212,7 @@ describe("the reply at capture", () => {
     // Inserted directly: a capture would schedule the door itself, and this
     // test drives the door by hand.
     const id = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "reply to me",
         readiness: "unprepared",
         status: "active",
@@ -287,7 +288,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
   // mail — a re-run, a lost cursor, a redeployment — never opens a second.
   async function aTodo(t: ReturnType<typeof convexTest>) {
     return await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "Reply to Sarah Chen about the lab meeting time",
         readiness: "unprepared",
         status: "active",
@@ -795,7 +796,7 @@ describe("threaded replies from Tom", () => {
 
     const dated = await postEvent(t, { channel: DUMP, ts: "400.3", thread_ts: "400.1", text: "sept 12" });
     expect(dated.outcome).toBe("time-note");
-    const timeNotes = await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect());
+    const timeNotes = await t.run(async (ctx) => ctx.db.query("timeNotes").collect());
     expect(timeNotes.map((n) => [n.text, n.todoId, n.status])).toEqual([
       ["sept 12", todoId, "pending"],
     ]);
@@ -809,7 +810,7 @@ describe("threaded replies from Tom", () => {
     expect(changes).toHaveLength(1);
     expect(changes[0].data).toMatchObject({ from: "active", to: "done", note: "Done." });
     // No time note was written for "done": nothing would ever have acted on it.
-    expect(await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect())).toHaveLength(1);
+    expect(await t.run(async (ctx) => ctx.db.query("timeNotes").collect())).toHaveLength(1);
 
     // A second "done" on a completed todo has nothing to complete; the words
     // are kept as a fact.
@@ -838,7 +839,7 @@ describe("threaded replies from Tom", () => {
     // A bare date with no todo to land on is a fact too, with the day.
     const dated = await postEvent(t, { channel: TTS, ts: "500.3", thread_ts: "500.1", text: "tomorrow" });
     expect(dated).toMatchObject({ outcome: "tom-note", subject: { kind: "digest", day: "2026-09-05" } });
-    expect(await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect())).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("timeNotes").collect())).toHaveLength(0);
     expect((await events(t, "tom-note"))[1].data).toMatchObject({ text: "tomorrow", day: "2026-09-05" });
 
     // Naming a todo by its link and saying "done" completes THAT todo, as a
@@ -881,7 +882,7 @@ describe("threaded replies from Tom", () => {
     expect(notes[0].data).toMatchObject({ hour, day: "2026-09-05" });
     const dated = await postEvent(t, { channel: TTS, ts: "600.3", thread_ts: "600.1", text: "friday" });
     expect(dated.outcome).toBe("tom-note");
-    expect(await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect())).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("timeNotes").collect())).toHaveLength(0);
 
     const todoId = await t.mutation(internal.tts.internalCapture, {
       statement: "renew the passport",
@@ -889,7 +890,7 @@ describe("threaded replies from Tom", () => {
     });
     const onTodo = await postEvent(t, { channel: TTS, ts: "600.4", thread_ts: "600.1", text: `${todoId} by friday` });
     expect(onTodo.outcome).toBe("time-note");
-    const timeNotes = await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect());
+    const timeNotes = await t.run(async (ctx) => ctx.db.query("timeNotes").collect());
     expect(timeNotes).toHaveLength(1);
     expect(timeNotes[0]).toMatchObject({ text: `${todoId} by friday`, todoId, status: "pending" });
     expect(timeNotes[0].day).toBeUndefined();
@@ -1008,7 +1009,7 @@ describe("threaded replies from Tom", () => {
     const t = convexTest(schema, modules);
     const result = await postEvent(t, { channel: TTS, ts: "800.2", thread_ts: "800.1", text: "book the ferry" });
     expect(result.outcome).toBe("captured");
-    const todoId = result.todoId as Id<"dtsTodos">;
+    const todoId = result.todoId as Id<"todos">;
     const todo = await t.run(async (ctx) => ctx.db.get(todoId));
     expect(todo).toMatchObject({
       statement: "book the ferry",
@@ -1050,7 +1051,7 @@ describe("threaded replies from Tom", () => {
     await t.run(async (ctx) => ctx.db.delete(sessionId));
     const result = await postEvent(t, { channel: TTS, ts: "850.2", thread_ts: "850.1", text: "ship it" });
     expect(result.outcome).toBe("captured");
-    const todoId = result.todoId as Id<"dtsTodos">;
+    const todoId = result.todoId as Id<"todos">;
     const todo = await t.run(async (ctx) => ctx.db.get(todoId));
     expect(todo).toMatchObject({
       statement: "ship it",
@@ -1077,7 +1078,7 @@ describe("threaded replies from Tom", () => {
     // A redelivery of the same event is a duplicate, not a second capture.
     const again = await postEvent(t, { channel: TTS, ts: "850.2", thread_ts: "850.1", text: "ship it" });
     expect(again.outcome).toBe("duplicate");
-    expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(1);
+    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(1);
   });
 
   // witness: drop the slackReplyChannels check from the route and a reply in
@@ -1087,7 +1088,7 @@ describe("threaded replies from Tom", () => {
     const t = convexTest(schema, modules);
     const top = await postEvent(t, { channel: TTS, ts: "900.1", text: "not a capture" });
     expect(top).toEqual({ ok: true, ignored: true });
-    expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(0);
     const bot = await postEvent(t, { channel: TTS, ts: "900.3", thread_ts: "900.1", text: "our own reply", bot_id: "B1" });
     expect(bot).toEqual({ ok: true, ignored: true });
     expect(await events(t, "slack-event")).toHaveLength(0);
@@ -1096,7 +1097,7 @@ describe("threaded replies from Tom", () => {
     const elsewhere = await postEvent(t, { channel: "C0GENERAL", ts: "900.5", thread_ts: "900.4", text: "lunch?" });
     expect(elsewhere).toEqual({ ok: true, ignored: true });
     expect(await events(t, "slack-event")).toHaveLength(0);
-    expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(0);
     expect(await scheduledSends(t)).toHaveLength(0);
 
     // #tts-hourly admits replies once its id is set, not before.
@@ -1122,7 +1123,7 @@ describe("threaded replies from Tom", () => {
         ignored: true,
       });
     }
-    expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(0);
     expect(await scheduledSends(t)).toHaveLength(0);
     // Once, not per event.
     expect(
@@ -1169,7 +1170,7 @@ describe("objecting to a delegate decision in the digest thread", () => {
   // printed it as line 2.
   async function morning(t: TestConvex<typeof schema>, day = "2026-09-05") {
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "renew passport",
         status: "active",
         readiness: "prepared",
@@ -1226,7 +1227,7 @@ describe("objecting to a delegate decision in the digest thread", () => {
     const t = convexTest(schema, modules);
     const day = "2026-09-05";
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "renew passport",
         status: "active",
         readiness: "prepared",
@@ -1537,7 +1538,7 @@ describe("a reply in one of the new rooms", () => {
     slackEnv();
     const t = convexTest(schema, modules);
     const id = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "check the OpenAI notice",
         readiness: "unprepared",
         status: "active",

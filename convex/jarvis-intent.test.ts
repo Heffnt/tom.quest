@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { SETTLED_LEAD } from "./ttsCompose";
+import { insertTodo } from "../test/core-tables";
 
 // From the convex root, as every other test: convex-test names modules by
 // their path under convex/, so a glob from a subdirectory finds none of them.
@@ -99,7 +100,7 @@ describe("jarvis/intent", () => {
   it("takes no accept on a refused or unanswered decision, and writes no ruling for one", async () => {
     const t = convexTest({ schema, modules });
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "a todo",
         status: "active",
         readiness: "prepared",
@@ -126,7 +127,7 @@ describe("jarvis/intent", () => {
   it("writes his ruling on the todo when the decision was about one", async () => {
     const t = convexTest({ schema, modules });
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "a todo",
         status: "active",
         readiness: "prepared",

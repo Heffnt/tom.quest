@@ -155,7 +155,7 @@ export const ROLLOVER_NOTE = "passed without an outcome; recorded at the 5 a.m. 
 // gives a new one. Idempotent: the outcome row's dueAt equals the todo's dueAt
 // afterwards, and that equality is the "already recorded" check.
 export function isPassedWithoutOutcome(
-  todo: Pick<Doc<"dtsTodos">, "status" | "dueAt" | "dateOutcomes">,
+  todo: Pick<Doc<"todos">, "status" | "dueAt" | "dateOutcomes">,
   newDayStart: number,
 ): boolean {
   if (todo.status !== "active" || todo.dueAt === undefined) return false;
@@ -172,12 +172,12 @@ export const internalRollMissed = internalMutation({
     // and dated before the new day. The `gte(0)` lower bound excludes the
     // undated rows, which sort before every number in a Convex index.
     const passed = await ctx.db
-      .query("dtsTodos")
+      .query("todos")
       .withIndex("by_status_and_due", (q) =>
         q.eq("status", "active").gte("dueAt", 0).lt("dueAt", start),
       )
       .collect();
-    const rolled: Id<"dtsTodos">[] = [];
+    const rolled: Id<"todos">[] = [];
     for (const todo of passed) {
       if (!isPassedWithoutOutcome(todo, start)) continue;
       await recordMissedKeepingDate(ctx, todo, ROLLOVER_NOTE);

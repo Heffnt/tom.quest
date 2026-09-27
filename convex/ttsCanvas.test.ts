@@ -11,6 +11,7 @@ import {
 } from "./ttsCanvas";
 import { gatherTodayFacts } from "./ttsDigest";
 import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
+import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -39,7 +40,7 @@ async function sync(t: ReturnType<typeof convexTest>, assignments: AssignmentInp
 }
 
 const allTodos = (t: ReturnType<typeof convexTest>) =>
-  t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+  t.run(async (ctx) => ctx.db.query("todos").collect());
 const allEvents = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
 
@@ -163,7 +164,7 @@ describe("internalSyncCanvasTodos", () => {
   it("reports, and never adopts, a source-canvas row that is not an assignment", async () => {
     const t = convexTest({ schema, modules });
     const strayId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "Sign up for the CS4241 demo slot",
         readiness: "unprepared",
         status: "active",
@@ -248,7 +249,7 @@ describe("internalSyncCanvasTodos", () => {
     const t = convexTest({ schema, modules });
     await sync(t, [assignment()]);
     await sync(t, [assignment({ submitted: true })]);
-    const done = (await allTodos(t))[0] as Doc<"dtsTodos">;
+    const done = (await allTodos(t))[0] as Doc<"todos">;
     const eventCount = (await allEvents(t)).length;
 
     // Both a still-submitted report and a late date move must be no-ops: the

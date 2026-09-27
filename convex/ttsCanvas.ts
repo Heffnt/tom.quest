@@ -1,5 +1,5 @@
 // Canvas LMS assignments, the Convex half (spec §17 post-MVP priority 1).
-// ONE dtsTodos row per upcoming assignment — source "canvas", dated with the
+// ONE todos row per upcoming assignment — source "canvas", dated with the
 // assignment's real due time (dateKind "external"), provenance carrying the
 // assignment id + link.
 //
@@ -33,7 +33,7 @@ import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { applyDateOutcome, applyStatusChange, logEvent } from "./tts";
-import { follow, todoEvents } from "./jarvis/tables";
+import { back, todoEvents } from "./jarvis/tables";
 
 export const ASSIGNMENT_INPUT = v.object({
   externalId: v.string(), // Canvas assignment id, as a string
@@ -115,7 +115,7 @@ export const internalSyncCanvasTodos = internalMutation({
   handler: async (ctx, { assignments }) => {
     const now = Date.now();
     const sourceRows = await ctx.db
-      .query("dtsTodos")
+      .query("todos")
       .withIndex("by_source", (q) => q.eq("source", ASSIGNMENT_SOURCE))
       .collect();
     // Narrowed to the ASSIGNMENT provenance shape, and the rows that fail that
@@ -149,7 +149,7 @@ export const internalSyncCanvasTodos = internalMutation({
         // Submitted-before-we-ever-saw-it needs no todo; nothing was lost
         // because nothing was ever tracked.
         if (a.submitted) continue;
-        const id = await ctx.db.insert("dtsTodos", {
+        const id = await ctx.db.insert("todos", {
           statement: `${a.courseCode}: ${a.name}`,
           readiness: "unprepared",
           status: "active",
@@ -164,7 +164,7 @@ export const internalSyncCanvasTodos = internalMutation({
           createdAt: now,
           updatedAt: now,
         });
-        await follow(ctx, "todos", id);
+        await back(ctx, "todos", id);
         await logEvent(ctx, "captured", id, { source: ASSIGNMENT_SOURCE });
         created++;
         continue;
@@ -185,7 +185,7 @@ export const internalSyncCanvasTodos = internalMutation({
           timingClass: "dated",
           updatedAt: now,
         });
-        await follow(ctx, "todos", todo._id);
+        await back(ctx, "todos", todo._id);
         await logEvent(ctx, "updated", todo._id, {
           fields: ["dueAt"],
           via: "canvas-sync",

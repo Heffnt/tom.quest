@@ -5,6 +5,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
+import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -22,7 +23,7 @@ async function events(t: ReturnType<typeof convexTest>, kind: string) {
 
 async function aTodo(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
+    insertTodo(ctx, {
       statement: "Reply to Sarah Chen about the lab meeting time",
       readiness: "unprepared",
       status: "active",

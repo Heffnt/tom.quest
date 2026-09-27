@@ -40,12 +40,19 @@ async function seed(t: T) {
   const todo = await tom.mutation(api.tts.createTodo, { statement: "renew the lease", dueAt: Date.now() + 3 * DAY });
   const block = await tom.mutation(api.tts.createBlock, { start: Date.now() + DAY, end: Date.now() + DAY + 3_600_000, todoId: todo });
   const note = await tom.mutation(api.tts.createTimeNote, { text: "move it to Friday", blockId: block });
-  const plain = await t.run(async (ctx) => ({
-    todo: (await resolveId(ctx, "todos", todo))!,
-    block: (await resolveId(ctx, "blocks", block))!,
-    note: (await resolveId(ctx, "timeNotes", note))!,
-  }));
-  return { tom, old: { todo, block, note }, plain };
+  // The doors answer plain ids; the old ids are the rows written back.
+  const [a, b, c] = await t.run(async (ctx) => {
+    const both = async <C extends "todos" | "blocks" | "timeNotes">(table: C, id: string) => {
+      const plain = (await resolveId(ctx, table, id))!;
+      return { plain, old: (await ctx.db.get(plain))!.legacyId as string };
+    };
+    return [await both("todos", todo), await both("blocks", block), await both("timeNotes", note)] as const;
+  });
+  return {
+    tom,
+    old: { todo: a.old as Id<"dtsTodos">, block: b.old as Id<"dtsBlocks">, note: c.old as Id<"dtsTimeNotes"> },
+    plain: { todo: a.plain, block: b.plain, note: c.plain },
+  };
 }
 
 // The box's work queue (Jarvis worker/jobs/work-queue.mjs, pull request 74)
@@ -125,7 +132,6 @@ describe("a work-queue outcome on its todo", () => {
     // The copy of a POST /tts/event row names its key, not a todo: not read here.
     await t.run(async (ctx) => {
       await ctx.db.insert("events", { kind: "session-outcome", at: now - 3_600_000, provenance: {}, subject: `work-queue:${old.todo}:1`, data: {} });
-      await follow(ctx, "todos", old.todo);
     });
     const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY }));
     expect(facts.overnightByTodo).toEqual([
