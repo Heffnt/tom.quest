@@ -26,7 +26,7 @@ import {
 } from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 import { needsYouNumber, openNeedsYou } from "./jarvis/outbox";
-import { follow, oldId } from "./jarvis/tables";
+import { follow, oldId, resolveId } from "./jarvis/tables";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -733,7 +733,8 @@ async function isOpen(ctx: MutationCtx, item: NeedsYouItem): Promise<boolean> {
     .first();
   if (answered !== null) return false;
   if (item.subject.kind !== "todo") return true;
-  const todo = await ctx.db.get(item.subject.id);
+  const plain = await resolveId(ctx, "todos", item.subject.id);
+  const todo = plain === null ? null : await ctx.db.get(plain);
   return todo !== null && todo.status !== "done" && todo.status !== "archived";
 }
 

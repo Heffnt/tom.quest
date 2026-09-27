@@ -15,7 +15,7 @@ import {
   markLiveSessionRulingApplied,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
-import { eitherId, oldId } from "./jarvis/tables";
+import { eitherId, oldId, todoReader } from "./jarvis/tables";
 import { appendNotes, inboundRowIdOf, NOTES, rowSource } from "./sessionRows";
 import { isIsoDay } from "../shared/markdown-sections.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
@@ -404,7 +404,7 @@ const SESSION_KIND = v.union(
  */
 function resolveSessionRepos(input: {
   explicit?: readonly string[] | string;
-  todo?: Doc<"dtsTodos"> | null;
+  todo?: Doc<"todos"> | null;
   extraText?: string;
 }): string[] {
   if (input.explicit !== undefined) {
@@ -798,9 +798,10 @@ async function createSessionFrom(
   if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
   // A todo-scoped session with no repos named falls back to the word guess
   // over the todo rather than silently landing on an empty scratch workspace.
+  // The session row stores the old id; the word guess reads the plain row.
   const old = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
   if (old === null) throw new Error(`Unknown todo id: ${todoId}`);
-  const todo = old === undefined ? null : await ctx.db.get(old);
+  const todo = old === undefined ? null : await todoReader(ctx)(old);
   return await insertSession(
     ctx,
     {

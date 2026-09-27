@@ -29,6 +29,7 @@ import { DELEGATE_DECISION, recordedDecision } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { DIGEST_SENT } from "./ttsDigest";
 import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
+import { todoReader } from "./jarvis/tables";
 
 /** The four doors, in the schema's own words. */
 const LABEL_SOURCE = v.union(
@@ -248,7 +249,7 @@ async function tokenForRulingSubject(
   ruling: Doc<"rulings">,
 ): Promise<string | undefined> {
   if (ruling.subjectType === "life" && ruling.todoId !== undefined) {
-    return (await ctx.db.get(ruling.todoId))?.producedByRunToken;
+    return (await todoReader(ctx)(ruling.todoId))?.producedByRunToken;
   }
   if (ruling.subjectType === "code" && ruling.repo !== undefined && ruling.externalId !== undefined) {
     const brief = await ctx.db

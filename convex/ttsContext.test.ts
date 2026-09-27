@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { insertTodo, patchTodo } from "../test/core-tables";
 import {
   areaSubjectLine,
   assembleContext,
@@ -79,7 +80,7 @@ async function seed(t: ReturnType<typeof convexTest>, { without = [] as string[]
     }
     const todos: Record<string, Id<"dtsTodos">> = {};
     for (const todo of record.todos) {
-      todos[todo.id] = await ctx.db.insert("dtsTodos", {
+      todos[todo.id] = await insertTodo(ctx, {
         statement: todo.id,
         readiness: "prepared",
         status: "active",
@@ -337,7 +338,7 @@ describe("insertSession's context", () => {
     const ids = await seed(t);
     // A statement the word guess would read a repo out of.
     await t.run(async (ctx) =>
-      ctx.db.patch(ids.todos[IDS.oversize], { statement: "talk about the tom.quest work" }),
+      patchTodo(ctx, ids.todos[IDS.oversize], { statement: "talk about the tom.quest work" }),
     );
     const tom = await withTom(t);
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {

@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalQuery } from "./_generated/server";
 import { redactSecrets } from "../shared/redact.mjs";
+import { todoReader } from "./jarvis/tables";
 
 // Search reads historical prose that may have been stored before ingest grew
 // its redaction choke point. This is deliberately the exact same pure helper
@@ -101,6 +102,8 @@ export const rulings = internalQuery({
     let exhausted = true;
     let scanLimitReached = false;
     let oldestScannedAt: number | null = null;
+    // The todo a row names, by the old id it stores (convex/jarvis/tables.ts).
+    const todoOf = todoReader(ctx);
     for await (const ruling of candidates) {
       if (scanned >= MAX_SCANNED_ROWS) {
         exhausted = false;
@@ -109,7 +112,7 @@ export const rulings = internalQuery({
       }
       scanned += 1;
       oldestScannedAt = ruling.ruledAt;
-      const todo = ruling.todoId ? await ctx.db.get(ruling.todoId) : null;
+      const todo = await todoOf(ruling.todoId);
       const sentenceSource = ruling.sentence ? redactSecrets(ruling.sentence) : null;
       const todoSource = todo ? redactSecrets(todo.statement) : null;
       const sentence = sentenceSource ? excerpt(sentenceSource, query) : null;
@@ -236,6 +239,8 @@ export const events = internalQuery({
     let exhausted = true;
     let scanLimitReached = false;
     let oldestScannedAt: number | null = null;
+    // The todo a row names, by the old id it stores (convex/jarvis/tables.ts).
+    const todoOf = todoReader(ctx);
     for await (const event of candidates) {
       if (scanned >= MAX_SCANNED_ROWS) {
         exhausted = false;
@@ -244,7 +249,7 @@ export const events = internalQuery({
       }
       scanned += 1;
       oldestScannedAt = event.at;
-      const todo = event.todoId ? await ctx.db.get(event.todoId) : null;
+      const todo = await todoOf(event.todoId);
       const textSource = redactSecrets(
         [todo?.statement, flattenedText(event.data)].filter(Boolean).join(" "),
       );
@@ -282,13 +287,13 @@ export const todos = internalQuery({
     const limit = searchLimit(args.limit);
     const candidates = status === undefined
       ? args.since === undefined
-        ? ctx.db.query("dtsTodos").withIndex("by_updatedAt").order("desc")
+        ? ctx.db.query("todos").withIndex("by_updatedAt").order("desc")
         : ctx.db
-            .query("dtsTodos")
+            .query("todos")
             .withIndex("by_updatedAt", (q) => q.gte("updatedAt", args.since!))
             .order("desc")
       : ctx.db
-          .query("dtsTodos")
+          .query("todos")
           .withIndex("by_status", (q) =>
             args.since === undefined
               ? q.eq("status", status)

@@ -6,6 +6,7 @@ import { api, internal } from "./_generated/api";
 import type { MessageOverflowRead } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { insertTodo } from "../test/core-tables";
 import { modelOfTomPrelude } from "./ttsSkills";
 import {
   WORKER_CONTRACT,
@@ -277,7 +278,7 @@ describe("claude sessions", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await t.run(async (ctx) =>
-      ctx.db.insert("dtsTodos", {
+      insertTodo(ctx, {
         statement: "the other todo", status: "active", readiness: "prepared", timingClass: "whenever",
         source: "tom", createdAt: 1, updatedAt: 1,
       }),

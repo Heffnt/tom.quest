@@ -11,7 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
-import { eitherId, follow, oldId, resolveId, withPlainTodoIds } from "./jarvis/tables";
+import { eitherId, follow, oldId, resolveId, todoReader, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
 // Tom's rulings, unified over life and code todos (ratified 2026-08-28).
@@ -299,7 +299,7 @@ async function ruledSubjectName(
   },
 ): Promise<string> {
   if (subject.todoId !== undefined) {
-    return (await ctx.db.get(subject.todoId))?.statement ?? "an item";
+    return (await todoReader(ctx)(subject.todoId))?.statement ?? "an item";
   }
   if (subject.repo !== undefined && subject.externalId !== undefined) {
     return `${subject.repo} ${subject.externalId}`;
@@ -543,7 +543,7 @@ async function refuseUnlessSessionSubject(
       if (id !== undefined && (await oldId(ctx, "todos", named)) === id) about = true;
     }
   } else if (subjectType === "life" && subject.todoId !== undefined) {
-    const todo = await ctx.db.get(subject.todoId);
+    const todo = await todoReader(ctx)(subject.todoId);
     about =
       session.todoId === subject.todoId ||
       (session.blockCategory !== undefined &&

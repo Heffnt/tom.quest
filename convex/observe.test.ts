@@ -6,6 +6,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { insertTodo } from "../test/core-tables";
 import { isFailureKind } from "./observe";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -244,7 +245,7 @@ describe("the rulings", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.run(async (ctx) => {
-      const todoId = await ctx.db.insert("dtsTodos", todo("rename the observation page"));
+      const todoId = await insertTodo(ctx, todo("rename the observation page"));
       await ctx.db.insert("rulings", {
         subjectType: "life",
         todoId,
@@ -264,8 +265,8 @@ describe("waiting on Tom", () => {
     const tom = await withTom(t);
     const now = Date.now();
     await t.run(async (ctx) => {
-      const answered = await ctx.db.insert("dtsTodos", todo("answered"));
-      const open = await ctx.db.insert("dtsTodos", todo("open"));
+      const answered = await insertTodo(ctx, todo("answered"));
+      const open = await insertTodo(ctx, todo("open"));
       await ctx.db.insert("dtsEvents", { at: now - 2_000, kind: "needs-tom", todoId: answered });
       await ctx.db.insert("dtsEvents", { at: now - 1_000, kind: "slack-event", todoId: answered });
       await ctx.db.insert("dtsEvents", { at: now - 3_000, kind: "needs-tom", todoId: open });

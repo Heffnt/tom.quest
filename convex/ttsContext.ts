@@ -16,17 +16,19 @@
 // NO MODEL CALL, anywhere on this path.
 
 import { v } from "convex/values";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { modelOfTomState, modelOfTomText, withoutModelOfTomPrelude, WRITE_PAGES } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
+import { oldId, resolveId } from "./jarvis/tables";
 
 /** What the run is about. `none` is every caller with no subject (the HTTP
  * doors, the laptop): its prompt carries no record facts. */
 export type ContextSubject =
   // `repos`: the repositories the run works in, as its caller named them (a
   // session's resolved repos).
-  | { kind: "todo"; todoId: Id<"dtsTodos">; repos?: readonly string[] }
+  // `todoId` in either form (convex/jarvis/tables.ts resolveId).
+  | { kind: "todo"; todoId: string; repos?: readonly string[] }
   | { kind: "repo"; repo: string }
   // A model-of-tom area: a therapy session's subject is the mental-health
   // area whatever todo it was opened on (Tom's ruling 2026-09-25). It carries
@@ -136,11 +138,13 @@ async function subjectFacts(
       : [];
 
   if (subject.kind === "todo") {
-    const todo = await ctx.db.get(subject.todoId);
-    if (todo === null) throw new Error(`context subject todo ${subject.todoId} does not exist`);
+    // The plain row; a ruling names it by its old id.
+    const plain = await resolveId(ctx, "todos", subject.todoId);
+    const old = plain === null ? null : await oldId(ctx, "todos", plain);
+    if (old === null) throw new Error(`context subject todo ${subject.todoId} does not exist`);
     const own = await ctx.db
       .query("rulings")
-      .withIndex("by_todo", (q) => q.eq("todoId", todo._id))
+      .withIndex("by_todo", (q) => q.eq("todoId", old))
       .take(RULINGS_PER_SUBJECT);
     for (const ruling of own) {
       record.rulings.push({
@@ -203,7 +207,7 @@ async function writePages(ctx: QueryCtx | MutationCtx): Promise<string> {
  *
  *   modelOfTomPublication by_key                     1
  *   modelOfTomFiles by_name                          2  (reaching Tom only)
- *   dtsTodos get                                   ≤  1
+ *   todos get (by_legacy for an old id), its old row ≤  3
  *   rulings by_todo                             ≤  5
  *   claudeSessions by_status ×2, filtered in memory ≤ 60 (SESSION_SCAN_MAX)
  *
