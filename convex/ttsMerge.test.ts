@@ -1411,7 +1411,7 @@ describe("the gate posted as the tts-gate commit status", () => {
     expect(result.posted.map((p) => p.state)).toEqual(["pending", "success"]);
   });
 
-  it("posts nothing without a credential, for an unknown repo, or for a short sha", async () => {
+  it("posts nothing without a credential (and reports it), for an unknown repo, or for a short sha", async () => {
     const calls = statusesApi();
     const t = convex();
     await greenTests(t);
@@ -1419,9 +1419,15 @@ describe("the gate posted as the tts-gate commit status", () => {
     expect((await t.action(internal.ttsMerge.internalPostGateStatus, { repo: "nope", sha: SHA })).posted).toEqual([]);
     expect((await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA.slice(0, 7) })).posted).toEqual([]);
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
-    expect((await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA })).why).toBe(
-      "the record holds no GitHub credential",
+    expect((await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA })).why).toContain(
+      "GITHUB_MIRROR_TOKEN is not set",
     );
     expect(calls).toHaveLength(0);
+    // Not silent: the missing credential is a keyed job-failed row naming it.
+    const failed = await t.run((ctx) =>
+      ctx.db.query("events").withIndex("by_kind_subject_at", (q) => q.eq("kind", "job-failed").eq("subject", "gate-status:tom.quest")).collect(),
+    );
+    expect(failed).toHaveLength(1);
+    expect((failed[0].data as { error: string }).error).toContain("GITHUB_MIRROR_TOKEN");
   });
 });
