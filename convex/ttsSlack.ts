@@ -26,7 +26,7 @@ import {
 } from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 import { needsYouNumber, openNeedsYou } from "./jarvis/outbox";
-import { follow } from "./jarvis/tables";
+import { follow, oldId } from "./jarvis/tables";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -180,7 +180,10 @@ export const internalClaimSlackItem = internalMutation({
     ctx,
     { day, ask, itemId, channel },
   ): Promise<{ claimed: boolean; by: string | null }> => {
-    const key = claimKey(day, ask as "act" | "object", itemId);
+    // A todo is claimed under its old id whichever form the caller holds, so
+    // a claim made before the readers moved still dedupes one made after.
+    const todoId = await oldId(ctx, "todos", itemId);
+    const key = claimKey(day, ask as "act" | "object", todoId ?? itemId);
     const seen = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", SLACK_CLAIMED).eq("key", key))
@@ -189,7 +192,6 @@ export const internalClaimSlackItem = internalMutation({
       const by = (seen.data as { channel?: unknown } | undefined)?.channel;
       return { claimed: false, by: typeof by === "string" ? by : null };
     }
-    const todoId = ctx.db.normalizeId("dtsTodos", itemId);
     await ctx.db.insert("dtsEvents", {
       at: Date.now(),
       kind: SLACK_CLAIMED,
@@ -224,7 +226,7 @@ export const internalOpenNeedsTomThread = internalMutation({
   ): Promise<{ opened: boolean; key: string; reason?: string }> => {
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
-    const id = ctx.db.normalizeId("dtsTodos", todoId);
+    const id = await oldId(ctx, "todos", todoId);
     const todo = id === null ? null : await ctx.db.get(id);
     if (id === null || !todo) throw new Error(`Unknown todo id: ${todoId}`);
     const seen = await ctx.db
@@ -977,8 +979,8 @@ async function namedTodo(
   for (const token of text.split(/\s+/)) {
     const bare = token.replace(/^<|>$/g, "").split("|")[0];
     const candidate = /[?&]item=([A-Za-z0-9]+)/.exec(bare)?.[1] ?? bare.replace(/[.,;:!)]+$/, "");
-    const todoId = ctx.db.normalizeId("dtsTodos", candidate);
-    if (todoId === null || !(await ctx.db.get(todoId))) continue;
+    const todoId = await oldId(ctx, "todos", candidate);
+    if (todoId === null) continue;
     return { todoId, rest: text.replace(token, " ").replace(/\s+/g, " ").trim() };
   }
   return undefined;

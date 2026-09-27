@@ -34,6 +34,7 @@ import type { MutationCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { logEvent } from "../tts";
+import { oldId } from "./tables";
 import { needsYouInThread, recordSlackSent } from "../ttsSlack";
 import {
   DAY_MS,
@@ -128,7 +129,7 @@ export async function onDigestSent(ctx: MutationCtx, row: Doc<"events">): Promis
   const day = typeof d.day === "string" ? d.day : null;
   const surfaced = Array.isArray(d.surfacedTodoIds) ? d.surfacedTodoIds : [];
   for (const raw of surfaced) {
-    const todoId = typeof raw === "string" ? ctx.db.normalizeId("dtsTodos", raw) : null;
+    const todoId = typeof raw === "string" ? await oldId(ctx, "todos", raw) : null;
     if (todoId !== null) await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
   }
   const { channel, ts } = digestFacts(row);
@@ -150,14 +151,14 @@ export async function onNeedsYouPosted(ctx: MutationCtx, row: Doc<"events">): Pr
   const channel = typeof d.channel === "string" ? d.channel : null;
   const ts = typeof d.ts === "string" ? d.ts : null;
   const threadTs = typeof d.threadTs === "string" ? d.threadTs : null;
-  const subject = needsYouSubject(ctx, d);
+  const subject = await needsYouSubject(ctx, d);
   if (channel === null || ts === null || threadTs === null || subject === null) return { threaded: false };
   await recordSlackSent(ctx, { channel, ts, threadTs, subject, text: row.text ?? "" });
   return { threaded: true };
 }
 
-function needsYouSubject(ctx: MutationCtx, d: Record<string, unknown>): SlackSubject | null {
-  const todoId = typeof d.todoId === "string" ? ctx.db.normalizeId("dtsTodos", d.todoId) : null;
+async function needsYouSubject(ctx: MutationCtx, d: Record<string, unknown>): Promise<SlackSubject | null> {
+  const todoId = typeof d.todoId === "string" ? await oldId(ctx, "todos", d.todoId) : null;
   if (todoId !== null) return { kind: "todo", id: todoId };
   const job = typeof d.job === "string" ? d.job : null;
   return job === null ? null : { kind: "job", id: job };

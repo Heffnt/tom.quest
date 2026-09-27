@@ -15,6 +15,7 @@ import {
   markLiveSessionRulingApplied,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
+import { eitherId, oldId } from "./jarvis/tables";
 import { appendNotes, inboundRowIdOf, NOTES, rowSource } from "./sessionRows";
 import { isIsoDay } from "../shared/markdown-sections.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
@@ -760,7 +761,7 @@ const CREATE_SESSION_ARGS = {
   // saved link) keeps working; both go through the same resolver.
   repos: v.optional(v.array(v.string())),
   repo: v.optional(v.string()),
-  todoId: v.optional(v.id("dtsTodos")),
+  todoId: v.optional(eitherId.todos),
   blockCategory: v.optional(v.string()),
   // Tom picks the model for his own sessions (ratified 2026-09-04). Absent
   // takes DEFAULT_SESSION_MODEL, which insertSession supplies.
@@ -786,7 +787,7 @@ async function createSessionFrom(
     kind: Doc<"claudeSessions">["kind"];
     repos?: string[];
     repo?: string;
-    todoId?: Id<"dtsTodos">;
+    todoId?: string;
     blockCategory?: string;
     model?: SessionModel;
     initialPrompt: string;
@@ -797,7 +798,9 @@ async function createSessionFrom(
   if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
   // A todo-scoped session with no repos named falls back to the word guess
   // over the todo rather than silently landing on an empty scratch workspace.
-  const todo = todoId !== undefined ? await ctx.db.get(todoId) : null;
+  const old = todoId === undefined ? undefined : await oldId(ctx, "todos", todoId);
+  if (old === null) throw new Error(`Unknown todo id: ${todoId}`);
+  const todo = old === undefined ? null : await ctx.db.get(old);
   return await insertSession(
     ctx,
     {
@@ -809,7 +812,7 @@ async function createSessionFrom(
         explicit: repos ?? repo ?? (kind === "therapy" ? [] : undefined),
         todo,
       }),
-      todoId,
+      todoId: old,
       blockCategory,
       model,
       agendaDay,
