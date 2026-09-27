@@ -24,7 +24,9 @@ import type { Id } from "@/convex/_generated/dataModel";
 import CalendarTab from "./components/calendar-tab";
 import EventStream from "./components/event-stream";
 import EverythingTab from "./components/everything-tab";
-import { selectNeedsMe, type LinkIntent } from "./lib";
+import TodoDetail from "./components/todo-detail";
+import TodoLists, { type ListRow } from "./components/todo-lists";
+import { codeSubjectKey, selectNeedsMe, selectToday, type LinkIntent, type Todo } from "./lib";
 
 // The two tabs, in the page's own vocabulary. A Slack link may still name a
 // third (convex/ttsShared.ts TtsTab); the read-once effect below maps it.
@@ -107,15 +109,65 @@ export default function TtsClient() {
   const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
   const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
 
-  const awaitingCount = useMemo(() => {
-    const { lifeRows, codeRows } = selectNeedsMe(
-      todos ?? [],
-      mirror ?? [],
-      codeBriefs ?? [],
-      rulings ?? [],
-    );
-    return lifeRows.length + codeRows.length;
-  }, [todos, mirror, codeBriefs, rulings]);
+  const needsMe = useMemo(
+    () => selectNeedsMe(todos ?? [], mirror ?? [], codeBriefs ?? [], rulings ?? []),
+    [todos, mirror, codeBriefs, rulings],
+  );
+  const awaitingCount = needsMe.lifeRows.length + needsMe.codeRows.length;
+
+  // Today, by the calendar's own selector: what is overdue (dated before the
+  // day began) and what falls due inside it. The day is the reader's local
+  // one; it is read again whenever the todos change.
+  const today = useMemo(() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return selectToday(todos ?? [], [], { start: start.getTime(), end: end.getTime() });
+  }, [todos]);
+
+  // The left drawer's rows, from the same selectors as its rail's counts.
+  const lists = useMemo(() => {
+    const todoRow = (t: Todo): ListRow => ({ key: t._id, statement: t.statement, todoId: t._id });
+    return {
+      awaiting: [
+        ...needsMe.lifeRows.map(todoRow),
+        ...needsMe.codeRows.map(({ row }) => ({ key: codeSubjectKey(row.repo, row.externalId), statement: row.statement })),
+      ],
+      overdue: today.overdue.map(todoRow),
+    };
+  }, [needsMe, today]);
+
+  // The selected todo, shown whole in the right drawer and named on its rail.
+  // Until a row is pressed, an ?item= link's todo is the selected one.
+  const [pickedId, setPickedId] = useState<Id<"dtsTodos"> | null>(null);
+  const selectedId = pickedId ?? ((link?.item as Id<"dtsTodos"> | undefined) ?? null);
+  const selected = useMemo(() => (todos ?? []).find((t) => t._id === selectedId) ?? null, [todos, selectedId]);
+  const [now] = useState(() => Date.now());
+
+  const listSignals = useMemo<RailSignal[]>(() => {
+    if (todos === undefined) return [];
+    return [
+      { kind: "count", value: awaitingCount, tone: "accent", label: "awaiting you" },
+      { kind: "count", value: today.overdue.length, tone: today.overdue.length > 0 ? "error" : "faint", label: "overdue" },
+    ];
+  }, [todos, awaitingCount, today]);
+
+  const calendarSignals = useMemo<RailSignal[]>(() => {
+    if (todos === undefined) return [];
+    return [{ kind: "count", value: today.due.length, tone: today.due.length > 0 ? "warn" : "faint", label: "due today" }];
+  }, [todos, today]);
+
+  const detailSignals = useMemo<RailSignal[]>(() => {
+    if (!selected) return [];
+    const overdue = today.overdue.some((t) => t._id === selected._id);
+    const awaiting = needsMe.lifeRows.some((t) => t._id === selected._id);
+    const tone = overdue ? "error" : awaiting ? "accent" : selected.status === "active" ? "ok" : "faint";
+    return [
+      { kind: "dot", value: 1, tone, label: overdue ? "overdue" : awaiting ? "awaiting you" : selected.status },
+      { kind: "age", value: selected.updatedAt, tone: "faint", label: "last updated", staleAfterMs: 7 * 24 * 60 * 60 * 1000 },
+    ];
+  }, [selected, today, needsMe]);
 
   // The bottom drawer: the event stream, and its rail's signals from the same
   // subscription — how many rows are loaded and how old the newest is.
@@ -173,9 +225,10 @@ export default function TtsClient() {
     </TomGate>
   );
 
-  // Round 0 of the frame: the centre is the page as it was, the bottom drawer
-  // is the event stream, and the other three drawers are placeholders (the
-  // top one holds the calendar, which is where the calendar goes).
+  // The frame: the centre is the page as it was; the left drawer lists what
+  // awaits Tom and what is overdue, the right shows the selected todo, the
+  // bottom is the event stream, and the top holds the calendar (where the
+  // calendar goes). Every rail's signals come from the same subscriptions.
   return (
     <Frame
       page="tts"
@@ -185,10 +238,22 @@ export default function TtsClient() {
       center={center}
       top={{
         title: "calendar",
+        signals: calendarSignals,
         body: canRead ? <div className="p-3"><CalendarTab onOpenItem={openFromCalendar} /></div> : null,
       }}
-      left={{ title: "lists", body: null }}
-      right={{ title: "detail", body: null }}
+      left={{
+        title: "lists",
+        signals: listSignals,
+        body: canRead ? (
+          <TodoLists awaiting={lists.awaiting} overdue={lists.overdue} selected={selectedId} onSelect={setPickedId} />
+        ) : null,
+      }}
+      right={{
+        title: "detail",
+        label: selected?.statement,
+        signals: detailSignals,
+        body: canRead ? <TodoDetail todo={selected} now={now} /> : null,
+      }}
       bottom={{
         title: "events",
         signals: streamSignals,

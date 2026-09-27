@@ -79,6 +79,7 @@ import CalendarTab from "./calendar-tab";
 import CodeTodoRow from "./code-todo-row";
 import EventStream from "./event-stream";
 import EverythingTab from "./everything-tab";
+import TodoLists from "./todo-lists";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
 import RepeatDialog from "./repeat-dialog";
@@ -443,6 +444,19 @@ const CASES: { file: string; render: () => void }[] = [
         <EventStream
           rows={[{ _id: "e1", _creationTime: 1, at: NOW, kind: "captured", todoId: "t1" } as never]}
           statements={new Map([["t1" as never, "a todo"]])}
+        />,
+      ),
+  },
+  {
+    // Its rows only select a todo for the right drawer; none fires anything.
+    file: "app/tts/components/todo-lists.tsx",
+    render: () =>
+      void render(
+        <TodoLists
+          awaiting={[{ key: "t1", statement: "a todo", todoId: "t1" as never }, { key: "code:x", statement: "a code todo" }]}
+          overdue={[{ key: "t2", statement: "an overdue todo", todoId: "t2" as never }]}
+          selected={null}
+          onSelect={noop}
         />,
       ),
   },
