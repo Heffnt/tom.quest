@@ -2263,6 +2263,7 @@ export default defineSchema({
     })),
   })
     .index("by_day", ["day"])
+    .index("by_createdAt", ["createdAt"])
     .index("by_status", ["status"]),
 
   dayLogItems: defineTable({

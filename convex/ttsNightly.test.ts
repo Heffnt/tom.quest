@@ -5,6 +5,8 @@ import {
   EXPORT_PAGE_BYTES,
   EXPORT_PAGE_DEFAULT,
   EXPORT_TABLES,
+  LEARNING_DAY_LOG_CHARS_MAX,
+  LEARNING_DAY_LOG_ENTRIES_MAX,
   LEARNING_INPUT_MAX,
   LEARNING_REPLY_CHARS,
 } from "./ttsNightly";
@@ -283,6 +285,84 @@ describe("POST /tts/event", () => {
 describe("GET /tts/learning-input", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("serves the learning window's day-log entries with their stored text", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const since = Date.UTC(2030, 0, 2, 12, 0, 0);
+    const until = since + 10_000;
+    const text = "  prepared a neutral project note\nwith its original spacing  ";
+    const { insideId } = await t.run(async (ctx) => {
+      const insert = (createdAt: number, entryText: string) =>
+        ctx.db.insert("dayLogEntries", {
+          text: entryText,
+          createdAt,
+          day: "2030-01-02",
+          status: "pending",
+        });
+      await insert(since - 1, "before the learning window");
+      const insideId = await insert(since, text);
+      await insert(until, "after the learning window");
+      return { insideId };
+    });
+
+    const res = await get(t, `/jarvis/context?for=learning&since=${since}&until=${until}`);
+    expect(res.status).toBe(200);
+    const input = await res.json();
+    expect(input.dayLogEntries).toEqual([{ id: insideId, at: since, text }]);
+    expect(input.dayLogDropped).toBe(0);
+  });
+
+  it("keeps the newest two hundred day-log entries and counts older entries as dropped", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const since = Date.UTC(2030, 0, 3, 12, 0, 0);
+    const until = since + 1_000;
+    await t.run(async (ctx) => {
+      for (let index = 0; index <= LEARNING_DAY_LOG_ENTRIES_MAX; index += 1) {
+        await ctx.db.insert("dayLogEntries", {
+          text: `entry-${index}`,
+          createdAt: since + index,
+          day: "2030-01-03",
+          status: "pending",
+        });
+      }
+    });
+
+    const input = await (await get(t, `/jarvis/context?for=learning&since=${since}&until=${until}`)).json();
+    expect(input.dayLogEntries).toHaveLength(LEARNING_DAY_LOG_ENTRIES_MAX);
+    expect(input.dayLogEntries[0]).toMatchObject({ at: since + 1, text: "entry-1" });
+    expect(input.dayLogEntries.at(-1)).toMatchObject({
+      at: since + LEARNING_DAY_LOG_ENTRIES_MAX,
+      text: `entry-${LEARNING_DAY_LOG_ENTRIES_MAX}`,
+    });
+    expect(input.dayLogDropped).toBe(1);
+  });
+
+  it("drops every older entry when day-log text exceeds its character cap", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const since = Date.UTC(2030, 0, 4, 12, 0, 0);
+    const until = since + 1_000;
+    const newest = `new:${"n".repeat(75_000)}`;
+    const middle = `middle:${"m".repeat(30_000)}`;
+    const oldest = `old:${"o".repeat(10_000)}`;
+    await t.run(async (ctx) => {
+      for (const [createdAt, text] of [
+        [since, oldest],
+        [since + 1, middle],
+        [since + 2, newest],
+      ] as const) {
+        await ctx.db.insert("dayLogEntries", { text, createdAt, day: "2030-01-04", status: "pending" });
+      }
+    });
+
+    const input = await (await get(t, `/jarvis/context?for=learning&since=${since}&until=${until}`)).json();
+    expect(input.dayLogEntries).toHaveLength(1);
+    expect(input.dayLogEntries[0]).toMatchObject({ at: since + 2, text: newest });
+    expect(input.dayLogEntries[0].text.length).toBeLessThanOrEqual(LEARNING_DAY_LOG_CHARS_MAX);
+    expect(input.dayLogDropped).toBe(2);
   });
 
   it("returns Tom's turns, his Slack replies and his rulings in the window, and nothing an agent wrote", async () => {
