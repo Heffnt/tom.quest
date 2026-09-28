@@ -235,6 +235,28 @@ describe("<Frame>", () => {
     expect(useFrameStore.getState().size.test?.right).toBe(300);
   });
 
+  it("mid-drag, lays each drawer's content out at a width that changes in 40 px steps, never wider than the drawer", () => {
+    const width = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth")!;
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => 1000 });
+    try {
+      renderFrame();
+      const scroller = (edge: string) => drawer(edge).querySelector<HTMLElement>("[data-frame-drawer-scroll]")!;
+      const el = handle("right");
+      act(() => {
+        fireEvent.pointerDown(el, { pointerId: 1, button: 0, clientX: 1000, clientY: 300 });
+        fireEvent.pointerMove(el, { pointerId: 1, clientX: 700, clientY: 300 });
+      });
+      // The top drawer lost 300 px on its right: its content is 320 px narrower.
+      expect(scroller("top").style.flex).toBe("0 0 680px");
+      // The right drawer grew 140 px past its minimum: its content is 120 px wider.
+      expect(scroller("right").style.flex).toBe("0 0 1120px");
+      // The left drawer did not change: its content fills it.
+      expect(scroller("left").style.flex).toBe("");
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "offsetWidth", width);
+    }
+  });
+
   it("persists the open drawers per page", () => {
     renderFrame();
     act(() => fireEvent.keyDown(window, { key: "a" }));

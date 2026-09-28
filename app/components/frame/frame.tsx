@@ -133,8 +133,8 @@ const REFLOW_STEP_PX = 40;
  * the motion began, changed by the change in the drawer's width rounded down
  * to REFLOW_STEP_PX. The drawer's box and handle still follow the pointer
  * exactly; its content fills it to within one step and never past it, and
- * between steps nothing inside the drawer lays out or paints again. When the
- * motion ends the explicit width is dropped and the content fills the drawer
+ * between steps nothing inside the drawer lays out again. When the motion
+ * ends the explicit width is dropped and the content fills the drawer
  * exactly.
  */
 class Geometry {
@@ -172,7 +172,8 @@ class Geometry {
       const scroller = began && this.scroller(edge);
       if (!began || !scroller) continue;
       const change = Math.round(this.drawerWidth(edge) - began.drawer);
-      scroller.style.flex = change === 0 ? "" : `0 0 ${began.content + Math.floor(change / REFLOW_STEP_PX) * REFLOW_STEP_PX}px`;
+      scroller.style.flex =
+        change === 0 ? "" : `0 0 ${Math.max(0, began.content + Math.floor(change / REFLOW_STEP_PX) * REFLOW_STEP_PX)}px`;
     }
   }
 
