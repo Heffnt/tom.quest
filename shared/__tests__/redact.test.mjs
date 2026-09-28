@@ -635,3 +635,127 @@ describe("a spelling an open block's reader can read two ways", () => {
   });
 });
 
+// Where a shape or a secret's name may begin (START in redact.mjs): not in the
+// middle of a longer word, so the character before it is not a letter, a digit
+// or an underscore, unless that character is the last of an escape or of an
+// encoded character. In a serialized string every line after the first begins
+// behind `\n`; in a URL a value begins behind `%3A` or `%3D`.
+describe("a shape or a name begins behind an escape or an encoded character", () => {
+  const ESCAPE_ENDS = [
+    ["an escaped line break", "\\n"],
+    ["an escaped tab", "\\t"],
+    ["an escaped carriage return and line break", "\\r\\n"],
+    ["an escaped backspace", "\\b"],
+    ["an escaped form feed", "\\f"],
+    ["a character spelled as \\u and four hex digits", "\\u003d"],
+    ["a line break escaped in a string serialized twice", "\\\\n"],
+    ["an encoded colon", "%3A"],
+    ["an encoded space", "%20"],
+    ["an encoded equals sign", "%3d"],
+  ];
+  for (const [kind, token] of SHAPES) {
+    for (const [name, before] of ESCAPE_ENDS) {
+      it(`takes a ${kind} token (${token.slice(0, 6)}…) behind ${name}`, () => {
+        expect(redactSecrets(`one${before}${token} two`)).toBe(`one${before}[redacted:${kind}] two`);
+      });
+    }
+  }
+
+  it("takes a token on the second line of a serialized string, and the JSON stays valid", () => {
+    for (const [kind, token] of SHAPES) {
+      const out = redactSecrets(JSON.stringify({ text: `first line\n${token}\nlast line` }));
+      expect(JSON.parse(out).text).toBe(`first line\n[redacted:${kind}]\nlast line`);
+    }
+  });
+
+  const value = t("r4Nd0m", "Secret", "Value1234567890abcdef");
+  const NAMED = [
+    ["an environment name", (before) => `${before}TTS_WORKER_KEY=${value}`, (before) => `${before}TTS_WORKER_KEY=[redacted:secret]`],
+    ["a secret word", (before) => `${before}password=${value}`, (before) => `${before}password=[redacted:secret]`],
+    ["a secret word before a spaced value", (before) => `${before}auth_token ${value}${"Z9".repeat(8)}`, (before) => `${before}auth_token [redacted:secret]`],
+  ];
+  for (const [name, text, shown] of NAMED) {
+    for (const [where, before] of [["an escaped line break", "\\n"], ["an encoded colon", "%3A"], ["an escaped tab", "\\t"]]) {
+      it(`takes the value of ${name} behind ${where}`, () => {
+        expect(redactSecrets(text(`FOO=1${before}`))).toBe(shown(`FOO=1${before}`));
+      });
+    }
+  }
+
+  it("takes each value of an environment file serialized into one string", () => {
+    const file = `FOO=1\nGITHUB_TOKEN=${value}\npassword=${value}\nTTS_WORKER_KEY=${value}\n`;
+    const out = JSON.parse(redactSecrets(JSON.stringify({ text: file }))).text;
+    expect(out).toBe("FOO=1\nGITHUB_TOKEN=[redacted:secret]\npassword=[redacted:secret]\nTTS_WORKER_KEY=[redacted:secret]\n");
+  });
+
+  it("leaves a shape that is the tail of a longer word: a letter, digit or underscore before it", () => {
+    for (const [, token] of SHAPES) {
+      for (const before of ["x", "7", "_"]) {
+        expect(redactSecrets(`one ${before}${token} two`)).toBe(`one ${before}${token} two`);
+      }
+    }
+    // The ordinary text that condition is there for.
+    const phrase = "the risk-averse-and-deliberately-long-hyphenated-plan wins";
+    expect(redactSecrets(phrase)).toBe(phrase);
+    expect(redactSecrets(`${phrase}\\n${phrase}`)).toBe(`${phrase}\\n${phrase}`);
+  });
+
+  it("leaves a secret's name inside a longer word", () => {
+    expect(redactSecrets(`mypassword=${value}`)).toBe(`mypassword=${value}`);
+  });
+});
+
+// Where a shape of fixed length ends: at any character that cannot belong to
+// it. A character of its own alphabet after it makes it part of a longer run.
+describe("a shape of fixed length ends where the next character cannot belong to it", () => {
+  const aws = t("AK", "IAMOCK7EXAMPLE1234");
+  const googleBody = t("AI", "zaSyA1b2C3d4E5f6G7h8I9j0KlMnOpQrStUv");
+
+  it("takes a Google key whose last character is a hyphen or an underscore, before a space, a quote or the text's end", () => {
+    for (const last of ["-", "_"]) {
+      const key = `${googleBody}${last}`;
+      expect(redactSecrets(`key ${key} here`)).toBe("key [redacted:google] here");
+      expect(redactSecrets(`{"key":"${key}"}`)).toBe('{"key":"[redacted:google]"}');
+      expect(redactSecrets(`key ${key}`)).toBe("key [redacted:google]");
+    }
+  });
+
+  it("leaves a Google key's shape that a letter, a digit or an underscore continues, whatever its last character", () => {
+    for (const last of ["W", "-"]) {
+      for (const next of ["W", "w", "7", "_"]) {
+        const run = `${googleBody}${last}${next}`;
+        expect(redactSecrets(`key ${run} here`)).toBe(`key ${run} here`);
+      }
+    }
+  });
+
+  it("takes an AWS key id before a lower-case letter or an underscore", () => {
+    expect(redactSecrets(`id ${aws}_old`)).toBe("id [redacted:aws]_old");
+    expect(redactSecrets(`id ${aws}x`)).toBe("id [redacted:aws]x");
+  });
+
+  it("leaves an AWS key id's shape that an upper-case letter or a digit continues", () => {
+    for (const next of ["Z", "7"]) {
+      expect(redactSecrets(`id ${aws}${next} here`)).toBe(`id ${aws}${next} here`);
+    }
+  });
+
+  it("takes a GitHub token before an underscore", () => {
+    const [, token] = SHAPES[1];
+    expect(redactSecrets(`${token}_backup`)).toBe("[redacted:github]_backup");
+  });
+});
+
+describe("an AWS secret behind its access id and an escaped separator", () => {
+  const accessId = t("AK", "IA", "1234567890ABCDEF");
+  const secret = t("Ab1dE2fG3hI4jK5l", "Mn6oP7qR8sT9uV0w", "XyZ1+/aB");
+  for (const [name, between] of [["an escaped line break", "\\n"], ["an escaped carriage return and line break", "\\r\\n"], ["an escaped tab", "\\t"], ["a colon and an escaped tab", ":\\t"]]) {
+    it(`takes the secret behind ${name}`, () => {
+      expect(redactSecrets(`${accessId}${between}${secret}`)).toBe(`[redacted:aws]${between}[redacted:aws]`);
+    });
+  }
+  it("takes the pair on two lines of a serialized string, and the JSON stays valid", () => {
+    const out = redactSecrets(JSON.stringify({ text: `first\n${accessId}\n${secret}\nnext` }));
+    expect(JSON.parse(out).text).toBe("first\n[redacted:aws]\n[redacted:aws]\nnext");
+  });
+});
