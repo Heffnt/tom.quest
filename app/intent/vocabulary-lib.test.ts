@@ -61,23 +61,23 @@ describe("versionRow", () => {
 describe("termRows", () => {
   it("prints every term of the picked kind, with the posted section", () => {
     expect(termRows(row({ section: "12.1" }), "refused", "")).toEqual([
-      "vocabulary/#tts 12.1 kind=refused definition=\"not a TTS word\" spec=§12.1 related=#tts-today refused-for=#tts-today",
+      "vocabulary/#tts 12.1 type=refused definition=\"not a TTS word\" spec=§12.1 related=#tts-today refused-for=#tts-today",
     ]);
     expect(termRows(row(), "all", "  ")).toHaveLength(3);
   });
 
   it("never prints a section the row does not carry", () => {
     expect(termRows(row(), "all", "")[0]).toBe(
-      "vocabulary/task kind=concept definition=\"work an agent or Tom performs\" spec=§5.1 related=todo",
+      "vocabulary/task type=concept definition=\"work an agent or Tom performs\" spec=§5.1 related=todo",
     );
   });
 
   it("answers a typed word the way define does, whatever kind is picked", () => {
     expect(termRows(row({ section: "12.1" }), "refused", "Ruling")).toEqual([
-      "vocabulary/ruling 12.1 kind=concept definition=\"his decision, carrying one of four verdicts\" spec=§5.1",
+      "vocabulary/ruling 12.1 type=concept definition=\"his decision, carrying one of four verdicts\" spec=§5.1",
     ]);
     expect(termRows(row({ section: "12.1" }), "all", "verdicts")).toEqual([
-      "vocabulary/verdicts unknown\n  did you mean  vocabulary/ruling 12.1 kind=concept definition=\"his decision, carrying one of four verdicts\" spec=§5.1",
+      "vocabulary/verdicts unknown\n  did you mean  vocabulary/ruling 12.1 type=concept definition=\"his decision, carrying one of four verdicts\" spec=§5.1",
     ]);
     expect(termRows(row(), "all", "nothing")).toEqual([
       "vocabulary/nothing unknown\n  no term's definition carries \"nothing\"",

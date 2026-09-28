@@ -111,7 +111,7 @@ function kindInfo(kind: KindFilter) {
   return (
     <Info side="below" call={`matches(BANK, { ...filters, kind: ${callValue} })`}>
       {kind === null
-        ? "Admits every question, the lighter ones included; kind no longer narrows the list."
+        ? "Admits every question, the lighter ones included; type no longer narrows the list."
         : details[kind]}
     </Info>
   );
@@ -243,7 +243,7 @@ function Questions() {
       {drawerContent === "options" ? (
         <div className="space-y-3 px-4 pb-2 pt-2">
           <ChipRow
-            label={<span className="w-14 shrink-0 text-sm text-text-faint">kind</span>}
+            label={<span className="w-14 shrink-0 text-sm text-text-faint">type</span>}
             options={KINDS}
             selected={view.filters.kind}
             onSelect={(kind) => refine({ kind })}

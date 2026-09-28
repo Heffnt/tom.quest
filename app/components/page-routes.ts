@@ -30,7 +30,7 @@ export const PAGES: Page[] = [
   { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, what each line rests on, the vocabulary, and what stands until he objects", priority: 8, visibility: "tom" },
   { slug: "log", title: "Log", blurb: "Private day entries and their recorded measures", priority: 8, visibility: "tom" },
   { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
-  { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5, visibility: "tom" },
+  { slug: "questions", title: "Questions", blurb: "One question at a time, by type, frame and topic", priority: 5, visibility: "tom" },
   { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
   { slug: "secrets", title: "Secrets", blurb: "Values for the Jarvis Box", priority: 5, visibility: "tom" },
   { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4, visibility: "public" },

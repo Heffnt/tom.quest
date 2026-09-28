@@ -76,7 +76,7 @@ export function formatTermRow({ section, term: entry }) {
   const related = Array.isArray(term.related) ? term.related.join(",") : "";
   const parts = [`vocabulary/${singleLine(term.term)}`];
   if (section !== undefined && section !== null && section !== "") parts.push(singleLine(section));
-  parts.push(`kind=${singleLine(term.kind)}`, `definition=${quoted(term.definition)}`);
+  parts.push(`type=${singleLine(term.kind)}`, `definition=${quoted(term.definition)}`);
   if (term.specSection) parts.push(`spec=§${singleLine(term.specSection)}`);
   if (term.codeSymbol) parts.push(`code=${singleLine(term.codeSymbol)}`);
   if (related !== "") parts.push(`related=${related}`);

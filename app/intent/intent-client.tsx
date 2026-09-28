@@ -156,7 +156,7 @@ export default function IntentClient() {
             <>
               <Group>
                 <Pick on={filters.kind === "all"} onClick={() => setFilters({ kind: "all" })}>
-                  every kind
+                  every type
                 </Pick>
                 {KINDS.map((kind) => (
                   <Pick key={kind} on={filters.kind === kind} onClick={() => setFilters({ kind })}>
