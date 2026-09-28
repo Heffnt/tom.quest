@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { AGENT_READABLE_SURFACES, isAgentReadableSurface } from "./agentSurfaces";
-import { roleAccess } from "./authRoles";
+import { requireTom, roleAccess } from "./authRoles";
+import { grantAgentRole, ROLE_GRANTED } from "./users";
 
 // The `agent` role: what a TTS session's headless browser signs in as. The
 // bug these tests exist to keep out is the one that made the role necessary —
@@ -259,6 +260,233 @@ describe("the read gate never guards a write", () => {
         chunk.includes("requireTomOrAgent"),
         `${file}: ${name} is not a query but reaches for the read gate`,
       ).toBe(false);
+    }
+  });
+});
+
+// users.grantAgentRole: the deploy credential's grant of the agent role. The
+// rows it may write are one role and one event; every refusal below checks
+// that neither was written.
+describe("users.grantAgentRole", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function account(
+    t: ReturnType<typeof convexTest>,
+    username: string,
+    role?: "user" | "admin" | "tom" | "agent",
+  ) {
+    return await t.run(async (ctx) =>
+      ctx.db.insert("users", {
+        name: username,
+        email: `${username}@tom.quest`,
+        ...(role === undefined ? {} : { role }),
+      }),
+    );
+  }
+
+  async function grants(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) =>
+      (await ctx.db.query("events").collect()).filter((e) => e.kind === ROLE_GRANTED),
+    );
+  }
+
+  it("is internal: no browser can call it", () => {
+    expect((grantAgentRole as unknown as { isInternal: boolean }).isInternal).toBe(true);
+    expect((grantAgentRole as unknown as { isPublic?: boolean }).isPublic).not.toBe(true);
+  });
+
+  it("gives a user the agent role and records which run asked", async () => {
+    const t = convexTest(schema, modules);
+    const id = await account(t, "reader");
+    const result = await t.mutation(internal.users.grantAgentRole, {
+      username: "Reader",
+      agentId: "run-1",
+    });
+    expect(result).toEqual({ userId: id, changed: true });
+    expect((await t.run(async (ctx) => ctx.db.get(id)))?.role).toBe("agent");
+    const rows = await grants(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: ROLE_GRANTED,
+      subject: id,
+      provenance: { agentId: "run-1" },
+      data: { userId: id, username: "reader", role: "agent", previousRole: "user" },
+    });
+  });
+
+  it("gives an account with an explicit user role the agent role too", async () => {
+    const t = convexTest(schema, modules);
+    const id = await account(t, "reader", "user");
+    await t.mutation(internal.users.grantAgentRole, { username: "reader", agentId: "run-1" });
+    expect((await t.run(async (ctx) => ctx.db.get(id)))?.role).toBe("agent");
+  });
+
+  it("a second run changes nothing and writes no second event", async () => {
+    const t = convexTest(schema, modules);
+    const id = await account(t, "reader");
+    await t.mutation(internal.users.grantAgentRole, { username: "reader", agentId: "run-1" });
+    const again = await t.mutation(internal.users.grantAgentRole, {
+      username: "reader",
+      agentId: "run-2",
+    });
+    expect(again).toEqual({ userId: id, changed: false });
+    expect((await t.run(async (ctx) => ctx.db.get(id)))?.role).toBe("agent");
+    expect(await grants(t)).toHaveLength(1);
+  });
+
+  async function expectRefused(
+    t: ReturnType<typeof convexTest>,
+    args: { username: string; agentId: string },
+    message: RegExp,
+    unchanged?: { id: Awaited<ReturnType<typeof account>>; role: string | undefined },
+  ) {
+    await expect(t.mutation(internal.users.grantAgentRole, args)).rejects.toThrow(message);
+    expect(await grants(t)).toHaveLength(0);
+    if (unchanged) {
+      expect((await t.run(async (ctx) => ctx.db.get(unchanged.id)))?.role).toBe(unchanged.role);
+    }
+  }
+
+  it("refuses the account at tom, under any username", async () => {
+    const t = convexTest(schema, modules);
+    const id = await account(t, "owner", "tom");
+    await expectRefused(t, { username: "owner", agentId: "run-1" }, /cannot be changed/, {
+      id,
+      role: "tom",
+    });
+  });
+
+  it("refuses the default Tom username even when that account is not at tom", async () => {
+    const t = convexTest(schema, modules);
+    const id = await account(t, "tom", "user");
+    await expectRefused(t, { username: "T.o.m", agentId: "run-1" }, /Tom username/, {
+      id,
+      role: "user",
+    });
+  });
+
+  it("refuses the username TOM_USERNAME names", async () => {
+    vi.stubEnv("TOM_USERNAME", "Boss");
+    const t = convexTest(schema, modules);
+    const id = await account(t, "boss");
+    await expectRefused(t, { username: "boss", agentId: "run-1" }, /Tom username/, {
+      id,
+      role: undefined,
+    });
+  });
+
+  it("refuses to change an admin", async () => {
+    const t = convexTest(schema, modules);
+    const id = await account(t, "friend", "admin");
+    await expectRefused(t, { username: "friend", agentId: "run-1" }, /admin/, {
+      id,
+      role: "admin",
+    });
+  });
+
+  it("refuses an unknown username", async () => {
+    const t = convexTest(schema, modules);
+    await expectRefused(t, { username: "nobody", agentId: "run-1" }, /User not found/);
+  });
+
+  it("refuses an empty username and an empty agentId", async () => {
+    const t = convexTest(schema, modules);
+    const id = await account(t, "reader");
+    await expectRefused(t, { username: " .- ", agentId: "run-1" }, /letters or numbers/);
+    await expectRefused(t, { username: "reader", agentId: " " }, /agentId/, {
+      id,
+      role: undefined,
+    });
+  });
+});
+
+// A user with the agent role against every write that only Tom may call. The
+// calls below are one per file: in each of those files every write calls the
+// same check (the source test after them holds that), so one refused call
+// shows the file's check refuses the role.
+describe("the agent role is refused by every Tom-only write", () => {
+  it("is refused by requireTom itself", async () => {
+    const t = convexTest(schema, modules);
+    const { as: agent } = await withRole(t, "agent");
+    await expect(agent.run(async (ctx) => requireTom(ctx, "Anything"))).rejects.toThrow(
+      /Anything access is restricted to Tom/,
+    );
+  });
+
+  it("is refused by one write of each file", async () => {
+    const t = convexTest(schema, modules);
+    const { as: agent } = await withRole(t, "agent");
+    const proposalId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", { at: 1, kind: "send-proposal", data: {} }),
+    );
+    const denied = /restricted to Tom/;
+    await expect(agent.mutation(api.agents.requestMaterialize, { agentId: "a" })).rejects.toThrow(denied);
+    await expect(
+      agent.mutation(api.claudeSessions.createSession, { title: "t", kind: "gate", initialPrompt: "p" }),
+    ).rejects.toThrow(denied);
+    await expect(agent.mutation(api.dayLog.submit, { text: "t" })).rejects.toThrow(denied);
+    await expect(
+      agent.mutation(api.forge.createJob, { name: "n", config: {}, runId: "r" }),
+    ).rejects.toThrow(denied);
+    await expect(
+      agent.mutation(api.jarvis.intent.settle, { subject: "decision:a", verdict: "approve" }),
+    ).rejects.toThrow(denied);
+    await expect(
+      agent.mutation(api.observe.approveChange, { repo: "tom.quest", number: 1 }),
+    ).rejects.toThrow(denied);
+    await expect(
+      agent.mutation(api.secrets.set, { name: "PLACEHOLDER", value: "placeholder" }),
+    ).rejects.toThrow(denied);
+    await expect(agent.mutation(api.ttsSignoff.signAndSend, { proposalId })).rejects.toThrow(denied);
+    await expect(agent.mutation(api.ttsSignoff.decline, { proposalId })).rejects.toThrow(denied);
+    // tts.ts, ttsRepeats.ts and ttsRulings.ts: "TTS writes refuse agent" above.
+  });
+
+  // users.ts's writes do not share one check, so each is called.
+  it("is refused by each write of users.ts", async () => {
+    const t = convexTest(schema, modules);
+    const { as: agent } = await withRole(t, "agent");
+    const { id: userId } = await withRole(t, "user");
+    await expect(
+      agent.mutation(api.users.setRoleByUsername, { username: "user", role: "agent" }),
+    ).rejects.toThrow(/restricted to Tom/);
+    await expect(agent.mutation(api.users.promoteToAdmin, { userId })).rejects.toThrow(
+      /Only Tom can promote admins/,
+    );
+    await expect(
+      agent.mutation(api.users.setTomByUsername, { username: "agent", setupSecret: "placeholder" }),
+    ).rejects.toThrow(/not authorized/);
+    expect((await t.run(async (ctx) => ctx.db.get(userId)))?.role).toBe("user");
+  });
+
+  // Each file's check, as its writes call it. A write added to one of these
+  // files without the check fails here, whichever write it is.
+  const WRITE_CHECKS: Array<[string, RegExp]> = [
+    ["agents.ts", /await requireTom\(ctx, "Agents"\)/],
+    ["claudeSessions.ts", /await requireTomId\(ctx\)/],
+    ["dayLog.ts", /await requireTom\(ctx, SURFACE\)/],
+    ["forge.ts", /await requireTomId\(ctx\)/],
+    ["jarvis/intent.ts", /await requireTom\(ctx, SURFACE\)/],
+    ["observe.ts", /await requireTom\(ctx, SURFACE\)/],
+    ["secrets.ts", /await requireTom\(ctx, LABEL\)/],
+    ["tts.ts", /await requireTomId\(ctx\)/],
+    ["ttsRepeats.ts", /await requireTom\(ctx, "TTS"\)/],
+    ["ttsRulings.ts", /await requireTom\(ctx, "TTS"\)/],
+    ["ttsSignoff.ts", /await requireTom\(ctx, SURFACE\)/],
+  ];
+
+  it.each(WRITE_CHECKS)("%s: every public write calls the file's check", (file, check) => {
+    const source = readFileSync(join(__dirname, file), "utf8");
+    const writes = source
+      .split(/\nexport const /)
+      .slice(1)
+      .filter((chunk) => /^\S+ = (?:mutation|action)\(/.test(chunk));
+    expect(writes.length).toBeGreaterThan(0);
+    for (const chunk of writes) {
+      const name = chunk.slice(0, chunk.indexOf(" "));
+      expect(check.test(chunk), `${file}: ${name} does not call its check`).toBe(true);
     }
   });
 });
