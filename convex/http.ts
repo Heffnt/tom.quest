@@ -1321,23 +1321,20 @@ const ttsDayLogApply = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "invalid JSON body" });
   }
   const b = (body ?? {}) as Record<string, unknown>;
+  if (Object.keys(b).some((field) => !["id", "status", "items", "failure", "detail"].includes(field))) {
+    return jsonResponse(400, { error: "unknown field" });
+  }
   if (typeof b.id !== "string" || b.id === "") return jsonResponse(400, { error: "id (non-empty string) required" });
   if (b.status !== "applied" && b.status !== "needs-session") {
     return jsonResponse(400, { error: 'status must be "applied" or "needs-session"' });
   }
   if (!Array.isArray(b.items)) return jsonResponse(400, { error: "items (array) required" });
-  if (!Array.isArray(b.actions)) return jsonResponse(400, { error: "actions (array) required" });
-  if (b.warning !== undefined && (typeof b.warning !== "object" || b.warning === null || Array.isArray(b.warning))) {
-    return jsonResponse(400, { error: "warning, when given, must be an object" });
-  }
   if (b.detail !== undefined && typeof b.detail !== "string") return jsonResponse(400, { error: "detail, when given, must be a string" });
   try {
     const result = await ctx.runMutation(internal.dayLog.internalApplyDayLog, {
       id: b.id,
       status: b.status,
       items: b.items,
-      actions: b.actions,
-      warning: b.warning,
       failure: b.failure as "model" | "parse" | "refused" | undefined,
       detail: b.detail as string | undefined,
     });

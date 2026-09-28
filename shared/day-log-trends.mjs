@@ -41,8 +41,7 @@ function mean(values) {
 export function morningWeightAverage(items) {
   const values = items
     .filter((item) =>
-      isActive(item)
-      && isMorningValue(item)
+      isMorningValue(item)
       && typeof item.value === "number"
       && Number.isFinite(item.value),
     )
@@ -74,10 +73,6 @@ export function newYorkMonth(at) {
   return `${year}-${month}`;
 }
 
-function isActive(item) {
-  return item.revertedAt === undefined;
-}
-
 /** Monday YYYY-MM-DD for a calendar day that is already in New York. */
 export function mondayOf(day) {
   const at = Date.parse(day);
@@ -95,8 +90,7 @@ export function weeklyMorningAverages(items) {
   const buckets = new Map();
   for (const item of items) {
     if (
-      !isActive(item)
-      || !isMorningValue(item)
+      !isMorningValue(item)
       || typeof item.value !== "number"
       || !Number.isFinite(item.value)
     ) continue;
@@ -127,8 +121,7 @@ export function dayLogWeeklyFacts(items, today) {
   const currentWeekStart = offsetDay(today, -6);
   const previousWeekStart = offsetDay(today, -13);
   const current = items.filter((item) =>
-    item.revertedAt === undefined
-    && typeof item.day === "string"
+    typeof item.day === "string"
     && item.day >= lookbackStart
     && item.day <= today,
   );
@@ -170,11 +163,11 @@ export function dayLogWeeklyFacts(items, today) {
   };
 }
 
-/** One daily mean for every active waist reading on that New York calendar day. */
+/** One daily mean for every waist reading on that New York calendar day. */
 export function dailyWaistAverages(items) {
   const buckets = new Map();
   for (const item of items) {
-    if (!isActive(item) || item.metric !== "waist" || !Number.isFinite(item.value)) continue;
+    if (item.metric !== "waist" || !Number.isFinite(item.value)) continue;
     const values = buckets.get(item.day) ?? [];
     values.push(item.value);
     buckets.set(item.day, values);
@@ -188,12 +181,12 @@ export function dailyWaistAverages(items) {
     .sort((a, b) => a.day.localeCompare(b.day));
 }
 
-/** The best active value in each New York calendar month for every benchmark. */
+/** The best value in each New York calendar month for every benchmark. */
 export function monthlyBenchmarkBests(items) {
   const buckets = new Map();
   for (const item of items) {
     const benchmark = DAY_LOG_BENCHMARKS[item.metric];
-    if (!isActive(item) || !benchmark || !Number.isFinite(item.value)) continue;
+    if (!benchmark || !Number.isFinite(item.value)) continue;
     const month = item.day.slice(0, 7);
     const key = `${item.metric}:${month}`;
     const bucket = buckets.get(key);
@@ -213,11 +206,11 @@ export function monthlyBenchmarkBests(items) {
   });
 }
 
-/** Active run items grouped into Monday-starting New York weeks. */
+/** Run items grouped into Monday-starting New York weeks. */
 export function weeklyRuns(items) {
   const buckets = new Map();
   for (const item of items) {
-    if (!isActive(item) || item.activity !== "run") continue;
+    if (item.activity !== "run") continue;
     const week = mondayOf(item.day);
     const bucket = buckets.get(week) ?? { count: 0, distanceMi: 0, distanceCount: 0 };
     bucket.count += 1;

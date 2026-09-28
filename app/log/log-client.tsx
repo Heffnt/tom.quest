@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
@@ -13,6 +13,8 @@ import {
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import Info from "@/app/jarvis/components/info";
+import { errMessage } from "@/app/jarvis/lib";
+import { DAY_LOG_ENTRY_MAX, dayLogEntryState } from "@/shared/day-log-entry.mjs";
 import LineChart from "./components/line-chart";
 
 const controlClass = "rounded-md border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-faint focus:border-accent/60 focus:outline-none";
@@ -73,6 +75,12 @@ type Run = {
 type Series = { measurements: Measurement[]; runs: Run[] };
 
 const benchmarkOrder = ["pullup_added_weight", "hang_20mm", "sprint_40yd", "loop_1_4mi"] as const;
+const benchmarkTitles = {
+  pullup_added_weight: "Pull-up added weight, monthly best",
+  hang_20mm: "20 mm hang, monthly best",
+  sprint_40yd: "40-yard sprint, monthly best",
+  loop_1_4mi: "1.4-mile loop, monthly best",
+} as const;
 
 function duration(seconds: number): string {
   const totalSeconds = Math.round(seconds);
@@ -114,7 +122,9 @@ export default function LogClient() {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [ideasOpen, setIdeasOpen] = useState(false);
+  const entryState = dayLogEntryState(text);
 
   useLayoutEffect(() => {
     const input = textarea.current;
@@ -122,6 +132,15 @@ export default function LogClient() {
     input.style.height = "0px";
     input.style.height = `${input.scrollHeight}px`;
   }, [text]);
+
+  useEffect(() => {
+    if (!ideasOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIdeasOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [ideasOpen]);
 
   const weeklyWeight = useMemo(() => weeklyMorningAverages(
     (series?.measurements ?? [])
@@ -145,11 +164,14 @@ export default function LogClient() {
   }, [entries]);
 
   async function onSubmit() {
-    if (text.trim() === "" || submitting) return;
+    if (!entryState.canSubmit || submitting) return;
     setSubmitting(true);
+    setSubmitError(null);
     try {
       await submit({ text });
       setText("");
+    } catch (error) {
+      setSubmitError(errMessage(error));
     } finally {
       setSubmitting(false);
     }
@@ -185,17 +207,19 @@ export default function LogClient() {
             <button
               type="button"
               onClick={onSubmit}
-              disabled={text.trim() === "" || submitting}
+              disabled={!entryState.canSubmit || submitting}
               className="min-w-[6.2rem] rounded-md bg-accent px-3 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:pointer-events-none disabled:opacity-50"
             >
               {submitting ? "Submitting…" : "Submit"}
             </button>
+            {entryState.overLimit && <span className="text-sm tabular-nums text-text-muted">{entryState.count.toLocaleString("en-US")} of {DAY_LOG_ENTRY_MAX.toLocaleString("en-US")} characters</span>}
             <Info
               call="dayLog.submit({ text })"
               explanation={explanation("Submit a log entry", "This button submits the open entry through the Tom-only day-log mutation. When it succeeds, the text area is cleared and the stored entry remains available below.")}
               explanationTitle="Submit a log entry"
             >Stores this entry, then leaves it pending for Jarvis to process.</Info>
           </div>
+          <p aria-live="polite" className="min-h-5 text-sm text-error">{submitError}</p>
           {training !== undefined && training !== null && (
             <section aria-label="Today’s training" className="space-y-2 rounded-md border border-border bg-surface/40 px-3 py-2.5 text-sm leading-5">
               <div className="space-y-0.5">
@@ -216,24 +240,17 @@ export default function LogClient() {
                     <button
                       type="button"
                       aria-expanded={ideasOpen}
-                      onClick={() => setIdeasOpen((open) => !open)}
+                      onClick={() => setIdeasOpen(true)}
                       className="rounded-md border border-border px-2 py-1 text-xs font-medium text-text transition-colors hover:bg-surface-alt"
                     >
                       Ideas
                     </button>
                     <Info
-                      call="setIdeasOpen((open) => !open)"
-                      explanation={explanation("Show training ideas", "This control shows or hides the ideas stored with the current weekly training structure. It changes only this page while it is open.")}
+                      call="setIdeasOpen(true)"
+                      explanation={explanation("Show training ideas", "This control opens the ideas stored with the current weekly training structure in a fixed dialog. It changes only this page while the dialog is open.")}
                       explanationTitle="Show training ideas"
-                    >Shows or hides the ideas from the current weekly structure.</Info>
+                    >Opens the ideas from the current weekly structure.</Info>
                   </div>
-                  {ideasOpen && (
-                    <div className="space-y-1.5 text-text-muted">
-                      {training.ideas.map((idea) => (
-                        <p key={`${idea.label}:${idea.text}`} className="break-words"><strong className="font-semibold text-text">{idea.label}</strong>: {idea.text}</p>
-                      ))}
-                    </div>
-                  )}
                 </div>
               )}
             </section>
@@ -242,12 +259,15 @@ export default function LogClient() {
 
         <section aria-label="Charts" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {weeklyWeight.length > 0 && <section aria-label="Morning weight" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+            <h2 className="mb-2 text-sm font-medium text-text">Morning weight, weekly average</h2>
             <LineChart points={weeklyWeight.map((point) => ({ x: point.week, y: point.value }))} unit="lb" />
           </section>}
           {waist.length > 0 && <section aria-label="Waist" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+            <h2 className="mb-2 text-sm font-medium text-text">Waist</h2>
             <LineChart points={waist.map((point) => ({ x: point.day, y: point.value }))} unit="in" />
           </section>}
           {runs.length > 0 && <section aria-label="Runs per week" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+            <h2 className="mb-2 text-sm font-medium text-text">Runs per week</h2>
             <LineChart
               points={runs.map((point) => ({ x: point.week, y: point.count, label: runLabel(point.count, point.distanceMi) }))}
               unit="runs"
@@ -260,6 +280,7 @@ export default function LogClient() {
             const benchmark = DAY_LOG_BENCHMARKS[metric];
             return (
               <section key={metric} aria-label={metric.replaceAll("_", " ")} className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+                <h2 className="mb-2 text-sm font-medium text-text">{benchmarkTitles[metric]}</h2>
                 <LineChart
                   points={points.map((point) => ({ x: point.month, y: point.value }))}
                   unit={benchmark.unit === "s" && metric === "loop_1_4mi" ? "m:ss" : benchmark.unit}
@@ -269,6 +290,30 @@ export default function LogClient() {
             );
           })}
         </section>
+
+        {ideasOpen && training !== undefined && training !== null && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="training-ideas-title"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) setIdeasOpen(false);
+            }}
+          >
+            <section className="max-h-[calc(100dvh-2rem)] w-[440px] max-w-full overflow-y-auto rounded-xl border border-border bg-surface p-4" onClick={(event) => event.stopPropagation()}>
+              <h2 id="training-ideas-title" className="text-[15px] font-semibold">Ideas</h2>
+              <div className="mt-3 space-y-1.5 text-sm text-text-muted">
+                {training.ideas.map((idea) => (
+                  <p key={`${idea.label}:${idea.text}`} className="break-words"><strong className="font-semibold text-text">{idea.label}</strong>: {idea.text}</p>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button type="button" onClick={() => setIdeasOpen(false)} className="rounded-md border border-border px-3 py-1 text-sm text-text-muted transition-colors hover:bg-surface-alt hover:text-text">Close</button>
+              </div>
+            </section>
+          </div>
+        )}
 
         <section className="space-y-5" aria-label="Entries">
           {entries === undefined ? <p className="text-sm text-text-faint">Loading…</p> : days.map(([day, rows]) => (

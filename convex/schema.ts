@@ -2275,11 +2275,10 @@ export default defineSchema({
     distanceMi: v.optional(v.number()),
     durationMin: v.optional(v.number()),
     createdAt: v.number(),
-    revertedAt: v.optional(v.number()),
   })
     .index("by_entry", ["entryId"])
     .index("by_type_day", ["type", "day"])
     .index("by_metric_day", ["metric", "day"])
-    .index("by_reverted_at_and_type_and_metric_and_day", ["revertedAt", "type", "metric", "day"])
-    .index("by_reverted_at_and_type_and_activity_and_day", ["revertedAt", "type", "activity", "day"]),
+    .index("by_type_and_metric_and_day", ["type", "metric", "day"])
+    .index("by_type_and_activity_and_day", ["type", "activity", "day"]),
 });

@@ -13,9 +13,9 @@ import {
 } from "./dayLogVocabulary";
 import { trainingDay as parseTrainingDay } from "./trainingDay";
 import { nyCalendarDayKey, nyOffsetHours, weekdayWordOf } from "./ttsShared";
+import { DAY_LOG_ENTRY_MAX } from "../shared/day-log-entry.mjs";
 
 const SURFACE = "Log";
-const ENTRY_MAX = 4_000;
 const PAGE_DAYS = 60;
 const SERIES_DAYS = 366;
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
@@ -169,7 +169,7 @@ export const submit = mutation({
   handler: async (ctx, { text }) => {
     await requireTom(ctx, SURFACE);
     if (text.trim() === "") throw new Error("Log entries cannot be empty");
-    if (text.length > ENTRY_MAX) throw new Error(`Log entries are at most ${ENTRY_MAX} characters`);
+    if (text.length > DAY_LOG_ENTRY_MAX) throw new Error(`Log entries are at most ${DAY_LOG_ENTRY_MAX} characters`);
     const createdAt = Date.now();
     const id = await ctx.db.insert("dayLogEntries", { text, createdAt, day: nyCalendarDayKey(createdAt), status: "pending" });
     await ctx.db.insert("dtsEvents", { at: createdAt, kind: "day-log", data: { entryId: id } });
@@ -186,7 +186,7 @@ export const page = query({
     return await Promise.all(entries.map(async (entry) => ({
       ...entry,
       result: entry.result ?? dayLogResultLine(entry.status, []),
-      items: (await ctx.db.query("dayLogItems").withIndex("by_entry", (q) => q.eq("entryId", entry._id)).collect()).filter((item) => item.revertedAt === undefined),
+      items: await ctx.db.query("dayLogItems").withIndex("by_entry", (q) => q.eq("entryId", entry._id)).collect(),
     })));
   },
 });
@@ -214,18 +214,19 @@ export const series = query({
       const rows = [];
       const rowsInRange = ctx.db
         .query("dayLogItems")
-        .withIndex("by_reverted_at_and_type_and_metric_and_day", (q) => q.eq("revertedAt", undefined).eq("type", "measurement").eq("metric", metric).gte("day", since));
+        .withIndex("by_type_and_metric_and_day", (q) => q.eq("type", "measurement").eq("metric", metric).gte("day", since));
       for await (const item of rowsInRange) rows.push(item);
       return rows;
     }))).flat();
     const runs = [];
     const runsInRange = ctx.db
       .query("dayLogItems")
-      .withIndex("by_reverted_at_and_type_and_activity_and_day", (q) => q.eq("revertedAt", undefined).eq("type", "workout").eq("activity", "run").gte("day", since));
+      .withIndex("by_type_and_activity_and_day", (q) => q.eq("type", "workout").eq("activity", "run").gte("day", since));
     for await (const item of runsInRange) runs.push(item);
 
     const entries = await Promise.all(measurements.map(async (item) => {
       const entry = await ctx.db.get(item.entryId);
+      if (entry === null) throw new Error("day-log item entry is missing");
       return {
         _id: item._id,
         day: item.day,
@@ -233,7 +234,7 @@ export const series = query({
         value: item.value!,
         unit: item.unit!,
         partOfDay: item.partOfDay!,
-        entryCreatedAt: entry?.createdAt ?? item.createdAt,
+        entryCreatedAt: entry.createdAt,
       };
     }));
     return {
@@ -252,23 +253,12 @@ export const internalPending = internalQuery({
   args: {},
   handler: async (ctx) => {
     const entries = await ctx.db.query("dayLogEntries").withIndex("by_status", (q) => q.eq("status", "pending")).take(10);
-    const todoLists = await Promise.all(["active", "waiting"].map((status) =>
-      ctx.db.query("todos").withIndex("by_status", (q) => q.eq("status", status as "active" | "waiting")).order("desc").take(150),
-    ));
-    const openTodos = todoLists.flat().sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 150).map((todo) => ({
-      id: todo._id,
-      statement: todo.statement,
-      due: todo.dueAt === undefined ? null : nyCalendarDayKey(todo.dueAt),
-      dateKind: todo.dateKind ?? null,
-      status: todo.status as "active" | "waiting",
-    }));
     const now = Date.now();
     return {
       today: nyCalendarDayKey(now),
       now,
       entries: entries.map((entry) => ({ id: entry._id, text: entry.text, createdAt: entry.createdAt, day: entry.day, time: timeLabel(entry.createdAt) })),
       vocabulary: DAY_LOG_VOCABULARY,
-      openTodos,
     };
   },
 });
@@ -278,20 +268,15 @@ export const internalApplyDayLog = internalMutation({
     id: v.string(),
     status: v.union(v.literal("applied"), v.literal("needs-session")),
     items: v.array(v.any()),
-    actions: v.array(v.any()),
-    warning: v.optional(v.any()),
     failure: v.optional(v.union(v.literal("model"), v.literal("parse"), v.literal("refused"))),
     detail: v.optional(v.string()),
   },
-  handler: async (ctx, { id, status, items, actions, warning, failure, detail }) => {
+  handler: async (ctx, { id, status, items, failure, detail }) => {
     const entryId = ctx.db.normalizeId("dayLogEntries", id);
     const entry = entryId === null ? null : await ctx.db.get(entryId);
     if (entryId === null || entry === null) throw new Error("no such entry");
     if (entry.status !== "pending") return { ok: true, already: true };
     if (items.length > DAY_LOG_BOUNDS.maxItems) throw new Error(`at most ${DAY_LOG_BOUNDS.maxItems} items per entry`);
-    if (actions.length > DAY_LOG_BOUNDS.maxActions) throw new Error(`at most ${DAY_LOG_BOUNDS.maxActions} actions per entry`);
-    if (actions.length > 0) throw new Error("actions not yet supported");
-    if (warning !== undefined) throw new Error("warnings not yet supported");
     if (status === "needs-session" && items.length > 0) throw new Error("a needs-session entry carries no items");
     if (status === "needs-session" && failure === undefined) throw new Error("failure is required when status is needs-session");
     if (detail !== undefined && detail.length > 500) throw new Error("detail is at most 500 characters");

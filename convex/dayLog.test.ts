@@ -71,6 +71,11 @@ describe("day log", () => {
       },
       entries: [{ id, text: entry.text, createdAt: entry.createdAt, day: entry.day, time: expect.stringMatching(/^[0-9]+:[0-9]{2} [ap]\.m\.$/) }],
     });
+    expect(body).not.toHaveProperty("openTodos");
+    expect(body.vocabulary).not.toHaveProperty("warningClasses");
+    expect(body.vocabulary.bounds).not.toHaveProperty("maxActions");
+    expect(body.vocabulary.bounds).not.toHaveProperty("statementMin");
+    expect(body.vocabulary.bounds).not.toHaveProperty("statementMax");
   });
 
   it("applies a valid measurement and writes its item", async () => {
@@ -84,7 +89,6 @@ describe("day log", () => {
       id,
       status: "applied",
       items: [weight(entry.day)],
-      actions: [],
       }),
     });
     expect(response.status).toBe(200);
@@ -106,43 +110,41 @@ describe("day log", () => {
   ])("rejects %s without changing the entry", async (_name, invalid) => {
     const t = convexTest({ schema, modules });
     const { id, entry } = await pendingEntry(t);
-    await expect(t.mutation(internal.dayLog.internalApplyDayLog, { id, status: "applied", items: [invalid(entry.day)], actions: [] })).rejects.toThrow();
+    await expect(t.mutation(internal.dayLog.internalApplyDayLog, { id, status: "applied", items: [invalid(entry.day)] })).rejects.toThrow();
     expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ status: "pending" });
   });
 
-  it("rejects more than twenty items and deferred input", async () => {
+  it("rejects more than twenty items", async () => {
     const t = convexTest({ schema, modules });
     const tooMany = await pendingEntry(t);
     await expect(t.mutation(internal.dayLog.internalApplyDayLog, {
       id: tooMany.id,
       status: "applied",
       items: Array.from({ length: 21 }, () => weight(tooMany.entry.day)),
-      actions: [],
     })).rejects.toThrow("at most 20 items");
+  });
 
-    const actions = await pendingEntry(t);
-    await expect(t.mutation(internal.dayLog.internalApplyDayLog, {
-      id: actions.id,
-      status: "applied",
-      items: [],
-      actions: [{}],
-    })).rejects.toThrow("actions not yet supported");
-
-    const warning = await pendingEntry(t);
-    await expect(t.mutation(internal.dayLog.internalApplyDayLog, {
-      id: warning.id,
-      status: "applied",
-      items: [],
-      actions: [],
-      warning: {},
-    })).rejects.toThrow("warnings not yet supported");
+  it.each([
+    ["actions", []],
+    ["warning", {}],
+  ])("refuses the unknown %s request field", async (field, value) => {
+    vi.stubEnv("TTS_WORKER_KEY", "test-key");
+    const t = convexTest({ schema, modules });
+    const { id } = await pendingEntry(t);
+    const response = await t.fetch("/tts/day-log/apply", {
+      method: "POST",
+      headers: KEY,
+      body: JSON.stringify({ id, status: "applied", items: [], [field]: value }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "unknown field" });
   });
 
   it("makes a repeat apply idempotent", async () => {
     const t = convexTest({ schema, modules });
     const { id, entry } = await pendingEntry(t);
-    await t.mutation(internal.dayLog.internalApplyDayLog, { id, status: "applied", items: [weight(entry.day)], actions: [] });
-    await expect(t.mutation(internal.dayLog.internalApplyDayLog, { id, status: "applied", items: [weight(entry.day)], actions: [] })).resolves.toEqual({ ok: true, already: true });
+    await t.mutation(internal.dayLog.internalApplyDayLog, { id, status: "applied", items: [weight(entry.day)] });
+    await expect(t.mutation(internal.dayLog.internalApplyDayLog, { id, status: "applied", items: [weight(entry.day)] })).resolves.toEqual({ ok: true, already: true });
     expect(await t.run((ctx) => ctx.db.query("dayLogItems").withIndex("by_entry", (q) => q.eq("entryId", id)).collect())).toHaveLength(1);
   });
 
@@ -153,7 +155,6 @@ describe("day log", () => {
       id,
       status: "needs-session",
       items: [],
-      actions: [],
       failure: "parse",
       detail: "response was not structured",
     })).resolves.toMatchObject({ ok: true, result: "Jarvis could not read this entry; it stays here and still goes to nightly learning." });
@@ -184,7 +185,7 @@ describe("day log", () => {
     });
   });
 
-  it("returns active measurements and runs in the chart series shape", async () => {
+  it("returns measurements and runs in the chart series shape", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-28T16:00:00.000Z"));
     const t = convexTest({ schema, modules });
@@ -228,36 +229,12 @@ describe("day log", () => {
       await ctx.db.insert("dayLogItems", {
         entryId: id,
         day: entry.day,
-        type: "measurement",
-        quote: "recorded values",
-        summary: "reverted waist",
-        metric: "waist",
-        value: 35,
-        unit: "in",
-        partOfDay: "morning",
-        createdAt: now,
-        revertedAt: now,
-      });
-      await ctx.db.insert("dayLogItems", {
-        entryId: id,
-        day: entry.day,
         type: "workout",
         quote: "a run",
         summary: "run",
         activity: "run",
         distanceMi: 3.1,
         createdAt: now,
-      });
-      await ctx.db.insert("dayLogItems", {
-        entryId: id,
-        day: entry.day,
-        type: "workout",
-        quote: "a run",
-        summary: "reverted run",
-        activity: "run",
-        distanceMi: 2,
-        createdAt: now,
-        revertedAt: now,
       });
       await ctx.db.insert("dayLogItems", {
         entryId: id,

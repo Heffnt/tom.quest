@@ -20,4 +20,21 @@ describe("LineChart", () => {
     expect(screen.getByText("Sep 8")).toBeTruthy();
     expect(screen.getByLabelText("Latest value: 181 lb")).toBeTruthy();
   });
+
+  it("lists each run bar's count and miles in visible text", () => {
+    render(
+      <LineChart
+        points={[
+          { x: "2026-09-01", y: 1, label: "1 run · 3.1 mi" },
+          { x: "2026-09-08", y: 2, label: "2 runs · 6.0 mi" },
+        ]}
+        unit="runs"
+        variant="bar"
+      />,
+    );
+
+    expect(screen.getByText("Sep 1: 1 run · 3.1 mi")).toBeTruthy();
+    expect(screen.getByText("Sep 8: 2 runs · 6.0 mi")).toBeTruthy();
+    expect(document.querySelector("title")).toBeNull();
+  });
 });

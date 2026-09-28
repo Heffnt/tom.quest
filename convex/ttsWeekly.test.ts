@@ -119,7 +119,6 @@ async function dayLogItem(
     partOfDay?: "morning" | "afternoon" | "evening" | "unknown";
     activity?: "run";
     entryCreatedAt?: number;
-    revertedAt?: number;
   },
 ) {
   const createdAt = fields.entryCreatedAt ?? Date.parse(`${fields.day}T16:00:00Z`);
@@ -140,7 +139,6 @@ async function dayLogItem(
     ...(fields.value === undefined ? {} : { value: fields.value, unit: fields.metric === "weight" ? "lb" : "in", partOfDay: fields.partOfDay ?? "unknown" }),
     ...(fields.activity === undefined ? {} : { activity: fields.activity }),
     createdAt,
-    ...(fields.revertedAt === undefined ? {} : { revertedAt: fields.revertedAt }),
   });
 }
 
