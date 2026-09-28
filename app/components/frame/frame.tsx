@@ -300,12 +300,14 @@ function Drawer({
         aria-hidden={!shown}
         inert={!shown}
         tabIndex={-1}
-        className="flex min-h-0 min-w-0 flex-1 flex-col outline-none sm:flex-row"
+        className="flex min-h-0 min-w-0 flex-1 outline-none"
       >
         <div data-frame-drawer-scroll className="min-h-0 min-w-0 flex-1 overflow-auto">
-          <div data-frame-drawer-content>{spec.body}</div>
+          <div data-frame-drawer-content className="flex flex-col sm:flex-row">
+            <div className="min-w-0 flex-1">{spec.body}</div>
+            {children}
+          </div>
         </div>
-        {children}
       </div>
       <div
         data-frame-handle={edge}
@@ -613,7 +615,7 @@ export default function Frame({
               {edge === "bottom" && isTom && (
                 <aside
                   aria-label="Diagnostics"
-                  className="max-h-[45%] shrink-0 overflow-auto border-t border-border p-3 sm:max-h-none sm:w-80 sm:border-l sm:border-t-0"
+                  className="shrink-0 border-t border-border p-3 sm:w-[min(20rem,35%)] sm:border-l sm:border-t-0"
                 >
                   <Diagnostics />
                 </aside>

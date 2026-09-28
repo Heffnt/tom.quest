@@ -83,17 +83,17 @@ async function pressablePoints(page: Page, edge: Edge, fractions: number[]) {
   );
 }
 
-/** Wait until no drawer is moving: two reads of every box a frame apart agree. */
+/** Wait until no drawer is moving: every box reads the same twice, longer than an opening takes (150 ms) apart. */
 async function settled(page: Page) {
-  await page.waitForFunction(
-    () =>
-      new Promise<boolean>((resolve) => {
-        const read = () =>
-          [...document.querySelectorAll("[data-frame-drawer]")].map((e) => JSON.stringify(e.getBoundingClientRect())).join();
-        const a = read();
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve(read() === a)));
-      }),
-  );
+  const read = () =>
+    page.evaluate(() => [...document.querySelectorAll("[data-frame-drawer]")].map((e) => JSON.stringify(e.getBoundingClientRect())).join());
+  await page.waitForTimeout(50);
+  for (let a = await read(); ; ) {
+    await page.waitForTimeout(200);
+    const b = await read();
+    if (b === a) return;
+    a = b;
+  }
 }
 
 async function ready(page: Page, viewport: { width: number; height: number }) {
