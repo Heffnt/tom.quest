@@ -9,6 +9,8 @@ import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DIGEST_SENT,
   ROLLOVER_NOTE,
+  agentModelFamily,
+  agentWatcher,
   calendarLeadText,
   gatherTodayFacts,
   isPassedWithoutOutcome,
@@ -1448,5 +1450,130 @@ describe("the channels' lines, in the digest", () => {
     const { objectionAskIds } = await compose(t);
     expect(objectionAskIds).toContain("loop:7");
     vi.useRealTimers();
+  });
+});
+
+// ── What the window's agents cost ────────────────────────────────────────────
+// The spend section reads the agents that started in the window off the runs
+// table's time index and sums each one's price by model family and by who
+// watched it (convex/ttsDigest.ts agentModelFamily, agentWatcher).
+
+describe("agentModelFamily", () => {
+  it("places a model by its name: claude, then gpt or codex, then open weight", () => {
+    expect(agentModelFamily({ model: "claude-opus-5-5", cli: "claude" })).toBe("claude");
+    expect(agentModelFamily({ model: "gpt-5.6-sol", cli: "codex" })).toBe("codex");
+    expect(agentModelFamily({ model: "codex-mini-latest", cli: "codex" })).toBe("codex");
+    expect(agentModelFamily({ model: "openrouter/deepseek/deepseek-v4-pro", cli: "codex" })).toBe("openWeight");
+    // An unknown name is open weight, whichever command line ran it.
+    expect(agentModelFamily({ model: "some-new-model", cli: "claude" })).toBe("openWeight");
+  });
+
+  // The Codex command line also runs OpenRouter models, and the box hands it
+  // their name without the "openrouter/" prefix, so the name wins over it.
+  it("places a model the Codex command line ran by its name, not by the command line", () => {
+    expect(agentModelFamily({ model: "deepseek/deepseek-v4-pro-0813", cli: "codex" })).toBe("openWeight");
+  });
+
+  it("places a row with no model by its command line", () => {
+    expect(agentModelFamily({ cli: "codex" })).toBe("codex");
+    expect(agentModelFamily({ cli: "claude" })).toBe("claude");
+  });
+});
+
+describe("agentWatcher", () => {
+  it("is a session when a person was in the conversation, a child when the record names a parent, and nobody otherwise", () => {
+    expect(agentWatcher({ kind: "session" })).toBe("session");
+    expect(agentWatcher({ kind: "subagent", parentRunId: "claude:box:parent" })).toBe("child");
+    expect(agentWatcher({ kind: "codex-child", parentRunId: "claude:box:parent" })).toBe("child");
+    expect(agentWatcher({ kind: "job" })).toBe("nobody");
+    expect(agentWatcher({ kind: "delegate" })).toBe("nobody");
+    expect(agentWatcher({ kind: "unknown" })).toBe("nobody");
+  });
+
+  // A Codex agent started from another agent's shell records no parent and
+  // sits at depth 0. The record cannot say who started it, so it is counted
+  // with the agents nobody watched, whatever its kind claims.
+  it("counts a row at depth 0 with no parent as nobody's, even when its kind says codex-child", () => {
+    expect(agentWatcher({ kind: "codex-child" })).toBe("nobody");
+  });
+});
+
+describe("the spend section, gathered", () => {
+  const SINCE = FIVE_AM - DAY;
+  const NOW = FIVE_AM + 60_000;
+  const HOUR = 3_600_000;
+
+  async function seedAgent(
+    t: ReturnType<typeof convexTest>,
+    agent: { runId: string; startedAt: number; costUsd?: number; kind: string; cli: "claude" | "codex"; model?: string; parentRunId?: string },
+  ) {
+    const { runId, startedAt, costUsd, parentRunId, ...rest } = agent;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("runs", {
+        runId,
+        ...(parentRunId === undefined ? { rootRunId: runId, depth: 0 } : { parentRunId, rootRunId: parentRunId, depth: 1 }),
+        linkKnown: parentRunId === undefined,
+        origin: "job",
+        host: "box",
+        environment: "worker",
+        parserVersion: "runs-parser-1",
+        status: "ended",
+        startedAt,
+        lastLineAt: startedAt + 60_000,
+        attachments: [],
+        outcome: {
+          totals: {
+            inputTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            cacheWrite5mTokens: 0,
+            cacheWrite1hTokens: 0,
+            cacheWriteBreakdownKnown: true,
+            outputTokens: 0,
+            thinkingTokens: 0,
+            totalTokens: 0,
+          },
+          ...(costUsd === undefined ? {} : { costUsd, priceTableVersion: "prices-1" }),
+          turns: 1,
+          toolCalls: 0,
+        },
+        file: { path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0, committedLine: 0, committedPrefixSha256: "" },
+        ingestedAt: startedAt,
+        ...rest,
+      } as never);
+    });
+  }
+
+  it("sums the window's agents by model family and by who watched, and names the one with no price", async () => {
+    const t = convexTest(schema, modules);
+    await seedAgent(t, { runId: "claude:box:s1", startedAt: SINCE + HOUR, costUsd: 4, kind: "session", cli: "claude", model: "claude-opus-5-5" });
+    await seedAgent(t, { runId: "claude:box:a1", startedAt: SINCE + 2 * HOUR, costUsd: 2, kind: "subagent", cli: "claude", model: "claude-sonnet-5", parentRunId: "claude:box:s1" });
+    await seedAgent(t, { runId: "codex:box:c1", startedAt: SINCE + 3 * HOUR, costUsd: 1.5, kind: "codex-child", cli: "codex", model: "gpt-5.6-terra", parentRunId: "claude:box:s1" });
+    await seedAgent(t, { runId: "codex:box:j1", startedAt: SINCE + 4 * HOUR, costUsd: 0.25, kind: "job", cli: "codex", model: "deepseek/deepseek-v4-pro-0813" });
+    await seedAgent(t, { runId: "claude:box:j2", startedAt: SINCE + 5 * HOUR, kind: "job", cli: "claude", model: "claude-opus-5-5" });
+    // Outside the window at both ends: before it opened, and at its close.
+    await seedAgent(t, { runId: "claude:box:old", startedAt: SINCE - 1, costUsd: 100, kind: "session", cli: "claude", model: "claude-opus-5-5" });
+    await seedAgent(t, { runId: "claude:box:new", startedAt: NOW, costUsd: 50, kind: "session", cli: "claude", model: "claude-opus-5-5" });
+
+    const { text, facts } = await composeToday(t, { day: DAY_KEY, now: NOW, since: SINCE });
+    const url = "https://tom.quest/agents?view=window";
+    expect(text).toContain(
+      [
+        "The five agents that started since the last digest cost $7.75 at published prices; the subscriptions are not billed per token.",
+        `- <${url}|By model family: Claude $6.00, Codex $1.50, open weight $0.25.>`,
+        `- <${url}|By who watched: $4.00 in sessions, $3.50 in agents another agent started, $0.25 with no watcher on record.>`,
+        `- <${url}|One agent has no price, so the sums leave it out.>`,
+      ].join("\n"),
+    );
+    expect(facts.facts.filter((f: { id: string }) => f.id.startsWith("spend:"))).toHaveLength(4);
+  });
+
+  it("is left out when no agent started in the window", async () => {
+    const t = convexTest(schema, modules);
+    await seedAgent(t, { runId: "claude:box:old", startedAt: SINCE - 1, costUsd: 100, kind: "session", cli: "claude", model: "claude-opus-5-5" });
+    const { text, facts } = await composeToday(t, { day: DAY_KEY, now: NOW, since: SINCE });
+    expect(text).not.toContain("published prices");
+    expect(text).not.toContain("By model family");
+    expect(facts.facts.some((f: { id: string }) => f.id.startsWith("spend:"))).toBe(false);
   });
 });

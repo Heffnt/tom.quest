@@ -6,6 +6,7 @@ import {
   renderSlack,
   todayFactsBlock,
   type BrokenFact,
+  type SpendFact,
   type TodayFacts,
   type TodoOutcome,
 } from "./ttsCompose";
@@ -18,7 +19,7 @@ import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
-import { DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
+import { AGENTS_WINDOW_URL, DEPLOY, boxChangeLines, boxChangesInWindow } from "./boxChanges";
 import { failuresInWindow } from "./jarvis/jobs";
 import {
   DAY_MS,
@@ -69,6 +70,8 @@ import { resolveId, todoEvents, todoReader } from "./jarvis/tables";
 //   4. overnight — one line per TODO saying what the sessions on it came to,
 //      never one line per logged event (Tom, 2026-09-24: no batches)
 //   5. broken — the jobs that failed, and what that means for him
+//   6. spend — what the agents that started in the window cost, by model
+//      family and by who watched them
 //
 // What LEFT the morning message in this round (§4.3): the WikiTom commit list
 // (a changelog is not a morning read; an unreadable WikiTom is a broken line
@@ -948,6 +951,17 @@ export async function gatherTodayFacts(
     }),
   );
 
+  // 8. What the window's agents cost: every agent that STARTED in the window,
+  //    read on the time index. The price sits inside `outcome`, where no index
+  //    reaches, so the rows are read and summed here, newest first and bounded:
+  //    past the bound it is the oldest that go, and the text says the figures
+  //    are floors.
+  const started = await ctx.db
+    .query("runs")
+    .withIndex("by_started", (q) => q.gte("startedAt", since).lt("startedAt", now))
+    .order("desc")
+    .take(SPEND_SCAN);
+
   // The tail row, if any, last: it is the one line that names no todo.
   const overnightByTodo = [...byTodo.values()].sort(
     (a, b) => Number(a.todoId === null) - Number(b.todoId === null),
@@ -983,7 +997,74 @@ export async function gatherTodayFacts(
     broken: [...failures.values()],
     settled,
     boxChanges,
+    spend: spendOf(started, started.length >= SPEND_SCAN),
   };
+}
+
+/** The most agents one digest reads for the spend section. It bounds the
+ *  read far below a query's read limit whatever the rows hold, so a busy day
+ *  costs the section its completeness, said in its text, and never costs the
+ *  digest. */
+const SPEND_SCAN = 1000;
+
+type RunFields = Pick<Doc<"runs">, "model" | "cli" | "kind" | "parentRunId" | "outcome">;
+
+/**
+ * The model family an agent's spending belongs to. The model's name decides:
+ * "claude…" is Claude, "gpt…" and "codex…" are Codex (OpenAI's models), and any
+ * other name is open weight (a model reached through OpenRouter or a rented
+ * GPU). The name decides before the command line does because the Codex
+ * command line also runs OpenRouter models, and the box hands it their name
+ * with the "openrouter/" prefix taken off. A row with no model name is placed
+ * by its command line, which is the only fact it has left.
+ */
+export function agentModelFamily(run: Pick<RunFields, "model" | "cli">): keyof SpendFact["byFamily"] {
+  const model = run.model ?? "";
+  if (model.startsWith("claude")) return "claude";
+  if (model.startsWith("gpt") || model.startsWith("codex")) return "codex";
+  if (model !== "") return "openWeight";
+  return run.cli;
+}
+
+/**
+ * Who watched an agent, from its row: a session when a person was in the
+ * conversation (kind "session"); a child when the record names the agent that
+ * started it (parentRunId), which reads its report; otherwise nobody on
+ * record. The record keeps a row with no parent as its own root at depth 0, so
+ * parentRunId alone says whether there is a parent. A Codex agent that a
+ * Claude agent starts through the box's `jarvis codex` command records no
+ * parent (kind "job", depth 0), so it lands with the agents nobody watched,
+ * which is why the text calls that group "no watcher on record".
+ */
+export function agentWatcher(run: Pick<RunFields, "kind" | "parentRunId">): keyof SpendFact["byWatcher"] {
+  if (run.kind === "session") return "session";
+  if (run.parentRunId !== undefined) return "child";
+  return "nobody";
+}
+
+/** The spend section's facts, or none when no agent started in the window. */
+function spendOf(runs: RunFields[], capped: boolean): SpendFact | undefined {
+  if (runs.length === 0) return undefined;
+  const spend: SpendFact = {
+    agents: runs.length,
+    costUsd: 0,
+    unpriced: 0,
+    byFamily: { claude: 0, codex: 0, openWeight: 0 },
+    byWatcher: { session: 0, child: 0, nobody: 0 },
+    capped,
+    url: AGENTS_WINDOW_URL,
+  };
+  for (const run of runs) {
+    const cost = run.outcome?.costUsd;
+    if (cost === undefined) {
+      spend.unpriced += 1;
+      continue;
+    }
+    spend.costUsd += cost;
+    spend.byFamily[agentModelFamily(run)] += cost;
+    spend.byWatcher[agentWatcher(run)] += cost;
+  }
+  return spend;
 }
 
 /** The objection list's own cap, before the whole-message fit. */
