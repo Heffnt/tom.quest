@@ -501,20 +501,18 @@ describe("a private key block left open, as a serializer spells it", () => {
     ["lines behind line numbers and tabs", [`     1\t${begin}`, `     2\t${BODY}`, `     3\t${LAST}`, `     4\t${KEPT}`].join("\n"), `     1\t[redacted:pem]\n     4\t${KEPT}`],
     ["CRLF line breaks", [begin, BODY, LAST, KEPT].join("\r\n"), `[redacted:pem]\r\n${KEPT}`],
     ["a body folded onto the first line", `${begin} ${BODY} ${LAST}\n${KEPT}`, `[redacted:pem]\n${KEPT}`],
-    ["a text cut off behind a timestamp", [begin, `2026-09-28T01:00Z ${BODY}`, "2026-09-28T01:00Z QU/D"].join("\n"), "[redacted:pem]", "\n2026-09-28T01:00Z QU/D"],
-    ["a text cut off inside the first body line", `${begin}\nQU/D+E`, "[redacted:pem]", "\nQU/D+E"],
+    ["a text cut off behind a timestamp", [begin, `2026-09-28T01:00Z ${BODY}`, "2026-09-28T01:00Z QU/D"].join("\n"), "[redacted:pem]"],
+    ["a text cut off inside the first body line", `${begin}\nQU/D+E`, "[redacted:pem]"],
     ["a word after the first line, then prose", [begin, "x", KEPT].join("\n"), `[redacted:pem]\nx\n${KEPT}`],
     ["an empty line after the body", [begin, BODY, "", BODY].join("\n"), `[redacted:pem]\n\n${BODY}`],
   ];
-  // A cut-off line is the text's last. Serialized twice, the text stops at
-  // the inner string's end, an escaped quote, which is also a quote in a
-  // string's text: there the cut-off line is not taken (`keptTwice`).
-  for (const [name, text, shown, keptTwice] of CASES) {
+  // Serialized twice, a cut-off text stops at the inner string's end, an
+  // escaped quote, which is read as the text's end.
+  for (const [name, text, shown] of CASES) {
     for (const [spelling, spell, read] of SPELLINGS) {
       it(`${name}, ${spelling}`, () => {
         const out = redactSecrets(spell(text));
-        const twice = spelling.startsWith("serialized twice");
-        expect(read(out)).toBe(twice && keptTwice ? `${shown}${keptTwice}` : shown);
+        expect(read(out)).toBe(shown);
         if (!shown.includes(BODY)) expect(out).not.toContain("UFFSU1RVVldYWVph");
       });
     }
@@ -525,16 +523,17 @@ describe("a private key block left open, as a serializer spells it", () => {
     expect(JSON.parse(redactSecrets(body))).toEqual({ t: "[redacted:pem]", n: KEPT });
   });
 
-  it("ends the block at an escaped quote, a quote in the string's text, and keeps it and all after it", () => {
+  it("ends the block at an escaped quote, read as the text's end, and never takes the quote", () => {
     for (const spell of [(json) => json, (json) => json.replace(/\\"/g, "\\u0022")]) {
       const body = spell(JSON.stringify({ t: [begin, BODY, `"quoted" ${KEPT}`].join("\n") }));
       expect(JSON.parse(redactSecrets(body))).toEqual({ t: `[redacted:pem]\n"quoted" ${KEPT}` });
+      // A word directly after the first line, then the quote: the text's end, so it is taken.
       const first = spell(JSON.stringify({ t: [begin, `x "quoted" ${KEPT}`].join("\n") }));
-      expect(JSON.parse(redactSecrets(first))).toEqual({ t: `[redacted:pem]\nx "quoted" ${KEPT}` });
+      expect(JSON.parse(redactSecrets(first))).toEqual({ t: `[redacted:pem]"quoted" ${KEPT}` });
     }
   });
 
-  it("reads a Windows path after the first line as a path, not as line breaks that make a body", () => {
+  it("reads a Windows path's backslash-n as a line break; `C:` is no line a block takes, so the path is left", () => {
     const text = `${begin} C:\\new\\keys\\a.pem\n${KEPT}`;
     expect(redactSecrets(text)).toBe(`[redacted:pem] C:\\new\\keys\\a.pem\n${KEPT}`);
     expect(redactSecrets([begin, "C:\\new\\temp", KEPT].join("\n"))).toBe(`[redacted:pem]\nC:\\new\\temp\n${KEPT}`);
@@ -584,6 +583,55 @@ describe("the open-block step looks at each character a bounded number of times"
       expect(typeof kind, name).toBe("function");
       expect(String(kind), name).not.toMatch(/\.(?:test|exec|match|matchAll|search|replace|split)\(|RegExp/);
     }
+  });
+});
+
+// A spelling that reads two ways is read the way that takes more: the filter is
+// not told whether, or how often, its text was serialized, and it would rather
+// take a word of ordinary text from a row that holds a key's first line than
+// let a line of the key through. Each row is a choice this pins, and its cost.
+describe("a spelling an open block's reader can read two ways", () => {
+  const begin = t("-----BEGIN", " PRIVATE KEY-----");
+  const BODY = t("QUJDREVGR0hJSktMTU5P", "UFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2");
+  const J = (text) => JSON.stringify({ t: text });
+  const shows = (json) => JSON.parse(redactSecrets(json)).t;
+  const ROWS = [
+    // The audit's own example (tom.quest 315, fifth head): two backslashes and
+    // n are a literal backslash and n in a string serialized once, and a line
+    // break in one serialized twice. Read as the line break, the word before
+    // it is a short line after a full line: the key's last line, taken.
+    ["two backslashes before n, serialized once: a Windows path after a full line loses the word before it",
+      J(`${begin}\n${BODY}\nThanks\\new\\keys\\a.pem`), "[redacted:pem]\\new\\keys\\a.pem"],
+    // Read as a tab, a blank: `Thanks` then a literal backslash-t is a short line.
+    ["two backslashes before t, serialized once: a word ending in a literal backslash-t", J(`${begin}\n${BODY}\nThanks\\t\nwords stay here`), "[redacted:pem]\nwords stay here"],
+    ["two backslashes before r and n, serialized once", J(`${begin}\n${BODY}\nThanks\\r\\nmore words here`), "[redacted:pem]\\r\\nmore words here"],
+    ["two backslashes before a solidus, serialized once: a base64 character", J(`${begin}\n${BODY.slice(0, 38)}\\/QU\nwords stay here`), "[redacted:pem]\nwords stay here"],
+    ["two backslashes before u and four hex digits, serialized once", J(`${begin}\n${BODY}\nThanks\\u000aand more words`), "[redacted:pem]\\u000aand more words"],
+    ["a backslash spelled as \\u005c before n", `{"t":"${begin}\\n${BODY}\\nThanks\\u005cnew words"}`, "[redacted:pem]\\new words"],
+    ["an odd run before a quote directly after the first line: the text's end", J(`${begin}\nx "quoted" words`), '[redacted:pem]"quoted" words'],
+  ];
+  for (const [name, json, shown] of ROWS.filter(([, json]) => json !== null)) {
+    it(name, () => {
+      expect(shows(json)).toBe(shown);
+    });
+  }
+  it("one backslash before n in raw text: a Windows path after a full line loses the word before it", () => {
+    expect(redactSecrets(`${begin}\n${BODY}\nThanks\\new\\keys\\a.pem`)).toBe("[redacted:pem]\\new\\keys\\a.pem");
+  });
+  it("a run of three backslashes before n, serialized once: the line break, its backslash dropped", () => {
+    expect(shows(J(`${begin}\n${BODY}\\\nQUJD\nwords stay here`))).toBe("[redacted:pem]\nwords stay here");
+  });
+  it("\\u followed by anything but four hex digits is a backslash character", () => {
+    // Not a short line, so the block ends before it...
+    expect(redactSecrets(`${begin}\n${BODY}\nThanks\\uZZZZ\nkept line`)).toBe("[redacted:pem]\nThanks\\uZZZZ\nkept line");
+    // ...but a line holding it with a forty-character run is still full.
+    expect(redactSecrets(`${begin}\n${BODY}\\uZZZZ\nwords stay here`)).toBe("[redacted:pem]\nwords stay here");
+  });
+  it("a carriage return no line feed follows is a blank, not a line break", () => {
+    expect(redactSecrets(`${begin}\n${BODY}\nQUJD\r\nwords stay here`)).toBe("[redacted:pem]\r\nwords stay here");
+    // At the text's end, a short line ending in a lone carriage return is still one.
+    expect(redactSecrets(`${begin}\n${BODY}\nQUJD\r`)).toBe("[redacted:pem]");
+    expect(redactSecrets(`${begin}\n${BODY}\rwords on the same line\nkept line`)).toBe("[redacted:pem]\nkept line");
   });
 });
 

@@ -193,19 +193,20 @@ function redactNamedSecrets(text) {
 // A block whose last line never came (a log cut off, a process killed while it
 // printed, a buffer that stopped at its cap) is not matched by
 // PEM_PRIVATE_KEY, and its body went through as ordinary text. It is taken
-// from its first line over the lines a key's body can be, and no further, so
-// the text after a first line quoted in a document stays.
+// from its first line over the lines a key's body can be, and no further.
 //
 // THE STEP READS EACH CHARACTER A BOUNDED NUMBER OF TIMES. One search finds
 // the first lines; a block's lines are read by readBlockLine, which never
 // reads past the next first line (a new block ends the one before it); each
-// kind of line below scans its line once. No regular expression is left in
+// kind of line below scans its line at most twice. No regular expression is left in
 // the step but that search, which is linear: a fixed literal, then words of
 // one bounded class, each begun by a space, then a fixed literal. The test
 // counts what the step looks at (countOpenKeyBlockReads).
 
 const isBase64 = (c) => (c >= "A" && c <= "Z") || (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c === "+" || c === "/";
-const isBlank = (c) => c === " " || c === "\t";
+// A carriage return that no line feed follows is read as a blank, so a line
+// that ends in one is still the kind of line it would be without it.
+const isBlank = (c) => c === " " || c === "\t" || c === "\r";
 const isDigit = (c) => c >= "0" && c <= "9";
 const isSpace = (c) => c !== undefined && c.trim() === "";
 
@@ -272,7 +273,7 @@ export const OPEN_KEY_BLOCK = Object.freeze({
   },
   // A cut-off line behind a prefix: the text's last line as above, after a
   // full line, a base64 run behind one prefix holding a digit and no space
-  // (a log's timestamp, grep's file:line:). Prose is several words, and stays.
+  // (a log's timestamp, grep's file:line:). Prose, several words, is not one.
   cutOff(line, look) {
     const at = (i) => { look(); return line[i]; };
     let i = 0;
@@ -301,25 +302,56 @@ const isHex = (c) => isDigit(c) || (c >= "a" && c <= "f") || (c >= "A" && c <= "
 
 /**
  * The character a run of backslashes at `at` stands for, and the length of
- * its spelling, read no further than `limit`. One backslash is an escape; two
- * are one escaped twice (a JSON string inside a JSON string); three before a
- * quote are a quote escaped twice. Before a quote, an even run is backslashes
- * and the quote after it is the string's end. Any other run, and one that
- * ends at `limit`, is one character that is no key's (a backslash).
+ * its spelling, read no further than `limit`. A backslash in the run may be
+ * one character or `\u005c`, a backslash spelled as an escape.
+ *
+ * AN AMBIGUOUS SPELLING IS READ THE WAY THAT TAKES MORE. The filter is not
+ * told whether its text was serialized, or how often, and some spellings read
+ * two ways. It would rather take a word of ordinary text from a row that
+ * already holds a key's first line than let a line of the key through:
+ *   - any run of backslashes, spelled or not, before `n`, `r`, `t`, `/`, or
+ *     `u` and four hex digits, is that escape: one backslash is a literal in
+ *     raw text (a Windows path) and an escape in a serialized string; two are
+ *     a literal in a string serialized once and an escape in one serialized
+ *     twice; and so on;
+ *   - before a quote, a run of an odd number of backslashes, none spelled, is
+ *     a quote escaped: a quote in the string's text, or the end of a string
+ *     inside it, which readBlockLine takes as the text's end; any other run is
+ *     backslashes, and the quote after it is the string's end;
+ *   - any other run is one character that is no key's (a backslash).
+ * The one place the reader does not take more is a quote: it never takes one,
+ * so that a serialized body stays valid JSON, whatever the text it stands in.
  */
 function escapeAt(text, at, limit, look) {
-  let run = 0;
-  while (at + run < limit && text[at + run] === "\\") { look(); run += 1; }
-  const letter = at + run < limit ? text[at + run] : undefined;
-  look();
-  if (letter === '"') return run % 2 === 1 ? { char: '"', length: run + 1 } : { char: "\\", length: run };
-  if (run <= 2 && letter === "u") {
-    let hex = 0;
-    while (hex < 4 && at + run + 1 + hex < limit && isHex(text[at + run + 1 + hex])) { look(); hex += 1; }
-    if (hex === 4) return { char: String.fromCharCode(parseInt(text.slice(at + run + 1, at + run + 5), 16)), length: run + 5 };
+  const spelledAt = (i) => {
+    look();
+    if (i + 6 > limit || text[i + 1] !== "u") return false;
+    for (let k = 0; k < 4; k += 1) look();
+    return text.slice(i + 2, i + 6).toLowerCase() === "005c";
+  };
+  let i = at;
+  let raw = 0;
+  let spelled = false;
+  while (i < limit && text[i] === "\\") {
+    look();
+    if (spelledAt(i)) {
+      spelled = true;
+      i += 6;
+    } else {
+      raw += 1;
+      i += 1;
+    }
   }
-  if (run <= 2 && letter !== undefined && letter in ESCAPED) return { char: ESCAPED[letter], length: run + 1 };
-  return { char: "\\", length: run };
+  const letter = i < limit ? text[i] : undefined;
+  look();
+  if (letter === '"') return !spelled && raw % 2 === 1 ? { char: '"', length: i - at + 1 } : { char: "\\", length: i - at };
+  if (letter === "u") {
+    let hex = 0;
+    while (hex < 4 && i + 1 + hex < limit && isHex(text[i + 1 + hex])) { look(); hex += 1; }
+    if (hex === 4) return { char: String.fromCharCode(parseInt(text.slice(i + 1, i + 5), 16)), length: i - at + 5 };
+  }
+  if (letter !== undefined && letter !== '"' && letter in ESCAPED) return { char: ESCAPED[letter], length: i - at + 1 };
+  return { char: "\\", length: i - at };
 }
 
 /**
@@ -328,11 +360,11 @@ function escapeAt(text, at, limit, look) {
  * where its text ends in `text`; `next`, where the next line starts, or -1
  * when the block can have none; and `last`, whether the text stops there. A
  * line ends at a line break, raw or escaped, with a carriage return before it.
- * A quote ends the block: a raw one is the end of a serialized string, where
- * the text stops as its end does; an escaped one is a quote in the string's
- * text, or the end of a string inside it. The next block's first line ends
- * the block too. A block taken never holds a quote, and never ends inside an
- * escape.
+ * A quote ends the block and is read as the text's end: a raw one is the end
+ * of a serialized string; an escaped one is a quote in the string's text or
+ * the end of a string inside it, read the way that takes more (escapeAt). The
+ * next block's first line ends the block too, and is not the text's end. A
+ * block taken never holds a quote, and never ends inside an escape.
  */
 function readBlockLine(text, at, limit, look) {
   const charAt = (i) => {
@@ -342,9 +374,8 @@ function readBlockLine(text, at, limit, look) {
   let line = "";
   let i = at;
   while (i < limit) {
-    if (text[i] === '"') { look(); return { line, end: i, next: -1, last: true }; }
     const { char, length } = charAt(i);
-    if (char === '"') return { line, end: i, next: -1, last: false };
+    if (char === '"') return { line, end: i, next: -1, last: true };
     if (char === "\n") return { line, end: i, next: i + length, last: false };
     if (char === "\r" && i + length < limit && charAt(i + length).char === "\n") {
       return { line, end: i, next: i + length + charAt(i + length).length, last: false };
