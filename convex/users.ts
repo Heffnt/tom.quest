@@ -124,7 +124,10 @@ export const ROLE_GRANTED = "role-granted";
 //   - an account at `tom`, under any username;
 //   - an account at `admin`: taking an admin down to a reader is a decision
 //     about that person, not a grant, and setRoleByUsername is its pen;
-//   - an unknown username, an empty one, and an empty agentId.
+//   - an unknown username, and an empty one.
+// An empty agentId is refused by the record's event validator
+// (shared/jarvis-events.mjs, provenance fields are non-empty strings); the
+// throw undoes the role in the same transaction, so nothing is written.
 //
 // IDEMPOTENT: an account already at `agent` is answered { changed: false }
 // and no second event is written, because nothing happened.
@@ -133,7 +136,6 @@ export const grantAgentRole = internalMutation({
   handler: async (ctx, { username, agentId }) => {
     const normalized = normalizeUsername(username);
     if (!normalized) throw new Error("username must contain letters or numbers");
-    if (agentId.trim() === "") throw new Error("agentId names the run that asks for the grant");
     if (normalized === tomUsername()) {
       throw new Error("The Tom username cannot be given the agent role");
     }
