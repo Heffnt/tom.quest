@@ -28,10 +28,28 @@
   --text-4xl:  2.25rem;
   --text-5xl:  3rem;
 
+  /* Radius: 4px on a control, 6px on a panel; dots and the (i) are rounded-full. */
+  --radius-control: 4px;
+  --radius-panel:   6px;
+
+  /* Row heights. The rest of the spacing scale (2, 4, 8, 12, 16, 24 px) is
+     Tailwind's own: 0.5, 1, 2, 3, 4 and 6. */
+  --spacing-row-dense: 24px;
+  --spacing-row:       32px;
+
   /* Perfume "real vs. hypothetical" ingredient tokens (the Perfumer). */
   /* --pf-real: parchment tan sampled from Joe's ingredient PDF ground (Byobu extract_art.py page-ground sample). */
   --pf-real:         #ebd3b6;
   --pf-hypothetical: #111827; /* reuse --color-surface, tom.quest's slate surface */
+}
+
+/* The z layers of the frame and what lies over it. The drawers take no
+   layer: they never overlap one another, and a drawer with no z-index opens
+   no stacking context, so a fixed dialog inside one still covers the screen. */
+:root {
+  --z-header: 40;
+  --z-dialog: 50;
+  --z-explainer: 60;
 }
 
 body {
@@ -105,4 +123,148 @@ button, input, select, textarea {
 @media (prefers-reduced-motion: reduce) {
   .pf-float, .pf-bubble, .pf-steam, .pf-glow, .pf-pop { animation: none !important; }
   .pf-slot { transition: none !important; }
+}
+
+/* ===== The frame (app/components/frame) =====
+   A site header across the top, and under it the stage: a center and up to
+   four drawers, one per edge. A drawer is a body and a handle; shut, only the
+   handle shows, against the screen edge; open, the handle rides the body's
+   inner edge. The side drawers run the stage's full height; the top and
+   bottom drawers run between them. Drawers never overlap one another; they
+   lie over the center, whose box never changes.
+
+   Every drawer's box (its position and size) is written to its element's
+   style by frame.tsx (rules.ts drawerBox), on every pointer move of a drag
+   and every frame of an open or a shut. What is below is the part that
+   never changes, and every drawer shut, as the server renders it. */
+[data-frame] {
+  position: fixed;
+  inset: 0;
+  font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
+}
+/* No Syne inside the frame: headings are Plex Sans, semibold. */
+[data-frame] h1, [data-frame] h2, [data-frame] h3 {
+  font-family: var(--font-body), 'IBM Plex Sans', sans-serif;
+  letter-spacing: normal;
+}
+[data-frame-header] {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: var(--frame-header);
+  z-index: var(--z-header);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+/* clip, not hidden: a shut drawer lies mostly past the stage's edge, and a
+   hidden overflow is still a scroll container that scrollIntoView or a focus
+   could scroll, which would move the center. A clip cannot scroll, and
+   unlike a transform or containment it does not trap a fixed dialog. */
+[data-frame-stage] {
+  position: absolute;
+  top: var(--frame-header); left: 0; right: 0; bottom: 0;
+  overflow: clip;
+}
+[data-frame-center] {
+  position: absolute;
+  top: var(--frame-inset-top);
+  bottom: var(--frame-inset-bottom);
+  left: var(--frame-inset-left);
+  right: var(--frame-inset-right);
+  overflow: auto;
+}
+[data-frame-drawer] { position: absolute; display: flex; }
+[data-frame-drawer-body] { background: var(--color-bg); }
+/* The content fills its scrolling area, which is as wide as the drawer
+   except while a drawer moves, when frame.tsx gives it a width that changes
+   in steps. */
+[data-frame-drawer-content] { min-height: 100%; height: 100%; }
+/* A word longer than its drawer is wide breaks rather than running past the
+   drawer's edge, so whatever a drawer holds fits the width it is given. */
+[data-frame-drawer-content] { overflow-wrap: anywhere; }
+[data-frame-drawer="left"] {
+  top: 0; bottom: 0;
+  left: calc(-1 * var(--frame-min)); width: calc(var(--frame-min) + var(--frame-handle));
+  flex-direction: row;
+}
+[data-frame-drawer="right"] {
+  top: 0; bottom: 0;
+  right: calc(-1 * var(--frame-min)); width: calc(var(--frame-min) + var(--frame-handle));
+  flex-direction: row-reverse;
+}
+[data-frame-drawer="top"] {
+  left: var(--frame-inset-left); right: var(--frame-inset-right);
+  top: calc(-1 * var(--frame-min)); height: calc(var(--frame-min) + var(--frame-handle));
+  flex-direction: column;
+}
+[data-frame-drawer="bottom"] {
+  left: var(--frame-inset-left); right: var(--frame-inset-right);
+  bottom: calc(-1 * var(--frame-min)); height: calc(var(--frame-min) + var(--frame-handle));
+  flex-direction: column-reverse;
+}
+/* An open drawer's shadow falls toward the center. */
+[data-frame-drawer="left"][data-open="true"]   { box-shadow: 12px 0 18px -12px rgba(0, 0, 0, 0.6); }
+[data-frame-drawer="right"][data-open="true"]  { box-shadow: -12px 0 18px -12px rgba(0, 0, 0, 0.6); }
+[data-frame-drawer="top"][data-open="true"]    { box-shadow: 0 12px 18px -12px rgba(0, 0, 0, 0.6); }
+[data-frame-drawer="bottom"][data-open="true"] { box-shadow: 0 -12px 18px -12px rgba(0, 0, 0, 0.6); }
+
+/* The handle: the same on every edge but for its orientation. The whole of
+   it is pressable and draggable; its buttons keep their own presses. */
+[data-frame-handle] {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: 8px;
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color 80ms, border-color 80ms;
+}
+[data-frame-handle-orient="horizontal"] { height: var(--frame-handle); flex-direction: row; padding: 0 4px 0 10px; }
+[data-frame-handle-orient="vertical"] { width: var(--frame-handle); flex-direction: column; align-items: center; padding: 10px 0 4px; }
+[data-frame-handle="top"]    { border-bottom-width: 1px; cursor: ns-resize; }
+[data-frame-handle="bottom"] { border-top-width: 1px; cursor: ns-resize; }
+[data-frame-handle="left"]   { border-right-width: 1px; cursor: ew-resize; }
+[data-frame-handle="right"]  { border-left-width: 1px; cursor: ew-resize; }
+[data-frame-handle]:hover { background: var(--color-surface-alt); color: var(--color-text); }
+[data-frame-drawer][data-open="true"] > [data-frame-handle] { border-color: var(--color-accent); }
+[data-frame-drawer][data-dragging="true"] > [data-frame-handle] { background: var(--color-surface-alt); color: var(--color-text); }
+[data-frame-handle-control] { cursor: pointer; }
+[data-frame-handle-control] input { cursor: text; }
+/* The empty stretch of a handle takes whatever length is left. */
+[data-frame-handle-fill] { flex: 1 1 0; min-width: 0; min-height: 0; }
+
+/* A handle's line: notch, label, signals and buttons. On a top or bottom
+   handle it reads across; on a side handle it runs along the handle, the
+   left reading bottom to top and the right top to bottom. A long label (the
+   selected item's name) ends in an ellipsis where the handle does. */
+[data-frame-handle-line] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+[data-frame-handle-orient="horizontal"] [data-frame-handle-line] { flex: 0 1 auto; }
+[data-frame-handle-orient="vertical"] [data-frame-handle-line] { max-height: 100%; writing-mode: vertical-rl; }
+[data-frame-handle="left"] [data-frame-handle-line] { transform: rotate(180deg); }
+[data-frame-handle-label] {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: inherit;
+  color: inherit;
+}
+[data-frame-handle-label]:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 2px; }
+[data-frame-handle-signals] {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
 }

@@ -6,6 +6,7 @@ import NavTerm from "./nav-term";
 import DebugPanel from "./debug-panel";
 import { useAuth } from "../lib/auth";
 import { useUIStore } from "../lib/stores/ui-store";
+import { isFramePath } from "./page-routes";
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -25,6 +26,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
     }),
     [debugActive, debugWidth],
   );
+
+  /* A page registered `frame: true` renders its own <Frame>, whose site
+     header carries the site's controls, so it gets no NavTerm and no padding. DebugPanel still
+     mounts (its effects feed Copy diagnostics) but draws nothing there: the
+     frame's bottom drawer holds the diagnostics. */
+  if (isFramePath(pathname)) {
+    return (
+      <>
+        <main>{children}</main>
+        <DebugPanel />
+      </>
+    );
+  }
 
   /* The home page renders its own hero version of the nav (big logo +
      expanded terminal + auth top-right). Everywhere else uses the docked bar. */

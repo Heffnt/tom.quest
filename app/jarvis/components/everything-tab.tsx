@@ -210,12 +210,21 @@ function Chip({
   );
 }
 
+/** A row pressed in the tab, named the way its detail is looked up. */
+export type OpenedRow =
+  | { kind: "life"; todoId: string }
+  | { kind: "code"; repo: string; externalId: string };
+
 export default function EverythingTab({
   link,
   onLinkCleared,
+  onOpenRow,
 }: {
   link: { item: string; intent: "done" | "archive" | "engage" | null } | null;
   onLinkCleared: () => void;
+  /** When given, a pressed row is handed here to be shown elsewhere (the
+   * frame page's right drawer) instead of opening in place. */
+  onOpenRow?: (row: OpenedRow) => void;
 }) {
   const { isTom, canReadSurface } = useAuth();
   // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
@@ -411,7 +420,12 @@ export default function EverythingTab({
     }
   };
 
-  const flip = (key: string, engageIt: () => void) => {
+  const flip = (key: string, engageIt: () => void, row: OpenedRow) => {
+    if (onOpenRow) {
+      onOpenRow(row);
+      engageIt();
+      return;
+    }
     const opening = !expanded.has(key);
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -421,7 +435,14 @@ export default function EverythingTab({
     });
     if (opening) engageIt();
   };
-  const toggle = (r: Row) => flip(r.key, () => engage(r));
+  const toggle = (r: Row) =>
+    flip(
+      r.key,
+      () => engage(r),
+      r.kind === "life"
+        ? { kind: "life", todoId: r.todo._id }
+        : { kind: "code", repo: r.row.repo, externalId: r.row.externalId },
+    );
 
   // ── Deep link: force-expand + scroll to the linked todo once loaded ───────
   const scrolledRef = useRef(false);
@@ -461,6 +482,13 @@ export default function EverythingTab({
     return <div className="text-sm text-text-faint py-8">Loading…</div>;
   }
 
+  // Rows shown elsewhere when pressed (onOpenRow) never open in place, so
+  // they hold nothing that must reach past their own box, and one off screen
+  // may skip layout. That keeps a resize of the drawer holding a thousand of
+  // them to the rows in view. A row that opens in place keeps full layout:
+  // content-visibility confines a fixed dialog to the row.
+  const rowsCls = onOpenRow ? "[&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_64px]" : "";
+
   const toggleSet = <T,>(set: Set<T>, v: T): Set<T> => {
     const next = new Set(set);
     if (next.has(v)) next.delete(v);
@@ -478,7 +506,7 @@ export default function EverythingTab({
           count={awaitingLife.length + awaitingCode.length}
         />
         {(awaitingLife.length > 0 || awaitingCode.length > 0) && (
-          <div className="space-y-1.5">
+          <div className={`space-y-1.5 ${rowsCls}`}>
             {awaitingLife.map((t) => (
               <LifeRow
                 key={t._id}
@@ -493,7 +521,7 @@ export default function EverythingTab({
                       todoId: t._id,
                       data: { via: "everything-awaiting" },
                     }).catch(() => {});
-                  })
+                  }, { kind: "life", todoId: t._id })
                 }
               />
             ))}
@@ -517,7 +545,7 @@ export default function EverythingTab({
                           externalId: row.externalId,
                         },
                       }).catch(() => {});
-                    })
+                    }, { kind: "code", repo: row.repo, externalId: row.externalId })
                   }
                 />
               );
@@ -600,7 +628,7 @@ export default function EverythingTab({
         </div>
 
         {/* Rows */}
-        <div className="space-y-1.5">
+        <div className={`space-y-1.5 ${rowsCls}`}>
           {matches.map((r) =>
             r.kind === "life" ? (
               <TodoRow

@@ -42,7 +42,12 @@ type Environment = "all" | "session" | "worker" | "runner";
 
 const ENVIRONMENTS: Environment[] = ["all", "session", "worker", "runner"];
 
-export default function WindowView() {
+/**
+ * The window view's state: the window chosen, its rows, the filters, the
+ * focused lane and the word being defined. WindowView lays it out as one
+ * column; the frame page (app/frame) spreads the same parts over its drawers.
+ */
+export function useWindowView() {
   const { isTom } = useAuth();
 
   const [kind, setKind] = useState<WindowKind>("day");
@@ -87,76 +92,110 @@ export default function WindowView() {
     [rows.runs, children, environment, repo],
   );
 
+  return {
+    kind, setKind, offset, setOffset, children, setChildren, repo, setRepo,
+    environment, setEnvironment, focus, setFocus, defining, setDefining,
+    now, win, rows, data, shown,
+  };
+}
+
+type WindowViewState = ReturnType<typeof useWindowView>;
+
+/** The window's span, and whether its rows are all in. */
+export function WindowLabel({ view }: { view: WindowViewState }) {
+  const { win, rows } = view;
+  return (
+    <span className="text-[11px] font-mono text-text-faint">
+      {windowLabel(win)}
+      {rows.capped ? " · capped" : rows.complete ? "" : " · loading"}
+    </span>
+  );
+}
+
+/** The controls that choose the window and narrow what the timeline draws. */
+export function WindowControls({ view }: { view: WindowViewState }) {
+  const {
+    kind, setKind, setOffset, children, setChildren, repo, setRepo,
+    environment, setEnvironment, focus, setFocus,
+  } = view;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Group>
+        {WINDOW_KINDS.map((option) => (
+          <Pick
+            key={option}
+            on={kind === option}
+            onClick={() => {
+              setKind(option);
+              setOffset(0);
+            }}
+          >
+            {option}
+          </Pick>
+        ))}
+      </Group>
+      <Group>
+        <Pick on={false} onClick={() => setOffset((value) => value + 1)}>
+          previous
+        </Pick>
+        <Pick on={false} onClick={() => setOffset((value) => Math.max(0, value - 1))}>
+          next
+        </Pick>
+      </Group>
+      <Group>
+        <Pick on={children} onClick={() => setChildren((value) => !value)}>
+          child agents
+        </Pick>
+      </Group>
+      <Group>
+        <Pick on={repo === "all"} onClick={() => setRepo("all")}>
+          every repo
+        </Pick>
+        {REPO_NAMES.map((name) => (
+          <Pick key={name} on={repo === name} onClick={() => setRepo(name)}>
+            {name}
+          </Pick>
+        ))}
+      </Group>
+      <Group>
+        {ENVIRONMENTS.map((option) => (
+          <Pick
+            key={option}
+            on={environment === option}
+            onClick={() => setEnvironment(option)}
+          >
+            {option === "all" ? "every environment" : option}
+          </Pick>
+        ))}
+      </Group>
+      {focus !== null && (
+        <Group>
+          <Pick on onClick={() => setFocus(null)}>
+            {focus}
+          </Pick>
+        </Group>
+      )}
+    </div>
+  );
+}
+
+export default function WindowView() {
+  const view = useWindowView();
+  const { now, win, rows, data, shown, focus, setFocus, defining, setDefining } = view;
+
   return (
       <TermsProvider onDefine={setDefining}>
         <div className="w-full">
           <div className="flex flex-wrap items-baseline justify-end gap-2">
-            <span className="text-[11px] font-mono text-text-faint">
-              {windowLabel(win)}
-              {rows.capped ? " · capped" : rows.complete ? "" : " · loading"}
-            </span>
+            <WindowLabel view={view} />
           </div>
 
           <div className="mt-3">
             <Map data={data} now={now} focus={focus} onFocus={setFocus} waiting={rows.waiting} />
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            <Group>
-              {WINDOW_KINDS.map((option) => (
-                <Pick
-                  key={option}
-                  on={kind === option}
-                  onClick={() => {
-                    setKind(option);
-                    setOffset(0);
-                  }}
-                >
-                  {option}
-                </Pick>
-              ))}
-            </Group>
-            <Group>
-              <Pick on={false} onClick={() => setOffset((value) => value + 1)}>
-                previous
-              </Pick>
-              <Pick on={false} onClick={() => setOffset((value) => Math.max(0, value - 1))}>
-                next
-              </Pick>
-            </Group>
-            <Group>
-              <Pick on={children} onClick={() => setChildren((value) => !value)}>
-                child agents
-              </Pick>
-            </Group>
-            <Group>
-              <Pick on={repo === "all"} onClick={() => setRepo("all")}>
-                every repo
-              </Pick>
-              {REPO_NAMES.map((name) => (
-                <Pick key={name} on={repo === name} onClick={() => setRepo(name)}>
-                  {name}
-                </Pick>
-              ))}
-            </Group>
-            <Group>
-              {ENVIRONMENTS.map((option) => (
-                <Pick
-                  key={option}
-                  on={environment === option}
-                  onClick={() => setEnvironment(option)}
-                >
-                  {option === "all" ? "every environment" : option}
-                </Pick>
-              ))}
-            </Group>
-            {focus !== null && (
-              <Group>
-                <Pick on onClick={() => setFocus(null)}>
-                  {focus}
-                </Pick>
-              </Group>
-            )}
+          <div className="mt-3">
+            <WindowControls view={view} />
           </div>
 
           <div className="mt-2">

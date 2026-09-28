@@ -5,6 +5,11 @@ const nextConfig: NextConfig = {
   // pi-coding-agent ships native clipboard bindings (koffi) that Turbopack
   // cannot bundle into server chunks; load it at runtime instead.
   serverExternalPackages: ["@earendil-works/pi-coding-agent"],
+  // The dev-tools badge floats in a viewport corner over the page, and every
+  // corner holds a frame control (the drawer handles), so under
+  // `next dev` it covered the bottom-left handle and failed the frame e2e,
+  // which CI runs against `next dev`. Errors still open the dev overlay.
+  devIndicators: false,
   async redirects() {
     // "dts" -> "tts" rename (2026-08-29): links in already-sent Slack
     // digests point at the old path — query params are preserved by default.
