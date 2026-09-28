@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { LINE_CROSSING_RULES, openPrivateKeyLineStart, REDACTED_SHAPES, redactSecrets } from "../redact.mjs";
+import { countOpenKeyBlockReads, LINE_CROSSING_RULES, OPEN_KEY_BLOCK, openPrivateKeyLineStart, REDACTED_SHAPES, redactSecrets } from "../redact.mjs";
 
 // The parser's cut, TRUNCATE_LIMIT, is 32KB and lives in the Jarvis
 // repository (worker/agents/cut.mjs). Here it is a fixture: what these cases state is
@@ -542,6 +542,48 @@ describe("a private key block left open, as a serializer spells it", () => {
 
   it("reads a raw text's literal backslash-n as a line break after the first line", () => {
     expect(redactSecrets(`${begin}\\n${BODY}\\n${KEPT}`)).toBe(`[redacted:pem]\\n${KEPT}`);
+  });
+});
+
+// The step's cost, counted, not timed: a time fails on a loaded machine. The
+// count is every character the step looks at: the search for first lines (the
+// text once), the line reader and the kinds of line. For each input that was
+// slow on an earlier head of this change, and each worst case of the reader,
+// the count stays under eight looks per character, and doubling the text at
+// most doubles the count (with a margin).
+describe("the open-block step looks at each character a bounded number of times", () => {
+  const begin = t("-----BEGIN", " PRIVATE KEY-----");
+  const BODY = t("QUJDREVGR0hJSktMTU5P", "UFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2");
+  const fill = (unit, n) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  const INPUTS = {
+    // The audit's input on the third head: 4,000 first lines in 120 KB took 7 s.
+    "first lines on one line": (n) => fill(`${begin} x `, n),
+    "first lines on one line, serialized twice": (n) => JSON.stringify(JSON.stringify(fill(`${begin} \\ x\t`, n))),
+    // Found by this change's builder on the third head: 38 s at 120 KB.
+    "a full line, then blanks ending in a character no line kind takes": (n) => `${begin}\n${BODY}\n${" ".repeat(n)}!`,
+    "first lines each before a long line": (n) => fill(`${begin}\n${"word ".repeat(200)}\n`, n),
+    "one first line, then no line break": (n) => `${begin}${fill(BODY, n)}`,
+    "one first line, then escapes": (n) => `${begin}${fill("\\\\\\u00", n)}`,
+    "one first line, then line numbers": (n) => `${begin}\n${fill("12345678\t", n)}`,
+  };
+  for (const [name, make] of Object.entries(INPUTS)) {
+    it(name, () => {
+      const [small, large] = [make(30_000), make(60_000)];
+      const [atSmall, atLarge] = [countOpenKeyBlockReads(small), countOpenKeyBlockReads(large)];
+      expect(atSmall).toBeLessThan(8 * small.length);
+      expect(atLarge).toBeLessThan(8 * large.length);
+      expect(atLarge / atSmall).toBeLessThan(2.5);
+    });
+  }
+
+  // A regular expression does its work where the count cannot see it, and the
+  // 38-second input above was one. Every kind of line is a function that
+  // looks at its line through the counter, and none holds a regular expression.
+  it("has no kind of line that is a regular expression or runs one", () => {
+    for (const [name, kind] of Object.entries(OPEN_KEY_BLOCK)) {
+      expect(typeof kind, name).toBe("function");
+      expect(String(kind), name).not.toMatch(/\.(?:test|exec|match|matchAll|search|replace|split)\(|RegExp/);
+    }
   });
 });
 
