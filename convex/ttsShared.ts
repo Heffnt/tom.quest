@@ -484,8 +484,8 @@ export function normalizeRecommendation(r: StoredRecommendation): Recommendation
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
 // THE ONE HOME for the graph rules — convex/ and app/ both import from here,
 // so the server's frontier and the page's frontier cannot drift. Structural
-// types (not Doc<"dtsTodos">) so this module stays importable from both sides
-// without dragging in the generated data model; Id<"dtsTodos"> is a string at
+// types (not Doc<"todos">) so this module stays importable from both sides
+// without dragging in the generated data model; Id<"todos"> is a string at
 // runtime and assignable to these.
 
 /** The bounded fan-in of one todo's `needs` (Convex unbounded-array rule). */

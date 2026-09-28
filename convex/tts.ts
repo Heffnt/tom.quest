@@ -20,7 +20,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
-import { back, backDelete, clearBlock, eitherId, resolveId, withPlainTodoIds } from "./jarvis/tables";
+import { clearBlock, eitherId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -178,7 +178,6 @@ export const createTodo = mutation({
       createdAt: now,
       updatedAt: now,
     });
-    await back(ctx, "todos", id);
     await logEvent(ctx, "created", id, { source: "manual" });
     return id;
   },
@@ -245,7 +244,6 @@ export const updateTodo = mutation({
       }
     }
     await ctx.db.patch(id, patch);
-    await back(ctx, "todos", id);
     await logEvent(ctx, "updated", id, { fields: Object.keys(fields) });
   },
 });
@@ -311,7 +309,6 @@ export async function applyStatusChange(
     resolveDateAsDone(todo, now, note, patch);
   }
   await ctx.db.patch(todo._id, patch);
-  await back(ctx, "todos", todo._id);
   await logEvent(ctx, "status-changed", todo._id, {
     from: todo.status,
     to: status,
@@ -338,7 +335,6 @@ export const setStatus = mutation({
     // and an agent action must not stamp a Tom touch (tomTouchedAt freezes the
     // row to every agent pen).
     await ctx.db.patch(id, { tomTouchedAt: Date.now() });
-    await back(ctx, "todos", id);
   },
 });
 
@@ -376,7 +372,6 @@ export const internalTriage = internalMutation({
         timingClass: "dated",
         updatedAt: Date.now(),
       });
-      await back(ctx, "todos", normalized);
       await logEvent(ctx, "updated", normalized, { fields: ["dueAt"], via: "triage" });
     }
     if (status !== undefined) {
@@ -388,7 +383,6 @@ export const internalTriage = internalMutation({
     // must not freeze a row.
     if (status !== undefined || dueAt !== undefined) {
       await ctx.db.patch(normalized, { tomTouchedAt: Date.now() });
-      await back(ctx, "todos", normalized);
     }
   },
 });
@@ -435,7 +429,6 @@ export const internalBulkUpdate = internalMutation({
       // would resurface an already-ruled gate).
       if (fields.length > 0) patch.updatedAt = now;
       await ctx.db.patch(normalized, patch);
-      await back(ctx, "todos", normalized);
       await logEvent(ctx, "bulk-updated", normalized, { fields });
     }
   },
@@ -491,7 +484,6 @@ export async function applyDateOutcome(
     patch.timingClass = "whenever";
   }
   await ctx.db.patch(todo._id, patch);
-  await back(ctx, "todos", todo._id);
   await logEvent(ctx, "date-outcome", todo._id, { outcome, newDueAt, note });
 }
 
@@ -520,7 +512,6 @@ export async function recordMissedKeepingDate(
       { dueAt: todo.dueAt, outcome: "missed" as const, recordedAt: now, note },
     ],
   });
-  await back(ctx, "todos", todo._id);
   // `rollover: true` marks the row as the system's, not Tom's: the weekly
   // gather counts a date outcome as a touch of his unless it carries this
   // (convex/ttsWeekly.ts isTomTouch).
@@ -618,7 +609,6 @@ export async function insertBlock(
     note,
     createdAt: Date.now(),
   });
-  await back(ctx, "blocks", id);
   await logEvent(ctx, "block-created", todoId, {
     start,
     end,
@@ -640,7 +630,6 @@ export async function patchBlock(
     end: nextEnd,
     note: note === null ? undefined : (note ?? block.note),
   });
-  await back(ctx, "blocks", block._id);
   // block-moved only when the span actually changed — a note-only edit is
   // not a move and must not fake one in the event stream.
   if (nextStart !== block.start || nextEnd !== block.end) {
@@ -654,7 +643,6 @@ export async function patchBlock(
 
 export async function removeBlock(ctx: MutationCtx, block: Doc<"blocks">) {
   await ctx.db.delete(block._id);
-  await backDelete(ctx, "blocks", block);
   // A time note naming the block is taken off it.
   await clearBlock(ctx, block._id);
   await logEvent(ctx, "block-deleted", block.todoId, {
@@ -814,7 +802,6 @@ async function createTimeNoteFrom(
     status: "pending",
     createdAt: Date.now(),
   });
-  await back(ctx, "timeNotes", id);
   await logEvent(ctx, "time-note", todo, { text: trimmed, blockId: block, day });
   return id;
 }
@@ -846,7 +833,6 @@ export const deleteTimeNote = mutation({
       throw new Error("An applied time note is history — it is not deleted");
     }
     await ctx.db.delete(id);
-    await backDelete(ctx, "timeNotes", note);
     await logEvent(ctx, "time-note-deleted", note.todoId, { text: note.text });
   },
 });
@@ -1098,7 +1084,6 @@ export const internalApplyTimeNote = internalMutation({
     // the block mutations do not).
     const touch = async (todoId: Id<"todos">) => {
       await ctx.db.patch(todoId, { tomTouchedAt: now });
-      await back(ctx, "todos", todoId);
     };
 
     for (const action of list) {
@@ -1118,7 +1103,6 @@ export const internalApplyTimeNote = internalMutation({
             updatedAt: now,
             tomTouchedAt: now,
           });
-          await back(ctx, "todos", todo._id);
           await logEvent(ctx, "updated", todo._id, {
             fields: ["dueAt"],
             via: "time-note",
@@ -1167,7 +1151,6 @@ export const internalApplyTimeNote = internalMutation({
             updatedAt: now,
             tomTouchedAt: now,
           });
-          await back(ctx, "todos", todo._id);
           await logEvent(ctx, "updated", todo._id, {
             fields: ["dateKind"],
             via: "time-note",
@@ -1234,7 +1217,6 @@ export const internalApplyTimeNote = internalMutation({
       result: result.trim(),
       resolvedAt: now,
     });
-    await back(ctx, "timeNotes", normalized);
     await logEvent(ctx, "time-note-resolved", note.todoId, {
       status,
       result: result.trim(),
@@ -1330,7 +1312,6 @@ export const internalCapture = internalMutation({
       createdAt: now,
       updatedAt: now,
     });
-    await back(ctx, "todos", id);
     await logEvent(ctx, "captured", id, { source: declaredSource });
     // The one reply line at capture, in the thread of the #dump message this
     // came from. Scheduled INSIDE the insert's transaction, after the dedupe
@@ -1476,7 +1457,6 @@ export const internalPrepareTodo = internalMutation({
       patch.producedByRunToken = runToken;
     }
     await ctx.db.patch(normalized, patch);
-    await back(ctx, "todos", normalized);
     await logEvent(ctx, "prepared", normalized, {
       readiness: patch.readiness,
       fields: written,

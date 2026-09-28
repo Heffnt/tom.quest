@@ -39,7 +39,7 @@ import {
   buildDoneSet,
   isReady,
 } from "./ttsShared";
-import { back, resolveId } from "./jarvis/tables";
+import { resolveId } from "./jarvis/tables";
 
 // The phase-7 row mappings (convex/ttsMigrations.ts): resumable, dry-runnable,
 // idempotent, and counted. These tests are the local harness the design says
@@ -210,9 +210,6 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
         }),
       );
     }
-    // Each with its old row, as a door writes a todo while step C moves the
-    // writers (convex/jarvis/tables.ts).
-    for (const id of ids) await back(ctx, "todos", id);
     return ids;
   });
 }
@@ -233,11 +230,10 @@ async function eventsOfKind(t: ReturnType<typeof convexTest>, kind: string) {
 }
 
 /** Step C's check on a walk (convex/jarvis/tables.ts): the walk writes the
- * plain rows, and each row it writes has its old row written back to match. */
-async function expectWrittenBack(t: ReturnType<typeof convexTest>, walk: () => Promise<unknown>) {
+ * plain rows and nothing else, so the old table stays as it was (empty). */
+async function expectPlainOnly(t: ReturnType<typeof convexTest>, walk: () => Promise<unknown>) {
   await walk();
-  const { left } = await t.action(internal.jarvis.tables.leftToRemap, {});
-  expect(left.todos).toMatchObject({ notCopied: 0, stale: 0, version: 0, orphaned: 0 });
+  expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toEqual([]);
 }
 
 describe("readiness migration (ready-for-tom → prepared, preparing → unprepared)", () => {
@@ -362,10 +358,10 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
     }
   });
 
-  it("writes the plain rows it maps, and writes each one's old row back", async () => {
+  it("writes the plain rows it maps, and no old row", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
-    await expectWrittenBack(t, () => t.mutation(internal.ttsMigrations.internalMigrateReadiness, {}));
+    await expectPlainOnly(t, () => t.mutation(internal.ttsMigrations.internalMigrateReadiness, {}));
   });
 
   it("is idempotent: a second run maps nothing", async () => {
@@ -642,10 +638,10 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     expect(await eventsOfKind(t, "status-changed")).toHaveLength(3);
   });
 
-  it("writes the plain rows it maps, and writes each one's old row back", async () => {
+  it("writes the plain rows it maps, and no old row", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
-    await expectWrittenBack(t, () => t.mutation(internal.ttsMigrations.internalMigrateTiming, {}));
+    await expectPlainOnly(t, () => t.mutation(internal.ttsMigrations.internalMigrateTiming, {}));
   });
 
   it("resumes across pages by cursor", async () => {
@@ -1004,11 +1000,11 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
   // witness: patch a row inside the dryRun branch — the counts would still be
   // right and every row would have moved before Tom saw the numbers.
-  it("writes the plain todos it clears, and writes each one's old row back", async () => {
+  it("writes the plain todos it clears, and no old row", async () => {
     const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, todoSeed());
     await seedRest(t);
-    await expectWrittenBack(t, () => clearAll(t));
+    await expectPlainOnly(t, () => clearAll(t));
   });
 
   it("a dry run reports the same counts and writes nothing but the dry-run event", async () => {
@@ -1379,10 +1375,10 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
 
   // witness: match an entry by its completion test as well as by the old
   // wording — every run would rewrite the kept goal and log it again.
-  it("writes the plain goals it converts or archives, and writes each one's old row back", async () => {
+  it("writes the plain goals it converts or archives, and no old row", async () => {
     const t = convexTest({ schema, modules });
     await seed(t);
-    await expectWrittenBack(t, () => t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {}));
+    await expectPlainOnly(t, () => t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {}));
   });
 
   it("is idempotent: a second run changes nothing", async () => {

@@ -37,7 +37,6 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { back } from "./jarvis/tables";
 
 /** The unarchiveCondition the retired v1 → graph migration
  * (tts.internalMigrateToGraph, deleted with batches on 2026-09-24 after it had
@@ -165,7 +164,6 @@ export const internalMigrateReadiness = internalMutation({
         page[`${stored}-to-${target}`]++;
         if (!dryRun) {
           await ctx.db.patch(row._id, { readiness: target });
-          await back(ctx, "todos", row._id);
         }
       },
     );
@@ -288,7 +286,6 @@ export const internalMigrateTiming = internalMutation({
         if (statement !== row.statement) patch.statement = statement;
         if (!dryRun && Object.keys(patch).length > 0) {
           await ctx.db.patch(row._id, patch);
-          await back(ctx, "todos", row._id);
           if (row.status === "waiting") {
             await logEvent(ctx, "status-changed", row._id, {
               from: "waiting",
@@ -538,7 +535,6 @@ export const internalClearRetiredFields = internalMutation({
           }
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(row._id, patch as Partial<Doc<"todos">>);
-            await back(ctx, "todos", row._id);
           }
         }
         ({ isDone, continueCursor } = result);
@@ -923,7 +919,6 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
       changes.push({ todoId: row._id, entry, oldStatement: row.statement, action: "archived", reason });
       if (!dryRun) {
         await ctx.db.patch(row._id, { status: "archived", archivedAt: Date.now() });
-        await back(ctx, "todos", row._id);
       }
     };
 
@@ -971,7 +966,6 @@ export const internalConvertClosedUpstreamGoals = internalMutation({
           readiness: "unprepared",
           status,
         });
-        await back(ctx, "todos", kept._id);
       }
       for (const row of copies) {
         await archive(row, entry, duplicateArchiveReason(entry, kept._id), "duplicate-archived");

@@ -14,16 +14,14 @@ import {
   integrationStatement,
 } from "./ttsIntegrations";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { back, resolveId } from "./jarvis/tables";
+import { resolveId } from "./jarvis/tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/** A todo's status set by hand on the plain row, and its old row written
- *  back, as this part's writers do (convex/jarvis/tables.ts `back`). */
+/** A todo's status set by hand. */
 const setStatus = (t: ReturnType<typeof convexTest>, id: Id<"todos">, status: "active" | "archived") =>
   t.run(async (ctx) => {
     await ctx.db.patch(id, { status });
-    await back(ctx, "todos", id);
   });
 
 /** The plain row's id, which the readers hand out (convex/jarvis/tables.ts). */
@@ -162,7 +160,7 @@ describe("internalDeclinedIntegrations", () => {
 
     const rows = await t.run(async (ctx) =>
       ctx.db
-        .query("dtsTodos")
+        .query("todos")
         .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
         .collect(),
     );

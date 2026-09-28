@@ -9,37 +9,58 @@
 // to `rulings`. dtsRulings stays whole until `counts` confirms the copy, then
 // a later commit empties it and drops it from the schema.
 //
-// TODOS, BLOCKS AND TIME NOTES move the same way: the copy and the dual write
-// (step A: every writer wrote the old row, then `follow` copied it into the
-// plain one), the readers (step B), and the writers (step C). calendar,
-// repeats and vocabulary stay declared and untouched.
+// TODOS, BLOCKS AND TIME NOTES moved the same way, in three steps: the copy
+// and the dual write (step A: every writer wrote the old row, then `follow`
+// copied it into the plain one), the readers (step B), and the writers (step
+// C). calendar, repeats and vocabulary stay declared and untouched.
 //
-// STEP B, THE READERS. An id reaches the record from outside in either form:
-// the plain row's, or the old one's (an old link, a Slack thread, a box file,
-// and every reference rulings, claudeSessions, runs and dtsEvents store,
-// which keep the ids they hold). `eitherId` is the argument validator that
-// takes both; `resolveId` answers the plain row a reader reads (and, since
-// step C, a writer writes).
+// AN ID IN EITHER FORM. An id reaches the record from outside as the plain
+// row's, or as the old one's (an old link, a Slack thread, a box file, and a
+// reference a ruling, event, session or run stored before step C).
+// `eitherId` is the argument validator that takes both; `resolveId` answers
+// the plain row, which every reader reads and every writer writes.
 //
-// STEP C, THE OLD WRITES STOP, lands as a stack. First the readers: a stored
-// reference to a todo (rulings.todoId, dtsEvents.todoId, claudeSessions.todoId,
-// runs.todoId, a Slack thread's todo subject) takes either id, and every
-// reader of a stored reference reads both forms as the one todo (todoIdForms,
-// todoEvents, todoRulings; withPlainTodoIds before liveRulings); copyBack
-// (below) arrives with them, the way back from what follows. Then the writers
-// move to the plain tables a group at a time (blocks and time notes; then
-// every writer of a todo but the repeats generator and the migrations, with
-// tts.logEvent storing the plain id from then on; then those two, and the
-// last writers of a stored reference: a run, a merge, a delegate's ask and
-// objection, the digest's surfaced marks and needs-you subject),
-// each writing its old row back (`back`, `backDelete`), so a writer not yet
-// moved, which writes the old row and `follow`s, finds it current, and
-// leftToRemap stays at zero throughout. Then `follow`, `oldId` and the copy
-// go: nothing calls them, and `sync`, `remapTodoRefs` and their pages copied
-// the old tables over the plain ones, which once the write back stops would
-// overwrite every write since with a stale old row; they are deleted rather
-// than left to refuse (`unstamp` and `refsPage`, step A's way back, with
-// them). The last pull request of the stack takes `back` out.
+// STEP C, THE OLD WRITES STOP. Every writer inserts, patches and deletes the
+// plain row directly; nothing writes dtsTodos, dtsBlocks or dtsTimeNotes, and
+// they stay as read-only history until a later pull request drops them. A new
+// row exists only in the plain table, with no legacyId, and a creating door
+// answers its plain id. Everything that stores a reference to a todo, block
+// or time note stores the plain id (a block's and a time note's todoId and
+// blockId, rulings.todoId, the events' todoId, a session's, a run's, a Slack
+// thread's todo subject). Those fields still take either id (existing rows
+// hold old ones; the schema was widened, never narrowed), and every reader of
+// a stored reference reads both forms as the one todo (todoIdForms,
+// todoEvents, todoRulings; withPlainTodoIds before liveRulings).
+//
+// It landed as a stack, each pull request safe to deploy alone in order: the
+// readers of both forms and copyBack; then the writers, a group at a time
+// (blocks and time notes; every other writer of a todo but two; the repeats
+// generator, the migrations and the last stored references), each writing
+// its old row back so that a writer not yet moved, which wrote the old row
+// and `follow`ed, found it current and leftToRemap stayed at zero; then
+// `follow`, `oldId` and the copy went; last, the write back stopped.
+//
+// THE COPY IS OVER, so `sync`, `remapTodoRefs` and their pages are deleted,
+// not left to refuse: each copied the old tables over the plain ones, which
+// after step C would overwrite every write since with a stale old row.
+// `unstamp` and `refsPage` were step A's way back, which no longer applies
+// once the readers read the plain tables. `leftToRemap` stays, read-only
+// (below).
+//
+// THE WAY BACK from step C. The plain tables are the truth after it; the old
+// tables are frozen at the last write back. Reverting only the last pull
+// request is safe as it is: its predecessor's writers write each row's old
+// row back at their next write of it (inserting a missing one, patching a
+// stale one), and nothing it runs reads an old row; `copyBack` (below) brings
+// every old row current at once, after which leftToRemap reads zero. Going
+// back further, to the pull request whose migrations and repeats generator
+// still wrote an old row and `follow`ed it (or anything before), needs
+// copyBack first, since `follow` would copy a stale old row over a newer
+// plain one and a writer's oldId would find no old row for a todo created
+// since: run copyBack, confirm leftToRemap reads zero, deploy, and run it
+// again right before the deploy if anything wrote in between. Never go back
+// past step C's first pull request: step B's schema refuses the plain ids
+// stored since.
 
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
@@ -269,13 +290,16 @@ export const counts = internalAction({
 
 // ── todos, blocks and timeNotes: the check ────────────────────────────────
 //
-// leftToRemap compares each old table with its plain one: an old row with no
-// plain copy (`notCopied`), one whose copy differs (`stale`), one whose stamp
-// is not its fingerprint or its copy's (`version`), a plain row no old row
-// holds (`orphaned`), and each reference field's ids still naming an old
-// table. While step C writes the old rows back it stays at zero; once the
-// write back stops it reads as what the way back would carry, and copyBack
-// brings it to zero.
+// leftToRemap compares each old table with its plain one. Before step C it
+// was the copy's check, and while step C's writers wrote their old rows back
+// it stayed at zero. Since the old tables are frozen it reads as what the way
+// back would carry: `stale` counts the plain rows changed since, `orphaned`
+// the plain rows created since (no legacyId) and `notCopied` the old rows
+// whose plain row was deleted since (a block, a time note); `version` (an old
+// row whose stamp is not its fingerprint) counts a write to an old table,
+// which nothing makes any more, and each reference field counts the plain
+// rows still naming an old id, which no writer stores any more. copyBack
+// brings every count to 0.
 //
 // REFERENCES in the comparison point at the plain row: todos.needs at todos,
 // timeNotes.blockId at blocks, and a block's or time note's todoId at todos.
@@ -385,10 +409,10 @@ function versionOf(row: Row): string {
   return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
 }
 
-/** One page of the plain time notes naming a deleted block's copy, taken off
- *  it; the rest go to clearBlockPage, which runs until none is left. Each
- *  patched note leaves the by_block range, so every page reads from its
- *  start. Until then leftToRemap counts each note still naming it as stale. */
+/** One page of the time notes naming a deleted block, taken off it (tts
+ *  removeBlock); the rest go to clearBlockPage, which runs until none is
+ *  left. Each patched note leaves the by_block range, so every page reads
+ *  from its start. */
 export async function clearBlock(ctx: MutationCtx, blockId: Id<"blocks">) {
   const notes = await ctx.db.query("timeNotes").withIndex("by_block", (q) => q.eq("blockId", blockId)).take(PAGE + 1);
   for (const note of notes.slice(0, PAGE)) await ctx.db.patch(note._id, { blockId: undefined });
@@ -453,9 +477,11 @@ export const leftPage = internalQuery({
 });
 
 /**
- * What is left before the switch, per table: notCopied, stale, version, orphaned and,
- * per reference field, the ids still naming an old table. `zero` is true when
- * every one is 0.
+ * How each old table differs from its plain one, per table: notCopied, stale,
+ * version, orphaned and, per reference field, the ids still naming an old
+ * table (the check's section above says what each counts since step C).
+ * `zero` is true when every one is 0: the old tables hold what the plain ones
+ * do, and the way back may deploy.
  */
 export const leftToRemap = internalAction({
   args: {},
@@ -480,14 +506,14 @@ export const leftToRemap = internalAction({
 // ── copyBack: the way back from step C ──────────────────────────────────────
 //
 // Step C's writers write only the plain tables, so after it the old tables go
-// stale, and the code before it (whose writers write an old row, then
-// `follow`) would find no old row for a todo created since and would copy a
-// stale old row over a newer plain one. copyBack makes each old table hold
-// what its plain table holds, so that code can deploy again: a plain row with
-// no old row gets one (and its legacyId), an old row that differs is written
-// over (a field the plain row lost is cleared), both carry the same stamp, and
-// an old row whose plain row is gone (a block or time note deleted since) is
-// deleted with it. References move back to old ids. Run todos (twice when the
+// stale, and the code before it (whose writers wrote an old row, then
+// `follow`ed it) would find no old row for a todo created since and would
+// copy a stale old row over a newer plain one (the header says when a revert
+// needs it). copyBack makes each old table hold what its plain table holds,
+// so that code can deploy again: a plain row with no old row gets one (and
+// its legacyId), an old row that differs is written over (a field the plain
+// row lost is cleared), both carry the same stamp, and an old row whose
+// plain row is gone (a block or time note deleted since) is deleted with it. References move back to old ids. Run todos (twice when the
 // first pass left a need unresolved: a need on a todo later in the table),
 // then blocks, then timeNotes; leftToRemap then reads zero.
 
@@ -512,25 +538,6 @@ async function copyBackRow(ctx: MutationCtx, table: Core, row: Row) {
   }
   if (row.legacyVersion !== version) await ctx.db.patch(row._id as Id<Core>, { legacyVersion: version } as never);
   return { outcome, unresolved, dangling };
-}
-
-/**
- * The write back, while step C moves the writers: a writer moved to the plain
- * tables calls this right after its write, with the plain row's id, so its
- * old row holds the same (stamped, as copyBack stamps it) and a writer not
- * yet moved, which wrote the old row and `follow`ed, found it current. Every
- * plain row it writes carries a legacyId from then on. The last step C pull
- * request takes it out.
- */
-export async function back(ctx: MutationCtx, table: Core, id: string): Promise<void> {
-  const row = (await ctx.db.get(id as Id<Core>)) as Row | null;
-  if (row !== null) await copyBackRow(ctx, table, row);
-}
-
-/** A deleted plain row's old row, deleted with it (a moved writer's delete). */
-export async function backDelete(ctx: MutationCtx, table: Core, row: { legacyId?: string }): Promise<void> {
-  const old = typeof row.legacyId === "string" ? ctx.db.normalizeId(CORE[table], row.legacyId) : null;
-  if (old !== null && (await ctx.db.get(old)) !== null) await ctx.db.delete(old);
 }
 
 /** One page of copyBack over a plain table. */

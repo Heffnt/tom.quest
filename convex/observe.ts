@@ -374,7 +374,7 @@ export const rulingsInWindow = query({
       .withIndex("by_ruled", (q) => q.gte("ruledAt", from).lt("ruledAt", to))
       .order("asc")
       .take(RULINGS_MAX);
-    // A ruling stores its todo's old id; the page is handed the plain one
+    // A ruling names its todo in either form; the page is handed the plain one
     // (convex/jarvis/tables.ts).
     const todoOf = todoReader(ctx);
     return await Promise.all(rulings.map(async (ruling) => ({
