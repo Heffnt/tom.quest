@@ -616,7 +616,7 @@ export default function Frame({
               {edge === "bottom" && isTom && (
                 <aside
                   aria-label="Diagnostics"
-                  className="shrink-0 border-t border-border p-3 sm:w-[min(20rem,35%)] sm:border-l sm:border-t-0"
+                  className="shrink-0 border-t border-border p-3 sm:w-[clamp(12rem,35%,20rem)] sm:border-l sm:border-t-0"
                 >
                   <Diagnostics />
                 </aside>
