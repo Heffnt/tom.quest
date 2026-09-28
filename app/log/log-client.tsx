@@ -181,6 +181,21 @@ export default function LogClient() {
             rows={3}
             className={`${controlClass} block min-h-24 w-full resize-none text-base leading-6`}
           />
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={text.trim() === "" || submitting}
+              className="min-w-[6.2rem] rounded-md bg-accent px-3 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {submitting ? "Submitting…" : "Submit"}
+            </button>
+            <Info
+              call="dayLog.submit({ text })"
+              explanation={explanation("Submit a log entry", "This button submits the open entry through the Tom-only day-log mutation. When it succeeds, the text area is cleared and the stored entry remains available below.")}
+              explanationTitle="Submit a log entry"
+            >Stores this entry, then leaves it pending for Jarvis to process.</Info>
+          </div>
           {training !== undefined && training !== null && (
             <section aria-label="Today’s training" className="space-y-2 rounded-md border border-border bg-surface/40 px-3 py-2.5 text-sm leading-5">
               <div className="space-y-0.5">
@@ -223,21 +238,6 @@ export default function LogClient() {
               )}
             </section>
           )}
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={onSubmit}
-              disabled={text.trim() === "" || submitting}
-              className="min-w-[6.2rem] rounded-md bg-accent px-3 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:pointer-events-none disabled:opacity-50"
-            >
-              {submitting ? "Submitting…" : "Submit"}
-            </button>
-            <Info
-              call="dayLog.submit({ text })"
-              explanation={explanation("Submit a log entry", "This button submits the open entry through the Tom-only day-log mutation. When it succeeds, the text area is cleared and the stored entry remains available below.")}
-              explanationTitle="Submit a log entry"
-            >Stores this entry, then leaves it pending for Jarvis to process.</Info>
-          </div>
         </section>
 
         <section aria-label="Charts" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
