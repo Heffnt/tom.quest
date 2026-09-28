@@ -136,10 +136,11 @@ that has already been recorded, and it is keyed on the condition rather than the
 run — so a suite that has been slow for a week is one row, not one per push, and
 a run back under the threshold writes the recovery that re-arms it.
 
-The timing is read on every post, including a rerun whose row already exists.
-Write-once is a rule about the verdict on one commit, which must not move; how
-long today's run took is a fact about today's run, and the nightly full suite
-runs on a main sha whose row was written that morning.
+The timing is read on every post, including one the record does not write as a
+row. A commit keeps at most two `tests-run` rows and none after a green one, the
+newest deciding; that is a rule about the answer on one commit, which must not
+move past two runs. How long today's run took is a fact about today's run, and
+the nightly full suite runs on a main sha whose row was written that morning.
 
 ## Scratch directories
 

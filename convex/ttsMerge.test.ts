@@ -22,6 +22,7 @@ import {
   mergedOnMain,
   removalNotesOf,
   slowConditions,
+  standingAuditRow,
 } from "./ttsMerge";
 import { gatherTodayFacts } from "./ttsDigest";
 import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
@@ -148,8 +149,8 @@ const auditRows = (t: TestConvex<typeof schema>) =>
       .collect(),
   );
 
-/** The row the gate reads: the NEWEST audit row for the commit. There is one
- *  of them per head unless a real verdict replaced an UNAVAILABLE. */
+/** The NEWEST audit row for the commit. With one row it is the row the gate
+ *  reads; with more, the gate reads the first verdict (standingAuditRow). */
 const auditRow = async (t: TestConvex<typeof schema>) => (await auditRows(t))[0] ?? null;
 
 const auditData = async (t: TestConvex<typeof schema>) =>
@@ -270,6 +271,35 @@ describe("checkRowPassed", () => {
 
     expect(checkRowPassed("merge", { ok: true })).toBe(false);
     expect(checkRowPassed(TESTS_RUN, undefined)).toBe(false);
+  });
+});
+
+describe("standingAuditRow — which audit row the gate reads", () => {
+  const row = (at: number, verdict: string, _creationTime = at) => ({ at, _creationTime, data: { verdict } });
+
+  it("is the first verdict, whatever came after it and in whatever order the rows are given", () => {
+    const approved = row(2, "APPROVED");
+    const rows = [row(1, "UNAVAILABLE"), approved, row(3, "REFUSED"), row(4, "UNAVAILABLE")];
+    expect(standingAuditRow(rows)).toBe(approved);
+    expect(standingAuditRow([...rows].reverse())).toBe(approved);
+  });
+
+  it("is the newest UNAVAILABLE when no verdict came, and null for no rows", () => {
+    const newest = row(5, "unavailable");
+    expect(standingAuditRow([row(1, "UNAVAILABLE"), newest, row(3, "UNAVAILABLE")])).toBe(newest);
+    expect(standingAuditRow([])).toBeNull();
+  });
+
+  it("orders two rows of one millisecond by their creation", () => {
+    const first = row(7, "REFUSED", 7.1);
+    const second = row(7, "APPROVED", 7.2);
+    expect(standingAuditRow([second, first])).toBe(first);
+    expect(standingAuditRow([first, second])).toBe(first);
+  });
+
+  it("counts a word the auditor was never asked to write as a verdict, as the one-row rule did", () => {
+    const odd = row(1, "MAYBE");
+    expect(standingAuditRow([odd, row(2, "APPROVED")])).toBe(odd);
   });
 });
 
@@ -491,7 +521,9 @@ describe("GET /tts/merge-gate — what the box asks before it merges", () => {
       const t = convex();
       await greenTests(t);
       await seedFact(t, AUDIT_VERDICT, auditData);
-      return await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+      const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+      // The row's time is the clock's, which two records do not share.
+      return { ...gate, auditRow: { ...gate.auditRow, at: 0 } };
     }
 
     const open = await gateWith({ verdict: "APPROVED", text });
@@ -531,16 +563,72 @@ describe("POST /tts/tests — the first check's own door", () => {
     expect((await response.json()).green).toBe(true);
   });
 
-  it("keeps the first answer, so a red run cannot be re-run until it goes green", async () => {
+  const gateOf = async (t: TestConvex<typeof schema>) =>
+    await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+
+  it("keeps a second run after a red one, and the newest decides: red then green is green", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
     await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: false, detail: "one suite failed" });
+    expect(await gateOf(t)).toMatchObject({ testsRows: 1, testsRun: { ok: false }, missing: ["tests", "audit"] });
     const again = await (await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: true })).json();
-    expect(again.existing).toBe(true);
-    expect(again.green).toBe(false);
-    expect((await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json()).missing).toContain(
-      "tests",
-    );
+    expect(again).toEqual({ ok: true, existing: false, green: true });
+    expect(await testsRows(t)).toHaveLength(2);
+    expect(await gateOf(t)).toMatchObject({ testsRows: 2, testsRun: { ok: true }, missing: ["audit"] });
+  });
+
+  it("two red runs are red, and a third post writes nothing and is answered 200", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: false, detail: "first" });
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: false, detail: "second" });
+    expect(await gateOf(t)).toMatchObject({ testsRows: 2, testsRun: { ok: false, detail: "second" } });
+    const third = await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: true });
+    // 200 and not an error: GitHub's report job fails on any other status
+    // (scripts/tests-report.mjs), and the nightly run posts on a commit that
+    // already has its rows.
+    expect(third.status).toBe(200);
+    expect(await third.json()).toEqual({
+      ok: true,
+      existing: true,
+      green: false,
+      why: "not written: a1b2c3d already has 2 tests rows",
+    });
+    expect(await testsRows(t)).toHaveLength(2);
+    expect((await gateOf(t)).missing).toContain("tests");
+  });
+
+  it("writes nothing after a green row, so a green commit cannot be turned red", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: true });
+    const after = await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: false });
+    expect(after.status).toBe(200);
+    expect(await after.json()).toEqual({
+      ok: true,
+      existing: true,
+      green: true,
+      why: "not written: a1b2c3d already has a green tests row",
+    });
+    expect(await testsRows(t)).toHaveLength(1);
+    expect(await gateOf(t)).toMatchObject({ testsRows: 1, testsRun: { ok: true } });
+  });
+
+  it("answers a head with no tests row as zero rows", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    expect(await gateOf(t)).toMatchObject({ testsRun: null, testsRows: 0, auditRow: null });
+  });
+
+  it("keeps the box job's run on the row, and drops a run of the wrong shape", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    const run = { startedAt: 1_790_000_000_000, commit: "1bc0e67" };
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: false, run });
+    await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: false, run: { startedAt: "noon", commit: "1bc0e67" } });
+    const [newest, first] = await testsRows(t);
+    expect((first.data as { run?: unknown }).run).toEqual(run);
+    expect(Object.keys(newest.data as Record<string, unknown>)).not.toContain("run");
   });
 
   it("400s without ok", async () => {
@@ -793,29 +881,44 @@ describe("POST /tts/audit — the second check's own door", () => {
       model: "claude-opus-5",
       fallback: "codex-cap",
     });
-    expect((await replaced.json()).verdict).toBe("APPROVED");
+    expect(await replaced.json()).toMatchObject({ existing: false, verdict: "APPROVED", replaced: true });
     const open = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(open.missing).not.toContain("audit");
-    // The failed attempt is still on the record — the newest row is what the
-    // gate reads, not the only row there is.
+    expect(open.auditRow).toMatchObject({ verdict: "APPROVED", reason: "It lands what it claims and nothing else." });
+    // The failed attempt is still on the record — the first verdict is what
+    // the gate reads, not the only row there is.
     expect(await auditRows(t)).toHaveLength(2);
   });
 
-  it("keeps an APPROVED and a REFUSED write-once, and does not stack UNAVAILABLEs", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const approved = convex();
-    await post(approved, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: APPROVED\n\nfine" });
-    const again = await (
-      await post(approved, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: REFUSED\n\nno" })
-    ).json();
-    expect(again.existing).toBe(true);
-    expect(again.verdict).toBe("APPROVED");
-    expect(((await auditRow(approved))?.data as { verdict?: string })?.verdict).toBe("APPROVED");
+  const gateOf = async (t: TestConvex<typeof schema>) =>
+    await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
 
-    const refused = convex();
-    await post(refused, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: REFUSED\n\nno" });
+  it("keeps a later run after APPROVED, and APPROVED stands", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: APPROVED\n\nfine" });
+    const again = await (
+      await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: REFUSED\n\nno" })
+    ).json();
+    expect(again).toMatchObject({ existing: true, verdict: "APPROVED" });
+    // Kept: the newest row is the REFUSED one.
+    expect(await auditRows(t)).toHaveLength(2);
+    expect(((await auditRow(t))?.data as { verdict?: string })?.verdict).toBe("REFUSED");
+    // And not counted: the gate reads the APPROVED.
+    const gate = await gateOf(t);
+    expect(gate.allowed).toBe(true);
+    expect(gate.auditRow).toMatchObject({ verdict: "APPROVED", reason: "fine" });
+    expect(await auditWhy(t)).toContain("the audit approved a1b2c3d");
+  });
+
+  it("keeps a later run after REFUSED, and REFUSED stands", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: REFUSED\n\nno" });
     const retried = await (
-      await post(refused, "/tts/audit", {
+      await post(t, "/tts/audit", {
         repo: REPO,
         sha: SHA,
         text: "VERDICT: APPROVED\n\nfine now",
@@ -823,14 +926,34 @@ describe("POST /tts/audit — the second check's own door", () => {
         fallback: "codex-cap",
       })
     ).json();
-    expect(retried.existing).toBe(true);
-    expect(retried.verdict).toBe("REFUSED");
+    expect(retried).toMatchObject({ existing: true, verdict: "REFUSED" });
+    expect(await auditRows(t)).toHaveLength(2);
+    const gate = await gateOf(t);
+    expect(gate.allowed).toBe(false);
+    expect(gate.auditRow).toMatchObject({ verdict: "REFUSED", reason: "no" });
+    expect(await auditWhy(t)).toContain("the audit answered REFUSED");
+  });
 
-    const unavailable = convex();
-    const text = "VERDICT: UNAVAILABLE\n\nThe audit could not run.";
-    await post(unavailable, "/tts/audit", { repo: REPO, sha: SHA, text });
-    expect((await (await post(unavailable, "/tts/audit", { repo: REPO, sha: SHA, text })).json()).existing).toBe(true);
-    expect(await auditRows(unavailable)).toHaveLength(1);
+  it("keeps every UNAVAILABLE, counts none, and answers the newest one's time and reason", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: UNAVAILABLE\n\ncapped" });
+    const second = await (
+      await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: UNAVAILABLE\n\nthe claim is too long" })
+    ).json();
+    expect(second).toMatchObject({ existing: false, verdict: "UNAVAILABLE", replaced: false });
+    const rows = await auditRows(t);
+    expect(rows).toHaveLength(2);
+    const gate = await gateOf(t);
+    expect(gate.missing).toEqual(["audit"]);
+    expect(gate.auditRow).toEqual({ verdict: "UNAVAILABLE", at: rows[0].at, reason: "the claim is too long" });
+
+    // The first verdict after any number of them decides.
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: REFUSED\n\nno" });
+    await post(t, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: UNAVAILABLE\n\ncapped again" });
+    expect(await auditRows(t)).toHaveLength(4);
+    expect((await gateOf(t)).auditRow).toMatchObject({ verdict: "REFUSED", reason: "no" });
   });
 
   it("says WHO audited when Codex was capped, in the gate, on the audit row and on the merge row the digest reads", async () => {
@@ -1097,10 +1220,10 @@ describe("what the audit row records about its own reading", () => {
     expect(trace).toEqual({ available: true });
   });
 
-  // Write-once is the point of this door and none of the new fields is an
-  // opening in it: a thin read cannot be re-posted as a fat one over an
-  // APPROVED, any more than a REFUSED can be re-posted as an APPROVED.
-  it("keeps write-once with the new fields present", async () => {
+  // The first verdict standing is the point of this door and none of the new
+  // fields is an opening in it: a thin read posted after an APPROVED is kept
+  // and does not become what the gate reads.
+  it("keeps the first verdict standing with the new fields present", async () => {
     const t = convex();
     await recordAudit(t, { chunks: WHOLE_DIFF, traceFindings: [] });
     const again = await recordAudit(t, {
@@ -1111,8 +1234,11 @@ describe("what the audit row records about its own reading", () => {
     });
     expect(again.existing).toBe(true);
     expect(again.verdict).toBe("APPROVED");
-    expect(await auditRows(t)).toHaveLength(1);
-    expect((await auditData(t)).chunks).toEqual(WHOLE_DIFF);
+    expect(await auditRows(t)).toHaveLength(2);
+    // The clause in the gate's why is the standing row's coverage, not the
+    // later row's.
+    const gate = await t.query(internal.ttsMerge.internalMergeGate, { repo: REPO, sha: SHA });
+    expect(gate.checks.find((check) => check.name === "audit")?.why).toContain("12 of 12 chunks");
   });
 
   it("lets a real verdict still replace an UNAVAILABLE, carrying its own chunks", async () => {
@@ -1373,6 +1499,47 @@ describe("the gate posted as the tts-gate commit status", () => {
     expect(calls.map((c) => c.body)).toEqual([
       { state: "pending", description: "waiting for audit-verdict at a1b2c3d", context: "tts-gate" },
     ]);
+  });
+
+  it("red then green posts failure, then the answer the green run leaves", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await recordTests(t, false);
+    await settle(t);
+    await recordTests(t, true);
+    await settle(t);
+    expect(calls.map((c) => c.body.description)).toEqual([
+      "refused at a1b2c3d: tests-run red; waiting for audit-verdict",
+      "waiting for audit-verdict at a1b2c3d",
+    ]);
+  });
+
+  it("a run after the verdict is kept and posts nothing; the status stays the verdict's", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await greenTests(t);
+    await recordAudit(t, "APPROVED");
+    await settle(t);
+    await recordAudit(t, "REFUSED");
+    await recordAudit(t, "UNAVAILABLE");
+    await settle(t);
+    expect(calls.map((c) => c.body.state)).toEqual(["success"]);
+    // Asked afresh, the answer is still the APPROVED one.
+    await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA });
+    expect(calls.map((c) => c.body.state)).toEqual(["success", "success"]);
+  });
+
+  it("REFUSED then APPROVED, then UNAVAILABLE, stays failure", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    await greenTests(t);
+    await recordAudit(t, "REFUSED");
+    await recordAudit(t, "APPROVED");
+    // The newest row is no verdict; the REFUSED still refuses.
+    await recordAudit(t, "UNAVAILABLE");
+    await settle(t);
+    await t.action(internal.ttsMerge.internalPostGateStatus, { repo: REPO, sha: SHA });
+    expect(calls.map((c) => c.body.state)).toEqual(["failure", "failure"]);
   });
 
   it("a status GitHub refuses is one keyed job-failed row, and the next success recovers it", async () => {

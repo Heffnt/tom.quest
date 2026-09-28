@@ -1271,12 +1271,12 @@ export default defineSchema({
     // gate's former third check). Evals now land as `eval-run`, keyed by set.
     // Three are the MECHANICAL MERGE GATE (convex/ttsMerge.ts), two of them
     // under the same `<repo>@<sha>`:
-    //   "tests-run"   — the Guardrails tests job's own result, recorded once
-    //                   per commit so a red run cannot be re-run until it
-    //                   flakes green;
+    //   "tests-run"   — one run of the tests on that commit, at most two per
+    //                   commit and none after a green one, the newest deciding,
+    //                   so a red run cannot be re-run until it flakes green;
     //   "audit-verdict"
-    //                 — the audit's `VERDICT:` word for that commit, recorded
-    //                   once for the same reason;
+    //                 — one run of the audit on that commit, its `VERDICT:`
+    //                   word; the first word other than UNAVAILABLE decides;
     //   "merge"       — `<repo>:<sha>` (its own older spelling), so a retried
     //                   report of one merge is one event.
     // One is written by the deploy job in Heffnt/Jarvis through POST /tts/event
