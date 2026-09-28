@@ -169,6 +169,12 @@ export const internalExportPage = internalQuery({
 // agents' turns and the instrumentation events outnumber Tom's by far. Each
 // read below either pins the value in an index or examines the whole window.
 export const LEARNING_INPUT_MAX = 2000;
+// Day-log entries are a separate source from turns: they are bounded tightly
+// enough to keep one unusually full day from taking over the learning prompt.
+// Rows are read newest-first, so every omitted row is older than every row
+// returned to the worker.
+export const LEARNING_DAY_LOG_ENTRIES_MAX = 200;
+export const LEARNING_DAY_LOG_CHARS_MAX = 100_000;
 // The agent's replies are looked up per turn, two reads each pinned on the
 // session and the kind, for at most this many turns; past it a turn goes out
 // without them. A reply is clipped to LEARNING_REPLY_CHARS — it is context,
@@ -322,6 +328,33 @@ export const internalLearningInput = internalQuery({
       sentence: r.sentence,
       quote: r.provenance?.quote,
     }));
+    // The index makes the window exact rather than relying on a submission
+    // date. Traverse newest-first so applying either cap drops the oldest
+    // entries. Continue after a cap is reached to report every omitted row.
+    const keptDayLogEntries: Array<{ id: string; at: number; text: string }> = [];
+    let keptDayLogChars = 0;
+    let dayLogDropped = 0;
+    let droppingOldestDayLogEntries = false;
+    const dayLogRows = ctx.db
+      .query("dayLogEntries")
+      .withIndex("by_createdAt", (q) => q.gte("createdAt", since).lt("createdAt", until))
+      .order("desc");
+    for await (const entry of dayLogRows) {
+      if (
+        droppingOldestDayLogEntries ||
+        keptDayLogEntries.length >= LEARNING_DAY_LOG_ENTRIES_MAX ||
+        keptDayLogChars + entry.text.length > LEARNING_DAY_LOG_CHARS_MAX
+      ) {
+        dayLogDropped += 1;
+        droppingOldestDayLogEntries = true;
+        continue;
+      }
+      keptDayLogEntries.push({ id: entry._id, at: entry.createdAt, text: entry.text });
+      keptDayLogChars += entry.text.length;
+    }
+    // The other learning sources are chronological. The suffix above is
+    // assembled newest-first only to decide which older rows to drop.
+    const dayLogEntries = keptDayLogEntries.reverse();
     // The objections Tom has raised that no night has acted on yet (an
     // objection is consumed once, whichever way it went), oldest first, and
     // the changes an objection can name — by the change's id or by the
@@ -432,6 +465,8 @@ export const internalLearningInput = internalQuery({
       tomTurns,
       slackReplies,
       rulings,
+      dayLogEntries,
+      dayLogDropped,
       objections,
       changes,
       repoSessions,

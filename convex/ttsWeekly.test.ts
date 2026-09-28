@@ -110,6 +110,38 @@ async function event(
   return await ctx.db.insert("dtsEvents", { at, kind, ...extra });
 }
 
+async function dayLogItem(
+  ctx: MutationCtx,
+  fields: {
+    day: string;
+    metric?: "weight" | "waist";
+    value?: number;
+    partOfDay?: "morning" | "afternoon" | "evening" | "unknown";
+    activity?: "run";
+    entryCreatedAt?: number;
+  },
+) {
+  const createdAt = fields.entryCreatedAt ?? Date.parse(`${fields.day}T16:00:00Z`);
+  const entryId = await ctx.db.insert("dayLogEntries", {
+    text: "recorded a value",
+    createdAt,
+    day: fields.day,
+    status: "applied",
+  });
+  const type = fields.activity === undefined ? "measurement" as const : "workout" as const;
+  return await ctx.db.insert("dayLogItems", {
+    entryId,
+    day: fields.day,
+    type,
+    quote: "recorded",
+    summary: "record",
+    ...(fields.metric === undefined ? {} : { metric: fields.metric }),
+    ...(fields.value === undefined ? {} : { value: fields.value, unit: fields.metric === "weight" ? "lb" : "in", partOfDay: fields.partOfDay ?? "unknown" }),
+    ...(fields.activity === undefined ? {} : { activity: fields.activity }),
+    createdAt,
+  });
+}
+
 const AREA_BODY = (reviewed: string, window = "30") =>
   `---\nupdated: 2026-09-06\nreviewed: ${reviewed}\nwindow_days: ${window}\n---\n\n## Current state\n\n- x`;
 
@@ -145,6 +177,30 @@ describe("gatherWeeklyFacts", () => {
     expect(f.jobFailures).toEqual([]);
     expect(f.threads).toEqual([]);
     expect(f.readiness).toEqual({ prepared: 0, unprepared: 0 });
+    expect(f.dayLog).toBeNull();
+  });
+
+  it("uses New York week boundaries in the day-log facts it serves through weekly context", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const until = Date.UTC(2026, 8, 28, 2);
+    await publishSessionPrelude(t);
+    await t.run(async (ctx) => {
+      await dayLogItem(ctx, { day: "2026-09-21", metric: "weight", value: 180, partOfDay: "morning" });
+      await dayLogItem(ctx, { day: "2026-09-14", metric: "weight", value: 182, partOfDay: "morning" });
+      await dayLogItem(ctx, { day: "2026-09-28", metric: "weight", value: 190, partOfDay: "morning" });
+      await dayLogItem(ctx, { day: "2026-09-27", activity: "run" });
+    });
+
+    const response = await get(t, `/jarvis/context?for=weekly&until=${until}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).dayLog).toEqual({
+      weekAvgWeight: 180,
+      prevWeekAvgWeight: 182,
+      latestWaist: null,
+      waistFlat3w: false,
+      runCount: 1,
+    });
   });
 
   it("sums prelude delivery rows across the week", async () => {

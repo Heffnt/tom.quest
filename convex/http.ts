@@ -1290,6 +1290,56 @@ http.route({
   handler: ttsApplyTimeNote,
 });
 
+// The box receives pending text and a bounded vocabulary, then submits a
+// proposal. The internal mutation remains the authority over every write.
+const ttsDayLogPending = httpAction(async (ctx, request) => {
+  const denied = jarvisAuth(request);
+  if (denied) return denied;
+  try {
+    return jsonResponse(200, await ctx.runQuery(internal.dayLog.internalPending, {}));
+  } catch (error) {
+    return jsonResponse(503, { error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+http.route({ path: "/tts/day-log/pending", method: "POST", handler: ttsDayLogPending });
+
+const ttsDayLogApply = httpAction(async (ctx, request) => {
+  const denied = jarvisAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (Object.keys(b).some((field) => !["id", "status", "items", "failure", "detail"].includes(field))) {
+    return jsonResponse(400, { error: "unknown field" });
+  }
+  if (typeof b.id !== "string" || b.id === "") return jsonResponse(400, { error: "id (non-empty string) required" });
+  if (b.status !== "applied" && b.status !== "needs-session") {
+    return jsonResponse(400, { error: 'status must be "applied" or "needs-session"' });
+  }
+  if (!Array.isArray(b.items)) return jsonResponse(400, { error: "items (array) required" });
+  if (b.detail !== undefined && typeof b.detail !== "string") return jsonResponse(400, { error: "detail, when given, must be a string" });
+  try {
+    const result = await ctx.runMutation(internal.dayLog.internalApplyDayLog, {
+      id: b.id,
+      status: b.status,
+      items: b.items,
+      failure: b.failure as "model" | "parse" | "refused" | undefined,
+      detail: b.detail as string | undefined,
+    });
+    return jsonResponse(200, result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return jsonResponse(message === "no such entry" ? 404 : 400, { error: message });
+  }
+});
+
+http.route({ path: "/tts/day-log/apply", method: "POST", handler: ttsDayLogApply });
+
 // ── TTS code-todo ruling loop (spec §5.3) ────────────────────────────────────
 // Same TTS_WORKER_KEY path: the worker reads back Tom's pending rulings and
 // reports each application. The worker never rules — recordCodeRuling is

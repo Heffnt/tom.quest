@@ -2247,4 +2247,38 @@ export default defineSchema({
     signedBy: v.literal("tom"),
     usedAt: v.optional(v.number()),
   }).index("by_match", ["sha256", "recipient", "channel"]),
+
+  dayLogEntries: defineTable({
+    text: v.string(),
+    createdAt: v.number(),
+    day: v.string(),
+    status: v.union(v.literal("pending"), v.literal("applied"), v.literal("needs-session")),
+    result: v.optional(v.string()),
+    resolvedAt: v.optional(v.number()),
+  })
+    .index("by_day", ["day"])
+    .index("by_createdAt", ["createdAt"])
+    .index("by_status", ["status"]),
+
+  dayLogItems: defineTable({
+    entryId: v.id("dayLogEntries"),
+    day: v.string(),
+    type: v.union(v.literal("measurement"), v.literal("workout"), v.literal("food"), v.literal("feeling"), v.literal("symptom"), v.literal("work")),
+    quote: v.string(),
+    summary: v.string(),
+    metric: v.optional(v.string()),
+    value: v.optional(v.number()),
+    unit: v.optional(v.string()),
+    partOfDay: v.optional(v.union(v.literal("morning"), v.literal("afternoon"), v.literal("evening"), v.literal("unknown"))),
+    activity: v.optional(v.union(v.literal("run"), v.literal("climb"), v.literal("strength"), v.literal("bike"), v.literal("walk"), v.literal("other"))),
+    bodyParts: v.optional(v.array(v.string())),
+    distanceMi: v.optional(v.number()),
+    durationMin: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_entry", ["entryId"])
+    .index("by_type_day", ["type", "day"])
+    .index("by_metric_day", ["metric", "day"])
+    .index("by_type_and_metric_and_day", ["type", "metric", "day"])
+    .index("by_type_and_activity_and_day", ["type", "activity", "day"]),
 });
