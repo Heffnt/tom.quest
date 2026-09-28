@@ -34,13 +34,15 @@ import {
 import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
-import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, SESSION_OUTCOME, isPrepared } from "./ttsShared";
+import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, SESSION_OUTCOME, isPrepared, nyCalendarDayKey } from "./ttsShared";
 import { todoEvents, todoIdForms, todoReader } from "./jarvis/tables";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
+import { dayLogLookbackStart, dayLogWeeklyFacts } from "../shared/day-log-trends.mjs";
+import { DAY_LOG_KINDS } from "./dayLogVocabulary";
 // Every other string this gather carries came off a row a worker had already
 // put through the filter. An objection's sentence is Slack text Tom typed, so
 // it goes through the one choke point the rest of Convex uses
@@ -219,6 +221,13 @@ type WeeklyFacts = {
     replyMs: number | null;
   }[];
   readiness: { prepared: number; unprepared: number };
+  dayLog: {
+    weekAvgWeight: number | null;
+    prevWeekAvgWeight: number | null;
+    latestWaist: { value: number; day: string } | null;
+    waistFlat3w: boolean;
+    runCount: number;
+  } | null;
 };
 
 function str(value: unknown): string | null {
@@ -824,6 +833,33 @@ export async function gatherWeeklyFacts(
     });
   }
 
+  // The agenda reads seven calendar days ending today, not the trailing 168 hours of the
+  // general weekly gather. The pure helper owns those New York-day windows and
+  // the trend arithmetic; this query only supplies its last 28 days of rows.
+  const dayLogToday = nyCalendarDayKey(until);
+  const dayLogStart = dayLogLookbackStart(dayLogToday);
+  const dayLogEntriesPromise = ctx.db
+    .query("dayLogEntries")
+    .withIndex("by_day", (q) => q.gte("day", dayLogStart).lte("day", dayLogToday))
+    .collect();
+  const dayLogItemsByKindPromise = Promise.all(
+    DAY_LOG_KINDS.map(async (kind) =>
+      await ctx.db
+        .query("dayLogItems")
+        .withIndex("by_kind_day", (q) => q.eq("kind", kind).gte("day", dayLogStart).lte("day", dayLogToday))
+        .collect(),
+    ),
+  );
+  const [dayLogEntries, dayLogItemsByKind] = await Promise.all([dayLogEntriesPromise, dayLogItemsByKindPromise]);
+  const entryCreatedAt = new Map(dayLogEntries.map((entry) => [entry._id, entry.createdAt]));
+  const dayLog = dayLogWeeklyFacts(
+    dayLogItemsByKind.flat().map((item) => ({
+      ...item,
+      entryCreatedAt: entryCreatedAt.get(item.entryId) ?? item.createdAt,
+    })),
+    dayLogToday,
+  );
+
   return {
     since,
     until,
@@ -843,6 +879,7 @@ export async function gatherWeeklyFacts(
     jobFailures,
     threads,
     readiness: { prepared, unprepared },
+    dayLog,
   };
 }
 
