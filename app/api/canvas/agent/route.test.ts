@@ -34,16 +34,16 @@ function request(): NextRequest {
   });
 }
 
-function account(role: "user" | "agent" | "admin" | "tom") {
-  return {
-    _id: `${role}-id`,
-    name: role,
-    email: null,
-    role,
-    isAdmin: role === "admin" || role === "tom",
-    isTom: role === "tom",
-    isAgent: role === "agent",
-  };
+// users.viewer's answer for each role, as convex/authRoles.ts roleAccess gives it.
+const ACCESS = {
+  user: { isAdmin: false, isTom: false, isAgent: false },
+  agent: { isAdmin: false, isTom: false, isAgent: true },
+  admin: { isAdmin: true, isTom: false, isAgent: false },
+  tom: { isAdmin: true, isTom: true, isAgent: false },
+};
+
+function account(role: keyof typeof ACCESS) {
+  return { _id: `${role}-id`, name: role, email: null, role, ...ACCESS[role] };
 }
 
 describe("POST /api/canvas/agent", () => {
