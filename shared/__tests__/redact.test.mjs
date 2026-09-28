@@ -372,17 +372,17 @@ describe("a private key block left open", () => {
   const KEPT = "and this sentence stays as it was";
   const shows = (text) => redactSecrets(text);
 
-  it("takes pure body lines, the short last one too, and keeps the line after", () => {
+  it("takes full lines and the short last one, and keeps the line after", () => {
     expect(shows(["before", begin, BODY, BODY, LAST, KEPT].join("\n"))).toBe(`before\n[redacted:pem]\n${KEPT}`);
   });
 
-  it("takes a pure body line behind a line number and tab, or a diff's sign", () => {
+  it("takes full and short lines behind a line number and tab, or a diff's sign", () => {
     const read = [`     1\t${begin}`, `     2\t${BODY}`, `     3\t${LAST}`, `     4\t${KEPT}`].join("\n");
     expect(shows(read)).toBe(`     1\t[redacted:pem]\n     4\t${KEPT}`);
     expect(shows([`-${begin}`, `-${BODY}`, `+${BODY}`, ` ${LAST}`, ` ${KEPT}`].join("\n"))).toBe(`-[redacted:pem]\n ${KEPT}`);
   });
 
-  it("takes a long-run line behind any prefix, and keeps the line after", () => {
+  it("takes a full line behind any prefix, and keeps the line after", () => {
     const log = [begin, `2026-09-27T10:00:01Z stderr ${BODY}`, `2026-09-27T10:00:01Z stderr ${BODY}`, KEPT].join("\n");
     expect(shows(log)).toBe(`[redacted:pem]\n${KEPT}`);
   });
@@ -395,20 +395,38 @@ describe("a private key block left open", () => {
     expect(shows(`${begin}\n${BODY.repeat(20)}\n${KEPT}`)).toBe(`[redacted:pem]\n${KEPT}`);
   });
 
-  it("takes a line holding a full commit id: the stated cost of the long-run line", () => {
+  it("takes a line holding a full commit id: the stated cost of the full line", () => {
     expect(shows(`${begin}\ncommit 0123456789abcdef0123456789abcdef01234567\n${KEPT}`)).toBe(`[redacted:pem]\n${KEPT}`);
   });
 
-  it("takes header and empty lines when a body line follows, and not otherwise", () => {
+  it("takes header and empty lines before the first full line when one follows, and not otherwise", () => {
     const encrypted = [begin, "Proc-Type: 4,ENCRYPTED", "DEK-Info: AES-128-CBC,0A1B2C3D", "", BODY, KEPT].join("\n");
     expect(shows(encrypted)).toBe(`[redacted:pem]\n${KEPT}`);
     expect(shows([begin, "Proc-Type: 4,ENCRYPTED", "", KEPT].join("\n"))).toBe(`[redacted:pem]\nProc-Type: 4,ENCRYPTED\n\n${KEPT}`);
+    // After the body has begun, an empty line ends it.
+    expect(shows([begin, BODY, "", BODY].join("\n"))).toBe(`[redacted:pem]\n\n${BODY}`);
   });
 
   it("takes the text's cut-off last line: a partial body line, alone or behind a timestamp", () => {
     expect(shows(`${begin}\n${BODY}\nQUJD`)).toBe("[redacted:pem]");
     expect(shows(`${begin}\n2026-09-27T10:00:01Z ${BODY}\n2026-09-27T10:00:01Z QUJD`)).toBe("[redacted:pem]");
     expect(shows(`${begin}\n${BODY}\n${KEPT}`)).toBe(`[redacted:pem]\n${KEPT}`);
+  });
+
+  // The audit's case (tom.quest 315): a word after the first line is not a
+  // key's first body line, which is always a full one.
+  it("takes no short line directly after the first line when more text follows: only the marker goes", () => {
+    expect(shows([begin, "x", KEPT].join("\n"))).toBe(`[redacted:pem]\nx\n${KEPT}`);
+    expect(shows(`${begin} x\n${KEPT}`)).toBe(`[redacted:pem] x\n${KEPT}`);
+  });
+
+  it("takes one short line after full lines as the key's last, and ends the block with it", () => {
+    expect(shows([begin, BODY, BODY, "Thanks", KEPT].join("\n"))).toBe(`[redacted:pem]\n${KEPT}`);
+    expect(shows([begin, BODY, LAST, BODY].join("\n"))).toBe(`[redacted:pem]\n${BODY}`);
+  });
+
+  it("takes a short line directly after the first line when the text ends there", () => {
+    expect(shows(`${begin}\nQUJD`)).toBe("[redacted:pem]");
   });
 
   it("reads CRLF, leading spaces and tabs as a line's edges", () => {

@@ -203,20 +203,24 @@ const OPEN_KEY_BLOCK = Object.freeze({
   // A line's text: up to a line break, a quote or a backslash, but an escaped
   // tab whole. So a block taken never ends inside an escape or takes a quote.
   lineText: /(?:[^\r\n\\"]|\\{1,2}t)*/y,
-  // A pure body line: one base64 run, of any length (the short last line of a
-  // body is one), after an optional line number and tab (a file read with its
-  // line numbers) or a diff's sign.
-  pureBody: /^[ \t]*(?:\d+(?:\t|\\{1,2}t|→)|[+\- ])?[ \t]*[A-Za-z0-9+/]+={0,2}[ \t]*$/,
-  // A long-run line: forty base64 characters in a row anywhere in it, a body
-  // line behind any prefix (a log's timestamp) or a body folded onto one
-  // line. A line holding a full commit id or another long hash is one too.
-  longRun: /[A-Za-z0-9+/]{40}/,
-  // A header line of an encrypted block, and an empty line: taken only when a
-  // body line follows them.
+  // A full line: forty base64 characters in a row anywhere in the line. A
+  // key's body lines are one width, 64 (70 for OpenSSH, 76 in some tools),
+  // and the smallest key's first line is a full one; so is a body line behind
+  // any prefix (a log's timestamp) and a body folded onto one line. A line
+  // holding a full commit id or another long hash is one too.
+  fullLine: /[A-Za-z0-9+/]{40}/,
+  // A short line: one base64 run shorter than that, with optional padding,
+  // after an optional line number and tab (a file read with its line numbers)
+  // or a diff's sign. Taken as a key's last line directly after a full line,
+  // or as the text's last line (the text stopped inside a body line), and the
+  // block ends with it.
+  shortLine: /^[ \t]*(?:\d+(?:\t|\\{1,2}t|→)|[+\- ])?[ \t]*[A-Za-z0-9+/]+={0,2}[ \t]*$/,
+  // A header line of an encrypted block, and an empty line: taken only before
+  // the first full line, and only when a full line follows them.
   header: /^[ \t]*(?:Proc-Type|DEK-Info)[ \t]*:/,
   empty: /^[ \t]*$/,
-  // A cut-off last line: the text's last line, after a body line, a base64
-  // run of any length behind one prefix holding a digit and no space (a log's
+  // A cut-off line behind a prefix: the text's last line, after a full line,
+  // a base64 run behind one prefix holding a digit and no space (a log's
   // timestamp, grep's file:line:). Prose is several words, and stays.
   cutOff: /^[ \t]*(?=\S*\d)\S+[ \t]+[A-Za-z0-9+/]+={0,2}[ \t]*$/,
 });
@@ -238,30 +242,33 @@ function redactWholePrivateKeys(text) {
   return text.slice(0, upTo).replace(PEM_PRIVATE_KEY, "[redacted:pem]") + text.slice(upTo);
 }
 
-/** Where the open block whose first line ends at `from` ends. */
+/** Where the open block whose first line ends at `from` ends. The rest of
+ *  the first line is read as a line of the block. */
 function openBlockEnd(text, from) {
   const kinds = OPEN_KEY_BLOCK;
   let end = from;
   let at = from;
-  let afterBody = false;
+  let full = false;
   for (;;) {
     kinds.lineText.lastIndex = at;
     kinds.lineText.exec(text);
     const next = kinds.lineText.lastIndex;
     const line = text.slice(at, next);
-    const body = kinds.pureBody.test(line) || kinds.longRun.test(line)
-      || (next === text.length && afterBody && kinds.cutOff.test(line));
-    if (body) {
+    const last = next === text.length;
+    if (kinds.fullLine.test(line)) {
       end = next;
-      afterBody = true;
-    } else if (!kinds.empty.test(line) && !kinds.header.test(line)) {
-      break;
+      full = true;
+    } else if (kinds.shortLine.test(line) && (full || last)) {
+      return next;
+    } else if (last && full && kinds.cutOff.test(line)) {
+      return next;
+    } else if (full || (!kinds.empty.test(line) && !kinds.header.test(line))) {
+      return end;
     }
     kinds.lineBreak.lastIndex = next;
-    if (kinds.lineBreak.exec(text) === null) break;
+    if (kinds.lineBreak.exec(text) === null) return end;
     at = kinds.lineBreak.lastIndex;
   }
-  return end;
 }
 
 /** `text`, which holds no whole block, with each block left open taken. */
