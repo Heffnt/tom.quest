@@ -285,8 +285,11 @@ describe("the marker and the 32KB cut", () => {
 // line start leaves one open.
 describe("openPrivateKeyLineStart agrees with the filter's private-key rule", () => {
   const edge = (kind, label) => t("-----", kind, label, " PRIVATE KEY-----");
-  const opener = /-----BEGIN[^\n]*PRIVATE KEY-----/;
-  const leftOpen = (text) => opener.test(redactSecrets(text));
+  // A block is left open when a last line appended would change how the
+  // text's own part redacts: the filter then takes the block whole instead of
+  // as far as the lines a key's body can be.
+  const closing = t("-----END", " PRIVATE KEY-----");
+  const leftOpen = (text) => redactSecrets(`${text}\n${closing}`) !== `${redactSecrets(text)}\n${closing}`;
   const lineStarts = (text) => [0, ...[...text.matchAll(/\n/g)].map((m) => m.index + 1)];
   for (const label of ["", " RSA", " EC", " DSA", " OPENSSH", " ENCRYPTED", " X9 62"]) {
     const [b, e] = [edge("BEGIN", label), edge("END", label)];
@@ -354,5 +357,100 @@ describe("LINE_CROSSING_RULES lists the rules that match across a line break", (
   it("a Bearer value on the line after its header is left alone", () => {
     const text = `Authorization: Bearer\n${t("abcdefgh", "12345678")}`;
     expect(redactSecrets(text)).toBe(text);
+  });
+});
+
+// A block whose last line never came: a log cut off, a process killed while it
+// printed, a buffer stopped at its cap. The filter takes it from its first line
+// over the lines a key's body can be (OPEN_KEY_BLOCK in redact.mjs), and no further.
+// Each kind of line is shown taken, and the line after it shown kept. The
+// bodies are made up: base64 of the alphabet, no key.
+describe("a private key block left open", () => {
+  const begin = t("-----BEGIN", " PRIVATE KEY-----");
+  const BODY = t("QUJDREVGR0hJSktMTU5P", "UFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2");
+  const LAST = "d3h5eg==";
+  const KEPT = "and this sentence stays as it was";
+  const shows = (text) => redactSecrets(text);
+
+  it("takes pure body lines, the short last one too, and keeps the line after", () => {
+    expect(shows(["before", begin, BODY, BODY, LAST, KEPT].join("\n"))).toBe(`before\n[redacted:pem]\n${KEPT}`);
+  });
+
+  it("takes a pure body line behind a line number and tab, or a diff's sign", () => {
+    const read = [`     1\t${begin}`, `     2\t${BODY}`, `     3\t${LAST}`, `     4\t${KEPT}`].join("\n");
+    expect(shows(read)).toBe(`     1\t[redacted:pem]\n     4\t${KEPT}`);
+    expect(shows([`-${begin}`, `-${BODY}`, `+${BODY}`, ` ${LAST}`, ` ${KEPT}`].join("\n"))).toBe(`-[redacted:pem]\n ${KEPT}`);
+  });
+
+  it("takes a long-run line behind any prefix, and keeps the line after", () => {
+    const log = [begin, `2026-09-27T10:00:01Z stderr ${BODY}`, `2026-09-27T10:00:01Z stderr ${BODY}`, KEPT].join("\n");
+    expect(shows(log)).toBe(`[redacted:pem]\n${KEPT}`);
+  });
+
+  it("takes a body folded onto the first line with spaces", () => {
+    expect(shows(`${begin} ${BODY} ${BODY} ${LAST}\n${KEPT}`)).toBe(`[redacted:pem]\n${KEPT}`);
+  });
+
+  it("takes a body pasted as one long line", () => {
+    expect(shows(`${begin}\n${BODY.repeat(20)}\n${KEPT}`)).toBe(`[redacted:pem]\n${KEPT}`);
+  });
+
+  it("takes a line holding a full commit id: the stated cost of the long-run line", () => {
+    expect(shows(`${begin}\ncommit 0123456789abcdef0123456789abcdef01234567\n${KEPT}`)).toBe(`[redacted:pem]\n${KEPT}`);
+  });
+
+  it("takes header and empty lines when a body line follows, and not otherwise", () => {
+    const encrypted = [begin, "Proc-Type: 4,ENCRYPTED", "DEK-Info: AES-128-CBC,0A1B2C3D", "", BODY, KEPT].join("\n");
+    expect(shows(encrypted)).toBe(`[redacted:pem]\n${KEPT}`);
+    expect(shows([begin, "Proc-Type: 4,ENCRYPTED", "", KEPT].join("\n"))).toBe(`[redacted:pem]\nProc-Type: 4,ENCRYPTED\n\n${KEPT}`);
+  });
+
+  it("takes the text's cut-off last line: a partial body line, alone or behind a timestamp", () => {
+    expect(shows(`${begin}\n${BODY}\nQUJD`)).toBe("[redacted:pem]");
+    expect(shows(`${begin}\n2026-09-27T10:00:01Z ${BODY}\n2026-09-27T10:00:01Z QUJD`)).toBe("[redacted:pem]");
+    expect(shows(`${begin}\n${BODY}\n${KEPT}`)).toBe(`[redacted:pem]\n${KEPT}`);
+  });
+
+  it("reads CRLF, leading spaces and tabs as a line's edges", () => {
+    expect(shows([begin, `  ${BODY}`, `\t${LAST}  `, KEPT].join("\r\n"))).toBe(`[redacted:pem]\r\n${KEPT}`);
+  });
+
+  it("takes only the first line's marker when prose follows it on that line, and keeps the lines after", () => {
+    const doc = `A key file starts with ${begin} and then its body.\n${BODY}\n${KEPT}`;
+    expect(shows(doc)).toBe(`A key file starts with [redacted:pem] and then its body.\n${BODY}\n${KEPT}`);
+  });
+
+  it("reads escaped line breaks and tabs inside a serialized string, and the JSON stays valid", () => {
+    const once = JSON.stringify({ output: [`     1\t${begin}`, `     2\t${BODY}`, `     3\t${LAST}`].join("\n"), next: KEPT });
+    const out = shows(once);
+    expect(JSON.parse(out)).toEqual({ output: "     1\t[redacted:pem]", next: KEPT });
+    const twice = JSON.stringify({ line: JSON.stringify({ key: [begin, BODY, LAST].join("\r\n") }) });
+    const outTwice = shows(twice);
+    expect(JSON.parse(JSON.parse(outTwice).line)).toEqual({ key: "[redacted:pem]" });
+    expect(outTwice).not.toContain(BODY);
+  });
+
+  it("keeps the closing quote of a serialized string that ends inside the block", () => {
+    const body = JSON.stringify({ text: `${begin}\n${BODY}\nQUJD`, after: [1, "ok"] });
+    expect(JSON.parse(shows(body))).toEqual({ text: "[redacted:pem]", after: [1, "ok"] });
+  });
+
+  it("replaces whole blocks exactly as the whole-block rule over the whole text did, in any arrangement", () => {
+    // The rule as it stood, run over the whole text: the reference.
+    const rule = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
+    const end = t("-----END", " PRIVATE KEY-----");
+    const parts = [begin, end, BODY, KEPT, "x"];
+    let seed = 7;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) % parts.length;
+    for (let n = 0; n < 500; n += 1) {
+      const lines = Array.from({ length: 1 + (n % 9) }, () => parts[next()]);
+      const text = `${lines.join("\n")}\n${end}`;
+      expect(shows(text), JSON.stringify(lines)).toBe(text.replace(rule, "[redacted:pem]"));
+    }
+  });
+
+  it("leaves a whole block to the whole-block rule, prose between its lines and all", () => {
+    const whole = [begin, BODY, KEPT, t("-----END", " PRIVATE KEY-----"), "after"].join("\n");
+    expect(shows(whole)).toBe("[redacted:pem]\nafter");
   });
 });

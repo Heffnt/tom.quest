@@ -188,9 +188,100 @@ function redactNamedSecrets(text) {
   return out;
 }
 
+// ── A PRIVATE KEY BLOCK LEFT OPEN ─────────────────────────────────────────────
+//
+// A block whose last line never came (a log cut off, a process killed while it
+// printed, a buffer that stopped at its cap) is not matched by
+// PEM_PRIVATE_KEY, and its body went through as ordinary text. It is taken
+// from its first line over the lines a key's body can be, and no further, so
+// the text after a first line quoted in a document stays, and a closing quote
+// of a serialized string is never taken. The grammar, one entry per kind:
+const OPEN_KEY_BLOCK = Object.freeze({
+  // Where a line ends and the next begins: a line break as written, or
+  // escaped once or twice inside a serialized string.
+  lineBreak: /\r?\n|\\{1,2}(?:r\\{1,2})?n/y,
+  // A line's text: up to a line break, a quote or a backslash, but an escaped
+  // tab whole. So a block taken never ends inside an escape or takes a quote.
+  lineText: /(?:[^\r\n\\"]|\\{1,2}t)*/y,
+  // A pure body line: one base64 run, of any length (the short last line of a
+  // body is one), after an optional line number and tab (a file read with its
+  // line numbers) or a diff's sign.
+  pureBody: /^[ \t]*(?:\d+(?:\t|\\{1,2}t|→)|[+\- ])?[ \t]*[A-Za-z0-9+/]+={0,2}[ \t]*$/,
+  // A long-run line: forty base64 characters in a row anywhere in it, a body
+  // line behind any prefix (a log's timestamp) or a body folded onto one
+  // line. A line holding a full commit id or another long hash is one too.
+  longRun: /[A-Za-z0-9+/]{40}/,
+  // A header line of an encrypted block, and an empty line: taken only when a
+  // body line follows them.
+  header: /^[ \t]*(?:Proc-Type|DEK-Info)[ \t]*:/,
+  empty: /^[ \t]*$/,
+  // A cut-off last line: the text's last line, after a body line, a base64
+  // run of any length behind one prefix holding a digit and no space (a log's
+  // timestamp, grep's file:line:). Prose is several words, and stays.
+  cutOff: /^[ \t]*(?=\S*\d)\S+[ \t]+[A-Za-z0-9+/]+={0,2}[ \t]*$/,
+});
+
+const PEM_BEGIN = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
+const PEM_END = /-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
+
+/**
+ * `text` with PEM_PRIVATE_KEY's matches replaced, run only up to the end of
+ * the text's last END line. Past it no first line has a last line, so the rule
+ * matches nothing there; run over it, the rule's lazy search went on from
+ * every first line to the text's end, and a megabyte of first lines took
+ * seconds.
+ */
+function redactWholePrivateKeys(text) {
+  let upTo = 0;
+  PEM_END.lastIndex = 0;
+  while (PEM_END.exec(text) !== null) upTo = PEM_END.lastIndex;
+  return text.slice(0, upTo).replace(PEM_PRIVATE_KEY, "[redacted:pem]") + text.slice(upTo);
+}
+
+/** Where the open block whose first line ends at `from` ends. */
+function openBlockEnd(text, from) {
+  const kinds = OPEN_KEY_BLOCK;
+  let end = from;
+  let at = from;
+  let afterBody = false;
+  for (;;) {
+    kinds.lineText.lastIndex = at;
+    kinds.lineText.exec(text);
+    const next = kinds.lineText.lastIndex;
+    const line = text.slice(at, next);
+    const body = kinds.pureBody.test(line) || kinds.longRun.test(line)
+      || (next === text.length && afterBody && kinds.cutOff.test(line));
+    if (body) {
+      end = next;
+      afterBody = true;
+    } else if (!kinds.empty.test(line) && !kinds.header.test(line)) {
+      break;
+    }
+    kinds.lineBreak.lastIndex = next;
+    if (kinds.lineBreak.exec(text) === null) break;
+    at = kinds.lineBreak.lastIndex;
+  }
+  return end;
+}
+
+/** `text`, which holds no whole block, with each block left open taken. */
+function redactOpenPrivateKeys(text) {
+  let out = "";
+  let copied = 0;
+  PEM_BEGIN.lastIndex = 0;
+  for (let match; (match = PEM_BEGIN.exec(text)) !== null;) {
+    const end = openBlockEnd(text, match.index + match[0].length);
+    out += `${text.slice(copied, match.index)}[redacted:pem]`;
+    copied = end;
+    PEM_BEGIN.lastIndex = end;
+  }
+  return out + text.slice(copied);
+}
+
 /** `text` with every credential-shaped span replaced by `[redacted:<kind>]`. */
 export function redactSecrets(text) {
-  let out = String(text).replace(PEM_PRIVATE_KEY, "[redacted:pem]");
+  // A whole block first; a first line still standing has no last line after it.
+  let out = redactOpenPrivateKeys(redactWholePrivateKeys(String(text)));
   out = out.replace(AWS_ACCESS_KEY_PAIR, "$1$2$3[redacted:aws]$3");
   for (const { kind, pattern } of REDACTED_SHAPES) {
     out = out.replace(pattern, `[redacted:${kind}]`);
@@ -218,10 +309,11 @@ const CLOSING_LINE = `\n${["-----END", "PRIVATE KEY-----"].join(" ")}`;
 
 /**
  * For a caller that sends a text only up to where it is safe: where the text
- * holds a private key block that this filter leaves open (a first line with no
- * last line after it, so redactSecrets would not replace it), the last line
- * start at which no block is open; -1 where it leaves none open. Everything
- * before that position redacts with every block in it closed.
+ * holds a private key block left open (a first line with no last line after
+ * it, which redactSecrets takes only as far as OPEN_KEY_BLOCK's lines reach), the
+ * last line start at which no block is open; -1 where none is open. Everything
+ * before that position redacts with every block in it closed, and a caller
+ * that withholds the rest sends none of a key whose lines the grammar misses.
  *
  * Read with PEM_PRIVATE_KEY itself, so it cannot disagree with the filter: the
  * text is matched with a closing line appended, the one match that reaches the
