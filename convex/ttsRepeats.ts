@@ -13,6 +13,8 @@
 
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
 import { back } from "./jarvis/tables";
@@ -50,6 +52,19 @@ const RULE_FIELDS = {
   workDescription: v.optional(v.string()),
   groundUpExplanation: v.optional(v.string()),
   body: v.optional(v.string()),
+};
+
+export type RepeatUpdates = {
+  statement?: string;
+  daysOfWeek?: string[];
+  timeOfDay?: string | null;
+  skipWhenCalendarHas?: string | null;
+  category?: string | null;
+  entryAction?: string | null;
+  workDescription?: string | null;
+  groundUpExplanation?: string | null;
+  body?: string | null;
+  active?: boolean;
 };
 
 /**
@@ -114,24 +129,12 @@ export const createRepeat = mutation({
   },
 });
 
-export const updateRepeat = mutation({
-  args: {
-    id: v.id("ttsRepeats"),
-    statement: v.optional(v.string()),
-    daysOfWeek: v.optional(v.array(WEEKDAY)),
-    timeOfDay: v.optional(v.union(v.string(), v.null())),
-    skipWhenCalendarHas: v.optional(v.union(v.string(), v.null())),
-    category: v.optional(v.union(v.string(), v.null())),
-    entryAction: v.optional(v.union(v.string(), v.null())),
-    workDescription: v.optional(v.union(v.string(), v.null())),
-    groundUpExplanation: v.optional(v.union(v.string(), v.null())),
-    body: v.optional(v.union(v.string(), v.null())),
-    active: v.optional(v.boolean()),
-  },
-  handler: async (ctx, { id, ...updates }) => {
-    await requireTom(ctx, "TTS");
-    const rule = await ctx.db.get(id);
-    if (!rule) throw new Error("Repeat not found");
+/** The one repeat write, shared by the Tom-facing control and bounded workers. */
+export async function applyRepeatUpdate(
+  ctx: MutationCtx,
+  rule: Doc<"ttsRepeats">,
+  updates: RepeatUpdates,
+) {
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
     const fields: string[] = [];
     for (const [key, value] of Object.entries(updates)) {
@@ -168,9 +171,30 @@ export const updateRepeat = mutation({
       timeOfDay:
         "timeOfDay" in patch ? (patch.timeOfDay as string | undefined) : rule.timeOfDay,
     });
-    await ctx.db.patch(id, patch);
-    await logEvent(ctx, "repeat-updated", undefined, { repeatId: id, fields });
+    await ctx.db.patch(rule._id, patch);
+    await logEvent(ctx, "repeat-updated", undefined, { repeatId: rule._id, fields });
     return { changed: fields };
+}
+
+export const updateRepeat = mutation({
+  args: {
+    id: v.id("ttsRepeats"),
+    statement: v.optional(v.string()),
+    daysOfWeek: v.optional(v.array(WEEKDAY)),
+    timeOfDay: v.optional(v.union(v.string(), v.null())),
+    skipWhenCalendarHas: v.optional(v.union(v.string(), v.null())),
+    category: v.optional(v.union(v.string(), v.null())),
+    entryAction: v.optional(v.union(v.string(), v.null())),
+    workDescription: v.optional(v.union(v.string(), v.null())),
+    groundUpExplanation: v.optional(v.union(v.string(), v.null())),
+    body: v.optional(v.union(v.string(), v.null())),
+    active: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { id, ...updates }) => {
+    await requireTom(ctx, "TTS");
+    const rule = await ctx.db.get(id);
+    if (!rule) throw new Error("Repeat not found");
+    return await applyRepeatUpdate(ctx, rule, updates);
   },
 });
 

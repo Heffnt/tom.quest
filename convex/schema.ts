@@ -2291,11 +2291,24 @@ export default defineSchema({
 
   dayLogActions: defineTable({
     entryId: v.id("dayLogEntries"),
-    kind: v.union(v.literal("todo-done"), v.literal("todo-move"), v.literal("todo-capture")),
-    todoId: v.id("todos"),
+    kind: v.union(
+      v.literal("todo-done"),
+      v.literal("todo-archive"),
+      v.literal("todo-move"),
+      v.literal("todo-capture"),
+      v.literal("repeat-off"),
+      v.literal("repeat-on"),
+    ),
+    todoId: v.optional(v.id("todos")),
+    repeatId: v.optional(v.id("ttsRepeats")),
     statement: v.optional(v.string()),
-    before: v.optional(v.any()),
-    after: v.optional(v.any()),
+    due: v.optional(v.string()),
+    // The cited entry sentence is the authority for this consequence. The
+    // future text-ruling record can adopt this row without inventing a second
+    // provenance shape.
+    quote: v.string(),
+    before: v.any(),
+    after: v.any(),
     appliedAt: v.number(),
     revertedAt: v.optional(v.number()),
   })

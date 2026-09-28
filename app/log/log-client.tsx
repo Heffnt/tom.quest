@@ -3,6 +3,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import {
   DAY_LOG_BENCHMARKS,
   dailyWaistAverages,
@@ -32,7 +33,19 @@ type Entry = {
   text: string;
   createdAt: number;
   result: string;
-  items: Array<{ _id: string }>;
+  items: Array<{
+    _id: string;
+    summary: string;
+    value?: number;
+    unit?: string;
+    revertedAt?: number;
+  }>;
+  actions: Array<{
+    _id: string;
+    result: string;
+    quote: string;
+    revertedAt?: number;
+  }>;
 };
 
 type Measurement = {
@@ -78,10 +91,14 @@ export default function LogClient() {
   const series = useQuery(api.dayLog.series, isTom ? {} : "skip") as Series | undefined;
   const training = useQuery(api.dayLog.trainingDay, isTom ? {} : "skip") as TrainingDay | null | undefined;
   const submit = useMutation(api.dayLog.submit);
+  const undoItem = useMutation(api.dayLog.undoItem);
+  const undoAction = useMutation(api.dayLog.undoAction);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [ideasOpen, setIdeasOpen] = useState(false);
+  const [undoing, setUndoing] = useState<string | null>(null);
+  const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
 
   useLayoutEffect(() => {
     const input = textarea.current;
@@ -119,6 +136,22 @@ export default function LogClient() {
       setText("");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function undo(id: string, operation: () => Promise<unknown>) {
+    if (undoing !== null) return;
+    setUndoing(id);
+    setUndoErrors((errors) => ({ ...errors, [id]: "" }));
+    try {
+      await operation();
+    } catch (error) {
+      setUndoErrors((errors) => ({
+        ...errors,
+        [id]: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setUndoing(null);
     }
   }
 
@@ -247,6 +280,61 @@ export default function LogClient() {
                   <time dateTime={new Date(entry.createdAt).toISOString()} className="block text-xs text-text-faint">{time(entry.createdAt)}</time>
                   <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-sm leading-6 text-text">{entry.text}</pre>
                   <p className="mt-3 text-sm text-text-muted">{entry.result}</p>
+                  {(entry.items.length > 0 || entry.actions.length > 0) && (
+                    <div className="mt-3 space-y-2 border-t border-border pt-3">
+                      {entry.items.map((item) => (
+                        <div key={item._id} className={`rounded-md bg-surface-alt/40 px-2 py-1.5 ${item.revertedAt === undefined ? "" : "text-text-faint"}`}>
+                          <div className="flex min-h-6 items-center justify-between gap-2">
+                            <p className={`min-w-0 text-xs ${item.revertedAt === undefined ? "text-text-muted" : "text-text-faint"}`}>
+                              {item.summary}{item.value !== undefined && item.unit !== undefined ? ` · ${item.value} ${item.unit}` : ""}
+                            </p>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <span className="min-w-[3.9rem] text-right text-xs text-text-faint">{item.revertedAt === undefined ? "" : "Undone."}</span>
+                              <button
+                                type="button"
+                                disabled={item.revertedAt !== undefined || undoing !== null}
+                                onClick={() => void undo(item._id, () => undoItem({ id: item._id as Id<"dayLogItems"> }))}
+                                className="rounded px-1.5 py-0.5 text-xs text-accent transition-colors hover:bg-accent-dim disabled:pointer-events-none disabled:opacity-45"
+                              >
+                                Undo
+                              </button>
+                              <Info
+                                call="dayLog.undoItem({ id })"
+                                explanation={explanation("Undo a log item", "This control marks this extracted log item as undone in the private day-log store. Charts and trend calculations no longer include it, while the original entry remains unchanged.")}
+                                explanationTitle="Undo a log item"
+                              >Marks this extracted item as undone so it no longer appears in charts.</Info>
+                            </div>
+                          </div>
+                          <p aria-live="polite" className="min-h-4 text-xs text-text-muted">{undoErrors[item._id] ?? ""}</p>
+                        </div>
+                      ))}
+                      {entry.actions.map((action) => (
+                        <div key={action._id} className={`rounded-md bg-surface-alt/40 px-2 py-1.5 ${action.revertedAt === undefined ? "" : "text-text-faint"}`}>
+                          <div className="flex min-h-6 items-center justify-between gap-2">
+                            <p className={`min-w-0 text-xs ${action.revertedAt === undefined ? "text-text-muted" : "text-text-faint"}`}>{action.result}</p>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <span className="min-w-[3.9rem] text-right text-xs text-text-faint">{action.revertedAt === undefined ? "" : "Undone."}</span>
+                              <button
+                                type="button"
+                                disabled={action.revertedAt !== undefined || undoing !== null}
+                                onClick={() => void undo(action._id, () => undoAction({ id: action._id as Id<"dayLogActions"> }))}
+                                className="rounded px-1.5 py-0.5 text-xs text-accent transition-colors hover:bg-accent-dim disabled:pointer-events-none disabled:opacity-45"
+                              >
+                                Undo
+                              </button>
+                              <Info
+                                call="dayLog.undoAction({ id })"
+                                explanation={explanation("Undo a log action", "This control checks that the todo or repeat still has the values Jarvis wrote. If it does, it restores the saved prior values; todo changes are also written to their mirrored record, and a captured todo is archived instead of deleted.")}
+                                explanationTitle="Undo a log action"
+                              >Restores the saved values when nothing has changed since this action.</Info>
+                            </div>
+                          </div>
+                          <p className="text-xs text-text-faint">{action.quote}</p>
+                          <p aria-live="polite" className="min-h-4 text-xs text-text-muted">{undoErrors[action._id] ?? ""}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </article>
               ))}
             </div>

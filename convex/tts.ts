@@ -1274,23 +1274,20 @@ export const recordEvent = mutation({
 
 // ── Internal: worker submissions (via key-authed http.ts routes) ─────────────
 
-export const internalCapture = internalMutation({
-  args: {
-    statement: v.string(),
-    source: v.string(),
-    provenance: v.optional(v.string()),
-    // The Slack coordinates of the message this came from, when it came from
-    // one. Machine fields, kept out of `provenance` (which is Tom's to read).
-    slackChannel: v.optional(v.string()),
-    slackTs: v.optional(v.string()),
-    // A poller's triage judged it to need Tom today, and why. Recorded on the
-    // row for the morning message and the hourly line; nothing opens a thread.
-    needsTomToday: v.optional(v.object({ why: v.string() })),
-  },
-  handler: async (
-    ctx,
-    { statement, source, provenance, slackChannel, slackTs, needsTomToday },
-  ) => {
+export type CaptureTodoArgs = {
+  statement: string;
+  source: string;
+  provenance?: string;
+  slackChannel?: string;
+  slackTs?: string;
+  needsTomToday?: { why: string };
+};
+
+/** The one capture write, shared by worker doors that turn text into a todo. */
+export async function captureTodo(
+  ctx: MutationCtx,
+  { statement, source, provenance, slackChannel, slackTs, needsTomToday }: CaptureTodoArgs,
+) {
     const now = Date.now();
     // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
     // #dump message — the Events push route (fast, at-least-once: Slack
@@ -1348,8 +1345,23 @@ export const internalCapture = internalMutation({
         subject: { kind: "todo", id },
       });
     }
-    return id;
+  return id;
+}
+
+export const internalCapture = internalMutation({
+  args: {
+    statement: v.string(),
+    source: v.string(),
+    provenance: v.optional(v.string()),
+    // The Slack coordinates of the message this came from, when it came from
+    // one. Machine fields, kept out of `provenance` (which is Tom's to read).
+    slackChannel: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
+    // A poller's triage judged it to need Tom today, and why. Recorded on the
+    // row for the morning message and the hourly line; nothing opens a thread.
+    needsTomToday: v.optional(v.object({ why: v.string() })),
   },
+  handler: async (ctx, args) => await captureTodo(ctx, args),
 });
 
 // The preparation path for LIFE todos (spec §15, swarm-lite): the worker's

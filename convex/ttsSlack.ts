@@ -194,17 +194,10 @@ export const SLACK_REPLY_FAILED = "slack-reply-failed";
  *  `ask` is "act" or "object" (ttsCompose.SlackAsk) for the two asks that
  *  compete across channels, and "broken" for the per-job failure dedupe, which
  *  shares the mechanism and nothing else. */
-export const internalClaimSlackItem = internalMutation({
-  args: {
-    day: v.string(),
-    ask: v.string(),
-    itemId: v.string(),
-    channel: v.string(),
-  },
-  handler: async (
-    ctx,
-    { day, ask, itemId, channel },
-  ): Promise<{ claimed: boolean; by: string | null }> => {
+export async function claimSlackItem(
+  ctx: MutationCtx,
+  { day, ask, itemId, channel }: { day: string; ask: string; itemId: string; channel: string },
+): Promise<{ claimed: boolean; by: string | null }> {
     // A todo is claimed under its old id when it has one (else its plain id),
     // whichever form the caller holds, so a claim made before the readers
     // moved still dedupes one made after; the row stores the plain id.
@@ -226,8 +219,17 @@ export const internalClaimSlackItem = internalMutation({
       ...(todoId === null ? {} : { todoId }),
       data: { day, ask, itemId, channel },
     });
-    return { claimed: true, by: channel };
+  return { claimed: true, by: channel };
+}
+
+export const internalClaimSlackItem = internalMutation({
+  args: {
+    day: v.string(),
+    ask: v.string(),
+    itemId: v.string(),
+    channel: v.string(),
   },
+  handler: async (ctx, args) => await claimSlackItem(ctx, args),
 });
 
 // ── The needs-you thread ─────────────────────────────────────────────────────
@@ -235,22 +237,10 @@ export const internalClaimSlackItem = internalMutation({
 // job stops writing message text and sends facts. The raw vendor subject and
 // the From header never reach Slack — they stay on the needs-tom row and in
 // the dedupe key, which is where they belong.
-export const internalOpenNeedsTomThread = internalMutation({
-  // todoId as a plain string, normalized here: the caller is an HTTP route
-  // carrying a worker's JSON, and this is where an unknown id becomes a named
-  // refusal rather than a validator error (the internalPrepareTodo pattern).
-  args: {
-    todoId: v.string(),
-    // `verdict.why` from the triage — HALF A SENTENCE HE CAN READ, and the one
-    // thing the old message never said.
-    reason: v.string(),
-    key: v.string(),
-    canReply: v.optional(v.boolean()),
-  },
-  handler: async (
-    ctx,
-    { todoId, reason, key, canReply },
-  ): Promise<{ opened: boolean; key: string; reason?: string }> => {
+export async function openNeedsTomThread(
+  ctx: MutationCtx,
+  { todoId, reason, key, canReply }: { todoId: string; reason: string; key: string; canReply?: boolean },
+): Promise<{ opened: boolean; key: string; reason?: string }> {
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
     const id = await resolveId(ctx, "todos", todoId);
@@ -283,7 +273,7 @@ export const internalOpenNeedsTomThread = internalMutation({
     // before any daytime channel runs, so an item it printed is already on his
     // list today and this thread is correctly suppressed; an item that arrives
     // at 9 a.m. was not in the morning message and is not suppressed.
-    const claim = await ctx.runMutation(internal.ttsSlack.internalClaimSlackItem, {
+    const claim = await claimSlackItem(ctx, {
       day,
       ask: "act",
       itemId: id,
@@ -302,8 +292,22 @@ export const internalOpenNeedsTomThread = internalMutation({
       reason,
       text: renderSlack(composeNeedsYou(facts, { canReply: canReply ?? false })),
     });
-    return { opened: true, key };
+  return { opened: true, key };
+}
+
+export const internalOpenNeedsTomThread = internalMutation({
+  // todoId as a plain string, normalized here: the caller is an HTTP route
+  // carrying a worker's JSON, and this is where an unknown id becomes a named
+  // refusal rather than a validator error (the internalPrepareTodo pattern).
+  args: {
+    todoId: v.string(),
+    // `verdict.why` from the triage — HALF A SENTENCE HE CAN READ, and the one
+    // thing the old message never said.
+    reason: v.string(),
+    key: v.string(),
+    canReply: v.optional(v.boolean()),
   },
+  handler: async (ctx, args) => await openNeedsTomThread(ctx, args),
 });
 
 /** The message a capture came from, when its provenance carries one./** The message a capture came from, when its provenance carries one.
