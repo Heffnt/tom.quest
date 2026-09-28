@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import { dayLogResultLine } from "./dayLog";
 import schema from "./schema";
+import { nyCalendarDayKey, weekdayWordOf } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const DAY_MS = 86_400_000;
@@ -148,6 +149,41 @@ describe("day log", () => {
       detail: "response was not structured",
     })).resolves.toMatchObject({ ok: true, result: "Jarvis could not read this entry; it stays here and still goes to nightly learning." });
     expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ status: "needs-session" });
+  });
+
+  it("returns today's published training day only when both source files exist", async () => {
+    const t = convexTest({ schema, modules });
+    const readerId = await t.run((ctx) => ctx.db.insert("users", { name: "reader", email: "reader@example.test", role: "user" }));
+    await expect(t.withIdentity({ subject: readerId }).query(api.dayLog.trainingDay, {})).rejects.toThrow("Log access is restricted to Tom");
+
+    const viewer = await tom(t);
+    await expect(viewer.query(api.dayLog.trainingDay, {})).resolves.toBeNull();
+
+    const today = weekdayWordOf(nyCalendarDayKey(Date.now()));
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomFiles", {
+        name: "schedule",
+        body: `## Training week — test\n| Day | Block |\n| --- | --- |\n| Sunday | sunday plan |\n| Monday | monday plan |\n| Tuesday | tuesday plan |\n| Wednesday | wednesday plan |\n| Thursday | thursday plan |\n| Friday | friday plan |\n| Saturday | saturday plan |`,
+        sourcePath: "model-of-tom/schedule.md",
+        syncedAt: 1,
+      });
+    });
+    await expect(viewer.query(api.dayLog.trainingDay, {})).resolves.toBeNull();
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomFiles", {
+        name: "areas/health-and-food",
+        body: `## Session ideas\n- Marker (${today}): inspect the outline.`,
+        sourcePath: "model-of-tom/areas/health-and-food.md",
+        syncedAt: 1,
+      });
+    });
+
+    await expect(viewer.query(api.dayLog.trainingDay, {})).resolves.toEqual({
+      cells: [{ column: "Block", text: `${today} plan` }],
+      notes: [],
+      ideas: [{ label: "Marker", text: "inspect the outline." }],
+    });
   });
 });
 

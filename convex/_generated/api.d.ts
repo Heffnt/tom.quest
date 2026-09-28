@@ -43,6 +43,7 @@ import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as sessionRows from "../sessionRows.js";
 import type * as symbolScores from "../symbolScores.js";
+import type * as trainingDay from "../trainingDay.js";
 import type * as tts from "../tts.js";
 import type * as ttsAsk from "../ttsAsk.js";
 import type * as ttsCalendar from "../ttsCalendar.js";
@@ -116,6 +117,7 @@ declare const fullApi: ApiFromModules<{
   serverHealth: typeof serverHealth;
   sessionRows: typeof sessionRows;
   symbolScores: typeof symbolScores;
+  trainingDay: typeof trainingDay;
   tts: typeof tts;
   ttsAsk: typeof ttsAsk;
   ttsCalendar: typeof ttsCalendar;

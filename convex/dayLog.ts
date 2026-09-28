@@ -11,7 +11,8 @@ import {
   DAY_LOG_PARTS_OF_DAY,
   DAY_LOG_VOCABULARY,
 } from "./dayLogVocabulary";
-import { nyCalendarDayKey, nyOffsetHours } from "./ttsShared";
+import { trainingDay as parseTrainingDay } from "./trainingDay";
+import { nyCalendarDayKey, nyOffsetHours, weekdayWordOf } from "./ttsShared";
 
 const SURFACE = "Log";
 const ENTRY_MAX = 4_000;
@@ -187,6 +188,19 @@ export const page = query({
       result: entry.result ?? dayLogResultLine(entry.status, []),
       items: (await ctx.db.query("dayLogItems").withIndex("by_entry", (q) => q.eq("entryId", entry._id)).collect()).filter((item) => item.revertedAt === undefined),
     })));
+  },
+});
+
+export const trainingDay = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTom(ctx, SURFACE);
+    const [schedule, ideas] = await Promise.all([
+      ctx.db.query("modelOfTomFiles").withIndex("by_name", (q) => q.eq("name", "schedule")).first(),
+      ctx.db.query("modelOfTomFiles").withIndex("by_name", (q) => q.eq("name", "areas/health-and-food")).first(),
+    ]);
+    if (schedule === null || ideas === null) return null;
+    return parseTrainingDay(schedule.body, ideas.body, weekdayWordOf(nyCalendarDayKey(Date.now())));
   },
 });
 

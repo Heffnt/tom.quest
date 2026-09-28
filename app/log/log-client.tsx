@@ -39,14 +39,22 @@ type Measurement = {
   entryCreatedAt: number;
 };
 
+type TrainingDay = {
+  cells: Array<{ column: string; text: string }>;
+  notes: string[];
+  ideas: Array<{ label: string; text: string }>;
+};
+
 export default function LogClient() {
   const { isTom } = useAuth();
   const entries = useQuery(api.dayLog.page, isTom ? {} : "skip") as Entry[] | undefined;
   const measurements = useQuery(api.dayLog.series, isTom ? {} : "skip") as Measurement[] | undefined;
+  const training = useQuery(api.dayLog.trainingDay, isTom ? {} : "skip") as TrainingDay | null | undefined;
   const submit = useMutation(api.dayLog.submit);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [ideasOpen, setIdeasOpen] = useState(false);
 
   useLayoutEffect(() => {
     const input = textarea.current;
@@ -109,6 +117,48 @@ export default function LogClient() {
             rows={3}
             className={`${controlClass} block min-h-24 w-full resize-none text-base leading-6`}
           />
+          {training !== undefined && training !== null && (
+            <section aria-label="Today’s training" className="space-y-2 rounded-md border border-border bg-surface/40 px-3 py-2.5 text-sm leading-5">
+              <div className="space-y-0.5">
+                {training.cells.map((cell) => (
+                  <p key={`${cell.column}:${cell.text}`} className="break-words text-text">
+                    {cell.column}: {cell.text}
+                  </p>
+                ))}
+              </div>
+              {training.notes.length > 0 && (
+                <div className="space-y-0.5 text-text-muted">
+                  {training.notes.map((note) => <p key={note} className="break-words">{note}</p>)}
+                </div>
+              )}
+              {training.ideas.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      aria-expanded={ideasOpen}
+                      onClick={() => setIdeasOpen((open) => !open)}
+                      className="rounded-md border border-border px-2 py-1 text-xs font-medium text-text transition-colors hover:bg-surface-alt"
+                    >
+                      Ideas
+                    </button>
+                    <Info
+                      call="setIdeasOpen((open) => !open)"
+                      explanation={explanation("Show training ideas", "This control shows or hides the ideas stored with the current weekly training structure. It changes only this page while it is open.")}
+                      explanationTitle="Show training ideas"
+                    >Shows or hides the ideas from the current weekly structure.</Info>
+                  </div>
+                  {ideasOpen && (
+                    <div className="space-y-1.5 text-text-muted">
+                      {training.ideas.map((idea) => (
+                        <p key={`${idea.label}:${idea.text}`} className="break-words"><strong className="font-semibold text-text">{idea.label}</strong>: {idea.text}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
           <div className="flex items-center gap-1">
             <button
               type="button"
