@@ -19,6 +19,8 @@ import type * as brews from "../brews.js";
 import type * as canvas from "../canvas.js";
 import type * as claudeSessions from "../claudeSessions.js";
 import type * as crons from "../crons.js";
+import type * as dayLog from "../dayLog.js";
+import type * as dayLogVocabulary from "../dayLogVocabulary.js";
 import type * as forge from "../forge.js";
 import type * as http from "../http.js";
 import type * as intent from "../intent.js";
@@ -90,6 +92,8 @@ declare const fullApi: ApiFromModules<{
   canvas: typeof canvas;
   claudeSessions: typeof claudeSessions;
   crons: typeof crons;
+  dayLog: typeof dayLog;
+  dayLogVocabulary: typeof dayLogVocabulary;
   forge: typeof forge;
   http: typeof http;
   intent: typeof intent;

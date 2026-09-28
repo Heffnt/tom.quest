@@ -2247,4 +2247,55 @@ export default defineSchema({
     signedBy: v.literal("tom"),
     usedAt: v.optional(v.number()),
   }).index("by_match", ["sha256", "recipient", "channel"]),
+
+  dayLogEntries: defineTable({
+    text: v.string(),
+    createdAt: v.number(),
+    day: v.string(),
+    status: v.union(v.literal("pending"), v.literal("applied"), v.literal("needs-session")),
+    result: v.optional(v.string()),
+    resolvedAt: v.optional(v.number()),
+    warning: v.optional(v.object({
+      class: v.union(v.literal("chest-pain"), v.literal("fainting"), v.literal("heartbeat"), v.literal("light-headedness"), v.literal("crisis-language")),
+      quote: v.string(),
+      source: v.union(v.literal("model"), v.literal("phrase-check")),
+      todoId: v.id("todos"),
+    })),
+  })
+    .index("by_day", ["day"])
+    .index("by_status", ["status"]),
+
+  dayLogItems: defineTable({
+    entryId: v.id("dayLogEntries"),
+    day: v.string(),
+    kind: v.union(v.literal("measurement"), v.literal("workout"), v.literal("food"), v.literal("feeling"), v.literal("symptom"), v.literal("work")),
+    quote: v.string(),
+    summary: v.string(),
+    metric: v.optional(v.string()),
+    value: v.optional(v.number()),
+    unit: v.optional(v.string()),
+    partOfDay: v.optional(v.union(v.literal("morning"), v.literal("afternoon"), v.literal("evening"), v.literal("unknown"))),
+    activity: v.optional(v.union(v.literal("run"), v.literal("climb"), v.literal("strength"), v.literal("bike"), v.literal("walk"), v.literal("other"))),
+    bodyParts: v.optional(v.array(v.string())),
+    distanceMi: v.optional(v.number()),
+    durationMin: v.optional(v.number()),
+    createdAt: v.number(),
+    revertedAt: v.optional(v.number()),
+  })
+    .index("by_entry", ["entryId"])
+    .index("by_kind_day", ["kind", "day"])
+    .index("by_metric_day", ["metric", "day"]),
+
+  dayLogActions: defineTable({
+    entryId: v.id("dayLogEntries"),
+    kind: v.union(v.literal("todo-done"), v.literal("todo-move"), v.literal("todo-capture")),
+    todoId: v.id("todos"),
+    statement: v.optional(v.string()),
+    before: v.optional(v.any()),
+    after: v.optional(v.any()),
+    appliedAt: v.number(),
+    revertedAt: v.optional(v.number()),
+  })
+    .index("by_entry", ["entryId"])
+    .index("by_todo", ["todoId"]),
 });
