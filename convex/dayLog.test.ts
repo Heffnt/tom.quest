@@ -19,7 +19,7 @@ async function pendingEntry(t: ReturnType<typeof convexTest>, text = "weighed 18
   const { id } = await viewer.mutation(api.dayLog.submit, { text });
   const entry = await t.run((ctx) => ctx.db.get(id));
   if (!entry) throw new Error("test entry was not stored");
-  return { id, entry };
+  return { id, entry, viewer };
 }
 
 function weight(day: string, quote = "weighed 180.0 this morning") {
@@ -36,7 +36,10 @@ function weight(day: string, quote = "weighed 180.0 this morning") {
 }
 
 describe("day log", () => {
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+  });
 
   it("denies submit to a non-Tom user and stores typed text exactly", async () => {
     const t = convexTest({ schema, modules });
@@ -184,6 +187,103 @@ describe("day log", () => {
       notes: [],
       ideas: [{ label: "Marker", text: "inspect the outline." }],
     });
+  });
+
+  it("returns active measurements and runs in the chart series shape", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T16:00:00.000Z"));
+    const t = convexTest({ schema, modules });
+    const { id, entry, viewer } = await pendingEntry(t, "recorded values and a run");
+    const now = Date.now();
+    const measurements = [
+      ["weight", 180, "lb"],
+      ["waist", 31, "in"],
+      ["pullup_added_weight", 25, "lb"],
+      ["hang_20mm", 20, "s"],
+      ["sprint_40yd", 7, "s"],
+      ["loop_1_4mi", 480, "s"],
+    ] as const;
+    await t.run(async (ctx) => {
+      for (const [metric, value, unit] of measurements) {
+        await ctx.db.insert("dayLogItems", {
+          entryId: id,
+          day: entry.day,
+          kind: "measurement",
+          quote: "recorded values",
+          summary: metric,
+          metric,
+          value,
+          unit,
+          partOfDay: "morning",
+          createdAt: now,
+        });
+      }
+      await ctx.db.insert("dayLogItems", {
+        entryId: id,
+        day: "2025-09-26",
+        kind: "measurement",
+        quote: "recorded values",
+        summary: "old weight",
+        metric: "weight",
+        value: 175,
+        unit: "lb",
+        partOfDay: "morning",
+        createdAt: now,
+      });
+      await ctx.db.insert("dayLogItems", {
+        entryId: id,
+        day: entry.day,
+        kind: "measurement",
+        quote: "recorded values",
+        summary: "reverted waist",
+        metric: "waist",
+        value: 35,
+        unit: "in",
+        partOfDay: "morning",
+        createdAt: now,
+        revertedAt: now,
+      });
+      await ctx.db.insert("dayLogItems", {
+        entryId: id,
+        day: entry.day,
+        kind: "workout",
+        quote: "a run",
+        summary: "run",
+        activity: "run",
+        distanceMi: 3.1,
+        createdAt: now,
+      });
+      await ctx.db.insert("dayLogItems", {
+        entryId: id,
+        day: entry.day,
+        kind: "workout",
+        quote: "a run",
+        summary: "reverted run",
+        activity: "run",
+        distanceMi: 2,
+        createdAt: now,
+        revertedAt: now,
+      });
+      await ctx.db.insert("dayLogItems", {
+        entryId: id,
+        day: entry.day,
+        kind: "workout",
+        quote: "a run",
+        summary: "walk",
+        activity: "walk",
+        createdAt: now,
+      });
+    });
+
+    const result = await viewer.query(api.dayLog.series, {});
+
+    expect(Object.keys(result).sort()).toEqual(["measurements", "runs"]);
+    expect(result.measurements.map((item) => item.metric)).toEqual(measurements.map(([metric]) => metric));
+    expect(result.measurements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ day: entry.day, metric: "weight", value: 180, unit: "lb", entryCreatedAt: entry.createdAt }),
+      expect.objectContaining({ day: entry.day, metric: "loop_1_4mi", value: 480, unit: "s", entryCreatedAt: entry.createdAt }),
+    ]));
+    expect(result.runs).toEqual([expect.objectContaining({ day: entry.day, activity: "run", distanceMi: 3.1 })]);
   });
 });
 

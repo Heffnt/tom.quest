@@ -2285,7 +2285,9 @@ export default defineSchema({
   })
     .index("by_entry", ["entryId"])
     .index("by_kind_day", ["kind", "day"])
-    .index("by_metric_day", ["metric", "day"]),
+    .index("by_metric_day", ["metric", "day"])
+    .index("by_reverted_at_and_kind_and_metric_and_day", ["revertedAt", "kind", "metric", "day"])
+    .index("by_reverted_at_and_kind_and_activity_and_day", ["revertedAt", "kind", "activity", "day"]),
 
   dayLogActions: defineTable({
     entryId: v.id("dayLogEntries"),

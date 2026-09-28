@@ -3,7 +3,13 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { weeklyMorningAverages } from "@/shared/day-log-trends.mjs";
+import {
+  DAY_LOG_BENCHMARKS,
+  dailyWaistAverages,
+  monthlyBenchmarkBests,
+  weeklyMorningAverages,
+  weeklyRuns,
+} from "@/shared/day-log-trends.mjs";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import Info from "@/app/jarvis/components/info";
@@ -31,11 +37,11 @@ type Entry = {
 
 type Measurement = {
   _id: string;
-  metric?: string;
-  value?: number;
-  unit?: string;
+  metric: string;
+  value: number;
+  unit: string;
   day: string;
-  partOfDay?: "morning" | "afternoon" | "evening" | "unknown";
+  partOfDay: "morning" | "afternoon" | "evening" | "unknown";
   entryCreatedAt: number;
 };
 
@@ -45,10 +51,31 @@ type TrainingDay = {
   ideas: Array<{ label: string; text: string }>;
 };
 
+type Run = {
+  _id: string;
+  day: string;
+  activity: "run";
+  distanceMi?: number;
+};
+
+type Series = { measurements: Measurement[]; runs: Run[] };
+
+const benchmarkOrder = ["pullup_added_weight", "hang_20mm", "sprint_40yd", "loop_1_4mi"] as const;
+
+function duration(seconds: number): string {
+  const totalSeconds = Math.round(seconds);
+  return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
+
+function runLabel(count: number, distanceMi: number | null): string {
+  const runs = `${count} ${count === 1 ? "run" : "runs"}`;
+  return `${runs} · ${distanceMi === null ? "—" : distanceMi.toFixed(1)} mi`;
+}
+
 export default function LogClient() {
   const { isTom } = useAuth();
   const entries = useQuery(api.dayLog.page, isTom ? {} : "skip") as Entry[] | undefined;
-  const measurements = useQuery(api.dayLog.series, isTom ? {} : "skip") as Measurement[] | undefined;
+  const series = useQuery(api.dayLog.series, isTom ? {} : "skip") as Series | undefined;
   const training = useQuery(api.dayLog.trainingDay, isTom ? {} : "skip") as TrainingDay | null | undefined;
   const submit = useMutation(api.dayLog.submit);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -64,15 +91,19 @@ export default function LogClient() {
   }, [text]);
 
   const weeklyWeight = useMemo(() => weeklyMorningAverages(
-    (measurements ?? [])
-      .filter((measurement) => measurement.metric === "weight" && measurement.value !== undefined)
+    (series?.measurements ?? [])
+      .filter((measurement) => measurement.metric === "weight")
       .map((measurement) => ({
         day: measurement.day,
-        value: measurement.value!,
-        partOfDay: measurement.partOfDay ?? "unknown",
+        value: measurement.value,
+        partOfDay: measurement.partOfDay,
         entryCreatedAt: measurement.entryCreatedAt,
       })),
-  ), [measurements]);
+  ), [series]);
+
+  const waist = useMemo(() => dailyWaistAverages(series?.measurements ?? []), [series]);
+  const runs = useMemo(() => weeklyRuns(series?.runs ?? []), [series]);
+  const benchmarks = useMemo(() => monthlyBenchmarkBests(series?.measurements ?? []), [series]);
 
   const days = useMemo(() => {
     const grouped = new Map<string, Entry[]>();
@@ -93,7 +124,7 @@ export default function LogClient() {
 
   return (
     <TomGate label="Log">
-      <main className="mx-auto w-full max-w-3xl space-y-7 px-3 py-5 sm:px-5">
+      <div className="mx-auto w-full max-w-3xl space-y-7 px-3 py-5 sm:px-5">
         <header><h1 className="text-2xl font-bold tracking-tight">Log</h1></header>
 
         {/* This is the agreed exception to the dialog rule: the log's one
@@ -176,8 +207,35 @@ export default function LogClient() {
           </div>
         </section>
 
-        <section aria-label="Weight chart" className="rounded-lg border border-border bg-surface/40 p-3">
-          <LineChart points={weeklyWeight.map((point) => ({ x: point.week, y: point.value }))} unit="lb" />
+        <section aria-label="Charts" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {weeklyWeight.length > 0 && <section aria-label="Morning weight" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+            <LineChart points={weeklyWeight.map((point) => ({ x: point.week, y: point.value }))} unit="lb" />
+          </section>}
+          {waist.length > 0 && <section aria-label="Waist" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+            <LineChart points={waist.map((point) => ({ x: point.day, y: point.value }))} unit="in" xLabel="day" />
+          </section>}
+          {runs.length > 0 && <section aria-label="Runs per week" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+            <LineChart
+              points={runs.map((point) => ({ x: point.week, y: point.count, label: runLabel(point.count, point.distanceMi) }))}
+              unit="runs"
+              variant="bar"
+            />
+          </section>}
+          {benchmarkOrder.map((metric) => {
+            const points = benchmarks.filter((benchmark) => benchmark.metric === metric);
+            if (points.length === 0) return null;
+            const benchmark = DAY_LOG_BENCHMARKS[metric];
+            return (
+              <section key={metric} aria-label={metric.replaceAll("_", " ")} className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
+                <LineChart
+                  points={points.map((point) => ({ x: point.month, y: point.value }))}
+                  unit={benchmark.unit === "s" && metric === "loop_1_4mi" ? "m:ss" : benchmark.unit}
+                  xLabel="month"
+                  formatValue={metric === "loop_1_4mi" ? duration : undefined}
+                />
+              </section>
+            );
+          })}
         </section>
 
         <section className="space-y-5" aria-label="Entries">
@@ -194,7 +252,7 @@ export default function LogClient() {
             </div>
           ))}
         </section>
-      </main>
+      </div>
     </TomGate>
   );
 }

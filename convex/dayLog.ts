@@ -208,14 +208,43 @@ export const series = query({
   args: {},
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
-    const since = new Date(Date.now() - SERIES_DAYS * 86_400_000).toISOString().slice(0, 10);
-    const values = (await Promise.all(Object.keys(DAY_LOG_METRICS).map(async (metric) =>
-      await ctx.db.query("dayLogItems").withIndex("by_metric_day", (q) => q.eq("metric", metric).gte("day", since)).collect(),
-    ))).flat().filter((item) => item.revertedAt === undefined && item.value !== undefined && item.partOfDay !== undefined);
-    return await Promise.all(values.map(async (item) => {
+    const today = nyCalendarDayKey(Date.now());
+    const since = new Date(Date.parse(today) - SERIES_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const measurements = (await Promise.all(Object.keys(DAY_LOG_METRICS).map(async (metric) => {
+      const rows = [];
+      const rowsInRange = ctx.db
+        .query("dayLogItems")
+        .withIndex("by_reverted_at_and_kind_and_metric_and_day", (q) => q.eq("revertedAt", undefined).eq("kind", "measurement").eq("metric", metric).gte("day", since));
+      for await (const item of rowsInRange) rows.push(item);
+      return rows;
+    }))).flat();
+    const runs = [];
+    const runsInRange = ctx.db
+      .query("dayLogItems")
+      .withIndex("by_reverted_at_and_kind_and_activity_and_day", (q) => q.eq("revertedAt", undefined).eq("kind", "workout").eq("activity", "run").gte("day", since));
+    for await (const item of runsInRange) runs.push(item);
+
+    const entries = await Promise.all(measurements.map(async (item) => {
       const entry = await ctx.db.get(item.entryId);
-      return { ...item, entryCreatedAt: entry?.createdAt ?? item.createdAt };
+      return {
+        _id: item._id,
+        day: item.day,
+        metric: item.metric!,
+        value: item.value!,
+        unit: item.unit!,
+        partOfDay: item.partOfDay!,
+        entryCreatedAt: entry?.createdAt ?? item.createdAt,
+      };
     }));
+    return {
+      measurements: entries,
+      runs: runs.map((item) => ({
+        _id: item._id,
+        day: item.day,
+        activity: "run" as const,
+        ...(item.distanceMi === undefined ? {} : { distanceMi: item.distanceMi }),
+      })),
+    };
   },
 });
 
