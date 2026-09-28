@@ -188,9 +188,277 @@ function redactNamedSecrets(text) {
   return out;
 }
 
+// ── A PRIVATE KEY BLOCK LEFT OPEN ─────────────────────────────────────────────
+//
+// A block whose last line never came (a log cut off, a process killed while it
+// printed, a buffer that stopped at its cap) is not matched by
+// PEM_PRIVATE_KEY, and its body went through as ordinary text. It is taken
+// from its first line over the lines a key's body can be, and no further.
+//
+// THE STEP READS EACH CHARACTER A BOUNDED NUMBER OF TIMES. One search finds
+// the first lines; a block's lines are read by readBlockLine, which never
+// reads past the next first line (a new block ends the one before it); each
+// kind of line below scans its line at most twice. No regular expression is left in
+// the step but that search, which is linear: a fixed literal, then words of
+// one bounded class, each begun by a space, then a fixed literal. The test
+// counts what the step looks at (countOpenKeyBlockReads).
+
+const isBase64 = (c) => (c >= "A" && c <= "Z") || (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c === "+" || c === "/";
+// A carriage return that no line feed follows is read as a blank, so a line
+// that ends in one is still the kind of line it would be without it.
+const isBlank = (c) => c === " " || c === "\t" || c === "\r";
+const isDigit = (c) => c >= "0" && c <= "9";
+const isSpace = (c) => c !== undefined && c.trim() === "";
+
+// The kinds of line, each matched against a line whose escapes readBlockLine
+// has decoded, so they know raw characters only. Each takes `look`, which it
+// calls for every character it looks at.
+export const OPEN_KEY_BLOCK = Object.freeze({
+  // A full line: forty base64 characters in a row anywhere in the line. A
+  // key's body lines are one width, 64 (70 for OpenSSH, 76 in some tools),
+  // and the smallest key's first line is a full one; so is a body line behind
+  // any prefix (a log's timestamp) and a body folded onto one line. A line
+  // holding a full commit id or another long hash is one too.
+  fullLine(line, look) {
+    let run = 0;
+    for (let i = 0; i < line.length; i += 1) {
+      look();
+      run = isBase64(line[i]) ? run + 1 : 0;
+      if (run >= 40) return true;
+    }
+    return false;
+  },
+  // A short line: blanks, then optionally a line number and a tab or arrow (a
+  // file read with its line numbers) or a diff's sign and blanks, then one
+  // base64 run, at most two `=`, and blanks to the line's end. Taken as a
+  // key's last line directly after a full line, or as the text's last line
+  // (the text, or the serialized string it stands in, stopped inside a body
+  // line), and the block ends with it.
+  shortLine(line, look) {
+    const at = (i) => { look(); return line[i]; };
+    let i = 0;
+    while (i < line.length && isBlank(at(i))) i += 1;
+    let j = i;
+    while (j < line.length && isDigit(at(j))) j += 1;
+    if (j > i && (at(j) === "\t" || line[j] === "→")) i = j + 1;
+    else if (at(i) === "+" || line[i] === "-") i += 1;
+    while (i < line.length && isBlank(at(i))) i += 1;
+    const run = i;
+    while (i < line.length && isBase64(at(i))) i += 1;
+    if (i === run) return false;
+    for (let pad = 0; pad < 2 && i < line.length && at(i) === "="; pad += 1) i += 1;
+    while (i < line.length && isBlank(at(i))) i += 1;
+    return i === line.length;
+  },
+  // A header line of an encrypted block: blanks, `Proc-Type` or `DEK-Info`,
+  // blanks, a colon. Taken, like an empty line, only before the first full
+  // line, and only when a line the block takes follows them.
+  header(line, look) {
+    let i = 0;
+    while (i < line.length && isBlank(line[i])) { look(); i += 1; }
+    const name = ["Proc-Type", "DEK-Info"].find((one) => line.startsWith(one, i));
+    look();
+    if (name === undefined) return false;
+    i += name.length;
+    while (i < line.length && isBlank(line[i])) { look(); i += 1; }
+    look();
+    return line[i] === ":";
+  },
+  empty(line, look) {
+    for (let i = 0; i < line.length; i += 1) {
+      look();
+      if (!isBlank(line[i])) return false;
+    }
+    return true;
+  },
+  // A cut-off line behind a prefix: the text's last line as above, after a
+  // full line, a base64 run behind one prefix holding a digit and no space
+  // (a log's timestamp, grep's file:line:). Prose, several words, is not one.
+  cutOff(line, look) {
+    const at = (i) => { look(); return line[i]; };
+    let i = 0;
+    while (i < line.length && isBlank(at(i))) i += 1;
+    const token = i;
+    let digit = false;
+    while (i < line.length && !isSpace(at(i))) { digit ||= isDigit(line[i]); i += 1; }
+    if (i === token || !digit) return false;
+    const blanks = i;
+    while (i < line.length && isBlank(at(i))) i += 1;
+    if (i === blanks) return false;
+    const run = i;
+    while (i < line.length && isBase64(at(i))) i += 1;
+    if (i === run) return false;
+    for (let pad = 0; pad < 2 && i < line.length && at(i) === "="; pad += 1) i += 1;
+    while (i < line.length && isBlank(at(i))) i += 1;
+    return i === line.length;
+  },
+});
+
+// The escapes a serializer writes for a character of a key block, as the
+// letter after the backslash: a line break, a carriage return, a tab, a
+// solidus, a quote, and any character as u and four hex digits.
+const ESCAPED = Object.freeze({ n: "\n", r: "\r", t: "\t", "/": "/", '"': '"' });
+const isHex = (c) => isDigit(c) || (c >= "a" && c <= "f") || (c >= "A" && c <= "F");
+
+/**
+ * The character a run of backslashes at `at` stands for, and the length of
+ * its spelling, read no further than `limit`. A backslash in the run may be
+ * one character or `\u005c`, a backslash spelled as an escape.
+ *
+ * AN AMBIGUOUS SPELLING IS READ THE WAY THAT TAKES MORE. The filter is not
+ * told whether its text was serialized, or how often, and some spellings read
+ * two ways. It would rather take a word of ordinary text from a row that
+ * already holds a key's first line than let a line of the key through:
+ *   - any run of backslashes, spelled or not, before `n`, `r`, `t`, `/`, or
+ *     `u` and four hex digits, is that escape: one backslash is a literal in
+ *     raw text (a Windows path) and an escape in a serialized string; two are
+ *     a literal in a string serialized once and an escape in one serialized
+ *     twice; and so on;
+ *   - before a quote, a run of an odd number of backslashes, none spelled, is
+ *     a quote escaped: a quote in the string's text, or the end of a string
+ *     inside it, which readBlockLine takes as the text's end; any other run is
+ *     backslashes, and the quote after it is the string's end;
+ *   - any other run is one character that is no key's (a backslash).
+ * The one place the reader does not take more is a quote: it never takes one,
+ * so that a serialized body stays valid JSON, whatever the text it stands in.
+ */
+function escapeAt(text, at, limit, look) {
+  const spelledAt = (i) => {
+    look();
+    if (i + 6 > limit || text[i + 1] !== "u") return false;
+    for (let k = 0; k < 4; k += 1) look();
+    return text.slice(i + 2, i + 6).toLowerCase() === "005c";
+  };
+  let i = at;
+  let raw = 0;
+  let spelled = false;
+  while (i < limit && text[i] === "\\") {
+    look();
+    if (spelledAt(i)) {
+      spelled = true;
+      i += 6;
+    } else {
+      raw += 1;
+      i += 1;
+    }
+  }
+  const letter = i < limit ? text[i] : undefined;
+  look();
+  if (letter === '"') return !spelled && raw % 2 === 1 ? { char: '"', length: i - at + 1 } : { char: "\\", length: i - at };
+  if (letter === "u") {
+    let hex = 0;
+    while (hex < 4 && i + 1 + hex < limit && isHex(text[i + 1 + hex])) { look(); hex += 1; }
+    if (hex === 4) return { char: String.fromCharCode(parseInt(text.slice(i + 1, i + 5), 16)), length: i - at + 5 };
+  }
+  if (letter !== undefined && letter !== '"' && letter in ESCAPED) return { char: ESCAPED[letter], length: i - at + 1 };
+  return { char: "\\", length: i - at };
+}
+
+/**
+ * One line of an open block, read from `at` and no further than `limit`, the
+ * next block's first line: `line`, its text with every escape decoded; `end`,
+ * where its text ends in `text`; `next`, where the next line starts, or -1
+ * when the block can have none; and `last`, whether the text stops there. A
+ * line ends at a line break, raw or escaped, with a carriage return before it.
+ * A quote ends the block and is read as the text's end: a raw one is the end
+ * of a serialized string; an escaped one is a quote in the string's text or
+ * the end of a string inside it, read the way that takes more (escapeAt). The
+ * next block's first line ends the block too, and is not the text's end. A
+ * block taken never holds a quote, and never ends inside an escape.
+ */
+function readBlockLine(text, at, limit, look) {
+  const charAt = (i) => {
+    if (text[i] !== "\\") { look(); return { char: text[i], length: 1 }; }
+    return escapeAt(text, i, limit, look);
+  };
+  let line = "";
+  let i = at;
+  while (i < limit) {
+    const { char, length } = charAt(i);
+    if (char === '"') return { line, end: i, next: -1, last: true };
+    if (char === "\n") return { line, end: i, next: i + length, last: false };
+    if (char === "\r" && i + length < limit && charAt(i + length).char === "\n") {
+      return { line, end: i, next: i + length + charAt(i + length).length, last: false };
+    }
+    line += char;
+    i += length;
+  }
+  return { line, end: i, next: -1, last: limit === text.length };
+}
+
+const PEM_BEGIN = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
+const PEM_END = /-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
+
+/**
+ * `text` with PEM_PRIVATE_KEY's matches replaced, run only up to the end of
+ * the text's last END line. Past it no first line has a last line, so the rule
+ * matches nothing there; run over it, the rule's lazy search went on from
+ * every first line to the text's end, and a megabyte of first lines took
+ * seconds.
+ */
+function redactWholePrivateKeys(text) {
+  let upTo = 0;
+  PEM_END.lastIndex = 0;
+  while (PEM_END.exec(text) !== null) upTo = PEM_END.lastIndex;
+  return text.slice(0, upTo).replace(PEM_PRIVATE_KEY, "[redacted:pem]") + text.slice(upTo);
+}
+
+/** Where the open block whose first line ends at `from` ends, reading no
+ *  further than `limit`. The rest of the first line is read as a line of the
+ *  block. */
+function openBlockEnd(text, from, limit, look) {
+  const kinds = OPEN_KEY_BLOCK;
+  let end = from;
+  let at = from;
+  let full = false;
+  for (;;) {
+    const { line, end: lineEnd, next, last } = readBlockLine(text, at, limit, look);
+    if (kinds.fullLine(line, look)) {
+      end = lineEnd;
+      full = true;
+    } else if (kinds.shortLine(line, look) && (full || last)) {
+      return lineEnd;
+    } else if (last && full && kinds.cutOff(line, look)) {
+      return lineEnd;
+    } else if (full || (!kinds.empty(line, look) && !kinds.header(line, look))) {
+      return end;
+    }
+    if (next === -1) return end;
+    at = next;
+  }
+}
+
+/** `text`, which holds no whole block, with each block left open taken.
+ *  `look` is called for every character the step looks at, the search for
+ *  first lines counted as one look at each character of the text. */
+function redactOpenPrivateKeys(text, look = () => {}) {
+  const firsts = [];
+  PEM_BEGIN.lastIndex = 0;
+  for (let match; (match = PEM_BEGIN.exec(text)) !== null;) firsts.push([match.index, PEM_BEGIN.lastIndex]);
+  for (let i = 0; i < text.length; i += 1) look();
+  let out = "";
+  let copied = 0;
+  for (let k = 0; k < firsts.length; k += 1) {
+    const [start, markerEnd] = firsts[k];
+    const limit = k + 1 < firsts.length ? firsts[k + 1][0] : text.length;
+    out += `${text.slice(copied, start)}[redacted:pem]`;
+    copied = openBlockEnd(text, markerEnd, limit, look);
+  }
+  return out + text.slice(copied);
+}
+
+/** For the tests: how many characters the open-block step looks at in
+ *  `text`, which holds no whole block. */
+export function countOpenKeyBlockReads(text) {
+  let looks = 0;
+  redactOpenPrivateKeys(String(text), () => { looks += 1; });
+  return looks;
+}
+
 /** `text` with every credential-shaped span replaced by `[redacted:<kind>]`. */
 export function redactSecrets(text) {
-  let out = String(text).replace(PEM_PRIVATE_KEY, "[redacted:pem]");
+  // A whole block first; a first line still standing has no last line after it.
+  let out = redactOpenPrivateKeys(redactWholePrivateKeys(String(text)));
   out = out.replace(AWS_ACCESS_KEY_PAIR, "$1$2$3[redacted:aws]$3");
   for (const { kind, pattern } of REDACTED_SHAPES) {
     out = out.replace(pattern, `[redacted:${kind}]`);
@@ -218,10 +486,11 @@ const CLOSING_LINE = `\n${["-----END", "PRIVATE KEY-----"].join(" ")}`;
 
 /**
  * For a caller that sends a text only up to where it is safe: where the text
- * holds a private key block that this filter leaves open (a first line with no
- * last line after it, so redactSecrets would not replace it), the last line
- * start at which no block is open; -1 where it leaves none open. Everything
- * before that position redacts with every block in it closed.
+ * holds a private key block left open (a first line with no last line after
+ * it, which redactSecrets takes only as far as OPEN_KEY_BLOCK's lines reach), the
+ * last line start at which no block is open; -1 where none is open. Everything
+ * before that position redacts with every block in it closed, and a caller
+ * that withholds the rest sends none of a key whose lines the grammar misses.
  *
  * Read with PEM_PRIVATE_KEY itself, so it cannot disagree with the filter: the
  * text is matched with a closing line appended, the one match that reaches the

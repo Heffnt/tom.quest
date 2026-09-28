@@ -18,19 +18,22 @@ is no fourth verifier and this page does not add one.
 Every wall time was measured on the Jarvis Box on 2026-09-22, four cores, with
 `node_modules` already installed; the vitest rows and the guardrail total were
 measured again on 2026-09-24, after the box's code and its tests left for the
-Jarvis repository. A GitHub runner is also four cores, so these
+Jarvis repository. The vitest rows' counts of files and tests were counted again
+on 2026-09-28 from one run of the whole suite, a test file per row by its
+directory and every test counted, skipped ones too; their times were not
+measured again. A GitHub runner is also four cores, so these
 are close to what CI pays; the install itself is another 30 to 60 seconds per
 job and is not counted in any row.
 
 | Test or check | What it verifies | Where it runs | Wall time | Verifier |
 |---|---|---|---|---|
-| vitest, `convex/` — 43 files, 1,343 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
-| vitest, `app/` — 68 files, 1,047 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 18.5 s of CPU | checks |
-| vitest, `scripts/` — 8 files, 64 tests | The guardrail scripts' own logic, the affected-tests decision, the tests report | CI `tests`; local | 1.2 s of CPU | checks |
-| vitest, `shared/__tests__/` — 10 files, 278 tests | The modules Convex, the site and the box share: the skills catalog and router, the graph, redaction, the session constants, and that each imports only its siblings | CI `tests`; local | 0.3 s of CPU | checks |
+| vitest, `convex/` — 50 files, 1,183 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
+| vitest, `app/` — 74 files, 1,076 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 18.5 s of CPU | checks |
+| vitest, `scripts/` — 8 files, 69 tests | The guardrail scripts' own logic, the affected-tests decision, the tests report | CI `tests`; local | 1.2 s of CPU | checks |
+| vitest, `shared/__tests__/` — 11 files, 434 tests | The modules Convex, the site and the box share: the skills catalog and router, the graph, redaction, the session constants, and that each imports only its siblings | CI `tests`; local | 0.3 s of CPU | checks |
 | vitest, `vqc/` — 2 files, 9 tests | The shape of `vqc/todos.yaml` and the registries beside it | CI `tests`; local | 0.1 s of CPU | checks |
 | vitest, `test/` — 1 file, 3 tests | `test/temp.mjs`, the `tempDir` helper every test's scratch directory comes from | CI `tests`; local | under 0.01 s of CPU | checks |
-| **the whole vitest suite** — 132 files, 2,798 tests | all of the above, in one run | CI `tests` on main, on the nightly and on a manual run; the diff's related files on a pull request | **73 s** | checks |
+| **the whole vitest suite** — 146 files, 2,774 tests | all of the above, in one run | CI `tests` on main, on the nightly and on a manual run; the diff's related files on a pull request | **73 s** | checks |
 | Playwright, `e2e/` — 52 cases across 7 specs, 2 viewports | The site as a browser sees it: the home page, the public quest routes, the page-visibility registry, the boolback plot, the perfume brew | CI `e2e`; local `pnpm test:e2e` | **52 s** against `next dev`, 18 s against a built server | checks |
 | `npx tsc --noEmit` | Every type in the repository, `convex/_generated` included | CI `tests`; local | **28 s** | checks |
 | `pnpm build` | The production Next.js build, the one Vercel runs on main | CI `tests`; local | **62 s** | checks |
