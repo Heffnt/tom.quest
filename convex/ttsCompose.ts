@@ -78,7 +78,7 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  settled run (his own settlements on /intent) is printed right after the
  *  objection list and is not named here either: nothing in it waits on him.
  */
-export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnight", "broken", "box"] as const;
+export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnight", "broken", "spend", "box"] as const;
 
 /** Per-section item caps, before the whole-message fit. Nearest him, most
  *  room. */
@@ -524,6 +524,24 @@ export type TodayFacts = {
    *  boxChangeLines): one line per agent that ran root commands, per deploy,
    *  per setup run, per other kind of change. Absent or empty: nothing did. */
   boxChanges?: BoxChangeFact[];
+  /** What the agents that started in the window cost (convex/ttsDigest.ts
+   *  spendOf). Absent: no agent started in it. */
+  spend?: SpendFact;
+};
+
+/** The spend section's facts. Every sum is of the agents' own `costUsd`, the
+ *  box's price for the tokens at published prices; an agent with no price
+ *  adds nothing to a sum and is counted in `unpriced`. */
+export type SpendFact = {
+  /** The agents read: every one that started in the window, unless `capped`. */
+  agents: number;
+  costUsd: number;
+  unpriced: number;
+  byFamily: { claude: number; codex: number; openWeight: number };
+  byWatcher: { session: number; child: number; nobody: number };
+  /** The read stopped at its bound, so every figure is a floor. */
+  capped: boolean;
+  url: string;
 };
 
 /** One settlement of a disagreement: the event's id and the line settle wrote. */
@@ -699,6 +717,31 @@ export function calendarLine(span: CalendarSpan): string {
   );
 }
 
+function dollars(usd: number): string {
+  return `$${usd.toFixed(2)}`;
+}
+
+/** The spend section: its lead, then one line per split, then one saying what
+ *  the sums leave out when they leave anything out. "At published prices" is
+ *  in the lead because the subscriptions are not billed by the token, so the
+ *  figure is what the tokens would cost, not what was paid. The watcher line
+ *  says "no watcher on record" rather than "nobody watched" because the record
+ *  keeps no parent for a Codex agent a Claude agent starts from its shell,
+ *  which then looks exactly like one a job started. */
+export function spendLines(s: SpendFact): { lead: string; items: string[] } {
+  const lead = `The ${countWord(s.agents)} ${plural(s.agents, "agent", "agents")} that started since the last digest cost ${dollars(s.costUsd)} at published prices; the subscriptions are not billed per token.`;
+  const items = [
+    `By model family: Claude ${dollars(s.byFamily.claude)}, Codex ${dollars(s.byFamily.codex)}, open weight ${dollars(s.byFamily.openWeight)}.`,
+    `By who watched: ${dollars(s.byWatcher.session)} in sessions, ${dollars(s.byWatcher.child)} in agents another agent started, ${dollars(s.byWatcher.nobody)} with no watcher on record.`,
+  ];
+  const unpriced = `${capitalise(countWord(s.unpriced))} ${plural(s.unpriced, "agent has", "agents have")} no price`;
+  const stopped = `the read stopped at ${s.agents} agents, so every figure here is a floor`;
+  if (s.unpriced > 0 && s.capped) items.push(`${unpriced} and ${stopped}.`);
+  else if (s.unpriced > 0) items.push(`${unpriced}, so the sums leave ${s.unpriced === 1 ? "it" : "them"} out.`);
+  else if (s.capped) items.push(`${capitalise(stopped)}.`);
+  return { lead, items };
+}
+
 // ── Assembly helpers ─────────────────────────────────────────────────────────
 
 type Item = { text: string; url: string };
@@ -785,8 +828,8 @@ export function objectionsLead(all: number, merges: number, sent = 0): string {
 
 /**
  * The morning message. Runs today → objection list → the calendar →
- * done overnight → broken, fits one Slack message, and shrinks the sections
- * furthest from him first.
+ * done overnight → broken → spend, fits one Slack message, and shrinks the
+ * sections furthest from him first.
  *
  * OUTCOMES, NEVER LOGGED EVENTS: the overnight run prints one line per todo
  * saying what the sessions on it came to. "plan stored", "created", "retired", "session
@@ -928,6 +971,14 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
       f.broken.map((b) => ({ text: brokenLine(b), url: b.url ?? TAB_EVERYTHING })),
       SECTION_CAPS.broken,
     );
+  }
+
+  // 6b. What the window's agents cost. Left out when none started, as every
+  //     run but today's is when its fact is empty.
+  const spend = f.spend;
+  if (spend !== undefined) {
+    const { lead, items } = spendLines(spend);
+    pushRun(lines, "spend", lead, items.map((text) => ({ text, url: spend.url })), items.length);
   }
 
   // 7. What changed on the box (plan-root T1, guarantee G4): the last run,
@@ -1184,6 +1235,11 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
       ]),
     );
   });
+  const spend = f.spend;
+  if (spend !== undefined) {
+    const { lead, items } = spendLines(spend);
+    [lead, ...items].forEach((text, index) => facts.push(fact(`spend:${index}`, text, [spend.url])));
+  }
   for (const b of f.boxChanges ?? []) facts.push(fact(b.id, b.text, [b.url]));
   return { kind: "today", day: f.day, canReply, facts };
 }

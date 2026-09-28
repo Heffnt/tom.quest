@@ -18,6 +18,7 @@ import {
   objectionsLead,
   renderSlack,
   sessionUrl,
+  spendLines,
   statement,
   todayFactsBlock,
   fit,
@@ -25,6 +26,7 @@ import {
   todoOutcomeLine,
   type Line,
   type Message,
+  type SpendFact,
   type TodayFacts,
 } from "./ttsCompose";
 import { ttsItemLink, ttsSessionLink, ttsTabLink } from "./ttsShared";
@@ -338,11 +340,12 @@ describe("composeToday", () => {
           },
         ],
         boxChanges: [{ id: "box:logins", text: "2 ssh logins reached the box: jarvis 2.", url: "https://tom.quest/observe" }],
+        spend: spendFact(),
       }),
       { canReply: false },
     );
     const order = withAll.lines.filter((l) => l.role === "lead").map((l) => l.section);
-    expect(order).toEqual(["today", "objections", "needs-you-today", "calendar", "overnight", "broken", "box"]);
+    expect(order).toEqual(["today", "objections", "needs-you-today", "calendar", "overnight", "broken", "spend", "box"]);
     // The four ranked sections keep the design's order among themselves.
     expect(order.filter((s) => (SECTION_ORDER as readonly string[]).includes(s as string))).toEqual([
       ...SECTION_ORDER,
@@ -814,3 +817,78 @@ describe("the facts block", () => {
   });
 });
 
+
+// ── The spend section ────────────────────────────────────────────────────────
+// What the window's agents cost, from facts convex/ttsDigest.ts gathered: at
+// most four lines, dollars to two decimals, and a line naming what the sums
+// leave out whenever they leave anything out.
+
+const AGENTS_WINDOW = "https://tom.quest/agents?view=window";
+
+function spendFact(overrides: Partial<SpendFact> = {}): SpendFact {
+  return {
+    agents: 57,
+    costUsd: 12.347,
+    unpriced: 0,
+    byFamily: { claude: 8.1, codex: 3.2, openWeight: 1.047 },
+    byWatcher: { session: 5, child: 6, nobody: 1.347 },
+    capped: false,
+    url: AGENTS_WINDOW,
+    ...overrides,
+  };
+}
+
+describe("the spend section", () => {
+  it("says the total at published prices, then the model families and who watched, each linking the agents window", () => {
+    const text = renderSlack(composeToday(sept9({ spend: spendFact() }), { canReply: false }));
+    expect(text).toContain(
+      [
+        "The 57 agents that started since the last digest cost $12.35 at published prices; the subscriptions are not billed per token.",
+        `- <${AGENTS_WINDOW}|By model family: Claude $8.10, Codex $3.20, open weight $1.05.>`,
+        `- <${AGENTS_WINDOW}|By who watched: $5.00 in sessions, $6.00 in agents another agent started, $1.35 with no watcher on record.>`,
+      ].join("\n"),
+    );
+    // Nothing is left out, so nothing says so.
+    expect(text).not.toContain("no price");
+    expect(text).not.toContain("floor");
+    expect(text.toLowerCase()).not.toMatch(/\bkind\b/);
+  });
+
+  it("names the agents with no price, in the singular and the plural", () => {
+    expect(spendLines(spendFact({ unpriced: 1 })).items[2]).toBe("One agent has no price, so the sums leave it out.");
+    expect(spendLines(spendFact({ unpriced: 4 })).items[2]).toBe("Four agents have no price, so the sums leave them out.");
+  });
+
+  it("says the figures are floors when the read stopped at its bound", () => {
+    expect(spendLines(spendFact({ agents: 1000, capped: true })).items[2]).toBe(
+      "The read stopped at 1000 agents, so every figure here is a floor.",
+    );
+    expect(spendLines(spendFact({ agents: 1000, capped: true, unpriced: 3 })).items[2]).toBe(
+      "Three agents have no price and the read stopped at 1000 agents, so every figure here is a floor.",
+    );
+  });
+
+  it("is at most four lines, each inside the line cap, and one agent is said in the singular", () => {
+    const large = spendFact({
+      agents: 1000,
+      costUsd: 123456.78,
+      unpriced: 999,
+      byFamily: { claude: 123456.78, codex: 123456.78, openWeight: 123456.78 },
+      byWatcher: { session: 123456.78, child: 123456.78, nobody: 123456.78 },
+      capped: true,
+    });
+    const run = composeToday(sept9({ spend: large }), { canReply: false }).lines.filter((l) => l.section === "spend");
+    expect(run).toHaveLength(4);
+    for (const line of run) expect(line.text.length).toBeLessThanOrEqual(LINE_CHARS);
+    expect(checkMessage(composeToday(sept9({ spend: large }), { canReply: false }), { canReply: false })).toEqual([]);
+    expect(spendLines(spendFact({ agents: 1 })).lead).toMatch(/^The one agent that started since the last digest cost/);
+  });
+
+  it("is left out when no agent started, and its lines are facts when one did", () => {
+    expect(composeToday(sept9(), { canReply: false }).lines.some((l) => l.section === "spend")).toBe(false);
+    expect(todayFactsBlock(sept9(), false).facts.some((f) => f.id.startsWith("spend:"))).toBe(false);
+    const facts = todayFactsBlock(sept9({ spend: spendFact({ unpriced: 2 }) }), false).facts.filter((f) => f.id.startsWith("spend:"));
+    expect(facts.map((f) => f.id)).toEqual(["spend:0", "spend:1", "spend:2", "spend:3"]);
+    expect(facts[0]).toMatchObject({ urls: [AGENTS_WINDOW], numbers: expect.arrayContaining(["57", "12.35"]) });
+  });
+});
