@@ -42,7 +42,6 @@ import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./tts
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
 import { dayLogLookbackStart, dayLogWeeklyFacts } from "../shared/day-log-trends.mjs";
-import { DAY_LOG_KINDS } from "./dayLogVocabulary";
 // Every other string this gather carries came off a row a worker had already
 // put through the filter. An objection's sentence is Slack text Tom typed, so
 // it goes through the one choke point the rest of Convex uses
@@ -229,6 +228,11 @@ type WeeklyFacts = {
     runCount: number;
   } | null;
 };
+
+// A Friday fact needs only measurements and runs. The worker keeps this read
+// bounded even if a future capture source writes far more entries than a
+// person can review in one week.
+const DAY_LOG_WEEKLY_ROWS_MAX = 2_000;
 
 function str(value: unknown): string | null {
   return typeof value === "string" ? value : null;
@@ -841,19 +845,19 @@ export async function gatherWeeklyFacts(
   const dayLogEntriesPromise = ctx.db
     .query("dayLogEntries")
     .withIndex("by_day", (q) => q.gte("day", dayLogStart).lte("day", dayLogToday))
-    .collect();
-  const dayLogItemsByKindPromise = Promise.all(
-    DAY_LOG_KINDS.map(async (kind) =>
-      await ctx.db
-        .query("dayLogItems")
-        .withIndex("by_kind_day", (q) => q.eq("kind", kind).gte("day", dayLogStart).lte("day", dayLogToday))
-        .collect(),
-    ),
-  );
-  const [dayLogEntries, dayLogItemsByKind] = await Promise.all([dayLogEntriesPromise, dayLogItemsByKindPromise]);
+    .order("desc")
+    .take(DAY_LOG_WEEKLY_ROWS_MAX);
+  const dayLogItemsPromise = Promise.all(
+    (["measurement", "workout"] as const).map((itemType) => ctx.db
+      .query("dayLogItems")
+      .withIndex("by_type_day", (q) => q.eq("type", itemType).gte("day", dayLogStart).lte("day", dayLogToday))
+      .order("desc")
+      .take(DAY_LOG_WEEKLY_ROWS_MAX)),
+  ).then((rows) => rows.flat());
+  const [dayLogEntries, dayLogItems] = await Promise.all([dayLogEntriesPromise, dayLogItemsPromise]);
   const entryCreatedAt = new Map(dayLogEntries.map((entry) => [entry._id, entry.createdAt]));
   const dayLog = dayLogWeeklyFacts(
-    dayLogItemsByKind.flat().map((item) => ({
+    dayLogItems.map((item) => ({
       ...item,
       entryCreatedAt: entryCreatedAt.get(item.entryId) ?? item.createdAt,
     })),

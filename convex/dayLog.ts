@@ -6,7 +6,7 @@ import {
   DAY_LOG_ACTIVITIES,
   DAY_LOG_BODY_PARTS,
   DAY_LOG_BOUNDS,
-  DAY_LOG_KINDS,
+  DAY_LOG_TYPES,
   DAY_LOG_METRICS,
   DAY_LOG_PARTS_OF_DAY,
   DAY_LOG_VOCABULARY,
@@ -53,7 +53,7 @@ function isOneOf<T extends readonly string[]>(value: unknown, values: T): value 
 }
 
 function validateItem(raw: unknown, entry: Doc<"dayLogEntries">): {
-  kind: (typeof DAY_LOG_KINDS)[number];
+  type: (typeof DAY_LOG_TYPES)[number];
   day: string;
   quote: string;
   summary: string;
@@ -68,14 +68,14 @@ function validateItem(raw: unknown, entry: Doc<"dayLogEntries">): {
 } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) itemError("each item must be an object");
   const item = raw as WireItem;
-  if (!isOneOf(item.kind, DAY_LOG_KINDS)) itemError("item kind is unknown");
+  if (!isOneOf(item.type, DAY_LOG_TYPES)) itemError("item type is unknown");
   const day = string(item.day, "item day");
   if (!isDay(day) || !dayIsInEntryWindow(day, entry.day)) itemError("item day is outside the entry window");
   const quote = string(item.quote, "item quote", DAY_LOG_BOUNDS.quoteMax);
   if (!entry.text.includes(quote)) itemError("item quote must be a verbatim substring of the entry");
   const summary = string(item.summary, "item summary", DAY_LOG_BOUNDS.summaryMax);
 
-  if (item.kind === "measurement") {
+  if (item.type === "measurement") {
     const metric = string(item.metric, "measurement metric");
     const definition = DAY_LOG_METRICS[metric as keyof typeof DAY_LOG_METRICS];
     if (!definition) itemError("measurement metric is unknown");
@@ -84,10 +84,10 @@ function validateItem(raw: unknown, entry: Doc<"dayLogEntries">): {
     const unit = string(item.unit, "measurement unit");
     if (unit !== definition.unit) itemError("measurement unit does not match the metric");
     if (!isOneOf(item.partOfDay, DAY_LOG_PARTS_OF_DAY)) itemError("measurement partOfDay is unknown");
-    return { kind: item.kind, day, quote, summary, metric, value, unit, partOfDay: item.partOfDay };
+    return { type: item.type, day, quote, summary, metric, value, unit, partOfDay: item.partOfDay };
   }
 
-  if (item.kind === "workout") {
+  if (item.type === "workout") {
     if (!isOneOf(item.activity, DAY_LOG_ACTIVITIES)) itemError("workout activity is unknown");
     let bodyParts: string[] | undefined;
     if (item.bodyParts !== undefined) {
@@ -106,7 +106,7 @@ function validateItem(raw: unknown, entry: Doc<"dayLogEntries">): {
     const distanceMi = optionalNonnegative(item.distanceMi, "workout distanceMi");
     const durationMin = optionalNonnegative(item.durationMin, "workout durationMin");
     return {
-      kind: item.kind,
+      type: item.type,
       day,
       quote,
       summary,
@@ -117,14 +117,14 @@ function validateItem(raw: unknown, entry: Doc<"dayLogEntries">): {
     };
   }
 
-  return { kind: item.kind, day, quote, summary };
+  return { type: item.type, day, quote, summary };
 }
 
-function itemKindWord(item: { kind: string; activity?: string }): string {
-  if (item.kind === "workout" && item.activity === "run") return "run";
-  if (item.kind === "food") return "meal";
-  if (item.kind === "work") return "work item";
-  return item.kind;
+function itemTypeWord(item: { type: string; activity?: string }): string {
+  if (item.type === "workout" && item.activity === "run") return "run";
+  if (item.type === "food") return "meal";
+  if (item.type === "work") return "work item";
+  return item.type;
 }
 
 function countWord(count: number, word: string): string {
@@ -141,16 +141,16 @@ function joinClauses(clauses: string[]): string {
 /** The sole source of page wording for a worker verdict. */
 export function dayLogResultLine(
   status: "pending" | "applied" | "needs-session",
-  items: Array<{ kind: string; metric?: string; value?: number; unit?: string; activity?: string }>,
+  items: Array<{ type: string; metric?: string; value?: number; unit?: string; activity?: string }>,
 ): string {
   if (status === "pending") return "Jarvis has not read this yet.";
   if (status === "needs-session") return "Jarvis could not read this entry; it stays here and still goes to nightly learning.";
   const measurements = items
-    .filter((item) => item.kind === "measurement" && item.metric !== undefined && item.value !== undefined && item.unit !== undefined)
+    .filter((item) => item.type === "measurement" && item.metric !== undefined && item.value !== undefined && item.unit !== undefined)
     .map((item) => `your ${item.metric!.replaceAll("_", " ")}, ${item.value!.toFixed(1)} ${item.unit}`);
   const grouped = new Map<string, number>();
-  for (const item of items.filter((item) => item.kind !== "measurement")) {
-    const word = itemKindWord(item);
+  for (const item of items.filter((item) => item.type !== "measurement")) {
+    const word = itemTypeWord(item);
     grouped.set(word, (grouped.get(word) ?? 0) + 1);
   }
   const clauses = [...measurements, ...[...grouped.entries()].map(([word, count]) => countWord(count, word))];
@@ -199,8 +199,8 @@ export const trainingDay = query({
       ctx.db.query("modelOfTomFiles").withIndex("by_name", (q) => q.eq("name", "schedule")).first(),
       ctx.db.query("modelOfTomFiles").withIndex("by_name", (q) => q.eq("name", "areas/health-and-food")).first(),
     ]);
-    if (schedule === null || ideas === null) return null;
-    return parseTrainingDay(schedule.body, ideas.body, weekdayWordOf(nyCalendarDayKey(Date.now())));
+    if (schedule === null) return null;
+    return parseTrainingDay(schedule.body, ideas?.body ?? "", weekdayWordOf(nyCalendarDayKey(Date.now())));
   },
 });
 
@@ -214,14 +214,14 @@ export const series = query({
       const rows = [];
       const rowsInRange = ctx.db
         .query("dayLogItems")
-        .withIndex("by_reverted_at_and_kind_and_metric_and_day", (q) => q.eq("revertedAt", undefined).eq("kind", "measurement").eq("metric", metric).gte("day", since));
+        .withIndex("by_reverted_at_and_type_and_metric_and_day", (q) => q.eq("revertedAt", undefined).eq("type", "measurement").eq("metric", metric).gte("day", since));
       for await (const item of rowsInRange) rows.push(item);
       return rows;
     }))).flat();
     const runs = [];
     const runsInRange = ctx.db
       .query("dayLogItems")
-      .withIndex("by_reverted_at_and_kind_and_activity_and_day", (q) => q.eq("revertedAt", undefined).eq("kind", "workout").eq("activity", "run").gte("day", since));
+      .withIndex("by_reverted_at_and_type_and_activity_and_day", (q) => q.eq("revertedAt", undefined).eq("type", "workout").eq("activity", "run").gte("day", since));
     for await (const item of runsInRange) runs.push(item);
 
     const entries = await Promise.all(measurements.map(async (item) => {
@@ -305,7 +305,7 @@ export const internalApplyDayLog = internalMutation({
     await ctx.db.insert("dtsEvents", {
       at: now,
       kind: "day-log-resolved",
-      data: { status, itemKinds: validItems.map((item) => item.kind), ...(failure === undefined ? {} : { failure }), ...(detail === undefined ? {} : { detail }) },
+      data: { status, itemTypes: validItems.map((item) => item.type), ...(failure === undefined ? {} : { failure }), ...(detail === undefined ? {} : { detail }) },
     });
     return { ok: true, applied: validItems.length, result };
   },

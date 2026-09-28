@@ -38,9 +38,10 @@ Monday keeps the blue marker.
     });
   });
 
-  it("uses a Day table without a training heading and matches a weekday in an idea head", () => {
+  it("matches an abbreviated weekday in a required training section", () => {
     const day = trainingDay(`
 Before the table.
+## Training week
 | **Day** | Block |
 | --- | --- |
 | Tue | Signal |
@@ -74,6 +75,11 @@ Before the table.
 
   it("returns null when the schedule is missing or has no row for the weekday", () => {
     expect(trainingDay("", "", "monday")).toBeNull();
+    expect(trainingDay(`
+| Day | Block |
+| --- | --- |
+| Monday | Signal |
+`, "", "monday")).toBeNull();
     expect(trainingDay(`
 ## Training week
 | Day | Block |

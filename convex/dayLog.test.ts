@@ -24,7 +24,7 @@ async function pendingEntry(t: ReturnType<typeof convexTest>, text = "weighed 18
 
 function weight(day: string, quote = "weighed 180.0 this morning") {
   return {
-    kind: "measurement",
+    type: "measurement",
     day,
     quote,
     summary: "weight",
@@ -54,7 +54,7 @@ describe("day log", () => {
     expect(events[0]?.data).toEqual({ entryId: id });
   });
 
-  it("returns the pending worker shape with verbatim text and vocabulary", async () => {
+  it("returns the pending worker shape with verbatim text and fact-type vocabulary", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "test-key");
     const t = convexTest({ schema, modules });
     const { id, entry } = await pendingEntry(t, "weighed 180.0 this morning");
@@ -64,7 +64,11 @@ describe("day log", () => {
     expect(body).toMatchObject({
       today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       now: expect.any(Number),
-      vocabulary: { metrics: { weight: { unit: "lb", min: 60, max: 600 } }, bounds: { maxItems: 20 } },
+      vocabulary: {
+        types: ["measurement", "workout", "food", "feeling", "symptom", "work"],
+        metrics: { weight: { unit: "lb", min: 60, max: 600 } },
+        bounds: { maxItems: 20 },
+      },
       entries: [{ id, text: entry.text, createdAt: entry.createdAt, day: entry.day, time: expect.stringMatching(/^[0-9]+:[0-9]{2} [ap]\.m\.$/) }],
     });
   });
@@ -89,6 +93,8 @@ describe("day log", () => {
     expect(rows.entry).toMatchObject({ status: "applied", result: "Jarvis recorded your weight, 180.0 lb." });
     expect(rows.items).toHaveLength(1);
     expect(rows.items[0]).toMatchObject(weight(entry.day));
+    const resolved = await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "day-log-resolved")).first());
+    expect(resolved?.data).toMatchObject({ status: "applied", itemTypes: ["measurement"] });
   });
 
   it.each([
@@ -104,7 +110,7 @@ describe("day log", () => {
     expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ status: "pending" });
   });
 
-  it("rejects more than twenty items, actions, and warnings", async () => {
+  it("rejects more than twenty items and deferred input", async () => {
     const t = convexTest({ schema, modules });
     const tooMany = await pendingEntry(t);
     await expect(t.mutation(internal.dayLog.internalApplyDayLog, {
@@ -119,7 +125,7 @@ describe("day log", () => {
       id: actions.id,
       status: "applied",
       items: [],
-      actions: [{ kind: "todo-done" }],
+      actions: [{}],
     })).rejects.toThrow("actions not yet supported");
 
     const warning = await pendingEntry(t);
@@ -154,7 +160,7 @@ describe("day log", () => {
     expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ status: "needs-session" });
   });
 
-  it("returns today's published training day only when both source files exist", async () => {
+  it("returns today's published training day when the schedule exists", async () => {
     const t = convexTest({ schema, modules });
     const readerId = await t.run((ctx) => ctx.db.insert("users", { name: "reader", email: "reader@example.test", role: "user" }));
     await expect(t.withIdentity({ subject: readerId }).query(api.dayLog.trainingDay, {})).rejects.toThrow("Log access is restricted to Tom");
@@ -167,25 +173,14 @@ describe("day log", () => {
       await ctx.db.insert("modelOfTomFiles", {
         name: "schedule",
         body: `## Training week — test\n| Day | Block |\n| --- | --- |\n| Sunday | sunday plan |\n| Monday | monday plan |\n| Tuesday | tuesday plan |\n| Wednesday | wednesday plan |\n| Thursday | thursday plan |\n| Friday | friday plan |\n| Saturday | saturday plan |`,
-        sourcePath: "model-of-tom/schedule.md",
+        sourcePath: "private/schedule.md",
         syncedAt: 1,
       });
     });
-    await expect(viewer.query(api.dayLog.trainingDay, {})).resolves.toBeNull();
-
-    await t.run(async (ctx) => {
-      await ctx.db.insert("modelOfTomFiles", {
-        name: "areas/health-and-food",
-        body: `## Session ideas\n- Marker (${today}): inspect the outline.`,
-        sourcePath: "model-of-tom/areas/health-and-food.md",
-        syncedAt: 1,
-      });
-    });
-
     await expect(viewer.query(api.dayLog.trainingDay, {})).resolves.toEqual({
       cells: [{ column: "Block", text: `${today} plan` }],
       notes: [],
-      ideas: [{ label: "Marker", text: "inspect the outline." }],
+      ideas: [],
     });
   });
 
@@ -208,7 +203,7 @@ describe("day log", () => {
         await ctx.db.insert("dayLogItems", {
           entryId: id,
           day: entry.day,
-          kind: "measurement",
+          type: "measurement",
           quote: "recorded values",
           summary: metric,
           metric,
@@ -221,7 +216,7 @@ describe("day log", () => {
       await ctx.db.insert("dayLogItems", {
         entryId: id,
         day: "2025-09-26",
-        kind: "measurement",
+        type: "measurement",
         quote: "recorded values",
         summary: "old weight",
         metric: "weight",
@@ -233,7 +228,7 @@ describe("day log", () => {
       await ctx.db.insert("dayLogItems", {
         entryId: id,
         day: entry.day,
-        kind: "measurement",
+        type: "measurement",
         quote: "recorded values",
         summary: "reverted waist",
         metric: "waist",
@@ -246,7 +241,7 @@ describe("day log", () => {
       await ctx.db.insert("dayLogItems", {
         entryId: id,
         day: entry.day,
-        kind: "workout",
+        type: "workout",
         quote: "a run",
         summary: "run",
         activity: "run",
@@ -256,7 +251,7 @@ describe("day log", () => {
       await ctx.db.insert("dayLogItems", {
         entryId: id,
         day: entry.day,
-        kind: "workout",
+        type: "workout",
         quote: "a run",
         summary: "reverted run",
         activity: "run",
@@ -267,7 +262,7 @@ describe("day log", () => {
       await ctx.db.insert("dayLogItems", {
         entryId: id,
         day: entry.day,
-        kind: "workout",
+        type: "workout",
         quote: "a run",
         summary: "walk",
         activity: "walk",
@@ -292,8 +287,8 @@ describe("day log result text", () => {
     expect(dayLogResultLine("pending", [])).toBe("Jarvis has not read this yet.");
     expect(dayLogResultLine("applied", [])).toBe("Jarvis found nothing to record.");
     expect(dayLogResultLine("applied", [
-      { kind: "measurement", metric: "weight", value: 180, unit: "lb" },
-      { kind: "workout", activity: "run" },
+      { type: "measurement", metric: "weight", value: 180, unit: "lb" },
+      { type: "workout", activity: "run" },
     ])).toBe("Jarvis recorded your weight, 180.0 lb, and a run.");
     expect(dayLogResultLine("needs-session", [])).toBe("Jarvis could not read this entry; it stays here and still goes to nightly learning.");
   });

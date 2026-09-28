@@ -32,7 +32,19 @@ type Entry = {
   text: string;
   createdAt: number;
   result: string;
-  items: Array<{ _id: string }>;
+  items: Array<{
+    _id: string;
+    type: "measurement" | "workout" | "food" | "feeling" | "symptom" | "work";
+    summary: string;
+    metric?: string;
+    value?: number;
+    unit?: string;
+    partOfDay?: "morning" | "afternoon" | "evening" | "unknown";
+    activity?: "run" | "climb" | "strength" | "bike" | "walk" | "other";
+    bodyParts?: string[];
+    distanceMi?: number;
+    durationMin?: number;
+  }>;
 };
 
 type Measurement = {
@@ -70,6 +82,27 @@ function duration(seconds: number): string {
 function runLabel(count: number, distanceMi: number | null): string {
   const runs = `${count} ${count === 1 ? "run" : "runs"}`;
   return `${runs} · ${distanceMi === null ? "—" : distanceMi.toFixed(1)} mi`;
+}
+
+function words(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
+function factLine(item: Entry["items"][number]): string {
+  if (item.type === "measurement" && item.metric !== undefined && item.value !== undefined && item.unit !== undefined) {
+    const timing = item.partOfDay === undefined || item.partOfDay === "unknown" ? "" : ` · ${item.partOfDay}`;
+    return `${words(item.metric)}: ${item.value.toFixed(1)} ${item.unit}${timing}`;
+  }
+  if (item.type === "workout" && item.activity !== undefined) {
+    const details = [
+      words(item.activity),
+      item.distanceMi === undefined ? null : `${item.distanceMi.toFixed(1)} mi`,
+      item.durationMin === undefined ? null : `${item.durationMin.toFixed(0)} min`,
+      item.bodyParts === undefined || item.bodyParts.length === 0 ? null : item.bodyParts.join(", "),
+    ].filter((detail): detail is string => detail !== null);
+    return details.join(" · ");
+  }
+  return item.summary;
 }
 
 export default function LogClient() {
@@ -212,7 +245,7 @@ export default function LogClient() {
             <LineChart points={weeklyWeight.map((point) => ({ x: point.week, y: point.value }))} unit="lb" />
           </section>}
           {waist.length > 0 && <section aria-label="Waist" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
-            <LineChart points={waist.map((point) => ({ x: point.day, y: point.value }))} unit="in" xLabel="day" />
+            <LineChart points={waist.map((point) => ({ x: point.day, y: point.value }))} unit="in" />
           </section>}
           {runs.length > 0 && <section aria-label="Runs per week" className="min-h-[10.625rem] rounded-lg border border-border bg-surface/40 p-3">
             <LineChart
@@ -230,7 +263,6 @@ export default function LogClient() {
                 <LineChart
                   points={points.map((point) => ({ x: point.month, y: point.value }))}
                   unit={benchmark.unit === "s" && metric === "loop_1_4mi" ? "m:ss" : benchmark.unit}
-                  xLabel="month"
                   formatValue={metric === "loop_1_4mi" ? duration : undefined}
                 />
               </section>
@@ -246,6 +278,11 @@ export default function LogClient() {
                 <article key={entry._id} className="rounded-lg border border-border bg-surface/40 p-3">
                   <time dateTime={new Date(entry.createdAt).toISOString()} className="block text-xs text-text-faint">{time(entry.createdAt)}</time>
                   <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-sm leading-6 text-text">{entry.text}</pre>
+                  {entry.items.length > 0 && (
+                    <ul className="mt-3 space-y-1 border-l border-border pl-3 text-sm text-text-muted">
+                      {entry.items.map((item) => <li key={item._id}>{factLine(item)}</li>)}
+                    </ul>
+                  )}
                   <p className="mt-3 text-sm text-text-muted">{entry.result}</p>
                 </article>
               ))}

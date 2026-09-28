@@ -1,5 +1,5 @@
-export type TrainingCell = { column: string; text: string };
-export type TrainingIdea = { label: string; text: string };
+type TrainingCell = { column: string; text: string };
+type TrainingIdea = { label: string; text: string };
 export type TrainingDay = {
   cells: TrainingCell[];
   notes: string[];
@@ -106,7 +106,7 @@ function sectionAfter(lines: string[], at: number, level: number): number {
   return lines.length;
 }
 
-function trainingTable(lines: string[], day: string): MarkdownTable | null {
+function trainingTable(lines: string[]): MarkdownTable | null {
   for (let index = 0; index < lines.length; index += 1) {
     const candidate = heading(lines[index]);
     if (candidate === null || !candidate.text.toLowerCase().startsWith("training week")) continue;
@@ -116,15 +116,6 @@ function trainingTable(lines: string[], day: string): MarkdownTable | null {
       if (table !== null) return table;
     }
     return null;
-  }
-
-  for (let cursor = 0; cursor < lines.length; cursor += 1) {
-    const table = tableAt(lines, cursor, lines.length);
-    if (
-      table !== null
-      && table.header[0]?.toLowerCase() === "day"
-      && table.rows.some((row) => weekday(row[0] ?? "") !== null)
-    ) return table;
   }
   return null;
 }
@@ -199,7 +190,7 @@ export function trainingDay(scheduleMd: string, ideasMd: string, weekdayName: st
   if (day === null) return null;
 
   const scheduleLines = scheduleMd.split(/\r?\n/);
-  const table = trainingTable(scheduleLines, day);
+  const table = trainingTable(scheduleLines);
   if (table === null) return null;
   const row = table.rows.find((candidate) => weekday(candidate[0] ?? "") === day);
   if (row === undefined) return null;

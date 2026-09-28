@@ -37,7 +37,16 @@ function mean(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function average(values) {
+/** The one morning-weight average used by the page's weeks and Friday facts. */
+export function morningWeightAverage(items) {
+  const values = items
+    .filter((item) =>
+      isActive(item)
+      && isMorningValue(item)
+      && typeof item.value === "number"
+      && Number.isFinite(item.value),
+    )
+    .map((item) => item.value);
   return values.length === 0 ? null : mean(values);
 }
 
@@ -85,19 +94,22 @@ export function mondayOf(day) {
 export function weeklyMorningAverages(items) {
   const buckets = new Map();
   for (const item of items) {
-    if (!isActive(item)) continue;
-    if (!isMorningValue(item)) continue;
+    if (
+      !isActive(item)
+      || !isMorningValue(item)
+      || typeof item.value !== "number"
+      || !Number.isFinite(item.value)
+    ) continue;
     const week = mondayOf(item.day);
-    const values = buckets.get(week) ?? [];
-    values.push(item.value);
-    buckets.set(week, values);
+    const bucket = buckets.get(week) ?? [];
+    bucket.push(item);
+    buckets.set(week, bucket);
   }
   return [...buckets.entries()]
-    .map(([week, values]) => ({
-      week,
-      value: mean(values),
-      count: values.length,
-    }))
+    .flatMap(([week, bucket]) => {
+      const value = morningWeightAverage(bucket);
+      return value === null ? [] : [{ week, value, count: bucket.length }];
+    })
     .sort((a, b) => a.week.localeCompare(b.week));
 }
 
@@ -114,7 +126,6 @@ export function dayLogWeeklyFacts(items, today) {
   const lookbackStart = dayLogLookbackStart(today);
   const currentWeekStart = offsetDay(today, -6);
   const previousWeekStart = offsetDay(today, -13);
-  const previousWeekEnd = offsetDay(today, -7);
   const current = items.filter((item) =>
     item.revertedAt === undefined
     && typeof item.day === "string"
@@ -123,16 +134,11 @@ export function dayLogWeeklyFacts(items, today) {
   );
   if (current.length === 0) return null;
 
-  const morningWeightAverage = (start, end) => average(current
-    .filter((item) =>
-      item.metric === "weight"
-      && typeof item.value === "number"
-      && Number.isFinite(item.value)
-      && item.day >= start
-      && item.day <= end
-      && isMorningValue(item),
-    )
-    .map((item) => item.value));
+  // The page's weekly points and these trailing-seven-day facts use the same
+  // morning-only average, so an unknown-time measurement cannot reach the
+  // two surfaces by different rules.
+  const morningWeights = current.filter((item) => item.metric === "weight");
+  const averageForWindow = (start, end) => morningWeightAverage(morningWeights.filter((item) => item.day >= start && item.day <= end));
 
   const waists = current
     .filter((item) =>
@@ -152,13 +158,13 @@ export function dayLogWeeklyFacts(items, today) {
       .every((item) => Math.abs(item.value - latest.value) <= 0.25);
 
   return {
-    weekAvgWeight: morningWeightAverage(currentWeekStart, today),
-    prevWeekAvgWeight: morningWeightAverage(previousWeekStart, previousWeekEnd),
+    weekAvgWeight: averageForWindow(currentWeekStart, today),
+    prevWeekAvgWeight: averageForWindow(previousWeekStart, offsetDay(today, -7)),
     latestWaist: latest === null ? null : { value: latest.value, day: latest.day },
     waistFlat3w,
     runCount: current.filter((item) =>
       item.day >= currentWeekStart
-      && item.kind === "workout"
+      && item.type === "workout"
       && item.activity === "run",
     ).length,
   };

@@ -94,9 +94,9 @@ describe("Friday day-log facts", () => {
       { day: "2026-09-01", metric: "waist", value: 34.5 },
       { day: "2026-09-14", metric: "waist", value: 34.25 },
       { day: "2026-09-28", metric: "waist", value: 34.5 },
-      { day: "2026-09-20", kind: "workout", activity: "run" },
-      { day: "2026-09-27", kind: "workout", activity: "run" },
-      { day: "2026-09-28", kind: "workout", activity: "run" },
+      { day: "2026-09-20", type: "workout", activity: "run" },
+      { day: "2026-09-27", type: "workout", activity: "run" },
+      { day: "2026-09-28", type: "workout", activity: "run" },
     ], today)).toEqual({
       weekAvgWeight: 181,
       prevWeekAvgWeight: 184,
@@ -128,8 +128,8 @@ describe("Friday day-log facts", () => {
     expect(dayLogWeeklyFacts([
       { day: "2026-09-28", metric: "weight", value: 181, partOfDay: "morning" },
       { day: "2026-09-27", metric: "weight", value: 190, partOfDay: "morning", revertedAt: 1 },
-      { day: "2026-09-28", kind: "workout", activity: "run" },
-      { day: "2026-09-27", kind: "workout", activity: "run", revertedAt: 1 },
+      { day: "2026-09-28", type: "workout", activity: "run" },
+      { day: "2026-09-27", type: "workout", activity: "run", revertedAt: 1 },
     ], today)).toMatchObject({ weekAvgWeight: 181, runCount: 1 });
   });
 

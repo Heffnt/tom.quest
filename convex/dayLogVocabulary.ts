@@ -1,11 +1,11 @@
 // One bounded vocabulary is sent to the worker and used again at write-back.
 // The worker can propose only values the server names here.
 
-export const DAY_LOG_KINDS = ["measurement", "workout", "food", "feeling", "symptom", "work"] as const;
+export const DAY_LOG_TYPES = ["measurement", "workout", "food", "feeling", "symptom", "work"] as const;
 export const DAY_LOG_PARTS_OF_DAY = ["morning", "afternoon", "evening", "unknown"] as const;
 export const DAY_LOG_ACTIVITIES = ["run", "climb", "strength", "bike", "walk", "other"] as const;
 export const DAY_LOG_BODY_PARTS = ["fingers", "forearms", "biceps", "back", "shoulders", "chest", "triceps", "core", "hips", "quads", "hamstrings", "calves", "ankles", "full-body"] as const;
-export const DAY_LOG_WARNING_CLASSES = ["chest-pain", "fainting", "heartbeat", "light-headedness", "crisis-language"] as const;
+const DAY_LOG_WARNING_CLASSES = ["chest-pain", "fainting", "heartbeat", "light-headedness", "crisis-language"] as const;
 
 export const DAY_LOG_METRICS = {
   weight: { unit: "lb", min: 60, max: 600 },
@@ -28,7 +28,7 @@ export const DAY_LOG_BOUNDS = {
 } as const;
 
 export const DAY_LOG_VOCABULARY = {
-  kinds: [...DAY_LOG_KINDS],
+  types: [...DAY_LOG_TYPES],
   metrics: DAY_LOG_METRICS,
   partsOfDay: [...DAY_LOG_PARTS_OF_DAY],
   activities: [...DAY_LOG_ACTIVITIES],

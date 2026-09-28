@@ -129,11 +129,11 @@ async function dayLogItem(
     day: fields.day,
     status: "applied",
   });
-  const kind = fields.activity === undefined ? "measurement" as const : "workout" as const;
+  const type = fields.activity === undefined ? "measurement" as const : "workout" as const;
   return await ctx.db.insert("dayLogItems", {
     entryId,
     day: fields.day,
-    kind,
+    type,
     quote: "recorded",
     summary: "record",
     ...(fields.metric === undefined ? {} : { metric: fields.metric }),

@@ -2255,12 +2255,6 @@ export default defineSchema({
     status: v.union(v.literal("pending"), v.literal("applied"), v.literal("needs-session")),
     result: v.optional(v.string()),
     resolvedAt: v.optional(v.number()),
-    warning: v.optional(v.object({
-      class: v.union(v.literal("chest-pain"), v.literal("fainting"), v.literal("heartbeat"), v.literal("light-headedness"), v.literal("crisis-language")),
-      quote: v.string(),
-      source: v.union(v.literal("model"), v.literal("phrase-check")),
-      todoId: v.id("todos"),
-    })),
   })
     .index("by_day", ["day"])
     .index("by_createdAt", ["createdAt"])
@@ -2269,7 +2263,7 @@ export default defineSchema({
   dayLogItems: defineTable({
     entryId: v.id("dayLogEntries"),
     day: v.string(),
-    kind: v.union(v.literal("measurement"), v.literal("workout"), v.literal("food"), v.literal("feeling"), v.literal("symptom"), v.literal("work")),
+    type: v.union(v.literal("measurement"), v.literal("workout"), v.literal("food"), v.literal("feeling"), v.literal("symptom"), v.literal("work")),
     quote: v.string(),
     summary: v.string(),
     metric: v.optional(v.string()),
@@ -2284,21 +2278,8 @@ export default defineSchema({
     revertedAt: v.optional(v.number()),
   })
     .index("by_entry", ["entryId"])
-    .index("by_kind_day", ["kind", "day"])
+    .index("by_type_day", ["type", "day"])
     .index("by_metric_day", ["metric", "day"])
-    .index("by_reverted_at_and_kind_and_metric_and_day", ["revertedAt", "kind", "metric", "day"])
-    .index("by_reverted_at_and_kind_and_activity_and_day", ["revertedAt", "kind", "activity", "day"]),
-
-  dayLogActions: defineTable({
-    entryId: v.id("dayLogEntries"),
-    kind: v.union(v.literal("todo-done"), v.literal("todo-move"), v.literal("todo-capture")),
-    todoId: v.id("todos"),
-    statement: v.optional(v.string()),
-    before: v.optional(v.any()),
-    after: v.optional(v.any()),
-    appliedAt: v.number(),
-    revertedAt: v.optional(v.number()),
-  })
-    .index("by_entry", ["entryId"])
-    .index("by_todo", ["todoId"]),
+    .index("by_reverted_at_and_type_and_metric_and_day", ["revertedAt", "type", "metric", "day"])
+    .index("by_reverted_at_and_type_and_activity_and_day", ["revertedAt", "type", "activity", "day"]),
 });
