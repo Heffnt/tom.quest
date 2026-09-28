@@ -31,7 +31,7 @@ import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { APPROVABLE_REPOS, changeOfCommit, newestRuling, resolveChange } from "./observeMerge";
-import { mergeGateFor } from "./ttsMerge";
+import { mergeGateFor, standingAuditRowFor } from "./ttsMerge";
 import { insertRuling } from "./ttsRulings";
 import {
   VOCABULARY_TERMS,
@@ -493,12 +493,10 @@ export const gateRows = query({
       // an account of what a change does: the audit read the diff and wrote
       // about it, and convex/ttsMerge.ts stores that text on the head row. The
       // merge row itself carries a subject and GitHub's sentence and no pull
-      // request body, so this is what the expansion has to read.
-      const audit = await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_kind_key", (q) => q.eq("kind", "audit-verdict").eq("key", key))
-        .order("desc")
-        .first();
+      // request body, so this is what the expansion has to read. It is the
+      // row the gate read (the verdict that stands), not the newest: a later
+      // audit of the same commit is kept and does not change the answer.
+      const audit = await standingAuditRowFor(ctx, repo, sha);
       const data = (audit?.data ?? {}) as { text?: unknown; verdict?: unknown; model?: unknown };
       // The ruling this change carries, which decides whether its row shows
       // the quiet Approve or the ruled word.

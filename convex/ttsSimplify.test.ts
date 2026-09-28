@@ -246,6 +246,20 @@ describe("the gate history", () => {
     expect(gate.tests).toMatchObject({ heads: 1, failed: 0 });
   });
 
+  it("judges a head's audit on the verdict that stands, not on a later run", async () => {
+    const t = convex();
+    const approved = commitKey("tom.quest", "7".repeat(40));
+    const refused = commitKey("tom.quest", "8".repeat(40));
+    await seedEvent(t, AUDIT_VERDICT, NOW - 10 * DAY, { verdict: "UNAVAILABLE" }, approved);
+    await seedEvent(t, AUDIT_VERDICT, NOW - 9 * DAY, { verdict: "APPROVED" }, approved);
+    await seedEvent(t, AUDIT_VERDICT, NOW - 8 * DAY, { verdict: "REFUSED" }, approved);
+    await seedEvent(t, AUDIT_VERDICT, NOW - 7 * DAY, { verdict: "REFUSED" }, refused);
+    await seedEvent(t, AUDIT_VERDICT, NOW - 6 * DAY, { verdict: "APPROVED" }, refused);
+    const { gate } = await gather(t);
+    expect(gate.audit).toMatchObject({ heads: 2, failed: 1 });
+    expect(gate.audit.failures.map((failure) => failure.key)).toEqual([refused]);
+  });
+
   it("reads the evals' ablation deltas when they are there, and 0 when they are not", async () => {
     const t = convex();
     const bare = commitKey("tom.quest", "e".repeat(40));

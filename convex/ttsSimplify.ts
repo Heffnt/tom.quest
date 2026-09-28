@@ -27,7 +27,7 @@ import type { Doc } from "./_generated/dataModel";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { DIGEST_SENT } from "./ttsDigest";
 import { EVALS_RUN } from "./ttsEvals";
-import { AUDIT_VERDICT, TESTS_RUN, checkRowPassed } from "./ttsMerge";
+import { AUDIT_VERDICT, TESTS_RUN, checkRowPassed, standingAuditRow } from "./ttsMerge";
 import { WEEK_MS } from "./ttsWeekly";
 
 // ── Event kinds this pass owns ───────────────────────────────────────────────
@@ -294,9 +294,10 @@ function failureWhy(kind: string, data: unknown): string {
  * a check that has failed twice in a year is a different thing from a check
  * that has never failed, and four weeks cannot tell them apart.
  *
- * Newest-first, and the first row seen for a key is the one judged — a head
- * whose check was re-recorded is judged on what it says now, not on the first
- * answer it ever gave.
+ * Newest-first, and each head is judged on the row its gate reads
+ * (convex/ttsMerge.ts): the newest tests row, and the audit row that stands —
+ * the first verdict, not a later run of the audit that the gate keeps and
+ * does not count.
  */
 async function gateCheck(ctx: QueryCtx, kind: string): Promise<SimplifyGateCheck> {
   const rows = await ctx.db
@@ -304,22 +305,28 @@ async function gateCheck(ctx: QueryCtx, kind: string): Promise<SimplifyGateCheck
     .withIndex("by_kind_at", (q) => q.eq("kind", kind))
     .order("desc")
     .take(GATE_HEAD_SCAN);
-  const judged = new Set<string>();
-  const failures: { key: string; why: string; at: number }[] = [];
-  let failed = 0;
+  // Each head's rows, heads in the order their newest row was seen.
+  const rowsOf = new Map<string, typeof rows>();
   for (const row of rows) {
     // A row with no key is about no head. A MISSING ROW IS NOT A HEAD either:
     // nothing here invents a head out of a commit that was never checked.
     const key = row.key;
-    if (key === undefined || judged.has(key)) continue;
-    judged.add(key);
-    if (checkRowPassed(kind, row.data)) continue;
+    if (key === undefined) continue;
+    const held = rowsOf.get(key);
+    if (held === undefined) rowsOf.set(key, [row]);
+    else held.push(row);
+  }
+  const failures: { key: string; why: string; at: number }[] = [];
+  let failed = 0;
+  for (const [key, held] of rowsOf) {
+    const row = kind === AUDIT_VERDICT ? standingAuditRow(held) : held[0];
+    if (row === null || checkRowPassed(kind, row.data)) continue;
     failed += 1;
     if (failures.length < FAILURES_LISTED) {
       failures.push({ key, why: failureWhy(kind, row.data), at: row.at });
     }
   }
-  return { heads: judged.size, failed, failures };
+  return { heads: rowsOf.size, failed, failures };
 }
 
 // ── The gather ───────────────────────────────────────────────────────────────

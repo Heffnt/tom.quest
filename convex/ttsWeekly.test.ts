@@ -675,6 +675,27 @@ describe("gatherWeeklyFacts", () => {
     });
   });
 
+  // Every run of the audit is a row, and the first verdict stands: a REFUSED
+  // written after an APPROVED is kept and is not a refusal that landed anyway,
+  // and an APPROVED written after a REFUSED does not make the merge audited.
+  it("reads each commit's verdict that stands, not every verdict row it holds", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await auditedMerge(ctx, { sha: SHA, verdict: "APPROVED", approvedAt: now - 5 * DAY, mergedAt: now - 5 * DAY + HOUR });
+      await auditedMerge(ctx, { sha: SHA, verdict: "REFUSED", approvedAt: now - 5 * DAY + 60_000, mergedAt: null });
+      await auditedMerge(ctx, { sha: OTHER, verdict: "UNAVAILABLE", approvedAt: now - 4 * DAY - 60_000, mergedAt: null });
+      await auditedMerge(ctx, { sha: OTHER, verdict: "REFUSED", approvedAt: now - 4 * DAY, mergedAt: now - 3 * DAY });
+      await auditedMerge(ctx, { sha: OTHER, verdict: "APPROVED", approvedAt: now - 4 * DAY + 60_000, mergedAt: null });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.audit).toMatchObject({
+      merges: 1,
+      objected: 0,
+      landedAnyway: [{ sha: "9f8e7d6", refusedAt: now - 4 * DAY, mergedAt: now - 3 * DAY }],
+    });
+  });
+
   it("does not count an objection older than the audit's own window", async () => {
     const t = convexTest({ schema, modules });
     const now = Date.now();

@@ -313,6 +313,21 @@ describe("the merge gate's state", () => {
     expect(gate.checks.map((check) => check.name).sort()).toEqual(["audit", "tests"]);
     expect(gate.checks.every((check) => check.passed)).toBe(false);
   });
+
+  it("shows the audit that stands, not a later run of it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sha = "abcdef1234";
+    const key = "tom.quest@abcdef1234";
+    await t.run(async (ctx) => {
+      const row = (at: number, verdict: string, text: string) =>
+        ctx.db.insert("dtsEvents", { at, kind: "audit-verdict", key, data: { repo: "tom.quest", sha, verdict, text } });
+      await row(1_000, "APPROVED", "VERDICT: APPROVED\nthe first answer");
+      await row(2_000, "REFUSED", "VERDICT: REFUSED\na later run");
+    });
+    const [gate] = await tom.query(api.observe.gateRows, { commits: [{ repo: "tom.quest", sha }] });
+    expect(gate.audit).toMatchObject({ at: 1_000, verdict: "APPROVED", text: "VERDICT: APPROVED\nthe first answer" });
+  });
 });
 
 describe("defining a word", () => {
