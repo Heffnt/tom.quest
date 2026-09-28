@@ -48,14 +48,24 @@ type TomLogoProps = {
   title?: string;
 };
 
+/* Resolves once the wordmark's font has settled, never rejects.
+
+   DANGER: document.fonts.load() rejects when any face in the family list
+   fails, and MANROPE_FAMILY lists next/font's "Manrope Fallback", a
+   local("Arial") face that errors on a machine without Arial (the box's
+   Chromium). A rejection here once skipped the measurement, so the SVG kept
+   the width estimates and the final "t" drew over "ues". The probes and the
+   SVG text share one font stack, so measuring after a failed load is still
+   correct; only waiting for in-flight faces matters.                        */
 function fontReady(fontSize: number): Promise<unknown> {
   if (typeof document === "undefined" || !document.fonts) {
     return Promise.resolve();
   }
-  return Promise.all([
-    document.fonts.load(`${FONT_WEIGHT} ${fontSize}px ${MANROPE_FAMILY}`),
-    document.fonts.ready,
-  ]);
+  const fonts = document.fonts;
+  return fonts
+    .load(`${FONT_WEIGHT} ${fontSize}px ${MANROPE_FAMILY}`)
+    .catch(() => undefined)
+    .then(() => fonts.ready);
 }
 
 export default function TomLogo({
