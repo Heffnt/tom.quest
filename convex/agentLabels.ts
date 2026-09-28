@@ -1,12 +1,12 @@
 // agentLabels.ts — everywhere Tom's judgment enters becomes a row about an agent.
 //
 // A LABEL is one act of Tom's about one run's output: a ruling on the todo a
-// prepare pass wrote, an objection in #tts-decisions to a decision the delegate
-// took, a reply he typed at a session, an emoji on the morning digest. Four
-// doors, all of them already built and none of them writing anything until
-// this file existed — `runLabels` had no writer and no row, which is why the
-// run page's label strip was deferred and why the evals layer could only mine
-// the WikiTom nightly snapshot for its golden set.
+// prepare pass wrote, an objection on the digest's objection list to a
+// decision the delegate took, a reply he typed at a session, an emoji on the
+// morning digest. Four doors, all of them already built and none of them
+// writing anything until this file existed — `runLabels` had no writer and no
+// row, which is why the run page's label strip was deferred and why the evals
+// layer could only mine the WikiTom nightly snapshot for its golden set.
 //
 // ONE WRITER, ONE RESOLVER, FOUR CALLERS. The callers differ only in where
 // they find the run and what the act meant; everything else — idempotency, the
@@ -306,7 +306,7 @@ export const internalLabelFromRuling = internalMutation({
   },
 });
 
-// ── Writer two: an objection in #tts-decisions ──────────────────────────────
+// ── Writer two: an objection on the digest's objection list ─────────────────
 
 /**
  * `revert` and a redirect sentence are BOTH "bad".

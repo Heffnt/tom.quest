@@ -99,8 +99,8 @@ export const GATE_KINDS = ["tests-run", "audit-verdict", "evals-run"] as const;
 
 /** True for the event rows the failures lane draws: the one spelling of the
  *  rule, in convex/ttsShared.ts, which is also what decides whether an event
- *  becomes a #tts-broken line. Re-exported so the page's server module names
- *  what it uses. */
+ *  becomes a line in the digest's broken section. Re-exported so the page's
+ *  server module names what it uses. */
 export { isFailureKind };
 
 /** The kinds a page of events keeps. Everything else in the window is dropped

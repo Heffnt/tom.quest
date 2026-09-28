@@ -9,12 +9,12 @@
 // through POST /jarvis/event (Jarvis tts-lib postEvent); the hooks below run
 // on each, inside the same mutation.
 //
-// ONE #tts-broken LINE PER CONDITION, NOT ONE PER TICK. The first thing that
-// ever spoke through this channel was a dead Canvas access token, dead until
+// ONE LINE IN THE DIGEST'S BROKEN SECTION PER CONDITION, NOT ONE PER TICK.
+// The first failure ever reported was a dead Canvas access token, dead until
 // Tom mints a new one, which is days. So a `job-failed` names the CONDITION
 // it is about in `subject` (`poll-canvas:canvas-auth`, not the run), and a
-// condition already reported and not since recovered gets no second Slack
-// line: every accepted post is one row (the job said it again), and a row
+// condition already reported and not since recovered gets no second line:
+// every accepted post is one job-failed row (the job said it again), and a row
 // posted while its condition stands carries `data.standingSince`, the time of
 // the report it repeats, so a reader of reports (the digest) reads the rows
 // without it. The standing check, the recovery and the rows are all `events`
@@ -26,11 +26,12 @@
 // is in the record within minutes. A reader that has stopped says nothing, so
 // its silence is the thing to hear: checkSilence reads each watched job's
 // newest `job-ok` on events.by_kind_job_at, and a job whose last clean run is
-// older than three of its intervals is a job-failed under `<job>:silent` and
-// one #tts-broken line in the alarm's own words; the first clean run after it
-// writes the recovery, which re-arms the alarm. A job with no job-ok row yet
-// is not watched: the alarm is armed by the job's first clean run, so it
-// cannot fire before the job is deployed.
+// older than three of its intervals is a job-failed row under `<job>:silent`
+// (a line in the digest's broken section) and one line in the output channel
+// in the alarm's own words; the first clean run after it writes the recovery,
+// which re-arms the alarm. A job with no job-ok row yet is not watched: the
+// alarm is armed by the job's first clean run, so it cannot fire before the
+// job is deployed.
 
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";

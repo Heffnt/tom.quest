@@ -203,7 +203,7 @@ export function compactCount(n: unknown): string {
  * coverage were indistinguishable on the record from an audit that read every
  * line. The audit now reads the whole diff in chunks; this is the part that
  * makes what it read legible afterwards, in the gate's own answer and therefore
- * in the #tts-decisions merge line, which joins these `why` strings.
+ * in the digest's merge line, which joins these `why` strings.
  *
  * AN AUDIT THAT REFUSED AFTER 3 OF 12 CHUNKS IS AS INTERESTING AS ONE THAT
  * APPROVED AFTER 12, so the clause rides the detail both arms carry, not the
@@ -351,7 +351,7 @@ export async function mergeGateFor(
   // A fallback audit is a WEAKER audit and says so wherever it is read: the
   // point of the check is a family that did not write the code, and at Codex's
   // weekly cap it was Opus that answered. The note rides the `why`, so the
-  // gate's answer and the #tts-decisions merge line (which joins these whys)
+  // gate's answer and the digest's merge line (which joins these whys)
   // both carry it and Tom can object to a same-family audit.
   const byWhom = auditFallbackNote(auditData);
   const auditCheck: MergeCheck =
@@ -404,8 +404,9 @@ export const internalMergeGate = internalQuery({
 // read and to land pull requests (convex/observeMerge.ts). Creating a status
 // takes push access (classic scope repo or repo:status; fine-grained "Commit
 // statuses: write"). A refusal is one keyed job-failed row per repository, so
-// #tts-broken hears it once and hears the recovery; a status that never
-// arrives also leaves the ruleset closed, which fails the right way.
+// the digest's broken section says it once and hears the recovery; a status
+// that never arrives also leaves the ruleset closed, which fails the right
+// way.
 
 /** The status context the rulesets require (Phase 1, P1). */
 const GATE_STATUS_CONTEXT = "tts-gate";

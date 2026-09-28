@@ -670,9 +670,9 @@ http.route({
 //   { channel: "slack:<conversation id>", recipient, text, why?, agentId? }
 //   { channel: "calendar", event: { title, start, end, guests, description?,
 //     location?, recurrence? }, why?, agentId? }
-// It writes one "send-proposal" row and opens one #tts-needs-you thread that
-// names the recipient and the channel, never the text. Nothing else: no
-// sign-off (the worker key cannot write one; only his press of "sign and
+// It writes one "send-proposal" row and opens one needs-you reply under the
+// digest that names the recipient and the channel, never the text. Nothing
+// else: no sign-off (the worker key cannot write one; only his press of "sign and
 // send" on /tts does) and no send (that happens from Convex once he has
 // signed, and only then). The answer names where he signs.
 //
@@ -741,25 +741,18 @@ let warnedNoTomSlackUserId = false;
 // The same guard for an unset SLACK_DUMP_CHANNEL_ID, which admits no capture.
 let warnedNoDumpChannel = false;
 
-/** The channels a threaded reply is acted on in: the three TTS posts to.
- * Read per request so a value set after the isolate warmed up counts. */
+/** The channels a threaded reply is acted on in: the two TTS posts to, #dump
+ * and the output channel (under either of its variables, as outputChannel()
+ * reads them). A "revert" on a decision and an answer to a needs-you are
+ * replies in the digest's thread, in the output channel (convex/ttsSlack.ts
+ * routeReply). Read per request so a value set after the isolate warmed up
+ * counts. */
 function slackReplyChannels(): Set<string> {
   return new Set(
     [
       process.env.SLACK_DUMP_CHANNEL_ID,
       process.env.SLACK_TTS_CHANNEL_ID,
       process.env.SLACK_TTS_TODAY_CHANNEL_ID,
-      process.env.SLACK_TTS_HOURLY_CHANNEL_ID,
-      // The three rooms this round adds, so a reply in them is acted on:
-      // "revert" in a decision's thread, an answer in a needs-you thread, a
-      // note on a failure (convex/ttsSlack.ts routeReply).
-      process.env.SLACK_TTS_DECISIONS_CHANNEL_ID,
-      process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID,
-      process.env.SLACK_TTS_BROKEN_CHANNEL_ID,
-      // The removal loop's room: a reply in a pull request's thread is his
-      // objection to it (convex/ttsSync.ts sendRemoval). Without this line
-      // the thread would look answerable and every reply would be dropped.
-      process.env.SLACK_TTS_SIMPLIFY_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
   );
 }
@@ -914,14 +907,14 @@ const slackEvents = httpAction(async (ctx, request) => {
 
   // ── A threaded reply (the lifeos update, phase 2) ────────────────────────
   // A reply in a thread is never a capture; it is Tom answering something TTS
-  // posted (a digest line, an hourly update, a session that needs him, the
+  // posted (the digest, a needs-you reply under it, the silence alarm, the
   // reply under his own #dump message). Accepted from ONE Slack user id —
   // TOM_SLACK_USER_ID — because a reply becomes a session's next turn or a
   // time note on a todo, which are Tom's pens; anyone else's reply is
   // acknowledged and ignored. Unset means no threaded reply is acted on, and
   // the log says so once per isolate rather than on every event.
   //
-  // And accepted in TTS's OWN channels only: #dump, #tts, #tts-hourly. An
+  // And accepted in TTS's OWN channels only: #dump and the output channel. An
   // unknown thread becomes a todo and gets a capture line posted into it, so
   // a reply in any other channel the app happens to be in would make TTS
   // post where nobody asked it to (agents post nothing Tom did not ask for).
@@ -1664,7 +1657,7 @@ http.route({ path: "/tts/merge-gate", method: "GET", handler: ttsMergeGate });
 
 // POST /tts/merge records a merge that has already happened. It is not a
 // delegate decision: a mechanically gated merge is reported in the objection
-// list and posted to #tts-decisions, keyed by repo+sha so a retry stays one
+// list on the digest, keyed by repo+sha so a retry stays one
 // event. The gate runs again inside the mutation, so a merge that reached the
 // default branch some other way cannot be laundered into a reported one; the
 // answer is then 409 naming which checks are missing.

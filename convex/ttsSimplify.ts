@@ -46,12 +46,12 @@ const SIMPLIFY_RUN = "simplify-run";
 
 // ── Event kinds the removal loop owns ────────────────────────────────────────
 // worker/jobs/removal-loop.mjs, the daily job that turns one structural smell
-// into one pull request. Its thread lives in #tts-simplify, but its objection
-// window is THIS file's, read the same way, so the two cannot disagree about
-// what "a day and a digest" means.
+// into one pull request. The digest's objection list carries it, but its
+// objection window is THIS file's, read the same way, so the two cannot
+// disagree about what "a day and a digest" means.
 
-/** One posting of a loop pull request to #tts-simplify, keyed `loop:<number>`
- *  — the askId of its thread, so a reply resolves by one lookup. A rewrite
+/** One loop pull request, keyed `loop:<number>` — the askId of its line on
+ *  the digest's objection list, so "revert <n>" resolves by one lookup. A rewrite
  *  after his reply is a NEW row on the same key with a higher `round`, and the
  *  window restarts from it. */
 export const REMOVAL_LOOP_PR = "removal-loop-pr";
@@ -186,7 +186,7 @@ export type SimplifyGateCheck = {
 };
 
 export type OpenProposal = {
-  /** The row's key, which is also the askId of its #tts-decisions thread and
+  /** The row's key, which is also the askId of its objection-list line and
    *  the key the admission event must carry — the one string that joins the
    *  proposal, its objection and its admission. The job keys on THIS. */
   askId: string;
@@ -523,7 +523,7 @@ async function keyedRow(ctx: QueryCtx, kind: string, key: string) {
  *   dryRun        — for ever. A dry run's proposal was never posted to him,
  *                   so no silence of his stands behind it.
  *   needsHisWords — never admitted and never expired. It stands parked in
- *                   #tts-decisions until he rules; silence is not an answer to
+ *                   the objection list until he rules; silence is not an answer to
  *                   a question only he can answer.
  *   admitted      — already a todo. Admitting it twice is two todos.
  * And an objection closes it the other way: he answered.

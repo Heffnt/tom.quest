@@ -78,7 +78,7 @@ export function mergeKey(repo: string, sha: string): string {
  *                        the nightly job could not apply, and it belongs to
  *                        the model-of-Tom line it is about.
  *
- * Spelled here, not in convex/tts.ts where the #tts-broken writer applies it,
+ * Spelled here, not in convex/ttsDigest.ts where the broken section applies it,
  * because the observation page asks the same question of the same events and a
  * second list of the exceptions is a second answer waiting to drift.
  */
@@ -957,19 +957,16 @@ export const SLACK_SUBJECT = v.union(
   // already-posted threads: a Slack reply can arrive days after a deploy.
   v.object({ kind: v.literal("today"), day: v.string() }),
   v.object({ kind: v.literal("digest"), day: v.string() }),
-  v.object({ kind: v.literal("hourly"), hour: v.string() }),
   // Either id: a thread posted before step C of the core tables' move names
   // its todo's old id, one posted since the plain one.
   v.object({ kind: v.literal("todo"), id: v.union(v.id("dtsTodos"), v.id("todos")) }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
-  // ONE DELEGATED DECISION (an "ask"), posted to the decisions channel as it
-  // is recorded (convex/ttsAsk.ts), and one broken-job thread. Both name their
+  // A JOB'S OWN LINE: the silence alarm (convex/jarvis/jobs.ts), a producer's
+  // needs-you reply under the digest, a message sent as Tom. It names its
   // producer rather than a fabricated todo: a todo subject stamps
   // slackReplyTs, which belongs to the ONE reply thread that todo has in
-  // #dump, and a decisions-channel line must not claim it. A reply in an ask's
-  // thread is an objection to that one decision.
-  v.object({ kind: v.literal("ask"), id: v.string() }),
+  // #dump, and a job's line must not claim it. A reply in its thread is a fact.
   v.object({ kind: v.literal("job"), id: v.string() }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
@@ -979,11 +976,6 @@ export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
  * Tom's reply events carry (channel, thread_ts); this is what they match. */
 export function slackThreadKey(channel: string, threadRootTs: string): string {
   return `${channel}:${threadRootTs}`;
-}
-
-/** The hourly update's subject key: NY calendar date and hour, "YYYY-MM-DDTHH". */
-export function slackHourKey(utcMs: number): string {
-  return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }
 
 // ── The one output channel (Tom, 2026-09-26: "#dump in, one out") ─────────────

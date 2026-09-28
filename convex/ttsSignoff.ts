@@ -7,8 +7,8 @@
 // THREE STEPS, THREE WRITERS, and only the middle one is his:
 //   1. PROPOSE. An agent posts the exact text, the recipient and the channel
 //      through POST /tts/send-proposal (the worker key). That writes one
-//      dtsEvents row of kind "send-proposal" and opens one #tts-needs-you
-//      thread naming the recipient and the channel, never the text. No
+//      dtsEvents row of kind "send-proposal" and opens one needs-you reply
+//      under the digest naming the recipient and the channel, never the text. No
 //      sign-off, no send.
 //   2. SIGN. Tom reads the verbatim text on /tts and presses "sign and send".
 //      That is signAndSend, a requireTom mutation, and it is the ONLY function
@@ -60,7 +60,7 @@ export const SEND_PROPOSAL = "send-proposal";
 /** A message that went out in Tom's name on his sign-off (dtsEvents kind). */
 export const SENT_AS_TOM = "sent-as-tom";
 /** A send that was refused (no matching sign-off) or failed on delivery. The
- *  "-failed" suffix is what makes it a #tts-broken line. */
+ *  "-failed" suffix is what makes it a line in the digest's broken section. */
 export const SEND_AS_TOM_FAILED = "send-as-tom-failed";
 /** A send whose outcome is unknown (a dropped answer, a 5xx, a network error):
  *  it may have gone out. Its sign-off stays spent, nothing retries it, and it

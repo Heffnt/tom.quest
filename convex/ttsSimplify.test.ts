@@ -471,7 +471,7 @@ describe("internalOpenRemovals — a day, a digest, and his words", () => {
   });
 });
 
-describe("a reply in a loop pull request's thread", () => {
+describe("an objection to a loop pull request", () => {
   it("is recorded as an objection on its key, which the window then reads", async () => {
     const t = convex();
     // The recorder stamps the wall clock, so this test lives on it too.
@@ -482,7 +482,7 @@ describe("a reply in a loop pull request's thread", () => {
       text: "keep it, a test reads it",
       revert: false,
       sentence: "keep it, a test reads it",
-      channel: "C0SIMPLIFY",
+      channel: "C0TTS",
       ts: "2.0",
       threadTs: "1.0",
     });

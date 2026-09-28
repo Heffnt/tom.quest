@@ -37,7 +37,7 @@ import {
 // THE ONE CHOKE POINT for a credential-shaped span, the same pure helper
 // convex/ttsSearch.ts and worker/session-host use — never a second copy of the
 // patterns. Every free-text error, reason, summary or title below passes
-// through it before it becomes a #tts-broken line or a `broken:<n>` fact:
+// through it before it becomes a broken-section line or a `broken:<n>` fact:
 // worker/jobs/nightly.mjs reports git stderr verbatim, and git stderr can name
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
@@ -71,9 +71,10 @@ import { resolveId, todoEvents, todoReader } from "./jarvis/tables";
 //   5. broken — the jobs that failed, and what that means for him
 //
 // What LEFT the morning message in this round (§4.3): the WikiTom commit list
-// (a changelog is not a morning read; an unreadable WikiTom is a #tts-broken
-// line instead), the rulings-from-your-words lines and the model-of-Tom lines
-// (both are decisions taken in his name, so both go to #tts-decisions), and
+// (a changelog is not a morning read; an unreadable WikiTom is a broken line
+// instead), the rulings-from-your-words lines and the model-of-Tom lines
+// (both are decisions taken in his name, so both are objection-list lines
+// now, through convex/jarvis/outbox.ts listForDigest), and
 // the "Captured from email" section (a capture that is ready is a thing to do
 // today; one that is not is a row, not a line).
 
@@ -92,8 +93,8 @@ export { MERGE } from "./ttsMerge";
 
 // The nightly job's model-of-Tom lines (worker/jobs/nightly.mjs learningStep
 // writes them). They no longer appear in the morning message: a line the
-// nightly job wrote about him is a decision taken in his name, so it goes to
-// #tts-decisions as it is written (§1.2).
+// nightly job wrote about him is a decision taken in his name, so it is a
+// line on the objection list (convex/ttsNightly.ts internalRecordWorkerEvent).
 //   kind "learning-change",        data { id, file, section, before, after, evidence, excerpt,
 //                                         baseBlob, resultBlob, modelOfTomCommit }
 //   kind "learning-reverted",      data { id, file, before, after, objection, baseBlob,
@@ -108,9 +109,8 @@ export { PRELUDE_DELIVERY } from "./ttsEvals";
 // scripts/check-evidence.mjs failed after the write, so every line the night
 // put on a page was reverted rather than left standing behind a failing check.
 // NOT a decision — nothing stands to object to — and not a quiet night either,
-// which is the confusion silence would leave. It goes to #tts-broken as it is
-// written (convex/ttsNightly.ts internalRecordWorkerEvent), and the morning
-// message's broken run states it again if it is still the day's news.
+// which is the confusion silence would leave. It is a line in the broken
+// section, in its own words (convex/ttsNightly.ts internalRecordWorkerEvent).
 //   kind "learning-check-failed", data { baseline, stage?: "reverts" | "changes",
 //                                        changes?, output }
 // `baseline` true means the check was ALREADY failing before the run, so the
@@ -122,9 +122,9 @@ export const LEARNING_CHECK_FAILED = "learning-check-failed";
 // lands in that repository through ITS OWN checks — a branch, a review, a
 // merge — so what he is shown is a PROPOSAL, not a write. It is a decision
 // taken in his name like a model-of-Tom line, and it reaches him the same way:
-// #tts-decisions as it is written (convex/ttsNightly.ts
-// internalRecordWorkerEvent), where "revert" in the thread drops it before it
-// is ever applied. A reply on the MORNING thread naming its id does the same
+// a line on the objection list (convex/ttsNightly.ts
+// internalRecordWorkerEvent), where "revert <n>" in the digest's thread drops
+// it before it is ever applied. A reply there naming its id does the same
 // (convex/ttsSlack.ts namedLearningChange searches both sets).
 //   kind "repo-proposal",         data { id, repo, file, section, line, evidence }
 //   kind "repo-proposal-applied", data { id, repo, file, section, line, evidence, commit }
@@ -608,9 +608,8 @@ export async function gatherTodayFacts(
         const sha = (str(d.sha) ?? "").slice(0, 7);
         rawObjections.push({
           at: e.at,
-          // The merge's own key: "revert <n>" reaches it as a reply in its
-          // #tts-decisions thread did (ttsAsk internalRecordDelegateObjection
-          // resolves a merge row).
+          // The merge's own key: "revert <n>" reaches it (ttsAsk
+          // internalRecordDelegateObjection resolves a merge row).
           askId: e.key ?? "",
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
           decision: `merged ${repo}@${sha}: ${str(d.subject) ?? "no subject"}`,
@@ -661,9 +660,8 @@ export async function gatherTodayFacts(
         const sentence = str(d.sentence);
         rawObjections.push({
           at: e.at,
-          // Unlike a merge, the askId is here: the proposal's row key is the
-          // askId of its own #tts-decisions thread, so "revert <n>" on the
-          // morning thread resolves the same row the thread reply does.
+          // Unlike a merge, the askId is here: the proposal's row key is its
+          // askId, so "revert <n>" on the digest's thread resolves the row.
           askId: e.key ?? "",
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
           decision: sentence ?? null,
@@ -679,10 +677,9 @@ export async function gatherTodayFacts(
       case REMOVAL_LOOP_PR: {
         // The removal loop's pull request, the same way a proposal is listed:
         // its window closes on "a digest sent after a day", so the digest must
-        // carry it. Keyed like its #tts-simplify thread, so "revert <n>" on
-        // the morning thread resolves the same row a reply in that thread
-        // does. A rewrite is a new row and is listed again, deliberately: the
-        // window restarted.
+        // carry it. Keyed `loop:<number>`, so "revert <n>" on the digest's
+        // thread resolves the row. A rewrite is a new row and is listed again,
+        // deliberately: the window restarted.
         if (d.dryRun === true) break;
         const rule = str(d.ruleId);
         const path = str(d.path);

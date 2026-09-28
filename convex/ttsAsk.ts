@@ -73,7 +73,8 @@ const ASK_ARGS = {
   ms: v.number(),
   promptSha: v.string(),
   // THE RUN THAT TOOK THIS DECISION — the delegate run itself, so an objection
-  // of Tom's in #tts-decisions can be scored against the output he objected to
+  // of Tom's on the digest's objection list can be scored against the output
+  // he objected to
   // (convex/agentLabels.ts internalLabelFromObjection reads it back off this
   // row's data). `data` is v.any(), so this is not a schema change, exactly as
   // the digest-sent row's objectionAskIds (convex/jarvis/digest.ts) say of their own
@@ -333,9 +334,9 @@ export const internalAskContext = internalQuery({
  * message it matched to TOM_SLACK_USER_ID in a thread whose subject it
  * resolved. No agent can write this row through any door.
  *
- * `n` and `day` name the digest line he answered; both are absent when the
- * objection came from the decisions channel, where a decision has its own
- * thread and no number.
+ * `n` and `day` name the digest line he answered. Both are absent on an
+ * objection recorded before the one output channel, from the retired
+ * decisions room, where a decision had its own thread and no number.
  *
  * The row carries the DECISION's todoId, so it lands on that todo's own event
  * timeline — which is where internalAskContext finds it and hands it to the
@@ -358,14 +359,11 @@ export const internalRecordDelegateObjection = internalMutation({
   },
   handler: async (ctx, args) => {
     // The thing objected to is a delegate decision, OR a merge: both are
-    // reported in the objection list and both carry a #tts-decisions thread,
-    // so both accept a "revert" (convex/ttsMerge.ts). A merge's askId is its
-    // own `<repo>:<sha>` key. A simplification proposal is the third for the
-    // same reason — the weekly pass reports each line it means to remove in
-    // that channel and gives it a thread — and its askId is its own
-    // `simplify:<id>` key (convex/ttsNightly.ts). A removal-loop pull request
-    // is the fourth: its #tts-simplify thread is keyed `loop:<number>`, and a
-    // reply there is what the loop rewrites the branch from.
+    // reported in the digest's objection list, so both accept a "revert"
+    // (convex/ttsMerge.ts). A merge's askId is its own `<repo>:<sha>` key. A
+    // simplification proposal is the third for the same reason, and its askId
+    // is its own `simplify:<id>` key (convex/ttsNightly.ts). A removal-loop
+    // pull request is the fourth, keyed `loop:<number>`.
     //
     // THE RECORD'S ROWS TOO. Every askId the digest numbers must resolve here,
     // or "revert <n>" throws on a line he was offered: a `jarvis decide`

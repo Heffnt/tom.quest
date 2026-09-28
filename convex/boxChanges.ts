@@ -21,10 +21,11 @@
 // the record's side of it:
 //   - onBoxChange, the kind's hook (convex/jarvis/events.ts AFTER_RECORD):
 //     refuses a row whose data is not the shape or whose provenance and data
-//     disagree, drops a second copy of one change, and schedules the two
-//     Slack lines a change can earn: a #tts-decisions line when it changes
-//     who or what can act on the box, and a #tts-broken line when the journal
-//     lost entries the reader had not read;
+//     disagree, drops a second copy of one change, and lists the two digest
+//     lines a change can earn (convex/jarvis/outbox.ts listForDigest): an
+//     objection-list line when it changes who or what can act on the box, and
+//     a broken-section line when the journal lost entries the reader had not
+//     read;
 //   - forAgent, the /agents chat's read of one agent's changes;
 //   - boxChangesInWindow, the digest's read of a window's changes;
 //   - boxChangeLines, the digest's "Box changes" facts: one line per agent
@@ -160,7 +161,7 @@ function programOf(command: string): string {
 }
 
 /**
- * The words of a #tts-decisions line when this change is to who or what can
+ * The words of an objection-list line when this change is to who or what can
  * act on the box — sudo rules, ssh keys, accounts, the Claude hooks, the
  * logging (plan-root T1) — or null when it is not.
  */
