@@ -255,6 +255,37 @@ describe("private path guardrail", () => {
     }
   });
 
+  // THE PAGES BY AREA TOO, AND NOT evidence/. The earlier reading took only
+  // the top-level pages, and a test file carrying a line of an area page
+  // passed it. Every line here is invented.
+  it("catches a fragment of an area page, and does not read evidence/", () => {
+    const base = mkdtempSync(path.join(tmpdir(), "private-paths-"));
+    try {
+      const vault = path.join(base, "vault");
+      const pub = path.join(base, "public");
+      mkdirSync(path.join(vault, "model-of-tom", "areas"), { recursive: true });
+      mkdirSync(path.join(vault, "model-of-tom", "evidence", "repos"), { recursive: true });
+      mkdirSync(pub);
+      const areaLine = "- the invented orchard is pruned on the second frost of every year.";
+      const evidenceLine = "said: 2000-01-01 · an invented session · \"the invented quote stays unread by this check\"";
+      writeFileSync(path.join(vault, "model-of-tom", "agent-rules.md"), "# Rules\n- an invented operate sentence, long enough for a window.\n");
+      writeFileSync(path.join(vault, "model-of-tom", "areas", "alpha.md"), `---\ncategories: [amber, birch, cobalt]\n---\n# Alpha\n${areaLine}\n`);
+      writeFileSync(path.join(vault, "model-of-tom", "evidence", "alpha.md"), `# Evidence\n${evidenceLine}\n`);
+      writeFileSync(path.join(vault, "model-of-tom", "evidence", "repos", "public.md"), `# Rules\n- line: ${evidenceLine}\n`);
+      writeFileSync(path.join(pub, "fixture.test.mjs"), `const PAGE = "${areaLine.slice(2, 50)}";\n`);
+      writeFileSync(path.join(pub, "quoted.mjs"), `// ${evidenceLine}\n`);
+      const run = () => "fixture.test.mjs\0quoted.mjs\0";
+      expect(checkPrivatePaths(run, { root: vault, cwd: pub, env: {} })).toEqual([
+        { file: "fixture.test.mjs", rule: "model-of-tom page content" },
+      ]);
+      const windows = operateWindows(vault);
+      expect(windows).toContain(areaLine.slice(0, OPERATE_LINE_MIN));
+      expect(windows.some((w) => evidenceLine.includes(w))).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   // ABSENT IS A FAILURE WHEN IT IS REQUIRED, a warning annotation in CI, and a
   // plain notice otherwise.
   it("fails an absent WikiTom when REQUIRE_WIKITOM or WIKITOM_DIR asks for one", () => {

@@ -132,14 +132,24 @@ export function wikiTomCategoryLines(root, { exists = existsSync, readdir = read
 /**
  * EVERY 40-CHARACTER WINDOW OF EVERY MODEL-OF-TOM PAGE, not its whole lines.
  *
- * EVERY TOP-LEVEL PAGE, NOT ONLY THE OPERATE PAGE. This began with
- * agent-rules.md alone, and a retrospective then found six fragments of two
- * other model-of-tom pages sitting in this tree, quoted in comments and docs,
- * that the check had never been shown. Every `model-of-tom/*.md` is private
- * alike, so each is cut the same way. What stays out is what always did: the
- * area pages under areas/ (whose bodies never enter this check; their category
- * lines are compared by the rule above) and the evidence/ tree, which is
- * searched, never loaded.
+ * EVERY PAGE, NOT ONLY THE OPERATE PAGE. This began with agent-rules.md
+ * alone, and a retrospective then found six fragments of two other
+ * model-of-tom pages sitting in this tree, quoted in comments and docs, that
+ * the check had never been shown. It then read every top-level page and left
+ * out the pages under areas/, and test files that carried lines of those pages
+ * passed it. Every page is private alike, so every `.md` under model-of-tom is
+ * cut the same way, at any depth, with one folder left out: evidence/.
+ *
+ * WHY evidence/ STAYS OUT. Its pages hold three things. Each entry's `line:`
+ * repeats a line of the page it backs, which this check already reads there.
+ * evidence/repos/ holds the lines of the repositories' own rule files, this
+ * repository's AGENTS.md files among them, so reading it would refuse this
+ * repository's own rules. And the rest are the entries' sources: facts read
+ * from code (often this repository's), and Tom's rulings in his words, which
+ * this repository's code and tests already quote where the ruling is carried
+ * out. Reading them refused nineteen files of this tree on 2026-09-28 (sixteen
+ * without the entries read from code), most of them not tests. Whether those quotes go is a decision of their own; until it
+ * is taken, evidence/ is not read.
  *
  * The first version of this took whole lines and asked whether each appeared in
  * a tracked file. That caught four copies and missed ten more, because the way
@@ -163,19 +173,38 @@ export function wikiTomCategoryLines(root, { exists = existsSync, readdir = read
  * scan asks one Set lookup per position of the FILE either way, so the work is
  * the tree's size and not the set's.
  *
- * BOUNDED BY THE PAGES, NOT BY THE TREE: ~40 KB of model-of-tom yields a
- * few tens of thousands of windows whatever the repository does, and the scan
- * still costs one Set lookup per position of each file.
+ * BOUNDED BY THE PAGES, NOT BY THE TREE: the fifteen pages outside
+ * evidence/ yield about fifty thousand windows (about 2 MB) whatever the
+ * repository does, and the scan still costs one Set lookup per position of
+ * each file.
  */
 export const OPERATE_LINE_MIN = 40;
 export const OPERATE_WINDOW_STEP = 1;
+/** The folder under model-of-tom that the window check does not read (see
+ *  "WHY evidence/ STAYS OUT" above). */
+export const OPERATE_SKIPPED_DIRS = Object.freeze(["evidence"]);
+
+/** Every `.md` under model-of-tom, as paths relative to it, sorted; the
+ *  folders in OPERATE_SKIPPED_DIRS left out. */
+function modelOfTomPages(dir, readdir, rel = "") {
+  const pages = [];
+  const entries = readdir(rel === "" ? dir : path.join(dir, rel), { withFileTypes: true })
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const at = rel === "" ? entry.name : `${rel}/${entry.name}`;
+    if (entry.isFile() && entry.name.endsWith(".md")) pages.push(at);
+    else if (typeof entry.isDirectory === "function" && entry.isDirectory() && !(rel === "" && OPERATE_SKIPPED_DIRS.includes(entry.name))) {
+      pages.push(...modelOfTomPages(dir, readdir, at));
+    }
+  }
+  return pages;
+}
+
 export function operateWindows(root, { exists = existsSync, readdir = readdirSync, readFile = readFileSync } = {}) {
   const dir = path.join(root, "model-of-tom");
   if (!exists(dir)) return null;
-  const pages = readdir(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b));
+  const pages = modelOfTomPages(dir, readdir);
   if (pages.length === 0) return null;
   const windows = new Set();
   for (const page of pages) {
