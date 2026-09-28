@@ -34,7 +34,7 @@ export default function Vocabulary({ answer }: { answer: Doc<"ttsVocabulary"> | 
       <div className="flex flex-wrap items-center gap-1.5">
         <Group>
           <Pick on={kind === "all"} onClick={() => setKind("all")}>
-            every kind
+            every type
           </Pick>
           {kinds.map((name) => (
             <Pick key={name} on={kind === name} onClick={() => setKind(name)}>

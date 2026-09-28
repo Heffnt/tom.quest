@@ -199,7 +199,7 @@ ${WHAT_TTS_IS}
 
 <h2>What happens next, and who does it</h2>
 
-<p>Each of these controls writes the field, writes one entry of kind <span class="mono">status-changed</span> carrying the old and new values, and stops. Nothing else is scheduled and no message is sent.</p>
+<p>Each of these controls writes the field, writes one <span class="mono">status-changed</span> entry carrying the old and new values, and stops. Nothing else is scheduled and no message is sent.</p>
 
 <p>After that: an active todo is one the box's work queue may list for an agent, and appears in today's column on the calendar when it is due, overdue, scheduled, ready or waking today; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom.</p>
 `,
@@ -264,7 +264,7 @@ ${WHAT_TTS_IS}
 
 <h2>What happens next, and who does it</h2>
 
-<p>Recording a ruling writes one row, writes one entry of kind <span class="mono">ruling</span> in the append-only event record, and — for approve and archive on a life todo — nothing further. For revise, the planner re-prepares the brief on its next half-hourly run and the item returns at <span class="mono">prepared</span> for another look. For session, the item waits until Tom opens the conversation. For approve, archive or revise on a code todo, the ruling stays pending.</p>
+<p>Recording a ruling writes one row, writes one <span class="mono">ruling</span> entry in the append-only event record, and — for approve and archive on a life todo — nothing further. For revise, the planner re-prepares the brief on its next half-hourly run and the item returns at <span class="mono">prepared</span> for another look. For session, the item waits until Tom opens the conversation. For approve, archive or revise on a code todo, the ruling stays pending.</p>
 `,
 );
 
@@ -281,12 +281,12 @@ ${WHAT_TTS_IS}
 
 <p>A program on the Jarvis Box, the <span class="term">daemon</span>, polls TTS constantly — every second while something is happening, every thirty seconds when nothing is — and claims any session row it finds in the requested state. TTS treats the daemon as absent if it has not polled for ninety seconds. Everything the session then does is streamed back into TTS through that same connection, which is what the session view on the site is showing.</p>
 
-<h2>The kinds of session</h2>
+<h2>The types of session</h2>
 
-<p>The <span class="term">kind</span> is stored on the row and decides one paragraph of the opening prompt. There are five.</p>
+<p>The <span class="term">session type</span> is stored on the row, in the field <span class="mono">kind</span>, and decides one paragraph of the opening prompt. There are five.</p>
 
 <table>
-  <tr><th>Kind</th><th>Started from</th><th>What its prompt says</th></tr>
+  <tr><th>Type</th><th>Started from</th><th>What its prompt says</th></tr>
   <tr><td class="mono">gate</td><td>A todo whose readiness is <span class="mono">prepared</span>.</td><td>That the item is ready and needs Tom's input integrated: walk him through it from the ground up, take his ruling, and shape the result with him.</td></tr>
   <tr><td class="mono">focus-item</td><td>Any other todo.</td><td>That Tom chose to begin this item now: open with the smallest concrete first step and work it with him.</td></tr>
   <tr><td class="mono">block</td><td>A placed span of calendar time that targets a category rather than one todo.</td><td>That Tom committed this span to the category, followed by a list of every active todo carrying that category, one line each with its timing, date, entry action and work description.</td></tr>
@@ -328,7 +328,7 @@ ${WHAT_TTS_IS}
 
 <h2>What happens next, and who does it</h2>
 
-<p>Pressing the button writes the session row and its first prompt, opens a browser tab for the session view, and records an entry of kind <span class="mono">session-created</span>. Within a second or so the daemon claims it, clones what it needs, and the transcript begins to appear in that tab.</p>
+<p>Pressing the button writes the session row and its first prompt, opens a browser tab for the session view, and records one <span class="mono">session-created</span> entry. Within a second or so the daemon claims it, clones what it needs, and the transcript begins to appear in that tab.</p>
 
 <p>What the session leaves behind is a branch and, if the work is finished, a pull request — and whatever it wrote back into the todo through the pen. Merging is Tom's, always.</p>
 `,
@@ -373,10 +373,10 @@ ${WHAT_TTS_IS}
 
 <table>
   <tr><th>Action</th><th>What it changes</th><th>The rule the server enforces</th></tr>
-  <tr><td>set a due date</td><td>The todo's date, its date kind and its timing class.</td><td>Only if the todo has no date yet. Moving an existing date is a renegotiation, not a new date.</td></tr>
+  <tr><td>set a due date</td><td>The todo's date, whether that date is external or self-imposed, and its timing class.</td><td>Only if the todo has no date yet. Moving an existing date is a renegotiation, not a new date.</td></tr>
   <tr><td>renegotiate a date</td><td>Records the old date as renegotiated and sets a new one.</td><td>Only before the old date has arrived.</td></tr>
   <tr><td>record a date missed</td><td>Records the old date as missed, with or without a replacement.</td><td>Only after the date has passed. A date still ahead is renegotiated, never missed.</td></tr>
-  <tr><td>set the date kind</td><td>Whether the date came from outside or Tom set it himself.</td><td>Only on a todo that has a date.</td></tr>
+  <tr><td>mark the date external or self-imposed</td><td>Whether the date came from outside or Tom set it himself.</td><td>Only on a todo that has a date.</td></tr>
   <tr><td>set waiting, or set active</td><td>The todo's status, with a wake time when parking it.</td><td>A wake time not given is merged from what the todo already holds.</td></tr>
   <tr><td>create, move or delete a block</td><td>A placed span of calendar time.</td><td>A span must end after it starts, and must target either one todo or one category.</td></tr>
 </table>
@@ -408,7 +408,7 @@ ${WHAT_TTS_IS}
 
 <p>A block is not a todo. It carries no status, no readiness, no ruling, and it is not itself something to be done — it is a statement about when. Blocks are described in the code as calendar strokes, and moving or deleting one is expected rather than exceptional.</p>
 
-<h2>The one target, and the two kinds it can be</h2>
+<h2>The one target, and the two things it can be</h2>
 
 <table>
   <tr><th>Target</th><th>What the block means</th></tr>
@@ -438,7 +438,7 @@ ${WHAT_TTS_IS}
 
 <h2>What deleting one does</h2>
 
-<p>Exactly two things: the block row is removed, and one entry of kind <span class="mono">block-deleted</span> is written into the append-only event record, carrying the span and the target. The todo the block was for is not touched — not its status, not its date, not its readiness. Nothing is written to any external calendar, because nothing was ever written there.</p>
+<p>Exactly two things: the block row is removed, and one <span class="mono">block-deleted</span> entry is written into the append-only event record, carrying the span and the target. The todo the block was for is not touched — not its status, not its date, not its readiness. Nothing is written to any external calendar, because nothing was ever written there.</p>
 
 <p>The block is gone rather than archived. That is deliberate, and it is the one place in TTS where a row is genuinely removed: a block is schedule mechanics rather than a record of intent, and the intent it served is still on the todo.</p>
 
@@ -503,7 +503,7 @@ ${WHAT_TTS_IS}
 
 <h2>The calendar skip</h2>
 
-<p>If a rule carries skip text, the job first reads every mirrored calendar event overlapping that New York calendar day and looks for one whose title contains that text, ignoring capitalisation. If it finds one, no todo is minted; instead an entry of kind <span class="mono">repeat-skipped</span> is written into the append-only event record, naming the event that caused the skip.</p>
+<p>If a rule carries skip text, the job first reads every mirrored calendar event overlapping that New York calendar day and looks for one whose title contains that text, ignoring capitalisation. If it finds one, no todo is minted; instead one <span class="mono">repeat-skipped</span> entry is written into the append-only event record, naming the event that caused the skip.</p>
 
 <p>Those events come from the read-only mirror of Tom's external calendars, refreshed hourly. The match is a plain substring of the title, so "travel" matches "Travel to Boston" and matches nothing that mentions travel only in its description.</p>
 
@@ -534,7 +534,7 @@ export const MUST_NOT_BREAK_EXPLANATION = page(
 
 ${WHAT_TTS_IS}
 
-<p>A todo is one of two kinds. A <span class="term">task</span> is work someone does. A <span class="term">goal</span> is a state of the world Tom wants, written as a condition that is either true yet or not. <span class="term">Must not break</span> is one field on a goal: one line, in Tom's own words, naming what the work toward that goal must not break — a constraint on everything done in the goal's name.</p>
+<p>A todo is either a task or a goal. A <span class="term">task</span> is work someone does. A <span class="term">goal</span> is a state of the world Tom wants, written as a condition that is either true yet or not. <span class="term">Must not break</span> is one field on a goal: one line, in Tom's own words, naming what the work toward that goal must not break — a constraint on everything done in the goal's name.</p>
 
 <p>It is stored on the goal's row under the name <span class="mono">mustNotBreak</span>, and it exists only on goals: the one function that writes it, <span class="mono">updateTodo</span> in the file <span class="mono">convex/tts.ts</span>, refuses it on a task.</p>
 

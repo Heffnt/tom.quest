@@ -306,7 +306,7 @@ describe("QuestionsClient", () => {
     expect(infoControls).toHaveLength(12);
     fireEvent.click(infoControls[0]);
 
-    expect(screen.getByText("Admits every question, the lighter ones included; kind no longer narrows the list.")).toBeTruthy();
+    expect(screen.getByText("Admits every question, the lighter ones included; type no longer narrows the list.")).toBeTruthy();
     expect(screen.getByText("matches(BANK, { ...filters, kind: null })")).toBeTruthy();
   });
 

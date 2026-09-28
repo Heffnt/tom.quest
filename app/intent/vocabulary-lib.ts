@@ -33,7 +33,7 @@ export function versionRow(row: VocabularyRow): string {
 
 /**
  * The rows the page prints under the header. With no word typed, every term
- * of the picked kind, as `tts search vocabulary --kind` prints them. With a
+ * of the picked kind, as `tts search vocabulary --type` prints them. With a
  * word, what `tts search define <word>` prints: its one row, or the line that
  * says it is unknown and the words it could have meant.
  */
