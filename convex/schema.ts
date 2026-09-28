@@ -447,8 +447,9 @@ export default defineSchema({
   // Convex has no table rename; renaming a populated table is a copy. The
   // core tables were copied under plain names (todos, blocks, timeNotes,
   // rulings, calendar, repeats, vocabulary: convex/jarvis/tables.ts), each
-  // row keeping its old _id as legacyId; dtsTodos, dtsBlocks and dtsTimeNotes
-  // then left the schema, and their final rows are in WikiTom tts/snapshot.
+  // row keeping its old _id as legacyId; dtsTodos, dtsBlocks, dtsTimeNotes
+  // and dtsRulings then left the schema, and their final rows are in WikiTom
+  // tts/snapshot.
 
   // ── Batches went on 2026-09-24 (Tom: "I dont want to have batches at all
   // anymore") and their table on 2026-09-26; the 198 rows are in WikiTom
@@ -877,67 +878,17 @@ export default defineSchema({
   // ("defer" is NOT a verdict — not ruling is deferring; timing changes are a
   // reschedule, not a ruling.)
   //
-  // NARROWED after read-only production counts on 2026-09-27: dtsRulings and
-  // rulings each held 5 rows, with zero `batch` or `elevation` subjectType,
-  // zero `answer` verdict, and zero batchId or elevationId fields. Their
-  // by_batch and by_elevation indexes were therefore removed with the fields.
-  dtsRulings: defineTable({
-    subjectType: v.union(
-      v.literal("life"),
-      v.literal("code"),
-    ),
-    todoId: v.optional(STORED_TODO_ID), // life subjects
-    repo: v.optional(v.string()), // code subjects…
-    externalId: v.optional(v.string()), // …(repo, externalId)
-    verdict: v.union(
-      v.literal("approve"),
-      v.literal("revise"),
-      v.literal("session"),
-      v.literal("archive"),
-    ),
-    // Who ruled. Absent is Tom, as on every row written before the delegate
-    // could rule. "delegate" marks a delegate ruling (Tom, 2026-09-21): every
-    // run treats it as his, his objection reverts it, and nothing that learns
-    // about Tom from his rulings reads it as his words.
-    ruledBy: v.optional(v.union(v.literal("tom"), v.literal("delegate"))),
-    // The delegate's ask behind a delegate ruling (a "delegate-decision"
-    // event's key), so an objection to the ask finds the ruling.
-    askId: v.optional(v.string()),
-    // One optional written note, accepted on EVERY verdict (2026-08-29): the
-    // redirect for revise (required there, enforced in ttsRulings.ts), the
-    // unarchive condition for archive, a free steering note for
-    // approve/session — the worker prompts inject all four as context.
-    sentence: v.optional(v.string()),
-    ruledAt: v.number(),
-    appliedAt: v.optional(v.number()),
-    applyResult: v.optional(v.string()),
-    // Set when the ruling was written from Tom's own words in a session turn
-    // rather than from a button (ruling 15, 2026-09-05): `inboundId` is the
-    // claudeInbound row the words came from and `quote` is the one whole
-    // sentence or line of that row the agent read as the ruling. Provenance
-    // only: it is never copied into `sentence` above (the archive return
-    // condition the page shows, the revise redirect the worker reads).
-    // Absent on every ruling recorded through the UI. The digest quotes these
-    // so a misreading is objected; the same row never rules on the same
-    // subject twice (checked in ttsRulings.ts, by the index below).
-    provenance: v.optional(
-      v.object({
-        from: v.literal("tom-words"),
-        inboundId: v.string(),
-        quote: v.string(),
-      }),
-    ),
-  })
-    .index("by_todo", ["todoId"])
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_ruled", ["ruledAt"])
-    .index("by_provenance_inboundId", ["provenance.inboundId"])
-    .index("by_ask", ["askId"]),
-
-  // rulings: the plain-named home of dtsRulings's rows (the record's core
-  // tables, 2026-09-26). Its payload and source indexes match; legacyId and
-  // by_legacy preserve lookup by the old id. dtsRulings above empties once
-  // convex/jarvis/tables.ts has copied it.
+  // NARROWED after read-only production counts on 2026-09-27: the rulings
+  // held 5 rows, with zero `batch` or `elevation` subjectType, zero `answer`
+  // verdict, and zero batchId or elevationId fields. Their by_batch and
+  // by_elevation indexes were therefore removed with the fields.
+  //
+  // rulings: the plain-named home of the rows dtsRulings held (the record's
+  // core tables, 2026-09-26). Every row was copied here with its old _id as
+  // legacyId, and by_legacy keeps lookup by that id (convex/jarvis/tables.ts
+  // resolveId). dtsRulings has left the schema; its final state is WikiTom
+  // tts/snapshot/dtsRulings.jsonl, and purgeOldTables empties what the
+  // deployment still holds of it.
   rulings: defineTable({
     subjectType: v.union(
       v.literal("life"),
@@ -1123,7 +1074,7 @@ export default defineSchema({
   // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
   // when the entry changes upstream, the hash mismatch marks the brief stale
   // and the worker rewrites it. `recommendation` is the worker's read, never a
-  // verdict — Tom rules (dtsRulings); `execClass` says where an approved
+  // verdict — Tom rules (rulings); `execClass` says where an approved
   // item can run; `evidence` carries the commits/files that justify a
   // propose-archive.
   dtsCodeBriefs: defineTable({
@@ -1222,7 +1173,7 @@ export default defineSchema({
   // than the page's widest window: until then it is how a merged commit on the
   // page finds the pull request it came from (by its head sha), and so which
   // ruling of Tom's it carries. Tom's approval itself is a ruling in
-  // `dtsRulings`, which is why deleting a row loses nothing.
+  // `rulings`, which is why deleting a row loses nothing.
   //
   // `lastAttempt` is the one fact GitHub cannot be asked for afterwards: what
   // happened the last time the record tried to merge this. Without it the page
@@ -1272,7 +1223,7 @@ export default defineSchema({
   // THE REST OF WHERE HIS INTENT IS WRITTEN. His intent lives in four kinds of
   // place (the /intent page): his directions, the standing rules, his rulings,
   // and the labels he puts on a run's output. Three of the four already have a
-  // home in the record — modelOfTomFiles above, dtsRulings, runLabels — and the
+  // home in the record — modelOfTomFiles above, rulings, runLabels — and the
   // files below are the ones that had none: the evidence behind each
   // model-of-tom line, `vqc/steering.yaml`, and the two files whose dated notes
   // quote his rulings (`tts/spec.md`, `vqc/adoption.md`).

@@ -6,15 +6,16 @@
 // kept as `legacyId`, so an id cited outside the record (the evidence, a Slack
 // thread, a box file, WikiTom's tts/snapshot) or stored by a row written
 // before the move still finds its row (resolveId below). The rulings' copy ran
-// in production on 2026-09-26; dtsRulings stays whole until `counts` confirms
-// it, then a later commit empties it and drops it from the schema.
+// in production on 2026-09-26 and brought all five rows; since then every
+// ruling is written to `rulings` alone (ttsRulings.ts insertRuling), and
+// dtsRulings left the schema with the other old tables.
 //
 // TODOS, BLOCKS AND TIME NOTES moved in three steps: the copy and the dual
 // write (step A), the readers (step B), and the writers (step C, whose last
-// pull request stopped every write to the old tables). Then the old tables
-// left the schema. What the deployment still holds of them is emptied once by
-// purgeOldTables (below), after WikiTom tts/snapshot holds their final state;
-// nothing else here names them.
+// pull request stopped every write to the old tables). Then the old tables,
+// dtsRulings among them, left the schema. What the deployment still holds of
+// them is emptied once by purgeOldTables (below), after WikiTom tts/snapshot
+// holds their final state; nothing else here names them.
 //
 // AN ID IN EITHER FORM. An id reaches the record as the plain row's, or as the
 // _id its row had before the move (an old link, a Slack thread, a box file,
@@ -200,47 +201,6 @@ export async function todoRulings(ctx: QueryCtx | MutationCtx, id: string): Prom
   return await withPlainTodoIds(ctx, out);
 }
 
-/** One page of a count: rows, and (in `rulings`) rows carrying a legacyId. */
-export const countPage = internalQuery({
-  args: {
-    table: v.union(v.literal("rulings"), v.literal("dtsRulings")),
-    cursor: v.union(v.string(), v.null()),
-  },
-  handler: async (ctx, { table, cursor }) => {
-    const page = await ctx.db.query(table).paginate({ cursor, numItems: 200 });
-    const copied = page.page.filter((r) => typeof (r as Record<string, unknown>).legacyId === "string").length;
-    return { rows: page.page.length, copied, isDone: page.isDone, continueCursor: page.continueCursor };
-  },
-});
-
-/**
- * `rulings` counted beside dtsRulings: the check the old table is emptied
- * on. `copied` is the new table's rows that came from the old one; it equals
- * `old` when the copy is whole.
- */
-export const counts = internalAction({
-  args: {},
-  handler: async (ctx) => {
-    const count = async (table: "rulings" | "dtsRulings") => {
-      let rows = 0;
-      let copied = 0;
-      let cursor: string | null = null;
-      for (;;) {
-        const page: { rows: number; copied: number; isDone: boolean; continueCursor: string } =
-          await ctx.runQuery(internal.jarvis.tables.countPage, { table, cursor });
-        rows += page.rows;
-        copied += page.copied;
-        if (page.isDone) break;
-        cursor = page.continueCursor;
-      }
-      return { rows, copied };
-    };
-    const before = await count("dtsRulings");
-    const after = await count("rulings");
-    return { rulings: { old: before.rows, new: after.rows, copied: after.copied, whole: after.copied === before.rows } };
-  },
-});
-
 // ── blocks ──────────────────────────────────────────────────────────────────
 
 /** Rows per page of clearBlock. */
@@ -278,28 +238,30 @@ async function drain<T extends Paged>(step: (cursor: string | null) => Promise<T
 
 // ── the old tables are emptied ──────────────────────────────────────────────
 //
-// dtsTodos, dtsBlocks and dtsTimeNotes are out of the schema: nothing has
-// written them since step C and nothing reads them. Dropping a table from the
-// schema deletes none of its rows (Convex validates only the tables the
-// schema lists, and a push's schema diff has no table deletion, only index
-// removals: AGENTS.md, "schema"), so the rows stay on the deployment
-// undeclared until this empties them.
+// dtsTodos, dtsBlocks, dtsTimeNotes and dtsRulings are out of the schema:
+// nothing has written the first three since step C, nor dtsRulings since its
+// rows were copied into `rulings` on 2026-09-26, and nothing reads any of
+// them. Dropping a table from the schema deletes none of its rows (Convex
+// validates only the tables the schema lists, and a push's schema diff has no
+// table deletion, only index removals: AGENTS.md, "schema"), so the rows stay
+// on the deployment undeclared until this empties them.
 //
 // It runs once, by hand (`tts-convex run jarvis/tables:purgeOldTables`), and
 // only after WikiTom tts/snapshot holds each table's final state: the first
 // nightly copy after the old writes stopped. `expect` is that copy's row
-// count per table (the lines of dtsTodos.jsonl, dtsBlocks.jsonl and
-// dtsTimeNotes.jsonl). The tables are counted first, and nothing is deleted
-// unless every count equals the copy's, so a row the copy does not hold is
-// never deleted. The old ids stay readable after: each plain row keeps its
-// old row's _id as legacyId, and resolveId maps it.
+// count per table (the lines of dtsTodos.jsonl, dtsBlocks.jsonl,
+// dtsTimeNotes.jsonl and dtsRulings.jsonl). The tables are counted first, and
+// nothing is deleted unless every count equals the copy's, so a row the copy
+// does not hold is never deleted. The old ids stay readable after: each plain row keeps its
+// old row's _id as legacyId, and resolveId maps it (a ruling's too: every
+// dtsRulings row's _id is a `rulings` row's legacyId).
 //
 // The tables are named through a loose view of the database, since the
 // schema no longer declares them: Convex reads and deletes an undeclared
 // table's rows like any other's. A later pull request deletes this section
 // once the run has reported every table empty.
 
-const OLD_TABLES = ["dtsTimeNotes", "dtsBlocks", "dtsTodos"] as const;
+const OLD_TABLES = ["dtsTimeNotes", "dtsBlocks", "dtsTodos", "dtsRulings"] as const;
 type OldTable = (typeof OLD_TABLES)[number];
 const OLD_TABLE = v.union(...OLD_TABLES.map((table) => v.literal(table)));
 
@@ -350,12 +312,15 @@ export const recordPurge = internalMutation({
 });
 
 /**
- * Empties dtsTodos, dtsBlocks and dtsTimeNotes, once each table's row count
- * equals `expect` (the off-box copy's). Answers each table's count and, when
- * every count matched, what was deleted; when one did not, deletes nothing.
+ * Empties dtsTodos, dtsBlocks, dtsTimeNotes and dtsRulings, once each
+ * table's row count equals `expect` (the off-box copy's). Answers each
+ * table's count and, when every count matched, what was deleted; when one did
+ * not, deletes nothing.
  */
 export const purgeOldTables = internalAction({
-  args: { expect: v.object({ dtsTodos: v.number(), dtsBlocks: v.number(), dtsTimeNotes: v.number() }) },
+  args: {
+    expect: v.object({ dtsTodos: v.number(), dtsBlocks: v.number(), dtsTimeNotes: v.number(), dtsRulings: v.number() }),
+  },
   handler: async (ctx, { expect }) => {
     const counted = {} as Record<OldTable, number>;
     for (const table of OLD_TABLES) {
