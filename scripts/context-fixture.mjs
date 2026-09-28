@@ -26,16 +26,16 @@ export const CONTEXT_PAGES = Object.freeze({
     "# Priorities\n\n## Rules learned from corrections\n\n- He rules; agents implement.\n\n"
     + "## What becomes a todo\n\n- Anything with a date.\n",
   "model-of-tom/schedule.md":
-    "# Schedule\n\n## Week\n\n- Monday — climbing team practice.\n- Tuesday — lab meeting.\n"
-    + "- Wednesday — cube draft.\n\n## Calendars\n\n- Google, and the WPI feed.\n",
+    "# Schedule\n\n## Week\n\n- Monday — kite club practice.\n- Tuesday — reading group.\n"
+    + "- Wednesday — puzzle night.\n\n## Calendars\n\n- Google, and the club feed.\n",
   "model-of-tom/areas/admin.md": area("admin", "Admin", "admin-one, admin-two, admin-three", "Paperwork waits."),
   "model-of-tom/areas/agent-systems.md": area("agent-systems", "Agent systems", "agent-one, agent-two, agent-three", "TTS is live."),
-  "model-of-tom/areas/climbing.md": area("climbing", "Climbing", "climb-one, climb-two, climb-three", "On the WPI team."),
+  "model-of-tom/areas/climbing.md": area("climbing", "Climbing", "climb-one, climb-two, climb-three", "On the kite club."),
   "model-of-tom/areas/health-and-food.md": area("health-and-food", "Health and food", "food-one, food-two, food-three", "Batch meals."),
   "model-of-tom/areas/mental-health.md": area("mental-health", "Mental health", "mind-one, mind-two, mind-three", "Weekly therapy."),
   "model-of-tom/areas/money.md": area("money", "Money", null, "Reimbursements owed."),
   "model-of-tom/areas/research.md": area("research", "Research", "study-one, study-two, study-three", "The September campaign."),
-  "model-of-tom/areas/social.md": area("social", "Social", "social-one, social-two, social-three", "Cube drafts."),
+  "model-of-tom/areas/social.md": area("social", "Social", "social-one, social-two, social-three", "Puzzle nights."),
 });
 
 /** tom.quest's published repo layer, four files at three depths. */

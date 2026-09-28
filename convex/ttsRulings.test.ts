@@ -235,7 +235,7 @@ describe("TTS unified rulings", () => {
     const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
-      statement: "email Ana Maria",
+      statement: "email Pat Example",
     });
     await tom.mutation(api.tts.updateTodo, {
       id: todoId,

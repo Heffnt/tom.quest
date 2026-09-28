@@ -19,7 +19,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // fetch and the window now (mapCanvasAssignments lives there, with its tests),
 // so these instants only need to be stable, not near the real clock.
 const DUE = Date.UTC(2026, 8, 3, 3, 59); // 2026-09-02 23:59 EDT
-const URL_14 = "https://canvas.wpi.edu/courses/1/assignments/14";
+const URL_14 = "https://canvas.example.edu/courses/1/assignments/14";
 
 function assignment(over: Partial<AssignmentInput> = {}): AssignmentInput {
   return {
@@ -172,7 +172,7 @@ describe("internalSyncCanvasTodos", () => {
         kind: "task",
         actor: "tom",
         source: ASSIGNMENT_SOURCE,
-        provenance: "https://canvas.wpi.edu/courses/1/discussion_topics/991",
+        provenance: "https://canvas.example.edu/courses/1/discussion_topics/991",
         createdAt: 1,
         updatedAt: 1,
       }),

@@ -136,7 +136,7 @@ describe("assembleContext", () => {
     expect(joinContext(context)).toBe(`${PREFIX}\n\n${WRITE}\n\n${SKILLS_LINE}`);
     expect(SKILLS_LINE).toBe("Skills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
     // No other page rides along: the rest is read on demand.
-    expect(joinContext(context)).not.toContain("On the WPI team.");
+    expect(joinContext(context)).not.toContain("On the kite club.");
     expect(joinContext(context)).not.toContain("── model-of-tom/intent.md ──");
   });
 

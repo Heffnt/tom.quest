@@ -187,12 +187,12 @@ describe("parseModelOfTomPage", () => {
   it("calls a line a paraphrase of his words his", () => {
     const paraphrased = parseModelOfTomPage({
       path: "model-of-tom/intent.md",
-      body: "## What to protect\n\n- He is never observed while he works.",
+      body: "## What to protect\n\n- He is never asked twice for the same file.",
       evidence: [
         "## What to protect",
         "",
-        "- line: He is never observed while he works.",
-        "  paraphrase: 2026-08-19 · a session · observation was tested and failed for him.",
+        "- line: He is never asked twice for the same file.",
+        "  paraphrase: 2026-01-15 · a session · asking twice was tried and failed.",
       ].join("\n"),
       kind: "direction",
     });
@@ -253,7 +253,7 @@ describe("parseSteering", () => {
     "",
     "- id: someone-elses",
     "  kind: gotcha",
-    "  owner: raha",
+    "  owner: other",
     "  created: 2026-08-26",
     "  correction: Not his taste.",
   ].join("\n");

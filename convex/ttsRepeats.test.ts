@@ -482,7 +482,7 @@ describe("internalGenerateRepeats", () => {
   it("skips a rule whose calendar-needle matches an event that day", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    await seedCalendarEvent(t, "Climbing Team Practice");
+    await seedCalendarEvent(t, "Kite Club Practice");
     const skippedId = await tom.mutation(api.ttsRepeats.createRepeat, {
       statement: "train outside of practice",
       daysOfWeek: ["monday"],
@@ -511,7 +511,7 @@ describe("internalGenerateRepeats", () => {
     expect(skipped[0].data).toMatchObject({
       repeatId: skippedId,
       day: DAY,
-      calendarEvent: "Climbing Team Practice",
+      calendarEvent: "Kite Club Practice",
     });
   });
 
@@ -523,7 +523,7 @@ describe("internalGenerateRepeats", () => {
       ctx.db.insert("ttsCalendarEvents", {
         feed: "google",
         uid: "practice-sunday",
-        title: "Climbing Team Practice",
+        title: "Kite Club Practice",
         start: bounds.start - 6 * 3_600_000, // the previous evening
         end: bounds.start - 4 * 3_600_000,
         allDay: false,
@@ -574,13 +574,13 @@ describe("internalGenerateRepeats", () => {
       }),
     ).rejects.toThrow(/at least one weekday/);
     const id = await t.mutation(internal.ttsRepeats.internalCreateRepeat, {
-      statement: "  finger + pulling strength  ",
+      statement: "  knots + reel drills  ",
       daysOfWeek: ["saturday"],
       timeOfDay: "11:00",
       skipWhenCalendarHas: "climb",
     });
     const rule = await t.run(async (ctx) => ctx.db.get(id));
-    expect(rule?.statement).toBe("finger + pulling strength");
+    expect(rule?.statement).toBe("knots + reel drills");
     expect(rule?.active).toBe(true);
     const created = await events(t, "repeat-created");
     expect(created).toHaveLength(1);

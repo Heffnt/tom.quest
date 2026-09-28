@@ -29,7 +29,7 @@ import { SILENCE_INTERVALS } from "./ttsJobs";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const AT = Date.UTC(2026, 8, 25, 5, 8, 34);
-const AGENT = "claude:box:bc34b0d6-a223-4529-bfb0-af12442b8c6a";
+const AGENT = "claude:box:0a0b0c0d-1111-4222-8333-444455556666";
 const TOKEN = `ghp_${"a1B2".repeat(9)}`;
 
 const change = (over: Partial<BoxChange> = {}): BoxChange => ({

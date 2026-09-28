@@ -291,7 +291,7 @@ describe("gatherWeeklyFacts", () => {
         subjectType: "life",
         todoId: declined,
         verdict: "archive",
-        sentence: "the WPI mailbox is read by hand",
+        sentence: "the example mailbox is read by hand",
         ruledAt: now - 4 * DAY,
       });
       await event(ctx, JOB_FAILED, now - 6 * DAY, {
@@ -386,7 +386,7 @@ describe("gatherWeeklyFacts", () => {
     expect(f.integrations).toEqual([
       { name: "gmail", state: "running", since: null, detail: null },
       { name: "canvas", state: "waiting-on-credential", since: expect.any(Number), detail: "Canvas said 401" },
-      { name: "outlook", state: "declined", since: expect.any(Number), detail: "the WPI mailbox is read by hand" },
+      { name: "outlook", state: "declined", since: expect.any(Number), detail: "the example mailbox is read by hand" },
     ]);
     expect(f.areaPages).toEqual([
       expect.objectContaining({ path: "model-of-tom/areas/admin.md", windowDays: 60, reviewedAgeDays: 0, pastWindow: false }),

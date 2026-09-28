@@ -145,13 +145,13 @@ describe("intent.lines", () => {
       await ctx.db.insert("modelOfTomFiles", {
         name: "intent",
         sourcePath: "model-of-tom/intent.md",
-        body: "# Intent\n\n## What to protect\n\n- The record of him is his.\n",
+        body: "# Intent\n\n## What to protect\n\n- The garden plan is his.\n",
         syncedAt: 10,
         commit: COMMIT,
       });
       await ctx.db.insert("intentSources", source(
         "model-of-tom/evidence/intent.md",
-        "## What to protect\n\n- line: The record of him is his.\n  said: 2026-09-05 · a session · \"it is mine\"\n",
+        "## What to protect\n\n- line: The garden plan is his.\n  said: 2026-09-05 · a session · \"it is mine\"\n",
       ));
       await ctx.db.insert("intentSources", source(
         "vqc/steering.yaml",
@@ -181,7 +181,7 @@ describe("intent.lines", () => {
 
     const direction = lines.find((line) => line.kind === "direction")!;
     expect(direction).toMatchObject({
-      text: "The record of him is his.",
+      text: "The garden plan is his.",
       section: "What to protect",
       voice: "his",
       source: "model-of-tom/intent.md",

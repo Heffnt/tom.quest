@@ -61,7 +61,7 @@ describe("expandIcsText", () => {
       `BEGIN:VEVENT
 UID:single-timed@tom.quest
 SUMMARY:Dinner with Nora
-LOCATION:Worcester
+LOCATION:Harbor Hall
 DTSTART;TZID=America/New_York:20260812T190000
 DTEND;TZID=America/New_York:20260812T203000
 END:VEVENT`,
@@ -78,7 +78,7 @@ END:VEVENT`,
     expect(rows[0]).toMatchObject({
       uid: "single-timed@tom.quest",
       title: "Dinner with Nora",
-      location: "Worcester",
+      location: "Harbor Hall",
       allDay: false,
       // 19:00 EDT = 23:00 UTC; August is UTC-4.
       start: Date.UTC(2026, 7, 12, 23),
@@ -392,12 +392,12 @@ describe("listCalendarEvents", () => {
 describe("buildEventBody (the calendar write door)", () => {
   it("builds a Google Calendar insert body with the NY time zone", () => {
     const body = buildEventBody({
-      title: "  Climbing Team Practice  ",
+      title: "  Kite Club Practice  ",
       start: Date.UTC(2026, 8, 7, 21), // Mon Sep 7, 17:00 EDT
       end: Date.UTC(2026, 9, 8, 0),
       recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"],
     });
-    expect(body.summary).toBe("Climbing Team Practice"); // trimmed
+    expect(body.summary).toBe("Kite Club Practice"); // trimmed
     expect(body.start).toEqual({
       dateTime: "2026-09-07T21:00:00.000Z",
       timeZone: "America/New_York",

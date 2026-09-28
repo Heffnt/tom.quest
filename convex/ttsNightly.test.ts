@@ -379,7 +379,7 @@ describe("GET /tts/learning-input", () => {
         statusChangedAt: now,
         nextSeq: 3,
         createdAt: now,
-        sdkSessionId: "47f04bc9-1111-4222-8333-444444444444",
+        sdkSessionId: "0a0b0c0d-1111-4222-8333-444444444444",
       });
       const turn = (author: "tom" | "agent", text: string) =>
         ctx.db.insert("claudeInbound", {
@@ -431,7 +431,7 @@ describe("GET /tts/learning-input", () => {
     expect(input.tomTurns.map((x: { text: string }) => x.text)).toEqual(["sign it Friday"]);
     expect(input.tomTurns[0].sessionTitle).toBe("the lease");
     // The SDK session id rides each turn: the pages cite its 8-hex prefix.
-    expect(input.tomTurns[0].sdkSessionId).toBe("47f04bc9-1111-4222-8333-444444444444");
+    expect(input.tomTurns[0].sdkSessionId).toBe("0a0b0c0d-1111-4222-8333-444444444444");
     expect(input.slackReplies).toHaveLength(1);
     expect(input.slackReplies[0].data.text).toBe("done");
     expect(input.rulings.map((r: { verdict: string }) => r.verdict)).toEqual(["revise"]);

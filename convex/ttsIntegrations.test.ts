@@ -174,7 +174,7 @@ describe("internalDeclinedIntegrations", () => {
     const t = convexTest(schema, modules);
     const id = await declineable(t, "integration: outlook");
     await rule(t, id, "archive", {
-      sentence: "the WPI tenant will not give me a token worth the trouble",
+      sentence: "the example tenant will not give me a token worth the trouble",
       ruledAt: 1_757_000_000_000,
     });
     expect(await declined(t)).toEqual([
@@ -182,7 +182,7 @@ describe("internalDeclinedIntegrations", () => {
         name: "outlook",
         todoId: await plainId(t, id),
         ruledAt: 1_757_000_000_000,
-        sentence: "the WPI tenant will not give me a token worth the trouble",
+        sentence: "the example tenant will not give me a token worth the trouble",
       },
     ]);
   });

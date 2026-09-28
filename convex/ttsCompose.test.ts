@@ -265,7 +265,7 @@ function sept9(overrides: Partial<TodayFacts> = {}): TodayFacts {
       },
       {
         id: "ph7acr30",
-        statement: "Confirm the time of the TRACE Lab meeting you are presenting at",
+        statement: "Confirm the time of the Example Lab meeting you are presenting at",
         entryAction: "open the linked email thread",
         countdown: "Five days late.",
       },
@@ -283,7 +283,7 @@ function sept9(overrides: Partial<TodayFacts> = {}): TodayFacts {
     needsYou: [],
     overnightByTodo: [
       { todoId: "ph7crit", statement: "Walk the research critical path", sessionId: "k1", finished: 4, running: false },
-      { todoId: "ph7veri", statement: "Answer the Veritasium BackerKit reward survey", sessionId: "k2", finished: 0, running: true },
+      { todoId: "ph7kite", statement: "Answer the Example Crowdfund reward survey", sessionId: "k2", finished: 0, running: true },
     ],
     broken: [],
     ...overrides,
@@ -317,7 +317,7 @@ describe("composeToday", () => {
       expect(text.toLowerCase()).not.toContain(word.toLowerCase());
     }
     expect(text).toContain("<https://tom.quest/tts?item=ph7crit|Walk the research critical path: 4 sessions on it ended.>");
-    expect(text).toContain("<https://tom.quest/tts?item=ph7veri|Answer the Veritasium BackerKit reward survey: a session on it is still running.>");
+    expect(text).toContain("<https://tom.quest/tts?item=ph7kite|Answer the Example Crowdfund reward survey: a session on it is still running.>");
   });
 
   it("prints the runs in the ruled order and omits the empty ones", () => {
@@ -585,7 +585,7 @@ describe("the needs-you-today run", () => {
     const late = sept9({
       lateCount: 12,
       oldestLateBy: "twenty-three days",
-      today: [{ id: "x1", statement: "Confirm the time of the TRACE Lab meeting you are presenting at next week in the main hall", entryAction: "open it", countdown: "Twenty-three days late." }],
+      today: [{ id: "x1", statement: "Confirm the time of the Example Lab meeting you are presenting at next week in the main hall", entryAction: "open it", countdown: "Twenty-three days late." }],
       objections,
       needsYou: ITEMS,
     });
@@ -783,7 +783,7 @@ describe("the facts block", () => {
       urls: [itemUrl("ph7crit")],
       numbers: ["4"],
     });
-    expect(byId.get("overnight-todo:ph7veri")?.urls).toEqual([itemUrl("ph7veri")]);
+    expect(byId.get("overnight-todo:ph7kite")?.urls).toEqual([itemUrl("ph7kite")]);
     const ids = block.facts.map((f) => f.id);
     expect(ids.some((id) => id === "overnight:count" || id.startsWith("batch:"))).toBe(false);
     expect(block.facts.flatMap((f) => f.urls).some((url) => url.includes("tab=batches"))).toBe(false);

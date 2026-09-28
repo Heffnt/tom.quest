@@ -157,13 +157,13 @@ describe("TTS todos", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const id = await tom.mutation(api.tts.createTodo, {
-      statement: "  email Ana Maria  ",
+      statement: "  email Pat Example  ",
       dueAt: Date.now() + 86_400_000,
     });
     const todos = await tom.query(api.tts.listTodos, {});
     expect(todos).toHaveLength(1);
     expect(todos[0]._id).toBe(id);
-    expect(todos[0].statement).toBe("email Ana Maria");
+    expect(todos[0].statement).toBe("email Pat Example");
     expect(todos[0].timingClass).toBe("dated"); // dueAt implies dated
     expect(todos[0].dateKind).toBe("self-imposed");
     expect(todos[0].readiness).toBe("unprepared");

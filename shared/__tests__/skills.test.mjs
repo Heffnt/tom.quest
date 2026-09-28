@@ -345,7 +345,7 @@ describe("skills: descriptions", () => {
   });
 
   it("lets a page's `skill:` frontmatter replace the generated description verbatim", () => {
-    const chosen = "Tom's climbing team and his exec role. Load before anything about practice or the gym.";
+    const chosen = "Tom's kite club and its meetings. Load before anything about practice or the field.";
     const pages = fixturePages().map((page) =>
       page.path === `${AREAS_DIR}/climbing.md` ? areaPage("climbing", "[climbing, team]", `skill: ${chosen}\n`) : page,
     );
