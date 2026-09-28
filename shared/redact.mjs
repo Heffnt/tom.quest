@@ -194,15 +194,12 @@ function redactNamedSecrets(text) {
 // printed, a buffer that stopped at its cap) is not matched by
 // PEM_PRIVATE_KEY, and its body went through as ordinary text. It is taken
 // from its first line over the lines a key's body can be, and no further, so
-// the text after a first line quoted in a document stays, and a closing quote
-// of a serialized string is never taken. The grammar, one entry per kind:
+// the text after a first line quoted in a document stays.
+//
+// The lines are read by readBlockLine, which decodes a serialized string's
+// escapes as it reads, and the kinds below are matched against the decoded
+// line: they know raw characters only. The kinds of line:
 const OPEN_KEY_BLOCK = Object.freeze({
-  // Where a line ends and the next begins: a line break as written, or
-  // escaped once or twice inside a serialized string.
-  lineBreak: /\r?\n|\\{1,2}(?:r\\{1,2})?n/y,
-  // A line's text: up to a line break, a quote or a backslash, but an escaped
-  // tab whole. So a block taken never ends inside an escape or takes a quote.
-  lineText: /(?:[^\r\n\\"]|\\{1,2}t)*/y,
   // A full line: forty base64 characters in a row anywhere in the line. A
   // key's body lines are one width, 64 (70 for OpenSSH, 76 in some tools),
   // and the smallest key's first line is a full one; so is a body line behind
@@ -210,20 +207,74 @@ const OPEN_KEY_BLOCK = Object.freeze({
   // holding a full commit id or another long hash is one too.
   fullLine: /[A-Za-z0-9+/]{40}/,
   // A short line: one base64 run shorter than that, with optional padding,
-  // after an optional line number and tab (a file read with its line numbers)
-  // or a diff's sign. Taken as a key's last line directly after a full line,
-  // or as the text's last line (the text stopped inside a body line), and the
-  // block ends with it.
-  shortLine: /^[ \t]*(?:\d+(?:\t|\\{1,2}t|→)|[+\- ])?[ \t]*[A-Za-z0-9+/]+={0,2}[ \t]*$/,
+  // after an optional line number and tab or arrow (a file read with its line
+  // numbers) or a diff's sign. Taken as a key's last line directly after a
+  // full line, or as the text's last line (the text, or the serialized string
+  // it stands in, stopped inside a body line), and the block ends with it.
+  shortLine: /^[ \t]*(?:\d+[\t→]|[+\- ])?[ \t]*[A-Za-z0-9+/]+={0,2}[ \t]*$/,
   // A header line of an encrypted block, and an empty line: taken only before
-  // the first full line, and only when a full line follows them.
+  // the first full line, and only when a line the block takes follows them.
   header: /^[ \t]*(?:Proc-Type|DEK-Info)[ \t]*:/,
   empty: /^[ \t]*$/,
-  // A cut-off line behind a prefix: the text's last line, after a full line,
+  // A cut-off line behind a prefix: the text's last line as above, after a full line,
   // a base64 run behind one prefix holding a digit and no space (a log's
   // timestamp, grep's file:line:). Prose is several words, and stays.
   cutOff: /^[ \t]*(?=\S*\d)\S+[ \t]+[A-Za-z0-9+/]+={0,2}[ \t]*$/,
 });
+
+// The escapes a serializer writes for a character of a key block, as the
+// letter after the backslash: a line break, a carriage return, a tab, a
+// solidus, a quote, and any character as u and four hex digits.
+const ESCAPED = Object.freeze({ n: "\n", r: "\r", t: "\t", "/": "/", '"': '"' });
+
+/**
+ * The character a run of backslashes at `at` stands for, and the length of
+ * its spelling. One backslash is an escape; two are one escaped twice (a JSON
+ * string inside a JSON string); three before a quote are a quote escaped
+ * twice. Before a quote, an even run is backslashes and the quote after it is
+ * the string's end. Any other run, and one that ends the text, is one
+ * character that is no key's (a backslash), however long.
+ */
+function escapeAt(text, at) {
+  let run = 0;
+  while (text[at + run] === "\\") run += 1;
+  const letter = text[at + run];
+  if (letter === undefined) return { char: "\\", length: run };
+  if (letter === '"') return run % 2 === 1 ? { char: '"', length: run + 1 } : { char: "\\", length: run };
+  if (run <= 2 && letter === "u" && /^[0-9A-Fa-f]{4}$/.test(text.slice(at + run + 1, at + run + 5))) {
+    return { char: String.fromCharCode(parseInt(text.slice(at + run + 1, at + run + 5), 16)), length: run + 5 };
+  }
+  if (run <= 2 && letter in ESCAPED) return { char: ESCAPED[letter], length: run + 1 };
+  return { char: "\\", length: run };
+}
+
+/**
+ * One line of an open block, read from `at`: `line`, its text with every
+ * escape decoded; `end`, where its text ends in `text`; `next`, where the next
+ * line starts, or -1 when the block can have none; and `last`, whether the
+ * text stops there. A line ends at a line break, raw or escaped, with a
+ * carriage return before it. A quote ends the block: a raw one is the end of
+ * a serialized string, where the text stops as its end does; an escaped one
+ * is a quote in the string's text, or the end of a string inside it. A block
+ * taken never holds a quote, and never ends inside an escape.
+ */
+function readBlockLine(text, at) {
+  let line = "";
+  let i = at;
+  while (i < text.length) {
+    if (text[i] === '"') return { line, end: i, next: -1, last: true };
+    const { char, length } = text[i] === "\\" ? escapeAt(text, i) : { char: text[i], length: 1 };
+    if (char === '"') return { line, end: i, next: -1, last: false };
+    if (char === "\n") return { line, end: i, next: i + length, last: false };
+    if (char === "\r") {
+      const after = text[i + length] === "\\" ? escapeAt(text, i + length) : { char: text[i + length], length: 1 };
+      if (after.char === "\n") return { line, end: i, next: i + length + after.length, last: false };
+    }
+    line += char;
+    i += length;
+  }
+  return { line, end: i, next: -1, last: true };
+}
 
 const PEM_BEGIN = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
 const PEM_END = /-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
@@ -250,24 +301,19 @@ function openBlockEnd(text, from) {
   let at = from;
   let full = false;
   for (;;) {
-    kinds.lineText.lastIndex = at;
-    kinds.lineText.exec(text);
-    const next = kinds.lineText.lastIndex;
-    const line = text.slice(at, next);
-    const last = next === text.length;
+    const { line, end: lineEnd, next, last } = readBlockLine(text, at);
     if (kinds.fullLine.test(line)) {
-      end = next;
+      end = lineEnd;
       full = true;
     } else if (kinds.shortLine.test(line) && (full || last)) {
-      return next;
+      return lineEnd;
     } else if (last && full && kinds.cutOff.test(line)) {
-      return next;
+      return lineEnd;
     } else if (full || (!kinds.empty.test(line) && !kinds.header.test(line))) {
       return end;
     }
-    kinds.lineBreak.lastIndex = next;
-    if (kinds.lineBreak.exec(text) === null) return end;
-    at = kinds.lineBreak.lastIndex;
+    if (next === -1) return end;
+    at = next;
   }
 }
 
