@@ -48,24 +48,22 @@ type TomLogoProps = {
   title?: string;
 };
 
-/* Resolves once the wordmark's font has settled, never rejects.
+/* Resolves once every font face the page has requested has settled.
 
-   DANGER: document.fonts.load() rejects when any face in the family list
-   fails, and MANROPE_FAMILY lists next/font's "Manrope Fallback", a
-   local("Arial") face that errors on a machine without Arial (the box's
-   Chromium). A rejection here once skipped the measurement, so the SVG kept
-   the width estimates and the final "t" drew over "ues". The probes and the
-   SVG text share one font stack, so measuring after a failed load is still
-   correct; only waiting for in-flight faces matters.                        */
-function fontReady(fontSize: number): Promise<unknown> {
+   DANGER: do not wait on document.fonts.load() with MANROPE_FAMILY here. It
+   rejects when any face in the family list fails, and that list includes
+   next/font's "Manrope Fallback", a local("Arial") face that errors on a
+   machine without Arial (the box's Chromium). A rejection once skipped the
+   measurement, so the SVG kept the width estimates and the final "t" drew
+   over "ues". document.fonts.ready never rejects on a failed face. In 24 cold
+   loads of the production build (/ and /logo, 1440x900 and 390x844, a fresh
+   browser context each) it resolved after Manrope had loaded every time, and
+   the layout matched the measured widths.                                   */
+function fontReady(): Promise<unknown> {
   if (typeof document === "undefined" || !document.fonts) {
     return Promise.resolve();
   }
-  const fonts = document.fonts;
-  return fonts
-    .load(`${FONT_WEIGHT} ${fontSize}px ${MANROPE_FAMILY}`)
-    .catch(() => undefined)
-    .then(() => fonts.ready);
+  return document.fonts.ready;
 }
 
 export default function TomLogo({
@@ -95,7 +93,7 @@ export default function TomLogo({
   useLayoutEffect(() => {
     setM(estimate(fontSize));
     let cancelled = false;
-    void fontReady(fontSize).then(() => {
+    void fontReady().then(() => {
       if (cancelled || !tRef.current || !omRef.current || !uesRef.current) return;
       const t   = tRef.current.getBoundingClientRect().width;
       const om  = omRef.current.getBoundingClientRect().width;

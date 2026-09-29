@@ -81,6 +81,8 @@ describe("TomLogo bars variant", () => {
 // next/font's "Manrope Fallback" face is local("Arial"), which errors where
 // Arial is absent (the box's Chromium). The measurement never ran, the SVG kept
 // the width estimates, and the final "t" drew over "ues" on the home page.
+// fontReady() now awaits document.fonts.ready alone; the mocked load() still
+// rejects, so the test fails if a load() without a rejection handler returns.
 describe("TomLogo plain variant", () => {
   const MEASURED = { t: 42.2, om: 157.8, ues: 184 };
 
@@ -89,7 +91,7 @@ describe("TomLogo plain variant", () => {
     Reflect.deleteProperty(document, "fonts");
   });
 
-  it("lays out from measured widths when the font load rejects", async () => {
+  it("lays out from measured widths when a font face fails to load", async () => {
     Object.defineProperty(document, "fonts", {
       configurable: true,
       value: {
