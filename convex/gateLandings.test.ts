@@ -228,13 +228,13 @@ describe("what arrived on main", () => {
   it("clears the report when a late row opens the gate for that commit", async () => {
     const t = await started();
     const head = sha("a");
-    await t.run((ctx) =>
-      ctx.db.insert("dtsEvents", { at: Date.now(), kind: TESTS_RUN, key: commitKey(REPO, head), data: { repo: REPO, sha: head, ok: true } }),
-    );
     arrive(commit(sha("b"), [BASE]));
     gh.state.closed.set(SLUG, [landed(44, head, sha("b"))]);
     await refresh(t);
     expect((await reports(t)).map((row) => row.subject)).toEqual([landingKey(REPO, head)]);
+
+    // A row that leaves the gate shut clears nothing.
+    await t.mutation(internal.ttsMerge.internalRecordTests, { repo: REPO, sha: head, ok: true });
     expect(await eventsOf(t, "job-recovered")).toHaveLength(0);
 
     await t.mutation(internal.ttsMerge.internalRecordAudit, {
