@@ -15,7 +15,7 @@ import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
-import { MERGE } from "./ttsMerge";
+import { LANDING_JOB, MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { SEND_AS_TOM_FAILED, SENT_AS_TOM } from "./ttsSignoff";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
@@ -767,7 +767,7 @@ export async function gatherTodayFacts(
     const fixedAt = recoveredAt.get(condition);
     failedKeys.add(condition);
     const statement = brokenStatement(job);
-    const said = fixedAt !== undefined && fixedAt >= row.at ? `${statement} It has run clean again since ${nyHhmm(fixedAt)}.` : statement;
+    const said = fixedAt !== undefined && fixedAt >= row.at ? `${statement} ${recoveredClause(job, fixedAt)}` : statement;
     // The reports come oldest first, so the newest report of the condition
     // writes the line last: one that failed again after it recovered reads
     // as failing, with the newest error.
@@ -778,7 +778,12 @@ export async function gatherTodayFacts(
   for (const row of reports.recovered) {
     if (failedKeys.has(row.subject as string)) continue;
     const job = row.provenance.job ?? "";
-    failure(`${row.subject}:recovered`, `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`);
+    failure(
+      `${row.subject}:recovered`,
+      job === LANDING_JOB
+        ? `A change that reached main past the merge gate passes it since ${nyHhmm(row.at)}: ${landingCommit(String(row.subject))}.`
+        : `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`,
+    );
   }
 
   // The evals (Jarvis worker/jobs/evals.mjs): one eval-run event per set per
@@ -1086,8 +1091,28 @@ function brokenStatement(job: string): string {
     "poll-canvas": "Canvas assignments have stopped reaching your list.",
     "poll-outlook": "Outlook mail has stopped reaching your list.",
     nightly: "The nightly job did not finish, so the model-of-Tom pages are yesterday's.",
+    // Not a job's failure: a commit on main that did not pass the merge gate
+    // (convex/gateLandings.ts). The detail names the repository, the commit
+    // and the missing checks.
+    [LANDING_JOB]: "A change reached main without passing the merge gate.",
   };
   return known[job] ?? `The ${job} job failed overnight.`;
+}
+
+/** `repo@abc1234` out of a landing report's subject (convex/ttsMerge.ts
+ *  landingKey). */
+function landingCommit(subject: string): string {
+  const [repo, sha] = subject.slice(LANDING_JOB.length + 1).split("@");
+  return `${repo}@${(sha ?? "").slice(0, 7)}`;
+}
+
+/** The clause a broken line ends with when its condition cleared inside the
+ *  window. A landing past the gate clears when the gate opens for it, which is
+ *  no job running clean. */
+function recoveredClause(job: string, at: number): string {
+  return job === LANDING_JOB
+    ? `The merge gate has passed it since ${nyHhmm(at)}.`
+    : `It has run clean again since ${nyHhmm(at)}.`;
 }
 
 // ── Composing the morning message ────────────────────────────────────────────

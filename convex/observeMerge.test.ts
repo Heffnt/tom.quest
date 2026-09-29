@@ -167,8 +167,11 @@ describe("the mirror", () => {
     const tom = await withTom(t);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        Response.json([
+      // The refresh also reads main of each repository under the gate
+      // (convex/gateLandings.ts); on its first refresh that is main's newest
+      // commit, and nothing is accounted for.
+      vi.fn(async (url: string | URL | Request) =>
+        String(url).endsWith("/commits/main") ? Response.json({ sha: "c".repeat(40) }) : Response.json([
           {
             number: 300,
             title: "a change aimed elsewhere",

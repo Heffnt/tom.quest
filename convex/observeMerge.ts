@@ -41,6 +41,7 @@ import {
   internalQuery,
 } from "./_generated/server";
 import { mergeGateFor, mergedOnMain } from "./ttsMerge";
+import { accountForMain } from "./gateLandings";
 import {
   SESSION_REPOS,
   commitChange,
@@ -564,6 +565,11 @@ export const refreshOpenPulls = internalAction({
       open += answer.open;
     }
     await landReady(ctx);
+    // What arrived on main of each repository under the gate, after the
+    // landing above so a change it just landed is filed in this same refresh
+    // (convex/gateLandings.ts). Its own list of repositories: the copy of open
+    // pull requests above stays the Approve control's.
+    failures.push(...(await accountForMain(ctx, token)));
     return { open, failures };
   },
 });
