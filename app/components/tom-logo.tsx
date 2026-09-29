@@ -61,11 +61,8 @@ function fontReady(fontSize: number): Promise<unknown> {
   if (typeof document === "undefined" || !document.fonts) {
     return Promise.resolve();
   }
-  const fonts = document.fonts;
-  return fonts
-    .load(`${FONT_WEIGHT} ${fontSize}px ${MANROPE_FAMILY}`)
-    .catch(() => undefined)
-    .then(() => fonts.ready);
+  void fontSize;
+  return document.fonts.ready;
 }
 
 export default function TomLogo({
