@@ -182,7 +182,7 @@ export const OPERATE_LINE_MIN = 40;
 export const OPERATE_WINDOW_STEP = 1;
 /** The folder under model-of-tom that the window check does not read (see
  *  "WHY evidence/ STAYS OUT" above). */
-export const OPERATE_SKIPPED_DIRS = Object.freeze(["evidence"]);
+const OPERATE_SKIPPED_DIRS = Object.freeze(["evidence"]);
 
 /** Every `.md` under model-of-tom, as paths relative to it, sorted; the
  *  folders in OPERATE_SKIPPED_DIRS left out. */
