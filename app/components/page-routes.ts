@@ -1,58 +1,37 @@
+import { canSee, type PageRole, type PageSlug } from "@/convex/pageAccess";
+
+// The page list the home page and navigation autocomplete render. Who may see
+// each page is not here: it is the page's row in convex/pageAccess.ts, which
+// Convex's gates read too.
 export type Page = {
-  slug: string;       // "turing" -> tom.quest/turing
+  slug: PageSlug;     // "turing" -> tom.quest/turing
   title: string;
   blurb: string;
   priority: number;   // higher = preferred in autocomplete tie-breaks
-  visibility: PageVisibility;
-  /**
-   * Visible to the read-only `agent` role — the account a TTS session signs in
-   * as to LOOK at a page it just changed. Deliberately its own flag and not a
-   * `visibility` value: `agent` is not a rank on the guest→user→admin→tom
-   * ladder, so it cannot be expressed by widening that ladder. Absent means
-   * closed, so a page added later is closed until someone says otherwise.
-   * The Convex-side twin of this flag is convex/agentSurfaces.ts.
-   */
-  agentReadable?: boolean;
 };
 
-export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
-export type PageRole = "guest" | "user" | "admin" | "tom" | "agent";
-
 export const PAGES: Page[] = [
-  { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin", agentReadable: true },
-  { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8,  visibility: "authenticated" },
-  { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7, visibility: "public" },
-  { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6, visibility: "public" },
-  { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
-  { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
-  { slug: "agents", title: "Agents", blurb: "Every agent, and everything that ran, by window", priority: 9, visibility: "tom" },
-  { slug: "jarvis", title: "Jarvis", blurb: "Todos, calendar and what waits on a ruling", priority: 9, visibility: "tom", agentReadable: true },
-  { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, what each line rests on, the vocabulary, and what stands until he objects", priority: 8, visibility: "tom" },
-  { slug: "log", title: "Log", blurb: "Private day entries and their recorded measures", priority: 8, visibility: "tom" },
-  { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5, visibility: "tom" },
-  { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5, visibility: "tom" },
-  { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5, visibility: "tom" },
-  { slug: "secrets", title: "Secrets", blurb: "Values for the Jarvis Box", priority: 5, visibility: "tom" },
-  { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4, visibility: "public" },
-  { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3, visibility: "public" },
-  { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2, visibility: "public" },
-  { slug: "help",   title: "Help",   blurb: "How tom.quest works",          priority: 1, visibility: "public" },
+  { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10 },
+  { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8 },
+  { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7 },
+  { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6 },
+  { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6 },
+  { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6 },
+  { slug: "agents", title: "Agents", blurb: "Every agent, and everything that ran, by window", priority: 9 },
+  { slug: "jarvis", title: "Jarvis", blurb: "Todos, calendar and what waits on a ruling", priority: 9 },
+  { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, what each line rests on, the vocabulary, and what stands until he objects", priority: 8 },
+  { slug: "log", title: "Log", blurb: "Private day entries and their recorded measures", priority: 8 },
+  { slug: "forge",  title: "Forge",  blurb: "Build & train backdoors",      priority: 5 },
+  { slug: "questions", title: "Questions", blurb: "One question at a time, by kind, frame and topic", priority: 5 },
+  { slug: "logo",   title: "Logo",   blurb: "tom.Quest brand lab",          priority: 5 },
+  { slug: "secrets", title: "Secrets", blurb: "Values for the Jarvis Box", priority: 5 },
+  { slug: "game",   title: "Game",   blurb: "Symbol-shooting mini-game",    priority: 4 },
+  { slug: "bio",    title: "Bio",    blurb: "About Tom",                    priority: 3 },
+  { slug: "boolback", title: "Boolback", blurb: "Boolean-backdoor artifact-tree explorer", priority: 2 },
+  { slug: "help",   title: "Help",   blurb: "How tom.quest works",          priority: 1 },
 ];
 
-export function canSeePage(role: PageRole, page: Page): boolean {
-  // `agent` reads ONLY its own flag and never falls through to the rank
-  // ladder below. In particular it does not inherit "authenticated", which is
-  // what keeps /canvas — whose agent route spends LLM credits — shut to it.
-  // The list a TTS session sees is therefore exactly the pages it must look
-  // at, which is the whole reason the role exists.
-  if (role === "agent") return page.agentReadable === true;
-  if (page.visibility === "public") return true;
-  if (page.visibility === "authenticated") return role !== "guest";
-  if (page.visibility === "admin") return role === "admin" || role === "tom";
-  return role === "tom";
-}
-
-// rankPages: orders the page list for display + autocomplete.
+// rankPages: orders the pages the role may see for display + autocomplete.
 // Empty query -> all pages, best first.
 // Non-empty query -> prefix matches first, then substring matches.
 // Ties break on `priority`.
@@ -61,7 +40,7 @@ export function canSeePage(role: PageRole, page: Page): boolean {
 // you have 10+ routes. Signature stays the same; only the body changes.
 export function rankPages(query: string, role: PageRole = "guest", pages: Page[] = PAGES): Page[] {
   const q = query.trim().toLowerCase();
-  const visible = pages.filter((page) => canSeePage(role, page));
+  const visible = pages.filter((page) => canSee(role, page.slug));
   const byPriority = (a: Page, b: Page) => b.priority - a.priority;
   if (!q) return [...visible].sort(byPriority);
   const prefix    = visible.filter((x) => x.slug.toLowerCase().startsWith(q));

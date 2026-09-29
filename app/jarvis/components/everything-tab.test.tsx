@@ -39,7 +39,7 @@ vi.mock("convex/react", async () => {
 
 // app/lib/auth pulls in Sentry, which does not load under jsdom.
 vi.mock("@/app/lib/auth", () => ({
-  useAuth: () => ({ isTom: true, canReadSurface: () => true }),
+  useAuth: () => ({ isTom: true, canSee: () => true }),
 }));
 
 const NOW = 1_756_000_000_000;

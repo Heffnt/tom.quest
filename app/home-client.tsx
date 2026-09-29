@@ -8,7 +8,8 @@ import LoginModal from "./components/login-modal";
 import ProfileModal from "./components/profile-modal";
 import DebugToggle from "./components/debug-toggle";
 import { useAuth, getUsername } from "./lib/auth";
-import { rankPages, type PageRole } from "./components/page-routes";
+import type { PageRole } from "@/convex/pageAccess";
+import { rankPages } from "./components/page-routes";
 
 /* Home = the expanded nav bar. Big logo centered, nav terminal below with the
    pages list always visible, and the auth button fixed top-right. Everything

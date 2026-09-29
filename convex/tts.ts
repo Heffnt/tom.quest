@@ -27,21 +27,6 @@ import { clearBlock, eitherId, resolveId, withPlainTodoIds } from "./jarvis/tabl
 // Tom-gated (forge.ts pattern); everything the Jarvis Box or crons touch goes
 // through internal functions (http.ts routes are key-authed with TTS_WORKER_KEY).
 
-// The WRITE gate: Tom only. Every mutation on this surface calls it.
-async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
-  return await requireTom(ctx, "TTS");
-}
-
-// The READ gate: Tom, plus the `agent` role a TTS session browses as, because
-// "TTS" is an agent-readable surface (convex/agentSurfaces.ts). Only query
-// handlers the /tts page renders from call this — a reader that can also
-// write is the thing this split exists to prevent.
-async function requireTomOrAgentId(
-  ctx: QueryCtx | MutationCtx,
-): Promise<Id<"users">> {
-  return await requireTomOrAgent(ctx, "TTS");
-}
-
 // Readiness is two values (ruling 18); READINESS, the two-value validator, is
 // imported from ttsShared — Tom's door writes only those. The worker's pen
 // below still ACCEPTS the retired spellings and stores them normalized.
@@ -89,7 +74,7 @@ export async function logEvent(
 export const listTodos = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomOrAgentId(ctx);
+    await requireTomOrAgent(ctx, "jarvis");
     return await ctx.db.query("todos").collect();
   },
 });
@@ -121,7 +106,7 @@ async function liveMirrorRows(ctx: QueryCtx): Promise<Doc<"dtsCodeTodoMirror">[]
 export const listMirror = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomOrAgentId(ctx);
+    await requireTomOrAgent(ctx, "jarvis");
     return await liveMirrorRows(ctx);
   },
 });
@@ -131,7 +116,7 @@ export const listMirror = query({
 export const listRecentEvents = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
-    await requireTomOrAgentId(ctx);
+    await requireTomOrAgent(ctx, "jarvis");
     // The rows store the old todo id; the page joins them to plain rows.
     return await withPlainTodoIds(
       ctx,
@@ -159,7 +144,7 @@ export const createTodo = mutation({
     category: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const now = Date.now();
     const timingClass = args.timingClass ?? (args.dueAt ? "dated" : "whenever");
     const id = await ctx.db.insert("todos", {
@@ -206,7 +191,7 @@ export const updateTodo = mutation({
     mustNotBreak: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { id: given, ...fields }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const id = await resolveId(ctx, "todos", given);
     const todo = id === null ? null : await ctx.db.get(id);
     if (id === null || !todo) throw new Error("TTS todo not found");
@@ -325,7 +310,7 @@ export const setStatus = mutation({
     note: v.optional(v.string()),
   },
   handler: async (ctx, { id: given, ...args }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const id = await resolveId(ctx, "todos", given);
     const todo = id === null ? null : await ctx.db.get(id);
     if (id === null || !todo) throw new Error("TTS todo not found");
@@ -531,7 +516,7 @@ export const recordDateOutcome = mutation({
     note: v.optional(v.string()),
   },
   handler: async (ctx, { id, ...args }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const plain = await resolveId(ctx, "todos", id);
     const todo = plain === null ? null : await ctx.db.get(plain);
     if (!todo) throw new Error("TTS todo not found");
@@ -560,7 +545,7 @@ function requireOneBlockTarget(todoId: unknown, category: unknown) {
 export const listBlocks = query({
   args: { start: v.optional(v.number()), end: v.optional(v.number()) },
   handler: async (ctx, { start, end }) => {
-    await requireTomOrAgentId(ctx);
+    await requireTomOrAgent(ctx, "jarvis");
     const rows =
       end === undefined
         ? await ctx.db.query("blocks").collect()
@@ -661,7 +646,7 @@ export const createBlock = mutation({
     note: v.optional(v.string()),
   },
   handler: async (ctx, { todoId, ...args }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
     if (plain === null) throw new Error("TTS todo not found");
     return await insertBlock(ctx, { ...args, todoId: plain });
@@ -676,7 +661,7 @@ export const updateBlock = mutation({
     note: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { id, ...args }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const plain = await resolveId(ctx, "blocks", id);
     const block = plain === null ? null : await ctx.db.get(plain);
     if (!block) throw new Error("Block not found");
@@ -687,7 +672,7 @@ export const updateBlock = mutation({
 export const deleteBlock = mutation({
   args: { id: eitherId.blocks },
   handler: async (ctx, { id }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const plain = await resolveId(ctx, "blocks", id);
     const block = plain === null ? null : await ctx.db.get(plain);
     if (!block) throw new Error("Block not found");
@@ -734,7 +719,7 @@ const TIME_NOTE_LIST_MAX = 200;
 export const listTimeNotes = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomOrAgentId(ctx);
+    await requireTomOrAgent(ctx, "jarvis");
     const byStatus = (status: "pending" | "needs-session" | "applied") =>
       ctx.db
         .query("timeNotes")
@@ -809,7 +794,7 @@ async function createTimeNoteFrom(
 export const createTimeNote = mutation({
   args: CREATE_TIME_NOTE_ARGS,
   handler: async (ctx, args) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     return await createTimeNoteFrom(ctx, args);
   },
 });
@@ -825,7 +810,7 @@ export const internalCreateTimeNote = internalMutation({
 export const deleteTimeNote = mutation({
   args: { id: eitherId.timeNotes },
   handler: async (ctx, { id: given }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const id = await resolveId(ctx, "timeNotes", given);
     const note = id === null ? null : await ctx.db.get(id);
     if (id === null || !note) throw new Error("Time note not found");
@@ -1248,7 +1233,7 @@ export const recordEvent = mutation({
     data: v.optional(v.any()),
   },
   handler: async (ctx, { kind, todoId, data }) => {
-    await requireTomId(ctx);
+    await requireTom(ctx, "jarvis");
     const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
     await logEvent(ctx, kind, plain ?? undefined, data);
   },

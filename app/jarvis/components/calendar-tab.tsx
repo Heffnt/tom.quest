@@ -214,11 +214,11 @@ export default function CalendarTab({
   /** Queue-chip click-through: the shell jumps to the item on the everything tab. */
   onOpenItem?: (todoId: string) => void;
 }) {
-  const { canReadSurface } = useAuth();
+  const { canSee } = useAuth();
   // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
   // session browses as. Every mutation on this surface stays Tom-only and is
   // refused by Convex regardless of what renders here.
-  const canRead = canReadSurface("TTS");
+  const canRead = canSee("jarvis");
   const now = Date.now();
   const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
   const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");

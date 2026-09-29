@@ -5,6 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { canSee as canRoleSee, type PageSlug } from "@/convex/pageAccess";
 import SecretsClient from "./secrets-client";
 
 const state = vi.hoisted(() => ({
@@ -28,11 +29,12 @@ vi.mock("convex/react", async () => {
 });
 
 // app/lib/auth pulls in Sentry, which does not load under jsdom. The stand-in
-// keeps the real rule: only Tom reads a surface outside agentSurfaces.ts.
+// keeps the real rule: the page table decides, and /secrets is Tom's alone.
 vi.mock("@/app/lib/auth", () => ({
   useAuth: () => ({
     ...state.auth,
-    canReadSurface: (label: string) => state.auth.isTom || (state.auth.isAgent && ["TTS", "Turing"].includes(label)),
+    canSee: (page: PageSlug) =>
+      canRoleSee(state.auth.isTom ? "tom" : state.auth.isAgent ? "agent" : "user", page),
   }),
 }));
 

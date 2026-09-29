@@ -60,7 +60,7 @@ export default function SecretsClient() {
   };
 
   return (
-    <TomGate label="Secrets">
+    <TomGate page="secrets">
       <div className="max-w-3xl mx-auto w-full">
         <div className="px-3 sm:px-4 py-6 space-y-4">
           <header>

@@ -108,7 +108,7 @@ export const subjectKey = (row: {
 export const listRulings = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomOrAgent(ctx, "TTS");
+    await requireTomOrAgent(ctx, "jarvis");
     return await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
   },
 });
@@ -315,7 +315,7 @@ export const recordRuling = mutation({
     unarchiveCondition: v.optional(v.string()),
   },
   handler: async (ctx, { todoId, ...args }) => {
-    await requireTom(ctx, "TTS");
+    await requireTom(ctx, "jarvis");
     const plain = todoId === undefined ? undefined : await resolveId(ctx, "todos", todoId);
     if (plain === null) throw new Error("TTS todo not found");
     return await insertRuling(ctx, { ...args, todoId: plain });

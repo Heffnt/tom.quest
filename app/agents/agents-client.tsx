@@ -164,5 +164,5 @@ export default function AgentsClient() {
     </div>
   );
 
-  return <TomGate label="Agents">{body}</TomGate>;
+  return <TomGate page="agents">{body}</TomGate>;
 }

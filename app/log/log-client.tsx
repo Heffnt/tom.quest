@@ -178,7 +178,7 @@ export default function LogClient() {
   }
 
   return (
-    <TomGate label="Log">
+    <TomGate page="log">
       <div className="mx-auto w-full max-w-3xl space-y-7 px-3 py-5 sm:px-5">
         <header><h1 className="text-2xl font-bold tracking-tight">Log</h1></header>
 

@@ -1,5 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { isAgentReadableSurface } from "./agentSurfaces";
+import { canSee, PAGE_ACCESS, type PageSlug } from "./pageAccess";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
@@ -54,33 +55,45 @@ async function requireViewer(ctx: AuthCtx): Promise<{
   return { userId, user, access: roleAccess(user?.role) };
 }
 
-// The one Tom gate. `label` names the surface in the error ("Forge", "TTS") so
-// a denial says what was denied. Every Tom-only Convex module calls this —
+// WHILE THE GATES MOVE FROM LABELS TO PAGES: a gate names either a page slug
+// (resolved through convex/pageAccess.ts) or, until its module moves, the
+// label it always named (resolved through convex/agentSurfaces.ts).
+function isPageSlug(target: string): target is PageSlug {
+  return Object.prototype.hasOwnProperty.call(PAGE_ACCESS, target);
+}
+
+// The one Tom gate. `target` names the page (or, until moved, the label) so a
+// denial says what was denied. Every Tom-only Convex module calls this —
 // never a local copy — so a change to the Tom check has exactly one home.
 export async function requireTom(
   ctx: AuthCtx,
-  label: string,
+  target: PageSlug | string,
 ): Promise<Id<"users">> {
   const { userId, access } = await requireViewer(ctx);
-  if (!access.isTom) throw new Error(`${label} access is restricted to Tom`);
+  const name = isPageSlug(target) ? PAGE_ACCESS[target].label : target;
+  if (!access.isTom) throw new Error(`${name} access is restricted to Tom`);
   return userId;
 }
 
 // The read gate, sibling to requireTom above, which stays the WRITE gate.
-// Admits Tom always, and the `agent` role only when `label` names a surface
-// in convex/agentSurfaces.ts. Query handlers that a TTS session must be able
-// to look at call this; every mutation, action and internal function keeps
-// calling requireTom, so "may look at /tts" never becomes "may change /tts".
+// Admits a caller who is Tom or `agent` and may see the page by its row in
+// convex/pageAccess.ts. Query handlers that a TTS session must be able to look
+// at call this; every mutation, action and internal function keeps calling
+// requireTom, so "may look at /jarvis" never becomes "may change /jarvis".
 //
 // The denial message is deliberately IDENTICAL to requireTom's: a refused
 // caller learns that the surface is closed to it, not which of two gates
 // closed it.
 export async function requireTomOrAgent(
   ctx: AuthCtx,
-  label: string,
+  target: PageSlug | string,
 ): Promise<Id<"users">> {
   const { userId, access } = await requireViewer(ctx);
+  if (isPageSlug(target)) {
+    if ((access.isTom || access.isAgent) && canSee(access.role, target)) return userId;
+    throw new Error(`${PAGE_ACCESS[target].label} access is restricted to Tom`);
+  }
   if (access.isTom) return userId;
-  if (access.isAgent && isAgentReadableSurface(label)) return userId;
-  throw new Error(`${label} access is restricted to Tom`);
+  if (access.isAgent && isAgentReadableSurface(target)) return userId;
+  throw new Error(`${target} access is restricted to Tom`);
 }

@@ -7,7 +7,7 @@ import { ConvexReactClient } from "convex/react";
 import { useQuery } from "convex/react";
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { api } from "@/convex/_generated/api";
-import { isAgentReadableSurface } from "@/convex/agentSurfaces";
+import { canSee as canRoleSee, type PageSlug } from "@/convex/pageAccess";
 
 export type UserRole = "user" | "admin" | "tom" | "agent";
 
@@ -27,12 +27,12 @@ interface AuthContextType {
   isTom: boolean;
   isAgent: boolean;
   /**
-   * May the viewer READ the named surface ("TTS", "Turing" — the same labels
-   * requireTom passes in Convex)? True for Tom, and for the read-only `agent`
-   * role on the surfaces in convex/agentSurfaces.ts. Gate query subscriptions
-   * on this; keep gating writes on isTom, which is what "may change it" means.
+   * May the viewer see the page with this slug? Its row in
+   * convex/pageAccess.ts answers, the same row Convex's read gate reads. Gate
+   * the subscriptions to a page's agent-readable reads on this; keep gating
+   * writes, and reads Convex keeps Tom-only, on isTom.
    */
-  canReadSurface: (label: string) => boolean;
+  canSee: (page: PageSlug) => boolean;
   loading: boolean;
   signIn: (username: string, password: string) => Promise<{ error: string | null }>;
   signUp: (username: string, password: string) => Promise<{ error: string | null }>;
@@ -81,9 +81,11 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
   const isAdmin = viewer?.isAdmin ?? false;
   const isTom = viewer?.isTom ?? false;
   const isAgent = viewer?.isAgent ?? false;
-  const canReadSurface = useMemo(
-    () => (label: string) => isTom || (isAgent && isAgentReadableSurface(label)),
-    [isTom, isAgent],
+  // Signed out is `guest` on the ladder, not `user`.
+  const pageRole = user ? role : "guest";
+  const canSee = useMemo(
+    () => (page: PageSlug) => canRoleSee(pageRole, page),
+    [pageRole],
   );
   const loading = !convexAuth.isLoading && convexAuth.isAuthenticated ? viewer === undefined : convexAuth.isLoading;
 
@@ -119,7 +121,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, token, role, isAdmin, isTom, isAgent, canReadSurface, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, token, role, isAdmin, isTom, isAgent, canSee, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );

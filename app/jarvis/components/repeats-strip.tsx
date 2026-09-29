@@ -151,11 +151,11 @@ function RepeatRow({
 }
 
 export default function RepeatsStrip() {
-  const { canReadSurface } = useAuth();
+  const { canSee } = useAuth();
   // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
   // session browses as. Every mutation on this surface stays Tom-only and is
   // refused by Convex regardless of what renders here.
-  const canRead = canReadSurface("TTS");
+  const canRead = canSee("jarvis");
   const repeats = useQuery(api.ttsRepeats.listRepeats, canRead ? {} : "skip");
   // null = closed, "new" = the empty form, a Repeat = that rule's form. Held
   // here rather than per row, so the overlay is never a descendant of a dimmed

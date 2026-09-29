@@ -18,7 +18,7 @@ import { requireTomOrAgent } from "./authRoles";
 export const listCodeBriefs = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomOrAgent(ctx, "TTS");
+    await requireTomOrAgent(ctx, "jarvis");
     return await ctx.db.query("dtsCodeBriefs").collect();
   },
 });

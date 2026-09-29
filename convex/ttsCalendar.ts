@@ -25,7 +25,7 @@ export const CALENDAR_EVENT_INPUT = v.object({
 export const listCalendarEvents = query({
   args: { start: v.number(), end: v.number() },
   handler: async (ctx, { start, end }) => {
-    await requireTomOrAgent(ctx, "TTS");
+    await requireTomOrAgent(ctx, "jarvis");
     // by_start serves "starts before the range ends"; the >-start overlap
     // filter runs on that bounded set. Multi-day events longer than 31 days
     // would escape the lower bound — personal calendars don't carry those,

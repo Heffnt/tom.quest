@@ -86,7 +86,7 @@ function validateRule(args: { daysOfWeek: string[]; timeOfDay?: string; statemen
 export const listRepeats = query({
   args: {},
   handler: async (ctx) => {
-    await requireTomOrAgent(ctx, "TTS");
+    await requireTomOrAgent(ctx, "jarvis");
     return await ctx.db.query("ttsRepeats").collect();
   },
 });
@@ -94,7 +94,7 @@ export const listRepeats = query({
 export const createRepeat = mutation({
   args: RULE_FIELDS,
   handler: async (ctx, args) => {
-    await requireTom(ctx, "TTS");
+    await requireTom(ctx, "jarvis");
     validateRule(args);
     const now = Date.now();
     const id = await ctx.db.insert("ttsRepeats", {
@@ -128,7 +128,7 @@ export const updateRepeat = mutation({
     active: v.optional(v.boolean()),
   },
   handler: async (ctx, { id, ...updates }) => {
-    await requireTom(ctx, "TTS");
+    await requireTom(ctx, "jarvis");
     const rule = await ctx.db.get(id);
     if (!rule) throw new Error("Repeat not found");
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
@@ -180,7 +180,7 @@ export const updateRepeat = mutation({
 export const deleteRepeat = mutation({
   args: { id: v.id("ttsRepeats") },
   handler: async (ctx, { id }) => {
-    await requireTom(ctx, "TTS");
+    await requireTom(ctx, "jarvis");
     const rule = await ctx.db.get(id);
     if (!rule) throw new Error("Repeat not found");
     await ctx.db.delete(id);

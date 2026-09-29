@@ -361,11 +361,11 @@ function Questions() {
 }
 
 export default function QuestionsClient() {
-  // TomGate owns both gate states' JSX, so this surface cannot drift from the
-  // other Tom-only ones. "Questions" is absent from convex/agentSurfaces.ts,
-  // which makes canReadSurface here exactly isTom.
+  // TomGate owns both gate states' JSX, so this page cannot drift from the
+  // other Tom-only ones. Its row in convex/pageAccess.ts is Tom-only and not
+  // agentReadable, which makes the gate here exactly isTom.
   return (
-    <TomGate label="Questions">
+    <TomGate page="questions">
       <Questions />
     </TomGate>
   );

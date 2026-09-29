@@ -217,12 +217,12 @@ export default function EverythingTab({
   link: { item: string; intent: "done" | "archive" | "engage" | null } | null;
   onLinkCleared: () => void;
 }) {
-  const { isTom, canReadSurface } = useAuth();
+  const { isTom, canSee } = useAuth();
   // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
   // session browses as. Every mutation on this surface stays Tom-only and is
   // refused by Convex regardless of what renders here — isTom below gates the
   // one write that fires on its own, without a click.
-  const canRead = canReadSurface("TTS");
+  const canRead = canSee("jarvis");
   const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
   const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
   const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");

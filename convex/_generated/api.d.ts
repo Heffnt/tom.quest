@@ -39,6 +39,7 @@ import type * as jarvis_tables from "../jarvis/tables.js";
 import type * as jarvis_tick from "../jarvis/tick.js";
 import type * as observe from "../observe.js";
 import type * as observeMerge from "../observeMerge.js";
+import type * as pageAccess from "../pageAccess.js";
 import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as sessionRows from "../sessionRows.js";
@@ -113,6 +114,7 @@ declare const fullApi: ApiFromModules<{
   "jarvis/tick": typeof jarvis_tick;
   observe: typeof observe;
   observeMerge: typeof observeMerge;
+  pageAccess: typeof pageAccess;
   secrets: typeof secrets;
   serverHealth: typeof serverHealth;
   sessionRows: typeof sessionRows;

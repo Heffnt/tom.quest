@@ -1,5 +1,6 @@
 import { expect, test, type Page as PlaywrightPage } from "@playwright/test";
-import { canSeePage, PAGES, type PageRole } from "../app/components/page-routes";
+import { PAGES } from "../app/components/page-routes";
+import { canSee, type PageRole } from "../convex/pageAccess";
 import { credentialsFor, signIn, type AuthRole } from "./helpers/auth";
 
 function pageLink(page: PlaywrightPage, slug: string) {
@@ -9,7 +10,7 @@ function pageLink(page: PlaywrightPage, slug: string) {
 async function expectPageListForRole(page: PlaywrightPage, role: PageRole) {
   await page.goto("/");
   for (const entry of PAGES) {
-    const visible = canSeePage(role, entry);
+    const visible = canSee(role, entry.slug);
     await expect(pageLink(page, entry.slug)).toHaveCount(visible ? 1 : 0);
   }
 }

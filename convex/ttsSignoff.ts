@@ -52,8 +52,8 @@ import { NEEDS_TOM, nyCalendarDayKey, nyHhmm } from "./ttsShared";
 import { listForDigest, openNeedsYou } from "./jarvis/outbox";
 import { composeProposalAsk, renderSlack } from "./ttsCompose";
 
-/** The label the gates name: the sign-off control lives on the TTS page. */
-const SURFACE = "TTS";
+/** The page the gates name: the sign-off control lives on /jarvis. */
+const PAGE = "jarvis";
 
 /** An agent's proposed message, waiting for Tom (dtsEvents kind). */
 export const SEND_PROPOSAL = "send-proposal";
@@ -323,7 +323,7 @@ export const internalPropose = internalMutation({
 export const listProposals = query({
   args: {},
   handler: async (ctx) => {
-    await requireTom(ctx, SURFACE);
+    await requireTom(ctx, PAGE);
     const rows = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", SEND_PROPOSAL))
@@ -361,7 +361,7 @@ export const listProposals = query({
 export const signAndSend = mutation({
   args: { proposalId: v.id("dtsEvents") },
   handler: async (ctx, { proposalId }) => {
-    await requireTom(ctx, SURFACE);
+    await requireTom(ctx, PAGE);
     const row = await ctx.db.get(proposalId);
     const p = proposalOf(row);
     if (row === null || p === null) throw new Error("no such proposal");
@@ -400,7 +400,7 @@ export const signAndSend = mutation({
 export const decline = mutation({
   args: { proposalId: v.id("dtsEvents") },
   handler: async (ctx, { proposalId }) => {
-    await requireTom(ctx, SURFACE);
+    await requireTom(ctx, PAGE);
     const row = await ctx.db.get(proposalId);
     const p = proposalOf(row);
     if (row === null || p === null) throw new Error("no such proposal");

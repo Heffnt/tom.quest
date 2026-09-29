@@ -17,7 +17,7 @@ export default function ForgeClient() {
   const jobs = useQuery(api.forge.listMine, isTom ? {} : "skip");
 
   return (
-    <TomGate label="Forge">
+    <TomGate page="forge">
     <div className="max-w-6xl mx-auto px-6 py-10 space-y-6">
       <header>
         <h1 className="text-3xl font-bold tracking-tight">Backdoor Forge</h1>

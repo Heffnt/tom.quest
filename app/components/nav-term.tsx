@@ -16,7 +16,8 @@ import { useAuth, getUsername } from "../lib/auth";
 import LoginModal from "./login-modal";
 import ProfileModal from "./profile-modal";
 import DebugToggle from "./debug-toggle";
-import { rankPages, type PageRole } from "./page-routes";
+import type { PageRole } from "@/convex/pageAccess";
+import { rankPages } from "./page-routes";
 
 /* Responsive cut-points. */
 const COMPACT_PX = 480;  // below: logo collapses to bare tom symbol

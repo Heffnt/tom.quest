@@ -1,31 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { canSeePage, PAGES, rankPages, type Page, type PageRole } from "./page-routes";
+import { canSee, PAGE_ACCESS, type PageRole, type PageSlug, type PageVisibility } from "@/convex/pageAccess";
+import { PAGES, rankPages, type Page } from "./page-routes";
 
-const page = (visibility: Page["visibility"]): Page => ({
-  slug: visibility,
-  title: visibility,
-  blurb: visibility,
-  priority: 1,
-  visibility,
-});
+const slugs = Object.keys(PAGE_ACCESS) as PageSlug[];
 
 describe("page registry", () => {
-  const visibilityPages = [
-    page("public"),
-    page("authenticated"),
-    page("admin"),
-    page("tom"),
-  ];
+  // The page list and the access table are one set of slugs: a page with no
+  // row would have no answer to who may see it, and a row with no page would
+  // be an access rule for nothing.
+  it("lists exactly the pages the access table has rows for", () => {
+    expect(PAGES.map((page) => page.slug).sort()).toEqual([...slugs].sort());
+  });
 
   it.each([
     ["guest", ["public"]],
     ["user", ["public", "authenticated"]],
     ["admin", ["public", "authenticated", "admin"]],
     ["tom", ["public", "authenticated", "admin", "tom"]],
-  ] satisfies Array<[PageRole, Array<Page["visibility"]>]>)(
-    "filters pages for %s",
+  ] satisfies Array<[PageRole, PageVisibility[]]>)(
+    "lets %s see the pages on its rung of the ladder and below",
     (role, visible) => {
-      expect(visibilityPages.filter((entry) => canSeePage(role, entry)).map((entry) => entry.visibility)).toEqual(visible);
+      for (const slug of slugs) {
+        expect(canSee(role, slug), `${role} on /${slug}`).toBe(
+          (visible as string[]).includes(PAGE_ACCESS[slug].visibility),
+        );
+      }
     },
   );
 
@@ -35,19 +34,17 @@ describe("page registry", () => {
   describe("the agent role", () => {
     it("sees turing and jarvis and nothing else", () => {
       expect(
-        PAGES.filter((entry) => canSeePage("agent", entry)).map((entry) => entry.slug),
+        PAGES.filter((entry) => canSee("agent", entry.slug)).map((entry) => entry.slug),
       ).toEqual(["turing", "jarvis"]);
     });
 
     // Named individually because each is a specific thing a session must not
     // reach: /canvas spends LLM credits through its agent route, and the other
     // three are Tom's own surfaces.
-    it.each(["canvas", "agents", "forge", "logo", "intent", "secrets"])(
+    it.each(["canvas", "agents", "forge", "logo", "intent", "secrets"] as const)(
       "does not see /%s",
       (slug) => {
-        const entry = PAGES.find((p) => p.slug === slug);
-        expect(entry, `no page named ${slug}`).toBeDefined();
-        expect(canSeePage("agent", entry!)).toBe(false);
+        expect(canSee("agent", slug)).toBe(false);
       },
     );
 
@@ -55,21 +52,21 @@ describe("page registry", () => {
     // "authenticated" the way every role on the ladder does. That is exactly
     // what keeps /canvas shut, so it is asserted rather than left implied.
     it("does not inherit the ladder's public or authenticated pages", () => {
-      expect(canSeePage("agent", page("public"))).toBe(false);
-      expect(canSeePage("agent", page("authenticated"))).toBe(false);
-      expect(canSeePage("agent", page("admin"))).toBe(false);
-      expect(canSeePage("agent", page("tom"))).toBe(false);
+      for (const slug of slugs) {
+        if (PAGE_ACCESS[slug].visibility === "tom" || PAGE_ACCESS[slug].visibility === "admin") continue;
+        expect(canSee("agent", slug), `agent on /${slug}`).toBe(false);
+      }
     });
 
     // The flag opens a page for `agent` alone; it must not leak a Tom-only
     // page to a signed-out visitor or an ordinary user.
     it("leaves every other role's answer unchanged when the flag is set", () => {
-      const flagged: Page = { ...page("tom"), agentReadable: true };
-      expect(canSeePage("guest", flagged)).toBe(false);
-      expect(canSeePage("user", flagged)).toBe(false);
-      expect(canSeePage("admin", flagged)).toBe(false);
-      expect(canSeePage("tom", flagged)).toBe(true);
-      expect(canSeePage("agent", flagged)).toBe(true);
+      expect(PAGE_ACCESS.jarvis).toMatchObject({ visibility: "tom", agentReadable: true });
+      expect(canSee("guest", "jarvis")).toBe(false);
+      expect(canSee("user", "jarvis")).toBe(false);
+      expect(canSee("admin", "jarvis")).toBe(false);
+      expect(canSee("tom", "jarvis")).toBe(true);
+      expect(canSee("agent", "jarvis")).toBe(true);
     });
   });
 
@@ -81,9 +78,8 @@ describe("page registry", () => {
   // /turing (and the cluster terminal it links to) is admin-level, not Tom-only.
   // If this entry is ever narrowed to "tom", every non-Tom admin loses the terminal.
   it("keeps /turing visible to a plain admin", () => {
-    const turing = PAGES.find((entry) => entry.slug === "turing");
-    expect(turing?.visibility).toBe("admin");
-    expect(canSeePage("admin", turing!)).toBe(true);
+    expect(PAGE_ACCESS.turing.visibility).toBe("admin");
+    expect(canSee("admin", "turing")).toBe(true);
   });
 
   // The two pages of his own record: what he wants to be true, and the words
@@ -91,24 +87,21 @@ describe("page registry", () => {
   // a headless session looking at a page it changed has no business reading
   // his intent.
   it("keeps /intent Tom-only", () => {
-    for (const slug of ["intent"]) {
-      const entry = PAGES.find((page) => page.slug === slug);
-      expect(entry, `no page named ${slug}`).toBeDefined();
-      expect(entry!.visibility).toBe("tom");
-      expect(entry!.agentReadable).toBeUndefined();
-      expect(canSeePage("tom", entry!)).toBe(true);
-      expect(canSeePage("admin", entry!)).toBe(false);
-      expect(canSeePage("guest", entry!)).toBe(false);
-    }
+    expect(PAGE_ACCESS.intent).toEqual({ visibility: "tom", label: "Intent" });
+    expect(canSee("tom", "intent")).toBe(true);
+    expect(canSee("admin", "intent")).toBe(false);
+    expect(canSee("guest", "intent")).toBe(false);
   });
 
   it("prefers prefix matches before substring matches", () => {
     const pages: Page[] = [
-      { slug: "alpha", title: "Alpha", blurb: "", priority: 1, visibility: "public" },
-      { slug: "catalog", title: "Catalog", blurb: "", priority: 99, visibility: "public" },
-      { slug: "atom", title: "Atom", blurb: "", priority: 2, visibility: "public" },
+      { slug: "help", title: "Help", blurb: "", priority: 1 },
+      { slug: "thmm", title: "THMM", blurb: "", priority: 99 },
+      { slug: "bio", title: "Bio", blurb: "", priority: 3 },
+      { slug: "boolback", title: "Boolback", blurb: "", priority: 2 },
     ];
 
-    expect(rankPages("a", "guest", pages).map((entry) => entry.slug)).toEqual(["atom", "alpha", "catalog"]);
+    expect(rankPages("h", "guest", pages).map((entry) => entry.slug)).toEqual(["help", "thmm"]);
+    expect(rankPages("b", "guest", pages).map((entry) => entry.slug)).toEqual(["bio", "boolback"]);
   });
 });

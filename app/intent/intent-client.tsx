@@ -111,7 +111,7 @@ export default function IntentClient() {
   const open = openDisagreements(decisions, evalItems, vocabulary);
 
   return (
-    <TomGate label="Intent">
+    <TomGate page="intent">
       <div className="w-full px-3 py-5 sm:px-5">
         <header className="flex flex-wrap items-baseline justify-between gap-2">
           <h1 className="text-2xl font-bold tracking-tight">intent</h1>

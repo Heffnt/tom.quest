@@ -13,9 +13,9 @@
 // todos are captured from Slack through the events route, and this page is
 // where they are read and ruled on. What ran is on /agents.
 //
-// THE SURFACE LABEL STAYS "TTS" (TomGate, canReadSurface): it is the name
-// convex/agentSurfaces.ts and every Convex read gate of this page share, not a
-// word on the page, and renaming it is one edit across both sides.
+// WHO MAY SEE THIS PAGE is its row "jarvis" in convex/pageAccess.ts: TomGate,
+// canSee below and every Convex read gate of the page name that slug. The
+// row's label "TTS" is what a refusal calls the page.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -40,8 +40,8 @@ export default function JarvisClient() {
   // canRead gates the queries ("skip" idiom); TomGate owns the gate JSX.
   // isTom stays separate and gates the WRITES below — the read-only `agent`
   // role a TTS session browses as passes canRead and fails isTom.
-  const { isTom, canReadSurface } = useAuth();
-  const canRead = canReadSurface("TTS");
+  const { isTom, canSee } = useAuth();
+  const canRead = canSee("jarvis");
   const router = useRouter();
   const recordEvent = useMutation(api.tts.recordEvent);
 
@@ -127,7 +127,7 @@ export default function JarvisClient() {
   }, [todos, mirror, codeBriefs, rulings]);
 
   return (
-    <TomGate label="TTS">
+    <TomGate page="jarvis">
       <div className="max-w-5xl mx-auto px-6 pb-16">
         <div className="flex items-end gap-1 border-b border-border mt-4">
           {TABS.map(({ value, label }) => (

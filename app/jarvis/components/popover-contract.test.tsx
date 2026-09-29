@@ -72,7 +72,7 @@ vi.mock("convex/react", async () => {
 // depends on the answer beyond "this viewer may read TTS": every mutation on
 // this surface is refused by Convex, not by the client.
 vi.mock("@/app/lib/auth", () => ({
-  useAuth: () => ({ isTom: true, canReadSurface: () => true }),
+  useAuth: () => ({ isTom: true, canSee: () => true }),
 }));
 
 import CalendarTab from "./calendar-tab";
