@@ -22,6 +22,7 @@ import type * as crons from "../crons.js";
 import type * as dayLog from "../dayLog.js";
 import type * as dayLogVocabulary from "../dayLogVocabulary.js";
 import type * as forge from "../forge.js";
+import type * as gateLandings from "../gateLandings.js";
 import type * as http from "../http.js";
 import type * as intent from "../intent.js";
 import type * as intentParse from "../intentParse.js";
@@ -96,6 +97,7 @@ declare const fullApi: ApiFromModules<{
   dayLog: typeof dayLog;
   dayLogVocabulary: typeof dayLogVocabulary;
   forge: typeof forge;
+  gateLandings: typeof gateLandings;
   http: typeof http;
   intent: typeof intent;
   intentParse: typeof intentParse;

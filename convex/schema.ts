@@ -1457,6 +1457,17 @@ export default defineSchema({
     .index("by_repo_sha", ["repo", "headSha"])
     .index("by_repo", ["repo"]),
 
+  // The newest commit on main of each repository under the merge gate that the
+  // record has accounted for (convex/gateLandings.ts): every commit that
+  // arrived after it is a merge row or a report of a landing past the gate.
+  // One row per repository, written on the first refresh and moved forward by
+  // each refresh that finds main moved.
+  gateMainHeads: defineTable({
+    repo: v.string(), // a GATED_REPOS name
+    sha: v.string(),
+    seenAt: v.number(),
+  }).index("by_repo", ["repo"]),
+
   // The repo layer, published the way the model-of-tom files are published.
   //
   // WHY A TABLE AND NOT A PATH: the assembler pre-expands the repo rules for

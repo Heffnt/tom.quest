@@ -57,6 +57,16 @@ export const SESSION_REPOS = /** @type {const} */ ({
 });
 
 /**
+ * The repositories under the merge gate: a change joins their main only when
+ * the record holds a green tests row and an APPROVED verdict for its head. The
+ * record accounts for every commit that arrives on their main
+ * (convex/gateLandings.ts), and the box's pull-request job reads this same list
+ * through the package. Each name is a SESSION_REPOS key; WikiTom and
+ * ComplexMultiTrigger are outside the gate.
+ */
+export const GATED_REPOS = /** @type {const} */ (["tom.quest", "Jarvis"]);
+
+/**
  * The label on the last line of every turn Tom typed, as the model receives
  * it: his text, a blank line, then `inbound row: <claudeInbound id>`. The
  * daemon appends it (worker/session-host/session.mjs deliveredTurnText), the
