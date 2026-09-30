@@ -84,9 +84,12 @@ function fromLog(entry: LogEntry): Said {
 
 function fromCapture(todo: Doc<"todos">): Said {
   const base = { id: todo._id, at: todo.createdAt, day: dayKey.format(todo.createdAt), text: todo.statement, processed: true, needsTom: false };
-  if (todo.needsTomToday) return { ...base, kind: "question", line: todo.needsTomToday.why || "waiting for your answer", needsTom: true };
+  // Terminal status first: needsTomToday is kept on a todo after it is done
+  // or archived, so checking it first would show a finished capture as a
+  // live question.
   if (todo.status === "done") return { ...base, kind: "errand", line: "a todo, done" };
   if (todo.status === "archived") return { ...base, kind: "idea", line: "a todo, archived" };
+  if (todo.needsTomToday) return { ...base, kind: "question", line: todo.needsTomToday.why || "waiting for your answer", needsTom: true };
   if (todo.timingClass === "dated" && todo.dueAt !== undefined) {
     return { ...base, kind: "errand", line: `on the calendar for ${dueName.format(todo.dueAt)}` };
   }
