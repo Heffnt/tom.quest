@@ -58,6 +58,8 @@ export type IntentLine = {
    *  `ruling:<id>` reference or an eval item named before the copy names the
    *  ruling by this id, so the line answers to it as to its own. */
   legacyId?: string;
+  /** A ruling's own sentence, when the ruling carries one. */
+  sentence?: string;
 };
 
 /** The model-of-tom pages whose lines are intent, and which kind each is. Each
@@ -128,25 +130,15 @@ type Bullet = { section: string; text: string; line: number };
  * Every top-level bullet of a markdown page, each under the deepest heading
  * above it. A continuation line (indented, or a bare line under a bullet) is
  * folded into the bullet it belongs to, because a wrapped line is one line.
- * With `includeProse`, each non-empty prose line under a heading is also kept
- * as a line (a bullet with its marker stripped, a prose line as it is), while
- * markdown link reference definitions and HTML comments stay ignored.
+ * With `includeProse`, every non-empty line under a heading that is not a
+ * heading, not a bullet and not a continuation is kept as a prose line.
  */
 export function parseBullets(body: string, includeProse = false): Bullet[] {
   const bullets: Bullet[] = [];
   let section = "";
-  let inComment = false;
   const lines = body.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    if (inComment) {
-      if (raw.includes("-->")) inComment = false;
-      continue;
-    }
-    if (/^\s*<!--/.test(raw)) {
-      inComment = !raw.includes("-->");
-      continue;
-    }
     const heading = /^#{1,6}\s+(.*)$/.exec(raw);
     if (heading) {
       section = heading[1].trim();
@@ -162,7 +154,7 @@ export function parseBullets(body: string, includeProse = false): Bullet[] {
       last.text = `${last.text} ${raw.trim()}`;
       continue;
     }
-    if (includeProse && section !== "" && raw.trim() !== "" && !/^\[[^\]]+\]:\s/.test(raw)) {
+    if (includeProse && section !== "" && raw.trim() !== "") {
       bullets.push({ section, text: raw.trim(), line: i + 1 });
     }
   }

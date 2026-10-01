@@ -241,6 +241,7 @@ export const lines = query({
       id: `rulings/${row._id}`,
       kind: "ruling" as const,
       text: row.sentence ?? row.verdict,
+      ...(row.sentence === undefined ? {} : { sentence: row.sentence }),
       section: row.subjectType,
       voice: "his" as const,
       source: "rulings",
