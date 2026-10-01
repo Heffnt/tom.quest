@@ -67,6 +67,64 @@ describe("POST /tts/capture: needing Tom today", () => {
     expect(rows.plain).not.toHaveProperty("needsTomToday");
     expect(rows.threads).toEqual([]);
   });
+
+  it("stores dueAt and dateKind on a dated todo, and dedupes on threadMessageId", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const dueAt = Date.now() + 86_400_000;
+    const dated = await capture(t, { statement: "File the form", dueAt, dateKind: "external", threadMessageId: "evt_todo_1" });
+    const row = await t.run((ctx) => ctx.db.get(dated.id as never));
+    expect(row).toMatchObject({ timingClass: "dated", dueAt, dateKind: "external" });
+
+    const again = await capture(t, { statement: "File the form", dueAt, dateKind: "external", threadMessageId: "evt_todo_1" });
+    expect(again.id).toBe(dated.id);
+    const rows = await t.run((ctx) => ctx.db.query("todos").withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", "evt_todo_1")).collect());
+    expect(rows).toHaveLength(1);
+  });
+
+  it("refuses a dated capture that is missing dateKind", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const res = await t.fetch("/tts/capture", {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify({ statement: "File the form", dueAt: Date.now() + 86_400_000 }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ── POST /jarvis/day-log writes a pending entry behind the worker key ───────
+describe("POST /jarvis/day-log", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function postDayLog(t: ReturnType<typeof convexTest>, body: Record<string, unknown>, key?: string) {
+    return await t.fetch("/jarvis/day-log", {
+      method: "POST",
+      headers: {
+        "X-Jarvis-Key": key ?? "s3cret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("writes a pending entry with the worker key, and refuses without it", async () => {
+    vi.stubEnv("JARVIS_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+
+    const refused = await postDayLog(t, { text: "a fact", threadMessageId: "evt_day_1" }, "wrong");
+    expect(refused.status).toBe(401);
+
+    const ok = await postDayLog(t, { text: "a fact", threadMessageId: "evt_day_1" });
+    expect(ok.status).toBe(200);
+    const body = await ok.json();
+    expect(body).toMatchObject({ ok: true });
+    const entry = await t.run((ctx) => ctx.db.get(body.id as never));
+    expect(entry).toMatchObject({ text: "a fact", status: "pending", threadMessageId: "evt_day_1" });
+  });
 });
 
 // ── POST /tts/needs-tom opens a reply under the day's digest ─────────────────

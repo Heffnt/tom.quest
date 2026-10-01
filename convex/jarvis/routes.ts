@@ -8,6 +8,12 @@
 //
 // GET /jarvis/events?kind=&since=&subject=&limit=: the read, newest first.
 //
+// POST /jarvis/day-log: the box writes one pending day-log entry. Body
+// { text, threadMessageId }, both non-empty strings; the entry is idempotent
+// on threadMessageId, so a classifying job that acted but crashed before
+// posting its reply cannot mint the entry twice on its next run. Answers
+// { ok: true, id }.
+//
 // HOW AN AREA ADDS A ROUTE: a handler here (or in its own file under
 // convex/jarvis/), one line in register() below. convex/http.ts calls
 // register once; nothing else in http.ts changes for a new /jarvis/ route.
@@ -70,10 +76,38 @@ export const getEvents = httpAction(async (ctx, request) => {
   return jsonResponse(200, { ok: true, events });
 });
 
+export const postDayLog = httpAction(async (ctx, request) => {
+  const denied = jarvisAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.text !== "string" || b.text.trim() === "") {
+    return jsonResponse(400, { error: "text (non-empty string) required" });
+  }
+  if (typeof b.threadMessageId !== "string" || b.threadMessageId.trim() === "") {
+    return jsonResponse(400, { error: "threadMessageId (non-empty string) required" });
+  }
+  try {
+    const { id } = await ctx.runMutation(internal.dayLog.internalSubmitFromThread, {
+      text: b.text,
+      threadMessageId: b.threadMessageId,
+    });
+    return jsonResponse(200, { ok: true, id });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 /** Every /jarvis/ route the record serves, one line each. */
 export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/event", method: "POST", handler: postEvent });
   http.route({ path: "/jarvis/events", method: "GET", handler: getEvents });
+  http.route({ path: "/jarvis/day-log", method: "POST", handler: postDayLog });
   registerContext(http); // GET /jarvis/context?for=<caller> (context.ts)
   http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
   http.route({ path: "/jarvis/digest", method: "POST", handler: digestRoute });

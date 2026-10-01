@@ -359,11 +359,14 @@ http.route({ path: "/tts/search/events", method: "GET", handler: ttsSearchEvents
 http.route({ path: "/tts/search/todos", method: "GET", handler: ttsSearchTodos });
 
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
-// item. Body: { statement, source?, provenance?, needsTomToday?, why? }.
-// `needsTomToday: true` is a poller's triage judging the item to need Tom
-// today, and `why` its few words; both are stored on the todo, and the
-// morning message and the hourly line say them. No worker opens a needs-you
-// thread (Tom, 2026-09-21).
+// item. Body: { statement, source?, provenance?, threadMessageId?, dueAt?,
+// dateKind?, needsTomToday?, why? }. `threadMessageId` makes the capture
+// idempotent on the Jarvis-thread message it came from; `dueAt` (epoch ms)
+// with `dateKind` ("external" | "self-imposed") gives the todo a dated
+// timing class. `needsTomToday: true` is a poller's triage judging the item
+// to need Tom today, and `why` its few words; both are stored on the todo,
+// and the morning message and the hourly line say them. No worker opens a
+// needs-you thread (Tom, 2026-09-21).
 const ttsCapture = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -377,10 +380,29 @@ const ttsCapture = httpAction(async (ctx, request) => {
   if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
     return jsonResponse(400, { error: "statement (non-empty string) required" });
   }
+  const threadMessageId =
+    typeof b.threadMessageId === "string" && b.threadMessageId.trim() !== ""
+      ? b.threadMessageId
+      : undefined;
+  const dueAt =
+    typeof b.dueAt === "number" && Number.isFinite(b.dueAt) && b.dueAt > 0
+      ? b.dueAt
+      : undefined;
+  const hasDateKind = b.dateKind === "external" || b.dateKind === "self-imposed";
+  if (b.dateKind !== undefined && !hasDateKind) {
+    return jsonResponse(400, { error: 'dateKind must be "external" or "self-imposed"' });
+  }
+  if (dueAt !== undefined && !hasDateKind) {
+    return jsonResponse(400, { error: "a dated capture names its dateKind" });
+  }
+  const dateKind = hasDateKind ? (b.dateKind as "external" | "self-imposed") : undefined;
   const id = await ctx.runMutation(internal.tts.internalCapture, {
     statement: b.statement,
     source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
+    threadMessageId,
+    dueAt,
+    dateKind,
     // The Slack coordinates, when the caller is a Slack producer. They are
     // what the threaded reply is addressed to and what the push route dedupes
     // on; a caller that has none simply omits them.

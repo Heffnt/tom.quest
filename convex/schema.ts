@@ -740,6 +740,7 @@ export default defineSchema({
     slackTs: v.optional(v.string()),
     slackReplyTs: v.optional(v.string()), // ts of OUR reply, so it can be edited
     slackRepliedAt: v.optional(v.number()), // the "replied once" guard
+    threadMessageId: v.optional(v.string()), // the Jarvis-thread message this todo came from; the capture dedupes on it
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
@@ -832,6 +833,7 @@ export default defineSchema({
     // looks itself up by ts before inserting. A scan would be a full-table
     // read on the hot path of a route that must answer within 3 seconds.
     .index("by_slackTs", ["slackTs"])
+    .index("by_threadMessageId", ["threadMessageId"])
     .index("by_legacy", ["legacyId"]),
 
   // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
@@ -2255,10 +2257,12 @@ export default defineSchema({
     status: v.union(v.literal("pending"), v.literal("applied"), v.literal("needs-session")),
     result: v.optional(v.string()),
     resolvedAt: v.optional(v.number()),
+    threadMessageId: v.optional(v.string()), // the Jarvis-thread message this entry came from; the writer dedupes on it
   })
     .index("by_day", ["day"])
     .index("by_createdAt", ["createdAt"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_threadMessageId", ["threadMessageId"]),
 
   dayLogItems: defineTable({
     entryId: v.id("dayLogEntries"),

@@ -56,6 +56,7 @@ type LogEntry = {
   text: string;
   createdAt: number;
   status: "pending" | "applied" | "needs-session";
+  threadMessageId?: string;
   items: LogItem[];
 };
 
@@ -137,7 +138,7 @@ export default function ThreadClient() {
   const days = useMemo(() => {
     const since = Date.now() - WINDOW_MS;
     const said: Said[] = [
-      ...(entries ?? []).map(fromLog),
+      ...(entries ?? []).filter((e) => e.threadMessageId === undefined).map(fromLog),
       ...(todos ?? []).filter((t) => t.source === "slack-capture" && t.createdAt >= since).map(fromCapture),
       ...(thread ?? []).map(fromThread),
     ].sort((a, b) => a.at - b.at);
