@@ -65,8 +65,6 @@ const clock = new Intl.DateTimeFormat("en-US", { timeZone: ZONE, hour: "numeric"
 const dayName = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
 const dueName = new Intl.DateTimeFormat("en-US", { timeZone: ZONE, weekday: "short", month: "short", day: "numeric" });
 
-const KINDS: readonly Kind[] = ["fact", "todo", "rule", "errand", "question"];
-
 function words(value: string): string {
   return value.replaceAll("_", " ");
 }
@@ -111,7 +109,7 @@ function fromCapture(todo: Doc<"todos">): Said {
 function fromThread(message: ThreadMessage): Said {
   const base = { id: message.id, at: message.at, day: dayKey.format(message.at), text: message.text };
   if (message.reply !== null) {
-    const kind = KINDS.includes(message.reply.kind as Kind) ? (message.reply.kind as Kind) : undefined;
+    const kind = message.reply.kind as Kind;
     return {
       ...base,
       kind,
@@ -139,7 +137,7 @@ export default function ThreadClient() {
     const since = Date.now() - WINDOW_MS;
     const said: Said[] = [
       ...(entries ?? []).filter((e) => e.threadMessageId === undefined).map(fromLog),
-      ...(todos ?? []).filter((t) => t.source === "slack-capture" && t.createdAt >= since).map(fromCapture),
+      ...(todos ?? []).filter((t) => t.threadMessageId === undefined && t.source === "slack-capture" && t.createdAt >= since).map(fromCapture),
       ...(thread ?? []).map(fromThread),
     ].sort((a, b) => a.at - b.at);
     const grouped = new Map<string, Said[]>();

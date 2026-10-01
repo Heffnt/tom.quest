@@ -94,6 +94,9 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  */
 export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply"];
 
+/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
+export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
+
 /**
  * The kinds whose writer retries with a stable `data.id`: a second row of the
  * kind with the same subject and data.id is that retry, not a new fact, and is
@@ -149,6 +152,14 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   }
   if (subject === undefined && SUBJECT_REQUIRED.includes(kind)) {
     return { ok: false, error: `a ${kind} event names its subject` };
+  }
+  if (kind === "thread-reply") {
+    if (!nonEmptyString(text)) {
+      return { ok: false, error: "a thread-reply names its one-line text" };
+    }
+    if (!isPlainObject(data) || !THREAD_REPLY_KINDS.includes(data.kind)) {
+      return { ok: false, error: `a thread-reply names data.kind as one of ${THREAD_REPLY_KINDS.join(", ")}` };
+    }
   }
   if (text !== undefined && typeof text !== "string") {
     return { ok: false, error: "text, when given, is a string" };

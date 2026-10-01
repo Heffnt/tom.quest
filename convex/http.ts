@@ -380,14 +380,17 @@ const ttsCapture = httpAction(async (ctx, request) => {
   if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
     return jsonResponse(400, { error: "statement (non-empty string) required" });
   }
-  const threadMessageId =
-    typeof b.threadMessageId === "string" && b.threadMessageId.trim() !== ""
-      ? b.threadMessageId
-      : undefined;
-  const dueAt =
-    typeof b.dueAt === "number" && Number.isFinite(b.dueAt) && b.dueAt > 0
-      ? b.dueAt
-      : undefined;
+  // A present-but-malformed value is the caller's error, not a reason to
+  // treat the field as absent (the audit's finding): refuse it with one
+  // sentence naming the shape.
+  if (b.threadMessageId !== undefined && (typeof b.threadMessageId !== "string" || b.threadMessageId.trim() === "")) {
+    return jsonResponse(400, { error: "threadMessageId, when given, is a non-empty string" });
+  }
+  const threadMessageId = typeof b.threadMessageId === "string" ? b.threadMessageId : undefined;
+  if (b.dueAt !== undefined && !(typeof b.dueAt === "number" && Number.isFinite(b.dueAt) && b.dueAt > 0)) {
+    return jsonResponse(400, { error: "dueAt, when given, is epoch milliseconds (a finite number greater than 0)" });
+  }
+  const dueAt = typeof b.dueAt === "number" ? b.dueAt : undefined;
   const hasDateKind = b.dateKind === "external" || b.dateKind === "self-imposed";
   if (b.dateKind !== undefined && !hasDateKind) {
     return jsonResponse(400, { error: 'dateKind must be "external" or "self-imposed"' });
@@ -398,7 +401,12 @@ const ttsCapture = httpAction(async (ctx, request) => {
   const dateKind = hasDateKind ? (b.dateKind as "external" | "self-imposed") : undefined;
   const id = await ctx.runMutation(internal.tts.internalCapture, {
     statement: b.statement,
-    source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
+    source:
+      typeof b.source === "string" && b.source
+        ? b.source
+        : threadMessageId !== undefined
+          ? "thread"
+          : "slack-capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
     threadMessageId,
     dueAt,

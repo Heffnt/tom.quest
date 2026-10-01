@@ -61,6 +61,12 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "todo" }, text: "a todo" }).ok).toBe(true);
   });
 
+  it("refuses a thread-reply with only a subject, and one with an unknown data.kind", () => {
+    expect(validateEvent({ kind: "thread-reply", subject: "m1" }).ok).toBe(false);
+    expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "idea" }, text: "an idea" }).ok).toBe(false);
+    expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "todo" }, text: "a todo" }).ok).toBe(true);
+  });
+
   it("keeps thread-message as a Tom-only kind", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
