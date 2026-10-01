@@ -68,6 +68,13 @@ describe("day log", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("refuses a thread message that already became a todo", async () => {
+    const t = convexTest({ schema, modules });
+    const threadMessageId = "evt_conflict_daylog_first";
+    await t.mutation(internal.tts.internalCapture, { statement: "buy tape", source: "thread", threadMessageId });
+    await expect(t.mutation(internal.dayLog.internalSubmitFromThread, { text: "a fact", threadMessageId })).rejects.toThrow("this thread message already became a todo");
+  });
+
   it("Tom's submit still writes a pending entry without a threadMessageId", async () => {
     const t = convexTest({ schema, modules });
     const { id } = await pendingEntry(t, "weighed 180.0 this morning");

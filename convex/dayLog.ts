@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
@@ -176,6 +177,11 @@ async function insertDayLogEntry(
   if (text.trim() === "") throw new Error("Log entries cannot be empty");
   if (text.length > DAY_LOG_ENTRY_MAX) throw new Error(`Log entries are at most ${DAY_LOG_ENTRY_MAX} characters`);
   if (threadMessageId !== undefined) {
+    const existingTodo = await ctx.db
+      .query("todos")
+      .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
+      .first();
+    if (existingTodo) throw new ConvexError("this thread message already became a todo");
     const existing = await ctx.db
       .query("dayLogEntries")
       .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))

@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { ConvexError } from "convex/values";
 import { composeCaptured, renderSlack } from "./ttsCompose";
 import {
   internalMutation,
@@ -1277,15 +1278,22 @@ export const internalCapture = internalMutation({
     { statement, source, provenance, threadMessageId, dueAt, dateKind, slackChannel, slackTs, needsTomToday },
   ) => {
     const now = Date.now();
+    const stored = threadMessageId === undefined
+      ? null
+      : (await ctx.db
+          .query("todos")
+          .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
+          .first()) ?? null;
     // IDEMPOTENT ON THE THREAD MESSAGE, the same way slackTs is below: a box
     // job that acted but crashed before posting its reply must not mint the
     // todo twice on its next run.
+    if (stored) return stored._id;
     if (threadMessageId !== undefined) {
-      const existing = await ctx.db
-        .query("todos")
+      const dayLog = await ctx.db
+        .query("dayLogEntries")
         .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
         .first();
-      if (existing) return existing._id;
+      if (dayLog) throw new ConvexError("this thread message already became a day-log entry");
     }
     // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
     // #dump message — the Events push route (fast, at-least-once: Slack

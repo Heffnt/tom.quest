@@ -358,6 +358,40 @@ describe("TTS todos", () => {
     expect(after).toHaveLength(3);
   });
 
+  it("refuses to capture a thread message that already became a day-log entry", async () => {
+    const t = convexTest({ schema, modules });
+    const threadMessageId = "evt_conflict_todo_first";
+    await t.mutation(internal.dayLog.internalSubmitFromThread, { text: "a fact", threadMessageId });
+    await expect(t.mutation(internal.tts.internalCapture, {
+      statement: "buy climbing tape",
+      source: "thread",
+      threadMessageId,
+    })).rejects.toThrow("this thread message already became a day-log entry");
+  });
+
+  it("returns the stored todo unchanged on a retry", async () => {
+    const t = convexTest({ schema, modules });
+    const threadMessageId = "evt_retry_todo";
+    const dueAt = Date.now() + 86_400_000;
+    const first = await t.mutation(internal.tts.internalCapture, {
+      statement: "file the form",
+      source: "thread",
+      threadMessageId,
+      dueAt,
+      dateKind: "external",
+    });
+    const second = await t.mutation(internal.tts.internalCapture, {
+      statement: "file the form later",
+      source: "thread",
+      threadMessageId,
+      dueAt: dueAt + 86_400_000,
+      dateKind: "self-imposed",
+    });
+    expect(second).toBe(first);
+    const stored = await t.run((ctx) => ctx.db.query("todos").withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId)).first());
+    expect(stored).toMatchObject({ dueAt, dateKind: "external" });
+  });
+
   // witness: make internalPrepareTodo patch `statement` too, and the
   // preserved-statement assertion below goes red.
   it("preparer attaches fields and advances readiness without touching intent", async () => {
