@@ -535,20 +535,21 @@ export const internalApplyRepoProposal = internalMutation({
     await ctx.db.patch(row._id, {
       data: { ...data, status: "applied", commit, appliedLine },
     });
-    await ctx.db.insert("dtsEvents", {
-      at: Date.now(),
-      kind: "repo-proposal-applied",
-      key: id,
-      data: {
-        id,
-        repo: data.repo,
-        file: data.file,
-        section: data.section,
-        line: data.line,
-        appliedLine,
-        commit,
-      },
-    });
+    const at = Date.now();
+    const appliedData = {
+      id,
+      repo: data.repo,
+      file: data.file,
+      section: data.section,
+      line: data.line,
+      appliedLine,
+      commit,
+    };
+    await ctx.db.insert("dtsEvents", { at, kind: "repo-proposal-applied", key: id, data: appliedData });
+    // The Jarvis thread reads agent changes from the events table: this
+    // applied proposal and its dtsEvents row are one fact, so the copy rides
+    // in this transaction.
+    await copyDtsRow(ctx, { at, kind: "repo-proposal-applied", key: id, data: appliedData });
     return { applied: true, repo: data.repo, file: data.file };
   },
 });
