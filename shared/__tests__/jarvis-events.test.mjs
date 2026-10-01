@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_KINDS, validateEvent } from "../jarvis-events.mjs";
+import { EVENT_KINDS, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
 
 describe("validateEvent", () => {
   it("fills at and data, keeps subject and text, and drops nothing it was given", () => {
@@ -51,6 +51,19 @@ describe("validateEvent", () => {
       expect(validateEvent({ kind, data: {} })).toEqual({ ok: false, error: `a ${kind} event names its subject` });
       expect(validateEvent({ kind, subject: "s", data: {} }).ok).toBe(true);
     }
+  });
+
+  it("refuses a thread-reply without its subject", () => {
+    expect(validateEvent({ kind: "thread-reply", data: { kind: "todo" }, text: "a todo" })).toEqual({
+      ok: false,
+      error: "a thread-reply event names its subject",
+    });
+    expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "todo" }, text: "a todo" }).ok).toBe(true);
+  });
+
+  it("keeps thread-message as a Tom-only kind", () => {
+    expect(TOM_ONLY_KINDS).toContain("thread-message");
+    expect(SUBJECT_REQUIRED).toContain("thread-reply");
   });
 
   it("lists every kind once", () => {

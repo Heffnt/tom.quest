@@ -45,6 +45,7 @@ import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as sessionRows from "../sessionRows.js";
 import type * as symbolScores from "../symbolScores.js";
+import type * as thread from "../thread.js";
 import type * as trainingDay from "../trainingDay.js";
 import type * as tts from "../tts.js";
 import type * as ttsAsk from "../ttsAsk.js";
@@ -121,6 +122,7 @@ declare const fullApi: ApiFromModules<{
   serverHealth: typeof serverHealth;
   sessionRows: typeof sessionRows;
   symbolScores: typeof symbolScores;
+  thread: typeof thread;
   trainingDay: typeof trainingDay;
   tts: typeof tts;
   ttsAsk: typeof ttsAsk;
