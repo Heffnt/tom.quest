@@ -75,7 +75,7 @@ describe("page registry", () => {
 
   it("ranks visible pages by priority when query is empty", () => {
     expect(rankPages("", "guest").map((entry) => entry.slug)).toEqual(["transformer", "thmm", "clouds", "perfume", "game", "bio", "boolback", "help"]);
-    expect(rankPages("", "tom")[0]?.slug).toBe("turing");
+    expect(rankPages("", "tom")[0]?.slug).toBe("thread");
   });
 
   // /turing (and the cluster terminal it links to) is admin-level, not Tom-only.
