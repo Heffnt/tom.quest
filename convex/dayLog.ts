@@ -16,6 +16,7 @@ import {
 import { trainingDay as parseTrainingDay } from "./trainingDay";
 import { nyCalendarDayKey, nyOffsetHours, weekdayWordOf } from "./ttsShared";
 import { DAY_LOG_ENTRY_MAX } from "../shared/day-log-entry.mjs";
+export { DAY_LOG_ENTRY_MAX };
 
 const SURFACE = "Log";
 const PAGE_DAYS = 60;

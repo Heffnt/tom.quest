@@ -7,6 +7,7 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { insertEvent } from "./jarvis/record";
+import { DAY_LOG_ENTRY_MAX } from "./dayLog";
 
 const SURFACE = "Thread";
 
@@ -15,7 +16,7 @@ export const send = mutation({
   handler: async (ctx, { text }) => {
     await requireTom(ctx, SURFACE);
     if (text.trim() === "") throw new Error("A message cannot be empty");
-    if (text.length > 8000) throw new Error("A message is at most 8000 characters");
+    if (text.length > DAY_LOG_ENTRY_MAX) throw new Error(`A message is at most ${DAY_LOG_ENTRY_MAX} characters`);
     const id = await insertEvent(ctx, {
       kind: "thread-message",
       at: Date.now(),
