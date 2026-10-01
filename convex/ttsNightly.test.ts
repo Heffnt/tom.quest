@@ -276,6 +276,7 @@ describe("POST /tts/event", () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     expect((await post(t, "/tts/event", { kind: "slack-sent" })).status).toBe(400);
+    expect((await post(t, "/tts/event", { kind: "thread-reply", data: {} })).status).toBe(400);
     expect((await post(t, "/tts/event", { kind: "Nightly Run" })).status).toBe(400);
     expect((await post(t, "/tts/event", { data: {} })).status).toBe(400);
     expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);

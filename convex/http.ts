@@ -2539,6 +2539,9 @@ const ttsEvent = httpAction(async (ctx, request) => {
   if (typeof b.kind !== "string" || b.kind === "") {
     return jsonResponse(400, { error: "kind (non-empty string) required" });
   }
+  if (b.kind === "thread-reply" || b.kind === "thread-message") {
+    return jsonResponse(400, { error: "thread events are written through their own route" });
+  }
   if ((TOM_ONLY_KINDS as readonly string[]).includes(b.kind)) {
     return jsonResponse(403, { error: `${b.kind} is Tom-only` });
   }
