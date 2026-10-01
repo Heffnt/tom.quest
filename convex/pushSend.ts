@@ -11,7 +11,7 @@ import { VAPID_UNSET, vapidKeys } from "./push";
 
 /** Send one notification to every live subscription. */
 export const sendToAll = internalAction({
-  args: { title: v.string(), body: v.string(), url: v.string() },
+  args: { title: v.string(), body: v.string(), url: v.string(), only: v.optional(v.string()) },
   handler: async (ctx, args): Promise<{ sent: number; failed: number; gone: number; errors: string[] }> => {
     const keys = vapidKeys();
     if (keys === null) throw new Error(VAPID_UNSET);
@@ -20,6 +20,7 @@ export const sendToAll = internalAction({
     const payload = JSON.stringify({ title: args.title, body: args.body, url: args.url });
     const result = { sent: 0, failed: 0, gone: 0, errors: [] as string[] };
     for (const subscription of subscriptions as Array<{ endpoint: string }>) {
+      if (args.only !== undefined && subscription.endpoint !== args.only) continue;
       try {
         await webpush.sendNotification(
           subscription as Parameters<typeof webpush.sendNotification>[0],

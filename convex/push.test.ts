@@ -100,4 +100,23 @@ describe("push", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, sent: 0, failed: 0, gone: 0, errors: [] });
   });
+
+  it("POST /jarvis/event refuses a push-subscription kind and writes no event", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const res = await post(
+      t,
+      "/jarvis/event",
+      { kind: "push-subscription", subject: "https://push.example/x", data: { live: true } },
+      { "X-Jarvis-Key": "k" },
+    );
+    expect(res.status).not.toBe(200);
+    expect(await pushRows(t)).toEqual([]);
+  });
+
+  it("requestTest refuses a signed-out caller and liveSubscriptions is unchanged", async () => {
+    const t = convexTest({ schema, modules });
+    await expect(t.mutation(api.push.requestTest, { endpoint: "https://push.example/a" })).rejects.toThrow();
+    expect(await t.query(internal.push.liveSubscriptions, {})).toEqual([]);
+  });
 });
