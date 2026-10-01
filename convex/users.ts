@@ -1,6 +1,18 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { requireTom, roleAccess, viewerDoc } from "./authRoles";
+import { insertEvent } from "./jarvis/record";
+
+// The login widget's username as the "email" index holds it: sign-up derives
+// the synthetic email `${normalized}@tom.quest` from it (convex/auth.ts).
+function normalizeUsername(username: string): string {
+  return username.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// The one username setTomByUsername may promote, normalized the same way.
+function tomUsername(): string {
+  return normalizeUsername(process.env.TOM_USERNAME ?? "tom");
+}
 
 export const viewer = query({
   args: {},
@@ -27,11 +39,8 @@ export const setTomByUsername = mutation({
     if (!expectedSecret || setupSecret !== expectedSecret) {
       throw new Error("Tom setup is not authorized");
     }
-    const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const allowedUsername = (process.env.TOM_USERNAME ?? "tom")
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "");
-    if (normalized !== allowedUsername) {
+    const normalized = normalizeUsername(username);
+    if (normalized !== tomUsername()) {
       throw new Error("Only the configured Tom username can be promoted this way");
     }
     const existingTom = await ctx.db
@@ -75,7 +84,7 @@ export const setRoleByUsername = mutation({
   },
   handler: async (ctx, { username, role }) => {
     await requireTom(ctx, "User roles");
-    const normalized = username.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normalized = normalizeUsername(username);
     const user = await ctx.db
       .query("users")
       .withIndex("email", (q) => q.eq("email", `${normalized}@tom.quest`))
@@ -97,5 +106,56 @@ export const promoteToAdmin = mutation({
       throw new Error("Only Tom can promote admins");
     }
     await ctx.db.patch(userId, { role: "admin" });
+  },
+});
+
+// The event kind grantAgentRole writes (shared/jarvis-events.mjs EVENT_KINDS).
+export const ROLE_GRANTED = "role-granted";
+
+// The deploy credential's pen for the read-only `agent` role: an internal
+// mutation, so no browser can call it; `npx convex run` with the deploy
+// credential can. It is setRoleByUsername's `agent` grant without the
+// signed-in caller, and it asserts no identity: the record's row names the
+// agent run that asked (provenance.agentId), not a person.
+//
+// WHAT IT REFUSES, each before anything is written:
+//   - a username that normalizes to TOM_USERNAME, whatever role that account
+//     holds now, so the name setTomByUsername promotes is never an agent;
+//   - an account at `tom`, under any username;
+//   - an account at `admin`: taking an admin down to a reader is a decision
+//     about that person, not a grant, and setRoleByUsername is its pen;
+//   - an unknown username, and an empty one.
+// An empty agentId is refused by the record's event validator
+// (shared/jarvis-events.mjs, provenance fields are non-empty strings); the
+// throw undoes the role in the same transaction, so nothing is written.
+//
+// IDEMPOTENT: an account already at `agent` is answered { changed: false }
+// and no second event is written, because nothing happened.
+export const grantAgentRole = internalMutation({
+  args: { username: v.string(), agentId: v.string() },
+  handler: async (ctx, { username, agentId }) => {
+    const normalized = normalizeUsername(username);
+    if (!normalized) throw new Error("username must contain letters or numbers");
+    if (normalized === tomUsername()) {
+      throw new Error("The Tom username cannot be given the agent role");
+    }
+    const user = await ctx.db
+      .query("users")
+      .withIndex("email", (q) => q.eq("email", `${normalized}@tom.quest`))
+      .unique();
+    if (!user) throw new Error("User not found");
+    if (user.role === "tom") throw new Error("The Tom account's role cannot be changed here");
+    if (user.role === "admin") throw new Error("An admin's role is not changed by this grant");
+    if (user.role === "agent") return { userId: user._id, changed: false };
+    const previousRole = user.role ?? "user";
+    await ctx.db.patch(user._id, { role: "agent" });
+    await insertEvent(ctx, {
+      kind: ROLE_GRANTED,
+      provenance: { agentId },
+      subject: user._id,
+      data: { userId: user._id, username: normalized, role: "agent", previousRole },
+      text: `${normalized} was given the agent role (was ${previousRole})`,
+    });
+    return { userId: user._id, changed: true };
   },
 });

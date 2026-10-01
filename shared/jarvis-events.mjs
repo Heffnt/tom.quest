@@ -61,6 +61,10 @@ export const EVENT_KINDS = [
   // queue knows (outcome "completed" or "errored", summary, cost). The digest
   // and the weekly count it on its todo (convex/ttsDigest.ts, ttsWeekly.ts).
   "session-outcome",
+  // A user was given the read-only `agent` role (convex/users.ts
+  // grantAgentRole): subject is the user's id, data { userId, username,
+  // role, previousRole }, provenance.agentId the run that asked for it.
+  "role-granted",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
