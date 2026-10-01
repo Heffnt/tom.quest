@@ -54,6 +54,28 @@ describe("day log", () => {
     expect(events[0]?.data).toEqual({ entryId: id });
   });
 
+  it("internalSubmitFromThread writes one pending entry idempotently on its threadMessageId", async () => {
+    const t = convexTest({ schema, modules });
+    const text = "a fact about the day";
+    const threadMessageId = "evt_abc123";
+    const first = await t.mutation(internal.dayLog.internalSubmitFromThread, { text, threadMessageId });
+    const entry = await t.run((ctx) => ctx.db.get(first.id));
+    expect(entry).toMatchObject({ text, status: "pending", threadMessageId });
+
+    const second = await t.mutation(internal.dayLog.internalSubmitFromThread, { text, threadMessageId });
+    expect(second.id).toBe(first.id);
+    const rows = await t.run((ctx) => ctx.db.query("dayLogEntries").withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId)).collect());
+    expect(rows).toHaveLength(1);
+  });
+
+  it("Tom's submit still writes a pending entry without a threadMessageId", async () => {
+    const t = convexTest({ schema, modules });
+    const { id } = await pendingEntry(t, "weighed 180.0 this morning");
+    const entry = await t.run((ctx) => ctx.db.get(id));
+    expect(entry).toMatchObject({ text: "weighed 180.0 this morning", status: "pending" });
+    expect(entry).not.toHaveProperty("threadMessageId");
+  });
+
   it("returns the pending worker shape with verbatim text and fact-type vocabulary", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "test-key");
     const t = convexTest({ schema, modules });
