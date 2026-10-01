@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
@@ -32,13 +32,13 @@ export default function PushClient() {
   const { isTom } = useAuth();
   const publicKey = useQuery(api.push.vapidPublicKey, isTom ? undefined : "skip");
   const saveSubscription = useMutation(api.push.saveSubscription);
-  const requestTest = useMutation(api.push.requestTest);
+  const sendTest = useAction(api.pushSend.sendTest);
 
   const [permission, setPermission] = useState<NotificationPermission | null>(null);
   const [endpoint, setEndpoint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState<boolean | null>(null);
+  const [result, setResult] = useState<{ sent: number; failed: number; gone: number; errors: string[] } | null>(null);
   const [supported, setSupported] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -59,9 +59,10 @@ export default function PushClient() {
   const subscribe = async () => {
     setBusy(true);
     setError(null);
-    setSent(null);
+    setResult(null);
     try {
       const granted = await Notification.requestPermission();
+      setPermission(granted);
       if (granted !== "granted") throw new Error("permission not granted");
       const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
       await navigator.serviceWorker.ready;
@@ -89,12 +90,11 @@ export default function PushClient() {
   const test = async () => {
     setBusy(true);
     setError(null);
-    setSent(null);
+    setResult(null);
     try {
-      await requestTest({ endpoint: endpoint! });
-      setSent(true);
+      const outcome = await sendTest({ endpoint: endpoint! });
+      setResult(outcome);
     } catch (err) {
-      setSent(false);
       setError(refusal(err));
     } finally {
       setBusy(false);
@@ -134,12 +134,21 @@ export default function PushClient() {
               <button type="button" onClick={test} disabled={busy || !endpoint} className={primaryBtnCls}>
                 Send a test push to this device
               </button>
-              <Info call="push.requestTest({ endpoint })" side="below">
-                Schedules pushSend.sendToAll for this device&apos;s subscription only.
+              <Info call="pushSend.sendTest({ endpoint })" side="below">
+                Sends a test notification to this device&apos;s subscription only and reports what the push service answered.
               </Info>
             </span>
           </div>
-          {sent === true && <p className="text-success">sent</p>}
+          {result !== null && (
+            <p className="text-text text-sm">
+              {result.sent === 0 && result.failed === 0 && result.gone === 0
+                ? "no live subscription for this device"
+                : `sent ${result.sent}, failed ${result.failed}, gone ${result.gone}`}
+              {result.errors.map((entry, i) => (
+                <span key={i} className="block">{entry}</span>
+              ))}
+            </p>
+          )}
           <p className="min-h-5 text-xs text-error">{error}</p>
         </div>
       </div>

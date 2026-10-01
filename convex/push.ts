@@ -99,18 +99,12 @@ export const markGone = internalMutation({
   },
 });
 
-/** Send a test notification to this device's subscription only; Tom-only. */
-export const requestTest = mutation({
-  args: { endpoint: v.string() },
-  handler: async (ctx, args) => {
+/** The Tom gate for sendTest; run from the action to carry the caller's identity. */
+export const assertTom = internalQuery({
+  args: {},
+  handler: async (ctx) => {
     await requireTom(ctx, "Push");
-    if (vapidKeys() === null) throw new Error(VAPID_UNSET);
-    await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, {
-      title: "tom.Quest",
-      body: "Test notification from /push",
-      url: "/push",
-      only: args.endpoint,
-    });
+    return null;
   },
 });
 

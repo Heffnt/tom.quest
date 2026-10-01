@@ -114,9 +114,21 @@ describe("push", () => {
     expect(await pushRows(t)).toEqual([]);
   });
 
-  it("requestTest refuses a signed-out caller and liveSubscriptions is unchanged", async () => {
+  it("sendTest refuses a signed-out caller", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.mutation(api.push.requestTest, { endpoint: "https://push.example/a" })).rejects.toThrow();
-    expect(await t.query(internal.push.liveSubscriptions, {})).toEqual([]);
+    await expect(t.action(api.pushSend.sendTest, { endpoint: "https://push.example/a" })).rejects.toThrow();
+  });
+
+  it("sendTest returns an empty result for Tom with VAPID stubbed and no subscriptions", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("VAPID_PUBLIC_KEY", VAPID_PUBLIC);
+    vi.stubEnv("VAPID_PRIVATE_KEY", VAPID_PRIVATE);
+    const tom = await withTom(t);
+    expect(await tom.action(api.pushSend.sendTest, { endpoint: "https://push.example/a" })).toEqual({
+      sent: 0,
+      failed: 0,
+      gone: 0,
+      errors: [],
+    });
   });
 });
