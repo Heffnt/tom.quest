@@ -372,6 +372,18 @@ describe("a merge the gate allows", () => {
     expect(written).toHaveLength(1);
     expect(written[0].key).toBe(`${REPO}:${SHA}`);
     expect(written[0].todoId).toBe(todoId);
+
+    // The same fact reaches the Jarvis thread: one events row of kind "merge",
+    // keyed so its subject is `<repo>:<sha>`.
+    const events = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "merge")).collect(),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "merge",
+      subject: `${REPO}:${SHA}`,
+      data: { repo: REPO, sha: SHA, subject: "the delegate and the objection list" },
+    });
   });
 
   it("puts ONE line on the digest's objection list from the merge row, answers the two checks, and posts nothing", async () => {

@@ -6,6 +6,7 @@ import { logEvent } from "./tts";
 import { resolveId } from "./jarvis/tables";
 import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
+import { copyDtsRow } from "./jarvis/events";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
 // Merging used to be Tom's gate: the box classifier denied `git merge` and
@@ -982,6 +983,10 @@ export const internalRecordMerge = internalMutation({
     // The digest's objection list reads this merge row itself, under its key,
     // so "revert <n>" in the digest's thread objects to THIS merge
     // (convex/ttsAsk.ts internalRecordDelegateObjection resolves a merge row).
+    // The Jarvis thread reads agent changes from the events table: this merge
+    // and the row above are one fact, so the copy rides in this transaction.
+    const dtsRow = await ctx.db.get(id);
+    if (dtsRow !== null) await copyDtsRow(ctx, dtsRow);
     return { recorded: true, id, existing: false, gate };
   },
 });
