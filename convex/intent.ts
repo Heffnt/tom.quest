@@ -241,6 +241,7 @@ export const lines = query({
       id: `rulings/${row._id}`,
       kind: "ruling" as const,
       text: row.sentence ?? row.verdict,
+      ...(row.sentence === undefined ? {} : { sentence: row.sentence }),
       section: row.subjectType,
       voice: "his" as const,
       source: "rulings",
@@ -296,6 +297,61 @@ export const lines = query({
     });
     sources.sort((left, right) => left.name.localeCompare(right.name));
     return { lines: out, sources, capped: rulingsCapped || labelsCapped };
+  },
+});
+
+// ── The model pages (the /mock/intent page) ──────────────────────────────────
+
+/** The model-of-tom pages `lines` does not read, which the mockup shows. */
+const MODEL_PAGES = ["writing", "ground"];
+
+/** The one area whose lines never leave the record: the page gets its title and
+ *  its count. A server-side omission, so no client code can render them. */
+// This case cannot be deleted because Tom's rule is that mental-health lines never leave the server (a therapy session reads that page itself; no page renders it).
+const TITLE_ONLY = new Set(["areas/mental-health"]);
+
+type ModelPage = {
+  name: string;
+  updated: string | null;
+  count: number;
+  lines: IntentLine[] | null;
+};
+
+/**
+ * writing.md, ground.md and every area page, parsed by the same grammar as
+ * `lines`, with each page's evidence file where the record holds one.
+ */
+export const pages = query({
+  args: {},
+  handler: async (ctx): Promise<ModelPage[]> => {
+    await requireTom(ctx, SURFACE);
+    const evidence = new Map<string, string>();
+    for (const row of await ctx.db.query("intentSources").collect()) evidence.set(row.path, row.body);
+
+    const rows = [];
+    for (const name of MODEL_PAGES) {
+      const row = await ctx.db.query("modelOfTomFiles")
+        .withIndex("by_name", (q) => q.eq("name", name)).unique();
+      if (row !== null) rows.push(row);
+    }
+    rows.push(...await ctx.db.query("modelOfTomFiles")
+      .withIndex("by_name", (q) => q.gte("name", "areas/").lt("name", "areas0")).collect());
+
+    return rows.map((row) => {
+      const path = `model-of-tom/${row.name}.md`;
+      const parsed = parseModelOfTomPage({
+        path,
+        body: row.body,
+        evidence: evidence.get(path.replace("model-of-tom/", "model-of-tom/evidence/")) ?? "",
+        kind: "standing-rule",
+      });
+      return {
+        name: row.name,
+        updated: /^updated:\s*(\S+)/m.exec(row.body)?.[1] ?? null,
+        count: parsed.length,
+        lines: TITLE_ONLY.has(row.name) ? null : parsed,
+      };
+    });
   },
 });
 

@@ -58,6 +58,8 @@ export type IntentLine = {
    *  `ruling:<id>` reference or an eval item named before the copy names the
    *  ruling by this id, so the line answers to it as to its own. */
   legacyId?: string;
+  /** A ruling's own sentence, when the ruling carries one. */
+  sentence?: string;
 };
 
 /** The model-of-tom pages whose lines are intent, and which kind each is. Each
@@ -128,8 +130,10 @@ type Bullet = { section: string; text: string; line: number };
  * Every top-level bullet of a markdown page, each under the deepest heading
  * above it. A continuation line (indented, or a bare line under a bullet) is
  * folded into the bullet it belongs to, because a wrapped line is one line.
+ * With `includeProse`, every non-empty line under a heading that is not a
+ * heading, not a bullet and not a continuation is kept as a prose line.
  */
-export function parseBullets(body: string): Bullet[] {
+export function parseBullets(body: string, includeProse = false): Bullet[] {
   const bullets: Bullet[] = [];
   let section = "";
   const lines = body.split("\n");
@@ -148,6 +152,10 @@ export function parseBullets(body: string): Bullet[] {
     const last = bullets[bullets.length - 1];
     if (last !== undefined && /^\s+\S/.test(raw)) {
       last.text = `${last.text} ${raw.trim()}`;
+      continue;
+    }
+    if (includeProse && section !== "" && raw.trim() !== "") {
+      bullets.push({ section, text: raw.trim(), line: i + 1 });
     }
   }
   return bullets;
@@ -240,7 +248,7 @@ export function parseModelOfTomPage(args: {
   kind: IntentKind;
 }): IntentLine[] {
   const entries = parseEvidence(args.evidence);
-  return parseBullets(args.body).map((bullet) => {
+  return parseBullets(args.body, true).map((bullet) => {
     const evidence = entries.get(evidenceKey(bullet.text)) ?? [];
     const { at, text: dateText } = newestEvidenceDate(evidence);
     return {
