@@ -61,13 +61,17 @@ export const EVENT_KINDS = [
   // queue knows (outcome "completed" or "errored", summary, cost). The digest
   // and the weekly count it on its todo (convex/ttsDigest.ts, ttsWeekly.ts).
   "session-outcome",
+  // The Jarvis thread (convex/thread.ts, the /thread page): a message Tom
+  // typed there, and Jarvis's one-line answer posted back by the box.
+  "thread-message",
+  "thread-reply",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
  *  Convex's Tom-only mutations can write them through the shared validator;
  *  worker-key HTTP routes refuse them before any mutation runs. */
 /** @type {const} */
-export const TOM_ONLY_KINDS = ["disagreement-settled"];
+export const TOM_ONLY_KINDS = ["disagreement-settled", "thread-message"];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
@@ -88,7 +92,7 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply"];
 
 /**
  * The kinds whose writer retries with a stable `data.id`: a second row of the
