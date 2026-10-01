@@ -25,6 +25,10 @@ export const EVENT_KINDS = [
   "job-ok",
   "job-failed",
   "job-recovered",
+  // One browser's web push subscription; subject is its endpoint URL; data
+  // { live: true, subscription } when saved by Tom on /push, { live: false, reason }
+  // when the push service reports it gone (convex/push.ts).
+  "push-subscription",
   // A record-tick task was queued. Its completion is the later job-ok or
   // job-failed under the same subject (convex/jarvis/tick.ts).
   "tick-started",
