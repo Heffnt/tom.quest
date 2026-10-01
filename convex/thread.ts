@@ -42,7 +42,8 @@ export const messages = query({
         .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-reply").eq("subject", row._id))
         .order("desc")
         .first();
-      const kind = typeof reply?.data?.kind === "string" ? reply.data.kind : null;
+      const kind =
+        typeof reply?.data?.kind === "string" ? (reply.data.kind as "fact" | "todo" | "rule" | "errand" | "question") : null;
       return {
         id: row._id,
         at: row.at,

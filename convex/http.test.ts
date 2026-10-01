@@ -92,6 +92,39 @@ describe("POST /tts/capture: needing Tom today", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("stores a capture carrying threadMessageId and no source as source \"thread\"", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    const res = await t.fetch("/tts/capture", {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify({ statement: "File the form", threadMessageId: "evt_todo_2" }),
+    });
+    expect(res.status).toBe(200);
+    const { id } = (await res.json()) as { id: string };
+    const row = await t.run((ctx) => ctx.db.get(id as never));
+    expect(row).toMatchObject({ source: "thread", threadMessageId: "evt_todo_2" });
+  });
+
+  it("refuses a malformed threadMessageId or dueAt", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    for (const threadMessageId of ["", 7]) {
+      const res = await t.fetch("/tts/capture", {
+        method: "POST",
+        headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+        body: JSON.stringify({ statement: "File the form", threadMessageId }),
+      });
+      expect(res.status).toBe(400);
+    }
+    const res = await t.fetch("/tts/capture", {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify({ statement: "File the form", dueAt: "tomorrow" }),
+    });
+    expect(res.status).toBe(400);
+  });
 });
 
 // ── POST /jarvis/day-log writes a pending entry behind the worker key ───────
