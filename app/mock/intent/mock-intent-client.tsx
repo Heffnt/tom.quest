@@ -168,6 +168,7 @@ function IntentModel({
     const from = (source: string) => inFileOrder(lines.filter((line) => line.source === source));
     const intent = bySection(from("model-of-tom/intent.md"));
     const priorities = bySection(from("model-of-tom/priorities.md"));
+    // This exclusion cannot be deleted because the writing rules forbid writing any verdict or status as Tom's; a ruling row with a verdict and no sentence of his would render as his word.
     const rulings = lines.filter((line) => line.kind === "ruling" && line.source === "rulings" && !VERDICTS.has(line.text));
     const page = (name: string) => pages?.find((row) => row.name === name);
     const write = page("writing")?.lines ?? [];

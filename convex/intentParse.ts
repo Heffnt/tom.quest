@@ -128,13 +128,25 @@ type Bullet = { section: string; text: string; line: number };
  * Every top-level bullet of a markdown page, each under the deepest heading
  * above it. A continuation line (indented, or a bare line under a bullet) is
  * folded into the bullet it belongs to, because a wrapped line is one line.
+ * With `includeProse`, each non-empty prose line under a heading is also kept
+ * as a line (a bullet with its marker stripped, a prose line as it is), while
+ * markdown link reference definitions and HTML comments stay ignored.
  */
-export function parseBullets(body: string): Bullet[] {
+export function parseBullets(body: string, includeProse = false): Bullet[] {
   const bullets: Bullet[] = [];
   let section = "";
+  let inComment = false;
   const lines = body.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
+    if (inComment) {
+      if (raw.includes("-->")) inComment = false;
+      continue;
+    }
+    if (/^\s*<!--/.test(raw)) {
+      inComment = !raw.includes("-->");
+      continue;
+    }
     const heading = /^#{1,6}\s+(.*)$/.exec(raw);
     if (heading) {
       section = heading[1].trim();
@@ -148,6 +160,10 @@ export function parseBullets(body: string): Bullet[] {
     const last = bullets[bullets.length - 1];
     if (last !== undefined && /^\s+\S/.test(raw)) {
       last.text = `${last.text} ${raw.trim()}`;
+      continue;
+    }
+    if (includeProse && section !== "" && raw.trim() !== "" && !/^\[[^\]]+\]:\s/.test(raw)) {
+      bullets.push({ section, text: raw.trim(), line: i + 1 });
     }
   }
   return bullets;
@@ -240,7 +256,7 @@ export function parseModelOfTomPage(args: {
   kind: IntentKind;
 }): IntentLine[] {
   const entries = parseEvidence(args.evidence);
-  return parseBullets(args.body).map((bullet) => {
+  return parseBullets(args.body, true).map((bullet) => {
     const evidence = entries.get(evidenceKey(bullet.text)) ?? [];
     const { at, text: dateText } = newestEvidenceDate(evidence);
     return {

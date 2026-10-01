@@ -306,6 +306,7 @@ const MODEL_PAGES = ["writing", "ground"];
 
 /** The one area whose lines never leave the record: the page gets its title and
  *  its count. A server-side omission, so no client code can render them. */
+// This case cannot be deleted because Tom's rule is that mental-health lines never leave the server (a therapy session reads that page itself; no page renders it).
 const TITLE_ONLY = new Set(["areas/mental-health"]);
 
 type ModelPage = {
