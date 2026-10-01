@@ -19,6 +19,7 @@ export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
 export type PageRole = "guest" | "user" | "admin" | "tom" | "agent";
 
 export const PAGES: Page[] = [
+  { slug: "thread", title: "Jarvis thread", blurb: "One standing conversation with Jarvis: what you dump and what it did", priority: 11, visibility: "tom" },
   { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin", agentReadable: true },
   { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8,  visibility: "authenticated" },
   { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7, visibility: "public" },
