@@ -25,6 +25,11 @@ const ibmPlexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "tom.Quest",
   description: "The personal website of Tom Heffernan - PhD Student in Artificial Intelligence at WPI",
+  appleWebApp: {
+    capable: true,
+    title: "tom.Quest",
+    statusBarStyle: "black",
+  },
 };
 
 export default function RootLayout({
