@@ -25,6 +25,10 @@ export const EVENT_KINDS = [
   "job-ok",
   "job-failed",
   "job-recovered",
+  // One browser's web push subscription; subject is its endpoint URL; data
+  // { live: true, subscription } when saved by Tom on /push, { live: false, reason }
+  // when the push service reports it gone (convex/push.ts).
+  "push-subscription",
   // A record-tick task was queued. Its completion is the later job-ok or
   // job-failed under the same subject (convex/jarvis/tick.ts).
   "tick-started",
@@ -65,9 +69,12 @@ export const EVENT_KINDS = [
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
  *  Convex's Tom-only mutations can write them through the shared validator;
- *  worker-key HTTP routes refuse them before any mutation runs. */
+ *  worker-key HTTP routes refuse them before any mutation runs.
+ *  push-subscription is listed so that no worker-key route can add a
+ *  subscription (an endpoint receives every notification's text); Convex's
+ *  own markGone still writes it. */
 /** @type {const} */
-export const TOM_ONLY_KINDS = ["disagreement-settled"];
+export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription"];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
