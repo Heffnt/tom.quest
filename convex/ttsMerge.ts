@@ -964,20 +964,23 @@ export const internalRecordMerge = internalMutation({
     const key = mergeKey(args.repo, args.sha);
     const existing = await rowFor(ctx, MERGE, key);
     if (existing) return { recorded: true, id: existing._id, existing: true, gate };
+    const at = Date.now();
+    const data = {
+      repo: args.repo,
+      sha: args.sha,
+      subject: args.subject,
+      mainCheck: args.mainCheck,
+      // Why it merged, in the gate's own words (who audited, and on which
+      // model when Codex was capped; the evals it merged past): the digest's
+      // objection line for this merge prints it.
+      reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
+    };
+    // Convex fixes Date.now() for the mutation, so logEvent records this same at.
     const id = await logEvent(
       ctx,
       MERGE,
       todoId ?? undefined,
-      {
-        repo: args.repo,
-        sha: args.sha,
-        subject: args.subject,
-        mainCheck: args.mainCheck,
-        // Why it merged, in the gate's own words (who audited, and on which
-        // model when Codex was capped; the evals it merged past): the digest's
-        // objection line for this merge prints it.
-        reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
-      },
+      data,
       key,
     );
     // The digest's objection list reads this merge row itself, under its key,
@@ -985,8 +988,7 @@ export const internalRecordMerge = internalMutation({
     // (convex/ttsAsk.ts internalRecordDelegateObjection resolves a merge row).
     // The Jarvis thread reads agent changes from the events table: this merge
     // and the row above are one fact, so the copy rides in this transaction.
-    const dtsRow = await ctx.db.get(id);
-    if (dtsRow !== null) await copyDtsRow(ctx, dtsRow);
+    await copyDtsRow(ctx, { kind: MERGE, at, key, data });
     return { recorded: true, id, existing: false, gate };
   },
 });

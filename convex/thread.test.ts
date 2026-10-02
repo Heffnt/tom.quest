@@ -141,6 +141,43 @@ describe("thread", () => {
     ]);
   });
 
+  it("leaves malformed change events out without hiding a valid neighboring event", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    const validId = await t.run(async (ctx) => {
+      const at = Date.now();
+      await ctx.db.insert("events", {
+        kind: "deploy",
+        at,
+        provenance: { job: "deploy" },
+        data: { repo: "tom.quest", from: "aaaa1111", to: "bbbb2222" },
+      });
+      await ctx.db.insert("events", {
+        kind: "merge",
+        at,
+        provenance: { job: "merge" },
+        data: { repo: "unknown", sha: "cccc3333", subject: "unknown repo" },
+      });
+      return await ctx.db.insert("events", {
+        kind: "merge",
+        at,
+        provenance: { job: "merge" },
+        data: { repo: "tom.quest", sha: "dddd4444", subject: "valid change" },
+      });
+    });
+
+    const found = await viewer.query(api.thread.changes, {});
+    expect(found).toEqual([
+      {
+        id: validId,
+        at: expect.any(Number),
+        kind: "merge",
+        line: "Merged tom.quest dddd444: valid change",
+        href: "https://github.com/Heffnt/tom.quest/commit/dddd4444",
+      },
+    ]);
+  });
+
   it("send with a change subject writes a thread-message naming it, and messages returns it", async () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);

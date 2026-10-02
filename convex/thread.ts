@@ -33,6 +33,75 @@ type AgentChangeRow = Omit<Doc<"events">, "kind" | "data"> & (
     }
 );
 
+type ChangeData<K extends AgentChangeRow["kind"]> = Extract<AgentChangeRow, { kind: K }>["data"];
+type LearningChangeData = Omit<ChangeData<"learning-change">, "modelOfTomCommit"> & {
+  modelOfTomCommit?: string | null;
+};
+
+// These guards cannot be deleted: /tts/event writes these rows through an
+// unvalidated route, and one bad row must not hide every change from the page.
+function isMergeData(data: unknown): data is ChangeData<"merge"> {
+  if (data === null || typeof data !== "object") return false;
+  const fields = data as Record<string, unknown>;
+  return (
+    typeof fields.repo === "string" &&
+    Object.prototype.hasOwnProperty.call(SESSION_REPOS, fields.repo) &&
+    typeof fields.sha === "string" &&
+    typeof fields.subject === "string"
+  );
+}
+
+function isDeployData(data: unknown): data is ChangeData<"deploy"> {
+  if (data === null || typeof data !== "object") return false;
+  const fields = data as Record<string, unknown>;
+  return (
+    typeof fields.repo === "string" &&
+    Object.prototype.hasOwnProperty.call(SESSION_REPOS, fields.repo) &&
+    typeof fields.from === "string" &&
+    typeof fields.to === "string" &&
+    Array.isArray(fields.commits)
+  );
+}
+
+function isLearningChangeData(data: unknown): data is LearningChangeData {
+  if (data === null || typeof data !== "object") return false;
+  const fields = data as Record<string, unknown>;
+  return (
+    typeof fields.file === "string" &&
+    typeof fields.section === "string" &&
+    (fields.modelOfTomCommit === undefined ||
+      fields.modelOfTomCommit === null ||
+      typeof fields.modelOfTomCommit === "string")
+  );
+}
+
+function isRepoProposalAppliedData(data: unknown): data is ChangeData<"repo-proposal-applied"> {
+  if (data === null || typeof data !== "object") return false;
+  const fields = data as Record<string, unknown>;
+  return (
+    typeof fields.repo === "string" &&
+    Object.prototype.hasOwnProperty.call(SESSION_REPOS, fields.repo) &&
+    typeof fields.file === "string" &&
+    typeof fields.appliedLine === "string" &&
+    typeof fields.commit === "string"
+  );
+}
+
+function checkedAgentChangeRow(row: Doc<"events">, kind: AgentChangeRow["kind"]): AgentChangeRow | null {
+  switch (kind) {
+    case "merge":
+      return isMergeData(row.data) ? { ...row, kind, data: row.data } : null;
+    case "deploy":
+      return isDeployData(row.data) ? { ...row, kind, data: row.data } : null;
+    case "learning-change":
+      return isLearningChangeData(row.data)
+        ? { ...row, kind, data: { ...row.data, modelOfTomCommit: row.data.modelOfTomCommit ?? null } }
+        : null;
+    case "repo-proposal-applied":
+      return isRepoProposalAppliedData(row.data) ? { ...row, kind, data: row.data } : null;
+  }
+}
+
 function repoLink(repo: keyof typeof SESSION_REPOS, path: string): string {
   return `https://github.com/${SESSION_REPOS[repo]}/${path}`;
 }
@@ -136,8 +205,10 @@ export const changes = query({
           .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since))
           .order("desc")
           .take(200);
-        return byKind.map((row) => {
-          const { line, href } = agentChange({ ...row, kind } as AgentChangeRow);
+        return byKind.flatMap((row) => {
+          const changeRow = checkedAgentChangeRow(row, kind);
+          if (changeRow === null) return [];
+          const { line, href } = agentChange(changeRow);
           return { id: row._id, at: row.at, kind, line, href };
         });
       }),
