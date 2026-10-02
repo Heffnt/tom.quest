@@ -1,6 +1,5 @@
 import { v } from "convex/values";
 import { ConvexError } from "convex/values";
-import { composeCaptured, renderSlack } from "./ttsCompose";
 import {
   internalMutation,
   internalQuery,
@@ -1295,13 +1294,8 @@ export const internalCapture = internalMutation({
         .first();
       if (dayLog) throw new ConvexError("this thread message already became a day-log entry");
     }
-    // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
-    // #dump message — the Events push route (fast, at-least-once: Slack
-    // retries the same event) and poll-dump.mjs (the reconciliation backstop,
-    // which cannot know what the push route already took). Without this, every
-    // Slack retry and every overlap between the two would mint a duplicate
-    // todo. Returning the EXISTING id rather than throwing is what lets the
-    // push route answer 200 to a retry, which is what stops Slack retrying.
+    // IDEMPOTENT ON THE LEGACY SLACK MESSAGE TS. Keep the lookup with the
+    // stored coordinates so old rows and retried callers remain compatible.
     if (slackTs !== undefined) {
       const existing = await ctx.db
         .query("todos")
@@ -1343,22 +1337,6 @@ export const internalCapture = internalMutation({
       updatedAt: now,
     });
     await logEvent(ctx, "captured", id, { source: declaredSource });
-    // The one reply line at capture, in the thread of the #dump message this
-    // came from. Scheduled INSIDE the insert's transaction, after the dedupe
-    // above — so a Slack retry, which returns the existing id, never
-    // schedules a second one, and no reply exists for a capture that rolled
-    // back. The door (ttsSync.sendSlack) records the send and stamps
-    // slackReplyTs. This is the ONE reply a #dump message gets: no worker
-    // posts its own (a second sender reading a stale copy of the stamp is how
-    // a message got two replies), and a refused send is a recorded failure.
-    if (slackChannel !== undefined && slackTs !== undefined) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-        channel: slackChannel,
-        threadTs: slackTs,
-        text: renderSlack(composeCaptured({ todoId: id, statement })),
-        subject: { kind: "todo", id },
-      });
-    }
     return id;
   },
 });

@@ -379,7 +379,7 @@ const PROTECTED_RUN = "needs-you-today";
  *               needs-you thread.
  *    "object" — revert this or let it stand. A decision line, and the morning
  *               objection list.
- *    null     — nothing is wanted. Hourly, broken, the #dump reply: never
+ *    null     — nothing is wanted. Hourly, broken, a capture reply: never
  *               claimed, never suppressed.
  *  The index is per ASK, not per item alone. An item may be BOTH something to
  *  do today and the subject of a decision taken about it, and suppressing the
@@ -1102,8 +1102,8 @@ export function composeProposalAsk(f: ProposalAskFacts): Message {
   };
 }
 
-/** The #dump capture reply. It stops echoing his own words back and says what
- *  happens next — the one fact he does not already have.
+/** The reply when an unknown output-channel thread becomes a capture. It says
+ *  what happens next instead of echoing his own words back.
  *
  *  HIS WORD IS "THE DIGEST". Every line Tom or a model can read names the
  *  morning message "the digest"; the other phrase survives only in comments. */

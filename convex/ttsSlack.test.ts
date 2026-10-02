@@ -11,7 +11,7 @@ import { composeCaptured, renderSlack } from "./ttsCompose";
 import { writePageRows } from "../scripts/context-fixture.mjs";
 import { insertTodo } from "../test/core-tables";
 
-/** The one reply line at capture, as convex/ttsCompose.ts writes it. */
+/** The response when an unknown output-channel thread becomes a capture. */
 const captureLine = (statement: string, todoId: string) =>
   renderSlack(composeCaptured({ todoId, statement }));
 
@@ -91,7 +91,6 @@ async function postEvent(
 
 function slackEnv() {
   vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
-  vi.stubEnv("SLACK_DUMP_CHANNEL_ID", DUMP);
   vi.stubEnv("SLACK_TTS_CHANNEL_ID", TTS);
   vi.stubEnv("TOM_SLACK_USER_ID", TOM);
 }
@@ -165,31 +164,20 @@ afterEach(() => {
   vi.stubGlobal("crypto", webcrypto);
 });
 
-describe("the reply at capture", () => {
-  // witness: move the scheduler call above the by_slackTs lookup in
-  // internalCapture and the retry schedules a second reply.
-  it("schedules exactly one reply line per #dump message, however many times Slack retries", async () => {
-    slackEnv();
+describe("Slack sends associated with captures", () => {
+  it("a direct capture keeps legacy Slack coordinates and schedules no send", async () => {
     const t = convexTest(schema, modules);
-    const message = { channel: DUMP, ts: "1700000000.000100", text: "buy climbing tape" };
-    const first = await postEvent(t, message);
-    const second = await postEvent(t, message, "EvRetry");
-    expect(second.id).toBe(first.id);
-    const sends = await scheduledSends(t);
-    expect(sends).toHaveLength(1);
-    expect(sends[0]).toMatchObject({
-      channel: DUMP,
-      threadTs: message.ts,
-      subject: { kind: "todo", id: first.id },
+    const id = await t.mutation(internal.tts.internalCapture, {
+      statement: "buy climbing tape",
+      source: "slack-capture",
+      slackChannel: DUMP,
+      slackTs: "1700000000.000100",
     });
-    expect(sends[0].text).toBe(captureLine("buy climbing tape", first.id as string));
-    // It says what happens NEXT rather than echoing his own words back at him,
-    // and it names the morning message by HIS word for it: the digest.
-    expect(sends[0].text).toContain(
-      "Captured; it is prepared tonight and reaches you in the digest.",
-    );
-    expect(sends[0].text).not.toContain("morning message");
-    expect(sends[0].text).not.toContain("Captured as a todo");
+    expect(await t.run(async (ctx) => ctx.db.get(id))).toMatchObject({
+      slackChannel: DUMP,
+      slackTs: "1700000000.000100",
+    });
+    expect(await scheduledSends(t)).toHaveLength(0);
   });
 
   // witness: let recordSlackSent re-stamp slackReplyTs on every send in the
@@ -751,15 +739,16 @@ describe("threaded replies from Tom", () => {
   it("a todo thread takes a sentence as a fact, a bare date as a time note, and 'done' completes the todo", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
-    // Captured from #dump with no recorded reply yet: found by the todo's own ts.
+    // A legacy Slack-coordinated todo with no recorded reply yet is found by
+    // the todo's own root ts.
     const todoId = await t.mutation(internal.tts.internalCapture, {
       statement: "renew the passport",
       source: "slack-capture",
-      slackChannel: DUMP,
+      slackChannel: TTS,
       slackTs: "400.1",
     });
     const fact = await postEvent(t, {
-      channel: DUMP,
+      channel: TTS,
       ts: "400.2",
       thread_ts: "400.1",
       text: "the office only takes appointments on weekdays",
@@ -770,18 +759,18 @@ describe("threaded replies from Tom", () => {
     expect(notes[0].todoId).toBe(todoId);
     expect(notes[0].data).toMatchObject({
       text: "the office only takes appointments on weekdays",
-      channel: DUMP,
+      channel: TTS,
       threadTs: "400.1",
     });
 
-    const dated = await postEvent(t, { channel: DUMP, ts: "400.3", thread_ts: "400.1", text: "sept 12" });
+    const dated = await postEvent(t, { channel: TTS, ts: "400.3", thread_ts: "400.1", text: "sept 12" });
     expect(dated.outcome).toBe("time-note");
     const timeNotes = await t.run(async (ctx) => ctx.db.query("timeNotes").collect());
     expect(timeNotes.map((n) => [n.text, n.todoId, n.status])).toEqual([
       ["sept 12", todoId, "pending"],
     ]);
 
-    const done = await postEvent(t, { channel: DUMP, ts: "400.4", thread_ts: "400.1", text: "Done." });
+    const done = await postEvent(t, { channel: TTS, ts: "400.4", thread_ts: "400.1", text: "Done." });
     expect(done).toMatchObject({ outcome: "done", todoId });
     const todo = await t.run(async (ctx) => ctx.db.get(todoId));
     expect(todo?.status).toBe("done");
@@ -794,7 +783,7 @@ describe("threaded replies from Tom", () => {
 
     // A second "done" on a completed todo has nothing to complete; the words
     // are kept as a fact.
-    const again = await postEvent(t, { channel: DUMP, ts: "400.5", thread_ts: "400.1", text: "done" });
+    const again = await postEvent(t, { channel: TTS, ts: "400.5", thread_ts: "400.1", text: "done" });
     expect(again.outcome).toBe("tom-note");
     expect(await events(t, "tom-note")).toHaveLength(2);
     expect(await events(t, "status-changed")).toHaveLength(1);
@@ -1035,55 +1024,44 @@ describe("threaded replies from Tom", () => {
     expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(1);
   });
 
-  // witness: drop the slackReplyChannels check from the route and a reply in
-  // any channel the app is in becomes a todo AND a bot post into that thread.
-  it("a threaded reply is acted on only in #dump and the output channel; a top-level message captures only in #dump", async () => {
+  it("top-level messages in every channel are acknowledged and ignored", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
-    const top = await postEvent(t, { channel: TTS, ts: "900.1", text: "not a capture" });
-    expect(top).toEqual({ ok: true, ignored: true });
-    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(0);
+    for (const [i, channel] of [DUMP, TTS, "C0GENERAL"].entries()) {
+      expect(await postEvent(t, { channel, ts: `900.${i}`, text: "not a capture" })).toEqual({
+        ok: true,
+        ignored: true,
+      });
+    }
     const bot = await postEvent(t, { channel: TTS, ts: "900.3", thread_ts: "900.1", text: "our own reply", bot_id: "B1" });
     expect(bot).toEqual({ ok: true, ignored: true });
     expect(await events(t, "slack-event")).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(0);
+    expect(await scheduledSends(t)).toHaveLength(0);
+  });
 
-    // Another channel: nothing recorded, nothing captured, nothing posted.
-    const elsewhere = await postEvent(t, { channel: "C0GENERAL", ts: "900.5", thread_ts: "900.4", text: "lunch?" });
-    expect(elsewhere).toEqual({ ok: true, ignored: true });
+  it("a threaded reply in the former dump channel is ignored", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    expect(await postEvent(t, {
+      channel: DUMP,
+      ts: "925.2",
+      thread_ts: "925.1",
+      text: "lunch?",
+    })).toEqual({ ok: true, ignored: true });
     expect(await events(t, "slack-event")).toHaveLength(0);
     expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(0);
     expect(await scheduledSends(t)).toHaveLength(0);
+  });
 
-    // The output channel under its newer variable admits replies once set.
+  it("the output channel under its newer variable admits replies once set", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
     const today = { channel: "C0TODAY", ts: "900.7", thread_ts: "900.6", text: "noted" };
     expect(await postEvent(t, today, "EvT1")).toEqual({ ok: true, ignored: true });
     vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
     expect((await postEvent(t, today, "EvT2")).outcome).toBe("captured");
     expect(await events(t, "slack-event")).toHaveLength(1);
-  });
-
-  // witness: restore the `dumpChannel !== undefined &&` guard and an unset id
-  // turns every channel the app is in into #dump — a top-level message
-  // anywhere becomes a todo AND gets a bot reply posted under it.
-  it("captures nothing at all while SLACK_DUMP_CHANNEL_ID is unset", async () => {
-    slackEnv();
-    vi.stubEnv("SLACK_DUMP_CHANNEL_ID", "");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const t = convexTest(schema, modules);
-
-    for (const [i, channel] of [DUMP, "C0GENERAL"].entries()) {
-      expect(await postEvent(t, { channel, ts: `950.${i}`, text: "buy milk" })).toEqual({
-        ok: true,
-        ignored: true,
-      });
-    }
-    expect(await t.run(async (ctx) => ctx.db.query("todos").collect())).toHaveLength(0);
-    expect(await scheduledSends(t)).toHaveLength(0);
-    // Once, not per event.
-    expect(
-      warn.mock.calls.filter((c) => String(c[0]).includes("SLACK_DUMP_CHANNEL_ID")).length,
-    ).toBe(1);
-    warn.mockRestore();
   });
 });
 
