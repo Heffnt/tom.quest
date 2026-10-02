@@ -1,6 +1,8 @@
 import { v } from "convex/values";
-import type { Doc } from "./_generated/dataModel";
+import { ConvexError } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import {
   DAY_LOG_ACTIVITIES,
@@ -14,6 +16,7 @@ import {
 import { trainingDay as parseTrainingDay } from "./trainingDay";
 import { nyCalendarDayKey, nyOffsetHours, weekdayWordOf } from "./ttsShared";
 import { DAY_LOG_ENTRY_MAX } from "../shared/day-log-entry.mjs";
+export { DAY_LOG_ENTRY_MAX };
 
 const SURFACE = "Log";
 const PAGE_DAYS = 60;
@@ -164,16 +167,53 @@ function timeLabel(at: number): string {
   return `${hour % 12 || 12}:${minute} ${hour < 12 ? "a.m." : "p.m."}`;
 }
 
+/** The ONE writer of a day-log entry. `submit` is Tom's door; the worker's
+ * internal door below calls this with a threadMessageId so a re-run of the
+ * classifying job cannot mint the same entry twice. */
+async function insertDayLogEntry(
+  ctx: MutationCtx,
+  text: string,
+  threadMessageId?: string,
+): Promise<Id<"dayLogEntries">> {
+  if (text.trim() === "") throw new Error("Log entries cannot be empty");
+  if (text.length > DAY_LOG_ENTRY_MAX) throw new Error(`Log entries are at most ${DAY_LOG_ENTRY_MAX} characters`);
+  if (threadMessageId !== undefined) {
+    const existingTodo = await ctx.db
+      .query("todos")
+      .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
+      .first();
+    if (existingTodo) throw new ConvexError("this thread message already became a todo");
+    const existing = await ctx.db
+      .query("dayLogEntries")
+      .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
+      .first();
+    if (existing) return existing._id;
+  }
+  const createdAt = Date.now();
+  const id = await ctx.db.insert("dayLogEntries", {
+    text,
+    createdAt,
+    day: nyCalendarDayKey(createdAt),
+    status: "pending",
+    ...(threadMessageId !== undefined ? { threadMessageId } : {}),
+  });
+  await ctx.db.insert("dtsEvents", { at: createdAt, kind: "day-log", data: { entryId: id } });
+  return id;
+}
+
 export const submit = mutation({
   args: { text: v.string() },
   handler: async (ctx, { text }) => {
     await requireTom(ctx, SURFACE);
-    if (text.trim() === "") throw new Error("Log entries cannot be empty");
-    if (text.length > DAY_LOG_ENTRY_MAX) throw new Error(`Log entries are at most ${DAY_LOG_ENTRY_MAX} characters`);
-    const createdAt = Date.now();
-    const id = await ctx.db.insert("dayLogEntries", { text, createdAt, day: nyCalendarDayKey(createdAt), status: "pending" });
-    await ctx.db.insert("dtsEvents", { at: createdAt, kind: "day-log", data: { entryId: id } });
+    const id = await insertDayLogEntry(ctx, text);
     return { id };
+  },
+});
+
+export const internalSubmitFromThread = internalMutation({
+  args: { text: v.string(), threadMessageId: v.string() },
+  handler: async (ctx, { text, threadMessageId }) => {
+    return { id: await insertDayLogEntry(ctx, text, threadMessageId) };
   },
 });
 

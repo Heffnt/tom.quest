@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { ConvexError } from "convex/values";
 import { composeCaptured, renderSlack } from "./ttsCompose";
 import {
   internalMutation,
@@ -1261,6 +1262,9 @@ export const internalCapture = internalMutation({
     statement: v.string(),
     source: v.string(),
     provenance: v.optional(v.string()),
+    threadMessageId: v.optional(v.string()),
+    dueAt: v.optional(v.number()),
+    dateKind: v.optional(v.union(v.literal("external"), v.literal("self-imposed"))),
     // The Slack coordinates of the message this came from, when it came from
     // one. Machine fields, kept out of `provenance` (which is Tom's to read).
     slackChannel: v.optional(v.string()),
@@ -1271,9 +1275,26 @@ export const internalCapture = internalMutation({
   },
   handler: async (
     ctx,
-    { statement, source, provenance, slackChannel, slackTs, needsTomToday },
+    { statement, source, provenance, threadMessageId, dueAt, dateKind, slackChannel, slackTs, needsTomToday },
   ) => {
     const now = Date.now();
+    const stored = threadMessageId === undefined
+      ? null
+      : (await ctx.db
+          .query("todos")
+          .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
+          .first()) ?? null;
+    // IDEMPOTENT ON THE THREAD MESSAGE, the same way slackTs is below: a box
+    // job that acted but crashed before posting its reply must not mint the
+    // todo twice on its next run.
+    if (stored) return stored._id;
+    if (threadMessageId !== undefined) {
+      const dayLog = await ctx.db
+        .query("dayLogEntries")
+        .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
+        .first();
+      if (dayLog) throw new ConvexError("this thread message already became a day-log entry");
+    }
     // IDEMPOTENT ON THE SLACK MESSAGE TS. Two producers now capture the same
     // #dump message — the Events push route (fast, at-least-once: Slack
     // retries the same event) and poll-dump.mjs (the reconciliation backstop,
@@ -1297,11 +1318,20 @@ export const internalCapture = internalMutation({
     // the handful of rows under that source rather than the whole archive.
     const declaredSource =
       integrationName(statement) === null ? source : INTEGRATION_SOURCE;
+    // A dated capture names its dateKind: dueAt is the time, dateKind says
+    // who imposed it, and both ride the row. Without dueAt the row stays
+    // whenever, exactly as a plain capture did.
+    if (dueAt !== undefined && dateKind === undefined) {
+      throw new Error("a dated capture names its dateKind");
+    }
     const id = await ctx.db.insert("todos", {
       statement: statement.trim(),
       readiness: "unprepared",
       status: "active",
-      timingClass: "whenever",
+      timingClass: dueAt !== undefined ? "dated" : "whenever",
+      dueAt,
+      ...(dueAt !== undefined ? { dateKind } : {}),
+      threadMessageId,
       source: declaredSource,
       provenance,
       slackChannel,

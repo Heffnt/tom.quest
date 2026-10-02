@@ -359,11 +359,14 @@ http.route({ path: "/tts/search/events", method: "GET", handler: ttsSearchEvents
 http.route({ path: "/tts/search/todos", method: "GET", handler: ttsSearchTodos });
 
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
-// item. Body: { statement, source?, provenance?, needsTomToday?, why? }.
-// `needsTomToday: true` is a poller's triage judging the item to need Tom
-// today, and `why` its few words; both are stored on the todo, and the
-// morning message and the hourly line say them. No worker opens a needs-you
-// thread (Tom, 2026-09-21).
+// item. Body: { statement, source?, provenance?, threadMessageId?, dueAt?,
+// dateKind?, needsTomToday?, why? }. `threadMessageId` makes the capture
+// idempotent on the Jarvis-thread message it came from; `dueAt` (epoch ms)
+// with `dateKind` ("external" | "self-imposed") gives the todo a dated
+// timing class. `needsTomToday: true` is a poller's triage judging the item
+// to need Tom today, and `why` its few words; both are stored on the todo,
+// and the morning message and the hourly line say them. No worker opens a
+// needs-you thread (Tom, 2026-09-21).
 const ttsCapture = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -377,10 +380,37 @@ const ttsCapture = httpAction(async (ctx, request) => {
   if (typeof b.statement !== "string" || b.statement.trim().length === 0) {
     return jsonResponse(400, { error: "statement (non-empty string) required" });
   }
+  // A present-but-malformed value is the caller's error, not a reason to
+  // treat the field as absent (the audit's finding): refuse it with one
+  // sentence naming the shape.
+  if (b.threadMessageId !== undefined && (typeof b.threadMessageId !== "string" || b.threadMessageId.trim() === "")) {
+    return jsonResponse(400, { error: "threadMessageId, when given, is a non-empty string" });
+  }
+  const threadMessageId = typeof b.threadMessageId === "string" ? b.threadMessageId : undefined;
+  if (b.dueAt !== undefined && !(typeof b.dueAt === "number" && Number.isFinite(b.dueAt) && b.dueAt > 0)) {
+    return jsonResponse(400, { error: "dueAt, when given, is epoch milliseconds (a finite number greater than 0)" });
+  }
+  const dueAt = typeof b.dueAt === "number" ? b.dueAt : undefined;
+  const hasDateKind = b.dateKind === "external" || b.dateKind === "self-imposed";
+  if (b.dateKind !== undefined && !hasDateKind) {
+    return jsonResponse(400, { error: 'dateKind must be "external" or "self-imposed"' });
+  }
+  if (dueAt !== undefined && !hasDateKind) {
+    return jsonResponse(400, { error: "a dated capture names its dateKind" });
+  }
+  const dateKind = hasDateKind ? (b.dateKind as "external" | "self-imposed") : undefined;
   const id = await ctx.runMutation(internal.tts.internalCapture, {
     statement: b.statement,
-    source: typeof b.source === "string" && b.source ? b.source : "slack-capture",
+    source:
+      typeof b.source === "string" && b.source
+        ? b.source
+        : threadMessageId !== undefined
+          ? "thread"
+          : "slack-capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
+    threadMessageId,
+    dueAt,
+    dateKind,
     // The Slack coordinates, when the caller is a Slack producer. They are
     // what the threaded reply is addressed to and what the push route dedupes
     // on; a caller that has none simply omits them.
@@ -2508,6 +2538,9 @@ const ttsEvent = httpAction(async (ctx, request) => {
   const b = (body ?? {}) as Record<string, unknown>;
   if (typeof b.kind !== "string" || b.kind === "") {
     return jsonResponse(400, { error: "kind (non-empty string) required" });
+  }
+  if (b.kind === "thread-reply" || b.kind === "thread-message") {
+    return jsonResponse(400, { error: "thread events are written through their own route" });
   }
   if ((TOM_ONLY_KINDS as readonly string[]).includes(b.kind)) {
     return jsonResponse(403, { error: `${b.kind} is Tom-only` });

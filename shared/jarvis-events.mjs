@@ -65,6 +65,10 @@ export const EVENT_KINDS = [
   // queue knows (outcome "completed" or "errored", summary, cost). The digest
   // and the weekly count it on its todo (convex/ttsDigest.ts, ttsWeekly.ts).
   "session-outcome",
+  // The Jarvis thread (convex/thread.ts, the /thread page): a message Tom
+  // typed there, and Jarvis's one-line answer posted back by the box.
+  "thread-message",
+  "thread-reply",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
@@ -74,7 +78,7 @@ export const EVENT_KINDS = [
  *  subscription (an endpoint receives every notification's text); Convex's
  *  own markGone still writes it. */
 /** @type {const} */
-export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription"];
+export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message"];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
@@ -95,7 +99,10 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply"];
+
+/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
+export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
 
 /**
  * The kinds whose writer retries with a stable `data.id`: a second row of the
@@ -152,6 +159,14 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   }
   if (subject === undefined && SUBJECT_REQUIRED.includes(kind)) {
     return { ok: false, error: `a ${kind} event names its subject` };
+  }
+  if (kind === "thread-reply") {
+    if (!nonEmptyString(text)) {
+      return { ok: false, error: "a thread-reply names its one-line text" };
+    }
+    if (!isPlainObject(data) || !THREAD_REPLY_KINDS.includes(data.kind)) {
+      return { ok: false, error: `a thread-reply names data.kind as one of ${THREAD_REPLY_KINDS.join(", ")}` };
+    }
   }
   if (text !== undefined && typeof text !== "string") {
     return { ok: false, error: "text, when given, is a string" };

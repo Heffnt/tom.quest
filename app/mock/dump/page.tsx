@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import DumpClient from "./dump-client";
+import { redirect } from "next/navigation";
 
 export const metadata: Metadata = {
   title: "Dump | tom.Quest",
@@ -7,5 +7,7 @@ export const metadata: Metadata = {
 };
 
 export default function DumpPage() {
-  return <DumpClient />;
+  // Kept for the link Tom was sent to judge the mockup: the redirect takes
+  // that /mock/dump link to the real page it became.
+  redirect("/thread");
 }
