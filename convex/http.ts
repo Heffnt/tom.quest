@@ -746,6 +746,9 @@ http.route({ path: "/tts/send-proposal", method: "POST", handler: ttsSendProposa
 // output channel. Tom ruled on 2026-10-02: "retire slack fully. i dont want to
 // use it at all anymore for jarvis." The Jarvis thread replaced #dump capture;
 // phase 2 of that retirement removes the rest of this route.
+// This route was one of the two #dump readers; the other, the box's poll-dump
+// job posting to POST /tts/capture, is deleted by Heffnt/Jarvis#231, which lands
+// before this change, so after both #dump is no longer read.
 //
 // This route is unlike every other one in this file: it is the only PUBLIC one
 // (Slack cannot present X-TTS-Key), so its authentication IS the signature
@@ -965,8 +968,8 @@ const slackEvents = httpAction(async (ctx, request) => {
     return jsonResponse(200, { ok: true, ...result });
   }
 
-  // Top-level Slack messages are no longer an input. Acknowledge them so Slack
-  // does not retry.
+  // A top-level Slack message is not captured by this route; acknowledge it so
+  // Slack does not retry.
   return jsonResponse(200, { ok: true, ignored: true });
 });
 
