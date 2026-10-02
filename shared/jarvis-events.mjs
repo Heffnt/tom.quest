@@ -69,7 +69,7 @@ export const EVENT_KINDS = [
   // typed there, Jarvis's one-line answer posted back by the box, and the
   // day's digest as a message from Jarvis on the thread. appendThreadDigest
   // in convex/jarvis/digest.ts writes it once per day; subject is the day key,
-  // text is the rendered digest, and data is { day, since, windowEnd,
+  // text is the rendered digest, and data is { day, since, windowEnd, itemsThrough,
   // truncated, surfacedTodoIds, objectionAskIds, items }, where items is the
   // numbered needs-you list [{ n, key, text, todoId?, job? }].
   "thread-message",
