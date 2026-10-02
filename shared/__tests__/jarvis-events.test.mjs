@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_KINDS, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
+import { EVENT_KINDS, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
 
 describe("validateEvent", () => {
   it("fills at and data, keeps subject and text, and drops nothing it was given", () => {
@@ -65,6 +65,28 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "thread-reply", subject: "m1" }).ok).toBe(false);
     expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "idea" }, text: "an idea" }).ok).toBe(false);
     expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "todo" }, text: "a todo" }).ok).toBe(true);
+  });
+
+  it("takes a complete part-disabled event and lists its identity rules", () => {
+    const event = {
+      kind: "part-disabled",
+      provenance: { job: "deploy" },
+      subject: "poll-dump",
+      data: { id: "part-disabled:poll-dump", part: "poll-dump", replacedBy: "thread-reply", ruling: "2026-10-02: \"retire slack fully.\"" },
+    };
+    expect(validateEvent(event)).toMatchObject({ ok: true, event });
+    expect(SUBJECT_REQUIRED).toContain("part-disabled");
+    expect(REPEATS_BY_DATA_ID).toContain("part-disabled");
+  });
+
+  it("refuses an incomplete or mismatched part-disabled event", () => {
+    const data = { id: "part-disabled:poll-dump", part: "poll-dump", replacedBy: "thread-reply", ruling: "2026-10-02: \"retire slack fully.\"" };
+    expect(validateEvent({ kind: "part-disabled", data }).error).toBe("a part-disabled event names its subject");
+    expect(validateEvent({ kind: "part-disabled", subject: "write-slack", data }).error).toBe("a part-disabled event names data.part as its subject");
+    expect(validateEvent({ kind: "part-disabled", subject: data.part, data: { part: data.part, replacedBy: data.replacedBy, ruling: data.ruling } }).error).toBe("a part-disabled event names data.id as part-disabled:<part>");
+    expect(validateEvent({ kind: "part-disabled", subject: data.part, data: { ...data, id: "part-disabled:write-slack" } }).error).toBe("a part-disabled event names data.id as part-disabled:<part>");
+    expect(validateEvent({ kind: "part-disabled", subject: data.part, data: { ...data, replacedBy: "" } }).error).toContain("data.replacedBy");
+    expect(validateEvent({ kind: "part-disabled", subject: data.part, data: { ...data, ruling: "" } }).error).toContain("data.ruling");
   });
 
   it("keeps thread-message as a Tom-only kind", () => {

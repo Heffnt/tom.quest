@@ -69,6 +69,14 @@ export const EVENT_KINDS = [
   // typed there, and Jarvis's one-line answer posted back by the box.
   "thread-message",
   "thread-reply",
+  // A part of Jarvis was turned off before its code is deleted; subject is
+  // the part's name (a job such as "poll-dump", or a record part such as
+  // "dump-capture"). Data { id, part, replacedBy, ruling }: part equals
+  // subject, replacedBy names what does its work now, and ruling is Tom's
+  // sentence that ordered it, quoted with its date. Data.id is
+  // "part-disabled:<part>"; the box deploy job posts it from Jarvis
+  // worker/parts-disabled.json.
+  "part-disabled",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
@@ -99,7 +107,7 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "part-disabled"];
 
 /** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
 export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
@@ -117,6 +125,9 @@ export const REPEATS_BY_DATA_ID = [
   // The work queue re-posts a run's outcome until it is answered; data.id is
   // "work-queue:<todo id>:<ruling id>:<run start ms>" (Jarvis worker/jobs/work-queue.mjs).
   "session-outcome",
+  // The deploy job re-posts every listed part on each deploy; data.id is
+  // "part-disabled:<part>".
+  "part-disabled",
 ];
 
 /** The provenance fields an event may carry, and nothing else. */
@@ -166,6 +177,23 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
     }
     if (!isPlainObject(data) || !THREAD_REPLY_KINDS.includes(data.kind)) {
       return { ok: false, error: `a thread-reply names data.kind as one of ${THREAD_REPLY_KINDS.join(", ")}` };
+    }
+  }
+  if (kind === "part-disabled") {
+    if (!isPlainObject(data) || !nonEmptyString(data.part)) {
+      return { ok: false, error: "a part-disabled event names data.part as a non-empty string" };
+    }
+    if (data.part !== subject) {
+      return { ok: false, error: "a part-disabled event names data.part as its subject" };
+    }
+    if (data.id !== `part-disabled:${data.part}`) {
+      return { ok: false, error: "a part-disabled event names data.id as part-disabled:<part>" };
+    }
+    if (!nonEmptyString(data.replacedBy)) {
+      return { ok: false, error: "a part-disabled event names data.replacedBy as a non-empty string" };
+    }
+    if (!nonEmptyString(data.ruling)) {
+      return { ok: false, error: "a part-disabled event names data.ruling as a non-empty string" };
     }
   }
   if (text !== undefined && typeof text !== "string") {

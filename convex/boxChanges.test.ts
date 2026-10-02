@@ -92,6 +92,20 @@ const eventOf = (data: BoxChange) => ({
   data,
 });
 
+it("keeps one row when the deploy job re-posts the same disabled part", async () => {
+  const t = convexTest({ schema, modules });
+  const event = {
+    kind: "part-disabled",
+    provenance: { job: "deploy" },
+    subject: "poll-dump",
+    data: { id: "part-disabled:poll-dump", part: "poll-dump", replacedBy: "thread-reply", ruling: "2026-10-02: \"retire slack fully.\"" },
+  };
+  const first = await (await recordEvent(t, event)).json();
+  expect(first).toMatchObject({ ok: true, duplicate: false });
+  expect(await (await recordEvent(t, event)).json()).toEqual({ ok: true, id: first.id, duplicate: true });
+  expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(1);
+});
+
 describe("the box-change door", () => {
   it("records a change posted to POST /jarvis/event under the agent it names, and nothing in dtsEvents", async () => {
     const t = convexTest({ schema, modules });
