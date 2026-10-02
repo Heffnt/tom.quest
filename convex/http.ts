@@ -741,11 +741,14 @@ const ttsSendProposal = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/send-proposal", method: "POST", handler: ttsSendProposal });
 
-// ── POST /slack/events — Slack PUSHES #dump messages to TTS ──────────────────
-// Tom's ruling 2026-08-30: Slack pushes instead of TTS polling every two
-// minutes. worker/jobs/poll-dump.mjs STAYS as the reconciliation backstop
-// (Slack's delivery is best-effort, not guaranteed) at an hourly cadence; its
-// cursor file is what makes a missed event recoverable.
+// ── POST /slack/events — Slack output-channel replies and reactions ───────
+// This receives Slack's push for Tom's threaded replies and reactions in the
+// output channel. Tom ruled on 2026-10-02: "retire slack fully. i dont want to
+// use it at all anymore for jarvis." The Jarvis thread replaced #dump capture;
+// phase 2 of that retirement removes the rest of this route.
+// This route was one of the two #dump readers; the other, the box's poll-dump
+// job posting to POST /tts/capture, is deleted by Heffnt/Jarvis#231, which lands
+// before this change, so after both #dump is no longer read.
 //
 // This route is unlike every other one in this file: it is the only PUBLIC one
 // (Slack cannot present X-TTS-Key), so its authentication IS the signature
@@ -758,29 +761,22 @@ http.route({ path: "/tts/send-proposal", method: "POST", handler: ttsSendProposa
 //     compared to X-Slack-Signature. The RAW body is what is signed, so it is
 //     read as text once and parsed after — re-serializing the parsed object
 //     would change the bytes and every request would fail.
-//  3. 200 within 3 seconds or Slack retries. The capture is a single
-//     idempotent insert, so it happens inline and nothing else does.
+//  3. 200 within 3 seconds or Slack retries. Accepted events are handled
+//     inline.
 //
 // Replay window: 5 minutes, standard for this scheme. It bounds how long a
-// captured request stays useful to an attacker who has the bytes but not the
+// signed request stays useful to an attacker who has the bytes but not the
 // secret; without it a signed request is valid forever.
 const SLACK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 // Log-once guard for an unset TOM_SLACK_USER_ID (per isolate — Convex may run
 // the route in more than one, so "once" is once per warm runtime).
 let warnedNoTomSlackUserId = false;
-// The same guard for an unset SLACK_DUMP_CHANNEL_ID, which admits no capture.
-let warnedNoDumpChannel = false;
-
-/** The channels a threaded reply is acted on in: the two TTS posts to, #dump
- * and the output channel (under either of its variables, as outputChannel()
- * reads them). A "revert" on a decision and an answer to a needs-you are
- * replies in the digest's thread, in the output channel (convex/ttsSlack.ts
- * routeReply). Read per request so a value set after the isolate warmed up
+/** The configured names of the output channel, under either variable read by
+ * outputChannel(). Read per request so a value set after the isolate warmed up
  * counts. */
 function slackReplyChannels(): Set<string> {
   return new Set(
     [
-      process.env.SLACK_DUMP_CHANNEL_ID,
       process.env.SLACK_TTS_CHANNEL_ID,
       process.env.SLACK_TTS_TODAY_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
@@ -912,11 +908,8 @@ const slackEvents = httpAction(async (ctx, request) => {
     return jsonResponse(200, { ok: true, ...result });
   }
 
-  // The SAME filter poll-dump.mjs applies, and it must stay the same filter:
-  // bot_id skips our own posts (including the threaded replies this whole
-  // feature adds — otherwise every reply would capture itself), subtype skips
-  // joins/edits/thread-broadcasts, and empty text has nothing to capture.
-  const dumpChannel = process.env.SLACK_DUMP_CHANNEL_ID;
+  // bot_id skips our own posts, subtype skips joins/edits/thread-broadcasts,
+  // and empty text has nothing to route.
   const text = typeof event.text === "string" ? event.text : "";
   const ts = typeof event.ts === "string" ? event.ts : "";
   const channel = typeof event.channel === "string" ? event.channel : "";
@@ -936,19 +929,15 @@ const slackEvents = httpAction(async (ctx, request) => {
   }
 
   // ── A threaded reply (the lifeos update, phase 2) ────────────────────────
-  // A reply in a thread is never a capture; it is Tom answering something TTS
-  // posted (the digest, a needs-you reply under it, the silence alarm, the
-  // reply under his own #dump message). Accepted from ONE Slack user id —
-  // TOM_SLACK_USER_ID — because a reply becomes a session's next turn or a
-  // time note on a todo, which are Tom's pens; anyone else's reply is
+  // A reply in a thread is Tom answering something TTS posted in the output
+  // channel. Accepted from ONE Slack user id — TOM_SLACK_USER_ID — because a
+  // reply becomes a session's next turn or a time note on a todo, which are
+  // Tom's pens; anyone else's reply is
   // acknowledged and ignored. Unset means no threaded reply is acted on, and
   // the log says so once per isolate rather than on every event.
   //
-  // And accepted in TTS's OWN channels only: #dump and the output channel. An
-  // unknown thread becomes a todo and gets a capture line posted into it, so
-  // a reply in any other channel the app happens to be in would make TTS
-  // post where nobody asked it to (agents post nothing Tom did not ask for).
-  // Each id is read as it is set; an unset one admits nothing.
+  // Only the output channel is accepted. An unknown thread becomes a todo and
+  // gets a capture line posted into it, so another channel must admit nothing.
   if (threadTs !== undefined && threadTs !== ts) {
     if (!slackReplyChannels().has(channel)) {
       return jsonResponse(200, { ok: true, ignored: true });
@@ -979,40 +968,9 @@ const slackEvents = httpAction(async (ctx, request) => {
     return jsonResponse(200, { ok: true, ...result });
   }
 
-  // A top-level message is a capture only in #dump, and an UNSET id admits
-  // nothing — the same posture as TOM_SLACK_USER_ID above, and for the same
-  // reason. Read as "no channel is #dump yet", this used to read as "every
-  // channel is #dump": a message in any channel the app happens to be in
-  // became a todo and got a bot reply posted under it, TTS speaking where
-  // nobody asked it to. Logged once per isolate rather than per event.
-  if (!dumpChannel) {
-    if (!warnedNoDumpChannel) {
-      warnedNoDumpChannel = true;
-      console.warn(
-        "TTS slack events: SLACK_DUMP_CHANNEL_ID not configured — captures are ignored",
-      );
-    }
-    return jsonResponse(200, { ok: true, ignored: true });
-  }
-  if (channel !== dumpChannel) {
-    return jsonResponse(200, { ok: true, ignored: true });
-  }
-
-  // The capture itself — one idempotent insert keyed on the message ts, so
-  // Slack's at-least-once retries and poll-dump's backstop pass converge on
-  // one todo. No permalink call here: fetching one is a second network round
-  // trip inside the 3-second budget, and poll-dump's provenance is not worth
-  // the risk of a retry storm. The ts IS the address until then. The one
-  // reply line in the message's thread is scheduled by the capture itself
-  // (tts.internalCapture → ttsSync.sendSlack), so a retry never re-posts it.
-  const id = await ctx.runMutation(internal.tts.internalCapture, {
-    statement: text,
-    source: "slack-capture",
-    provenance: `slack:#dump ts=${ts}`,
-    slackChannel: channel,
-    slackTs: ts,
-  });
-  return jsonResponse(200, { ok: true, id });
+  // A top-level Slack message is not captured by this route; acknowledge it so
+  // Slack does not retry.
+  return jsonResponse(200, { ok: true, ignored: true });
 });
 
 http.route({ path: "/slack/events", method: "POST", handler: slackEvents });

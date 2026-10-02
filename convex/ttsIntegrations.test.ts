@@ -116,9 +116,8 @@ describe("the source a ruling about an integration is captured under", () => {
     const t = convexTest(schema, modules);
     const id = await declineable(t, "integration: outlook", "active");
     const row = await t.run(async (ctx) => ctx.db.get(id));
-    // The producer asked for "slack-capture" — #dump is where he types it —
-    // and the statement is what decides. Nothing downstream has to re-read
-    // the sentence to find these rows.
+    // The producer's source is immaterial: the statement is what decides, so
+    // nothing downstream has to re-read the sentence to find these rows.
     expect(row?.source).toBe(INTEGRATION_SOURCE);
     // And the capture event says the same thing the row does.
     const captured = await t.run(async (ctx) =>

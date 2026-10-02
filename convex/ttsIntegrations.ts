@@ -6,10 +6,10 @@
 // which means the decision keeps his own words, its date, and its place in
 // everything that reads rulings.
 //
-// HOW HE DECLINES ONE: dump the line `integration: outlook` into #dump, then
-// archive it with the archive verdict. The optional sentence on that verdict is
-// the reason, in his words, and it is what a poller prints when it skips and
-// what the weekly gather will show beside the date.
+// HOW HE DECLINES ONE: capture the line `integration: outlook` in the Jarvis
+// thread, then archive it with the archive verdict. The optional sentence on
+// that verdict is the reason, in his words, and it is what a poller prints when
+// it skips and what the weekly gather will show beside the date.
 //
 // HOW HE TAKES IT BACK: rule again. The NEWEST ruling on the row decides, so an
 // approve after an archive re-enables the integration without deleting the

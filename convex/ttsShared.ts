@@ -932,11 +932,9 @@ export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
   return `https://tom.quest/tts?item=${todoId}${intent ? `&intent=${intent}` : ""}`;
 }
 
-// The one reply line at capture is composeCaptured in convex/ttsCompose.ts
-// now, with every other message TTS sends. The line that used to live here
-// echoed Tom's own words back to him in full inside his own thread, which
-// doubled the length of everything in #dump and told him only that the system
-// worked; the one fact he did not already have is when he next sees it.
+// composeCaptured remains in convex/ttsCompose.ts for the output-channel case
+// where a reply in an unknown thread becomes a todo. internalCapture itself no
+// longer schedules a Slack reply.
 
 /** Deep link to one session on the /agents page — the one spelling every
  * Slack message about a session carries. */
@@ -965,8 +963,8 @@ export const SLACK_SUBJECT = v.union(
   // A JOB'S OWN LINE: the silence alarm (convex/jarvis/jobs.ts), a producer's
   // needs-you reply under the digest, a message sent as Tom. It names its
   // producer rather than a fabricated todo: a todo subject stamps
-  // slackReplyTs, which belongs to the ONE reply thread that todo has in
-  // #dump, and a job's line must not claim it. A reply in its thread is a fact.
+  // slackReplyTs with the first recorded reply thread for that todo, and a
+  // job's line must not claim it. A reply in its thread is a fact.
   v.object({ kind: v.literal("job"), id: v.string() }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
@@ -979,12 +977,11 @@ export function slackThreadKey(channel: string, threadRootTs: string): string {
 }
 
 // ── The one output channel (Tom, 2026-09-26: "#dump in, one out") ─────────────
-// #dump is where his words come in; everything the record says to him goes to
-// one channel: the digest, the needs-you replies in its thread, the silence
-// alarm. It is #tts-today until the morning rename to #jarvis, which keeps the
-// id, so its variable keeps its name tonight. The single-purpose #tts- rooms
-// that came before it (the decisions, needs-you, hourly, broken, simplify and
-// runners rooms) are sections of the digest now.
+// Everything the record still says to Tom on Slack goes to one channel: the
+// digest, the needs-you replies in its thread, and the silence alarm. It is
+// #tts-today until the morning rename to #jarvis, which keeps the id, so its
+// variable keeps its name tonight. The single-purpose #tts- rooms that came
+// before it are sections of the digest now.
 //
 // Here rather than in convex/ttsSync.ts, which owns the Slack door, because
 // that file is "use node" and the plain-runtime record areas ask it too.

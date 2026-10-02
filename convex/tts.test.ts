@@ -315,10 +315,7 @@ describe("TTS todos", () => {
   });
 
   // ── Slack capture is idempotent on the message ts (Tom, 2026-08-30) ───────
-  // TWO producers now capture the same #dump message: the /slack/events push
-  // route (Slack retries the same event — delivery is at-least-once) and
-  // poll-dump.mjs, the hourly reconciliation backstop, which cannot know what
-  // the push route already took.
+  // Legacy callers may still retry a capture carrying Slack coordinates.
   // witness: delete the by_slackTs lookup from internalCapture and this goes
   // red — every Slack retry mints a duplicate todo.
   it("captures a Slack message once, however many times it is offered", async () => {
