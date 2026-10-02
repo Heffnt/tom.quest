@@ -23,58 +23,51 @@ export const AGENT_CHANGE_KINDS = [
   "repo-proposal-applied",
 ] as const;
 
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
+type AgentChangeRow = Omit<Doc<"events">, "kind" | "data"> & (
+  | { kind: "merge"; data: { repo: keyof typeof SESSION_REPOS; sha: string; subject: string } }
+  | { kind: "deploy"; data: { repo: keyof typeof SESSION_REPOS; from: string; to: string; commits: string[] } }
+  | { kind: "learning-change"; data: { file: string; section: string; modelOfTomCommit: string | null } }
+  | {
+      kind: "repo-proposal-applied";
+      data: { repo: keyof typeof SESSION_REPOS; file: string; appliedLine: string; commit: string };
+    }
+);
+
+function repoLink(repo: keyof typeof SESSION_REPOS, path: string): string {
+  return `https://github.com/${SESSION_REPOS[repo]}/${path}`;
 }
 
-function home(d: Record<string, unknown>): string | null {
-  const repo = str(d.repo);
-  return repo !== "" && Object.prototype.hasOwnProperty.call(SESSION_REPOS, repo)
-    ? SESSION_REPOS[repo as keyof typeof SESSION_REPOS].toString()
-    : null;
-}
-
-/** One agent change as the thread renders it: its line, and a link when the
- *  row carries a repo known to SESSION_REPOS and the fields a link needs. A
- *  malformed row yields the line it can and no link; nothing here throws. */
-export function agentChange(row: Doc<"events">): { line: string; href: string | null } {
-  const d = (typeof row.data === "object" && row.data !== null ? row.data : {}) as Record<string, unknown>;
-  const base = home(d);
-  const link = base === null ? null : (path: string) => `https://github.com/${base}/${path}`;
+/** One agent change as the thread renders it: its line and diff link. */
+export function agentChange(row: AgentChangeRow): { line: string; href: string | null } {
   switch (row.kind) {
     case "merge": {
-      const sha = str(d.sha);
+      const { repo, sha, subject } = row.data;
       return {
-        line: `Merged ${str(d.repo)} ${sha.slice(0, 7)}: ${str(d.subject)}`,
-        href: sha !== "" && link !== null ? link(`commit/${sha}`) : null,
+        line: `Merged ${repo} ${sha.slice(0, 7)}: ${subject}`,
+        href: repoLink(repo, `commit/${sha}`),
       };
     }
     case "deploy": {
-      const from = str(d.from);
-      const to = str(d.to);
-      const commits = Array.isArray(d.commits) ? d.commits : [];
+      const { repo, from, to, commits } = row.data;
       return {
-        line: `Deployed ${str(d.repo)} ${from.slice(0, 7)}..${to.slice(0, 7)}, ${commits.length} commit(s)`,
-        href: from !== "" && to !== "" && link !== null ? link(`compare/${from}...${to}`) : null,
+        line: `Deployed ${repo} ${from.slice(0, 7)}..${to.slice(0, 7)}, ${commits.length} commit(s)`,
+        href: repoLink(repo, `compare/${from}...${to}`),
       };
     }
     case "learning-change": {
-      const section = str(d.section);
-      const commit = str(d.modelOfTomCommit);
+      const { file, section, modelOfTomCommit } = row.data;
       return {
-        line: `Changed ${str(d.file)}${section !== "" ? ` § ${section}` : ""}`,
-        href: commit !== "" ? `https://github.com/Heffnt/WikiTom/commit/${commit}` : null,
+        line: `Changed ${file}${section !== "" ? ` § ${section}` : ""}`,
+        href: modelOfTomCommit === null ? null : `https://github.com/Heffnt/WikiTom/commit/${modelOfTomCommit}`,
       };
     }
     case "repo-proposal-applied": {
-      const commit = str(d.commit);
+      const { repo, file, appliedLine, commit } = row.data;
       return {
-        line: `Added a rule to ${str(d.repo)} ${str(d.file)}: ${str(d.appliedLine)}`,
-        href: commit !== "" && link !== null ? link(`commit/${commit}`) : null,
+        line: `Added a rule to ${repo} ${file}: ${appliedLine}`,
+        href: repoLink(repo, `commit/${commit}`),
       };
     }
-    default:
-      return { line: "", href: null };
   }
 }
 
@@ -127,6 +120,15 @@ export const messages = query({
         reply: reply === null ? null : { at: reply.at, text: reply.text, kind },
       };
     }));
+    return messages.sort((a, b) => a.at - b.at);
+  },
+});
+
+export const changes = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTom(ctx, SURFACE);
+    const since = Date.now() - 60 * 24 * 60 * 60 * 1000;
     const changes = await Promise.all(
       AGENT_CHANGE_KINDS.map(async (kind) => {
         const byKind = await ctx.db
@@ -135,14 +137,11 @@ export const messages = query({
           .order("desc")
           .take(200);
         return byKind.map((row) => {
-          const { line, href } = agentChange(row);
+          const { line, href } = agentChange({ ...row, kind } as AgentChangeRow);
           return { id: row._id, at: row.at, kind, line, href };
         });
       }),
     );
-    return {
-      messages: messages.sort((a, b) => a.at - b.at),
-      changes: changes.flat().sort((a, b) => a.at - b.at),
-    };
+    return changes.flat().sort((a, b) => a.at - b.at);
   },
 });

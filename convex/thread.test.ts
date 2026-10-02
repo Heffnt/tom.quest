@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { AGENT_CHANGE_KINDS, agentChange } from "./thread";
-import type { Doc } from "./_generated/dataModel";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -12,8 +11,10 @@ async function tom(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({ subject: id });
 }
 
-function row(kind: string, data: unknown): Doc<"events"> {
-  return { kind, at: 0, provenance: {}, data } as unknown as Doc<"events">;
+type AgentChangeRow = Parameters<typeof agentChange>[0];
+
+function row(kind: AgentChangeRow["kind"], data: unknown): AgentChangeRow {
+  return { kind, at: 0, provenance: {}, data } as unknown as AgentChangeRow;
 }
 
 describe("AGENT_CHANGE_KINDS", () => {
@@ -48,7 +49,7 @@ describe("agentChange", () => {
   });
 
   it("renders a learning change with no section, and null link when its commit is absent", () => {
-    const r = row("learning-change", { file: "model-of-tom/areas/climbing.md" });
+    const r = row("learning-change", { file: "model-of-tom/areas/climbing.md", section: "", modelOfTomCommit: null });
     expect(agentChange(r)).toEqual({
       line: "Changed model-of-tom/areas/climbing.md",
       href: null,
@@ -60,14 +61,6 @@ describe("agentChange", () => {
     expect(agentChange(r)).toEqual({
       line: "Added a rule to tom.quest app/AGENTS.md: a rule",
       href: "https://github.com/Heffnt/tom.quest/commit/deadbeef",
-    });
-  });
-
-  it("yields no link and no throw on a malformed row", () => {
-    expect(agentChange(row("merge", {}))).toEqual({ line: "Merged  : ", href: null });
-    expect(agentChange(row("merge", { repo: "unknown", sha: "abc" }))).toEqual({
-      line: "Merged unknown abc: ",
-      href: null,
     });
   });
 });
@@ -90,6 +83,7 @@ describe("thread", () => {
     const viewer = t.withIdentity({ subject: userId });
     await expect(viewer.mutation(api.thread.send, { text: "hello" })).rejects.toThrow("Thread access is restricted to Tom");
     await expect(viewer.query(api.thread.messages, {})).rejects.toThrow("Thread access is restricted to Tom");
+    await expect(viewer.query(api.thread.changes, {})).rejects.toThrow("Thread access is restricted to Tom");
 
     const tomViewer = await tom(t);
     await expect(tomViewer.mutation(api.thread.send, { text: "" })).rejects.toThrow("A message cannot be empty");
@@ -101,9 +95,8 @@ describe("thread", () => {
     const viewer = await tom(t);
     const { id } = await viewer.mutation(api.thread.send, { text: "hello" });
     let found = await viewer.query(api.thread.messages, {});
-    expect(found.messages).toHaveLength(1);
-    expect(found.messages[0]).toMatchObject({ id, text: "hello", reply: null, subject: null });
-    expect(found.changes).toEqual([]);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ id, text: "hello", reply: null, subject: null });
 
     await t.run(async (ctx) => {
       await ctx.db.insert("events", {
@@ -117,8 +110,8 @@ describe("thread", () => {
     });
 
     found = await viewer.query(api.thread.messages, {});
-    expect(found.messages).toHaveLength(1);
-    expect(found.messages[0]).toMatchObject({
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
       id,
       text: "hello",
       reply: { text: "a todo, waiting for a session", kind: "todo" },
@@ -136,8 +129,8 @@ describe("thread", () => {
         data: { repo: "tom.quest", from: "aaaa1111", to: "bbbb2222", commits: ["one"], setupNeeded: false },
       }),
     );
-    const found = await viewer.query(api.thread.messages, {});
-    expect(found.changes).toEqual([
+    const found = await viewer.query(api.thread.changes, {});
+    expect(found).toEqual([
       {
         id,
         at: expect.any(Number),
@@ -148,7 +141,7 @@ describe("thread", () => {
     ]);
   });
 
-  it("send with a change subject writes a thread-message naming it, and messages returns it under messages", async () => {
+  it("send with a change subject writes a thread-message naming it, and messages returns it", async () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);
     const deployId = await t.run(async (ctx) =>
@@ -161,7 +154,7 @@ describe("thread", () => {
     );
     const { id } = await viewer.mutation(api.thread.send, { text: "objecting", subject: deployId });
     const found = await viewer.query(api.thread.messages, {});
-    const message = found.messages.find((m) => m.id === id);
+    const message = found.find((m) => m.id === id);
     expect(message).toMatchObject({ id, text: "objecting", subject: deployId, reply: null });
   });
 

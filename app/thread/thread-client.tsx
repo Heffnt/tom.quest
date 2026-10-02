@@ -1,8 +1,8 @@
 "use client";
 
 // The Jarvis thread: Tom's one standing conversation with Jarvis. It reads
-// four sources merged by time — his thread messages and Jarvis's changes
-// (api.thread.messages),
+// four sources merged by time — his thread messages (api.thread.messages),
+// Jarvis's changes (api.thread.changes),
 // the day log (api.dayLog.page, the /log page's query) and the #dump captures
 // (api.tts.listTodos, filtered to source "slack-capture") — and derives each
 // reply line from what the record already holds. A message he types here is
@@ -46,11 +46,6 @@ type AgentChange = {
   kind: "merge" | "deploy" | "learning-change" | "repo-proposal-applied";
   line: string;
   href: string | null;
-};
-
-type ThreadData = {
-  messages: ThreadMessage[];
-  changes: AgentChange[];
 };
 
 type FeedItem =
@@ -151,23 +146,24 @@ export default function ThreadClient() {
   const { isTom } = useAuth();
   const entries = useQuery(api.dayLog.page, isTom ? {} : "skip") as LogEntry[] | undefined;
   const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip") as Doc<"todos">[] | undefined;
-  const thread = useQuery(api.thread.messages, isTom ? {} : "skip") as ThreadData | undefined;
+  const messages = useQuery(api.thread.messages, isTom ? {} : "skip") as ThreadMessage[] | undefined;
+  const changes = useQuery(api.thread.changes, isTom ? {} : "skip") as AgentChange[] | undefined;
   const days = useMemo(() => {
     const since = Date.now() - WINDOW_MS;
     const said: Said[] = [
       ...(entries ?? []).filter((e) => e.threadMessageId === undefined).map(fromLog),
       ...(todos ?? []).filter((t) => t.threadMessageId === undefined && t.source === "slack-capture" && t.createdAt >= since).map(fromCapture),
-      ...(thread?.messages ?? []).filter((message) => message.subject === null).map(fromThread),
+      ...(messages ?? []).filter((message) => message.subject === null).map(fromThread),
     ];
     const replies = new Map<string, Said[]>();
-    for (const message of thread?.messages ?? []) {
+    for (const message of messages ?? []) {
       if (message.subject === null) continue;
       const reply = fromThread(message);
       replies.set(message.subject, [...(replies.get(message.subject) ?? []), reply]);
     }
     const feed: FeedItem[] = [
       ...said.map((s): FeedItem => ({ type: "said", id: s.id, at: s.at, day: s.day, said: s })),
-      ...(thread?.changes ?? []).map((change): FeedItem => ({
+      ...(changes ?? []).map((change): FeedItem => ({
         type: "change",
         id: change.id,
         at: change.at,
@@ -179,11 +175,14 @@ export default function ThreadClient() {
     const grouped = new Map<string, FeedItem[]>();
     for (const item of feed) grouped.set(item.day, [...(grouped.get(item.day) ?? []), item]);
     return [...grouped.entries()];
-  }, [entries, todos, thread]);
+  }, [changes, entries, messages, todos]);
 
   return (
     <TomGate label="Thread">
-      <ThreadView days={days} loading={entries === undefined || todos === undefined || thread === undefined} />
+      <ThreadView
+        days={days}
+        loading={entries === undefined || todos === undefined || messages === undefined || changes === undefined}
+      />
     </TomGate>
   );
 }
