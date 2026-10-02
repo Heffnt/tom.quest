@@ -20,6 +20,10 @@
 - A session's rows are its agent file's, read by its `runId`; a session with no `runId` has none. A reader asks `sessionRows.rowSource`, and never picks an index itself.
 - What the session daemon knows that the agent file does not is a note in `sessionNotes`, never a row.
 
+## removals
+
+- A part of Jarvis is retired by a `part-disabled` event (`shared/jarvis-events.mjs`; subject the part, data `{ id, part, replacedBy, ruling }`) before its code is deleted, so the record says when and why it stopped; the box's deploy job posts it from Jarvis `worker/parts-disabled.json`, and the record keeps one row per part.
+
 ## inspecting
 
 - The Convex dashboard is where server state, function logs and query performance are read.
