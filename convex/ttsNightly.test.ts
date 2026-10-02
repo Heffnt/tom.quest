@@ -1,4 +1,5 @@
 import { convexTest } from "convex-test";
+import { internal } from "./_generated/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
 import {
@@ -280,6 +281,41 @@ describe("POST /tts/event", () => {
     expect((await post(t, "/tts/event", { kind: "Nightly Run" })).status).toBe(400);
     expect((await post(t, "/tts/event", { data: {} })).status).toBe(400);
     expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);
+  });
+});
+
+describe("internalApplyRepoProposal", () => {
+  it("applying a proposal also leaves one events row of kind repo-proposal-applied", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "repo-proposal",
+        key: "proposal-1",
+        data: {
+          id: "proposal-1",
+          repo: "tom.quest",
+          file: "app/AGENTS.md",
+          section: "style",
+          line: "A commit subject is lowercase.",
+        },
+      });
+    });
+    const result = await t.mutation(internal.ttsNightly.internalApplyRepoProposal, {
+      id: "proposal-1",
+      commit: "deadbeef",
+    });
+    expect(result).toMatchObject({ applied: true, repo: "tom.quest", file: "app/AGENTS.md" });
+    const events = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "repo-proposal-applied")).collect(),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "repo-proposal-applied",
+      subject: "proposal-1",
+      data: { repo: "tom.quest", file: "app/AGENTS.md", appliedLine: "A commit subject is lowercase.", commit: "deadbeef" },
+    });
   });
 });
 

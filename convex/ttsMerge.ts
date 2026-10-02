@@ -6,6 +6,7 @@ import { logEvent } from "./tts";
 import { resolveId } from "./jarvis/tables";
 import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
+import { copyDtsRow } from "./jarvis/events";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
 // Merging used to be Tom's gate: the box classifier denied `git merge` and
@@ -963,25 +964,31 @@ export const internalRecordMerge = internalMutation({
     const key = mergeKey(args.repo, args.sha);
     const existing = await rowFor(ctx, MERGE, key);
     if (existing) return { recorded: true, id: existing._id, existing: true, gate };
+    const at = Date.now();
+    const data = {
+      repo: args.repo,
+      sha: args.sha,
+      subject: args.subject,
+      mainCheck: args.mainCheck,
+      // Why it merged, in the gate's own words (who audited, and on which
+      // model when Codex was capped; the evals it merged past): the digest's
+      // objection line for this merge prints it.
+      reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
+    };
+    // Convex fixes Date.now() for the mutation, so logEvent records this same at.
     const id = await logEvent(
       ctx,
       MERGE,
       todoId ?? undefined,
-      {
-        repo: args.repo,
-        sha: args.sha,
-        subject: args.subject,
-        mainCheck: args.mainCheck,
-        // Why it merged, in the gate's own words (who audited, and on which
-        // model when Codex was capped; the evals it merged past): the digest's
-        // objection line for this merge prints it.
-        reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
-      },
+      data,
       key,
     );
     // The digest's objection list reads this merge row itself, under its key,
     // so "revert <n>" in the digest's thread objects to THIS merge
     // (convex/ttsAsk.ts internalRecordDelegateObjection resolves a merge row).
+    // The Jarvis thread reads agent changes from the events table: this merge
+    // and the row above are one fact, so the copy rides in this transaction.
+    await copyDtsRow(ctx, { kind: MERGE, at, key, data });
     return { recorded: true, id, existing: false, gate };
   },
 });

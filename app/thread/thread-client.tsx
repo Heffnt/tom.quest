@@ -1,17 +1,18 @@
 "use client";
 
 // The Jarvis thread: Tom's one standing conversation with Jarvis. It reads
-// three sources merged by time — his thread messages (api.thread.messages),
+// four sources merged by time — his thread messages (api.thread.messages),
+// Jarvis's changes (api.thread.changes),
 // the day log (api.dayLog.page, the /log page's query) and the #dump captures
 // (api.tts.listTodos, filtered to source "slack-capture") — and derives each
 // reply line from what the record already holds. A message he types here is
 // appended to the record's events table; a box job reads those rows and posts
 // Jarvis's one-line reply back under each.
 
-import { useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import type { Doc } from "@/convex/_generated/dataModel";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 
@@ -32,11 +33,24 @@ type Said = {
 };
 
 type ThreadMessage = {
-  id: string;
+  id: Id<"events">;
   at: number;
   text: string;
+  subject: Id<"events"> | null;
   reply: { at: number; text: string; kind: string | null } | null;
 };
+
+type AgentChange = {
+  id: Id<"events">;
+  at: number;
+  kind: "merge" | "deploy" | "learning-change" | "repo-proposal-applied";
+  line: string;
+  href: string | null;
+};
+
+type FeedItem =
+  | { type: "said"; id: string; at: number; day: string; said: Said }
+  | { type: "change"; id: string; at: number; day: string; change: AgentChange; replies: Said[] };
 
 type LogItem = {
   _id: string;
@@ -132,30 +146,52 @@ export default function ThreadClient() {
   const { isTom } = useAuth();
   const entries = useQuery(api.dayLog.page, isTom ? {} : "skip") as LogEntry[] | undefined;
   const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip") as Doc<"todos">[] | undefined;
-  const thread = useQuery(api.thread.messages, isTom ? {} : "skip") as ThreadMessage[] | undefined;
+  const messages = useQuery(api.thread.messages, isTom ? {} : "skip") as ThreadMessage[] | undefined;
+  const changes = useQuery(api.thread.changes, isTom ? {} : "skip") as AgentChange[] | undefined;
   const days = useMemo(() => {
     const since = Date.now() - WINDOW_MS;
     const said: Said[] = [
       ...(entries ?? []).filter((e) => e.threadMessageId === undefined).map(fromLog),
       ...(todos ?? []).filter((t) => t.threadMessageId === undefined && t.source === "slack-capture" && t.createdAt >= since).map(fromCapture),
-      ...(thread ?? []).map(fromThread),
+      ...(messages ?? []).filter((message) => message.subject === null).map(fromThread),
+    ];
+    const replies = new Map<string, Said[]>();
+    for (const message of messages ?? []) {
+      if (message.subject === null) continue;
+      const reply = fromThread(message);
+      replies.set(message.subject, [...(replies.get(message.subject) ?? []), reply]);
+    }
+    const feed: FeedItem[] = [
+      ...said.map((s): FeedItem => ({ type: "said", id: s.id, at: s.at, day: s.day, said: s })),
+      ...(changes ?? []).map((change): FeedItem => ({
+        type: "change",
+        id: change.id,
+        at: change.at,
+        day: dayKey.format(change.at),
+        change,
+        replies: (replies.get(change.id) ?? []).sort((a, b) => a.at - b.at),
+      })),
     ].sort((a, b) => a.at - b.at);
-    const grouped = new Map<string, Said[]>();
-    for (const s of said) grouped.set(s.day, [...(grouped.get(s.day) ?? []), s]);
+    const grouped = new Map<string, FeedItem[]>();
+    for (const item of feed) grouped.set(item.day, [...(grouped.get(item.day) ?? []), item]);
     return [...grouped.entries()];
-  }, [entries, todos, thread]);
+  }, [changes, entries, messages, todos]);
 
   return (
     <TomGate label="Thread">
-      <ThreadView days={days} loading={entries === undefined || todos === undefined || thread === undefined} />
+      <ThreadView
+        days={days}
+        loading={entries === undefined || todos === undefined || messages === undefined || changes === undefined}
+      />
     </TomGate>
   );
 }
 
-function ThreadView({ days, loading }: { days: Array<[string, Said[]]>; loading: boolean }) {
+function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; loading: boolean }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [replying, setReplying] = useState<AgentChange | null>(null);
   const send = useMutation(api.thread.send);
   const now = Date.now();
   const today = dayKey.format(now);
@@ -184,30 +220,19 @@ function ThreadView({ days, loading }: { days: Array<[string, Said[]]>; loading:
         <div className="mx-auto w-full max-w-[38.5rem] px-4 pb-4">
           <h1 className="pb-2 pt-4 text-2xl font-bold tracking-tight">Jarvis thread</h1>
           {loading && <p className="text-sm text-text-faint">Loading…</p>}
-          {days.map(([day, said]) => (
+          {days.map(([day, items]) => (
             <section key={day} aria-label={day}>
               <h2 className="sticky top-0 z-10 bg-bg pb-1.5 pt-4 font-mono text-xs text-text-muted">
                 {dayLabel(day, today, yesterday)}
               </h2>
               <ol className="space-y-3">
-                {said.map((s) => (
-                  <li key={s.id} className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-0.5">
-                    <time
-                      dateTime={new Date(s.at).toISOString()}
-                      className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint"
-                    >
-                      {clock.format(s.at)}
-                    </time>
-                    <p className="whitespace-pre-wrap break-words border-l-2 border-accent/60 pl-3 text-[15px] leading-6 text-text">
-                      {s.text}
-                    </p>
-                    <span className={`font-mono text-[11px] leading-5 ${s.needsTom ? "text-accent" : "text-text-faint"}`}>
-                      {s.kind ?? ""}
-                    </span>
-                    <p className={`break-words pl-3.5 text-sm leading-5 ${s.needsTom ? "text-text" : s.processed ? "text-text-muted" : "text-text-faint"}`}>
-                      {s.line}
-                    </p>
-                  </li>
+                {items.map((item) => item.type === "said" ? (
+                  <MessageRow key={item.id} message={item.said} />
+                ) : (
+                  <Fragment key={item.id}>
+                    <ChangeRow change={item.change} onReply={() => setReplying(item.change)} />
+                    {item.replies.map((reply) => <MessageRow key={reply.id} message={reply} />)}
+                  </Fragment>
                 ))}
               </ol>
             </section>
@@ -229,6 +254,146 @@ function ThreadView({ days, loading }: { days: Array<[string, Said[]]>; loading:
             placeholder="Message Jarvis"
             aria-label="Message Jarvis"
             className="max-h-40 min-w-0 flex-1 resize-none rounded-md border border-border bg-surface px-3 py-2 text-base leading-6 text-text placeholder:text-text-faint focus:border-accent/60 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!canSend}
+            className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {failed ? "Not sent, retry" : "Send"}
+          </button>
+        </div>
+      </div>
+      {replying !== null && (
+        <ReplyDialog key={replying.id} change={replying} onClose={() => setReplying(null)} />
+      )}
+    </div>
+  );
+}
+
+function MessageRow({ message: s }: { message: Said }) {
+  return (
+    <li className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-0.5">
+      <time
+        dateTime={new Date(s.at).toISOString()}
+        className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint"
+      >
+        {clock.format(s.at)}
+      </time>
+      <p className="whitespace-pre-wrap break-words border-l-2 border-accent/60 pl-3 text-[15px] leading-6 text-text">
+        {s.text}
+      </p>
+      <span className={`font-mono text-[11px] leading-5 ${s.needsTom ? "text-accent" : "text-text-faint"}`}>
+        {s.kind ?? ""}
+      </span>
+      <p className={`break-words pl-3.5 text-sm leading-5 ${s.needsTom ? "text-text" : s.processed ? "text-text-muted" : "text-text-faint"}`}>
+        {s.line}
+      </p>
+    </li>
+  );
+}
+
+function ChangeRow({ change, onReply }: { change: AgentChange; onReply: () => void }) {
+  return (
+    <li className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-0.5">
+      <time
+        dateTime={new Date(change.at).toISOString()}
+        className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint"
+      >
+        {clock.format(change.at)}
+      </time>
+      <p className="break-words border-l-2 border-border pl-3 text-[15px] leading-6 text-text-muted">
+        {change.line}
+        {change.href !== null && (
+          <a
+            href={change.href}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-2 underline underline-offset-2 transition-colors hover:text-text"
+          >
+            diff
+          </a>
+        )}
+      </p>
+      <span className="font-mono text-[11px] leading-5 text-text-faint">jarvis</span>
+      <div className="pl-3">
+        <button
+          type="button"
+          onClick={onReply}
+          className="rounded px-1 py-0.5 text-xs leading-4 text-text-muted underline underline-offset-2 transition-colors hover:bg-surface hover:text-text"
+        >
+          Reply
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function ReplyDialog({ change, onClose }: { change: AgentChange; onClose: () => void }) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const send = useMutation(api.thread.send);
+  const canSend = draft.trim() !== "" && !sending;
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  async function submit() {
+    if (draft.trim() === "" || sending) return;
+    setSending(true);
+    setFailed(false);
+    try {
+      await send({ text: draft, subject: change.id });
+      onClose();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Reply to Jarvis change"
+        className="relative w-full max-w-lg rounded-lg border border-border bg-surface p-6 animate-settle"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-4 top-4 text-text-muted transition-colors duration-150 hover:text-text"
+        >
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <p className="mb-4 pr-8 text-sm leading-5 text-text-muted">{change.line}</p>
+        <div className="flex items-end gap-2">
+          <textarea
+            value={draft}
+            rows={3}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                if (canSend) void submit();
+              }
+            }}
+            placeholder="Reply to Jarvis"
+            aria-label="Reply to Jarvis"
+            autoFocus
+            className="max-h-40 min-w-0 flex-1 resize-none rounded-md border border-border bg-bg px-3 py-2 text-base leading-6 text-text placeholder:text-text-faint focus:border-accent/60 focus:outline-none"
           />
           <button
             type="button"
