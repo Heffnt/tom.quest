@@ -28,6 +28,10 @@
 // records `needs-you-posted`. His reply in the thread answers the needs-you
 // reply directly above it, unless it names another todo or is an objection
 // (convex/ttsSlack.ts, digest case): his reply is the asker's next turn.
+//
+// THE THREAD GETS THE DIGEST TOO. The box calls POST /jarvis/thread/digest;
+// appendThreadDigest appends it once for the day with the needs-you items
+// numbered beneath its text. A reply under it is routed in convex/thread.ts.
 
 import { httpAction, internalMutation, internalQuery } from "../_generated/server";
 import type { MutationCtx } from "../_generated/server";
@@ -35,6 +39,7 @@ import type { Doc } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { logEvent } from "../tts";
 import { resolveId } from "./tables";
+import { insertEvent } from "./record";
 import { needsYouInThread, recordSlackSent } from "../ttsSlack";
 import {
   DAY_MS,
@@ -54,6 +59,8 @@ import {
   lastDigest,
   digestsSince,
 } from "./outbox";
+
+export const THREAD_DIGEST = "thread-digest";
 
 /**
  * POST /jarvis/digest's mutation: is a digest due, and if so, the digest.
@@ -128,10 +135,7 @@ export async function onDigestSent(ctx: MutationCtx, row: Doc<"events">): Promis
   const d = (row.data ?? {}) as Record<string, unknown>;
   const day = typeof d.day === "string" ? d.day : null;
   const surfaced = Array.isArray(d.surfacedTodoIds) ? d.surfacedTodoIds : [];
-  for (const raw of surfaced) {
-    const todoId = typeof raw === "string" ? await resolveId(ctx, "todos", raw) : null;
-    if (todoId !== null) await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
-  }
+  await markSurfaced(ctx, surfaced, day);
   const { channel, ts } = digestFacts(row);
   if (day === null || channel === null || ts === null) return { threaded: false };
   await recordSlackSent(ctx, {
@@ -142,6 +146,94 @@ export async function onDigestSent(ctx: MutationCtx, row: Doc<"events">): Promis
   });
   return { threaded: true };
 }
+
+async function markSurfaced(ctx: MutationCtx, surfacedTodoIds: unknown[], day: string | null): Promise<void> {
+  for (const raw of surfacedTodoIds) {
+    const todoId = typeof raw === "string" ? await resolveId(ctx, "todos", raw) : null;
+    if (todoId !== null) await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
+  }
+}
+
+type ThreadDigestAnswer = { appended: false; day: string; reason: string; id?: string }
+  | { appended: true; day: string; id: string };
+
+/** Append today's rendered digest and its numbered needs-you items to the
+ * Jarvis thread once the TTS day has begun. */
+export const appendThreadDigest = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<ThreadDigestAnswer> => {
+    const now = Date.now();
+    const day = ttsDayKey(now);
+    if (nyLocalHour(now) < TTS_DIGEST_NY_HOUR) {
+      return { appended: false, day, reason: "before 5 a.m. New York" };
+    }
+    const existing = await ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_DIGEST).eq("subject", day))
+      .order("desc")
+      .first();
+    if (existing !== null) return {
+      appended: false, day, reason: `the digest for ${day} is on the thread`, id: existing._id,
+    };
+    await ctx.runMutation(internal.ttsDigest.internalRollMissed, { day });
+    const previous = await ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST))
+      .order("desc")
+      .first();
+    const previousWindowEnd = (previous?.data as { windowEnd?: unknown } | undefined)?.windowEnd;
+    const since = typeof previousWindowEnd === "number" ? previousWindowEnd : now - DAY_MS;
+    const composed: { text: string; truncated: boolean; surfacedTodoIds: string[]; objectionAskIds: string[] } =
+      await ctx.runQuery(internal.ttsDigest.internalComposeToday, {
+      day,
+      now,
+      since,
+      // The composer's invitations describe Slack's "revert 2" and line-level
+      // "done" grammar, which the Jarvis thread does not route.
+      canReply: false,
+    });
+    const needsWindowStart = typeof previousWindowEnd === "number" ? previousWindowEnd : now - NEEDS_YOU_WINDOW_MS;
+    const opened = await ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gt("at", needsWindowStart).lte("at", now))
+      .order("asc")
+      .take(200);
+    const first = composed.objectionAskIds.length + 1;
+    const items = opened.map((row, index) => {
+      const data = (row.data ?? {}) as Record<string, unknown>;
+      return { n: first + index, key: row.subject as string, text: row.text ?? "",
+        ...(typeof data.todoId === "string" ? { todoId: data.todoId } : {}),
+        ...(typeof data.job === "string" ? { job: data.job } : {}),
+      };
+    });
+    // The next digest begins at this window's end, so each opening appears in
+    // exactly one thread digest.
+    // The box runs this before its Slack post, so Slack omits flagged captures
+    // the thread already showed. Slack is being retired (Tom, 2026-10-02).
+    await markSurfaced(ctx, composed.surfacedTodoIds, day);
+    const id = await insertEvent(ctx, {
+      kind: THREAD_DIGEST,
+      at: now,
+      provenance: { job: "digest" },
+      subject: day,
+      text: composed.text,
+      data: { day, since, windowEnd: now, truncated: composed.truncated,
+        surfacedTodoIds: composed.surfacedTodoIds,
+        objectionAskIds: composed.objectionAskIds,
+        items,
+      },
+    });
+    return { appended: true, day, id };
+  },
+});
+
+/** POST /jarvis/thread/digest — append today's digest to the Jarvis thread. */
+export const threadDigestRoute = httpAction(async (ctx, request) => {
+  const denied = jarvisAuth(request);
+  if (denied) return denied;
+  const answer: ThreadDigestAnswer = await ctx.runMutation(internal.jarvis.digest.appendThreadDigest, {});
+  return jsonResponse(200, { ok: true, ...answer });
+});
 
 /** The needs-you-posted hook: his reply in the digest's thread finds the
  *  needs-you reply above it through this slack-sent row (subject: the todo,
@@ -290,4 +382,3 @@ export const channelRoute = httpAction(async (_ctx, request) => {
   if (denied) return denied;
   return jsonResponse(200, { ok: true, channel: outputChannel() });
 });
-

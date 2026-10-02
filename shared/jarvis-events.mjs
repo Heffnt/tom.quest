@@ -66,9 +66,15 @@ export const EVENT_KINDS = [
   // and the weekly count it on its todo (convex/ttsDigest.ts, ttsWeekly.ts).
   "session-outcome",
   // The Jarvis thread (convex/thread.ts, the /thread page): a message Tom
-  // typed there, and Jarvis's one-line answer posted back by the box.
+  // typed there, Jarvis's one-line answer posted back by the box, and the
+  // day's digest as a message from Jarvis on the thread. appendThreadDigest
+  // in convex/jarvis/digest.ts writes it once per day; subject is the day key,
+  // text is the rendered digest, and data is { day, since, windowEnd,
+  // truncated, surfacedTodoIds, objectionAskIds, items }, where items is the
+  // numbered needs-you list [{ n, key, text, todoId?, job? }].
   "thread-message",
   "thread-reply",
+  "thread-digest",
   // One row per worker run, posted by Jarvis scripts/codex-run.mjs at the end
   // of a Codex run whose stdin was a brief and whose --cwd is inside a git
   // checkout, under the workspace-write sandbox. The actor is the agent
@@ -130,10 +136,12 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set, a work run's repo and commit.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "thread-digest"];
 
-/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
-export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
+/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything
+ * else. `answer` is written only by convex/thread.ts when Tom's reply under a
+ * thread digest answered a numbered item; the box's classifier never answers it. */
+export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question", "answer"];
 
 /**
  * The kinds whose writer retries with a stable `data.id`: a second row of the
