@@ -44,7 +44,7 @@ import {
 import { redactSecrets } from "../shared/redact.mjs";
 import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
-import { resolveId, todoEvents, todoReader } from "./jarvis/tables";
+import { resolveId, todoIdForms, todoReader } from "./jarvis/tables";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -234,21 +234,27 @@ export function calendarLeadText(spans: { start: number; end: number; allDay: bo
   return `Your day is committed from ${from} to ${to}.`;
 }
 
-// Bounded newest-first walk of dtsEvents for a kind, the internalLastEventAt
-// pattern: dtsEvents is busy instrumentation, and if the kind is not inside
-// this many rows "never" is the honest answer.
-const EVENT_SCAN = 2000;
-/** The most box-change rows, and deploy rows, one digest reads. A day holds
- *  tens (every sudo run, unit change, login and state change, folded). */
-const BOX_SCAN = 2000;
+/** A day normally has hundreds of legacy events; the cap bounds the busy instrumentation window. */
+export const EVENT_SCAN = 2000;
+/** A day normally has tens of deploy rows; the cap bounds that kind's catch-up window. */
+export const BOX_SCAN = 2000;
 
-// The same shape for the email-capture read: the newest rows on the source
-// index, cut at the window. A window holding more email captures than this is
-// a mail flood, and the morning message is a morning read.
-const CAPTURE_SCAN = 500;
+/** A day normally has tens of email captures; the cap bounds a mail-flood window. */
+export const CAPTURE_SCAN = 500;
 
-// How many delegate decisions one morning's objection list is gathered from.
-const OBJECTION_SCAN = 200;
+/** A day normally has a handful of decisions; the cap bounds each objection source. */
+export const OBJECTION_SCAN = 200;
+
+/** A day normally has tens of dated todos; the cap keeps a long backlog inside one digest read. */
+export const DATED_SCAN = 500;
+/** A day normally has tens of calendar rows; the cap bounds each 31-day overlap scan. */
+export const CALENDAR_SCAN = 500;
+/** A day normally has tens of prepared todos; the cap keeps their large explanations within the read budget. */
+export const READY_SCAN = 200;
+/** A day normally has a handful of flagged emails; the cap bounds their per-todo surfaced checks. */
+export const FLAGGED_SCAN = 100;
+/** A todo normally has one surfaced row per channel; the cap bounds each id-form lookup. */
+export const SURFACED_SCAN = 50;
 
 /**
  * The newest "digest-sent" row: which day went out last, and where that run's
@@ -340,7 +346,8 @@ export async function gatherTodayFacts(
       .withIndex("by_status_and_due", (q) =>
         q.eq("status", "active").gte("dueAt", 0).lt("dueAt", dayEnd),
       )
-      .collect()
+      .order("asc")
+      .take(DATED_SCAN)
   )
     .filter((t) => t.dueAt !== undefined)
     .sort((a, b) => (a.dueAt as number) - (b.dueAt as number))
@@ -366,7 +373,7 @@ export async function gatherTodayFacts(
   const blockRows = await ctx.db
     .query("blocks")
     .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
-    .collect();
+    .take(CALENDAR_SCAN);
   const spans: { start: number; end: number; title: string; allDay: boolean }[] = [];
   for (const b of blockRows) {
     if (b.end <= dayStart) continue;
@@ -380,7 +387,7 @@ export async function gatherTodayFacts(
   for (const e of await ctx.db
     .query("ttsCalendarEvents")
     .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
-    .collect()) {
+    .take(CALENDAR_SCAN)) {
     if (e.end <= dayStart) continue;
     if (feedIsPrivate(e.feed, privateFeeds)) continue;
     spans.push({ start: e.start, end: e.end, title: e.title, allDay: e.allDay });
@@ -415,15 +422,22 @@ export async function gatherTodayFacts(
   //    field is never cleared: it is what the triage judged at capture, and
   //    the reader decides what is still to be said. Gmail's "email" is the one
   //    mail source that captures today; Outlook's joins when its poller does.
-  const flagged = recentEmail.filter(
-    (t) => t.needsTomToday !== undefined && t.status === "active" && t.createdAt < now,
-  );
+  const flagged = recentEmail
+    .filter((t) => t.needsTomToday !== undefined && t.status === "active" && t.createdAt < now)
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(0, FLAGGED_SCAN);
   const unshown: typeof flagged = [];
   for (const t of flagged) {
     // The surfaced rows name the todo by either id.
-    const shown = (await todoEvents(ctx, t._id)).some(
-      (e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest",
-    );
+    let shown = false;
+    for (const form of await todoIdForms(ctx, t._id)) {
+      const surfaced = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_todo_kind", (q) => q.eq("todoId", form).eq("kind", "surfaced"))
+        .order("desc")
+        .take(SURFACED_SCAN);
+      shown ||= surfaced.some((e) => (e.data as { via?: unknown } | undefined)?.via === "digest");
+    }
     if (!shown) unshown.push(t);
   }
   const needsYou = unshown
@@ -886,7 +900,9 @@ export async function gatherTodayFacts(
   const preparedRows: Doc<"todos">[] = await ctx.db
     .query("todos")
     .withIndex("by_readiness", (q) => q.eq("readiness", "prepared"))
-    .collect();
+    .order("desc")
+    .take(READY_SCAN);
+  // At the cap the ready count is a floor: the digest says how many are waiting, not an inventory.
   const readyIds = new Set<string>();
   for (const t of preparedRows) {
     if (t.status !== "active" || datedIds.has(t._id as string)) continue;
@@ -1001,11 +1017,8 @@ export async function gatherTodayFacts(
   };
 }
 
-/** The most agents one digest reads for the spend section. It bounds the
- *  read far below a query's read limit whatever the rows hold, so a busy day
- *  costs the section its completeness, said in its text, and never costs the
- *  digest. */
-const SPEND_SCAN = 1000;
+/** A day normally has hundreds of agent runs; the cap bounds the spend read and makes its totals floors. */
+export const SPEND_SCAN = 1000;
 
 type RunFields = Pick<Doc<"runs">, "model" | "cli" | "kind" | "parentRunId" | "outcome">;
 
