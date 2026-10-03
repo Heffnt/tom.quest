@@ -138,6 +138,134 @@ describe("POST /jarvis/digest", () => {
   });
 });
 
+describe("POST /jarvis/thread/digest", () => {
+  it("requires the worker key and appends nothing before 5 a.m. New York", async () => {
+    const t = setup(NIGHT);
+    expect((await t.fetch("/jarvis/thread/digest", { method: "POST" })).status).toBe(401);
+    const answer = await (await post(t, "/jarvis/thread/digest", {})).json();
+    expect(answer).toMatchObject({ ok: true, appended: false, day: "2026-09-25", reason: "before 5 a.m. New York" });
+    expect(await ofKind(t, "events", "thread-digest")).toHaveLength(0);
+  });
+
+  it("appends one digest with needs-you numbered after objections, then returns its id", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "digest-line",
+        at: MORNING - 4_000,
+        provenance: {},
+        subject: "ask-1",
+        data: { section: "decisions", askId: "ask-1", decision: "Use the synthetic first choice." },
+      });
+      await ctx.db.insert("events", {
+        kind: "digest-line",
+        at: MORNING - 3_000,
+        provenance: {},
+        subject: "ask-2",
+        data: { section: "decisions", askId: "ask-2", decision: "Use the synthetic second choice." },
+      });
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING - 2_000,
+        provenance: {},
+        subject: "need-todo",
+        data: { key: "need-todo", todoId: "synthetic-todo" },
+        text: "Settle the synthetic todo.",
+      });
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING - 1_000,
+        provenance: {},
+        subject: "need-job",
+        data: { key: "need-job", job: "synthetic-job" },
+        text: "Settle the synthetic job.",
+      });
+    });
+    const first = await (await post(t, "/jarvis/thread/digest", {})).json();
+    expect(first).toMatchObject({ ok: true, appended: true, day: DAY, id: expect.any(String) });
+    const [row] = await ofKind(t, "events", "thread-digest");
+    expect(row).toMatchObject({ _id: first.id, subject: DAY, provenance: { job: "digest" } });
+    const data = row.data as { objectionAskIds: string[]; items: Array<Record<string, unknown>> };
+    expect(data.objectionAskIds).toHaveLength(2);
+    expect(data.items).toEqual([
+      { n: 3, key: "need-todo", text: "Settle the synthetic todo.", todoId: "synthetic-todo" },
+      { n: 4, key: "need-job", text: "Settle the synthetic job.", job: "synthetic-job" },
+    ]);
+
+    const second = await (await post(t, "/jarvis/thread/digest", {})).json();
+    expect(second).toMatchObject({
+      ok: true,
+      appended: false,
+      day: DAY,
+      id: first.id,
+      reason: `the digest for ${DAY} is on the thread`,
+    });
+  });
+
+  it("lists a boundary-time opening once and does not relist a previously listed opening", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING - 1_000,
+        provenance: {},
+        subject: "first-window",
+        data: { key: "first-window", job: "first-job" },
+        text: "First window.",
+      });
+    });
+    expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: DAY });
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING,
+        provenance: {},
+        subject: "boundary-opening",
+        data: { key: "boundary-opening", job: "boundary-job" },
+        text: "Boundary opening.",
+      });
+    });
+    vi.setSystemTime(MORNING + 86_400_000);
+    expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: "2026-09-27" });
+    const rows = await ofKind(t, "events", "thread-digest");
+    const next = rows.find((row) => row.subject === "2026-09-27");
+    expect((next?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["boundary-opening"]);
+  });
+
+  it("lists all 201 openings once", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 201; n += 1) {
+        const key = `need-${n + 1}`;
+        await ctx.db.insert("events", {
+          kind: "needs-you-opened",
+          at: MORNING - 201_000 + n * 1_000,
+          provenance: {},
+          subject: key,
+          data: { key },
+          text: `Need ${n + 1}.`,
+        });
+      }
+    });
+
+    expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: DAY });
+    let rows = await ofKind(t, "events", "thread-digest");
+    const first = rows.find((row) => row.subject === DAY);
+    const firstData = first?.data as { objectionAskIds: string[]; items: Array<Record<string, unknown>> };
+    expect(firstData.objectionAskIds).toEqual([]);
+    expect(firstData.items).toEqual(
+      Array.from({ length: 201 }, (_, index) => ({ n: index + 1, key: `need-${index + 1}`, text: `Need ${index + 1}.` })),
+    );
+
+    vi.setSystemTime(MORNING + 86_400_000);
+    expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: "2026-09-27" });
+    rows = await ofKind(t, "events", "thread-digest");
+    const next = rows.find((row) => row.subject === "2026-09-27");
+    expect((next?.data as { items: Array<Record<string, unknown>> }).items).toEqual([]);
+  });
+});
+
 describe("the digest outbox", () => {
   it("lists one subject once from 5 a.m. New York to the next 5 a.m.", async () => {
     const beforeMidnight = Date.parse("2026-09-26T03:59:00Z"); // 23:59 New York
