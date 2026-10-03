@@ -267,10 +267,14 @@ describe("waiting on Tom", () => {
     const now = Date.now();
     await t.run(async (ctx) => {
       const answered = await insertTodo(ctx, todo("answered"));
+      const answeredOnThread = await insertTodo(ctx, todo("answered on thread"));
       const open = await insertTodo(ctx, todo("open"));
-      await ctx.db.insert("dtsEvents", { at: now - 2_000, kind: "needs-tom", todoId: answered });
+      await ctx.db.insert("dtsEvents", { at: now - 2_000, kind: "needs-tom", key: "slack-answer", todoId: answered });
       await ctx.db.insert("dtsEvents", { at: now - 1_000, kind: "slack-event", todoId: answered });
-      await ctx.db.insert("dtsEvents", { at: now - 3_000, kind: "needs-tom", todoId: open });
+      await ctx.db.insert("dtsEvents", { at: now - 2_500, kind: "needs-tom", key: "thread-answer", todoId: answeredOnThread });
+      await ctx.db.insert("events", { at: now - 1_500, kind: "needs-tom-answered", provenance: { user: "tom" },
+        subject: "thread-answer", data: { answer: "done", via: "thread" } });
+      await ctx.db.insert("dtsEvents", { at: now - 3_000, kind: "needs-tom", key: "open", todoId: open });
     });
     const answer = await tom.query(api.observe.waitingOnTom, {});
     expect(answer.waiting).toBe(1);

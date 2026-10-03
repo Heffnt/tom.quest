@@ -31,7 +31,7 @@ import { postRuling } from "./rulings";
 import { channelRoute, digestRoute, needsYouRoute, threadDigestRoute } from "./digest";
 import { tickRoute } from "./tick";
 import { pushRoute } from "../push";
-import { DELEGATE_ONLY_KINDS, TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
+import { DELEGATE_ONLY_KINDS, RECORD_ONLY_KINDS, TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
 
 export const postEvent = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);
@@ -49,6 +49,10 @@ export const postEvent = httpAction(async (ctx, request) => {
   }
   if ((DELEGATE_ONLY_KINDS as readonly string[]).includes(checked.event.kind)) {
     return jsonResponse(403, { error: `${checked.event.kind} is written only by POST /tts/ask` });
+  }
+  // Only record mutations write these; readers trust their writer-owned shape.
+  if ((RECORD_ONLY_KINDS as readonly string[]).includes(checked.event.kind)) {
+    return jsonResponse(403, { error: `${checked.event.kind} is written only by the record` });
   }
   try {
     const { id, result } = await ctx.runMutation(internal.jarvis.events.record, checked.event);

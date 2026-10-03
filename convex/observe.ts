@@ -40,6 +40,7 @@ import {
   pullRequestChange,
 } from "./ttsShared";
 import { NEEDS_TOM } from "./ttsSlack";
+import { NEEDS_TOM_ANSWERED } from "./jarvis/outbox";
 import { BOX_CHANGE, DEPLOY, redactedBoxChange, type BoxChange } from "./boxChanges";
 import { EVENT_KINDS } from "../shared/jarvis-events.mjs";
 import { todoHasEventSince, todoReader } from "./jarvis/tables";
@@ -455,7 +456,16 @@ export const waitingOnTom = query({
       // that settles a thread is found on the todo, so counting such a row
       // would be counting something that can never stop waiting.
       if (todoId === undefined) continue;
-      // His reply itself, not a page of the todo's events that might not
+      const threadReply = event.key === undefined ? null : await ctx.db
+        .query("events")
+        .withIndex("by_kind_subject_at", (q) =>
+          q.eq("kind", NEEDS_TOM_ANSWERED).eq("subject", event.key).gte("at", event.at))
+        .first();
+      if (threadReply !== null) continue;
+      // The slack-event branch cannot be deleted yet because answers given
+      // before the thread exist only as slack-event rows, until phase 2 retires
+      // this reader.
+      // Read his reply itself, not a page of the todo's events that might not
       // reach it: a busy todo can carry any number of rows after the thread
       // was opened, and a cutoff there counts a settled todo as still waiting.
       // Under either id the rows store the todo by (convex/jarvis/tables.ts).

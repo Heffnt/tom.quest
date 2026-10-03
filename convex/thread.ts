@@ -10,7 +10,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { DAY_LOG_ENTRY_MAX } from "./dayLog";
-import { THREAD_DIGEST } from "./jarvis/digest";
+import { NEEDS_TOM_ANSWERED, THREAD_DIGEST, THREAD_NEEDS_YOU } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 import { logEvent } from "./tts";
 import { answerNeedsYou, numberedReply } from "./ttsSlack";
@@ -193,19 +193,20 @@ type NeedsSubject = Extract<SlackSubject, { kind: "todo" | "job" }>;
 type AnswerOutcome = Awaited<ReturnType<typeof answerNeedsYou>>;
 
 function digestItems(data: unknown): DigestItem[] {
-  const rows = (data as { items?: unknown } | undefined)?.items;
-  if (!Array.isArray(rows)) return [];
-  return rows.flatMap((value) => {
-    if (value === null || typeof value !== "object") return [];
-    const item = value as Record<string, unknown>;
-    if (!Number.isInteger(item.n) || (item.n as number) < 1 || typeof item.key !== "string" || typeof item.text !== "string") {
-      return [];
-    }
-    return [{ n: item.n as number, key: item.key, text: item.text,
-      ...(typeof item.todoId === "string" ? { todoId: item.todoId } : {}),
-      ...(typeof item.job === "string" ? { job: item.job } : {}),
-    }];
-  });
+  // RECORD_ONLY_KINDS keeps worker-key writers out, so the writer's type is trusted.
+  return (data as { items: DigestItem[] }).items;
+}
+
+async function laterDigestItems(ctx: QueryCtx, digestId: Id<"events">): Promise<DigestItem[]> {
+  const items: DigestItem[] = [];
+  for await (const row of ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) =>
+      q.eq("kind", THREAD_NEEDS_YOU).eq("subject", digestId))) {
+    const data = row.data as Omit<DigestItem, "text">;
+    items.push({ ...data, text: row.text ?? "" });
+  }
+  return items;
 }
 
 function answerText(n: number, subject: NeedsSubject, outcome: AnswerOutcome): string {
@@ -216,7 +217,6 @@ function answerText(n: number, subject: NeedsSubject, outcome: AnswerOutcome): s
       return subject.kind === "todo"
         ? `Item ${n}: your reply is a note on its todo.`
         : `Item ${n}: your reply is a note on the ${subject.id} job.`;
-    default: return `Item ${n}: answered (${outcome.outcome}).`;
   }
 }
 
@@ -226,7 +226,8 @@ export const internalAnswerDigestReply = internalMutation({
     const digest = await ctx.db.get(digestId);
     if (digest?.kind !== THREAD_DIGEST || typeof digest.subject !== "string") throw new Error("A reply on the thread names a digest");
     const parsed = numberedReply(text);
-    const item = parsed === null ? undefined : digestItems(digest.data).find((one) => one.n === parsed.n);
+    const items = [...digestItems(digest.data), ...await laterDigestItems(ctx, digestId)];
+    const item = parsed === null ? undefined : items.find((one) => one.n === parsed.n);
     const itemSubject: NeedsSubject | undefined = item?.todoId !== undefined
       ? { kind: "todo", id: item.todoId as Id<"todos"> | Id<"dtsTodos"> }
       : item?.job !== undefined ? { kind: "job", id: item.job } : undefined;
@@ -237,6 +238,12 @@ export const internalAnswerDigestReply = internalMutation({
         { text, said: parsed.rest, numbered: true },
         { threadDigestId: digestId, threadMessageId: messageId },
       );
+      await insertEvent(ctx, {
+        kind: NEEDS_TOM_ANSWERED,
+        provenance: { user: "tom" },
+        subject: item.key,
+        data: { answer: parsed.rest === "" ? text : parsed.rest, via: "thread" },
+      });
       await insertEvent(ctx, { kind: "thread-reply", subject: messageId,
         data: { kind: "answer", outcome: outcome.outcome, n: item.n },
         text: answerText(item.n, itemSubject, outcome),
@@ -272,7 +279,7 @@ export const messages = query({
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
     const since = Date.now() - 60 * 24 * 60 * 60 * 1000;
-    const [messageRows, digestRows] = await Promise.all([
+    const [messageRows, digestRows, itemRows] = await Promise.all([
       ctx.db
         .query("events")
         .withIndex("by_kind_at", (q) => q.eq("kind", "thread-message").gte("at", since))
@@ -283,6 +290,11 @@ export const messages = query({
         .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST).gte("at", since))
         .order("desc")
         .take(60),
+      ctx.db
+        .query("events")
+        .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_NEEDS_YOU).gte("at", since))
+        .order("desc")
+        .take(500),
     ]);
     const digestIds = new Set<string>(digestRows.map((digest) => digest._id));
     const messages = await Promise.all(
@@ -308,7 +320,17 @@ export const messages = query({
         }))),
       };
     }));
-    return [...messages, ...digests].sort((a, b) => a.at - b.at);
+    const digestDays = new Map(digestRows.map((digest) => [digest._id as string, digest.subject as string]));
+    const items = itemRows.flatMap((row) => {
+      const digestId = row.subject as Id<"events">;
+      const day = digestDays.get(digestId);
+      // This cannot be deleted: an item whose capped parent is absent has no
+      // trustworthy day to group under on the page.
+      if (day === undefined) return [];
+      return [{ kind: "item" as const, id: row._id, at: row.at, digestId, day,
+        n: (row.data as { n: number }).n, text: row.text ?? "" }];
+    });
+    return [...messages, ...digests, ...items].sort((a, b) => a.at - b.at);
   },
 });
 
