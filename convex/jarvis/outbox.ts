@@ -7,6 +7,7 @@
 
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
+import { internal } from "../_generated/api";
 import { DAY_MS, outputChannel, ttsDayBoundsUtc, ttsDayKey } from "../ttsShared";
 import { insertEvent } from "./record";
 
@@ -14,6 +15,9 @@ export const DIGEST_SENT = "digest-sent";
 export const NEEDS_YOU_OPENED = "needs-you-opened";
 export const NEEDS_YOU_POSTED = "needs-you-posted";
 export const DIGEST_LINE = "digest-line";
+export const THREAD_DIGEST = "thread-digest";
+export const THREAD_NEEDS_YOU = "thread-needs-you";
+export const NEEDS_TOM_ANSWERED = "needs-tom-answered";
 
 /** How far back an opened needs-you is still posted. Older than this, it
  *  was opened while the box was down for days; it is in the record and on
@@ -134,6 +138,38 @@ export async function openNeedsYou(
     },
     text,
   });
+  const day = ttsDayKey(Date.now());
+  const digest = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_DIGEST).eq("subject", day))
+    .order("desc")
+    .first();
+  // This branch cannot be deleted: after today's digest exists the item must
+  // appear now; before it exists the morning digest remains its one writer.
+  if (digest !== null) {
+    const digestData = digest.data as { objectionAskIds: string[]; items: Array<{ n: number }> };
+    let last = Math.max(digestData.objectionAskIds.length, ...digestData.items.map((item) => item.n));
+    for await (const row of ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) =>
+        q.eq("kind", THREAD_NEEDS_YOU).eq("subject", digest._id))) {
+      last = Math.max(last, (row.data as { n: number }).n);
+    }
+    await insertEvent(ctx, {
+      kind: THREAD_NEEDS_YOU,
+      provenance: { job: "needs-you" },
+      subject: digest._id,
+      data: { n: last + 1, key,
+        ...(todoId === undefined ? {} : { todoId }),
+        ...(job === undefined ? {} : { job }),
+      },
+      text,
+    });
+    // The record pushes here rather than the box because both openers run in
+    // the record, and scheduling in the same transaction pushes exactly once
+    // per posted item.
+    await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, { title: "Needs you", body: "", url: "/thread" });
+  }
   return { opened: true, key };
 }
 

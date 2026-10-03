@@ -32,6 +32,7 @@ import {
   isCredentialKey,
 } from "./ttsIntegrations";
 import { JOB_FAILED, JOB_RECOVERED, failuresInWindow } from "./jarvis/jobs";
+import { NEEDS_TOM_ANSWERED } from "./jarvis/outbox";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, SESSION_OUTCOME, isPrepared, nyCalendarDayKey } from "./ttsShared";
@@ -817,8 +818,7 @@ export async function gatherWeeklyFacts(
   for (const f of jobFailures) f.lines.sort((a, b) => a.at - b.at);
 
   // 12. Threads that needed Tom this week and his reply time on each: the
-  // "needs-tom" rows, and for each the first Slack reply of his on that todo
-  // after it (the events route writes "slack-event" with the todo's id). The
+  // "needs-tom" rows, and for each the first reply of his after it. The
   // spec's own check against the system becoming controlling (principle 8):
   // reported as a duration, never as a judgement.
   const threads: WeeklyFacts["threads"] = [];
@@ -827,13 +827,22 @@ export async function gatherWeeklyFacts(
     const todo = await todoOf(e.todoId);
     if (todo === null) continue;
     const later = await todoEvents(ctx, todo._id, e.at);
-    const reply = later.find((r) => r.kind === "slack-event");
+    // The slack-event branch cannot be deleted yet because answers given
+    // before the thread exist only as slack-event rows, until phase 2 retires
+    // this reader.
+    const slackReply = later.find((r) => r.kind === "slack-event");
+    const threadReply = e.key === undefined ? null : await ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) =>
+        q.eq("kind", NEEDS_TOM_ANSWERED).eq("subject", e.key).gte("at", e.at))
+      .first();
+    const repliedAt = Math.min(slackReply?.at ?? Infinity, threadReply?.at ?? Infinity);
     threads.push({
       todoId: todo._id,
       statement: todo.statement,
       askedAt: e.at,
-      repliedAt: reply?.at ?? null,
-      replyMs: reply === undefined ? null : reply.at - e.at,
+      repliedAt: Number.isFinite(repliedAt) ? repliedAt : null,
+      replyMs: Number.isFinite(repliedAt) ? repliedAt - e.at : null,
     });
   }
 

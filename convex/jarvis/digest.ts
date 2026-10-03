@@ -55,12 +55,15 @@ import {
   NEEDS_YOU_OPENED,
   NEEDS_YOU_POSTED,
   NEEDS_YOU_WINDOW_MS,
+  THREAD_DIGEST,
+  THREAD_NEEDS_YOU,
   digestFacts,
   lastDigest,
   digestsSince,
 } from "./outbox";
 
-const THREAD_DIGEST = "thread-digest";
+/** The most pending needs-you items one digest or outbox read answers. */
+const PENDING_MAX = 200;
 
 /**
  * POST /jarvis/digest's mutation: is a digest due, and if so, the digest.
@@ -199,25 +202,32 @@ export const appendThreadDigest = internalMutation({
       .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST).gte("at", needsFrom))
       .order("desc")
       .take(10);
-    const listedKeys = new Set(recentDigests.flatMap((row) => {
-      const items = (row.data as { items?: unknown } | undefined)?.items;
-      return Array.isArray(items)
-        ? items.flatMap((item) => typeof item === "object" && item !== null && "key" in item
-          && typeof item.key === "string" ? [item.key] : [])
-        : [];
-    }));
+    const postedAfterDigest = await ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_NEEDS_YOU).gte("at", needsFrom))
+      .order("desc")
+      .take(PENDING_MAX);
+    const listedKeys = new Set([
+      ...recentDigests.flatMap((row) =>
+        (row.data as { items: Array<{ key: string }> }).items.map((item) => item.key)),
+      ...postedAfterDigest.map((row) => (row.data as { key: string }).key),
+    ]);
     // An opening is listed once, in the first thread digest after it opened,
     // found by its key rather than by a time boundary, because an opening's time
     // is taken when its transaction starts, not when it commits; an opening older
     // than NEEDS_YOU_WINDOW_MS that no digest listed is left to its todo, as the
     // Slack path leaves it.
-    const opened = await ctx.db
+    const opened: Doc<"events">[] = [];
+    for await (const row of ctx.db
       .query("events")
       .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gte("at", needsFrom))
-      .order("asc")
-      .collect();
+      .order("asc")) {
+      if (row.subject === undefined || listedKeys.has(row.subject)) continue;
+      opened.push(row);
+      if (opened.length >= PENDING_MAX) break;
+    }
     const first = composed.objectionAskIds.length + 1;
-    const items = opened.filter((row) => !listedKeys.has(row.subject as string)).map((row, index) => {
+    const items = opened.map((row, index) => {
       const data = (row.data ?? {}) as Record<string, unknown>;
       return { n: first + index, key: row.subject as string, text: row.text ?? "",
         ...(typeof data.todoId === "string" ? { todoId: data.todoId } : {}),
@@ -303,9 +313,6 @@ function threadOf(row: { data?: unknown } | undefined): Thread | null {
  * reply its number here, the next free one after the objection lines and the
  * replies already posted in the thread; the box writes it first ("<n> · …").
  */
-/** The most pending needs-you replies one read answers. */
-const PENDING_MAX = 200;
-
 export const pendingNeedsYou = internalQuery({
   args: {},
   handler: async (ctx): Promise<PendingNeedsYou> => {

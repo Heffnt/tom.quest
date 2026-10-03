@@ -1,15 +1,20 @@
 // thread.ts — the Jarvis thread's record side: Tom's one standing conversation
 // with Jarvis, on the /thread page. A message he types is an appended row of
-// the record's append-only `events` table, never a state row: it is written
-// only through insertEvent, and a box job (a later change) reads those rows
-// and appends its one-line reply under each.
+// the record's append-only `events` table. The box appends its one-line reply
+// under an ordinary message. It also appends each day's thread-digest; Tom's
+// messages under that digest are nested beneath it, and a numbered reply is
+// routed to the digest's matching needs-you item here.
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
+import { internalMutation, mutation, query, type QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { insertEvent } from "./jarvis/record";
 import { DAY_LOG_ENTRY_MAX } from "./dayLog";
-import { SESSION_REPOS } from "./ttsShared";
+import { NEEDS_TOM_ANSWERED, THREAD_DIGEST, THREAD_NEEDS_YOU } from "./jarvis/outbox";
+import { insertEvent } from "./jarvis/record";
+import { logEvent } from "./tts";
+import { answerNeedsYou, numberedReply } from "./ttsSlack";
+import { SESSION_REPOS, type SlackSubject } from "./ttsShared";
 
 const SURFACE = "Thread";
 
@@ -146,10 +151,13 @@ export const send = mutation({
     await requireTom(ctx, SURFACE);
     if (text.trim() === "") throw new Error("A message cannot be empty");
     if (text.length > DAY_LOG_ENTRY_MAX) throw new Error(`A message is at most ${DAY_LOG_ENTRY_MAX} characters`);
+    let digestId: Id<"events"> | undefined;
     if (subject !== undefined) {
       const named = await ctx.db.get(subject);
-      if (named === null || !(AGENT_CHANGE_KINDS as readonly string[]).includes(named.kind)) {
-        throw new Error("A reply names a change Jarvis reported");
+      if (named?.kind === THREAD_DIGEST) {
+        digestId = subject;
+      } else if (named === null || !(AGENT_CHANGE_KINDS as readonly string[]).includes(named.kind)) {
+        throw new Error("A reply names a change Jarvis reported or a digest");
       }
     }
     const id = await insertEvent(ctx, {
@@ -159,37 +167,170 @@ export const send = mutation({
       text,
       ...(subject === undefined ? {} : { subject }),
     });
+    if (digestId !== undefined) {
+      // The message is recorded verbatim before routing. The route therefore
+      // runs in a sub-mutation: a routing failure must not roll that message
+      // back, for the same reason ttsSlack.slackThreadReplyFrom isolates its
+      // routing transaction.
+      try {
+        const answered: null = await ctx.runMutation(
+          internal.thread.internalAnswerDigestReply, { digestId, messageId: id, text },
+        );
+        void answered;
+      } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        await insertEvent(ctx, { kind: "thread-reply", subject: id, data: { kind: "answer", error },
+          text: `Not answered: ${error}. Your reply is kept here.`,
+        });
+      }
+    }
     return { id };
   },
 });
+
+type DigestItem = { n: number; key: string; text: string; todoId?: string; job?: string };
+type NeedsSubject = Extract<SlackSubject, { kind: "todo" | "job" }>;
+type AnswerOutcome = Awaited<ReturnType<typeof answerNeedsYou>>;
+
+function digestItems(data: unknown): DigestItem[] {
+  // RECORD_ONLY_KINDS keeps worker-key writers out, so the writer's type is trusted.
+  return (data as { items: DigestItem[] }).items;
+}
+
+async function laterDigestItems(ctx: QueryCtx, digestId: Id<"events">): Promise<DigestItem[]> {
+  const items: DigestItem[] = [];
+  for await (const row of ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) =>
+      q.eq("kind", THREAD_NEEDS_YOU).eq("subject", digestId))) {
+    const data = row.data as Omit<DigestItem, "text">;
+    items.push({ ...data, text: row.text ?? "" });
+  }
+  return items;
+}
+
+function answerText(n: number, subject: NeedsSubject, outcome: AnswerOutcome): string {
+  switch (outcome.outcome) {
+    case "done": return `Item ${n}: its todo is marked done.`;
+    case "time-note": return `Item ${n}: the date is a time note on its todo.`;
+    case "tom-note":
+      return subject.kind === "todo"
+        ? `Item ${n}: your reply is a note on its todo.`
+        : `Item ${n}: your reply is a note on the ${subject.id} job.`;
+  }
+}
+
+export const internalAnswerDigestReply = internalMutation({
+  args: { digestId: v.id("events"), messageId: v.id("events"), text: v.string() },
+  handler: async (ctx, { digestId, messageId, text }): Promise<null> => {
+    const digest = await ctx.db.get(digestId);
+    if (digest?.kind !== THREAD_DIGEST || typeof digest.subject !== "string") throw new Error("A reply on the thread names a digest");
+    const parsed = numberedReply(text);
+    const items = [...digestItems(digest.data), ...await laterDigestItems(ctx, digestId)];
+    const item = parsed === null ? undefined : items.find((one) => one.n === parsed.n);
+    const itemSubject: NeedsSubject | undefined = item?.todoId !== undefined
+      ? { kind: "todo", id: item.todoId as Id<"todos"> | Id<"dtsTodos"> }
+      : item?.job !== undefined ? { kind: "job", id: item.job } : undefined;
+    if (parsed !== null && item !== undefined && itemSubject !== undefined) {
+      const outcome = await answerNeedsYou(
+        ctx,
+        { n: item.n, subject: itemSubject, answeredKey: `thread:${digestId}#${item.n}` },
+        { text, said: parsed.rest, numbered: true },
+        { threadDigestId: digestId, threadMessageId: messageId },
+      );
+      await insertEvent(ctx, {
+        kind: NEEDS_TOM_ANSWERED,
+        provenance: { user: "tom" },
+        subject: item.key,
+        data: { answer: parsed.rest === "" ? text : parsed.rest, via: "thread" },
+      });
+      await insertEvent(ctx, { kind: "thread-reply", subject: messageId,
+        data: { kind: "answer", outcome: outcome.outcome, n: item.n },
+        text: answerText(item.n, itemSubject, outcome),
+      });
+      return null;
+    }
+    const day = digest.subject;
+    await logEvent(ctx, "tom-note", undefined, { text, subject: { kind: "today", day }, day,
+      threadDigestId: digestId, threadMessageId: messageId });
+    await insertEvent(ctx, { kind: "thread-reply", subject: messageId, data: { kind: "fact" },
+      text: parsed === null
+        ? `Kept as a note on the ${day} digest.`
+        : `Kept as a note on the ${day} digest; no item is numbered ${parsed.n}.`,
+    });
+    return null;
+  },
+});
+
+type ReplyKind = "fact" | "todo" | "rule" | "errand" | "question" | "answer";
+
+async function newestReply(ctx: QueryCtx, messageId: Id<"events">) {
+  const reply = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-reply").eq("subject", messageId))
+    .order("desc")
+    .first();
+  const kind = typeof reply?.data?.kind === "string" ? reply.data.kind as ReplyKind : null;
+  return reply === null ? null : { at: reply.at, text: reply.text, kind };
+}
 
 export const messages = query({
   args: {},
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
     const since = Date.now() - 60 * 24 * 60 * 60 * 1000;
-    const rows = await ctx.db
-      .query("events")
-      .withIndex("by_kind_at", (q) => q.eq("kind", "thread-message").gte("at", since))
-      .order("desc")
-      .take(500);
-    const messages = await Promise.all(rows.map(async (row) => {
-      const reply = await ctx.db
+    const [messageRows, digestRows, itemRows] = await Promise.all([
+      ctx.db
         .query("events")
-        .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-reply").eq("subject", row._id))
+        .withIndex("by_kind_at", (q) => q.eq("kind", "thread-message").gte("at", since))
         .order("desc")
-        .first();
-      const kind =
-        typeof reply?.data?.kind === "string" ? (reply.data.kind as "fact" | "todo" | "rule" | "errand" | "question") : null;
-      return {
-        id: row._id,
-        at: row.at,
-        text: row.text,
-        subject: row.subject ?? null,
-        reply: reply === null ? null : { at: reply.at, text: reply.text, kind },
+        .take(500),
+      ctx.db
+        .query("events")
+        .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST).gte("at", since))
+        .order("desc")
+        .take(60),
+      ctx.db
+        .query("events")
+        .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_NEEDS_YOU).gte("at", since))
+        .order("desc")
+        .take(500),
+    ]);
+    const digestIds = new Set<string>(digestRows.map((digest) => digest._id));
+    const messages = await Promise.all(
+      messageRows
+        .filter((row) => row.subject === undefined || !digestIds.has(row.subject))
+        .map(async (row) => ({ kind: "message" as const,
+          id: row._id, at: row.at, text: row.text, subject: row.subject ?? null,
+          reply: await newestReply(ctx, row._id),
+        })),
+    );
+    const digests = await Promise.all(digestRows.map(async (digest) => {
+      const replies = await ctx.db
+        .query("events")
+        .withIndex("by_kind_subject_at", (q) =>
+          q.eq("kind", "thread-message").eq("subject", digest._id))
+        .order("asc")
+        .take(500);
+      return { kind: "digest" as const, id: digest._id, at: digest.at,
+        day: digest.subject as string, text: digest.text,
+        items: digestItems(digest.data).map(({ n, text }) => ({ n, text })),
+        replies: await Promise.all(replies.map(async (row) => ({ id: row._id, at: row.at, text: row.text,
+          reply: await newestReply(ctx, row._id),
+        }))),
       };
     }));
-    return messages.sort((a, b) => a.at - b.at);
+    const digestDays = new Map(digestRows.map((digest) => [digest._id as string, digest.subject as string]));
+    const items = itemRows.flatMap((row) => {
+      const digestId = row.subject as Id<"events">;
+      const day = digestDays.get(digestId);
+      // This cannot be deleted: an item whose capped parent is absent has no
+      // trustworthy day to group under on the page.
+      if (day === undefined) return [];
+      return [{ kind: "item" as const, id: row._id, at: row.at, digestId, day,
+        n: (row.data as { n: number }).n, text: row.text ?? "" }];
+    });
+    return [...messages, ...digests, ...items].sort((a, b) => a.at - b.at);
   },
 });
 

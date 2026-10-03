@@ -1,25 +1,28 @@
 "use client";
 
 // The Jarvis thread: Tom's one standing conversation with Jarvis. It reads
-// four sources merged by time — his thread messages (api.thread.messages),
-// Jarvis's changes (api.thread.changes),
-// the day log (api.dayLog.page, the /log page's query) and the #dump captures
-// (api.tts.listTodos, filtered to source "slack-capture") — and derives each
-// reply line from what the record already holds. A message he types here is
-// appended to the record's events table; a box job reads those rows and posts
-// Jarvis's one-line reply back under each.
+// four sources merged by time — his messages and Jarvis's daily digests
+// (api.thread.messages), Jarvis's changes (api.thread.changes), the day log
+// (api.dayLog.page, the /log page's query) and the #dump captures
+// (api.tts.listTodos, filtered to source "slack-capture"). A message he types
+// is appended to the events table; replies to changes appear under the change,
+// replies to digests are nested under the digest, and a box job answers
+// ordinary messages.
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
+import { slackSegments } from "./digest-text";
 
 const ZONE = "America/New_York";
 const WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
 
-type Kind = "fact" | "todo" | "rule" | "errand" | "question";
+type Kind = "fact" | "todo" | "rule" | "errand" | "question" | "answer";
+
+type Reply = { at: number; text: string; kind: Kind | null } | null;
 
 type Said = {
   id: string;
@@ -32,13 +35,17 @@ type Said = {
   needsTom: boolean;
 };
 
-type ThreadMessage = {
-  id: Id<"events">;
-  at: number;
-  text: string;
-  subject: Id<"events"> | null;
-  reply: { at: number; text: string; kind: string | null } | null;
-};
+type ThreadMessage =
+  | { kind: "message"; id: Id<"events">; at: number; text: string;
+      subject: Id<"events"> | null; reply: Reply }
+  | { kind: "digest"; id: Id<"events">; at: number; day: string; text: string;
+      items: Array<{ n: number; text: string }>;
+      replies: Array<{ id: Id<"events">; at: number; text: string; reply: Reply }> }
+  | { kind: "item"; id: Id<"events">; at: number; digestId: Id<"events">;
+      day: string; n: number; text: string };
+
+type DigestEntry = Extract<ThreadMessage, { kind: "digest" }>;
+type NeedsYouEntry = Extract<ThreadMessage, { kind: "item" }>;
 
 type AgentChange = {
   id: Id<"events">;
@@ -50,7 +57,13 @@ type AgentChange = {
 
 type FeedItem =
   | { type: "said"; id: string; at: number; day: string; said: Said }
+  | { type: "digest"; id: string; at: number; day: string; digest: DigestEntry }
+  | { type: "item"; id: string; at: number; day: string; item: NeedsYouEntry }
   | { type: "change"; id: string; at: number; day: string; change: AgentChange; replies: Said[] };
+
+type ReplyTarget =
+  | { kind: "change"; id: Id<"events"> }
+  | { kind: "digest"; id: Id<"events">; day: string };
 
 type LogItem = {
   _id: string;
@@ -120,7 +133,7 @@ function fromCapture(todo: Doc<"todos">): Said {
   return { ...base, kind: "todo", line: "waiting for a session" };
 }
 
-function fromThread(message: ThreadMessage): Said {
+function fromThread(message: Extract<ThreadMessage, { kind: "message" }>): Said {
   const base = { id: message.id, at: message.at, day: dayKey.format(message.at), text: message.text };
   if (message.reply !== null) {
     const kind = message.reply.kind as Kind;
@@ -153,16 +166,30 @@ export default function ThreadClient() {
     const said: Said[] = [
       ...(entries ?? []).filter((e) => e.threadMessageId === undefined).map(fromLog),
       ...(todos ?? []).filter((t) => t.threadMessageId === undefined && t.source === "slack-capture" && t.createdAt >= since).map(fromCapture),
-      ...(messages ?? []).filter((message) => message.subject === null).map(fromThread),
+      ...(messages ?? []).flatMap((message) =>
+        message.kind === "message" && message.subject === null ? [fromThread(message)] : []),
     ];
     const replies = new Map<string, Said[]>();
     for (const message of messages ?? []) {
-      if (message.subject === null) continue;
+      if (message.kind !== "message" || message.subject === null) continue;
       const reply = fromThread(message);
       replies.set(message.subject, [...(replies.get(message.subject) ?? []), reply]);
     }
     const feed: FeedItem[] = [
       ...said.map((s): FeedItem => ({ type: "said", id: s.id, at: s.at, day: s.day, said: s })),
+      ...(messages ?? []).flatMap((message): FeedItem[] => message.kind === "digest" ? [{
+        type: "digest",
+        id: message.id,
+        at: message.at,
+        day: message.day,
+        digest: message,
+      }] : message.kind === "item" ? [{
+        type: "item",
+        id: message.id,
+        at: message.at,
+        day: message.day,
+        item: message,
+      }] : []),
       ...(changes ?? []).map((change): FeedItem => ({
         type: "change",
         id: change.id,
@@ -187,24 +214,118 @@ export default function ThreadClient() {
   );
 }
 
+function SlackText({ text }: { text: string }) {
+  return slackSegments(text).map((segment, index) => "href" in segment ? (
+    <a
+      key={index}
+      href={segment.href}
+      {...(segment.href.startsWith("https://") ? { target: "_blank", rel: "noreferrer" } : {})}
+      className="underline underline-offset-2 hover:text-accent"
+    >
+      {segment.text}
+    </a>
+  ) : <span key={index}>{segment.text}</span>);
+}
+
+function DigestRow({ digest, replying, onReply }: { digest: DigestEntry; replying: boolean; onReply: () => void }) {
+  return (
+    <li className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-0.5">
+      <time dateTime={new Date(digest.at).toISOString()} className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint">
+        {clock.format(digest.at)}
+      </time>
+      <div className="min-w-0">
+        <p className="font-mono text-[11px] leading-5 text-text-faint">Jarvis · digest</p>
+        <p className="whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-[15px] leading-6 text-text">
+          <SlackText text={digest.text} />
+        </p>
+        {digest.items.length > 0 && (
+          <ol className="mt-2 space-y-1 pl-3">
+            {digest.items.map((item) => (
+              <li key={item.n} className="flex gap-1 text-sm leading-5 text-text-muted">
+                <span className="shrink-0 font-mono text-[11px] text-text-faint">{item.n} ·</span>
+                <span className="whitespace-pre-wrap break-words"><SlackText text={item.text} /></span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+      {digest.replies.map((reply) => {
+        const needsTom = reply.reply?.kind === "question";
+        return (
+          <div key={reply.id} className="contents">
+            <time dateTime={new Date(reply.at).toISOString()} className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint">
+              {clock.format(reply.at)}
+            </time>
+            <p className="whitespace-pre-wrap break-words border-l-2 border-accent/60 pl-3 text-[15px] leading-6 text-text">{reply.text}</p>
+            <span className={`font-mono text-[11px] leading-5 ${needsTom ? "text-accent" : "text-text-faint"}`}>
+              {reply.reply?.kind ?? ""}
+            </span>
+            <p className={`break-words pl-3.5 text-sm leading-5 ${needsTom ? "text-text" : reply.reply ? "text-text-muted" : "text-text-faint"}`}>
+              {reply.reply?.text ?? "not processed yet"}
+            </p>
+          </div>
+        );
+      })}
+      <span />
+      <div className="flex justify-end pt-1">
+        <button
+          type="button"
+          aria-pressed={replying}
+          onClick={onReply}
+          className={`w-20 rounded-md border px-2 py-1 text-xs hover:bg-surface-alt hover:text-text ${replying ? "border-accent/60 bg-surface-alt text-text" : "border-border text-text-muted"}`}
+        >
+          {replying ? "Replying" : "Reply"}
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function NeedsYouRow({ item, replying, onReply }: { item: NeedsYouEntry; replying: boolean; onReply: () => void }) {
+  return (
+    <li className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-0.5">
+      <time dateTime={new Date(item.at).toISOString()} className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint">{clock.format(item.at)}</time>
+      <div className="min-w-0">
+        <p className="font-mono text-[11px] leading-5 text-text-faint">Jarvis · needs you</p>
+        <p className="whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-[15px] leading-6 text-text">
+          <span className="mr-1 font-mono text-[11px] text-text-faint">{item.n} ·</span><SlackText text={item.text} />
+        </p>
+      </div>
+      <span />
+      <div className="flex justify-end pt-1">
+        <button
+          type="button" aria-pressed={replying} onClick={onReply}
+          className={`w-20 rounded-md border px-2 py-1 text-xs hover:bg-surface-alt hover:text-text ${replying ? "border-accent/60 bg-surface-alt text-text" : "border-border text-text-muted"}`}
+        >
+          {replying ? "Replying" : "Reply"}
+        </button>
+      </div>
+    </li>
+  );
+}
+
 function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; loading: boolean }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [replying, setReplying] = useState<AgentChange | null>(null);
+  const [target, setTarget] = useState<ReplyTarget | null>(null);
   const send = useMutation(api.thread.send);
   const now = Date.now();
   const today = dayKey.format(now);
   const yesterday = dayKey.format(now - 24 * 60 * 60 * 1000);
   const canSend = draft.trim() !== "" && !sending;
+  const composerLabel = target === null
+    ? "Message Jarvis"
+    : target.kind === "digest" ? `Reply to the ${target.day} digest` : "Reply to Jarvis";
 
   async function submit() {
     if (draft.trim() === "" || sending) return;
     setSending(true);
     setFailed(false);
     try {
-      await send({ text: draft });
+      await send({ text: draft, ...(target === null ? {} : { subject: target.id }) });
       setDraft("");
+      setTarget(null);
     } catch {
       setFailed(true);
     } finally {
@@ -228,9 +349,32 @@ function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; load
               <ol className="space-y-3">
                 {items.map((item) => item.type === "said" ? (
                   <MessageRow key={item.id} message={item.said} />
+                ) : item.type === "digest" ? (
+                  <DigestRow
+                    key={item.id}
+                    digest={item.digest}
+                    replying={target?.id === item.id}
+                    onReply={() => setTarget(target?.id === item.id
+                      ? null
+                      : { kind: "digest", id: item.digest.id, day: item.day })}
+                  />
+                ) : item.type === "item" ? (
+                  <NeedsYouRow
+                    key={item.id}
+                    item={item.item}
+                    replying={target?.id === item.item.digestId}
+                    onReply={() => setTarget(target?.id === item.item.digestId
+                      ? null
+                      : { kind: "digest", id: item.item.digestId, day: item.day })}
+                  />
                 ) : (
                   <Fragment key={item.id}>
-                    <ChangeRow change={item.change} onReply={() => setReplying(item.change)} />
+                    <ChangeRow
+                      change={item.change}
+                      onReply={() => setTarget(target?.id === item.id
+                        ? null
+                        : { kind: "change", id: item.change.id })}
+                    />
                     {item.replies.map((reply) => <MessageRow key={reply.id} message={reply} />)}
                   </Fragment>
                 ))}
@@ -251,8 +395,8 @@ function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; load
                 if (canSend) void submit();
               }
             }}
-            placeholder="Message Jarvis"
-            aria-label="Message Jarvis"
+            placeholder={composerLabel}
+            aria-label={composerLabel}
             className="max-h-40 min-w-0 flex-1 resize-none rounded-md border border-border bg-surface px-3 py-2 text-base leading-6 text-text placeholder:text-text-faint focus:border-accent/60 focus:outline-none"
           />
           <button
@@ -265,9 +409,6 @@ function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; load
           </button>
         </div>
       </div>
-      {replying !== null && (
-        <ReplyDialog key={replying.id} change={replying} onClose={() => setReplying(null)} />
-      )}
     </div>
   );
 }
@@ -327,84 +468,5 @@ function ChangeRow({ change, onReply }: { change: AgentChange; onReply: () => vo
         </button>
       </div>
     </li>
-  );
-}
-
-function ReplyDialog({ change, onClose }: { change: AgentChange; onClose: () => void }) {
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const send = useMutation(api.thread.send);
-  const canSend = draft.trim() !== "" && !sending;
-
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  async function submit() {
-    if (draft.trim() === "" || sending) return;
-    setSending(true);
-    setFailed(false);
-    try {
-      await send({ text: draft, subject: change.id });
-      onClose();
-    } catch {
-      setFailed(true);
-    } finally {
-      setSending(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Reply to Jarvis change"
-        className="relative w-full max-w-lg rounded-lg border border-border bg-surface p-6 animate-settle"
-      >
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-4 top-4 text-text-muted transition-colors duration-150 hover:text-text"
-        >
-          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-        <p className="mb-4 pr-8 text-sm leading-5 text-text-muted">{change.line}</p>
-        <div className="flex items-end gap-2">
-          <textarea
-            value={draft}
-            rows={3}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                event.preventDefault();
-                if (canSend) void submit();
-              }
-            }}
-            placeholder="Reply to Jarvis"
-            aria-label="Reply to Jarvis"
-            autoFocus
-            className="max-h-40 min-w-0 flex-1 resize-none rounded-md border border-border bg-bg px-3 py-2 text-base leading-6 text-text placeholder:text-text-faint focus:border-accent/60 focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={!canSend}
-            className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            {failed ? "Not sent, retry" : "Send"}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }

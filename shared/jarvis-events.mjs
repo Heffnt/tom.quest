@@ -66,15 +66,22 @@ export const EVENT_KINDS = [
   // and the weekly count it on its todo (convex/ttsDigest.ts, ttsWeekly.ts).
   "session-outcome",
   // The Jarvis thread (convex/thread.ts, the /thread page): a message Tom
-  // typed there, Jarvis's one-line answer posted back by the box, and the
-  // day's digest as a message from Jarvis on the thread. appendThreadDigest
-  // in convex/jarvis/digest.ts writes it once per day; subject is the day key,
-  // text is the rendered digest, and data is { day, since, windowEnd,
+  // typed there, Jarvis's one-line answer posted back by the box, the day's
+  // digest, and a needs-you item that opened after it. appendThreadDigest in
+  // convex/jarvis/digest.ts writes the digest once per day; subject is the day
+  // key, text is the rendered digest, and data is { day, since, windowEnd,
   // truncated, surfacedTodoIds, objectionAskIds, items }, where items is the
-  // numbered needs-you list [{ n, key, text, todoId?, job? }].
+  // numbered needs-you list [{ n, key, text, todoId?, job? }]. A
+  // thread-needs-you has the digest id as subject, the item's text, and data
+  // { n, key, todoId?, job? }.
   "thread-message",
   "thread-reply",
   "thread-digest",
+  "thread-needs-you",
+  // Tom answered a needs-tom ask on the Jarvis thread; actor Tom
+  // (provenance { user: "tom" }), subject the ask's key, data
+  // { answer, via: "thread" }.
+  "needs-tom-answered",
   // One row per worker run, posted by Jarvis scripts/codex-run.mjs at the end
   // of a Codex run whose stdin was a brief and whose --cwd is inside a git
   // checkout, under the workspace-write sandbox. The actor is the agent
@@ -115,7 +122,7 @@ export const EVENT_KINDS = [
  *  subscription (an endpoint receives every notification's text); Convex's
  *  own markGone still writes it. */
 /** @type {const} */
-export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message"];
+export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message", "needs-tom-answered"];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
@@ -124,6 +131,11 @@ export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thr
  *  record without the ask that passed those checks. */
 /** @type {const} */
 export const DELEGATE_ONLY_KINDS = ["decision"];
+
+/** Only the record's own mutations write these, so their readers may trust
+ *  the shape the writer gives them. Generic worker-key routes refuse them. */
+/** @type {const} */
+export const RECORD_ONLY_KINDS = ["thread-digest", "thread-needs-you"];
 
 /** How far past the writer's clock an event's `at` may lie. The silence alarm
  *  reads a job's newest row (convex/jarvis/jobs.ts), so a row dated in the
@@ -136,10 +148,12 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set, a work run's repo and commit.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "thread-digest"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "thread-digest", "thread-needs-you", "needs-tom-answered"];
 
-/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
-export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
+/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything
+ * else. `answer` is written only by convex/thread.ts when Tom's reply under a
+ * thread digest answered a numbered item; the box's classifier never answers it. */
+export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question", "answer"];
 
 /**
  * The kinds whose writer retries with a stable `data.id`: a second row of the
