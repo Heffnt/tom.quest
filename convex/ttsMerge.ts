@@ -21,12 +21,23 @@ import { copyDtsRow } from "./jarvis/events";
 // `<repo>@<sha>`, so every check is a point lookup:
 //
 //   "tests-run"     — the Guardrails `tests` job posts its own result at the
-//                     end of the run (.github/workflows/guardrails.yml).
-//                     data { repo, sha, ok, detail?, url? }
+//                     end of the run (.github/workflows/guardrails.yml), and
+//                     the box's job posts the runs it makes itself.
+//                     data { repo, sha, ok, detail?, url?, run? }
 //   "audit-verdict" — the Codex/Opus audit step posts its answer, and the
 //                     `VERDICT: <WORD>` line in it is the verdict
 //                     (POST /tts/audit).
 //                     data { repo, sha, verdict, text, model?, fallback? }
+//
+// EVERY RUN IS A ROW, and two rules say which row a check reads:
+//
+//   tests — the NEWEST row. A commit holds at most TESTS_ROWS_MAX of them, and
+//           nothing is written after a green one, so a red run is run once
+//           more and two red runs are red, whoever posts them.
+//   audit — the FIRST row whose word is a verdict (anything but UNAVAILABLE).
+//           It is final: a later row is kept and shown and does not change the
+//           answer, so nobody asks the auditor again until it says yes. Any
+//           number of UNAVAILABLE rows may come before it; they are no verdict.
 //
 // The wall evals are not a third row: they run in Jarvis's own test suite
 // (worker/jobs/evals-wall.test.mjs), so they gate through its tests-run row.
@@ -45,8 +56,11 @@ export const MERGE = "merge";
 export const AUDIT_APPROVED = "APPROVED";
 /** The word the audit step posts when it could not run at all
  *  (worker/jobs/audit.mjs AUDIT_UNAVAILABLE). NOT A VERDICT: it is the
- *  ABSENCE of one, which is why a later real verdict replaces it below. */
+ *  ABSENCE of one, which is why the first real verdict after it decides. */
 const AUDIT_UNAVAILABLE = "UNAVAILABLE";
+/** The most tests rows one commit holds: a red run is run once more, and a
+ *  second red run is red. A third post is not written. */
+const TESTS_ROWS_MAX = 2;
 /** The most audit prose retained on its event, measured after redaction. */
 export const AUDIT_TEXT_MAX_BYTES = 8 * 1024;
 /** The heading the audit files its removal-check findings under
@@ -251,6 +265,63 @@ export function checkRowPassed(kind: string, data: unknown): boolean {
   return false;
 }
 
+/** The verdict word an audit row carries, upper-cased, or null. */
+function verdictWordOf(data: unknown): string | null {
+  const said = (data as { verdict?: unknown } | undefined)?.verdict;
+  return typeof said === "string" ? said.toUpperCase() : null;
+}
+
+/**
+ * THE AUDIT ROW THAT STANDS for one commit, out of all of that commit's
+ * audit-verdict rows in any order: the OLDEST row whose word is a verdict, and
+ * when none is, the NEWEST row (an UNAVAILABLE, which the check reports as
+ * "no verdict yet"). Null for no rows.
+ *
+ * A verdict is any word but UNAVAILABLE, as the one-row rule it replaces had
+ * it: a word the auditor was never asked to write still refuses, and is still
+ * final, rather than leaving the commit open to a second ask.
+ *
+ * One function, because the gate, its GitHub status, the /agents page, the
+ * weekly facts and the simplification pass all have to name the same row: a
+ * reader that took the newest instead would show a REFUSED written after an
+ * APPROVED as the answer the gate never gave.
+ */
+export function standingAuditRow<T extends { at: number; _creationTime?: number; data?: unknown }>(
+  rows: readonly T[],
+): T | null {
+  // Two rows of one millisecond are ordered as the index orders them, by
+  // creation time, so the answer does not depend on the order they came in.
+  const later = (a: T, b: T) => (a.at !== b.at ? a.at > b.at : (a._creationTime ?? 0) > (b._creationTime ?? 0));
+  let verdict: T | null = null;
+  let newest: T | null = null;
+  for (const row of rows) {
+    if (newest === null || later(row, newest)) newest = row;
+    if (verdictWordOf(row.data) === AUDIT_UNAVAILABLE) continue;
+    if (verdict === null || later(verdict, row)) verdict = row;
+  }
+  return verdict ?? newest;
+}
+
+/** Every audit-verdict row of one commit, oldest first, stopping at the first
+ *  verdict: what comes after it cannot change which row stands. */
+async function auditRowsUntilVerdict(ctx: QueryCtx | MutationCtx, key: string) {
+  const rows = [];
+  for await (const row of ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", AUDIT_VERDICT).eq("key", key))
+    .order("asc")) {
+    rows.push(row);
+    if (verdictWordOf(row.data) !== AUDIT_UNAVAILABLE) break;
+  }
+  return rows;
+}
+
+/** The audit row that stands for `repo@sha` (standingAuditRow), read from the
+ *  record. Exported for the page that shows that row's own text. */
+export async function standingAuditRowFor(ctx: QueryCtx | MutationCtx, repo: string, sha: string) {
+  return standingAuditRow(await auditRowsUntilVerdict(ctx, commitKey(repo, sha)));
+}
+
 export type MergeCheck = {
   /** "tests" or "audit" — the vocabulary the prompt, the deny message and the
    *  morning line all use, so what Tom reads and what an agent is told are the
@@ -271,11 +342,27 @@ type TestsRunRecord = {
   url?: string;
 };
 
+/** The audit row the audit check read (standingAuditRow): its word, when it
+ *  was written, and the audit's one-line reason (the first line after its
+ *  VERDICT line). The box's job reads it to tell an UNAVAILABLE it may retry
+ *  from a verdict that is final, and to see which UNAVAILABLE it posted. */
+type AuditRowRecord = {
+  verdict: string | null;
+  at: number;
+  reason: string | null;
+};
+
 export type MergeGateResult = {
   repo: string;
   sha: string;
-  /** The head's recorded test result, or null when the fail-closed row is absent. */
+  /** The head's NEWEST recorded test result, or null when the fail-closed row
+   *  is absent. */
   testsRun: TestsRunRecord | null;
+  /** How many tests rows the head holds, 0 to TESTS_ROWS_MAX: one red row is
+   *  a run the box's job makes once more, two red rows are red. */
+  testsRows: number;
+  /** The audit row that stands, or null when the head has none. */
+  auditRow: AuditRowRecord | null;
   allowed: boolean;
   /** Every check, in gate order. */
   checks: MergeCheck[];
@@ -302,7 +389,15 @@ export async function mergeGateFor(
   const key = commitKey(repo, sha);
   const short = sha.slice(0, 7);
 
+  // The newest tests row decides; the count is read on the same index and
+  // stops at the most a head can hold through POST /tts/tests.
   const tests = await rowFor(ctx, TESTS_RUN, key);
+  const testsRows = tests === null
+    ? 0
+    : (await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", key))
+        .take(TESTS_ROWS_MAX)).length;
   const testsData = (tests?.data ?? {}) as { ok?: unknown; detail?: unknown; url?: unknown };
   const testsRun: TestsRunRecord | null = tests === null
     ? null
@@ -324,7 +419,7 @@ export async function mergeGateFor(
             }`,
           };
 
-  const audit = await rowFor(ctx, AUDIT_VERDICT, key);
+  const audit = standingAuditRow(await auditRowsUntilVerdict(ctx, key));
   const auditData = (audit?.data ?? {}) as {
     verdict?: unknown;
     text?: unknown;
@@ -371,6 +466,8 @@ export async function mergeGateFor(
     repo,
     sha,
     testsRun,
+    testsRows,
+    auditRow: audit === null ? null : { verdict, at: audit.at, reason: auditWhy },
     allowed: checks.every((check) => check.passed),
     checks,
     missing: checks.filter((check) => !check.passed).map((check) => check.name),
@@ -418,8 +515,9 @@ const GATE_STATUS_JOB = "gate-status";
 /** How many times one action posts before it stops re-reading. Two actions for
  *  one sha can run at once (the tests row and the audit row landing together);
  *  each re-reads the gate after its post and posts again if the answer moved,
- *  so whichever posts last ends on the current answer. The rows are write-once
- *  (an UNAVAILABLE audit is replaced once), so the answer moves at most twice. */
+ *  so whichever posts last ends on the current answer. A head holds at most two
+ *  tests rows and one verdict that counts, so the answer moves at most three
+ *  times: red, then green and waiting, then decided. */
 const GATE_STATUS_POSTS_MAX = 3;
 
 /** The row kind behind each check name, which is what a status names. */
@@ -460,10 +558,10 @@ async function gateStatusFor(
     if (name === "tests" && gate.testsRun !== null) {
       refused.push(`${TESTS_RUN} red`);
     } else if (name === "audit") {
-      const audit = await rowFor(ctx, AUDIT_VERDICT, commitKey(repo, sha));
-      const said = (audit?.data as { verdict?: unknown } | undefined)?.verdict;
-      const word = typeof said === "string" ? said.toUpperCase() : null;
-      if (audit !== null && word !== AUDIT_UNAVAILABLE) {
+      // The row the check read, not the newest: a REFUSED written after an
+      // APPROVED is kept and does not refuse.
+      const word = gate.auditRow?.verdict ?? null;
+      if (gate.auditRow !== null && word !== AUDIT_UNAVAILABLE) {
         refused.push(`${AUDIT_VERDICT} ${word ?? "unreadable"}`);
       } else {
         waiting.push(AUDIT_VERDICT);
@@ -642,15 +740,22 @@ export function slowConditions(timing: TestsTiming): {
   return rows;
 }
 
-/** The Guardrails run's own result, at the end of it. Recorded
- *  ONCE per commit: a rerun of the same sha keeps the first answer, so a red
- *  run cannot be turned green by pressing re-run until it flakes through.
+/** One run of the tests on one commit, from the Guardrails workflow or from the
+ *  box's job. EVERY RUN IS A ROW, up to TESTS_ROWS_MAX, and the newest decides:
+ *  a red run that the load on the box caused is run once more, and two red
+ *  runs are red. Nothing is written after a green row or past the second row,
+ *  so a red commit cannot be re-run until it flakes through, whoever posts.
  *
- *  THE TIMING IS READ EVERY TIME, including on a rerun the row already answers.
- *  Write-once is a rule about the VERDICT on one commit, which must not move;
- *  how long today's run took is a fact about today's run, and the nightly full
- *  suite on an already-recorded main sha is precisely the run whose duration
- *  there would otherwise be no way to hear about. */
+ *  A POST THAT WRITES NOTHING IS ANSWERED, NOT REFUSED: the answer says
+ *  `existing: true` and why, with the status the route has always given.
+ *  scripts/tests-report.mjs fails GitHub's report job on any other status, and
+ *  the nightly full run posts again on a main commit that already has its row.
+ *
+ *  THE TIMING IS READ EVERY TIME, including on a post that writes no row. The
+ *  row limit is a rule about the answer on one commit; how long today's run
+ *  took is a fact about today's run, and the nightly full suite on an
+ *  already-recorded main sha is precisely the run whose duration there would
+ *  otherwise be no way to hear about. */
 export const internalRecordTests = internalMutation({
   args: {
     repo: v.string(),
@@ -668,10 +773,19 @@ export const internalRecordTests = internalMutation({
      *  vitest run inside the tests job. */
     durations: v.optional(v.record(v.string(), v.number())),
     slowest: v.optional(v.array(v.object({ file: v.string(), seconds: v.number() }))),
+    /** Which run of the box's job made this row: when the run started and the
+     *  Jarvis commit the job ran from. A record, not a condition. */
+    run: v.optional(v.object({ startedAt: v.number(), commit: v.string() })),
   },
-  handler: async (ctx, args) => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ existing: boolean; ok: boolean; why?: string }> => {
     const key = commitKey(args.repo, args.sha);
-    const existing = await rowFor(ctx, TESTS_RUN, key);
+    const held = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", key))
+      .take(TESTS_ROWS_MAX);
     for (const condition of slowConditions(args)) {
       if (condition.crossed) {
         await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
@@ -686,8 +800,16 @@ export const internalRecordTests = internalMutation({
         });
       }
     }
-    if (existing) {
-      return { existing: true, ok: (existing.data as { ok?: unknown } | undefined)?.ok === true };
+    const newest = held.length === 0 ? null : await rowFor(ctx, TESTS_RUN, key);
+    const newestGreen = newest !== null && checkRowPassed(TESTS_RUN, newest.data);
+    if (newestGreen || held.length >= TESTS_ROWS_MAX) {
+      return {
+        existing: true,
+        ok: newestGreen,
+        why: newestGreen
+          ? `not written: ${args.sha.slice(0, 7)} already has a green tests row`
+          : `not written: ${args.sha.slice(0, 7)} already has ${TESTS_ROWS_MAX} tests rows`,
+      };
     }
     await logEvent(ctx, TESTS_RUN, undefined, { ...args }, key);
     await scheduleGateStatus(ctx, args.repo, args.sha);
@@ -696,17 +818,17 @@ export const internalRecordTests = internalMutation({
 });
 
 /**
- * The audit step's verdict and bounded, redacted answer, recorded once per
- * commit for the same reason: a refusal cannot be re-run until it approves.
+ * The audit step's verdict and bounded, redacted answer. EVERY RUN IS A ROW,
+ * and the FIRST VERDICT STANDS (standingAuditRow): a refusal cannot be re-run
+ * until it approves, and a later row is kept for whoever reads the record
+ * without changing the gate's answer.
  *
- * ONE EXCEPTION, and it is not a loophole: an UNAVAILABLE row is the ABSENCE
- * of an audit, not an audit — it says the auditor could not be reached at all
- * (Codex over its weekly cap, the CLI missing, the box offline). Write-once
- * over that absence meant a head audited during a capped hour could NEVER
- * pass, because the only row it would ever have said "could not run". A later
- * REAL verdict therefore replaces it, in either direction: an Opus fallback
- * that approves opens the gate, and one that refuses shuts it just as firmly.
- * Any other existing verdict — APPROVED or REFUSED — still stands forever.
+ * An UNAVAILABLE row is the ABSENCE of an audit, not an audit — it says the
+ * auditor could not be reached at all (Codex over its weekly cap, the CLI
+ * missing, the box offline), or that the box's job would not ask it. Any
+ * number of them may come before the verdict, and the first real verdict after
+ * them decides, in either direction: an Opus fallback that approves opens the
+ * gate, and one that refuses shuts it just as firmly.
  *
  * The removal check's findings are read out of that same answer and filed
  * beside it. The gate is unchanged by them: they are read by whoever opens
@@ -784,20 +906,12 @@ export const internalRecordAudit = internalMutation({
   },
   handler: async (ctx, args) => {
     const key = commitKey(args.repo, args.sha);
-    const existing = await rowFor(ctx, AUDIT_VERDICT, key);
-    const recorded = (existing?.data as { verdict?: unknown } | undefined)?.verdict;
-    const recordedVerdict = typeof recorded === "string" ? recorded.toUpperCase() : null;
-    if (existing && recordedVerdict !== AUDIT_UNAVAILABLE) {
-      return { existing: true, verdict: typeof recorded === "string" ? recorded : null };
-    }
-    // The row that replaces an UNAVAILABLE is a NEW row, not an edit: the
-    // failed attempt stays in the event log (mergeGateFor reads the newest row
-    // for the key), so the record still says the audit was unreachable first.
+    // What stood before this run. Every run is written either way; this says
+    // whether the new row can still change the gate's answer.
+    const before = standingAuditRow(await auditRowsUntilVerdict(ctx, key));
+    const beforeWord = before === null ? null : verdictWordOf(before.data);
+    const decidedBefore = before !== null && beforeWord !== AUDIT_UNAVAILABLE;
     const verdict = args.verdict.toUpperCase();
-    if (existing && verdict === AUDIT_UNAVAILABLE) {
-      // A second "could not run" adds nothing but a row.
-      return { existing: true, verdict: typeof recorded === "string" ? recorded : null };
-    }
     const text = capUtf8(redactSecrets(args.text), AUDIT_TEXT_MAX_BYTES);
     // The findings are read OUT OF THE TEXT THE ROW KEEPS, after the redaction
     // and the cap, so they cannot say anything the stored text does not and
@@ -847,8 +961,16 @@ export const internalRecordAudit = internalMutation({
       },
       key,
     );
+    // THE ANSWER NAMES THE VERDICT THAT STANDS. `existing` is true when a
+    // verdict already stood: the row just written is kept and counts for
+    // nothing, and the caller is told the word the gate reads, as the one-row
+    // rule told it. `replaced` is true when this verdict followed UNAVAILABLE
+    // rows. A row that cannot move the gate posts no status.
+    if (decidedBefore) {
+      return { existing: true, verdict: beforeWord, replaced: false };
+    }
     await scheduleGateStatus(ctx, args.repo, args.sha);
-    return { existing: false, verdict, replaced: existing !== null };
+    return { existing: false, verdict, replaced: before !== null && verdict !== AUDIT_UNAVAILABLE };
   },
 });
 
@@ -870,8 +992,8 @@ export const internalRecordAudit = internalMutation({
  * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
  * recorded, and the reporter can post again. ONE EXCEPTION, said in `why`:
  * a repository GitHub will not show the record's token at all (404 on the
- * repository itself; GITHUB_MIRROR_TOKEN does not cover WikiTom, see
- * convex/ttsSync.ts). Refusing there would leave every merge of that
+ * repository itself: a repository added to SESSION_REPOS before
+ * GITHUB_MIRROR_TOKEN was granted it). Refusing there would leave every merge of that
  * repository with no row and no line to object to, which costs Tom more than
  * a row that says it was not checked; the row and its decisions line say so.
  */

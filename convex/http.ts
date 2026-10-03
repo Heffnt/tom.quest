@@ -1483,9 +1483,14 @@ http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 // approved it. These routes are where the two are written, where they are
 // read, and where a passed merge is recorded.
 
-// POST /tts/tests — the Guardrails run's own result, posted by the `report` job
-// once the other four have answered (scripts/tests-report.mjs). Body:
-// { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest? }.
+// POST /tts/tests — one run's result: the Guardrails run's, posted by the
+// `report` job once the other four have answered (scripts/tests-report.mjs),
+// or a run of the box's own job. Body:
+// { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest?, run? },
+// where `run` is { startedAt, commit }: when the box's job run started and the
+// Jarvis commit it ran from. A commit keeps at most two rows and none after a
+// green one; a post past that writes nothing and is answered 200 with
+// `existing: true` and why (convex/ttsMerge.ts internalRecordTests).
 //
 // EITHER KEY: CI holds the narrow evals key and posts this fact, while the box
 // holds the worker key and posts its own local runs. The worker key is
@@ -1517,6 +1522,16 @@ function slowestFiles(value: unknown): { file: string; seconds: number }[] | nul
   return out.length === 0 ? null : out;
 }
 
+/** `{ startedAt, commit }` when the start is a finite number and the commit a
+ *  non-empty string, else null. */
+function jobRun(value: unknown): { startedAt: number; commit: string } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const { startedAt, commit } = value as Record<string, unknown>;
+  if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) return null;
+  if (typeof commit !== "string" || commit.trim() === "") return null;
+  return { startedAt, commit: commit.trim() };
+}
+
 const ttsTests = httpAction(async (ctx, request) => {
   const denied = presentsJarvisKey(request)
     ? ttsAuth(request)
@@ -1536,6 +1551,7 @@ const ttsTests = httpAction(async (ctx, request) => {
   if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
   const durations = numberRecord(b.durations);
   const slowest = slowestFiles(b.slowest);
+  const run = jobRun(b.run);
   const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
     repo: (b.repo as string).trim(),
     sha: (b.sha as string).trim(),
@@ -1551,10 +1567,18 @@ const ttsTests = httpAction(async (ctx, request) => {
     ...(typeof b.files === "number" && Number.isFinite(b.files) ? { files: b.files } : {}),
     ...(durations === null ? {} : { durations }),
     ...(slowest === null ? {} : { slowest }),
+    // Dropped rather than refused when malformed, as the timing is: a run
+    // record of the wrong shape must not cost the gate its tests row.
+    ...(run === null ? {} : { run }),
   });
   //  rather than : the answer's own ok says the POST landed, and
   // the row's ok says whether the tests were green.
-  return jsonResponse(200, { ok: true, existing: result.existing, green: result.ok });
+  return jsonResponse(200, {
+    ok: true,
+    existing: result.existing,
+    green: result.ok,
+    ...(result.why === undefined ? {} : { why: result.why }),
+  });
 });
 
 http.route({ path: "/tts/tests", method: "POST", handler: ttsTests });

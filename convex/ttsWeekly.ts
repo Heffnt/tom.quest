@@ -38,7 +38,7 @@ import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, SESSION_OUTCOME, isPrepared, nyCalendar
 import { todoEvents, todoIdForms, todoReader } from "./jarvis/tables";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVAL_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
-import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
+import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey, standingAuditRow } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../shared/markdown-sections.mjs";
 import { dayLogLookbackStart, dayLogWeeklyFacts } from "../shared/day-log-trends.mjs";
@@ -707,20 +707,28 @@ export async function gatherWeeklyFacts(
   const auditSince = until - AUDIT_OBJECTION_WEEKS * WEEK_MS;
   const approvedAt = new Map<string, number>();
   const refusedAt = new Map<string, { at: number; sha: string }>();
+  // Every run of the audit is a row, and THE VERDICT THAT STANDS is each
+  // commit's first one (convex/ttsMerge.ts standingAuditRow): an APPROVED
+  // followed by a REFUSED is an approval, and must not also be counted as a
+  // refusal that landed anyway.
+  const auditRowsOf = new Map<string, { at: number; _creationTime: number; data?: unknown }[]>();
   for (const e of await eventsOfKindSince(AUDIT_VERDICT, auditSince)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     const repo = str(d.repo);
     const sha = str(d.sha);
     if (repo === null || sha === null) continue;
     const key = commitKey(repo, sha);
+    const held = auditRowsOf.get(key);
+    if (held === undefined) auditRowsOf.set(key, [e]);
+    else held.push(e);
+  }
+  for (const [key, rows] of auditRowsOf) {
+    const standing = standingAuditRow(rows);
+    if (standing === null) continue;
+    const d = (standing.data ?? {}) as Record<string, unknown>;
     const verdict = (str(d.verdict) ?? "").toUpperCase();
-    // Newest wins on each side: an UNAVAILABLE row can be replaced by a real
-    // verdict later (internalRecordAudit), and the real one is the audit.
-    if (verdict === AUDIT_APPROVED) {
-      if (e.at > (approvedAt.get(key) ?? -1)) approvedAt.set(key, e.at);
-    } else if (verdict === AUDIT_REFUSED) {
-      if (e.at > (refusedAt.get(key)?.at ?? -1)) refusedAt.set(key, { at: e.at, sha });
-    }
+    if (verdict === AUDIT_APPROVED) approvedAt.set(key, standing.at);
+    else if (verdict === AUDIT_REFUSED) refusedAt.set(key, { at: standing.at, sha: str(d.sha) ?? "" });
   }
   const objectedAt = new Map<string, { at: number; sentence: string }>();
   for (const e of await eventsOfKindSince(DELEGATE_OBJECTION, auditSince)) {
