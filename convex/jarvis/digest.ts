@@ -60,7 +60,7 @@ import {
   digestsSince,
 } from "./outbox";
 
-const THREAD_DIGEST = "thread-digest";
+export const THREAD_DIGEST = "thread-digest";
 
 /**
  * POST /jarvis/digest's mutation: is a digest due, and if so, the digest.
