@@ -202,7 +202,7 @@ describe("POST /jarvis/thread/digest", () => {
     });
   });
 
-  it("puts only openings after the previous window end in the next day's digest", async () => {
+  it("lists a boundary-time opening once and does not relist a previously listed opening", async () => {
     const t = setup(MORNING);
     await t.run(async (ctx) => {
       await ctx.db.insert("events", {
@@ -219,18 +219,18 @@ describe("POST /jarvis/thread/digest", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("events", {
         kind: "needs-you-opened",
-        at: MORNING + 1_000,
+        at: MORNING,
         provenance: {},
-        subject: "second-window",
-        data: { key: "second-window", job: "second-job" },
-        text: "Second window.",
+        subject: "boundary-opening",
+        data: { key: "boundary-opening", job: "boundary-job" },
+        text: "Boundary opening.",
       });
     });
     vi.setSystemTime(MORNING + 86_400_000);
     expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: "2026-09-27" });
     const rows = await ofKind(t, "events", "thread-digest");
     const next = rows.find((row) => row.subject === "2026-09-27");
-    expect((next?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["second-window"]);
+    expect((next?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["boundary-opening"]);
   });
 
   it("lists all 201 openings once", async () => {

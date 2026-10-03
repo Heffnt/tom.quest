@@ -193,18 +193,31 @@ export const appendThreadDigest = internalMutation({
       // "done" grammar, which the Jarvis thread does not route.
       canReply: false,
     });
-    const needsWindowStart = typeof previousWindowEnd === "number" ? previousWindowEnd : now - NEEDS_YOU_WINDOW_MS;
-    // This needs no cap: the daily window starts at the previous digest's end, or
-    // uses NEEDS_YOU_WINDOW_MS (three days) for the first; a few openings a day
-    // are far below the read limit. The next window starts at this one's end, so
-    // each opening appears exactly once.
+    const needsFrom = now - NEEDS_YOU_WINDOW_MS;
+    const recentDigests = await ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST).gte("at", needsFrom))
+      .order("desc")
+      .take(10);
+    const listedKeys = new Set(recentDigests.flatMap((row) => {
+      const items = (row.data as { items?: unknown } | undefined)?.items;
+      return Array.isArray(items)
+        ? items.flatMap((item) => typeof item === "object" && item !== null && "key" in item
+          && typeof item.key === "string" ? [item.key] : [])
+        : [];
+    }));
+    // An opening is listed once, in the first thread digest after it opened,
+    // found by its key rather than by a time boundary, because an opening's time
+    // is taken when its transaction starts, not when it commits; an opening older
+    // than NEEDS_YOU_WINDOW_MS that no digest listed is left to its todo, as the
+    // Slack path leaves it.
     const opened = await ctx.db
       .query("events")
-      .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gt("at", needsWindowStart).lte("at", now))
+      .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gte("at", needsFrom))
       .order("asc")
       .collect();
     const first = composed.objectionAskIds.length + 1;
-    const items = opened.map((row, index) => {
+    const items = opened.filter((row) => !listedKeys.has(row.subject as string)).map((row, index) => {
       const data = (row.data ?? {}) as Record<string, unknown>;
       return { n: first + index, key: row.subject as string, text: row.text ?? "",
         ...(typeof data.todoId === "string" ? { todoId: data.todoId } : {}),
