@@ -336,6 +336,7 @@ export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number
         ? kind.gt("_creationTime", BOX_CHANGE_HISTORY_COPIED_THROUGH).lt("_creationTime", to)
         : kind.gte("_creationTime", from).lt("_creationTime", to);
     });
+  // Not capped: consecutive digest windows must partition every change exactly once; rows are about a kilobyte and number tens a day, so a whole window stays far below the read limit.
   const rows: Doc<"events">[] = [];
   for await (const row of query) rows.push(row);
   return rows

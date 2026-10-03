@@ -25,12 +25,74 @@ import {
   type BoxChange,
 } from "./boxChanges";
 import { SILENCE_INTERVALS } from "./ttsJobs";
+import {
+  BOX_SCAN,
+  CALENDAR_SCAN,
+  CAPTURE_SCAN,
+  DATED_SCAN,
+  EVENT_SCAN,
+  OBJECTION_SCAN,
+  READY_SCAN,
+  SPEND_SCAN,
+  SURFACED_SCAN,
+  gatherTodayFacts,
+} from "./ttsDigest";
+import { nyCalendarDayBoundsUtc } from "./ttsShared";
+import type { QueryCtx } from "./_generated/server";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const AT = Date.UTC(2026, 8, 25, 5, 8, 34);
 const AGENT = "claude:box:bc34b0d6-a223-4529-bfb0-af12442b8c6a";
 const TOKEN = `ghp_${"a1B2".repeat(9)}`;
+
+function dbCountingReturnedDocuments(db: QueryCtx["db"], add: (count: number) => void): QueryCtx["db"] {
+  const terminals = new Set<PropertyKey>(["take", "first", "unique", "collect", "paginate"]);
+  const wrap = (chain: object): object =>
+    new Proxy(chain, {
+      get(target, key) {
+        const member = Reflect.get(target, key);
+        if (typeof member !== "function") return member;
+        if (key === Symbol.asyncIterator) {
+          return async function* () {
+            const iterator = Reflect.apply(member, target, []) as AsyncIterator<unknown>;
+            for (;;) {
+              const result = await iterator.next();
+              if (result.done) return;
+              add(1);
+              yield result.value;
+            }
+          };
+        }
+        if (terminals.has(key)) {
+          return async (...args: unknown[]) => {
+            const result = await Reflect.apply(member, target, args) as unknown;
+            if (Array.isArray(result)) add(result.length);
+            else if (result !== null && typeof result === "object" && "page" in result && Array.isArray(result.page)) add(result.page.length);
+            else if (result !== null) add(1);
+            return result;
+          };
+        }
+        return (...args: unknown[]) => {
+          const result = Reflect.apply(member, target, args) as unknown;
+          return result !== null && typeof result === "object" ? wrap(result) : result;
+        };
+      },
+    });
+  return new Proxy(db, {
+    get(target, key) {
+      const member = Reflect.get(target, key);
+      if (typeof member !== "function") return member;
+      if (key === "query") return (...args: unknown[]) => wrap(Reflect.apply(member, target, args) as object);
+      if (key === "get") return async (...args: unknown[]) => {
+        const result = await Reflect.apply(member, target, args) as unknown;
+        if (result !== null) add(1);
+        return result;
+      };
+      return member.bind(target);
+    },
+  });
+}
 
 const change = (over: Partial<BoxChange> = {}): BoxChange => ({
   source: "sudo",
@@ -309,6 +371,142 @@ describe("the box-change door", () => {
       "data.count must be a positive integer",
       "data.change.what must be a non-empty string",
     ]);
+  });
+});
+
+describe("the digest read budget", () => {
+  it("gathers over-cap source tables without returning over-cap rows", async () => {
+    const t = convexTest({ schema, modules });
+    const recordedAt = Date.UTC(2026, 8, 27, 9);
+    const now = recordedAt + 60_000;
+    const since = recordedAt - 60_000;
+    const day = "2026-09-27";
+    const { start: dayStart } = nyCalendarDayBoundsUtc(day);
+    vi.setSystemTime(recordedAt);
+    vi.stubEnv("TTS_ICS_FEEDS", JSON.stringify([{ name: "synthetic", url: "https://example.invalid/calendar.ics" }]));
+
+    await t.run(async (ctx) => {
+      for (let n = 0; n <= READY_SCAN; n += 1) {
+        await ctx.db.insert("todos", {
+          statement: `prepared ${n}`,
+          readiness: "prepared",
+          status: "active",
+          timingClass: "whenever",
+          source: "synthetic",
+          createdAt: recordedAt - n,
+          updatedAt: recordedAt - n,
+        });
+      }
+      for (let n = 0; n <= DATED_SCAN; n += 1) {
+        await ctx.db.insert("todos", {
+          statement: `dated ${n}`,
+          readiness: "unprepared",
+          status: "active",
+          timingClass: "dated",
+          dueAt: dayStart - n - 1,
+          dateKind: "external",
+          source: "synthetic",
+          createdAt: recordedAt - n,
+          updatedAt: recordedAt - n,
+        });
+      }
+      for (let n = 0; n <= CALENDAR_SCAN; n += 1) {
+        await ctx.db.insert("blocks", {
+          start: dayStart + n,
+          end: dayStart + n + 60_000,
+          category: `block ${n}`,
+          createdAt: recordedAt,
+        });
+        await ctx.db.insert("ttsCalendarEvents", {
+          feed: "synthetic",
+          uid: `event-${n}`,
+          title: `calendar ${n}`,
+          start: dayStart + n,
+          end: dayStart + n + 60_000,
+          allDay: false,
+          syncedAt: recordedAt,
+        });
+      }
+      const flagged = await ctx.db.insert("todos", {
+        statement: "flagged email",
+        needsTomToday: { why: "only Tom can answer" },
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        createdAt: recordedAt - 1,
+        updatedAt: recordedAt - 1,
+      });
+      for (let n = 0; n <= SURFACED_SCAN; n += 1) {
+        await ctx.db.insert("dtsEvents", { at: recordedAt + n, kind: "not-surfaced", todoId: flagged });
+      }
+      for (let n = 0; n < 10; n += 1) {
+        const data = change({ at: recordedAt + n, agentId: "synthetic-agent", id: `bounded-${n}` });
+        await ctx.db.insert("events", { ...eventOf(data), provenance: eventOf(data).provenance });
+      }
+    });
+
+    let documentsRead = 0;
+    const facts = await t.run(async (ctx) => {
+      const db = dbCountingReturnedDocuments(ctx.db, (count) => { documentsRead += count; });
+      return await gatherTodayFacts({ ...ctx, db } as QueryCtx, { day, now, since });
+    });
+    expect(facts.today).toHaveLength(DATED_SCAN);
+    expect(facts.calendar).toHaveLength(CALENDAR_SCAN * 2);
+    expect(facts.readyBeyond).toBe(READY_SCAN);
+    expect(facts.needsYou.map((item) => item.statement)).toEqual(["flagged email"]);
+    expect(facts.boxChanges).not.toHaveLength(0);
+    const everyDigestCap = [
+      BOX_SCAN, CALENDAR_SCAN, CAPTURE_SCAN, DATED_SCAN, EVENT_SCAN,
+      OBJECTION_SCAN, READY_SCAN, SPEND_SCAN, SURFACED_SCAN,
+    ];
+    expect(Math.max(...everyDigestCap)).toBe(EVENT_SCAN);
+    const primaryCaps = DATED_SCAN + READY_SCAN + CALENDAR_SCAN * 2;
+    // 200 rows cover the flagged email, its noise events, point reads, and every other capped range (empty here).
+    expect(documentsRead).toBeLessThanOrEqual(primaryCaps + 200);
+  }, 60_000);
+
+  it("finds a newer unsurfaced email after more than 100 surfaced flagged emails", async () => {
+    const t = convexTest({ schema, modules });
+    const recordedAt = Date.UTC(2026, 8, 27, 9);
+    vi.setSystemTime(recordedAt);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 100; n += 1) {
+        const todoId = await ctx.db.insert("todos", {
+          statement: `surfaced flagged email ${n}`,
+          needsTomToday: { why: "only Tom can answer" },
+          readiness: "unprepared",
+          status: "active",
+          timingClass: "whenever",
+          source: "email",
+          createdAt: recordedAt + n,
+          updatedAt: recordedAt + n,
+        });
+        await ctx.db.insert("dtsEvents", {
+          at: recordedAt + n,
+          kind: "surfaced",
+          todoId,
+          data: { via: "digest" },
+        });
+      }
+      await ctx.db.insert("todos", {
+        statement: "newer unsurfaced flagged email",
+        needsTomToday: { why: "only Tom can answer" },
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        createdAt: recordedAt + 100,
+        updatedAt: recordedAt + 100,
+      });
+    });
+
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, {
+      day: "2026-09-27",
+      now: recordedAt + 1_000,
+      since: recordedAt - 1,
+    }));
+    expect(facts.needsYou.map((item) => item.statement)).toEqual(["newer unsurfaced flagged email"]);
   });
 });
 
