@@ -138,8 +138,10 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  */
 export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "thread-digest"];
 
-/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
-export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
+/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything
+ * else. `answer` is written only by convex/thread.ts when Tom's reply under a
+ * thread digest answered a numbered item; the box's classifier never answers it. */
+export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question", "answer"];
 
 /**
  * The kinds whose writer retries with a stable `data.id`: a second row of the
