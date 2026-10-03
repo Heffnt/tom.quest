@@ -24,6 +24,10 @@
 
 - A part of Jarvis is retired by a `part-disabled` event (`shared/jarvis-events.mjs`; subject the part, data `{ id, part, replacedBy, ruling }`) before its code is deleted, so the record says when and why it stopped; the box's deploy job posts it from Jarvis `worker/parts-disabled.json`, and the record keeps one row per part.
 
+## work runs
+
+- A worker run is recorded as a `work-run` event (`shared/jarvis-events.mjs`; subject `<repo>@<baseCommit>`); the brief and both diffs are agent-store keys, not row text, because of the 1 MiB document limit, and Jarvis's eval set `work-runs` replays them.
+
 ## inspecting
 
 - The Convex dashboard is where server state, function logs and query performance are read.

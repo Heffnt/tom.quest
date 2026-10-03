@@ -69,6 +69,29 @@ export const EVENT_KINDS = [
   // typed there, and Jarvis's one-line answer posted back by the box.
   "thread-message",
   "thread-reply",
+  // One row per worker run, posted by Jarvis scripts/codex-run.mjs at the end
+  // of a Codex run whose stdin was a brief and whose --cwd is inside a git
+  // checkout, under the workspace-write sandbox. The actor is the agent
+  // (provenance.agentId "codex:<host>:<codex session id>" when the wrapper
+  // found the rollout; provenance.job is the run's origin). Subject is
+  // "<repo>@<baseCommit>". Data { repo, remote, cwd, baseCommit, briefKey,
+  // preStatePatchKey, resultDiffKey, bytes: { brief, preStatePatch,
+  // resultDiff }, check, checkPassed, model, effort, sandbox, operate,
+  // durationMs, costUsd, exitCode, harness, agentToken }; operate says whether
+  // the wrapper gave Codex WikiTom's operate instructions (false under
+  // --no-operate), so a replay gives the same. text is one line naming the
+  // repo, model and outcome. The brief, the uncommitted state before the run
+  // (preStatePatch: a binary git patch against baseCommit of staged, unstaged
+  // and untracked-not-ignored changes, empty for a clean tree), and the diff
+  // the worker left (resultDiff, the same form) are NOT in the row: they are
+  // files in the box's agent store (Jarvis worker/agents/store.mjs), and the
+  // row holds their store keys. A Convex document is limited to 1 MiB, and a
+  // build run's diff or a lockfile in the pre-state can exceed that; storing
+  // all three always keeps one path. Check is the command from a brief line
+  // "Check: <command>" and checkPassed says whether it exited 0 after the
+  // worker; both are null when none was named. The eval runner's set
+  // "work-runs" (Jarvis worker/jobs/evals.mjs) reads these rows as its items.
+  "work-run",
   // A part of Jarvis was turned off before its code is deleted; subject is
   // the part's name (a job such as "poll-dump", or a record part such as
   // "dump-capture"). Data { id, part, replacedBy, ruling }: part equals
@@ -105,9 +128,9 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
 /**
  * The kinds whose subject is their identity, refused without one: a
  * decision's askId (settle, "revert <n>" and the digest find it there), a
- * digest line's askId or job, an eval run's set.
+ * digest line's askId or job, an eval run's set, a work run's repo and commit.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "part-disabled"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled"];
 
 /** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
 export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
@@ -194,6 +217,28 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
     }
     if (!nonEmptyString(data.ruling)) {
       return { ok: false, error: "a part-disabled event names data.ruling as a non-empty string" };
+    }
+  }
+  if (kind === "work-run") {
+    if (!isPlainObject(data)) return { ok: false, error: "a work-run event names data as an object" };
+    for (const field of ["repo", "baseCommit", "model", "briefKey", "preStatePatchKey", "resultDiffKey"]) {
+      if (!nonEmptyString(data[field])) return { ok: false, error: `a work-run event names data.${field} as a non-empty string` };
+    }
+    if (!/^[0-9a-f]{40}$/.test(data.baseCommit)) {
+      return { ok: false, error: "a work-run event names data.baseCommit as 40 lowercase hexadecimal characters" };
+    }
+    if (subject !== `${data.repo}@${data.baseCommit}`) {
+      return { ok: false, error: "a work-run event names <repo>@<baseCommit> as its subject" };
+    }
+    if (data.harness !== "codex") return { ok: false, error: "a work-run event names data.harness as codex" };
+    if (data.check !== null && !nonEmptyString(data.check)) {
+      return { ok: false, error: "a work-run event names data.check as null or a non-empty string" };
+    }
+    if (data.checkPassed !== null && typeof data.checkPassed !== "boolean") {
+      return { ok: false, error: "a work-run event names data.checkPassed as null or a boolean" };
+    }
+    if ((data.check === null) !== (data.checkPassed === null)) {
+      return { ok: false, error: "a work-run event names data.check and data.checkPassed as both null or both non-null" };
     }
   }
   if (text !== undefined && typeof text !== "string") {

@@ -92,6 +92,26 @@ const eventOf = (data: BoxChange) => ({
   data,
 });
 
+it("records a worker run through POST /jarvis/event", async () => {
+  const t = convexTest({ schema, modules });
+  const baseCommit = "a".repeat(40);
+  const event = {
+    kind: "work-run",
+    provenance: { agentId: "codex:box:synthetic-session", job: "work-queue" },
+    subject: `example@${baseCommit}`,
+    data: {
+      repo: "example", remote: "https://example.invalid/repo.git", cwd: "/workspace/example", baseCommit,
+      briefKey: "runs/example/brief", preStatePatchKey: "runs/example/pre.patch", resultDiffKey: "runs/example/result.patch",
+      bytes: { brief: 120, preStatePatch: 0, resultDiff: 240 }, check: null, checkPassed: null,
+      model: "synthetic-model", effort: "high", sandbox: "workspace-write", durationMs: 1234,
+      costUsd: 0.01, exitCode: 0, harness: "codex", agentToken: "synthetic-agent-token",
+    },
+    text: "example on synthetic-model completed",
+  };
+  expect(await (await recordEvent(t, event)).json()).toMatchObject({ ok: true });
+  expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toMatchObject([event]);
+});
+
 it("keeps one row when the deploy job re-posts the same disabled part", async () => {
   const t = convexTest({ schema, modules });
   const event = {
