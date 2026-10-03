@@ -181,7 +181,7 @@ export const appendThreadDigest = internalMutation({
       .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST))
       .order("desc")
       .first();
-    const previousData = previous?.data as { itemsThrough?: unknown; windowEnd?: unknown } | undefined;
+    const previousData = previous?.data as { windowEnd?: unknown } | undefined;
     const previousWindowEnd = previousData?.windowEnd;
     const since = typeof previousWindowEnd === "number" ? previousWindowEnd : now - DAY_MS;
     const composed: { text: string; truncated: boolean; surfacedTodoIds: string[]; objectionAskIds: string[] } =
@@ -193,17 +193,16 @@ export const appendThreadDigest = internalMutation({
       // "done" grammar, which the Jarvis thread does not route.
       canReply: false,
     });
-    const previousItemsThrough = previousData?.itemsThrough;
-    const needsWindowStart = typeof previousItemsThrough === "number" ? previousItemsThrough
-      : typeof previousWindowEnd === "number" ? previousWindowEnd : now - NEEDS_YOU_WINDOW_MS;
+    const needsWindowStart = typeof previousWindowEnd === "number" ? previousWindowEnd : now - NEEDS_YOU_WINDOW_MS;
+    // This needs no cap: the daily window starts at the previous digest's end, or
+    // uses NEEDS_YOU_WINDOW_MS (three days) for the first; a few openings a day
+    // are far below the read limit. The next window starts at this one's end, so
+    // each opening appears exactly once.
     const opened = await ctx.db
       .query("events")
       .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gt("at", needsWindowStart).lte("at", now))
       .order("asc")
-      .take(200);
-    // One less than the last listed row's time when the read is full: rows opened in
-    // one mutation share Date.now(), so a sibling past the cut is listed again, never skipped.
-    const itemsThrough = opened.length === 200 ? opened[opened.length - 1].at - 1 : now;
+      .collect();
     const first = composed.objectionAskIds.length + 1;
     const items = opened.map((row, index) => {
       const data = (row.data ?? {}) as Record<string, unknown>;
@@ -212,7 +211,6 @@ export const appendThreadDigest = internalMutation({
         ...(typeof data.job === "string" ? { job: data.job } : {}),
       };
     });
-    // Items left over by a full read are listed by the next digest, so none is skipped.
     // The box runs this before its Slack post, so Slack omits flagged captures
     // the thread already showed. Slack is being retired (Tom, 2026-10-02).
     await markSurfaced(ctx, composed.surfacedTodoIds, day);
@@ -222,7 +220,7 @@ export const appendThreadDigest = internalMutation({
       provenance: { job: "digest" },
       subject: day,
       text: composed.text,
-      data: { day, since, windowEnd: now, itemsThrough, truncated: composed.truncated,
+      data: { day, since, windowEnd: now, truncated: composed.truncated,
         surfacedTodoIds: composed.surfacedTodoIds,
         objectionAskIds: composed.objectionAskIds,
         items,

@@ -233,7 +233,7 @@ describe("POST /jarvis/thread/digest", () => {
     expect((next?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["second-window"]);
   });
 
-  it("carries the 201st opening into the next day's digest, listing the cut row again", async () => {
+  it("lists all 201 openings once", async () => {
     const t = setup(MORNING);
     await t.run(async (ctx) => {
       for (let n = 0; n < 201; n += 1) {
@@ -252,17 +252,17 @@ describe("POST /jarvis/thread/digest", () => {
     expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: DAY });
     let rows = await ofKind(t, "events", "thread-digest");
     const first = rows.find((row) => row.subject === DAY);
-    expect((first?.data as { items: unknown[] }).items).toHaveLength(200);
+    const firstData = first?.data as { objectionAskIds: string[]; items: Array<Record<string, unknown>> };
+    expect(firstData.objectionAskIds).toEqual([]);
+    expect(firstData.items).toEqual(
+      Array.from({ length: 201 }, (_, index) => ({ n: index + 1, key: `need-${index + 1}`, text: `Need ${index + 1}.` })),
+    );
 
     vi.setSystemTime(MORNING + 86_400_000);
     expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: "2026-09-27" });
     rows = await ofKind(t, "events", "thread-digest");
     const next = rows.find((row) => row.subject === "2026-09-27");
-    // The cut row is listed again, so a sibling opened in the same millisecond is never skipped.
-    expect((next?.data as { items: Array<Record<string, unknown>> }).items).toEqual([
-      { n: 1, key: "need-200", text: "Need 200." },
-      { n: 2, key: "need-201", text: "Need 201." },
-    ]);
+    expect((next?.data as { items: Array<Record<string, unknown>> }).items).toEqual([]);
   });
 });
 
