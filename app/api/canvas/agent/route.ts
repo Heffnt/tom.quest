@@ -46,6 +46,16 @@ export async function POST(req: NextRequest) {
   if (!viewer) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // The canvas agent runs for accounts Tom has approved: the admin and tom
+  // roles (isAdmin is true for both). Tom approves an account by giving it
+  // the admin role (users.setRoleByUsername). Checked here, before any
+  // message is read or any model is called.
+  if (!viewer.isAdmin) {
+    return NextResponse.json(
+      { error: "The canvas agent runs for approved accounts only" },
+      { status: 403 },
+    );
+  }
   const allowed = providersForRole(viewer.isTom);
   if (!allowed.some((p) => p.id === provider)) {
     return NextResponse.json(
