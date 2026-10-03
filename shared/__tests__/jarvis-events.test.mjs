@@ -89,6 +89,50 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "part-disabled", subject: data.part, data: { ...data, ruling: "" } }).error).toContain("data.ruling");
   });
 
+  it("takes a complete work-run event and lists its subject as its identity", () => {
+    const baseCommit = "a".repeat(40);
+    const event = {
+      kind: "work-run",
+      provenance: { agentId: "codex:box:synthetic-session", job: "work-queue" },
+      subject: `example@${baseCommit}`,
+      data: {
+        repo: "example", remote: "https://example.invalid/repo.git", cwd: "/workspace/example", baseCommit,
+        briefKey: "runs/example/brief", preStatePatchKey: "runs/example/pre.patch", resultDiffKey: "runs/example/result.patch",
+        bytes: { brief: 120, preStatePatch: 0, resultDiff: 240 }, check: "pnpm test", checkPassed: true,
+        model: "synthetic-model", effort: "high", sandbox: "workspace-write", durationMs: 1234,
+        costUsd: 0.01, exitCode: 0, harness: "codex", agentToken: "synthetic-agent-token",
+      },
+      text: "example on synthetic-model completed",
+    };
+    expect(validateEvent(event)).toMatchObject({ ok: true, event });
+    expect(SUBJECT_REQUIRED).toContain("work-run");
+  });
+
+  it("refuses each malformed work-run identity field", () => {
+    const baseCommit = "a".repeat(40);
+    const data = {
+      repo: "example", baseCommit, model: "synthetic-model", briefKey: "brief", preStatePatchKey: "pre",
+      resultDiffKey: "result", harness: "codex", check: "pnpm test", checkPassed: true,
+    };
+    const event = { kind: "work-run", subject: `example@${baseCommit}`, data };
+    const cases = [
+      [{ ...event, data: null }, "a work-run event names data as an object"],
+      [{ ...event, data: { ...data, repo: "" } }, "a work-run event names data.repo as a non-empty string"],
+      [{ ...event, data: { ...data, baseCommit: "" } }, "a work-run event names data.baseCommit as a non-empty string"],
+      [{ ...event, data: { ...data, model: "" } }, "a work-run event names data.model as a non-empty string"],
+      [{ ...event, data: { ...data, briefKey: "" } }, "a work-run event names data.briefKey as a non-empty string"],
+      [{ ...event, data: { ...data, preStatePatchKey: "" } }, "a work-run event names data.preStatePatchKey as a non-empty string"],
+      [{ ...event, data: { ...data, resultDiffKey: "" } }, "a work-run event names data.resultDiffKey as a non-empty string"],
+      [{ ...event, data: { ...data, baseCommit: "A".repeat(40) } }, "a work-run event names data.baseCommit as 40 lowercase hexadecimal characters"],
+      [{ ...event, subject: `other@${baseCommit}` }, "a work-run event names <repo>@<baseCommit> as its subject"],
+      [{ ...event, data: { ...data, harness: "other" } }, "a work-run event names data.harness as codex"],
+      [{ ...event, data: { ...data, check: "" } }, "a work-run event names data.check as null or a non-empty string"],
+      [{ ...event, data: { ...data, checkPassed: "yes" } }, "a work-run event names data.checkPassed as null or a boolean"],
+      [{ ...event, data: { ...data, check: null } }, "a work-run event names data.check and data.checkPassed as both null or both non-null"],
+    ];
+    for (const [candidate, error] of cases) expect(validateEvent(candidate)).toEqual({ ok: false, error });
+  });
+
   it("keeps thread-message as a Tom-only kind", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
