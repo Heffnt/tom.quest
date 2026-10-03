@@ -32,25 +32,60 @@
 // lib.mjs — and a secret filter is exactly the kind of thing a test must fence
 // (__tests__/redact.test.mjs).
 
+// WHERE A SHAPE OR A NAME MAY BEGIN. Not in the middle of a longer word: the
+// character before it is not a letter, a digit or an underscore, so `risk-`
+// followed by a long hyphenated phrase is not an OpenAI key, and `mydev:` is
+// not the start of a Convex one. The one exception is a letter, digit or
+// underscore that is the last character of an escape or of an encoded
+// character: `\n`, `\t`, `\r`, `\b`, `\f`, `\u` and four hex digits, `%` and
+// two hex digits. In a serialized string every line after the first begins
+// behind `\n`, and in a URL a value begins behind `%3A` or `%3D`; there the
+// character before is not part of a word, and a shape or a name behind it is
+// taken. Several backslashes before the letter (a string serialized twice) are
+// read the same way.
+const ESCAPE_END = String.raw`\\[bfnrt]|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}`;
+const START = String.raw`(?:(?<![A-Za-z0-9_])|(?<=${ESCAPE_END}))`;
+// A shape is written as its forms, each a fixed prefix and the rest. Its
+// pattern is, for each form, the prefix, then the check of what stands before
+// the prefix, then the rest. The check follows the prefix, not precedes it,
+// because the engine searches a text fast for a pattern that begins with fixed
+// characters and runs a leading check at every character: over 19 MB of the
+// box's transcripts the OpenAI pattern with the check first took 598 ms, with
+// the check after the prefix 19 ms, and with the word boundary it replaces 25.
+const shape = (...forms) => new RegExp(
+  forms.map(([prefix, rest]) => `(?:${prefix})(?<=${START}(?:${prefix}))${rest}`).join("|"),
+  "g",
+);
+// A secret's name has no fixed prefix. Its pattern begins with a word boundary
+// or an escape, and keeps the escape in the prefix it leaves in the text.
+const NAME_START = String.raw`(?:\b|${ESCAPE_END})`;
+
 // Ordered: the named shapes first, so `Authorization: Bearer gho_…` reports
 // the kind it actually is, and the catch-all bearer rule last picks up only a
 // header value no named shape claimed. A marker is lowercase letters and
 // brackets, so no later rule can match inside an earlier rule's marker.
+//
+// A shape of fixed length is not taken where a character that could continue
+// it follows, since it is then part of a longer run: an upper-case letter or a
+// digit after an AWS key id, a letter, a digit or an underscore after a Google
+// key. Any other character after it leaves it taken: an underscore after an AWS
+// key id, a space or a quote after a Google key that ends in a hyphen. A shape
+// of open length takes its whole run and needs no such rule.
 export const REDACTED_SHAPES = Object.freeze([
   // GitHub: gh{p,o,u,s,r}_… (classic + app tokens) and the fine-grained PAT.
-  { kind: "github", pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g },
+  { kind: "github", pattern: shape(["gh[pousr]_", "[A-Za-z0-9]{20,}"], ["github_pat_", "[A-Za-z0-9_]{20,}"]) },
   // Slack: every xox?- bot/user/app/refresh token, plus the app-level xapp-.
-  { kind: "slack", pattern: /\b(?:xox[abcdeprs]|xapp)-[A-Za-z0-9-]{10,}/g },
+  { kind: "slack", pattern: shape(["xox[abcdeprs]-|xapp-", "[A-Za-z0-9-]{10,}"]) },
   // Anthropic before OpenAI: sk-ant-… also matches the generic sk- shape.
-  { kind: "anthropic", pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
-  { kind: "openai", pattern: /\bsk-[A-Za-z0-9_-]{20,}/g },
+  { kind: "anthropic", pattern: shape(["sk-ant-", "[A-Za-z0-9_-]{20,}"]) },
+  { kind: "openai", pattern: shape(["sk-", "[A-Za-z0-9_-]{20,}"]) },
   // AWS access key id.
-  { kind: "aws", pattern: /\bAKIA[0-9A-Z]{16}\b/g },
+  { kind: "aws", pattern: shape(["AKIA", "[0-9A-Z]{16}(?![0-9A-Z])"]) },
   // Google API key.
-  { kind: "google", pattern: /\bAIza[A-Za-z0-9_-]{35}\b/g },
+  { kind: "google", pattern: shape(["AIza", "[A-Za-z0-9_-]{35}(?![A-Za-z0-9_])"]) },
   // Convex deploy key: prod:<deployment>|<base64ish>. The pipe is what makes
   // it a key and not a prose colon.
-  { kind: "convex", pattern: /\b(?:prod|dev|preview):[a-z0-9-]+\|[A-Za-z0-9+/=_-]{20,}/g },
+  { kind: "convex", pattern: shape(["prod:|dev:|preview:", String.raw`[a-z0-9-]+\|[A-Za-z0-9+/=_-]{20,}`]) },
 ]);
 
 // The header form, kept separate because the prefix is preserved: the fact
@@ -63,7 +98,14 @@ const BEARER = /(Authorization[ \t]*[:=][ \t]*Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,
 // does, so recognise the pair before the ID's normal shape is replaced below.
 // The separator (and optional matching quotes) survives to keep a CLI table or
 // assignment readable, while the 40-character secret cannot reach storage.
-const AWS_ACCESS_KEY_PAIR = /\b(AKIA[0-9A-Z]{16})([ \t]*(?:[,;:=][ \t]*|\r?\n[ \t]*|[ \t]+))(["']?)([A-Za-z0-9/+=]{40})\3(?![A-Za-z0-9/+=])/g;
+// A blank is a space, a tab or an escaped tab, and a line break raw or escaped,
+// so the pair is read the same in a serialized string.
+const PAIR_BLANK = String.raw`(?:[ \t]|\\t)`;
+const PAIR_BREAK = String.raw`(?:\r?\n|(?:\\r)?\\n)`;
+const AWS_ACCESS_KEY_PAIR = new RegExp(
+  String.raw`(AKIA(?<=${START}AKIA)[0-9A-Z]{16})(${PAIR_BLANK}*(?:[,;:=]${PAIR_BLANK}*|${PAIR_BREAK}${PAIR_BLANK}*|${PAIR_BLANK}+))(["']?)([A-Za-z0-9/+=]{40})\3(?![A-Za-z0-9/+=])`,
+  "g",
+);
 
 // A name alone is not a secret, but it makes the value on the other side of
 // an assignment one — if the value also LOOKS like a credential.  The list is
@@ -109,12 +151,12 @@ const NAMED_VALUE = `(?:${ESCAPED_DOUBLE}|${DOUBLE}|${SINGLE}|(${BARE}))`;
 const namedRules = NAME_FLAVORS.map(({ name, flags }) => ({
   json: new RegExp(String.raw`("(${name})"\s*:\s*)${DOUBLE}`, flags),
   escapedJson: new RegExp(String.raw`(\\"(${name})\\"\s*:\s*)${ESCAPED_DOUBLE}`, flags),
-  assignment: new RegExp(String.raw`(\b(${name})\b\s*(?:=|:)\s*)${NAMED_VALUE}`, flags),
+  assignment: new RegExp(String.raw`(${NAME_START}(${name})\b\s*(?:=|:)\s*)${NAMED_VALUE}`, flags),
   // Some tools print "auth_token <value>" rather than an assignment.  Restrict
   // this fallback to a plausibly high-entropy value: ordinary prose about a
   // token is not a credential merely because it follows that word.
   spaced: new RegExp(
-    String.raw`(\b(${name})\b(?:\s+(?:is|was)\s+|\s+))([A-Za-z0-9._~+/=-]{32,})`,
+    String.raw`(${NAME_START}(${name})\b(?:\s+(?:is|was)\s+|\s+))([A-Za-z0-9._~+/=-]{32,})`,
     flags,
   ),
 }));
