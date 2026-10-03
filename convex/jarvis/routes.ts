@@ -28,7 +28,7 @@ import { jarvisAuth, jsonResponse } from "./auth";
 import { checkEvent } from "./record";
 import { register as registerContext } from "./context";
 import { postRuling } from "./rulings";
-import { channelRoute, digestRoute, needsYouRoute } from "./digest";
+import { channelRoute, digestRoute, needsYouRoute, threadDigestRoute } from "./digest";
 import { tickRoute } from "./tick";
 import { pushRoute } from "../push";
 import { DELEGATE_ONLY_KINDS, TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
@@ -112,6 +112,7 @@ export function register(http: HttpRouter): void {
   registerContext(http); // GET /jarvis/context?for=<caller> (context.ts)
   http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
   http.route({ path: "/jarvis/digest", method: "POST", handler: digestRoute });
+  http.route({ path: "/jarvis/thread/digest", method: "POST", handler: threadDigestRoute });
   http.route({ path: "/jarvis/digest/needs-you", method: "GET", handler: needsYouRoute });
   http.route({ path: "/jarvis/digest/channel", method: "GET", handler: channelRoute });
   http.route({ path: "/jarvis/tick", method: "POST", handler: tickRoute });
