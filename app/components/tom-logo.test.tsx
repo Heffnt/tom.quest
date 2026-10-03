@@ -5,8 +5,8 @@
 // tomSymbolMetrics(symbolParams). The first test pins the shipped default
 // rendering (it must not have changed); the rest fail if the constants return.
 
-import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { render, waitFor } from "@testing-library/react";
 
 vi.mock("next/font/google", () => ({
   Manrope: () => ({ className: "manrope", style: { fontFamily: "Manrope" } }),
@@ -73,5 +73,43 @@ describe("TomLogo bars variant", () => {
     const tilted = bars({ ...DEFAULT_TOM_PARAMS, mAngle: 50, dotSize: 90 });
     expect(tilted.barThick).toBeCloseTo(base.barThick, 6);
     expect(tilted.topBarY).toBeCloseTo(base.topBarY, 6);
+  });
+});
+
+// Regression: fontReady() awaited document.fonts.load() with no rejection
+// handler. The load rejects when any face in the family list errors, and
+// next/font's "Manrope Fallback" face is local("Arial"), which errors where
+// Arial is absent (the box's Chromium). The measurement never ran, the SVG kept
+// the width estimates, and the final "t" drew over "ues" on the home page.
+// fontReady() now awaits document.fonts.ready alone; the mocked load() still
+// rejects, so the test fails if a load() without a rejection handler returns.
+describe("TomLogo plain variant", () => {
+  const MEASURED = { t: 42.2, om: 157.8, ues: 184 };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(document, "fonts");
+  });
+
+  it("lays out from measured widths when a font face fails to load", async () => {
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        load: () => Promise.reject(new DOMException("A network error occurred.", "NetworkError")),
+        ready: Promise.resolve(),
+      },
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const w = MEASURED[this.textContent as keyof typeof MEASURED] ?? 0;
+      return { width: w, height: FONT_SIZE, x: 0, y: 0, top: 0, left: 0, right: w, bottom: FONT_SIZE, toJSON: () => ({}) } as DOMRect;
+    });
+
+    const { container } = render(<TomLogo fontSize={FONT_SIZE} variant="plain" />);
+    const x = (i: number) => Number(container.querySelectorAll("svg > text")[i].getAttribute("x"));
+    // Children order: "om", "ues", left "t", right "t".
+    await waitFor(() => {
+      expect(x(0) - x(2)).toBeCloseTo(MEASURED.t, 6);
+      expect(x(3) - x(1)).toBeCloseTo(MEASURED.ues, 6);
+    });
   });
 });
