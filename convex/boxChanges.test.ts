@@ -16,7 +16,6 @@ import {
 } from "./ttsCompose";
 import {
   AGENTS_WINDOW_URL,
-  BOX_CHANGE_SCAN,
   BOX_CHANGE_HISTORY_COPIED_THROUGH,
   BOX_CHANGE_HISTORY_CUT,
   boxChangeFaults,
@@ -32,7 +31,6 @@ import {
   CAPTURE_SCAN,
   DATED_SCAN,
   EVENT_SCAN,
-  FLAGGED_SCAN,
   OBJECTION_SCAN,
   READY_SCAN,
   SPEND_SCAN,
@@ -316,7 +314,9 @@ describe("the box-change door", () => {
     }
   });
 
-  it("caps a box-change window that holds more rows than one digest may read", async () => {
+  // witness: taking 2,000 rows and then advancing the digest through the
+  // whole window permanently skipped every later row in that same window.
+  it("reads every box change when a window holds more than 2,000", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
@@ -331,7 +331,9 @@ describe("the box-change door", () => {
       const rows = await t.run(async (ctx) =>
         boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_COPIED_THROUGH + 1, recordedAt + 100),
       );
-      expect(rows).toHaveLength(BOX_CHANGE_SCAN);
+      expect(rows).toHaveLength(2_001);
+      expect(rows[0].id).toBe("window-0");
+      expect(rows[2_000].id).toBe("window-2000");
     } finally {
       vi.useRealTimers();
     }
@@ -438,7 +440,7 @@ describe("the digest read budget", () => {
       for (let n = 0; n <= SURFACED_SCAN; n += 1) {
         await ctx.db.insert("dtsEvents", { at: recordedAt + n, kind: "not-surfaced", todoId: flagged });
       }
-      for (let n = 0; n <= BOX_CHANGE_SCAN; n += 1) {
+      for (let n = 0; n < 10; n += 1) {
         const data = change({ at: recordedAt + n, agentId: "synthetic-agent", id: `bounded-${n}` });
         await ctx.db.insert("events", { ...eventOf(data), provenance: eventOf(data).provenance });
       }
@@ -455,14 +457,57 @@ describe("the digest read budget", () => {
     expect(facts.needsYou.map((item) => item.statement)).toEqual(["flagged email"]);
     expect(facts.boxChanges).not.toHaveLength(0);
     const everyDigestCap = [
-      BOX_CHANGE_SCAN, BOX_SCAN, CALENDAR_SCAN, CAPTURE_SCAN, DATED_SCAN, EVENT_SCAN,
-      FLAGGED_SCAN, OBJECTION_SCAN, READY_SCAN, SPEND_SCAN, SURFACED_SCAN,
+      BOX_SCAN, CALENDAR_SCAN, CAPTURE_SCAN, DATED_SCAN, EVENT_SCAN,
+      OBJECTION_SCAN, READY_SCAN, SPEND_SCAN, SURFACED_SCAN,
     ];
-    expect(Math.max(...everyDigestCap)).toBe(BOX_CHANGE_SCAN);
-    const primaryCaps = DATED_SCAN + READY_SCAN + CALENDAR_SCAN * 2 + BOX_CHANGE_SCAN;
+    expect(Math.max(...everyDigestCap)).toBe(EVENT_SCAN);
+    const primaryCaps = DATED_SCAN + READY_SCAN + CALENDAR_SCAN * 2;
     // 200 rows cover the flagged email, its noise events, point reads, and every other capped range (empty here).
     expect(documentsRead).toBeLessThanOrEqual(primaryCaps + 200);
   }, 60_000);
+
+  it("finds a newer unsurfaced email after more than 100 surfaced flagged emails", async () => {
+    const t = convexTest({ schema, modules });
+    const recordedAt = Date.UTC(2026, 8, 27, 9);
+    vi.setSystemTime(recordedAt);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 100; n += 1) {
+        const todoId = await ctx.db.insert("todos", {
+          statement: `surfaced flagged email ${n}`,
+          needsTomToday: { why: "only Tom can answer" },
+          readiness: "unprepared",
+          status: "active",
+          timingClass: "whenever",
+          source: "email",
+          createdAt: recordedAt + n,
+          updatedAt: recordedAt + n,
+        });
+        await ctx.db.insert("dtsEvents", {
+          at: recordedAt + n,
+          kind: "surfaced",
+          todoId,
+          data: { via: "digest" },
+        });
+      }
+      await ctx.db.insert("todos", {
+        statement: "newer unsurfaced flagged email",
+        needsTomToday: { why: "only Tom can answer" },
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        createdAt: recordedAt + 100,
+        updatedAt: recordedAt + 100,
+      });
+    });
+
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, {
+      day: "2026-09-27",
+      now: recordedAt + 1_000,
+      since: recordedAt - 1,
+    }));
+    expect(facts.needsYou.map((item) => item.statement)).toEqual(["newer unsurfaced flagged email"]);
+  });
 });
 
 describe("the digest lines a change earns", () => {

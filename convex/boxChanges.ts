@@ -325,8 +325,6 @@ export const BOX_CHANGE_HISTORY_CUT = Date.UTC(2026, 8, 26, 8, 38, 58);
  * copied events to their pre-cut dtsEvents source rows. The copy wrote no
  * marker, so its exact inclusive upper bound is the durable partition. */
 export const BOX_CHANGE_HISTORY_COPIED_THROUGH = 1_790_412_428_617.723;
-/** A day normally has tens of box changes; the cap bounds a catch-up digest window. */
-export const BOX_CHANGE_SCAN = 2000;
 
 export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
   if (to <= BOX_CHANGE_HISTORY_COPIED_THROUGH) return [];
@@ -338,7 +336,9 @@ export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number
         ? kind.gt("_creationTime", BOX_CHANGE_HISTORY_COPIED_THROUGH).lt("_creationTime", to)
         : kind.gte("_creationTime", from).lt("_creationTime", to);
     });
-  const rows: Doc<"events">[] = await query.take(BOX_CHANGE_SCAN);
+  // Not capped: consecutive digest windows must partition every change exactly once; rows are about a kilobyte and number tens a day, so a whole window stays far below the read limit.
+  const rows: Doc<"events">[] = [];
+  for await (const row of query) rows.push(row);
   return rows
     .map((row) => row.data as BoxChange)
     .sort((a, b) => a.at - b.at);

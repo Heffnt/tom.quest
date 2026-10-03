@@ -251,8 +251,6 @@ export const DATED_SCAN = 500;
 export const CALENDAR_SCAN = 500;
 /** A day normally has tens of prepared todos; the cap keeps their large explanations within the read budget. */
 export const READY_SCAN = 200;
-/** A day normally has a handful of flagged emails; the cap bounds their per-todo surfaced checks. */
-export const FLAGGED_SCAN = 100;
 /** A todo normally has one surfaced row per channel; the cap bounds each id-form lookup. */
 export const SURFACED_SCAN = 50;
 
@@ -424,8 +422,7 @@ export async function gatherTodayFacts(
   //    mail source that captures today; Outlook's joins when its poller does.
   const flagged = recentEmail
     .filter((t) => t.needsTomToday !== undefined && t.status === "active" && t.createdAt < now)
-    .sort((a, b) => a.createdAt - b.createdAt)
-    .slice(0, FLAGGED_SCAN);
+    .sort((a, b) => a.createdAt - b.createdAt);
   const unshown: typeof flagged = [];
   for (const t of flagged) {
     // The surfaced rows name the todo by either id.
