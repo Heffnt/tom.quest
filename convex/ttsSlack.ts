@@ -464,6 +464,11 @@ export type ThreadReplyOutcome =
   | { outcome: "asked-which"; numbers: number[] }
   | { outcome: "captured"; todoId: Id<"todos"> };
 
+type NeedsYouAnswerOutcome = Extract<
+  ThreadReplyOutcome,
+  { outcome: "done" | "time-note" | "tom-note" }
+>;
+
 /**
  * One transaction per reply event. Dedupe first (Slack delivers at least
  * once: a redelivered event_id is dropped and counted on the row that took
@@ -780,12 +785,12 @@ async function needsYouReply(
 
 /** Apply one answer to one numbered needs-you item. Shared by Slack and the
  * Jarvis thread so both surfaces preserve the same done/date/note behavior. */
-async function answerNeedsYou(
+export async function answerNeedsYou(
   ctx: MutationCtx,
   item: { n: number; subject: SlackSubject; answeredKey: string },
   reply: { text: string; said: string; numbered: boolean },
   at: Record<string, string>,
-): Promise<ThreadReplyOutcome> {
+): Promise<NeedsYouAnswerOutcome> {
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: NEEDS_YOU_ANSWERED,
@@ -798,7 +803,6 @@ async function answerNeedsYou(
   await logEvent(ctx, "tom-note", undefined, { text: reply.text, ...at, subject: item.subject });
   return { outcome: "tom-note", subject: item.subject };
 }
-export { answerNeedsYou };
 
 /** Nothing is lost: the reply becomes a todo whose provenance names the
  * thread it came from, and the thread gets the one capture line. No slackTs
@@ -1005,7 +1009,7 @@ async function todoReply(
   text: string,
   at: Record<string, string>,
   shape: ReplyShape = replyShape(text),
-): Promise<ThreadReplyOutcome> {
+): Promise<NeedsYouAnswerOutcome> {
   // A thread names its todo in either form (convex/jarvis/tables.ts).
   const todoId = await resolveId(ctx, "todos", given);
   const todo = todoId === null ? null : await ctx.db.get(todoId);

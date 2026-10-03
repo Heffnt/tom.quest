@@ -40,9 +40,12 @@ type ThreadMessage =
       subject: Id<"events"> | null; reply: Reply }
   | { kind: "digest"; id: Id<"events">; at: number; day: string; text: string;
       items: Array<{ n: number; text: string }>;
-      replies: Array<{ id: Id<"events">; at: number; text: string; reply: Reply }> };
+      replies: Array<{ id: Id<"events">; at: number; text: string; reply: Reply }> }
+  | { kind: "item"; id: Id<"events">; at: number; digestId: Id<"events">;
+      day: string; n: number; text: string };
 
 type DigestEntry = Extract<ThreadMessage, { kind: "digest" }>;
+type NeedsYouEntry = Extract<ThreadMessage, { kind: "item" }>;
 
 type AgentChange = {
   id: Id<"events">;
@@ -55,6 +58,7 @@ type AgentChange = {
 type FeedItem =
   | { type: "said"; id: string; at: number; day: string; said: Said }
   | { type: "digest"; id: string; at: number; day: string; digest: DigestEntry }
+  | { type: "item"; id: string; at: number; day: string; item: NeedsYouEntry }
   | { type: "change"; id: string; at: number; day: string; change: AgentChange; replies: Said[] };
 
 type ReplyTarget =
@@ -179,6 +183,12 @@ export default function ThreadClient() {
         at: message.at,
         day: message.day,
         digest: message,
+      }] : message.kind === "item" ? [{
+        type: "item",
+        id: message.id,
+        at: message.at,
+        day: message.day,
+        item: message,
       }] : []),
       ...(changes ?? []).map((change): FeedItem => ({
         type: "change",
@@ -271,6 +281,29 @@ function DigestRow({ digest, replying, onReply }: { digest: DigestEntry; replyin
   );
 }
 
+function NeedsYouRow({ item, replying, onReply }: { item: NeedsYouEntry; replying: boolean; onReply: () => void }) {
+  return (
+    <li className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-0.5">
+      <time dateTime={new Date(item.at).toISOString()} className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint">{clock.format(item.at)}</time>
+      <div className="min-w-0">
+        <p className="font-mono text-[11px] leading-5 text-text-faint">Jarvis · needs you</p>
+        <p className="whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-[15px] leading-6 text-text">
+          <span className="mr-1 font-mono text-[11px] text-text-faint">{item.n} ·</span><SlackText text={item.text} />
+        </p>
+      </div>
+      <span />
+      <div className="flex justify-end pt-1">
+        <button
+          type="button" aria-pressed={replying} onClick={onReply}
+          className={`w-20 rounded-md border px-2 py-1 text-xs hover:bg-surface-alt hover:text-text ${replying ? "border-accent/60 bg-surface-alt text-text" : "border-border text-text-muted"}`}
+        >
+          {replying ? "Replying" : "Reply"}
+        </button>
+      </div>
+    </li>
+  );
+}
+
 function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; loading: boolean }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -324,6 +357,15 @@ function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; load
                     onReply={() => setTarget(target?.id === item.id
                       ? null
                       : { kind: "digest", id: item.digest.id, day: item.day })}
+                  />
+                ) : item.type === "item" ? (
+                  <NeedsYouRow
+                    key={item.id}
+                    item={item.item}
+                    replying={target?.id === item.item.digestId}
+                    onReply={() => setTarget(target?.id === item.item.digestId
+                      ? null
+                      : { kind: "digest", id: item.item.digestId, day: item.day })}
                   />
                 ) : (
                   <Fragment key={item.id}>

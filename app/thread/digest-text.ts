@@ -22,9 +22,10 @@ export function slackSegments(text: string): SlackSegment[] {
   for (const match of text.matchAll(links)) {
     plain(text.slice(end, match.index));
     const [whole, href, label] = match;
-    if (href.startsWith("https://") || href.startsWith("/")) {
+    if (href.startsWith("https://")) {
       segments.push({ text: unescapeSlack(label ?? href), href });
     } else {
+      // Link targets come from record text; any other scheme could run script in the page.
       plain(whole);
     }
     end = (match.index ?? 0) + whole.length;

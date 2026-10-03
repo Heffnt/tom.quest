@@ -267,6 +267,48 @@ describe("thread", () => {
       data: { kind: "answer", outcome: "done", n: 1 },
       text: "Item 1: its todo is marked done.",
     });
+    const [answered] = await t.run((ctx) => ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) =>
+        q.eq("kind", "needs-tom-answered").eq("subject", "todo-answer"))
+      .collect());
+    expect(answered).toMatchObject({
+      provenance: { user: "tom" },
+      subject: "todo-answer",
+      data: { answer: "done", via: "thread" },
+    });
+    expect(await t.run((ctx) => ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", "slack-event"))
+      .collect())).toEqual([]);
+  });
+
+  it("routes a numbered answer to a thread-needs-you item and returns that item as its own entry", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    const todoId = await activeTodo(t);
+    const digestId = await threadDigest(t, []);
+    const itemId = await t.run(async (ctx) => ctx.db.insert("events", {
+      kind: "thread-needs-you",
+      at: Date.now(),
+      provenance: { job: "needs-you" },
+      subject: digestId,
+      data: { n: 3, key: "late-todo", todoId },
+      text: "Finish the late synthetic task.",
+    }));
+
+    await viewer.mutation(api.thread.send, { text: "3 done", subject: digestId });
+    expect((await t.run((ctx) => ctx.db.get(todoId)))?.status).toBe("done");
+    const found = await viewer.query(api.thread.messages, {});
+    expect(found).toContainEqual({
+      kind: "item",
+      id: itemId,
+      at: expect.any(Number),
+      digestId,
+      day: "2026-10-02",
+      n: 3,
+      text: "Finish the late synthetic task.",
+    });
   });
 
   it("keeps a numbered job answer as a tom-note and records an answer reply", async () => {
@@ -275,14 +317,14 @@ describe("thread", () => {
     const digestId = await threadDigest(t, [
       { n: 2, key: "job-answer", text: "Settle the synthetic job.", job: "calendar" },
     ]);
-    const { id: messageId } = await viewer.mutation(api.thread.send, { text: "2 note text", subject: digestId });
+    const { id: messageId } = await viewer.mutation(api.thread.send, { text: "2", subject: digestId });
     const notes = await t.run((ctx) => ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", "tom-note"))
       .collect());
     expect(notes).toHaveLength(1);
     expect(notes[0].data).toMatchObject({
-      text: "2 note text",
+      text: "2",
       subject: { kind: "job", id: "calendar" },
       threadDigestId: digestId,
       threadMessageId: messageId,
@@ -295,6 +337,12 @@ describe("thread", () => {
       data: { kind: "answer", outcome: "tom-note", n: 2 },
       text: "Item 2: your reply is a note on the calendar job.",
     });
+    const answered = await t.run((ctx) => ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) =>
+        q.eq("kind", "needs-tom-answered").eq("subject", "job-answer"))
+      .first());
+    expect(answered?.data).toEqual({ answer: "2", via: "thread" });
   });
 
   it("keeps an unnumbered digest reply as a note on that day", async () => {

@@ -233,14 +233,73 @@ describe("POST /jarvis/thread/digest", () => {
     expect((next?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["boundary-opening"]);
   });
 
-  it("lists all 201 openings once", async () => {
+  it("posts openings after today's digest with consecutive numbers and pushes once each", async () => {
     const t = setup(MORNING);
     await t.run(async (ctx) => {
-      for (let n = 0; n < 201; n += 1) {
+      for (const n of [1, 2]) {
+        await ctx.db.insert("events", {
+          kind: "digest-line",
+          at: MORNING - 1_000 * n,
+          provenance: {},
+          subject: `late-ask-${n}`,
+          data: { section: "decisions", askId: `late-ask-${n}`, decision: `Synthetic choice ${n}.` },
+        });
+      }
+    });
+    const digest = await (await post(t, "/jarvis/thread/digest", {})).json();
+    const firstTodo = await aTodo(t, "Settle the first late item");
+    const secondTodo = await aTodo(t, "Settle the second late item");
+
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: firstTodo, reason: "the first answer is needed", key: "late-1",
+    });
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: secondTodo, reason: "the second answer is needed", key: "late-2",
+    });
+
+    const posted = await ofKind(t, "events", "thread-needs-you");
+    expect(posted.map((row) => ({ subject: row.subject, data: row.data }))).toEqual([
+      { subject: digest.id, data: expect.objectContaining({ n: 3, key: "late-1", todoId: firstTodo }) },
+      { subject: digest.id, data: expect.objectContaining({ n: 4, key: "late-2", todoId: secondTodo }) },
+    ]);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    const pushes = scheduled.filter((row) => row.name.includes("pushSend") && row.name.includes("sendToAll"));
+    expect(pushes).toHaveLength(2);
+    expect(pushes.map((row) => row.args[0])).toEqual([
+      { title: "Needs you", body: "", url: "/thread" },
+      { title: "Needs you", body: "", url: "/thread" },
+    ]);
+
+    vi.setSystemTime(MORNING + 86_400_000);
+    expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: "2026-09-27" });
+    const next = (await ofKind(t, "events", "thread-digest")).find((row) => row.subject === "2026-09-27");
+    expect((next?.data as { items: unknown[] }).items).toEqual([]);
+  });
+
+  it("leaves an opening for the morning digest when today's digest does not exist", async () => {
+    const t = setup(MORNING);
+    const todoId = await aTodo(t, "Settle the morning item");
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId, reason: "the morning answer is needed", key: "before-digest",
+    });
+    expect(await ofKind(t, "events", "thread-needs-you")).toEqual([]);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((row) => row.name.includes("pushSend"))).toEqual([]);
+
+    await post(t, "/jarvis/thread/digest", {});
+    const [digest] = await ofKind(t, "events", "thread-digest");
+    expect((digest.data as { items: Array<{ key: string }> }).items.map((item) => item.key))
+      .toEqual(["before-digest"]);
+  });
+
+  it("lists 200 pending openings and carries the rest into the next digest", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 205; n += 1) {
         const key = `need-${n + 1}`;
         await ctx.db.insert("events", {
           kind: "needs-you-opened",
-          at: MORNING - 201_000 + n * 1_000,
+          at: MORNING - 205_000 + n * 1_000,
           provenance: {},
           subject: key,
           data: { key },
@@ -255,14 +314,16 @@ describe("POST /jarvis/thread/digest", () => {
     const firstData = first?.data as { objectionAskIds: string[]; items: Array<Record<string, unknown>> };
     expect(firstData.objectionAskIds).toEqual([]);
     expect(firstData.items).toEqual(
-      Array.from({ length: 201 }, (_, index) => ({ n: index + 1, key: `need-${index + 1}`, text: `Need ${index + 1}.` })),
+      Array.from({ length: 200 }, (_, index) => ({ n: index + 1, key: `need-${index + 1}`, text: `Need ${index + 1}.` })),
     );
 
     vi.setSystemTime(MORNING + 86_400_000);
     expect(await (await post(t, "/jarvis/thread/digest", {})).json()).toMatchObject({ appended: true, day: "2026-09-27" });
     rows = await ofKind(t, "events", "thread-digest");
     const next = rows.find((row) => row.subject === "2026-09-27");
-    expect((next?.data as { items: Array<Record<string, unknown>> }).items).toEqual([]);
+    expect((next?.data as { items: Array<Record<string, unknown>> }).items).toEqual(
+      Array.from({ length: 5 }, (_, index) => ({ n: index + 1, key: `need-${index + 201}`, text: `Need ${index + 201}.` })),
+    );
   });
 });
 

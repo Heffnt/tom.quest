@@ -39,9 +39,7 @@ describe("slackSegments", () => {
       .toEqual([
         { text: "- " },
         { text: "One", href: "https://one.example" },
-        { text: "\nThen " },
-        { text: "/two", href: "/two" },
-        { text: " and " },
+        { text: "\nThen </two> and " },
         { text: "https://three.example", href: "https://three.example" },
         { text: "." },
       ]);
