@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_KINDS, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
+import { EVENT_KINDS, RECORD_ONLY_KINDS, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
 
 describe("validateEvent", () => {
   it("fills at and data, keeps subject and text, and drops nothing it was given", () => {
@@ -133,8 +133,9 @@ describe("validateEvent", () => {
     for (const [candidate, error] of cases) expect(validateEvent(candidate)).toEqual({ ok: false, error });
   });
 
-  it("keeps thread-message as a Tom-only kind", () => {
+  it("keeps thread events in their route-only lists", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
+    expect(RECORD_ONLY_KINDS).toContain("thread-digest");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
   });
 

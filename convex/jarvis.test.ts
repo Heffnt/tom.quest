@@ -103,6 +103,20 @@ describe("POST /jarvis/event", () => {
     expect(await rows(t, "dtsEvents")).toEqual([]);
   });
 
+  it("refuses record-only events through both worker-key routes", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    const body = { kind: "thread-digest", subject: "2026-10-04", data: {} };
+    for (const path of ["/jarvis/event", "/tts/event"]) {
+      const res = await post(t, path, body, { "X-Jarvis-Key": "k" });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "thread-digest is written only by the record" });
+    }
+    expect(await rows(t, "events")).toEqual([]);
+    expect(await rows(t, "dtsEvents")).toEqual([]);
+  });
+
   it("runs the job hooks: one digest failure per standing condition, a repeat marked, re-armed by the clean run, all in events, no Slack post", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");

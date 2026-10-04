@@ -125,6 +125,13 @@ export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thr
 /** @type {const} */
 export const DELEGATE_ONLY_KINDS = ["decision"];
 
+/** Events only the record's own mutations write. thread-digest is written by
+ *  appendThreadDigest in convex/jarvis/digest.ts, which checks the hour,
+ *  renders the digest and appends once per day. The worker-key event routes
+ *  refuse them, so no row can stand in for the real one. */
+/** @type {const} */
+export const RECORD_ONLY_KINDS = ["thread-digest"];
+
 /** How far past the writer's clock an event's `at` may lie. The silence alarm
  *  reads a job's newest row (convex/jarvis/jobs.ts), so a row dated in the
  *  future would hold it quiet until that date; a box clock a little ahead of
