@@ -45,6 +45,8 @@
 
 - Dropping a table from `convex/schema.ts` deletes nothing: `convex deploy` validates only declared tables and the rows persist undeclared. Purging data takes the dashboard or the CLI with credentials.
 - The model-of-tom publication table fails closed until the nightly post has written its singleton; there is no backfill door any more.
+- A function that reads a table reads it with a bound (an index range, a `.take(n)`, or a byte budget) and states the bound beside the read; `.collect()` on an unbounded query is refused in review.
+- Why: the digest's compose read whole tables with `.collect()`, passed Convex's 16 MiB limit on what one function may read on 2026-09-29, and no digest went out for six days.
 
 <!-- convex-ai-start -->
 
