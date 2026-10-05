@@ -297,6 +297,17 @@ describe("the thread digest, appended by the record's cron", () => {
       { n: 3, key: "need-todo", text: "Settle the synthetic todo.", todoId: "synthetic-todo" },
       { n: 4, key: "need-job", text: "Settle the synthetic job.", job: "synthetic-job" },
     ]);
+    // The sweep the digest schedules writes each listed opening's number and
+    // digest, which the thread's open items read (convex/thread.ts open).
+    await t.mutation(internal.thread.internalCloseOpenItems, {});
+    const openings = await ofKind(t, "events", "needs-you-opened");
+    expect(openings.map((one) => [one.subject, (one.data as { n?: number }).n, (one.data as { digestId?: string }).digestId]).sort())
+      .toEqual([["need-job", 4, first.id], ["need-todo", 3, first.id]]);
+    // One count per section the composer printed: the item lines of its run.
+    const counts = (row.data as { sectionCounts: Record<string, number> }).sectionCounts;
+    expect(counts.objections).toBe(2);
+    const itemLines = (row.text ?? "").split("\n").filter((line: string) => line.startsWith("- ")).length;
+    expect(Object.values(counts).reduce((sum, n) => sum + n, 0)).toBe(itemLines);
 
     const second = await appendDigest(t);
     expect(second).toMatchObject({

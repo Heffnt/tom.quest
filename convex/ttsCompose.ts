@@ -371,6 +371,18 @@ function lastResortDrop(lines: Line[]): number {
   return -1;
 }
 
+/** How many item lines each section's run printed, by section name: the
+ *  digest's folded line on the Jarvis thread (convex/jarvis/digest.ts
+ *  appendThreadDigest stores it as data.sectionCounts). */
+export function sectionCounts(m: Message): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const line of m.lines) {
+    if (line.role !== "item" || line.section === undefined) continue;
+    counts[line.section] = (counts[line.section] ?? 0) + 1;
+  }
+  return counts;
+}
+
 /** The lines with every run that has lost all its item lines removed whole,
  *  lead and note included: a lead with nothing under it is a malformed run. */
 function withoutEmptyRuns(lines: Line[]): Line[] {

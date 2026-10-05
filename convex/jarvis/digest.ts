@@ -376,12 +376,18 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
     data: { day, since, windowEnd: now, truncated: composed.truncated,
       surfacedTodoIds: composed.surfacedTodoIds,
       objectionAskIds: composed.objectionAskIds,
+      sectionCounts: composed.sectionCounts,
       items,
       openingsFrom,
       // Where the next digest's read of superseded rulings starts.
       supersededCursor: composed.supersededCursor,
     },
   });
+  // The sweep writes on each listed opening its number and this digest, which
+  // the Jarvis thread's open items read (convex/thread.ts), and closes what
+  // stopped waiting on him since yesterday. It runs in its own transaction,
+  // so its reads are not charged to this digest's.
+  await ctx.scheduler.runAfter(0, internal.thread.internalCloseOpenItems, {});
   // One push for the digest; its text stays in the record, as the needs-you
   // push's does (convex/jarvis/outbox.ts openNeedsYou).
   await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, { title: "Digest", body: day, url: "/thread" });

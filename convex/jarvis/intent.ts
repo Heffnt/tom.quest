@@ -28,7 +28,7 @@
 
 import { v } from "convex/values";
 import { mutation, query } from "../_generated/server";
-import type { QueryCtx } from "../_generated/server";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
 import { insertRuling } from "../ttsRulings";
@@ -102,7 +102,9 @@ const decisionSubject = (askId: string) => `decision:${askId}`;
  *  failing in a later run is open again. */
 const evalSubject = (runId: string, itemName: string) => `eval:${runId}:${itemName}`;
 
-async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
+/** His newest settlement of each thing he settled, by its subject; the
+ *  Jarvis thread reads it beside this page (convex/thread.ts). */
+export async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
   const rows = await ctx.db
     .query("events")
     .withIndex("by_kind_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED))
@@ -118,7 +120,9 @@ async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
   return bySubject;
 }
 
-function decisionOf(row: Doc<"events">, settled: Map<string, Settlement>): Decision | null {
+/** One `decision` row as its readers show it, with his settlement of it;
+ *  null for a row with no askId or no question. */
+export function decisionOf(row: Doc<"events">, settled: Map<string, Settlement>): Decision | null {
   const data = (row.data ?? {}) as Record<string, unknown>;
   // The askId is the row's subject: every writer files the decision under
   // it (Jarvis worker/jobs/delegate.mjs posts it as the key, which the record
@@ -244,42 +248,64 @@ export const settle = mutation({
         throw new Error(`no eval run ${evalRef.slice(0, colon)} reporting ${item} in the record`);
       }
     }
-    let rulingId: string | null = null;
-    let line: string;
-    if (askId !== null) {
-      const decision = await ctx.db
-        .query("events")
-        .withIndex("by_subject_at", (q) => q.eq("subject", askId))
-        .order("desc")
-        .filter((q) => q.eq(q.field("kind"), "decision"))
-        .first();
-      if (decision === null) throw new Error(`no decision ${askId} in the record`);
-      const data = (decision.data ?? {}) as { todoId?: unknown; decision?: unknown; refused?: unknown };
-      // A refused or unanswered decision took nothing in his name: accepting it
-      // would write an approve ruling that ratifies nothing he was shown.
-      if (args.verdict === "approve" && (data.refused === true || typeof data.decision !== "string")) {
-        throw new Error(`decision ${askId} was refused or not answered; there is nothing to accept`);
-      }
-      const todoId = typeof data.todoId === "string" ? await resolveId(ctx, "todos", data.todoId) : null;
-      if (todoId !== null) {
-        rulingId = await insertRuling(ctx, { todoId, verdict: args.verdict, ...(sentence === "" ? {} : { sentence }) });
-      }
-      const taken = typeof data.decision === "string" ? data.decision : "(refused)";
-      line = args.verdict === "approve"
-        ? `Tom accepted the delegate's decision "${taken}" (${askId}).`
-        : `Tom objected to the delegate's decision "${taken}" (${askId}): ${sentence}`;
-    } else {
-      line = args.verdict === "approve"
-        ? `Tom let the ruling behind eval item ${item} stand.`
-        : `Tom ruled on eval item ${item}: ${sentence}`;
-    }
+    if (askId !== null) return await settleDecision(ctx, askId, args.verdict, sentence);
+    const line = args.verdict === "approve"
+      ? `Tom let the ruling behind eval item ${item} stand.`
+      : `Tom ruled on eval item ${item}: ${sentence}`;
     const id = await insertEvent(ctx, {
       kind: DISAGREEMENT_SETTLED,
       provenance: { user: "tom" },
       subject: args.subject,
-      data: { subject: args.subject, verdict: args.verdict, sentence: sentence === "" ? null : sentence, rulingId },
+      data: { subject: args.subject, verdict: args.verdict, sentence: sentence === "" ? null : sentence, rulingId: null },
       text: line,
     });
-    return { id, rulingId };
+    return { id, rulingId: null };
   },
 });
+
+/**
+ * His settlement of one delegate decision: the one code path of the thread's
+ * accept (settle, above) and of his objection typed under a decision on the
+ * thread (convex/thread.ts send). Writes the `disagreement-settled` event under
+ * `decision:<askId>`, and his ruling on the todo when the decision names one.
+ * The caller has checked that he is Tom.
+ */
+export async function settleDecision(
+  ctx: MutationCtx,
+  askId: string,
+  verdict: "approve" | "revise",
+  sentence: string,
+): Promise<{ id: string; rulingId: string | null }> {
+  if (verdict === "revise" && sentence === "") throw new Error("revise needs his sentence");
+  const decision = await ctx.db
+    .query("events")
+    .withIndex("by_subject_at", (q) => q.eq("subject", askId))
+    .order("desc")
+    .filter((q) => q.eq(q.field("kind"), "decision"))
+    .first();
+  if (decision === null) throw new Error(`no decision ${askId} in the record`);
+  const data = (decision.data ?? {}) as { todoId?: unknown; decision?: unknown; refused?: unknown };
+  // A refused or unanswered decision took nothing in his name: accepting it
+  // would write an approve ruling that ratifies nothing he was shown.
+  if (verdict === "approve" && (data.refused === true || typeof data.decision !== "string")) {
+    throw new Error(`decision ${askId} was refused or not answered; there is nothing to accept`);
+  }
+  const todoId = typeof data.todoId === "string" ? await resolveId(ctx, "todos", data.todoId) : null;
+  const rulingId = todoId === null
+    ? null
+    : await insertRuling(ctx, { todoId, verdict, ...(sentence === "" ? {} : { sentence }) });
+  // Settled: the Jarvis thread's open items leave the decision.
+  await ctx.db.patch(decision._id, { data: { ...((decision.data ?? {}) as Record<string, unknown>), closedAt: Date.now() } });
+  const taken = typeof data.decision === "string" ? data.decision : "(refused)";
+  const subject = decisionSubject(askId);
+  const id = await insertEvent(ctx, {
+    kind: DISAGREEMENT_SETTLED,
+    provenance: { user: "tom" },
+    subject,
+    data: { subject, verdict, sentence: sentence === "" ? null : sentence, rulingId },
+    text: verdict === "approve"
+      ? `Tom accepted the delegate's decision "${taken}" (${askId}).`
+      : `Tom objected to the delegate's decision "${taken}" (${askId}): ${sentence}`,
+  });
+  return { id, rulingId };
+}

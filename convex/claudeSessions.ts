@@ -1219,7 +1219,10 @@ const SEND_MESSAGE_ARGS = {
   text: v.string(),
 };
 
-async function sendMessageFrom(
+/** One user turn into a live session's inbound queue; the session's next
+ *  turn reads it. Also the door of his answer to a session's open question
+ *  on the Jarvis thread (convex/thread.ts send). */
+export async function sendMessageFrom(
   ctx: MutationCtx,
   {
     sessionId,

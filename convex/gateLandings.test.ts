@@ -176,6 +176,34 @@ describe("what arrived on main", () => {
     expect(await reports(t)).toHaveLength(0);
   });
 
+  it("keeps a landed pull request's number, title and first paragraph on its merge row, for the thread's return", async () => {
+    const t = await started();
+    const head = sha("a");
+    const squash = sha("b");
+    await seedGate(t, head);
+    arrive(commit(squash, [BASE]));
+    gh.state.closed.set(SLUG, [{ ...landed(41, head, squash), body: "\r\nThe thread is the one page.\nIt has open items.\r\n\r\nThe rest of the body." }]);
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    const [row] = await eventsOf(t, MERGE);
+    expect(row.data).toMatchObject({
+      pull: { number: 41, title: "pull request 41" },
+      claim: "The thread is the one page.\nIt has open items.",
+    });
+  });
+
+  it("leaves the claim off a merge row whose pull request has no body", async () => {
+    const t = await started();
+    const head = sha("a");
+    const squash = sha("b");
+    await seedGate(t, head);
+    arrive(commit(squash, [BASE]));
+    gh.state.closed.set(SLUG, [{ ...landed(41, head, squash), body: null }]);
+    await refresh(t);
+    const [row] = await eventsOf(t, MERGE);
+    expect(row.data).toMatchObject({ pull: { number: 41, title: "pull request 41" } });
+    expect(row.data).not.toHaveProperty("claim");
+  });
+
   it("writes the merge row of a pull request that landed with the gate open, keyed on its head, once", async () => {
     const t = await started();
     const head = sha("a");

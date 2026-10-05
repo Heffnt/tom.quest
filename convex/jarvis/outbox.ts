@@ -173,17 +173,13 @@ export async function openNeedsYou(
     .filter((q) => q.eq(q.field("kind"), NEEDS_YOU_OPENED))
     .first();
   if (seen !== null) return { opened: false, key };
-  await insertEvent(ctx, {
-    kind: NEEDS_YOU_OPENED,
-    subject: key,
-    data: {
-      key,
-      ...(todoId === undefined ? {} : { todoId }),
-      ...(job === undefined ? {} : { job }),
-      ...(reason === undefined ? {} : { reason }),
-    },
-    text,
-  });
+  const openingData = {
+    key,
+    ...(todoId === undefined ? {} : { todoId }),
+    ...(job === undefined ? {} : { job }),
+    ...(reason === undefined ? {} : { reason }),
+  };
+  const openingId = await insertEvent(ctx, { kind: NEEDS_YOU_OPENED, subject: key, data: openingData, text });
   const day = ttsDayKey(Date.now());
   const digest = await ctx.db
     .query("events")
@@ -217,6 +213,9 @@ export async function openNeedsYou(
         },
         text: cutToBytes(text, ITEM_TEXT_MAX_BYTES),
       });
+      // The opening carries its number and digest, which the Jarvis thread's
+      // open items read (convex/thread.ts).
+      await ctx.db.patch(openingId, { data: { ...openingData, n: last + 1, digestId: digest._id } });
       // The record pushes here rather than the box because both openers run in
       // the record, and scheduling in the same transaction pushes once per
       // posted item.

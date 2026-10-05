@@ -58,6 +58,7 @@ import type { ActionCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { GATED_REPOS, MAIN_TAKES_PUSHES, SESSION_REPOS } from "../shared/session-constants.mjs";
 import { LANDING_JOB, landingKey, mergeGateFor } from "./ttsMerge";
+import { cutToBytes } from "./jarvis/outbox";
 
 /** The branch the gate guards. */
 const MAIN = "main";
@@ -86,6 +87,7 @@ type GitHubCommit = {
 type GitHubPull = {
   number?: unknown;
   title?: unknown;
+  body?: unknown;
   merged_at?: unknown;
   merge_commit_sha?: unknown;
   head?: { sha?: unknown };
@@ -93,7 +95,19 @@ type GitHubPull = {
 };
 
 /** A pull request GitHub shows landed on main, in the few fields used here. */
-type Landed = { number: number; title: string; headSha: string; landedAs: string | null };
+type Landed = { number: number; title: string; claim: string | null; headSha: string; landedAs: string | null };
+
+/** The most UTF-8 bytes of a pull request's first paragraph a merge row keeps. */
+const CLAIM_MAX_BYTES = 2_048;
+
+/** A pull request body's first paragraph: the text before its first blank
+ *  line, cut to CLAIM_MAX_BYTES; null for an empty or absent body. The Jarvis
+ *  thread shows it as the claim of the landing's return (convex/thread.ts). */
+function claimOf(body: unknown): string | null {
+  if (typeof body !== "string") return null;
+  const first = body.replace(/\r\n/g, "\n").trim().split(/\n\s*\n/)[0].trim();
+  return first === "" ? null : cutToBytes(first, CLAIM_MAX_BYTES);
+}
 
 /** One commit of main's first-parent line and the pull request it landed, or
  *  null for a commit of no pull request. */
@@ -156,7 +170,9 @@ export const internalAccountForCommit = internalMutation({
     commit: v.string(),
     /** The first line of its message, the subject of a commit of no pull request. */
     subject: v.string(),
-    pull: v.optional(v.object({ number: v.number(), title: v.string(), headSha: v.string() })),
+    pull: v.optional(v.object({
+      number: v.number(), title: v.string(), headSha: v.string(), claim: v.optional(v.string()),
+    })),
   },
   handler: async (ctx, { repo, commit, subject, pull }): Promise<{ filed: "merge" | "report" }> => {
     const short = (sha: string) => sha.slice(0, 7);
@@ -176,6 +192,8 @@ export const internalAccountForCommit = internalMutation({
         repo,
         sha: pull.headSha,
         subject: pull.title || subject,
+        pull: { number: pull.number, title: pull.title },
+        ...(pull.claim === undefined ? {} : { claim: pull.claim }),
         // The sentence mergedOnMain writes for the same fact, and where it
         // landed: this file read it from GitHub's own list.
         mainCheck: `${short(pull.headSha)} is the head of pull request #${pull.number}, merged into ${MAIN} as ${short(commit)}`,
@@ -199,6 +217,7 @@ function landedOf(value: unknown): Landed | null {
   return {
     number: pull.number,
     title: typeof pull.title === "string" ? pull.title : "",
+    claim: claimOf(pull.body),
     headSha: pull.head.sha,
     landedAs: typeof pull.merge_commit_sha === "string" ? pull.merge_commit_sha : null,
   };
@@ -319,7 +338,10 @@ async function fileCommits(ctx: ActionCtx, repo: string, commits: readonly Resol
       repo,
       commit: commit.sha,
       subject: subjectOf(commit),
-      ...(pull === null ? {} : { pull: { number: pull.number, title: pull.title, headSha: pull.headSha } }),
+      ...(pull === null ? {} : { pull: {
+        number: pull.number, title: pull.title, headSha: pull.headSha,
+        ...(pull.claim === null ? {} : { claim: pull.claim }),
+      } }),
     });
   }
 }

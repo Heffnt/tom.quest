@@ -137,6 +137,11 @@ export default defineSchema({
     // the ones it has not yet printed (convex/ttsDigest.ts), on their own
     // index so no other kind's rows can crowd one out.
     .index("by_kind_standing_superseded_at", ["kind", "data.standing", "data.supersededAt"])
+    // One kind's rows that still wait on Tom: an opening, a decision or a
+    // suggestion carries data.closedAt once it stops waiting, so the Jarvis
+    // thread's open items read only the open ones, whatever their age
+    // (convex/thread.ts open, internalCloseOpenItems).
+    .index("by_kind_closed_at", ["kind", "data.closedAt", "at"])
     // One kind's rows by when the record wrote them (_creationTime, which ends
     // every index): the digest's read of post-history-cut box changes recorded
     // in its window, however long after they happened (convex/boxChanges.ts).

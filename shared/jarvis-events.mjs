@@ -44,12 +44,14 @@ export const EVENT_KINDS = [
   // box, and provenance.agentId names the agent that ran it when the reader
   // matched one, so the /agents chat draws it on events.by_agent_at.
   "box-change",
-  // Intent (convex/jarvis/intent.ts, the /intent page): the delegate's
+  // Intent (convex/jarvis/intent.ts; the Jarvis thread shows each decision
+  // and takes his accept or objection, convex/thread.ts): the delegate's
   // decision (`jarvis decide`: question, options, decision, reason, restedOn,
   // wouldChange, refused, refusedBecause, caller, askId, model; subject is
   // the askId), and Tom's settlement of one disagreement on the page — a
-  // decision he accepts or objects to, or a failing eval item he rules on
-  // (data: subject, verdict, sentence, rulingId when a ruling was written).
+  // decision he accepts or objects to on the thread, or a failing eval item he
+  // rules on on /intent (data: subject, verdict, sentence, rulingId when a
+  // ruling was written).
   "decision",
   "disagreement-settled",
   // The digest and needs-you (convex/jarvis/digest.ts): the box posted the
@@ -74,15 +76,17 @@ export const EVENT_KINDS = [
   // The Jarvis thread (convex/thread.ts, the /thread page): a message Tom
   // typed there, Jarvis's one-line answer posted back by the box, the day's
   // digest, a needs-you item that opened after it, and a line of the silence
-  // alarm. appendThreadDigest in convex/jarvis/digest.ts writes the digest once
-  // per day from the record's cron; subject is the day key, text is the
-  // rendered digest, and data is { day, since, windowEnd, truncated,
-  // surfacedTodoIds, objectionAskIds, items, openingsFrom }, where items is
-  // the numbered needs-you list [{ n, key, text, todoId?, job? }] and
-  // openingsFrom the time the next digest's scan of openings starts. A thread-needs-you has
-  // the digest id as subject, the item's text, and data { n, key, todoId?,
-  // job? }. A silence-alarm (convex/jarvis/jobs.ts raise) has the condition's
-  // key as subject, the alarm's line as text, and data { job, href }.
+  // alarm. appendThreadDigest in
+  // convex/jarvis/digest.ts writes the digest once per day from the record's
+  // cron; subject is the day key, text is the rendered digest, and data is
+  // { day, since, windowEnd, truncated, surfacedTodoIds, objectionAskIds,
+  // sectionCounts, items, openingsFrom }, where sectionCounts is the item
+  // lines per section of the text ({ [section]: n }), items is the numbered
+  // needs-you list [{ n, key, text, todoId?, job? }] and openingsFrom the time
+  // the next digest's scan of openings starts. A thread-needs-you has the
+  // digest id as subject, the item's text, and data { n, key, todoId?, job? }.
+  // A silence-alarm (convex/jarvis/jobs.ts raise) has the condition's key as
+  // subject, the alarm's line as text, and data { job, href }.
   "thread-message",
   "thread-reply",
   "thread-digest",
@@ -207,7 +211,50 @@ export const EVENT_KINDS = [
   // row that carried the new information, supersededAt to the instant and
   // supersededLine to the digest's sentence for it.
   "ruling",
+  // What the Jarvis thread's open items and stream read (convex/thread.ts),
+  // each fixed here by its reader before its writer exists, so the writer
+  // builds against this shape.
+  // A pause: a session's turn ended without finishing. Subject the
+  // claudeSessions id; provenance.agentId the session's run id and
+  // provenance.session the same session id. Data { reason, sessionId,
+  // question?, liftsAt?, doneSoFar? }: reason is one of PAUSE_REASONS;
+  // question, one sentence, is required when reason is "awaiting you,
+  // present" (a question only Tom can answer, while he is present); liftsAt
+  // is when the pause lifts by itself (epoch ms), absent for a question. Text
+  // is the question or the reason line. The thread shows only the "awaiting
+  // you, present" rows, as a session's open question.
+  "pause",
+  // A suggestion: something done or proposed in his name, for his yes, no or
+  // sentence. Subject the thing suggested (a todo id, `<repo>@<sha>`, a part
+  // id, or a rule line's heading). Data { class, built, restsOn, answer? }:
+  // class is one of SUGGESTION_CLASSES; built is true when it was done, false
+  // when proposed; restsOn is his sentence { text, source }; answer is absent
+  // until convex/thread.ts send writes { at, text, messageId } from his reply.
+  // Text is the one line.
+  "suggestion",
+  // A quality check of one part. Subject the part's id (its row in Jarvis
+  // worker/parts.json), so a part's newest check of any check is one index
+  // read (convex/thread.ts open). Data { part,
+  // check, measure, target, result, pass, agentHref? }: measure a number,
+  // target a number or null, result "green" or "failed", pass the job or
+  // tick that ran it, agentHref the diagnosis agent's chat on /agents when
+  // one was started. Text the one line.
+  "quality-check",
+  // A diagnosis of one failed quality check. Subject the failed check row's
+  // id. Data { part, causes, fixOrderId?, preventionOrderId?, fixLanding?,
+  // preventionLanding?, restsOn }: causes is [{ n, class, sentence }] for
+  // n 1 to 3; the landings are merge row ids. Text the causes, one sentence
+  // each.
+  "diagnosis",
 ];
+
+/** A pause's `data.reason`: the five ways a session's turn ends unfinished. */
+/** @type {const} */
+export const PAUSE_REASONS = ["awaiting you, present", "pace refused", "slot at cap", "task failed its ladder", "gate refused"];
+
+/** A suggestion's `data.class`. */
+/** @type {const} */
+export const SUGGESTION_CLASSES = ["fix", "deletion", "landing", "drawing", "explanation", "todo", "change"];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
  *  Convex's Tom-only mutations can write them through the shared validator;
@@ -279,9 +326,11 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set, a work run's repo and commit,
  * a build row's todo, a needs-you opening's key (the thread digest lists an
- * opening by its key).
+ * opening by its key), a pause's session, a suggestion's thing, a quality
+ * check's check and part, and a diagnosis's failed check (the thread finds
+ * each by it).
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened", "silence-alarm", "ruling"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened", "silence-alarm", "ruling", "pause", "suggestion", "quality-check", "diagnosis"];
 
 /** A todo-state's `data.state` and `data.from`: where a todo stands in a build. */
 /** @type {const} */
@@ -624,6 +673,41 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   if (kind === "todo-state" || kind === "handoff") {
     const error = kind === "todo-state" ? todoStateError(data, text) : handoffError(data, text);
     if (error !== null) return { ok: false, error };
+  }
+  if (kind === "pause") {
+    if (!isPlainObject(data) || !PAUSE_REASONS.includes(data.reason)) {
+      return { ok: false, error: `a pause names data.reason as one of ${PAUSE_REASONS.join(", ")}` };
+    }
+    if (data.reason === "awaiting you, present" && !nonEmptyString(data.question)) {
+      return { ok: false, error: "a pause awaiting Tom names data.question" };
+    }
+  }
+  if (kind === "suggestion") {
+    if (!isPlainObject(data) || !SUGGESTION_CLASSES.includes(data.class)) {
+      return { ok: false, error: `a suggestion names data.class as one of ${SUGGESTION_CLASSES.join(", ")}` };
+    }
+    if (typeof data.built !== "boolean") return { ok: false, error: "a suggestion names data.built as a boolean" };
+  }
+  if (kind === "quality-check") {
+    if (!isPlainObject(data) || !nonEmptyString(data.part) || !nonEmptyString(data.check)) {
+      return { ok: false, error: "a quality-check names data.part and data.check as non-empty strings" };
+    }
+    if (typeof data.measure !== "number" || !(data.target === null || typeof data.target === "number")) {
+      return { ok: false, error: "a quality-check names data.measure as a number and data.target as a number or null" };
+    }
+    if (data.result !== "green" && data.result !== "failed") {
+      return { ok: false, error: "a quality-check names data.result as green or failed" };
+    }
+    if (subject !== data.part) return { ok: false, error: "a quality-check names its part as its subject" };
+  }
+  if (kind === "diagnosis") {
+    if (!isPlainObject(data) || !nonEmptyString(data.part) || !Array.isArray(data.causes)) {
+      return { ok: false, error: "a diagnosis names data.part as a non-empty string and data.causes as a list" };
+    }
+    const cause = (one) => isPlainObject(one) && [1, 2, 3].includes(one.n) && nonEmptyString(one.class) && nonEmptyString(one.sentence);
+    if (!data.causes.every(cause)) {
+      return { ok: false, error: "a diagnosis names each of data.causes as { n: 1 to 3, class, sentence }" };
+    }
   }
   if (text !== undefined && typeof text !== "string") {
     return { ok: false, error: "text, when given, is a string" };

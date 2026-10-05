@@ -4,6 +4,7 @@ import {
   countWord,
   itemUrl,
   renderSlack,
+  sectionCounts,
   todayFactsBlock,
   type BrokenFact,
   type SpendFact,
@@ -1548,6 +1549,9 @@ export async function composeToday(
   const { message, truncated } = composeTodayFitted(facts, { canReply: reply });
   return {
     text: renderSlack(message),
+    // Item lines per section, read off the fitted message: the Jarvis
+    // thread's folded digest line.
+    sectionCounts: sectionCounts(message),
     // Whether runs were reduced to one sentence to fit one Slack message;
     // the sender records it on the "digest-sent" row.
     truncated,

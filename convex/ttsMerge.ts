@@ -1061,6 +1061,12 @@ export const internalRecordMerge = internalMutation({
     // What GitHub said about the merge (mergedOnMain), kept on the row. The
     // one caller, POST /tts/merge, always has it.
     mainCheck: v.string(),
+    // The pull request that landed, and its body's first paragraph, when the
+    // caller read them from GitHub (convex/gateLandings.ts): the Jarvis
+    // thread's return line and claim (convex/thread.ts). Rows written before
+    // carry neither.
+    pull: v.optional(v.object({ number: v.number(), title: v.string() })),
+    claim: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const gate = await mergeGateFor(ctx, args.repo, args.sha);
@@ -1083,6 +1089,8 @@ export const internalRecordMerge = internalMutation({
       // model when Codex was capped; the evals it merged past): the digest's
       // objection line for this merge prints it.
       reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
+      ...(args.pull === undefined ? {} : { pull: args.pull }),
+      ...(args.claim === undefined ? {} : { claim: args.claim }),
     };
     // Convex fixes Date.now() for the mutation, so logEvent records this same at.
     const id = await logEvent(

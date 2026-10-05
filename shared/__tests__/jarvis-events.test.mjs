@@ -183,6 +183,57 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "digest-line", subject: "deploy", data: { durationMs: "n/a" } }).ok).toBe(true);
   });
 
+  // The thread reads these four before their writers exist; the shapes are
+  // what those writers build against.
+  const SHAPES = {
+    pause: { subject: "session1", data: { reason: "awaiting you, present", sessionId: "session1", question: "Ship it?" }, text: "Ship it?" },
+    suggestion: { subject: "log-page", data: { class: "deletion", built: false, restsOn: { text: "purge it", source: "ruling r1" } }, text: "Delete the log page." },
+    "quality-check": { subject: "digest", data: { part: "digest", check: "size", measure: 9, target: null, result: "failed", pass: "tick" }, text: "digest size failed" },
+    diagnosis: { subject: "check1", data: { part: "digest", causes: [{ n: 1, class: "code", sentence: "One." }], restsOn: [] }, text: "One." },
+  };
+
+  it("takes a pause, a suggestion, a quality check and a diagnosis with their shapes, and refuses each without its subject", () => {
+    for (const [kind, body] of Object.entries(SHAPES)) {
+      expect(validateEvent({ kind, ...body }).ok).toBe(true);
+      const bare = { ...body };
+      delete bare.subject;
+      expect(validateEvent({ kind, ...bare })).toEqual({ ok: false, error: `a ${kind} event names its subject` });
+    }
+  });
+
+  it("refuses a pause with an unknown reason, and one awaiting Tom with no question", () => {
+    const pause = SHAPES.pause;
+    expect(validateEvent({ kind: "pause", ...pause, data: { ...pause.data, reason: "tired" } }).ok).toBe(false);
+    const noQuestion = { ...pause.data };
+    delete noQuestion.question;
+    expect(validateEvent({ kind: "pause", ...pause, data: noQuestion }))
+      .toEqual({ ok: false, error: "a pause awaiting Tom names data.question" });
+    expect(validateEvent({ kind: "pause", subject: "s", data: { reason: "slot at cap", sessionId: "s", liftsAt: 1 } }).ok).toBe(true);
+  });
+
+  it("refuses a suggestion, a quality check or a diagnosis whose fixed fields are malformed", () => {
+    expect(validateEvent({ kind: "suggestion", ...SHAPES.suggestion, data: { class: "idea", built: false } }).ok).toBe(false);
+    expect(validateEvent({ kind: "suggestion", ...SHAPES.suggestion, data: { class: "fix" } }).ok).toBe(false);
+    const check = SHAPES["quality-check"];
+    expect(validateEvent({ kind: "quality-check", ...check, data: { ...check.data, result: "red" } }).ok).toBe(false);
+    expect(validateEvent({ kind: "quality-check", ...check, data: { ...check.data, measure: "9" } }).ok).toBe(false);
+    expect(validateEvent({ kind: "quality-check", ...check, subject: "size:digest" }))
+      .toEqual({ ok: false, error: "a quality-check names its part as its subject" });
+    expect(validateEvent({ kind: "diagnosis", ...SHAPES.diagnosis, data: { part: "digest" } }).ok).toBe(false);
+    // Each cause is a whole { n, class, sentence }: a reader dereferences it.
+    for (const causes of [[null], [{ n: 1, class: "code" }], [{ n: 4, class: "code", sentence: "Four." }]]) {
+      expect(validateEvent({ kind: "diagnosis", ...SHAPES.diagnosis, data: { ...SHAPES.diagnosis.data, causes } }))
+        .toEqual({ ok: false, error: "a diagnosis names each of data.causes as { n: 1 to 3, class, sentence }" });
+    }
+  });
+
+  it("takes the four words the box's classifier adds to a thread-reply", () => {
+    for (const word of ["leaving", "back", "issue", "no-issues"]) {
+      expect(THREAD_REPLY_KINDS).toContain(word);
+      expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: word }, text: word }).ok).toBe(true);
+    }
+  });
+
   it("lists every kind once", () => {
     expect(new Set(EVENT_KINDS).size).toBe(EVENT_KINDS.length);
   });
