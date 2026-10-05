@@ -1211,11 +1211,11 @@ describe("a run's end", () => {
     expect(result).toEqual({ ok: true, runId: RUN_ID, endedAt: 5_000, endReason: "ended", kept: false });
     const after = await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
     expect(after).toMatchObject({ endedAt: 5_000, endReason: "ended", status: "running", lastLineAt: 2_000 });
-    const { endedAt: _endedAt, endReason: _endReason, ...rest } = after!;
-    expect(rest).toEqual(before);
+    // toEqual reads an undefined field as an absent one.
+    expect({ ...after!, endedAt: undefined, endReason: undefined }).toEqual(before);
   });
 
-  it("refuses a run the record does not hold, so the box keeps its end and posts it again", async () => {
+  it("refuses a run the record does not hold", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" }))
       .toEqual({ ok: false, reason: "no run" });

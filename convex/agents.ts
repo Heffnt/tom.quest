@@ -669,8 +669,9 @@ const RUN_END_REASON = v.union(v.literal("ended"), v.literal("failed"), v.litera
 
 /**
  * Set a run's end. Refused, with a fixed reason and no write: a run the record
- * does not hold ("no run"; the box keeps its end and posts it again after the
- * run's first page lands), an instant that is not epoch milliseconds, one
+ * does not hold ("no run", a 404 at the route, which the box reads as final and
+ * retires the end; the sweep posts the end only after the run's page is in, so
+ * a held run is the case it meets), an instant that is not epoch milliseconds, one
  * before the run started, or one more than the events table's skew past the
  * record's clock. A second end for the same run keeps the later instant: a
  * resumed session ends again after its first end, and a retried post of the

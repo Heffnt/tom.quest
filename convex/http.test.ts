@@ -523,7 +523,7 @@ describe("POST /agents/run-end", () => {
     expect(stored).toMatchObject({ endedAt: 5_000, endReason: "ended" });
   });
 
-  it("answers 404 for a run the record does not hold yet, so the box posts it again", async () => {
+  it("answers 404 for a run the record does not hold", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
     const response = await postEnd(t, end);

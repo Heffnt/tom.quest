@@ -2858,9 +2858,10 @@ http.route({ path: "/agents/overflow", method: "POST", handler: agentsOverflow }
 // endedAt (epoch ms), endReason (one of agents.RUN_END_REASONS) }. Posted by
 // the sweep from the end marker a SessionEnd or SubagentStop hook, a launcher
 // or the Codex runner wrote, after the run's page is in. The key and the wire
-// spelling are the other /agents routes'. A run the record does not hold yet
-// answers 404, so the box keeps the end and posts it again; any other refusal
-// is a 400 the box does not retry.
+// spelling are the other /agents routes'. A run the record does not hold
+// answers 404, which the box reads as final and retires the end; the sweep
+// posts the end only after the run's page is in, so a held run is the case it
+// meets. Any other refusal is a 400, which the box also does not retry.
 const agentsRunEnd = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
