@@ -912,10 +912,12 @@ export const internalRecordAudit = internalMutation({
  * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
  * recorded, and the reporter can post again. ONE EXCEPTION, said in `why`:
  * a repository GitHub will not show the record's token at all (404 on the
- * repository itself; GITHUB_MIRROR_TOKEN does not cover WikiTom, see
- * convex/ttsSync.ts). Refusing there would leave every merge of that
- * repository with no row and no line to object to, which costs Tom more than
- * a row that says it was not checked; the row and its decisions line say so.
+ * repository itself, as GITHUB_MIRROR_TOKEN answered for Jarvis until
+ * 2026-09-25; it reads tom.quest, Jarvis and WikiTom since, and
+ * convex/gateLandings.ts reads all three with it). Refusing there would leave
+ * every merge of that repository with no row and no line to object to, which
+ * costs Tom more than a row that says it was not checked; the row and its
+ * decisions line say so.
  */
 export async function mergedOnMain(
   repo: string,
