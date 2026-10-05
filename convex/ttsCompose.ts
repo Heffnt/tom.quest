@@ -76,7 +76,9 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  named here: it is his day, not a ranked list, and it has no page of its own
  *  to send him to. `fit` reduces it in printed order like any other run. The
  *  settled run (his own settlements on /intent) is printed right after the
- *  objection list and is not named here either: nothing in it waits on him.
+ *  objection list, and the superseded run (his standing rulings that new
+ *  information ended) right after it; neither is named here: nothing in
+ *  them waits on him.
  */
 export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnight", "broken", "spend", "box"] as const;
 
@@ -87,6 +89,7 @@ export const SECTION_CAPS = {
   objections: 12,
   calendar: 12,
   settled: 6,
+  superseded: 6,
   overnight: 6,
   broken: 4,
   box: 8,
@@ -544,6 +547,10 @@ export type TodayFacts = {
    *  settle writes each as a `disagreement-settled` event whose text is the
    *  line), oldest first. Absent or empty: he settled nothing. */
   settled?: SettledFact[];
+  /** His standing rulings that new information ended since the last digest
+   *  (convex/jarvis/rulings.ts supersede puts each on the digest as a
+   *  `digest-line` of section "superseded"), oldest first. */
+  superseded?: SettledFact[];
   /** What changed on the Jarvis Box since the last digest (convex/boxChanges.ts
    *  boxChangeLines): one line per agent that ran root commands, per deploy,
    *  per setup run, per other kind of change. Absent or empty: nothing did. */
@@ -578,6 +585,8 @@ type SettledFact = { id: string; text: string };
 const INTENT_URL = "https://tom.quest/intent";
 /** The settled run's lead. */
 export const SETTLED_LEAD = "What you settled on the intent page since the last digest.";
+/** The superseded run's lead. */
+const SUPERSEDED_LEAD = "Rulings of yours that no longer stand since the last digest, each with the new information that ended it.";
 
 /** One line of the box-changes run: its fact id (`box:…`), its sentence, and
  *  its link. Declared here, not imported, for the import restriction above. */
@@ -999,6 +1008,20 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
+  // 2c. His standing rulings that new information ended: an asker in that
+  //     scope no longer reads them (convex/jarvis/rulings.ts
+  //     standingRulings). Not numbered: his answer is a new ruling, written
+  //     where he says it.
+  if ((f.superseded ?? []).length > 0) {
+    pushRun(
+      lines,
+      "superseded",
+      SUPERSEDED_LEAD,
+      (f.superseded ?? []).map((row) => ({ text: row.text, url: INTENT_URL })),
+      SECTION_CAPS.superseded,
+    );
+  }
+
   // 3. What the email triage judged to need him today. No worker opens a
   //    needs-you thread for these (Tom, 2026-09-21: workers "should not reach
   //    me at all directly"), so this run is where he hears of them, and a
@@ -1306,6 +1329,7 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     facts.push(fact(`ask:${objection.askId}`, line.text, [line.url], [index + 1]));
   });
   for (const row of f.settled ?? []) facts.push(fact(`settled:${row.id}`, row.text, [INTENT_URL]));
+  for (const row of f.superseded ?? []) facts.push(fact(`superseded:${row.id}`, row.text, [INTENT_URL]));
   if (f.needsYou.length > 0) {
     facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));
   }

@@ -10,10 +10,12 @@ import {
   RECORD_ONLY_KINDS,
   registryDiffOf,
   REPEATS_BY_DATA_ID,
+  STANDING_RULING_ONLY_KINDS,
   SUBJECT_REQUIRED,
   THREAD_REPLY_KINDS,
   TODO_STATES,
   TOM_ONLY_KINDS,
+  isRulingScope,
   validateEvent,
 } from "../jarvis-events.mjs";
 
@@ -565,5 +567,64 @@ describe("use, issue and presence rows", () => {
     }
     expect(THREAD_REPLY_KINDS).toEqual(["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back", "answer"]);
     expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "no-issues" }, text: "working, written as a use row on digest: event e1" }).ok).toBe(true);
+  });
+});
+
+describe("a ruling event", () => {
+  const ruling = (data = {}, extra = {}) => ({
+    kind: "ruling",
+    subject: "repo:Jarvis",
+    data: {
+      sentence: "if I say it is good once then that holds",
+      scope: "repo:Jarvis",
+      question: "May the merge gate's audit run on Codex?",
+      provenance: { threadMessageId: "k17abc" },
+      standing: true,
+      ...data,
+    },
+    ...extra,
+  });
+
+  it("takes his sentence, its scope as its subject, the question and one provenance", () => {
+    expect(validateEvent(ruling(), { now: 1000 }).ok).toBe(true);
+    expect(validateEvent(ruling({ provenance: { session: "aaa9ae16" } })).ok).toBe(true);
+    expect(validateEvent(ruling({ scope: "all" }, { subject: "all" })).ok).toBe(true);
+    expect(EVENT_KINDS).toContain("ruling");
+    expect(SUBJECT_REQUIRED).toContain("ruling");
+    expect(STANDING_RULING_ONLY_KINDS).toEqual(["ruling"]);
+  });
+
+  it("refuses a missing sentence or question, a subject other than the scope, and a scope off the four forms", () => {
+    expect(validateEvent(ruling({ sentence: " " })).error).toContain("data.sentence");
+    expect(validateEvent(ruling({ question: undefined })).error).toContain("data.question");
+    expect(validateEvent(ruling({}, { subject: "repo:WikiTom" })).error).toContain("as its subject");
+    expect(validateEvent(ruling({ scope: "repo:Elsewhere" }, { subject: "repo:Elsewhere" })).error).toContain("data.scope");
+    expect(validateEvent(ruling({}, { subject: undefined })).error).toContain("names its subject");
+  });
+
+  it("refuses a provenance naming both sources, neither, or another field", () => {
+    expect(validateEvent(ruling({ provenance: { session: "a", threadMessageId: "b" } })).error).toContain("data.provenance");
+    expect(validateEvent(ruling({ provenance: {} })).error).toContain("data.provenance");
+    expect(validateEvent(ruling({ provenance: { agentId: "x" } })).error).toContain("data.provenance");
+    expect(validateEvent(ruling({ provenance: { session: "" } })).error).toContain("data.provenance");
+  });
+
+  it("is written standing, never already superseded", () => {
+    expect(validateEvent(ruling({ standing: false })).error).toContain("data.standing");
+    expect(validateEvent(ruling({ supersededBy: "k17def" })).error).toContain("data.supersededBy");
+  });
+});
+
+describe("isRulingScope", () => {
+  it("takes all, a part id, a change class and a SESSION_REPOS repository", () => {
+    for (const scope of ["all", "part:delegate", "part:thread-reply", "class:mockup", "repo:tom.quest", "repo:Jarvis", "repo:WikiTom"]) {
+      expect(isRulingScope(scope)).toBe(true);
+    }
+  });
+
+  it("refuses anything else", () => {
+    for (const scope of ["", "All", "part:", "part:Delegate", "part:a--b", "class:small change", "repo:jarvis", "repo:", "todo:abc", "delegate", 3, null]) {
+      expect(isRulingScope(scope)).toBe(false);
+    }
   });
 });

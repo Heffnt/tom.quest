@@ -19,6 +19,7 @@
 // had; the list governs what is POSTED, not what was.
 
 import { DAY_LOG_ENTRY_MAX } from "./day-log-entry.mjs";
+import { SESSION_REPOS } from "./session-constants.mjs";
 
 /** @type {const} */
 export const EVENT_KINDS = [
@@ -193,6 +194,15 @@ export const EVENT_KINDS = [
   // (the box's thread-reply job, types leaving and back). Subject "tom";
   // data { away: boolean, threadMessageId }.
   "presence",
+  // A standing ruling of Tom's (convex/jarvis/rulings.ts, POST
+  // /jarvis/standing-ruling): his sentence verbatim, the scope it holds in,
+  // the question it answered and where he said it. Subject is the scope, so
+  // an asker reads the rulings in its scope on events.by_kind_subject_at.
+  // Data { sentence, scope, question, provenance: { threadMessageId } or
+  // { session }, standing: true }. A ruling holds until new information is
+  // recorded against it; then the record sets standing false and
+  // supersededBy to the id of the row that carried the new information.
+  "ruling",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
@@ -231,6 +241,29 @@ export const DELEGATE_ONLY_KINDS = ["decision"];
 /** @type {const} */
 export const RECORD_ONLY_KINDS = ["thread-digest", "thread-needs-you", "silence-alarm"];
 
+/** Events only POST /jarvis/standing-ruling writes: that route checks the
+ *  sentence against the turn it cites before the row exists, so the generic
+ *  worker-key route refuses them. */
+/** @type {const} */
+export const STANDING_RULING_ONLY_KINDS = ["ruling"];
+
+/** What a ruling's scope may be: "all", a part id of the Jarvis registry
+ *  (Jarvis worker/parts.json) as "part:<id>", a change class as
+ *  "class:<name>", or a repository as "repo:<name>" (a SESSION_REPOS name).
+ *  Part ids and class names are lowercase words joined by hyphens; the record
+ *  holds no copy of the registry, so a part id is checked for its form only. */
+const SCOPE_WORD = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export function isRulingScope(scope) {
+  if (scope === "all") return true;
+  if (typeof scope !== "string") return false;
+  const colon = scope.indexOf(":");
+  const type = scope.slice(0, colon);
+  const name = scope.slice(colon + 1);
+  if (type === "part" || type === "class") return SCOPE_WORD.test(name);
+  if (type === "repo") return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
+  return false;
+}
+
 /** How far past the writer's clock an event's `at` may lie. The silence alarm
  *  reads a job's newest row (convex/jarvis/jobs.ts), so a row dated in the
  *  future would hold it quiet until that date; a box clock a little ahead of
@@ -244,7 +277,7 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * a build row's todo, a needs-you opening's key (the thread digest lists an
  * opening by its key).
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened", "silence-alarm"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened", "silence-alarm", "ruling"];
 
 /** A todo-state's `data.state` and `data.from`: where a todo stands in a build. */
 /** @type {const} */
@@ -537,6 +570,23 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   if (kind === "explanation") {
     const problem = explanationProblem(subject, data, prov);
     if (problem !== null) return { ok: false, error: problem };
+  }
+  if (kind === "ruling") {
+    if (!isPlainObject(data)) return { ok: false, error: "a ruling event names data as an object" };
+    for (const field of ["sentence", "question"]) {
+      if (!nonEmptyString(data[field])) return { ok: false, error: `a ruling event names data.${field} as a non-empty string` };
+    }
+    if (!isRulingScope(data.scope)) {
+      return { ok: false, error: "a ruling event names data.scope as all, part:<id>, class:<name> or repo:<repository>" };
+    }
+    if (subject !== data.scope) return { ok: false, error: "a ruling event names data.scope as its subject" };
+    const from = data.provenance;
+    const named = isPlainObject(from) ? Object.keys(from) : [];
+    if (named.length !== 1 || !["session", "threadMessageId"].includes(named[0]) || !nonEmptyString(from[named[0]])) {
+      return { ok: false, error: "a ruling event names data.provenance as { session } or { threadMessageId }, one non-empty string" };
+    }
+    if (data.standing !== true) return { ok: false, error: "a ruling event is written with data.standing true" };
+    if (data.supersededBy !== undefined) return { ok: false, error: "a ruling event is written without data.supersededBy" };
   }
   if (kind === "work-run") {
     if (!isPlainObject(data)) return { ok: false, error: "a work-run event names data as an object" };

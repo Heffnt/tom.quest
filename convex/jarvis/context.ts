@@ -21,6 +21,7 @@ import { internal } from "../_generated/api";
 import { nowContext } from "../tts";
 import { SESSION_REPO_NAMES } from "../ttsShared";
 import { jarvisAuth, jsonResponse } from "./auth";
+import { isRulingScope } from "../../shared/jarvis-events.mjs";
 
 /** A worker job needs the original missing-layer sentence, not a framework
  *  exception, so its nonzero exit names the deployment state to repair. */
@@ -96,17 +97,25 @@ const READERS: Record<string, Reader> = {
     return jsonResponse(200, { writingStandard, declinedIntegrations });
   },
   // What the delegate's caller sees before it asks: asks spent in the last
-  // day, its cap, and every objection Tom already made about this todo.
+  // day, its cap, every objection Tom already made about this todo, and his
+  // standing rulings in each `scope` the question names (repeatable; "all"
+  // is always read).
   ask: async (ctx, params) => {
     const sessionId = nonempty(params.get("sessionId"));
     const job = nonempty(params.get("job"));
     if ((sessionId === undefined) === (job === undefined)) {
       return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
     }
+    const scopes = params.getAll("scope");
+    const bad = scopes.find((scope) => !isRulingScope(scope));
+    if (bad !== undefined) {
+      return jsonResponse(400, { error: `scope "${bad}" is not all, part:<id>, class:<name> or repo:<repository>` });
+    }
     const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
       sessionId,
       job,
       todoId: nonempty(params.get("todoId")),
+      ...(scopes.length === 0 ? {} : { scopes }),
     });
     return jsonResponse(200, context);
   },

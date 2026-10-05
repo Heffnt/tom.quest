@@ -983,3 +983,32 @@ describe("the lines saying a digest read stopped", () => {
     expect(composeToday(sept9(), { canReply: false }).lines.some((line) => line.section === "cut")).toBe(false);
   });
 });
+
+describe("the superseded run", () => {
+  it("prints his rulings that no longer stand right after the settled run, one line each", () => {
+    const message = composeToday(
+      sept9({
+        settled: [{ id: "s1", text: "Tom accepted the delegate's decision \"One.\" (86f2f341)." }],
+        superseded: [
+          {
+            id: "r1",
+            text: 'Your ruling of 2026-10-04 in scope repo:Jarvis no longer stands, because a later sentence of yours in the same scope replaced it: "not yet"; it said "ship it"',
+          },
+        ],
+      }),
+      { canReply: false },
+    );
+    const leads = message.lines.filter((line) => line.role === "lead").map((line) => line.section);
+    expect(leads.indexOf("superseded")).toBe(leads.indexOf("settled") + 1);
+    const items = message.lines.filter((line) => line.section === "superseded" && line.role === "item");
+    expect(items).toHaveLength(1);
+    expect(items[0].text).toContain("in scope repo:Jarvis no longer stands");
+    const facts = todayFactsBlock(sept9({ superseded: [{ id: "r1", text: "Your ruling no longer stands." }] }), false);
+    expect(JSON.stringify(facts)).toContain("superseded:r1");
+  });
+
+  it("prints nothing when no ruling was superseded", () => {
+    const message = composeToday(sept9({ superseded: [] }), { canReply: false });
+    expect(message.lines.some((line) => line.section === "superseded")).toBe(false);
+  });
+});

@@ -1059,8 +1059,16 @@ export async function gatherTodayFacts(
       .order("desc"),
     OBJECTION_SCAN,
   );
+  const superseded: { id: string; text: string }[] = [];
   for (const row of lines) {
     const d = (row.data ?? {}) as Record<string, unknown>;
+    // A standing ruling of his that new information ended (convex/jarvis/
+    //    rulings.ts supersede): its own run, oldest first.
+    if (d.section === "superseded") {
+      const text = safeStr(d.statement);
+      if (text !== undefined) superseded.unshift({ id: row._id as string, text });
+      continue;
+    }
     if (d.section === "broken") {
       const job = str(d.job) ?? "a job";
       failure(job, safeStr(d.statement) ?? brokenStatement(job), str(d.url)).detail = safeStr(d.detail);
@@ -1240,6 +1248,7 @@ export async function gatherTodayFacts(
     overnightByTodo,
     broken: [...failures.values()],
     settled,
+    superseded,
     boxChanges,
     spend: spendOf(started, started.length >= SPEND_SCAN),
     readCuts: [
