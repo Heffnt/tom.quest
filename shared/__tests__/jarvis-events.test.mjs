@@ -7,6 +7,7 @@ import {
   JOB_KINDS_WITH_DURATION,
   PART_ROW_DATA_MAX_BYTES,
   PART_ROW_TEXT_MAX_BYTES,
+  RECORD_ONLY_KINDS,
   registryDiffOf,
   REPEATS_BY_DATA_ID,
   SUBJECT_REQUIRED,
@@ -148,9 +149,13 @@ describe("validateEvent", () => {
     for (const [candidate, error] of cases) expect(validateEvent(candidate)).toEqual({ ok: false, error });
   });
 
-  it("keeps thread-message as a Tom-only kind", () => {
+  it("keeps thread events in their route-only lists", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
+    expect(RECORD_ONLY_KINDS).toContain("thread-digest");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
+    expect(SUBJECT_REQUIRED).toContain("needs-you-opened");
+    expect(validateEvent({ kind: "needs-you-opened", data: { key: "k" }, text: "No subject." }))
+      .toEqual({ ok: false, error: "a needs-you-opened event names its subject" });
   });
 
   it("takes a job row's runtime as data.durationMs and keeps it", () => {

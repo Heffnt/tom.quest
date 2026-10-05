@@ -103,6 +103,43 @@ describe("POST /jarvis/event", () => {
     expect(await rows(t, "dtsEvents")).toEqual([]);
   });
 
+  it("refuses a needs-tom-answered event through both worker-key routes", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    const jarvisBody = {
+      kind: "needs-tom-answered", subject: "synthetic-ask", data: { answer: "done", via: "thread" },
+    };
+    const jarvis = await post(t, "/jarvis/event", jarvisBody, { "X-Jarvis-Key": "k" });
+    expect(jarvis.status).toBe(403);
+    expect(await jarvis.json()).toEqual({ error: "needs-tom-answered is Tom-only" });
+    const legacy = await post(t, "/tts/event", {
+      kind: "needs-tom-answered", key: "synthetic-ask", data: { answer: "done", via: "thread" },
+    }, { "X-TTS-Key": "k" });
+    expect(legacy.status).toBe(403);
+    expect(await legacy.json()).toEqual({ error: "needs-tom-answered is Tom-only" });
+    expect(await rows(t, "events")).toEqual([]);
+    expect(await rows(t, "dtsEvents")).toEqual([]);
+  });
+
+  it("refuses record-only thread events through both worker-key routes", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    for (const kind of ["thread-digest", "thread-needs-you"]) {
+      for (const path of ["/jarvis/event", "/tts/event"]) {
+        const body = path === "/jarvis/event"
+          ? { kind, subject: "synthetic-subject", data: {} }
+          : { kind, key: "synthetic-subject", data: {} };
+        const res = await post(t, path, body, { "X-Jarvis-Key": "k" });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: `${kind} is written only by the record` });
+      }
+    }
+    expect(await rows(t, "events")).toEqual([]);
+    expect(await rows(t, "dtsEvents")).toEqual([]);
+  });
+
   it("runs the job hooks: one digest failure per standing condition, a repeat marked, re-armed by the clean run, all in events, no Slack post", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");

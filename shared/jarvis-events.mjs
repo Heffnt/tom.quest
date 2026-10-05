@@ -71,9 +71,23 @@ export const EVENT_KINDS = [
   // and the weekly count it on its todo (convex/ttsDigest.ts, ttsWeekly.ts).
   "session-outcome",
   // The Jarvis thread (convex/thread.ts, the /thread page): a message Tom
-  // typed there, and Jarvis's one-line answer posted back by the box.
+  // typed there, Jarvis's one-line answer posted back by the box, the day's
+  // digest, and a needs-you item that opened after it. appendThreadDigest in
+  // convex/jarvis/digest.ts writes the digest once per day from the record's
+  // cron; subject is the day key, text is the rendered digest, and data is
+  // { day, since, windowEnd, truncated, surfacedTodoIds, objectionAskIds,
+  // items, openingsFrom }, where items is the numbered needs-you list
+  // [{ n, key, text, todoId?, job? }] and openingsFrom the time the next
+  // digest's scan of openings starts. A thread-needs-you has the digest id as
+  // subject, the item's text, and data { n, key, todoId?, job? }.
   "thread-message",
   "thread-reply",
+  "thread-digest",
+  "thread-needs-you",
+  // Tom answered a needs-tom ask on the Jarvis thread; actor Tom
+  // (provenance { user: "tom" }), subject the ask's key, data
+  // { answer, via: "thread" }.
+  "needs-tom-answered",
   // One row per worker run, posted by Jarvis scripts/codex-run.mjs at the end
   // of a Codex run whose stdin was a brief and whose --cwd is inside a git
   // checkout, under the workspace-write sandbox. The actor is the agent
@@ -185,7 +199,7 @@ export const EVENT_KINDS = [
  *  subscription (an endpoint receives every notification's text); Convex's
  *  own markGone still writes it. */
 /** @type {const} */
-export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message"];
+export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message", "needs-tom-answered"];
 
 /** Events only POST /jarvis/event writes, which checks each one's shape with
  *  validateEvent. POST /tts/event copies a row into the record unchecked
@@ -204,6 +218,15 @@ export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation", "use", "issue
 /** @type {const} */
 export const DELEGATE_ONLY_KINDS = ["decision"];
 
+/** Events only the record's own mutations write. thread-digest is written by
+ *  appendThreadDigest in convex/jarvis/digest.ts, which checks the hour,
+ *  renders the digest and appends once per day; thread-needs-you by
+ *  openNeedsYou in convex/jarvis/outbox.ts. The worker-key event routes
+ *  refuse them, so no row can stand in for the real one, and their readers
+ *  may trust the shape the writer gives them. */
+/** @type {const} */
+export const RECORD_ONLY_KINDS = ["thread-digest", "thread-needs-you"];
+
 /** How far past the writer's clock an event's `at` may lie. The silence alarm
  *  reads a job's newest row (convex/jarvis/jobs.ts), so a row dated in the
  *  future would hold it quiet until that date; a box clock a little ahead of
@@ -214,9 +237,10 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * The kinds whose subject is their identity, refused without one: a
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set, a work run's repo and commit,
- * a build row's todo.
+ * a build row's todo, a needs-you opening's key (the thread digest lists an
+ * opening by its key).
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened"];
 
 /** A todo-state's `data.state` and `data.from`: where a todo stands in a build. */
 /** @type {const} */
@@ -253,9 +277,11 @@ const TODO_STATE_MAX_BYTES = 8 * 1024;
 /** The most a build row's one-line text may hold, in UTF-8 bytes. */
 const BUILD_TEXT_MAX_BYTES = 2048;
 
-/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
+/** The kinds a thread-reply's `data.kind` may name; the writer refuses anything
+ * else. `answer` is written only by convex/thread.ts when Tom's reply under a
+ * thread digest answered a numbered item; the box's classifier never answers it. */
 /** @type {const} */
-export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back"];
+export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back", "answer"];
 
 /** Who used a part or reported an issue on it: a use or issue row's data.by. */
 /** @type {const} */

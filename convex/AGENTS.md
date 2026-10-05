@@ -11,9 +11,9 @@
 
 ## crons
 
-- The box is the one scheduler. `convex/crons.ts` holds only what must run when the box does not: the silence alarm. Every other timed task is a row of `TICK_TASKS` in `convex/jarvis/tick.ts`, started by the box's record-tick job.
+- `convex/crons.ts` holds the thread digest, run hourly so its 05:00 New York run appends (Tom, 2026-10-05: the digest on a Convex cron at 05:00), and the silence alarm, which must run when the box does not. Every other timed task is a row of `TICK_TASKS` in `convex/jarvis/tick.ts`, started by the box's record-tick job.
 - A timed task of the record is an entry in `TICK_TASKS` (`convex/jarvis/tick.ts`), started by the box's `record-tick` job through `POST /jarvis/tick` when its cadence comes round; its last run is its own `job-ok`/`job-failed` row under `tick:<name>`. `internal.serverHealth.pollTuring` is one: it writes the `serverHealth` row `useServer().status` reads.
-- Slack gets one output channel (`outputChannel()`); the digest is written by the box from `POST /jarvis/digest`, and a producer's decision or failure line goes on it through `listForDigest` (`convex/jarvis/outbox.ts`), never to a channel of its own.
+- The day's digest is appended to the Jarvis thread by the record's cron (`appendThreadDigest`, `convex/jarvis/digest.ts`), and a producer's decision or failure line goes into it through `listForDigest` (`convex/jarvis/outbox.ts`), never to a channel of its own.
 
 ## sessions
 

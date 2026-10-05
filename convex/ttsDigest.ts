@@ -329,6 +329,16 @@ export const READ_BYTES = {
  *  hold it under CONVEX_READ_LIMIT. */
 export const DIGEST_READ_BOUND = GATHER_BYTES + ROLLOVER_BYTES + 2 * MAX_DOCUMENT_BYTES;
 
+/** THE THREAD DIGEST'S SHARES OF THE SAME BOUND. appendThreadDigest
+ *  (convex/jarvis/digest.ts) runs the rollover, a gather and its own reads
+ *  (the digest rows it checks, the openings it lists and the items it lists
+ *  them against, the surfaced marks) in one transaction, so its own reads
+ *  take THREAD_OWN_BYTES out of the gather's share: 1.5 + 8 + 2, and one
+ *  document past each of the three budgets, is 14.5 MiB, DIGEST_READ_BOUND,
+ *  1.5 MiB under Convex's 16. */
+export const THREAD_OWN_BYTES = 2 * MIB;
+export const THREAD_GATHER_BYTES = GATHER_BYTES - THREAD_OWN_BYTES - MAX_DOCUMENT_BYTES;
+
 /**
  * The newest "digest-sent" row: which day went out last, and where that run's
  * window ended. Read on the by_kind_key index, whose columns are
@@ -404,16 +414,19 @@ export async function gatherTodayFacts(
     now,
     since,
     earlierCuts = [],
+    bytes = GATHER_BYTES,
   }: {
     day: string;
     now: number;
     since: number;
     /** Reads the same transaction stopped before the gather (the rollover). */
     earlierCuts?: ReadCut[];
+    /** The gather's budget: GATHER_BYTES, or THREAD_GATHER_BYTES. */
+    bytes?: number;
   },
 ): Promise<TodayFacts> {
   const { start: dayStart, end: dayEnd } = nyCalendarDayBoundsUtc(day);
-  const budget = ReadBudget.of(GATHER_BYTES);
+  const budget = ReadBudget.of(bytes);
 
   // Every row looked up by id (a todo a row names, a session) shares one
   // allotment. Todos are fetched one at a time and remembered; an id comes
@@ -1429,34 +1442,44 @@ export const internalComposeToday = internalQuery({
       by: v.union(v.literal("bytes"), v.literal("rows")),
     }))),
   },
-  handler: async (ctx, { day, now, since: givenSince, canReply, earlierCuts }) => {
-    const since = givenSince ?? (await digestWindowStart(ctx, now));
-    const facts = await gatherTodayFacts(ctx, { day, now, since, earlierCuts });
-    const reply = canReply ?? false;
-    const { message, truncated } = composeTodayFitted(facts, { canReply: reply });
-    return {
-      text: renderSlack(message),
-      // Whether runs were reduced to one sentence to fit one Slack message;
-      // the sender records it on the "digest-sent" row.
-      truncated,
-      since,
-      // Every todo the message showed, for the "surfaced" instrumentation:
-      // the today run and, read off the FITTED message as the objection
-      // numbers are, the needs-you-today items actually printed; each id once.
-      // Both read off the fitted message, so an item whose line was dropped
-      // never counts as seen.
-      surfacedTodoIds: printedTodoIds(message, facts)
-        .map((id) => ctx.db.normalizeId("todos", id))
-        .filter((id): id is Id<"todos"> => id !== null),
-      // The decisions the objection list carried, in PRINTED order: a reply of
-      // "revert 2" names the second of these. Read off the FITTED message, not
-      // off `facts.objections`: `fit` can reduce the objections run to its lead
-      // plus one "N more lines are on the page" line, and a number resolved
-      // against a list Tom never saw reverts something he never read.
-      objectionAskIds: printedObjectionAskIds(message, facts),
-      // The facts the text was rendered from, each with an id, its link and
-      // its numbers: the box keeps them on the digest-sent row.
-      facts: todayFactsBlock(facts, reply),
-    };
-  },
+  handler: (ctx, args) => composeToday(ctx, args),
 });
+
+/** The day's digest text, the ids it printed and its facts, read in the
+ *  caller's transaction: internalComposeToday's, or appendThreadDigest's,
+ *  which passes THREAD_GATHER_BYTES so its reads stay at DIGEST_READ_BOUND. */
+export async function composeToday(
+  ctx: QueryCtx,
+  { day, now, since: givenSince, canReply, earlierCuts, gatherBytes }: {
+    day: string; now: number; since?: number; canReply?: boolean; earlierCuts?: ReadCut[]; gatherBytes?: number;
+  },
+) {
+  const since = givenSince ?? (await digestWindowStart(ctx, now));
+  const facts = await gatherTodayFacts(ctx, { day, now, since, earlierCuts, bytes: gatherBytes });
+  const reply = canReply ?? false;
+  const { message, truncated } = composeTodayFitted(facts, { canReply: reply });
+  return {
+    text: renderSlack(message),
+    // Whether runs were reduced to one sentence to fit one Slack message;
+    // the sender records it on the "digest-sent" row.
+    truncated,
+    since,
+    // Every todo the message showed, for the "surfaced" instrumentation:
+    // the today run and, read off the FITTED message as the objection
+    // numbers are, the needs-you-today items actually printed; each id once.
+    // Both read off the fitted message, so an item whose line was dropped
+    // never counts as seen.
+    surfacedTodoIds: printedTodoIds(message, facts)
+      .map((id) => ctx.db.normalizeId("todos", id))
+      .filter((id): id is Id<"todos"> => id !== null),
+    // The decisions the objection list carried, in PRINTED order: a reply of
+    // "revert 2" names the second of these. Read off the FITTED message, not
+    // off `facts.objections`: `fit` can reduce the objections run to its lead
+    // plus one "N more lines are on the page" line, and a number resolved
+    // against a list Tom never saw reverts something he never read.
+    objectionAskIds: printedObjectionAskIds(message, facts),
+    // The facts the text was rendered from, each with an id, its link and
+    // its numbers: the box keeps them on the digest-sent row.
+    facts: todayFactsBlock(facts, reply),
+  };
+}

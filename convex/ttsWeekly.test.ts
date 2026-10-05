@@ -351,6 +351,13 @@ describe("gatherWeeklyFacts", () => {
         key: "Ev1",
         data: { text: "done", outcome: "done" },
       });
+      await ctx.db.insert("events", {
+        kind: "needs-tom-answered",
+        at: now - 2 * DAY + 30 * 60_000,
+        provenance: { user: "tom" },
+        subject: "gmail:message:1",
+        data: { answer: "done", via: "thread" },
+      });
       const unanswered = await todo(ctx, { statement: "sign the form" });
       await event(ctx, NEEDS_TOM, now - DAY, { todoId: unanswered, key: "gmail:message:2", data: {} });
       return { done, dated, ignored, goalAlone, asked, unanswered };
@@ -424,7 +431,7 @@ describe("gatherWeeklyFacts", () => {
       ["weekly", 1],
     ]);
     expect(f.threads).toEqual([
-      { todoId: seeded.asked, statement: "reply to the dean", askedAt: expect.any(Number), repliedAt: expect.any(Number), replyMs: 90 * 60_000 },
+      { todoId: seeded.asked, statement: "reply to the dean", askedAt: expect.any(Number), repliedAt: expect.any(Number), replyMs: 30 * 60_000 },
       { todoId: seeded.unanswered, statement: "sign the form", askedAt: expect.any(Number), repliedAt: null, replyMs: null },
     ]);
     // prepared: the dated one; unprepared: every other active row

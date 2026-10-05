@@ -28,6 +28,12 @@
 // records `needs-you-posted`. His reply in the thread answers the needs-you
 // reply directly above it, unless it names another todo or is an objection
 // (convex/ttsSlack.ts, digest case): his reply is the asker's next turn.
+//
+// THE THREAD GETS THE DIGEST TOO, from the record's own clock (Tom's ruling
+// of 2026-10-05: the digest on a Convex cron at 05:00). convex/crons.ts runs
+// appendThreadDigest at the top of every hour; from 5 a.m. New York it appends
+// the day's digest once, with the needs-you items numbered beneath its text,
+// and sends one web push. A reply under it is routed in convex/thread.ts.
 
 import { httpAction, internalMutation, internalQuery } from "../_generated/server";
 import type { MutationCtx } from "../_generated/server";
@@ -35,7 +41,10 @@ import type { Doc } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { logEvent } from "../tts";
 import { resolveId } from "./tables";
-import { rollMissed } from "../ttsDigest";
+import { THREAD_GATHER_BYTES, THREAD_OWN_BYTES, composeToday, rollMissed } from "../ttsDigest";
+import { ReadBudget, readWithin } from "../readBudget";
+import { getDocumentSize } from "convex/values";
+import { insertEvent } from "./record";
 import { needsYouInThread, recordSlackSent } from "../ttsSlack";
 import {
   DAY_MS,
@@ -48,13 +57,48 @@ import {
 } from "../ttsShared";
 import { jarvisAuth, jsonResponse } from "./auth";
 import {
+  ITEM_TEXT_MAX_BYTES,
   NEEDS_YOU_OPENED,
   NEEDS_YOU_POSTED,
   NEEDS_YOU_WINDOW_MS,
+  THREAD_DIGEST,
+  cutToBytes,
   digestFacts,
   lastDigest,
+  laterDigestItems,
   digestsSince,
+  type DigestItem,
 } from "./outbox";
+
+/** The most pending needs-you items one digest or outbox read answers. */
+const PENDING_MAX = 200;
+
+/** The most bytes of needs-you items one thread digest lists, sized as Convex
+ *  sizes a document (getDocumentSize). With the
+ *  digest text (at most ttsCompose's MESSAGE_MAX_CHARS) a thread-digest row
+ *  stays far under Convex's 1 MiB document limit, and /thread's read of 60
+ *  of them (convex/thread.ts messages) stays under its read limit. */
+const DIGEST_ITEMS_MAX_BYTES = 64 * 1024;
+
+/** appendThreadDigest's own reads, each an allotment of one ReadBudget of
+ *  THREAD_OWN_BYTES (convex/ttsDigest.ts, where the transaction's bound is
+ *  stated); they sum to it. */
+export const THREAD_OWN_READS = {
+  digests: { what: "thread digests", bytes: THREAD_OWN_BYTES / 4 },
+  items: { what: "items posted under recent thread digests", bytes: THREAD_OWN_BYTES / 4 },
+  openings: { what: "needs-you openings", bytes: THREAD_OWN_BYTES / 4 },
+  surfaced: { what: "surfaced marks", bytes: THREAD_OWN_BYTES / 4 },
+};
+
+/** How far before its own time a digest's next scan starts when it listed
+ *  every opening it read. An opening's time is taken when its transaction
+ *  starts, and POST /jarvis/event writes openings without reading the
+ *  digest, so one timed just before a digest can commit just after it. */
+const OPENINGS_OVERLAP_MS = 60_000;
+
+/** The most thread digests in the needs-you window: one per day across
+ *  NEEDS_YOU_WINDOW_MS (three days) touches at most four days. */
+const DIGESTS_IN_WINDOW = 4;
 
 /**
  * POST /jarvis/digest's mutation: is a digest due, and if so, the digest.
@@ -131,10 +175,7 @@ export async function onDigestSent(ctx: MutationCtx, row: Doc<"events">): Promis
   const d = (row.data ?? {}) as Record<string, unknown>;
   const day = typeof d.day === "string" ? d.day : null;
   const surfaced = Array.isArray(d.surfacedTodoIds) ? d.surfacedTodoIds : [];
-  for (const raw of surfaced) {
-    const todoId = typeof raw === "string" ? await resolveId(ctx, "todos", raw) : null;
-    if (todoId !== null) await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
-  }
+  await markSurfaced(ctx, surfaced, day);
   const { channel, ts } = digestFacts(row);
   if (day === null || channel === null || ts === null) return { threaded: false };
   await recordSlackSent(ctx, {
@@ -144,6 +185,167 @@ export async function onDigestSent(ctx: MutationCtx, row: Doc<"events">): Promis
     text: row.text ?? (typeof d.text === "string" ? d.text : ""),
   });
   return { threaded: true };
+}
+
+export async function markSurfaced(ctx: MutationCtx, surfacedTodoIds: unknown[], day: string | null, budget?: ReadBudget): Promise<void> {
+  for (const raw of surfacedTodoIds) {
+    if (typeof raw !== "string") continue;
+    if (budget === undefined) {
+      const todoId = await resolveId(ctx, "todos", raw);
+      if (todoId !== null) await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
+      continue;
+    }
+    // Under the thread digest's budget the ids are plain todo ids
+    // (composeToday). A mark reads its todo twice, here and in logEvent's
+    // resolveId; each read is made only while the budget is open and is
+    // charged, so the marks read at most one document past it. A mark past
+    // the budget is left out, so that todo can be said again on a later
+    // morning.
+    if (!budget.open) {
+      budget.skip();
+      continue;
+    }
+    const todoId = ctx.db.normalizeId("todos", raw);
+    const todo = todoId === null ? null : await ctx.db.get(todoId);
+    if (todo === null) continue;
+    budget.charge(todo);
+    if (!budget.open) {
+      budget.skip();
+      continue;
+    }
+    await logEvent(ctx, "surfaced", todo._id, { via: "digest", day });
+    budget.charge(todo);
+  }
+}
+
+type ThreadDigestAnswer = { appended: false; day: string; reason: string; id?: string }
+  | { appended: true; day: string; id: string };
+
+/** Append today's rendered digest and its numbered needs-you items to the
+ * Jarvis thread once the TTS day has begun, and push once. convex/crons.ts
+ * runs it at the top of every hour: the 05:00 New York run appends, and a
+ * later run appends only when no digest for the day exists yet. */
+export const appendThreadDigest = internalMutation({ args: {}, handler: (ctx) => appendDigestToThread(ctx) });
+
+/** appendThreadDigest's work, in the caller's transaction (a test counts its
+ *  reads against DIGEST_READ_BOUND). */
+export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDigestAnswer> {
+  const now = Date.now();
+  const day = ttsDayKey(now);
+  if (nyLocalHour(now) < TTS_DIGEST_NY_HOUR) {
+    return { appended: false, day, reason: "before 5 a.m. New York" };
+  }
+  const own = ReadBudget.of(THREAD_OWN_BYTES);
+  const digestReads = own.allot(THREAD_OWN_READS.digests.what, THREAD_OWN_READS.digests.bytes);
+  const [existing] = await readWithin(digestReads, ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_DIGEST).eq("subject", day))
+    .order("desc"), 1);
+  if (existing !== undefined) return {
+    appended: false, day, reason: `the digest for ${day} is on the thread`, id: existing._id,
+  };
+  // The rollover's read cut, if any, is said in the digest's cut lines, as
+  // compose does above.
+  const { cuts } = await rollMissed(ctx, day);
+  const needsFrom = now - NEEDS_YOU_WINDOW_MS;
+  // The newest digests in the needs-you window; the newest of all, which
+  // may be older, gives the window start when none is in it.
+  const recentDigests = await readWithin(digestReads, ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST))
+    .order("desc"), DIGESTS_IN_WINDOW);
+  const previousWindowEnd = (recentDigests[0]?.data as { windowEnd?: unknown } | undefined)?.windowEnd;
+  const since = typeof previousWindowEnd === "number" ? previousWindowEnd : now - DAY_MS;
+  const composed = await composeToday(ctx, {
+    day,
+    now,
+    since,
+    // The composer's invitations describe Slack's "revert 2" and line-level
+    // "done" grammar, which the Jarvis thread does not route.
+    canReply: false,
+    earlierCuts: cuts,
+    gatherBytes: THREAD_GATHER_BYTES,
+  });
+  const inWindow = recentDigests.filter((row) => row.at >= needsFrom);
+  const itemReads = own.allot(THREAD_OWN_READS.items.what, THREAD_OWN_READS.items.bytes);
+  const listedKeys = new Set<string>();
+  for (const row of inWindow) {
+    for (const item of (row.data as { items: DigestItem[] }).items) listedKeys.add(item.key);
+    for (const item of await laterDigestItems(ctx, row._id, itemReads)) listedKeys.add(item.key);
+  }
+  // A listed key the budget left unread could be listed twice, so a cut
+  // here lists no opening today and leaves the next digest's start where
+  // this one's was.
+  const listedComplete = own.cuts().length === 0;
+  // An opening is listed once, in the first thread digest after it opened,
+  // found by its key. The scan starts where the previous digest stopped
+  // (data.openingsFrom), so an opening it listed is not read again, except
+  // the items posted under it after it was appended and the openings of its
+  // last OPENINGS_OVERLAP_MS, which are read and skipped. Each row read is
+  // charged to the openings allotment; the first row past a bound (that
+  // allotment, PENDING_MAX items, DIGEST_ITEMS_MAX_BYTES of them) is where
+  // the next digest starts, so each digest moves the start forward and an
+  // opening is listed by a later digest while it is inside the three-day
+  // window (NEEDS_YOU_WINDOW_MS); past that window it is left to its todo,
+  // as the Slack path leaves it.
+  const resume = (inWindow[0]?.data as { openingsFrom?: unknown } | undefined)?.openingsFrom;
+  const scanFrom = Math.max(needsFrom, typeof resume === "number" ? resume : needsFrom);
+  const budget = own.allot(THREAD_OWN_READS.openings.what, THREAD_OWN_READS.openings.bytes);
+  const first = composed.objectionAskIds.length + 1;
+  const items: DigestItem[] = [];
+  let itemBytes = 0;
+  // readWithin checks the allotment before it fetches each row, so no row
+  // is read uncharged. When the allotment stopped the read, the next digest
+  // starts one millisecond after the last row read, so a row that fills the
+  // allotment alone is not read again; an opening in that same millisecond
+  // that the read did not reach is left to its todo, as one past the
+  // three-day window is.
+  const opened = listedComplete ? await readWithin(budget, ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", NEEDS_YOU_OPENED).gte("at", scanFrom))
+    .order("asc"), Number.POSITIVE_INFINITY) : [];
+  let openingsFrom = !listedComplete ? scanFrom
+    : budget.open ? now - OPENINGS_OVERLAP_MS : (opened.at(-1)?.at ?? scanFrom - 1) + 1;
+  for (const row of opened) {
+    // The writers refuse a needs-you-opened without a subject
+    // (shared/jarvis-events.mjs SUBJECT_REQUIRED); this narrows the type.
+    if (row.subject === undefined || listedKeys.has(row.subject)) continue;
+    if (items.length >= PENDING_MAX) {
+      openingsFrom = row.at;
+      break;
+    }
+    const data = (row.data ?? {}) as Record<string, unknown>;
+    const item: DigestItem = { n: first + items.length, key: row.subject,
+      text: cutToBytes(row.text ?? "", ITEM_TEXT_MAX_BYTES),
+      ...(typeof data.todoId === "string" ? { todoId: data.todoId } : {}),
+      ...(typeof data.job === "string" ? { job: data.job } : {}),
+    };
+    const size = getDocumentSize(item);
+    if (itemBytes + size > DIGEST_ITEMS_MAX_BYTES) {
+      openingsFrom = row.at;
+      break;
+    }
+    items.push(item);
+    itemBytes += size;
+  }
+  await markSurfaced(ctx, composed.surfacedTodoIds, day, own.allot(THREAD_OWN_READS.surfaced.what, THREAD_OWN_READS.surfaced.bytes));
+  const id = await insertEvent(ctx, {
+    kind: THREAD_DIGEST,
+    at: now,
+    provenance: { job: "digest" },
+    subject: day,
+    text: composed.text,
+    data: { day, since, windowEnd: now, truncated: composed.truncated,
+      surfacedTodoIds: composed.surfacedTodoIds,
+      objectionAskIds: composed.objectionAskIds,
+      items,
+      openingsFrom,
+    },
+  });
+  // One push for the digest; its text stays in the record, as the needs-you
+  // push's does (convex/jarvis/outbox.ts openNeedsYou).
+  await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, { title: "Digest", body: day, url: "/thread" });
+  return { appended: true, day, id };
 }
 
 /** The needs-you-posted hook: his reply in the digest's thread finds the
@@ -198,9 +400,6 @@ function threadOf(row: { data?: unknown } | undefined): Thread | null {
  * reply its number here, the next free one after the objection lines and the
  * replies already posted in the thread; the box writes it first ("<n> · …").
  */
-/** The most pending needs-you replies one read answers. */
-const PENDING_MAX = 200;
-
 export const pendingNeedsYou = internalQuery({
   args: {},
   handler: async (ctx): Promise<PendingNeedsYou> => {
@@ -293,4 +492,3 @@ export const channelRoute = httpAction(async (_ctx, request) => {
   if (denied) return denied;
   return jsonResponse(200, { ok: true, channel: outputChannel() });
 });
-
