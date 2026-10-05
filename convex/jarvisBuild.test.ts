@@ -140,6 +140,29 @@ describe("a build's rows through POST /jarvis/event", () => {
     await written(t, handoff(other.plain, "exploration to design"));
   });
 
+  it("heads the chain with the handoff written last, even one dated before its predecessor, so it cannot fork", async () => {
+    vi.stubEnv("JARVIS_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const todo = await seedTodo(t);
+    const now = Date.now();
+    const h1 = await written(t, { ...handoff(todo.plain, "exploration to design"), at: now - 60_000 });
+    // Backdated: its writer dates it a minute before h1.
+    const h2 = await written(t, { ...handoff(todo.plain, "design to build", { previous: h1.id, order: order(todo.plain) }), at: now - 120_000 });
+    // h1 is not the head any more, whatever the dates say: naming it again would fork the chain.
+    expect(await refused(t, handoff(todo.plain, "build to review", { previous: h1.id }))).toBe(
+      `a handoff names data.previous as the todo's newest handoff, ${h2.id}`,
+    );
+    const body = await (await t.fetch(`/jarvis/build-state?todo=${todo.plain}`, { headers: HEADERS })).json();
+    expect(body.todos[0].handoff._id).toBe(h2.id);
+    const h3 = await written(t, handoff(todo.plain, "build to review", { previous: h2.id }));
+    const chain = await t.run((ctx) => ctx.db.query("events").withIndex("by_kind_subject", (q) => q.eq("kind", "handoff").eq("subject", todo.plain)).collect());
+    expect(chain.map((row) => [row._id, (row.data as { previous?: string }).previous])).toEqual([
+      [h1.id, undefined],
+      [h2.id, h1.id],
+      [h3.id, h2.id],
+    ]);
+  });
+
   it("refuses an ordered or building state whose order is not the todo's design to build handoff", async () => {
     vi.stubEnv("JARVIS_KEY", KEY);
     const t = convexTest({ schema, modules });

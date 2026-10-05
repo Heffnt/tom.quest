@@ -12,7 +12,8 @@
 // WHAT THE RECORD ADDS TO THE SHARED CHECK, before the insert (prepareBuildRow):
 // the subject names a todo that exists, and is kept as its plain id; a
 // handoff after the first on a todo names the todo's newest handoff as
-// data.previous, so the handoffs of one todo are one chain; an ordered or
+// data.previous (the one the record inserted last, whatever its `at`), so
+// the handoffs of one todo are one chain with no fork; an ordered or
 // building todo-state names the todo's "design to build" handoff as its order.
 //
 // THE ONE SIDE EFFECT (onTodoState, run by events.ts recordEvent in the same
@@ -39,11 +40,16 @@ import { resolveId } from "./tables";
 export const TODO_STATE = "todo-state";
 export const HANDOFF = "handoff";
 
-/** The newest row of one kind on one todo. */
+/**
+ * The row of one kind the record inserted last on one todo. Insertion order,
+ * not the writer's `at`: a writer may date a row in the past, and a handoff
+ * chain headed by the newest `at` would leave a backdated handoff off the
+ * head, so the next handoff could name the same predecessor and fork it.
+ */
 async function newestOf(ctx: QueryCtx, kind: string, todoId: string): Promise<Doc<"events"> | null> {
   return await ctx.db
     .query("events")
-    .withIndex("by_kind_subject_at", (q) => q.eq("kind", kind).eq("subject", todoId))
+    .withIndex("by_kind_subject", (q) => q.eq("kind", kind).eq("subject", todoId))
     .order("desc")
     .first();
 }
