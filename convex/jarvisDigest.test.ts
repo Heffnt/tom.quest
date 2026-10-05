@@ -138,6 +138,337 @@ describe("POST /jarvis/digest", () => {
   });
 });
 
+/** What the record's hourly digest cron runs (convex/crons.ts). */
+const appendDigest = (t: ReturnType<typeof convexTest>) => t.mutation(internal.jarvis.digest.appendThreadDigest, {});
+
+const pushesOf = async (t: ReturnType<typeof convexTest>) =>
+  (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+    .filter((row) => row.name.includes("pushSend") && row.name.includes("sendToAll"))
+    .map((row) => row.args[0] as { title: string; body: string; url: string });
+
+describe("the thread digest, appended by the record's cron", () => {
+  it("appends nothing before 5 a.m. New York, and has no worker route", async () => {
+    const t = setup(NIGHT);
+    expect((await post(t, "/jarvis/thread/digest", {})).status).toBe(404);
+    const answer = await appendDigest(t);
+    expect(answer).toMatchObject({ appended: false, day: "2026-09-25", reason: "before 5 a.m. New York" });
+    expect(await ofKind(t, "events", "thread-digest")).toHaveLength(0);
+    expect(await pushesOf(t)).toEqual([]);
+  });
+
+  it("pushes once for the day's digest, and not again on a later run", async () => {
+    const t = setup(MORNING);
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: DAY });
+    vi.setSystemTime(MORNING + 3_600_000);
+    expect(await appendDigest(t)).toMatchObject({ appended: false, day: DAY });
+    expect(await pushesOf(t)).toEqual([{ title: "Digest", body: DAY, url: "/thread" }]);
+  });
+
+  // witness: the read of openings charged the openings earlier digests had
+  // listed, so large ones used its budget on every later digest and hid each
+  // later opening until they left the three-day window.
+  it("lists a later opening behind large openings an earlier digest listed, and lists each once", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (const n of [1, 2]) {
+        await ctx.db.insert("events", {
+          kind: "needs-you-opened", at: MORNING - (11 - n) * 60_000, provenance: {},
+          subject: `large-${n}`, data: { key: `large-${n}` }, text: "x".repeat(600_000),
+        });
+      }
+    });
+    await appendDigest(t);
+    vi.setSystemTime(MORNING + 3_600_000);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened", at: Date.now(), provenance: {}, subject: "later", data: { key: "later" }, text: "Later.",
+      });
+    });
+    for (const days of [1, 2]) {
+      vi.setSystemTime(MORNING + days * 86_400_000);
+      expect(await appendDigest(t)).toMatchObject({ appended: true });
+    }
+    const listed = (await ofKind(t, "events", "thread-digest"))
+      .flatMap((row) => (row.data as { items: Array<{ key: string }> }).items.map((item) => item.key));
+    expect(listed.sort()).toEqual(["large-1", "large-2", "later"]);
+  });
+
+  // witness: the read of the four newest digests looked at a fifth to learn
+  // whether it was cut, recorded a row cut, and every cut stopped the scan of
+  // openings, so from the sixth digest on no opening was listed.
+  it("lists a pending opening on the seventh morning, after six digests", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (let d = 6; d >= 1; d -= 1) {
+        const at = MORNING - d * 86_400_000;
+        await ctx.db.insert("events", { kind: "thread-digest", at, provenance: { job: "digest" }, subject: `earlier-${d}`,
+          data: { day: `earlier-${d}`, windowEnd: at, objectionAskIds: [], items: [] }, text: "Earlier digest." });
+      }
+      await ctx.db.insert("events", { kind: "needs-you-opened", at: MORNING - 3_600_000, provenance: {},
+        subject: "pending", data: { key: "pending" }, text: "Pending." });
+    });
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: DAY });
+    const today = (await ofKind(t, "events", "thread-digest")).find((row) => row.subject === DAY);
+    expect((today?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["pending"]);
+  });
+
+  it("cuts an item's text to its byte bound and stops the list at its byte budget", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 60; n += 1) {
+        const key = `long-${n + 1}`;
+        await ctx.db.insert("events", {
+          kind: "needs-you-opened",
+          at: MORNING - 60_000 + n * 1_000,
+          provenance: {},
+          subject: key,
+          data: { key },
+          text: "é".repeat(5_000),
+        });
+      }
+    });
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: DAY });
+    const [row] = await ofKind(t, "events", "thread-digest");
+    const items = (row.data as { items: Array<{ n: number; key: string; text: string }> }).items;
+    for (const item of items) {
+      expect(new TextEncoder().encode(item.text).length).toBeLessThanOrEqual(2_048);
+      expect(item.text.endsWith("…")).toBe(true);
+    }
+    expect(new TextEncoder().encode(JSON.stringify(items)).length).toBeLessThanOrEqual(64 * 1024);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.length).toBeLessThan(60);
+    // The rest wait for the next day's digest, numbered from 1 again.
+    vi.setSystemTime(MORNING + 86_400_000);
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: "2026-09-27" });
+    const next = (await ofKind(t, "events", "thread-digest")).find((one) => one.subject === "2026-09-27");
+    const nextItems = (next?.data as { items: Array<{ key: string }> }).items;
+    expect(nextItems[0].key).toBe(`long-${items.length + 1}`);
+  });
+
+  it("refuses a needs-you opening without a subject at the worker routes", async () => {
+    const t = setup(MORNING);
+    const res = await post(t, "/jarvis/event", { kind: "needs-you-opened", data: { key: "k" }, text: "No subject." });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "a needs-you-opened event names its subject" });
+    expect(await ofKind(t, "events", "needs-you-opened")).toEqual([]);
+  });
+
+  it("appends one digest with needs-you numbered after objections, then returns its id", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "digest-line",
+        at: MORNING - 4_000,
+        provenance: {},
+        subject: "ask-1",
+        data: { section: "decisions", askId: "ask-1", decision: "Use the synthetic first choice." },
+      });
+      await ctx.db.insert("events", {
+        kind: "digest-line",
+        at: MORNING - 3_000,
+        provenance: {},
+        subject: "ask-2",
+        data: { section: "decisions", askId: "ask-2", decision: "Use the synthetic second choice." },
+      });
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING - 2_000,
+        provenance: {},
+        subject: "need-todo",
+        data: { key: "need-todo", todoId: "synthetic-todo" },
+        text: "Settle the synthetic todo.",
+      });
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING - 1_000,
+        provenance: {},
+        subject: "need-job",
+        data: { key: "need-job", job: "synthetic-job" },
+        text: "Settle the synthetic job.",
+      });
+    });
+    const first = await appendDigest(t);
+    expect(first).toMatchObject({ appended: true, day: DAY, id: expect.any(String) });
+    const [row] = await ofKind(t, "events", "thread-digest");
+    expect(row).toMatchObject({ _id: first.id, subject: DAY, provenance: { job: "digest" } });
+    const data = row.data as { objectionAskIds: string[]; items: Array<Record<string, unknown>> };
+    expect(data.objectionAskIds).toHaveLength(2);
+    expect(data.items).toEqual([
+      { n: 3, key: "need-todo", text: "Settle the synthetic todo.", todoId: "synthetic-todo" },
+      { n: 4, key: "need-job", text: "Settle the synthetic job.", job: "synthetic-job" },
+    ]);
+
+    const second = await appendDigest(t);
+    expect(second).toMatchObject({
+      appended: false,
+      day: DAY,
+      id: first.id,
+      reason: `the digest for ${DAY} is on the thread`,
+    });
+  });
+
+  it("lists a boundary-time opening once and does not relist a previously listed opening", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING - 1_000,
+        provenance: {},
+        subject: "first-window",
+        data: { key: "first-window", job: "first-job" },
+        text: "First window.",
+      });
+    });
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: DAY });
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "needs-you-opened",
+        at: MORNING,
+        provenance: {},
+        subject: "boundary-opening",
+        data: { key: "boundary-opening", job: "boundary-job" },
+        text: "Boundary opening.",
+      });
+    });
+    vi.setSystemTime(MORNING + 86_400_000);
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: "2026-09-27" });
+    const rows = await ofKind(t, "events", "thread-digest");
+    const next = rows.find((row) => row.subject === "2026-09-27");
+    expect((next?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["boundary-opening"]);
+  });
+
+  it("posts openings after today's digest with consecutive numbers and pushes once each", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (const n of [1, 2]) {
+        await ctx.db.insert("events", {
+          kind: "digest-line",
+          at: MORNING - 1_000 * n,
+          provenance: {},
+          subject: `late-ask-${n}`,
+          data: { section: "decisions", askId: `late-ask-${n}`, decision: `Synthetic choice ${n}.` },
+        });
+      }
+    });
+    const digest = await appendDigest(t);
+    const firstTodo = await aTodo(t, "Settle the first late item");
+    const secondTodo = await aTodo(t, "Settle the second late item");
+
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: firstTodo, reason: "the first answer is needed", key: "late-1",
+    });
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: secondTodo, reason: "the second answer is needed", key: "late-2",
+    });
+
+    const posted = await ofKind(t, "events", "thread-needs-you");
+    expect(posted.map((row) => ({ subject: row.subject, data: row.data }))).toEqual([
+      { subject: digest.id, data: expect.objectContaining({ n: 3, key: "late-1", todoId: firstTodo }) },
+      { subject: digest.id, data: expect.objectContaining({ n: 4, key: "late-2", todoId: secondTodo }) },
+    ]);
+    expect(await pushesOf(t)).toEqual([
+      { title: "Digest", body: DAY, url: "/thread" },
+      { title: "Needs you", body: "", url: "/thread" },
+      { title: "Needs you", body: "", url: "/thread" },
+    ]);
+
+    vi.setSystemTime(MORNING + 86_400_000);
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: "2026-09-27" });
+    const next = (await ofKind(t, "events", "thread-digest")).find((row) => row.subject === "2026-09-27");
+    expect((next?.data as { items: unknown[] }).items).toEqual([]);
+  });
+
+  it("numbers a late item after the newest one, and past 50 under one digest leaves it for the next digest", async () => {
+    const t = setup(MORNING);
+    const digest = await appendDigest(t);
+    // The newest posted item under today's digest carries number 50.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "thread-needs-you", at: MORNING + 1_000, provenance: { job: "needs-you" },
+        subject: digest.id, data: { n: 50, key: "posted-50" }, text: "Posted 50.",
+      });
+    });
+    const todoId = await aTodo(t, "Settle the hundred-and-first item");
+    vi.setSystemTime(MORNING + 2_000);
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { todoId, reason: "one more", key: "late-101" });
+    const posted = await ofKind(t, "events", "thread-needs-you");
+    expect(posted.map((row) => (row.data as { key: string }).key)).toEqual(["posted-50"]);
+    expect((await pushesOf(t)).filter((push) => push.title === "Needs you")).toEqual([]);
+
+    vi.setSystemTime(MORNING + 86_400_000);
+    await appendDigest(t);
+    const next = (await ofKind(t, "events", "thread-digest")).find((row) => row.subject === "2026-09-27");
+    expect((next?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["late-101"]);
+  });
+
+  it("numbers a late item one past the newest posted under the digest", async () => {
+    const t = setup(MORNING);
+    const digest = await appendDigest(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", {
+        kind: "thread-needs-you", at: MORNING + 1_000, provenance: { job: "needs-you" },
+        subject: digest.id, data: { n: 7, key: "posted-7" }, text: "Posted 7.",
+      });
+    });
+    const todoId = await aTodo(t, "Settle the eighth item");
+    vi.setSystemTime(MORNING + 2_000);
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { todoId, reason: "the eighth", key: "late-8" });
+    const late = (await ofKind(t, "events", "thread-needs-you")).find((row) => row.subject === digest.id && (row.data as { key: string }).key === "late-8");
+    expect(late?.data).toMatchObject({ n: 8 });
+  });
+
+  it("leaves an opening for the morning digest when today's digest does not exist", async () => {
+    const t = setup(MORNING);
+    const todoId = await aTodo(t, "Settle the morning item");
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId, reason: "the morning answer is needed", key: "before-digest",
+    });
+    expect(await ofKind(t, "events", "thread-needs-you")).toEqual([]);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((row) => row.name.includes("pushSend"))).toEqual([]);
+
+    await appendDigest(t);
+    const [digest] = await ofKind(t, "events", "thread-digest");
+    expect((digest.data as { items: Array<{ key: string }> }).items.map((item) => item.key))
+      .toEqual(["before-digest"]);
+  });
+
+  it("lists 200 pending openings and carries the rest into the next digest", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 205; n += 1) {
+        const key = `need-${n + 1}`;
+        await ctx.db.insert("events", {
+          kind: "needs-you-opened",
+          at: MORNING - 205_000 + n * 1_000,
+          provenance: {},
+          subject: key,
+          data: { key },
+          text: `Need ${n + 1}.`,
+        });
+      }
+    });
+
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: DAY });
+    let rows = await ofKind(t, "events", "thread-digest");
+    const first = rows.find((row) => row.subject === DAY);
+    const firstData = first?.data as { objectionAskIds: string[]; items: Array<Record<string, unknown>> };
+    expect(firstData.objectionAskIds).toEqual([]);
+    expect(firstData.items).toEqual(
+      Array.from({ length: 200 }, (_, index) => ({ n: index + 1, key: `need-${index + 1}`, text: `Need ${index + 1}.` })),
+    );
+
+    vi.setSystemTime(MORNING + 86_400_000);
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: "2026-09-27" });
+    rows = await ofKind(t, "events", "thread-digest");
+    const next = rows.find((row) => row.subject === "2026-09-27");
+    expect((next?.data as { items: Array<Record<string, unknown>> }).items).toEqual(
+      Array.from({ length: 5 }, (_, index) => ({ n: index + 1, key: `need-${index + 201}`, text: `Need ${index + 201}.` })),
+    );
+  });
+});
+
 describe("the digest outbox", () => {
   it("lists one subject once from 5 a.m. New York to the next 5 a.m.", async () => {
     const beforeMidnight = Date.parse("2026-09-26T03:59:00Z"); // 23:59 New York

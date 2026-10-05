@@ -472,6 +472,11 @@ export type ThreadReplyOutcome =
   | { outcome: "asked-which"; numbers: number[] }
   | { outcome: "captured"; todoId: Id<"todos"> };
 
+type NeedsYouAnswerOutcome = Extract<
+  ThreadReplyOutcome,
+  { outcome: "done" | "time-note" | "tom-note" }
+>;
+
 /**
  * One transaction per reply event. Dedupe first (Slack delivers at least
  * once: a redelivered event_id is dropped and counted on the row that took
@@ -783,16 +788,27 @@ async function needsYouReply(
     }
     item = open[0];
   }
+  return await answerNeedsYou(ctx, item, { text, said, numbered: numbered !== null }, at);
+}
+
+/** Apply one answer to one numbered needs-you item. Shared by Slack and the
+ * Jarvis thread so both surfaces preserve the same done/date/note behavior. */
+export async function answerNeedsYou(
+  ctx: MutationCtx,
+  item: { n: number; subject: SlackSubject; answeredKey: string },
+  reply: { text: string; said: string; numbered: boolean },
+  at: Record<string, string>,
+): Promise<NeedsYouAnswerOutcome> {
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: NEEDS_YOU_ANSWERED,
     key: item.answeredKey,
-    data: { n: item.n, subject: await plainSubject(ctx, item.subject), text, ...at },
+    data: { n: item.n, subject: await plainSubject(ctx, item.subject), text: reply.text, ...at },
   });
   // The number named the item; what follows it is the answer ("4 done").
-  const answer = numbered !== null && said !== "" ? said : text;
-  if (item.subject.kind === "todo") return await todoReply(ctx, item.subject.id, answer, at, replyShape(said));
-  await logEvent(ctx, "tom-note", undefined, { text, ...at, subject: item.subject });
+  const answer = reply.numbered && reply.said !== "" ? reply.said : reply.text;
+  if (item.subject.kind === "todo") return await todoReply(ctx, item.subject.id, answer, at, replyShape(reply.said));
+  await logEvent(ctx, "tom-note", undefined, { text: reply.text, ...at, subject: item.subject });
   return { outcome: "tom-note", subject: item.subject };
 }
 
@@ -999,9 +1015,9 @@ async function todoReply(
   ctx: MutationCtx,
   given: Id<"todos"> | Id<"dtsTodos">,
   text: string,
-  at: { channel: string; ts: string; threadTs: string },
+  at: Record<string, string>,
   shape: ReplyShape = replyShape(text),
-): Promise<ThreadReplyOutcome> {
+): Promise<NeedsYouAnswerOutcome> {
   // A thread names its todo in either form (convex/jarvis/tables.ts).
   const todoId = await resolveId(ctx, "todos", given);
   const todo = todoId === null ? null : await ctx.db.get(todoId);

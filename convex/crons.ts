@@ -1,15 +1,27 @@
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
 
-// ONE SCHEDULER, ON THE BOX (Tom, 2026-09-26). The record's timed work — the
-// Turing health light, the pull-request mirror and its merges, the calendar
-// feeds, the code-todo mirror, the repeating todos, the row eviction — is a
-// task the box's record-tick job starts through POST /jarvis/tick
-// (convex/jarvis/tick.ts),
-// and the digest is written by the box (convex/jarvis/digest.ts). What stays
-// here is what must run when the box does not.
+// THE BOX STARTS MOST TIMED WORK (Tom, 2026-09-26). The record's timed work —
+// the Turing health light, the pull-request mirror and its merges, the
+// calendar feeds, the code-todo mirror, the repeating todos, the row eviction —
+// is a task the box's record-tick job starts through POST /jarvis/tick
+// (convex/jarvis/tick.ts). What runs here is the record's own clock: the
+// thread digest (Tom's ruling of 2026-10-05, the digest on a Convex cron at
+// 05:00) and what must run when the box does not.
 
 const crons = cronJobs();
+
+// THE THREAD DIGEST (convex/jarvis/digest.ts appendThreadDigest): the day's
+// digest appended to the Jarvis thread with its numbered needs-you items, and
+// one web push. Convex's cron schedules are UTC only (neither the installed
+// convex 1.37 nor 1.46 has a time zone field), and New York is a whole number
+// of hours from UTC, so the top of every UTC hour is the top of a New York
+// hour in both summer and winter time. The mutation appends from 5 a.m. New
+// York and once per day, so the 05:00 run appends and the other runs read one
+// row and stop; a 05:00 run that failed is retried at 06:00 and each hour
+// after, through 23:00 New York (the runs from midnight to 04:00 stop at the
+// 5 a.m. check).
+crons.cron("thread digest", "0 * * * *", internal.jarvis.digest.appendThreadDigest, {});
 
 // THE SILENCE ALARM (plan-root T3; convex/jarvis/jobs.ts checkSilence): a line
 // in the output channel when a watched box job — the box-change reader, the

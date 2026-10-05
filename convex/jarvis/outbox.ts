@@ -7,18 +7,66 @@
 
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
+import { internal } from "../_generated/api";
 import { DAY_MS, outputChannel, ttsDayBoundsUtc, ttsDayKey } from "../ttsShared";
 import { insertEvent } from "./record";
+import { ReadBudget, readWithin } from "../readBudget";
 
 export const DIGEST_SENT = "digest-sent";
 export const NEEDS_YOU_OPENED = "needs-you-opened";
 export const NEEDS_YOU_POSTED = "needs-you-posted";
 export const DIGEST_LINE = "digest-line";
+export const THREAD_DIGEST = "thread-digest";
+export const THREAD_NEEDS_YOU = "thread-needs-you";
+export const NEEDS_TOM_ANSWERED = "needs-tom-answered";
 
 /** How far back an opened needs-you is still posted. Older than this, it
  *  was opened while the box was down for days; it is in the record and on
  *  its todo, and a reply under a digest a week late is not what he reads. */
 export const NEEDS_YOU_WINDOW_MS = 3 * DAY_MS;
+
+/** The most UTF-8 bytes of one needs-you item's text on the thread (in a
+ *  thread-digest's items and in a thread-needs-you row). The cut is applied
+ *  where the thread reads an opening, not to the needs-you-opened row,
+ *  because POST /jarvis/event also writes those rows and a cut in
+ *  openNeedsYou would not bound them. */
+export const ITEM_TEXT_MAX_BYTES = 2_048;
+
+/** The most thread-needs-you rows posted under one digest, and so the most
+ *  laterDigestItems reads: 50 rows of at most ITEM_TEXT_MAX_BYTES of text,
+ *  so four digests' rows fit the thread digest's allotment for them
+ *  (convex/jarvis/digest.ts THREAD_OWN_READS). */
+const LATER_ITEMS_MAX = 50;
+
+const utf8 = new TextEncoder();
+
+/** `text` cut to at most `max` UTF-8 bytes, ending in "…" when cut. */
+export function cutToBytes(text: string, max: number): string {
+  if (utf8.encode(text).length <= max) return text;
+  let out = "";
+  let bytes = 3; // the "…"
+  for (const char of text) {
+    const size = utf8.encode(char).length;
+    if (bytes + size > max) break;
+    out += char;
+    bytes += size;
+  }
+  return `${out}…`;
+}
+
+export type DigestItem = { n: number; key: string; text: string; todoId?: string; job?: string };
+
+/** The needs-you items posted under one thread digest after it was appended,
+ *  oldest first. openNeedsYou posts at most LATER_ITEMS_MAX under one digest,
+ *  so this read takes every one of them, or stops at `budget` when given. */
+export async function laterDigestItems(ctx: QueryCtx, digestId: Id<"events">, budget?: ReadBudget): Promise<DigestItem[]> {
+  const query = ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_NEEDS_YOU).eq("subject", digestId))
+    .order("asc");
+  const rows = budget === undefined ? await query.take(LATER_ITEMS_MAX) : await readWithin(budget, query, LATER_ITEMS_MAX);
+  return rows.map((row) => ({ ...(row.data as Omit<DigestItem, "text">), text: row.text ?? "" }));
+}
 
 /** The newest digest-sent row: which day went out last, where its window
  *  ended, and where it lives in Slack. by_kind_at, newest first.
@@ -134,6 +182,45 @@ export async function openNeedsYou(
     },
     text,
   });
+  const day = ttsDayKey(Date.now());
+  const digest = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_DIGEST).eq("subject", day))
+    .order("desc")
+    .first();
+  // This branch cannot be deleted: after today's digest exists the item must
+  // appear now; before it exists the morning digest remains its one writer.
+  if (digest !== null) {
+    const digestData = digest.data as { objectionAskIds: string[]; items: Array<{ n: number }> };
+    const listed = Math.max(digestData.objectionAskIds.length, ...digestData.items.map((item) => item.n));
+    // Items under one digest are numbered consecutively, so the newest one
+    // carries the highest number and one row read finds it.
+    const newest = await ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_NEEDS_YOU).eq("subject", digest._id))
+      .order("desc")
+      .first();
+    const last = newest === null ? listed : Math.max(listed, (newest.data as { n: number }).n);
+    // Past LATER_ITEMS_MAX under one digest the item waits for the next
+    // morning's digest, which lists every opening no digest listed yet, so
+    // laterDigestItems' bounded read always holds every posted item.
+    if (last - listed < LATER_ITEMS_MAX) {
+      await insertEvent(ctx, {
+        kind: THREAD_NEEDS_YOU,
+        provenance: { job: "needs-you" },
+        subject: digest._id,
+        data: { n: last + 1, key,
+          ...(todoId === undefined ? {} : { todoId }),
+          ...(job === undefined ? {} : { job }),
+        },
+        text: cutToBytes(text, ITEM_TEXT_MAX_BYTES),
+      });
+      // The record pushes here rather than the box because both openers run in
+      // the record, and scheduling in the same transaction pushes once per
+      // posted item.
+      await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, { title: "Needs you", body: "", url: "/thread" });
+    }
+  }
   return { opened: true, key };
 }
 

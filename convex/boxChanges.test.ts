@@ -31,9 +31,12 @@ import {
   GATHER_BYTES,
   READ_BYTES,
   ROLLOVER_BYTES,
+  THREAD_GATHER_BYTES,
+  THREAD_OWN_BYTES,
   gatherTodayFacts,
   rollMissed,
 } from "./ttsDigest";
+import { THREAD_OWN_READS, appendDigestToThread, markSurfaced } from "./jarvis/digest";
 import { CONVEX_READ_LIMIT, MAX_DOCUMENT_BYTES, MIB, ReadBudget } from "./readBudget";
 import { composeTodayFitted, readCutLine, readCutsLead } from "./ttsCompose";
 import { nyCalendarDayBoundsUtc } from "./ttsShared";
@@ -50,8 +53,8 @@ const TOKEN = `ghp_${"a1B2".repeat(9)}`;
  *  (getDocumentSize) and added up: the bytes a function reads, whatever path
  *  the read takes (a range walked row by row, a terminal, a get, the row a
  *  patch changes). */
-function dbCountingReturnedBytes(db: MutationCtx["db"], add: (bytes: number) => void): MutationCtx["db"] {
-  const size = (doc: unknown) => add(getDocumentSize(doc as Record<string, Value>));
+function dbCountingReturnedBytes(db: MutationCtx["db"], add: (bytes: number, doc: Record<string, Value>) => void): MutationCtx["db"] {
+  const size = (doc: unknown) => add(getDocumentSize(doc as Record<string, Value>), doc as Record<string, Value>);
   const terminals = new Set<PropertyKey>(["take", "first", "unique", "collect", "paginate"]);
   const wrap = (chain: object): object =>
     new Proxy(chain, {
@@ -552,6 +555,88 @@ describe("the digest read budget", () => {
     expect(renderSlack(composeTodayFitted(facts, { canReply: false }).message)).toContain(
       "Prepared todos: 200 read, stopped at the row limit.",
     );
+  });
+  // witness: the thread digest's own reads (its openings scan) were added to
+  // the rollover and the gather, 14.5 MiB, and could pass Convex's 16 MiB.
+  it("reads at most the same bound in the thread digest, with every read at its cap, and still appends", async () => {
+    const own = Object.values(THREAD_OWN_READS).reduce((sum, read) => sum + read.bytes, 0);
+    expect(own).toBe(THREAD_OWN_BYTES);
+    expect(ROLLOVER_BYTES + THREAD_GATHER_BYTES + THREAD_OWN_BYTES + 3 * MAX_DOCUMENT_BYTES).toBe(DIGEST_READ_BOUND);
+    const t = convexTest({ schema, modules });
+    const now = Date.UTC(2026, 8, 27, 10); // 06:00 New York
+    const day = "2026-09-27";
+    const { start: dayStart } = nyCalendarDayBoundsUtc(day);
+    vi.setSystemTime(now);
+    const pad = "x".repeat(64 * 1024);
+    await t.run(async (ctx) => {
+      const todo = (n: number, over: Record<string, unknown>) => ctx.db.insert("todos", {
+        statement: `todo ${n}`, groundUpExplanation: pad, readiness: "unprepared", status: "active",
+        timingClass: "whenever", source: "synthetic", createdAt: now - n, updatedAt: now - n, ...over,
+      } as never);
+      for (let n = 0; n < 60; n += 1) {
+        const late = await todo(n, { timingClass: "dated", dueAt: dayStart - (n + 1) * 60_000, dateKind: "external" });
+        await todo(n, { readiness: "prepared", needs: [late] });
+        await todo(n, { source: "email", needsTomToday: { why: "only Tom can answer" } });
+        await ctx.db.insert("dtsEvents", { at: now - 3_600_000 + n, kind: "synthetic-note", data: { pad } });
+      }
+      for (let d = 1; d <= 4; d += 1) {
+        const at = now - d * 18 * 3_600_000;
+        const items = Array.from({ length: 30 }, (_, n) => ({ n: n + 1, key: `listed-${d}-${n}`, text: "y".repeat(2_000) }));
+        const digestId = await ctx.db.insert("events", {
+          kind: "thread-digest", at, provenance: { job: "digest" }, subject: `day-${d}`, text: "Synthetic daily digest.",
+          data: { day: `day-${d}`, windowEnd: at, objectionAskIds: [], items, openingsFrom: now - 4 * 86_400_000 },
+        });
+        for (let n = 0; n < 50; n += 1) {
+          await ctx.db.insert("events", { kind: "thread-needs-you", at: at + n + 1, provenance: { job: "needs-you" },
+            subject: digestId, data: { n: 31 + n, key: `later-${d}-${n}` }, text: "z".repeat(2_000) });
+        }
+      }
+      for (let n = 0; n < 40; n += 1) {
+        await ctx.db.insert("events", { kind: "needs-you-opened", at: now - 3_600_000 + n, provenance: {},
+          subject: `open-${n}`, data: { key: `open-${n}` }, text: "o".repeat(100_000) });
+      }
+    });
+    let bytesRead = 0;
+    const answer = await t.run(async (ctx) => appendDigestToThread(
+      { ...ctx, db: dbCountingReturnedBytes(ctx.db, (bytes) => { bytesRead += bytes; }) } as MutationCtx));
+    expect(answer).toMatchObject({ appended: true, day });
+    expect(bytesRead).toBeLessThanOrEqual(DIGEST_READ_BOUND);
+    expect(bytesRead).toBeGreaterThan(8 * MIB);
+    const digest = await t.run(async (ctx) => (await ctx.db.query("events").collect())
+      .find((row) => row.kind === "thread-digest" && row.subject === day));
+    expect((digest?.data as { items: unknown[] }).items.length).toBeGreaterThan(0);
+  });
+
+  // witness: the openings scan fetched its next row before it checked its
+  // allotment, and a surfaced mark read its todo twice after one check, so
+  // each could read two documents past its allotment.
+  it("reads no opening and no surfaced todo more than one document past its allotment", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.UTC(2026, 8, 27, 10); // 06:00 New York
+    vi.setSystemTime(now);
+    const near = "x".repeat(1_000_000); // a document near Convex's 1 MiB
+    const todoIds = await t.run(async (ctx) => {
+      for (let n = 0; n < 3; n += 1) {
+        await ctx.db.insert("events", { kind: "needs-you-opened", at: now - 3_600_000 + n, provenance: {},
+          subject: `near-${n}`, data: { key: `near-${n}` }, text: near });
+      }
+      return await Promise.all([0, 1].map((n) => ctx.db.insert("todos", {
+        statement: `near ${n}`, groundUpExplanation: near, readiness: "unprepared", status: "active",
+        timingClass: "whenever", source: "synthetic", createdAt: now, updatedAt: now,
+      } as never)));
+    });
+    let openingBytes = 0;
+    await t.run(async (ctx) => appendDigestToThread({ ...ctx, db: dbCountingReturnedBytes(ctx.db, (bytes, doc) => {
+      if (doc.kind === "needs-you-opened") openingBytes += bytes;
+    }) } as MutationCtx));
+    expect(openingBytes).toBeGreaterThan(0);
+    expect(openingBytes).toBeLessThanOrEqual(THREAD_OWN_READS.openings.bytes + MAX_DOCUMENT_BYTES);
+    let markBytes = 0;
+    await t.run(async (ctx) => markSurfaced(
+      { ...ctx, db: dbCountingReturnedBytes(ctx.db, (bytes) => { markBytes += bytes; }) } as MutationCtx,
+      todoIds, "2026-09-27", ReadBudget.of(THREAD_OWN_READS.surfaced.bytes)));
+    expect(markBytes).toBeGreaterThan(0);
+    expect(markBytes).toBeLessThanOrEqual(THREAD_OWN_READS.surfaced.bytes + MAX_DOCUMENT_BYTES);
   });
 });
 
