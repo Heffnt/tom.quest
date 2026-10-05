@@ -676,6 +676,14 @@ const RUN_END_REASON = v.union(v.literal("ended"), v.literal("failed"), v.litera
  * record's clock. A second end for the same run keeps the later instant: a
  * resumed session ends again after its first end, and a retried post of the
  * first end must not move it back.
+ *
+ * THE END SETS THE STATUS. A run's status comes from its pages, and a page
+ * read before the end says `running`; the page readers measure a running run
+ * to now and ignore its end (app/agents/lib.ts runDurationText, the window's
+ * barEnd). So the end sets the status the reason implies, `failed` for
+ * `failed` and `ended` otherwise, and clears an abandonment mark, as the
+ * ingest does for a session that ended. A later page of a resumed session
+ * sets `running` again, which is what the run then is.
  */
 export const internalRecordRunEnd = internalMutation({
   args: { runId: v.string(), endedAt: v.number(), endReason: RUN_END_REASON },
@@ -687,9 +695,10 @@ export const internalRecordRunEnd = internalMutation({
     if (run === null) return { ok: false as const, reason: "no run" };
     if (endedAt < run.startedAt) return { ok: false as const, reason: "endedAt is before the run started" };
     if (run.endedAt !== undefined && run.endedAt > endedAt) {
-      return { ok: true as const, runId, endedAt: run.endedAt, endReason: run.endReason ?? "unknown", kept: true };
+      // The two fields are written together, so a stored endedAt has its reason.
+      return { ok: true as const, runId, endedAt: run.endedAt, endReason: run.endReason, kept: true };
     }
-    await ctx.db.patch(run._id, { endedAt, endReason });
+    await ctx.db.patch(run._id, { endedAt, endReason, status: endReason === "failed" ? "failed" : "ended", abandonedAt: undefined });
     return { ok: true as const, runId, endedAt, endReason, kept: false };
   },
 });

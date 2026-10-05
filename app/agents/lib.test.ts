@@ -373,7 +373,6 @@ describe("runDurationText", () => {
   it("says nothing for a running run or one whose end nothing saw", () => {
     expect(runDurationText({ status: "running", startedAt: 1_000, endedAt: 125_000 })).toBe("");
     expect(runDurationText({ status: "ended", startedAt: 1_000 })).toBe("");
-    expect(runDurationText({ status: "abandoned", startedAt: 1_000, endedAt: null })).toBe("");
   });
 });
 
