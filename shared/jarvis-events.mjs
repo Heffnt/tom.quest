@@ -128,6 +128,13 @@ export const EVENT_KINDS = [
 /** @type {const} */
 export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message"];
 
+/** Events only POST /jarvis/event writes, which checks each one's shape with
+ *  validateEvent. POST /tts/event copies a row into the record unchecked
+ *  (convex/jarvis/events.ts copyDtsRow), so it refuses these: a registry row
+ *  it stored could become the registry convex/jarvis/design.ts reads. */
+/** @type {const} */
+export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation"];
+
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
  *  transaction as the ask it answers, after the attended check and the cap.

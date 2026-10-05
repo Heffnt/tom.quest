@@ -15,6 +15,10 @@
 // rows that tom.quest #343 (the use state) and #344 (the standing ruling)
 // add, and land with the page after those.
 //
+// A STORED REGISTRY ROW IS A CHECKED ONE: POST /jarvis/event, the one route
+// that writes the type, runs shared/jarvis-events.mjs validateEvent on it,
+// and POST /tts/event refuses it (JARVIS_EVENT_ONLY_KINDS).
+//
 // THE GATE IS requireTom, label "Design".
 
 import { v } from "convex/values";

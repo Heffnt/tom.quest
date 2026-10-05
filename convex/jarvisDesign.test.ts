@@ -76,6 +76,28 @@ describe("the rows the page reads", () => {
   });
 });
 
+describe("the route that copies rows unchecked", () => {
+  it("refuses a registry or an explanation, so the diff view's base registry stays the checked one", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const viewer = await tom(t);
+    await post(t, "/jarvis/event", registryBody("aaaaaaa1"));
+    const diff = { base: "aaaaaaa1", added: [], removed: ["idle"], changed: [], rows: {} };
+    await post(t, "/tts/tests", { repo: "Jarvis", sha: "head1", ok: true, registryDiff: diff });
+    const before = await viewer.query(api.jarvis.design.diff, { head: "Jarvis@head1" });
+    expect(before).toMatchObject({ baseIsExact: true, base: { sha: "aaaaaaa1" } });
+
+    const malformed = await post(t, "/tts/event", { kind: "registry", key: "Jarvis@aaaaaaa1", data: { parts: "not a list" } });
+    expect(malformed.status).toBe(403);
+    expect((await post(t, "/tts/event", { kind: "explanation", key: "idle", data: { html: "<script></script>" } })).status).toBe(403);
+
+    const rows = await t.run((ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "registry")).collect());
+    expect(rows).toHaveLength(1);
+    expect(await t.run((ctx) => ctx.db.query("dtsEvents").filter((q) => q.eq(q.field("kind"), "registry")).collect())).toEqual([]);
+    expect(await viewer.query(api.jarvis.design.diff, { head: "Jarvis@head1" })).toEqual(before);
+  });
+});
+
 describe("the registry diff on a head's tests row", () => {
   const diff = { base: "aaaaaaa1", added: [], removed: ["idle"], changed: ["ran"], rows: { ran: { ...PARTS[0], note: "changed" } } };
 
