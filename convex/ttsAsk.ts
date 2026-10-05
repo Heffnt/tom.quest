@@ -3,7 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { DAY_MS } from "./ttsShared";
+import { DAY_MS, NEEDS_TOM } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
@@ -11,6 +11,7 @@ import { newestTodoEvents, resolveId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 import { redactSecrets } from "../shared/redact.mjs";
+import { decisionOfAnswer } from "../shared/decided-by.mjs";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -89,6 +90,19 @@ const ASK_ARGS = {
   restedOn: v.optional(v.array(v.string())),
   wouldChange: v.optional(v.union(v.string(), v.null())),
   nearMissed: v.optional(v.any()),
+  // WHO DECIDED, AND HOW LONG THE QUESTION WAITED FOR TOM FIRST. Jarvis
+  // `jarvis decide --trade-off` (Jarvis #262) puts a real trade-off to him as
+  // a needs-you item and waits up to two hours (his answer 4 of 2026-10-04).
+  // `waitedMs` is that wait and `waitNote` its one line (why it ended, or why
+  // it never started). `decidedBy` is "tom" when his reply is the decision,
+  // and then `needsTomId` names the needs-you item his reply answered: the
+  // record finds his `needs-tom-answered` row under it and checks that the
+  // decision is what that reply named (tomAnswer, below). Absent means the
+  // delegate, as every ask before the wait was.
+  waitedMs: v.optional(v.number()),
+  waitNote: v.optional(v.string()),
+  decidedBy: v.optional(v.union(v.literal("delegate"), v.literal("tom"))),
+  needsTomId: v.optional(v.string()),
 };
 
 type AskData = {
@@ -114,7 +128,12 @@ type AskData = {
 /** How many asks this caller made in the last day, read on the caller's own
  *  index (dtsEvents.by_kind_session_at or by_kind_job_at), so other callers'
  *  rows are never read, and at most `limit` rows: the cap needs only to know
- *  whether cap is reached, so cap + 1 bounds it. */
+ *  whether cap is reached, so cap + 1 bounds it.
+ *
+ *  A DECISION BY TOM IS NOT AN ASK OF THE DELEGATE, so it does not count:
+ *  the cap is the delegate's spend wall. The filter reads past those rows,
+ *  and there are at most as many as his replies to this caller's questions
+ *  that day. */
 async function callerAsks(
   ctx: QueryCtx,
   args: { sessionId?: string; job?: string },
@@ -131,7 +150,7 @@ async function callerAsks(
       : ctx.db
           .query("dtsEvents")
           .withIndex("by_kind_job_at", (q) => q.eq("kind", DELEGATE_DECISION).eq("data.job", args.job).gte("at", since));
-  return (await rows.take(limit)).length;
+  return (await rows.filter((q) => q.neq(q.field("data.decidedBy"), "tom")).take(limit)).length;
 }
 
 function capFor(args: { sessionId?: string }): number {
@@ -160,6 +179,12 @@ type StoredAsk = {
   restedOn?: string[];
   wouldChange?: string | null;
   nearMissed?: unknown;
+  decidedBy?: "delegate" | "tom";
+  waitedMs?: number;
+  waitNote?: string;
+  needsTomId?: string;
+  /** The `needs-tom-answered` row that backs a decision by Tom. */
+  answerEventId?: string;
 };
 
 /** The most characters of the question, and of the decision, a notification
@@ -179,6 +204,74 @@ function pushLine(text: string): string {
   return line.length <= PUSH_LINE_MAX ? line : `${line.slice(0, PUSH_LINE_MAX - 1).trimEnd()}…`;
 }
 
+/** The row his numbered reply to a needs-you item writes on /thread: subject
+ *  the item's key, provenance user tom, `data.answer` what followed the
+ *  number. No worker-key route writes it: the kind is outside
+ *  shared/jarvis-events.mjs EVENT_KINDS here, and tom.quest #339, which adds
+ *  its writer, lists it in TOM_ONLY_KINDS. */
+const NEEDS_TOM_ANSWERED = "needs-tom-answered";
+
+/** The key a `jarvis decide` question's needs-you item carries (Jarvis
+ *  worker/jobs/delegate.mjs needsYouKey): one item per ask. */
+function tomAnswerKey(askId: string): string {
+  return `delegate-ask:${askId}`;
+}
+
+/**
+ * The reply of Tom's that backs a decision by Tom, or a thrown reason the
+ * record refuses it. A decision row in his name is written when his own
+ * reply to this ask's needs-you item named it, and refused otherwise.
+ *
+ * Four checks, each against the record:
+ * 1. `needsTomId` is this ask's item (`delegate-ask:<askId>`), so a reply of
+ *    his to some other item cannot back this ask;
+ * 2. the item's needs-tom row stores the question and options he was shown
+ *    (POST /tts/needs-tom), and the ask's question and options are those, so
+ *    a caller cannot pair his reply with another question or another option
+ *    list;
+ * 3. the newest `needs-tom-answered` row under it was written as his
+ *    (provenance user tom) and carries an answer;
+ * 4. the decision is what that answer names among the options he was shown
+ *    (shared/decided-by.mjs decisionOfAnswer, the mapping the box uses): the
+ *    option its letter or words name, or else his words.
+ */
+async function tomAnswer(
+  ctx: QueryCtx,
+  args: { askId: string; needsTomId?: string; question: string; options: string[]; decision: string | null },
+): Promise<{ eventId: string; answer: string }> {
+  const key = tomAnswerKey(args.askId);
+  if (args.needsTomId !== key) {
+    throw new Error(`a decision by Tom names this ask's needs-you item, ${key}`);
+  }
+  const item = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_TOM).eq("key", key))
+    .first();
+  const shown = (item?.data ?? {}) as { question?: unknown; options?: unknown };
+  const shownOptions = Array.isArray(shown.options) ? shown.options.filter((o): o is string => typeof o === "string") : null;
+  if (item === null || typeof shown.question !== "string" || shownOptions === null || shownOptions.length === 0) {
+    throw new Error(`the record holds no question with options shown to Tom under ${key}`);
+  }
+  if (args.question !== shown.question) throw new Error(`the question is not the one Tom was shown under ${key}`);
+  if (args.options.length !== shownOptions.length || args.options.some((option, i) => option !== shownOptions[i])) {
+    throw new Error(`the options are not the ones Tom was shown under ${key}`);
+  }
+  const row = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", NEEDS_TOM_ANSWERED).eq("subject", key))
+    .order("desc")
+    .first();
+  if (row === null) throw new Error(`no answer of Tom's to ${key} is in the record`);
+  if (row.provenance.user !== "tom") throw new Error(`the answer to ${key} was not written as Tom's`);
+  const said = (row.data as { answer?: unknown } | undefined)?.answer;
+  const answer = typeof said === "string" ? said.trim() : "";
+  if (answer === "") throw new Error(`the answer to ${key} is empty`);
+  if (args.decision !== decisionOfAnswer(answer, shownOptions)) {
+    throw new Error(`the decision is not what Tom's answer to ${key} names`);
+  }
+  return { eventId: row._id, answer };
+}
+
 /** The decision row (events kind "decision", convex/jarvis/intent.ts) for one
  *  answered ask, built from the ask as recorded; only internalRecordAsk calls it.
  *
@@ -193,9 +286,15 @@ function pushLine(text: string): string {
  *  (convex/ttsCompose.ts objectionLine). The push is scheduled, so a send that
  *  fails (no VAPID pair, a push service error) never undoes the row. */
 async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
+  // A DECISION BY TOM is his reply, so the row carries his provenance (the
+  // provenance of the needs-tom-answered row tomAnswer checked) and names
+  // that row; `caller` still says who asked. It sends no web push: the push
+  // tells him what the delegate decided while he was away (tom.quest #340),
+  // and he wrote this one himself.
+  const byTom = ask.decidedBy === "tom";
   await insertEvent(ctx, {
     kind: "decision",
-    provenance: ask.sessionId !== null ? { session: ask.sessionId } : { job: ask.job ?? undefined },
+    provenance: byTom ? { user: "tom" } : ask.sessionId !== null ? { session: ask.sessionId } : { job: ask.job ?? undefined },
     subject: ask.askId,
     data: {
       question: ask.question,
@@ -211,9 +310,14 @@ async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
       ...(ask.todoId === null ? {} : { todoId: ask.todoId }),
       model: ask.model,
       ...(ask.nearMissed === undefined ? {} : { nearMissed: ask.nearMissed }),
+      ...(ask.decidedBy === undefined ? {} : { decidedBy: ask.decidedBy }),
+      ...(ask.waitedMs === undefined ? {} : { waitedMs: ask.waitedMs }),
+      ...(ask.waitNote === undefined ? {} : { waitNote: ask.waitNote }),
+      ...(byTom ? { needsTomId: ask.needsTomId, answerEventId: ask.answerEventId } : {}),
     },
   });
-  if (ask.refused || ask.decision === null) return;
+  // His own decision is not pushed: he wrote it himself on /thread.
+  if (ask.refused || ask.decision === null || ask.decidedBy === "tom") return;
   await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, {
     title: "Delegate decision",
     body: `${pushLine(ask.question)}\n${pushLine(ask.decision)}`,
@@ -250,6 +354,7 @@ export const internalRecordAsk = internalMutation({
         args.decision !== stored.decision ||
         (args.sessionId ?? null) !== (stored.sessionId ?? null) ||
         (args.job ?? null) !== (stored.job ?? null) ||
+        (args.decidedBy === "tom") !== (stored.decidedBy === "tom") ||
         todoId !== storedTodoId
       ) {
         throw new Error(`askId ${args.askId} is already recorded for a different ask`);
@@ -280,10 +385,15 @@ export const internalRecordAsk = internalMutation({
       if (!session) throw new Error(`Unknown session id: ${args.sessionId}`);
     }
 
+    // A DECISION BY TOM is checked against his reply before anything is
+    // written, and passes neither the attended check nor the cap: both are
+    // walls on the delegate deciding in his name, and here he decided.
+    const byTom = args.decidedBy === "tom";
+    const answered = byTom ? await tomAnswer(ctx, args) : null;
     const cap = capFor(args);
-    const callerCount = await callerAsks(ctx, args, cap + 1);
-    const attended = session !== null && session.mode !== "autonomous";
-    const capped = callerCount >= cap;
+    const callerCount = byTom ? 0 : await callerAsks(ctx, args, cap + 1);
+    const attended = !byTom && session !== null && session.mode !== "autonomous";
+    const capped = !byTom && callerCount >= cap;
     // The cap is the delegate's spend wall: past it, no answer is acted on.
     // A CAPPED ASK TOOK NOTHING IN HIS NAME: the box does not act on the
     // delegate's answer past the cap and takes the caller's fallback, so the
@@ -301,6 +411,7 @@ export const internalRecordAsk = internalMutation({
       sessionId: args.sessionId ?? null,
       job: args.job ?? null,
       todoId: todoId ?? null,
+      ...(answered === null ? {} : { answerEventId: answered.eventId }),
     };
     const id = await logEvent(ctx, DELEGATE_DECISION, todoId ?? undefined, {
       ...stored,

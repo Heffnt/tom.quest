@@ -266,6 +266,8 @@ describe("openDisagreements", () => {
     ];
     expect(openDisagreements(decisions, items, { disagreements: [1, 2, 3] })).toBe(5);
     expect(openDisagreements(decisions, items, null)).toBe(2);
+    // A decision he took himself on /thread is no disagreement.
+    expect(openDisagreements([...decisions, { decision: "Three.", refused: false, settled: null, decidedByTom: true }], items, null)).toBe(2);
   });
 
   it("says nothing until every read has answered", () => {

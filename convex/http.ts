@@ -495,6 +495,20 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   if (typeof b.key !== "string" || b.key.trim().length === 0) {
     return jsonResponse(400, { error: "key (non-empty string) required" });
   }
+  // A QUESTION WITH LETTERED OPTIONS (Jarvis `jarvis decide --trade-off`):
+  // the record stores both on the item and composes the lines Tom reads from
+  // them, so a reply of his naming a letter is later read against the options
+  // he was shown (convex/ttsAsk.ts tomAnswer), not against a caller's copy.
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if ((b.question === undefined) !== (b.options === undefined)) {
+    return jsonResponse(400, { error: "question and options go together" });
+  }
+  if (b.question !== undefined && (!nonempty(b.question) || (b.question as string).trim().length > 400)) {
+    return jsonResponse(400, { error: "question, when given, is 1-400 characters" });
+  }
+  if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length >= 2 && b.options.length <= 5 && b.options.every(nonempty))) {
+    return jsonResponse(400, { error: "options, when given, are 2-5 non-empty strings" });
+  }
   // A REPLY UNDER THE DAY'S DIGEST in the one output channel, posted by the
   // box's digest job (convex/jarvis/digest.ts); no channel of its own.
   try {
@@ -502,6 +516,9 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
       todoId: b.todoId,
       reason: b.reason,
       key: b.key,
+      ...(b.question === undefined
+        ? {}
+        : { question: (b.question as string).trim(), options: (b.options as string[]).map((option) => option.trim()) }),
       // The reply invitation is printed only when a reply would reach TTS.
       canReply: Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID),
     });
@@ -1454,6 +1471,24 @@ const ttsAsk = httpAction(async (ctx, request) => {
   if (b.wouldChange !== undefined && b.wouldChange !== null && typeof b.wouldChange !== "string") {
     return jsonResponse(400, { error: "wouldChange, when given, is a string or null" });
   }
+  // How long the question waited for Tom, and who decided (convex/ttsAsk.ts
+  // ASK_ARGS). A decision by Tom is his reply: it names the needs-you item he
+  // answered, and the mutation checks that reply before writing anything.
+  if (b.waitedMs !== undefined && (typeof b.waitedMs !== "number" || !Number.isFinite(b.waitedMs) || b.waitedMs < 0)) {
+    return jsonResponse(400, { error: "waitedMs, when given, is a nonnegative finite number of milliseconds" });
+  }
+  if (b.waitNote !== undefined && (typeof b.waitNote !== "string" || b.waitNote.trim().length > 400)) {
+    return jsonResponse(400, { error: "waitNote, when given, is a string of at most 400 characters" });
+  }
+  if (b.decidedBy !== undefined && b.decidedBy !== "delegate" && b.decidedBy !== "tom") {
+    return jsonResponse(400, { error: 'decidedBy, when given, is "delegate" or "tom"' });
+  }
+  if (b.decidedBy === "tom") {
+    if (!nonempty(b.needsTomId)) return jsonResponse(400, { error: "a decision by Tom names needsTomId, the needs-you item his reply answered" });
+    if (b.decision === null || b.refused !== false) return jsonResponse(400, { error: "a decision by Tom is his answer: decision set, refused false" });
+  } else if (b.needsTomId !== undefined) {
+    return jsonResponse(400, { error: 'needsTomId goes only with decidedBy "tom"' });
+  }
   try {
     const result = await ctx.runMutation(internal.ttsAsk.internalRecordAsk, {
       askId: b.askId as string, sessionId: hasSession ? b.sessionId as string : undefined,
@@ -1465,6 +1500,10 @@ const ttsAsk = httpAction(async (ctx, request) => {
       model: b.model as string, ms: b.ms, promptSha: b.promptSha as string,
       restedOn: b.restedOn as string[] | undefined, wouldChange: b.wouldChange as string | null | undefined,
       nearMissed: b.nearMissed,
+      waitedMs: b.waitedMs as number | undefined,
+      waitNote: typeof b.waitNote === "string" ? b.waitNote.trim() : undefined,
+      decidedBy: b.decidedBy as "delegate" | "tom" | undefined,
+      needsTomId: b.needsTomId as string | undefined,
     });
     const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
       sessionId: hasSession ? b.sessionId as string : undefined,

@@ -26,6 +26,7 @@ import {
 } from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../shared/learning-change-names.mjs";
 import { needsYouNumber, openNeedsYou } from "./jarvis/outbox";
+import { askShown } from "../shared/decided-by.mjs";
 import { resolveId, todoIdForms } from "./jarvis/tables";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
@@ -244,11 +245,15 @@ export const internalOpenNeedsTomThread = internalMutation({
     // thing the old message never said.
     reason: v.string(),
     key: v.string(),
+    // A question with lettered options: stored on the item, and composed
+    // into what he reads ahead of `reason` (shared/decided-by.mjs askShown).
+    question: v.optional(v.string()),
+    options: v.optional(v.array(v.string())),
     canReply: v.optional(v.boolean()),
   },
   handler: async (
     ctx,
-    { todoId, reason, key, canReply },
+    { todoId, reason, key, question, options, canReply },
   ): Promise<{ opened: boolean; key: string; reason?: string }> => {
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
@@ -261,11 +266,12 @@ export const internalOpenNeedsTomThread = internalMutation({
       .first();
     if (seen) return { opened: false, key };
 
+    const asked = question !== undefined && options !== undefined;
     const facts: NeedsYouFacts = {
       todoId: id,
       statement: todo.statement,
       entryAction: todo.entryAction,
-      reason,
+      reason: asked ? `${askShown(question, options)} ${reason}` : reason,
       sourceUrl: sourceUrlOf(todo.provenance),
     };
     const day = ttsDayKey(Date.now());
@@ -274,8 +280,10 @@ export const internalOpenNeedsTomThread = internalMutation({
       kind: NEEDS_TOM,
       key,
       todoId: id,
-      // The provenance the message does NOT print stays on the row.
-      data: { key, reason, provenance: todo.provenance },
+      // The provenance the message does NOT print stays on the row. The
+      // question and options are the ones he is shown, which a reply of his
+      // naming a letter is read against (convex/ttsAsk.ts tomAnswer).
+      data: { key, reason, provenance: todo.provenance, ...(asked ? { question, options } : {}) },
     });
 
     // ONE APPEARANCE PER ITEM PER DAY. The morning message claims at 5 a.m.,

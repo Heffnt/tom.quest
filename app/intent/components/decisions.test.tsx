@@ -23,6 +23,8 @@ const DECISION: Decision = {
   refusedBecause: null,
   model: null,
   todoId: null,
+  decidedByTom: false,
+  waitedMs: null,
   settled: null,
 };
 
@@ -112,6 +114,19 @@ describe("Decisions", () => {
     expect(row.contains(message)).toBe(false);
     expect(row.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect((screen.getByText("accept") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("says who decided after how long, and offers no accept or object on his own decision", () => {
+    draw([
+      { ...DECISION, id: "t1", askId: "7e000001", question: "Tom's question", decidedByTom: true, waitedMs: 720_000 },
+      { ...DECISION, id: "d1", askId: "7e000002", question: "Waited question", waitedMs: 7_200_000 },
+    ], []);
+    expect(screen.getByText("decided by Tom after 12 minutes")).toBeTruthy();
+    expect(screen.getByText("decided by the delegate after waiting 120 minutes")).toBeTruthy();
+    // One accept and one object: the delegate's decision only.
+    expect(screen.getAllByText("accept")).toHaveLength(1);
+    expect(screen.getAllByText("object")).toHaveLength(1);
+    expect(screen.getByText("Tom's question").closest("li")!.querySelector("button")).toBeNull();
   });
 
   it("captions object as the revise it records", () => {

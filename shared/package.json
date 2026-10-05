@@ -11,6 +11,7 @@
     "./context-relevance.mjs": "./context-relevance.mjs",
     "./day-log-entry.mjs": "./day-log-entry.mjs",
     "./day-log-trends.mjs": "./day-log-trends.mjs",
+    "./decided-by.mjs": "./decided-by.mjs",
     "./jarvis-events.mjs": "./jarvis-events.mjs",
     "./learning-change-names.mjs": "./learning-change-names.mjs",
     "./markdown-sections.mjs": "./markdown-sections.mjs",

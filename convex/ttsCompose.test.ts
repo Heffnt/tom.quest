@@ -490,6 +490,23 @@ describe("objectionLine", () => {
       url: TAB_EVERYTHING,
     });
   });
+
+  it("says who decided and after how long, before the reason", () => {
+    expect(
+      objectionLine(
+        { askId: "c", decision: "moved the appointment", reason: "the consulate shuts", decidedByText: "decided by the delegate after waiting 120 minutes" },
+        3,
+      ).text,
+    ).toBe("3. Moved the appointment, decided by the delegate after waiting 120 minutes, because the consulate shuts.");
+    // His own decision carries no reason: his reply is it.
+    expect(
+      objectionLine(
+        { askId: "d", decision: "Leave it Wednesday.", reason: 'Tom answered on /thread: "b"', decidedByTom: true, decidedByText: "decided by Tom after 12 minutes" },
+        4,
+      ).text,
+    ).toBe("4. Leave it Wednesday, decided by Tom after 12 minutes.");
+    expect(objectionLine({ askId: "e", decision: "Leave it Wednesday.", decidedByTom: true }, 5).text).toBe("5. Leave it Wednesday, decided by Tom.");
+  });
 });
 
 // TWO KINDS SHARE THE OBJECTION LIST. A merge passed three mechanical gates
@@ -515,6 +532,15 @@ describe("objectionsLead", () => {
     const lead = objectionsLead(5, 2);
     expect(lead).toBe(
       "Three things were decided in your name while you were asleep and two merges landed on their own; silence means they stand.",
+    );
+    expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
+  });
+
+  it("credits a question he decided on /thread to him, after the sentence about the rest", () => {
+    expect(objectionsLead(1, 0, 0, 1)).toBe("You decided one question on /thread.");
+    const lead = objectionsLead(4, 1, 0, 1);
+    expect(lead).toBe(
+      "You decided one question on /thread, two things were decided in your name and one merge landed on its own; silence means the others stand.",
     );
     expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
   });
