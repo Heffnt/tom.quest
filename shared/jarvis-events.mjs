@@ -18,6 +18,8 @@
 // dtsEvents table (convex/jarvis/events.ts copyDtsRow) keep the kind they
 // had; the list governs what is POSTED, not what was.
 
+import { DAY_LOG_ENTRY_MAX } from "./day-log-entry.mjs";
+
 /** @type {const} */
 export const EVENT_KINDS = [
   // Jobs on the box (convex/jarvis/jobs.ts): a clean run, a failure, and the
@@ -149,6 +151,31 @@ export const EVENT_KINDS = [
   //     provenance.agentId or provenance.session the agent that wrote it.
   "registry",
   "explanation",
+  // Working properly, read from use (Tom's answer of 2026-10-04, 22:59
+  // Eastern: "the primary thing is that I am interacting with it and I don't
+  // report any issues or I explicitly report no issues."). A part is one id of
+  // Jarvis worker/parts.json; convex/jarvis/partStates.ts reads these rows
+  // into each part's state.
+  //   use: a part was used. Subject the part id, data.part the same; data.by
+  //     "tom", "agent" or "job" (who used it), data.what one line saying how;
+  //     data.state "working" when Tom said the part has no issues; data.threadMessageId
+  //     when the row was written for a message of his on /thread (the box's
+  //     thread-reply job, type no-issues).
+  //   issue: something is not working. Subject the part id when one is named
+  //     (data.part the same), none when data.part is null; text his sentence
+  //     or the failure's line; data.by as for use; data.threadMessageId as for
+  //     use. The table is append-only, so an issue is closed by a later issue
+  //     row on the same part carrying data.resolvedBy (the id of the landing
+  //     row or the thread message that resolved it; the record sets its `at`
+  //     and data.resolvedAt to its own time), or by a use row of Tom's with
+  //     state "working"; either closes the issues whose own `at` is earlier
+  //     than the time the record received it (convex/jarvis/partStates.ts).
+  "use",
+  "issue",
+  // Tom's presence, from his sentence on /thread that he is leaving or back
+  // (the box's thread-reply job, types leaving and back). Subject "tom";
+  // data { away: boolean, threadMessageId }.
+  "presence",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
@@ -163,9 +190,11 @@ export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thr
 /** Events only POST /jarvis/event writes, which checks each one's shape with
  *  validateEvent. POST /tts/event copies a row into the record unchecked
  *  (convex/jarvis/events.ts copyDtsRow), so it refuses these: a registry row
- *  it stored could become the registry convex/jarvis/design.ts reads. */
+ *  it stored could become the registry convex/jarvis/design.ts reads, and a
+ *  use or issue row it stored, with no data.by or data over its cap, would
+ *  reach the part-state read (convex/jarvis/partStates.ts) unchecked. */
 /** @type {const} */
-export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation"];
+export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation", "use", "issue", "presence"];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
@@ -187,7 +216,7 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * digest line's askId or job, an eval run's set, a work run's repo and commit,
  * a build row's todo.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence"];
 
 /** A todo-state's `data.state` and `data.from`: where a todo stands in a build. */
 /** @type {const} */
@@ -225,7 +254,29 @@ const TODO_STATE_MAX_BYTES = 8 * 1024;
 const BUILD_TEXT_MAX_BYTES = 2048;
 
 /** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
-export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
+/** @type {const} */
+export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back"];
+
+/** Who used a part or reported an issue on it: a use or issue row's data.by. */
+/** @type {const} */
+export const USE_BY = ["tom", "agent", "job"];
+
+/** The one state a use row may name: Tom said the part has no issues. */
+export const USE_STATE_WORKING = "working";
+
+/**
+ * Who a use or issue row is by, when its writer did not say: a row written
+ * for a message of Tom's on /thread (data.threadMessageId) or under his
+ * account (provenance.user "tom") is his; a row an agent or session wrote is
+ * an agent's; any other is a job's. The validator stores the answer as
+ * data.by, so every stored row names it.
+ */
+export function rowBy(data, provenance) {
+  if (USE_BY.includes(data?.by)) return data.by;
+  if (nonEmptyString(data?.threadMessageId) || provenance?.user === "tom") return "tom";
+  if (nonEmptyString(provenance?.agentId) || nonEmptyString(provenance?.session)) return "agent";
+  return "job";
+}
 
 /**
  * The kinds whose writer retries with a stable `data.id`: a second row of the
@@ -246,6 +297,12 @@ export const REPEATS_BY_DATA_ID = [
   // The deploy job re-posts the deployed registry until a post lands; data.id
   // is "registry:<subject>".
   "registry",
+  // The thread-reply job re-posts a message's row when the answer to its post
+  // was lost; data.id is "thread-reply:<message id>:<type>" (Jarvis
+  // worker/jobs/thread-reply.mjs).
+  "use",
+  "issue",
+  "presence",
 ];
 
 /** The kinds whose data may carry `durationMs`, the job's runtime when it
@@ -480,11 +537,26 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   if (text !== undefined && typeof text !== "string") {
     return { ok: false, error: "text, when given, is a string" };
   }
+  let stored = data === undefined ? {} : data;
+  if (kind === "use" || kind === "issue") {
+    const checked = checkPartRow(kind, subject, data, text, prov, at, now);
+    if (!checked.ok) return checked;
+    stored = checked.data;
+  }
+  if (kind === "presence") {
+    if (subject !== "tom") return { ok: false, error: 'a presence event names "tom" as its subject' };
+    if (!isPlainObject(data) || typeof data.away !== "boolean") {
+      return { ok: false, error: "a presence event names data.away as a boolean" };
+    }
+    if (data.threadMessageId !== undefined && !nonEmptyString(data.threadMessageId)) {
+      return { ok: false, error: "a presence event's data.threadMessageId, when given, is a non-empty string" };
+    }
+  }
   const event = {
     kind,
     at: at ?? now,
     provenance: prov,
-    data: data === undefined ? {} : data,
+    data: stored,
   };
   if (subject !== undefined) event.subject = subject;
   if (text !== undefined) event.text = text;
@@ -603,4 +675,100 @@ export function registryDiffOf(value) {
     if (row === undefined || registryRowProblem(row, `rows.${id}`) !== null || row.id !== id) return null;
   }
   return { base: base.trim(), added, removed, changed, rows };
+}
+
+/** The longest data.what a use row keeps: one line. */
+export const USE_WHAT_MAX = 200;
+
+/**
+ * The most a use or issue row's text may hold, in UTF-8 bytes. Its text is
+ * Tom's message on /thread when the box writes it for one (Jarvis
+ * worker/jobs/thread-reply.mjs), and a message is at most DAY_LOG_ENTRY_MAX
+ * characters of at most 4 bytes each, so every message he can send fits.
+ */
+export const PART_ROW_TEXT_MAX_BYTES = 4 * DAY_LOG_ENTRY_MAX;
+/** The most a use or issue row's data may hold, in UTF-8 bytes of its JSON: a part id, ids and one line. */
+export const PART_ROW_DATA_MAX_BYTES = 8 * 1024;
+
+/** A control character (a newline among them): data.what is one line of text. */
+const CONTROL = /[\u0000-\u001f\u007f]/;
+
+/**
+ * A use or issue row's own fields, checked; answers the data as stored, with
+ * data.by filled in (rowBy); on a use row, data.what filled from the first
+ * line of text when the writer gave none; on a resolving issue row,
+ * data.resolvedAt set to the record's own time, which is also the row's `at`.
+ */
+function checkPartRow(kind, subject, data, text, provenance, at, now) {
+  const an = kind === "issue" ? "an" : "a";
+  // A part-state read is bounded by bytes (convex/jarvis/partStates.ts), and
+  // these rows are what it reads, so each row's size is bounded where it is
+  // written: the text as given, the data as it will be stored, with by, what
+  // and resolvedAt filled in.
+  if (text !== undefined && utf8Bytes(text) > PART_ROW_TEXT_MAX_BYTES) {
+    return { ok: false, error: `${an} ${kind} event's text is over ${PART_ROW_TEXT_MAX_BYTES} bytes` };
+  }
+  const filled = fillPartRow(kind, subject, data, text, provenance, at, now);
+  if (filled.ok && utf8Bytes(JSON.stringify(filled.data)) > PART_ROW_DATA_MAX_BYTES) {
+    return { ok: false, error: `${an} ${kind} event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes as stored` };
+  }
+  return filled;
+}
+
+/** A use or issue row's fields, checked; answers the data as stored. */
+function fillPartRow(kind, subject, data, text, provenance, at, now) {
+  const an = kind === "issue" ? "an" : "a";
+  if (!isPlainObject(data)) return { ok: false, error: `${an} ${kind} event names data as an object` };
+  if (kind === "use" || data.part !== null) {
+    if (!nonEmptyString(data.part)) return { ok: false, error: `${an} ${kind} event names data.part as a part id` };
+    if (data.part !== subject) return { ok: false, error: `${an} ${kind} event names data.part as its subject` };
+  } else if (subject !== undefined) {
+    return { ok: false, error: "an issue event with data.part null names no subject" };
+  }
+  if (data.by !== undefined && !USE_BY.includes(data.by)) {
+    return { ok: false, error: `${an} ${kind} event names data.by as one of ${USE_BY.join(", ")}` };
+  }
+  if (data.threadMessageId !== undefined && !nonEmptyString(data.threadMessageId)) {
+    return { ok: false, error: `${an} ${kind} event's data.threadMessageId, when given, is a non-empty string` };
+  }
+  const by = rowBy(data, provenance);
+  if (kind === "use") {
+    if (data.state !== undefined && data.state !== USE_STATE_WORKING) {
+      return { ok: false, error: `a use event's data.state, when given, is "${USE_STATE_WORKING}"` };
+    }
+    if (data.what !== undefined && !nonEmptyString(data.what)) {
+      return { ok: false, error: "a use event's data.what, when given, is a non-empty string" };
+    }
+    if (data.what !== undefined && CONTROL.test(data.what)) {
+      return { ok: false, error: "a use event's data.what is one line, with no newline or other control character" };
+    }
+    const firstLine = nonEmptyString(text) ? text.trim().split(/[\r\n]/)[0].replace(/[\u0000-\u001f\u007f]/g, " ") : undefined;
+    const what = data.what ?? firstLine;
+    if (what === undefined) return { ok: false, error: "a use event names data.what or its text" };
+    return { ok: true, data: { ...data, by, what: what.slice(0, USE_WHAT_MAX) } };
+  }
+  if (!nonEmptyString(text)) return { ok: false, error: "an issue event names its text" };
+  // A RESOLVING ROW TAKES THE RECORD'S TIME. It closes the issues on its part
+  // reported before the record received it (convex/jarvis/partStates.ts reads
+  // the receipt time), and its resolvedAt, read by people, is the record's
+  // clock too: a writer backdating it by a day is refused, not stored.
+  // The row as stored (data.resolvedAt equal to its at) passes again, since
+  // the record's own insert validates what the route already validated.
+  const { resolvedBy, resolvedAt } = data;
+  const rowAt = at ?? now;
+  if (resolvedBy === undefined) {
+    if (resolvedAt !== undefined) return { ok: false, error: "an issue event names data.resolvedAt only with data.resolvedBy" };
+    return { ok: true, data: { ...data, by } };
+  }
+  if (!nonEmptyString(resolvedBy)) {
+    return { ok: false, error: "an issue event's data.resolvedBy is a landing row id or a thread message id" };
+  }
+  if (data.part === null) return { ok: false, error: "an issue event that resolves names its part" };
+  if (Math.abs(now - rowAt) > MAX_FUTURE_SKEW_MS) {
+    return { ok: false, error: "an issue event that resolves is dated by the record's clock, within 5 minutes" };
+  }
+  if (resolvedAt !== undefined && resolvedAt !== rowAt) {
+    return { ok: false, error: "an issue event's data.resolvedAt is set by the record to the row's own time" };
+  }
+  return { ok: true, data: { ...data, by, resolvedAt: rowAt } };
 }

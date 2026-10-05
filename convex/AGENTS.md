@@ -28,6 +28,10 @@
 
 - A worker run is recorded as a `work-run` event (`shared/jarvis-events.mjs`; subject `<repo>@<baseCommit>`); the brief and both diffs are agent-store keys, not row text, because of the 1 MiB document limit, and Jarvis's eval set `work-runs` replays them.
 
+## use
+
+- A part of Jarvis (an id of Jarvis `worker/parts.json`) is used, or has an issue, as a `use` or `issue` event (`shared/jarvis-events.mjs`; subject the part, `data.by` tom, agent or job); its state (unverified, run, in use, working, issue) is derived from those rows, the `job-ok` rows and the landing rows by `convex/jarvis/partStates.ts`, never stored. An issue closes by a later row, never by a patch: the table is append-only.
+
 ## inspecting
 
 - The Convex dashboard is where server state, function logs and query performance are read.

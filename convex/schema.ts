@@ -95,6 +95,10 @@ export default defineSchema({
     // its last `job-ok`. Named separately from by_kind_at because a scan of
     // every job's heartbeats to find one job's is what an index is for.
     .index("by_kind_job_at", ["kind", "provenance.job", "at"])
+    // One job's rows of one kind in the order the record received them (the
+    // index ends in _creationTime): convex/jarvis/partStates.ts reads a job's
+    // last-received job-ok by it, where a writer's `at` may lie.
+    .index("by_kind_job", ["kind", "provenance.job"])
     // One agent's rows: the /agents chat draws them among the transcript.
     .index("by_agent_at", ["provenance.agentId", "at"])
     // One agent's rows of one kind: the /agents chat's box changes
@@ -106,11 +110,13 @@ export default defineSchema({
     // and the digest's read of one condition, without a scan of every job's
     // failures (convex/jarvis/jobs.ts).
     .index("by_kind_subject_at", ["kind", "subject", "at"])
-    // One subject's rows of one kind in the order the record inserted them
-    // (Convex orders an index's ties by _creationTime): the newest todo-state
-    // and handoff on a todo (convex/jarvis/build.ts) is the one written last,
-    // whatever `at` its writer gave, so a backdated handoff still becomes
-    // the head of the todo's chain.
+    // One subject's rows of one kind in the order the record inserted them:
+    // Convex ends every index with the row's _creationTime, the server's clock
+    // at insert, so this one orders and bounds by receipt whatever `at` a
+    // writer gave. The newest todo-state and handoff on a todo
+    // (convex/jarvis/build.ts) is the one written last, so a backdated handoff
+    // still becomes the head of the todo's chain; and convex/jarvis/partStates.ts
+    // reads a part's use and issue rows by it.
     .index("by_kind_subject", ["kind", "subject"])
     // One kind's rows that are not a standing condition's repeat (a
     // job-failed posted while its condition stands carries

@@ -16,17 +16,17 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import { addDays, displayDay, displayDayKey, displayTime, newYorkDay } from "@/shared/clock.mjs";
+import type { THREAD_REPLY_KINDS } from "@/shared/jarvis-events.mjs";
 
 const WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
 
-type Kind = "fact" | "todo" | "rule" | "errand" | "question";
 
 type Said = {
   id: string;
   at: number;
   day: string;
   text: string;
-  kind?: Kind;
+  kind?: (typeof THREAD_REPLY_KINDS)[number];
   line: string;
   processed: boolean;
   needsTom: boolean;
@@ -119,7 +119,7 @@ function fromCapture(todo: Doc<"todos">): Said {
 function fromThread(message: ThreadMessage): Said {
   const base = { id: message.id, at: message.at, day: newYorkDay(message.at), text: message.text };
   if (message.reply !== null) {
-    const kind = message.reply.kind as Kind;
+    const kind = message.reply.kind as (typeof THREAD_REPLY_KINDS)[number];
     return {
       ...base,
       kind,
