@@ -1033,6 +1033,29 @@ describe("the superseded run", () => {
     expect(kept.some((line) => line.text.includes("on the page"))).toBe(false);
   });
 
+  it("keeps every superseded line when the digest is over its length even after every run is reduced", () => {
+    const long = (what: string, n: number) => `${what} ${n} ${"carries enough words to fill the line ".repeat(3)}`;
+    const superseded = Array.from({ length: 22 }, (_, n) => ({
+      id: `r${n}`,
+      text: `Your ruling of 2026-10-04 in scope part:p${n} no longer stands, because a later sentence of yours in the same scope replaced it`,
+    }));
+    const facts = sept9({
+      superseded,
+      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
+      boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
+      broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
+    });
+    const sectionsBefore = new Set(composeToday(facts, { canReply: false }).lines.map((line) => line.section));
+    const { message, truncated } = composeTodayFitted(facts, { canReply: false });
+    const sectionsAfter = new Set(message.lines.map((line) => line.section));
+    expect(truncated).toBe(true);
+    // The last-resort drop ran: a run present before the fit is gone whole,
+    // which reduction alone never does (it keeps a lead and one line).
+    expect([...sectionsBefore].some((section) => !sectionsAfter.has(section))).toBe(true);
+    const kept = message.lines.filter((line) => line.section === "superseded" && line.role === "item");
+    expect(kept.map((line) => line.text)).toEqual(superseded.map((row) => statement(row.text)));
+  });
+
   it("prints nothing when no ruling was superseded", () => {
     const message = composeToday(sept9({ superseded: [] }), { canReply: false });
     expect(message.lines.some((line) => line.section === "superseded")).toBe(false);

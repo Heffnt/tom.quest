@@ -298,9 +298,7 @@ export function fit(
     let target = -1;
     for (let i = runs.length - 1; i >= 1; i -= 1) {
       const section = current.lines[runs[i].start].section;
-      // The superseded run is not reduced either: its reduction would say
-      // its lines are on a page, and no page lists ruling rows yet.
-      if (section === PROTECTED_RUN || section === CUT_RUN || section === SUPERSEDED_RUN) continue;
+      if (isProtectedRun(section)) continue;
       if (runs[i].end - runs[i].start > 2) {
         target = i;
         break;
@@ -354,7 +352,7 @@ function lastResortDrop(lines: Line[]): number {
   const runs = sectionRuns(lines);
   const first = runs[0];
   const inFirst = (i: number) => first !== undefined && i >= first.start && i < first.end;
-  const isProtected = (i: number) => lines[i].section === PROTECTED_RUN || lines[i].section === CUT_RUN;
+  const isProtected = (i: number) => isProtectedRun(lines[i].section);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!inFirst(i) && !isProtected(i)) return i;
   }
@@ -389,6 +387,14 @@ const PROTECTED_RUN = "needs-you-today";
 const CUT_RUN = "cut";
 /** His standing rulings that new information ended (composeToday 2c). */
 const SUPERSEDED_RUN = "superseded";
+/** The runs neither fit's reduction nor the first pass of its last-resort
+ *  drop touches: one list, so the two cannot disagree. The superseded run
+ *  is here because no page lists ruling rows yet and no later digest
+ *  repeats one, so a superseded line dropped or reduced to "on the page"
+ *  would be gone; the last-resort drop's later passes take lines of the
+ *  needs-you and cut runs only, never of this one. */
+const PROTECTED_RUNS: readonly string[] = [PROTECTED_RUN, CUT_RUN, SUPERSEDED_RUN];
+const isProtectedRun = (section: string | undefined) => section !== undefined && PROTECTED_RUNS.includes(section);
 
 // ── The dedup index — one appearance per item per day ────────────────────────
 
