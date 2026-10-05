@@ -700,11 +700,12 @@ describe("thread.open", () => {
     const viewer = await tom(t);
     const old = Date.now() - 61 * 86_400_000;
     const aged = await insertEventRow(t, { kind: "suggestion", at: old, subject: "log-page",
-      data: { class: "deletion", built: false }, text: "Delete it." });
+      data: { class: "deletion", built: false, restsOn: { text: "drop it", source: "ruling r1" } }, text: "Delete it." });
     await insertEventRow(t, { kind: "suggestion", subject: "push-page", data: { class: "deletion", built: true,
       answer: { at: 1, text: "yes", messageId: "m" } }, text: "Deleted it." });
     expect((await viewer.query(api.thread.open, {})).suggestions).toEqual([{
-      id: aged, at: old, class: "deletion", built: false, text: "Delete it.", subject: "log-page", href: "/design#log-page",
+      kind: "suggestion", id: aged, at: old, class: "deletion", built: false, text: "Delete it.", subject: "log-page",
+      href: "/design#log-page", restsOn: { text: "drop it", source: "ruling r1" }, answer: null,
     }]);
     await viewer.mutation(api.thread.send, { text: "yes", subject: aged });
     expect((await viewer.query(api.thread.open, {})).suggestions).toEqual([]);
@@ -721,8 +722,9 @@ describe("thread.open", () => {
     await insertEventRow(t, { kind: "decision", subject: "70m00001", data: { ...DECISION_DATA, askId: "70m00001", decidedBy: "tom" } });
     await viewer.mutation(api.jarvis.intent.settle, { subject: "decision:5e771ed1", verdict: "approve" });
     expect((await viewer.query(api.thread.open, {})).decisions).toEqual([{
-      id: aged, at: old, askId: "0ld00001", question: "One session or two?", decision: "One.",
-      reason: "His pages say one.", wouldChange: null,
+      kind: "decision", id: aged, at: old, askId: "0ld00001", question: "One session or two?", decision: "One.",
+      reason: "His pages say one.", restedOn: ["ruling:abc"], wouldChange: null, caller: "job:proof", model: "opus",
+      todoId: null, decidedByTom: false, waitedMs: null, settled: null,
     }]);
     // Outside the stream's 60 days, so only the open items carry its controls.
     expect((await viewer.query(api.thread.messages, {})).entries.some((one) => one.id === aged)).toBe(false);
@@ -937,5 +939,23 @@ describe("the thread's row types and POST /tts/event", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("thread.row, a linked row older than the stream", () => {
+  it("reads a 61-day-old settled decision by its id, with its settlement, and nothing else", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    const old = Date.now() - 61 * 86_400_000;
+    const id = await insertEventRow(t, { kind: "decision", at: old, subject: "0ld00001", data: { ...DECISION_DATA, askId: "0ld00001" } });
+    await viewer.mutation(api.jarvis.intent.settle, { subject: "decision:0ld00001", verdict: "approve" });
+    // The digest's line links this row, and the stream no longer holds it.
+    expect((await viewer.query(api.thread.messages, {})).entries.some((one) => one.id === id)).toBe(false);
+    expect(await viewer.query(api.thread.row, { id })).toMatchObject({
+      kind: "decision", id, at: old, askId: "0ld00001", decision: "One.", settled: { verdict: "approve", sentence: null },
+    });
+    const other = await insertEventRow(t, { kind: "job-ok", subject: "digest" });
+    expect(await viewer.query(api.thread.row, { id: other })).toBeNull();
+    expect(await viewer.query(api.thread.row, { id: "not-an-id" })).toBeNull();
   });
 });

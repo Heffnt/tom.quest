@@ -452,6 +452,58 @@ function suggestionHref(ctx: QueryCtx, subject: string): string | null {
   return /^[a-z0-9][a-z0-9-]*$/.test(subject) ? `/design#${subject}` : null;
 }
 
+/** One `decision` row as the stream draws it, with his settlement of it;
+ *  null for a refused or unanswered ask, which took nothing in his name. */
+function decisionEntry(row: Doc<"events">, settled: Parameters<typeof decisionOf>[1]) {
+  const data = (row.data ?? {}) as { refused?: unknown; decision?: unknown };
+  if (data.refused === true || typeof data.decision !== "string") return null;
+  const decision = decisionOf(row, settled);
+  if (decision === null || decision.decision === null) return null;
+  const { askId, question, reason, restedOn, wouldChange, caller, model, todoId, decidedByTom, waitedMs } = decision;
+  return { kind: "decision" as const, id: row._id, at: row.at, askId, question, decision: decision.decision,
+    reason, restedOn, wouldChange, caller, model, todoId, decidedByTom, waitedMs,
+    settled: decision.settled === null ? null
+      : { at: decision.settled.at, verdict: decision.settled.verdict, sentence: decision.settled.sentence },
+  };
+}
+
+/** One `suggestion` row as the stream and the open items draw it. */
+function suggestionEntry(ctx: QueryCtx, row: Doc<"events">) {
+  const data = (row.data ?? {}) as {
+    class: string; built: boolean; restsOn?: { text?: unknown; source?: unknown };
+    answer?: { at: number; text: string; messageId: string };
+  };
+  const restsOn = str(data.restsOn?.text) === null ? null
+    : { text: data.restsOn!.text as string, source: str(data.restsOn!.source) ?? "" };
+  return { kind: "suggestion" as const, id: row._id, at: row.at, subject: row.subject as string,
+    href: suggestionHref(ctx, row.subject as string), class: data.class, built: data.built, restsOn,
+    answer: data.answer ?? null, text: row.text ?? "" };
+}
+
+/** The decision a link names (/thread#<row id>) past the stream's 60 days,
+ *  with its settlement; any other id answers null. */
+export const row = query({
+  args: { id: v.string() },
+  handler: async (ctx, { id }) => {
+    await requireTom(ctx, SURFACE);
+    const eventId = ctx.db.normalizeId("events", id);
+    const found = eventId === null ? null : await ctx.db.get(eventId);
+    if (found === null || found.kind !== "decision" || found.subject === undefined) return null;
+    const subject = `decision:${found.subject}`;
+    const settlement = await ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED).eq("subject", subject))
+      .order("desc")
+      .first();
+    const data = (settlement?.data ?? {}) as { verdict?: unknown; sentence?: unknown; rulingId?: unknown };
+    const settled: Parameters<typeof decisionOf>[1] = new Map();
+    if (settlement !== null && (data.verdict === "approve" || data.verdict === "revise")) {
+      settled.set(subject, { at: settlement.at, verdict: data.verdict, sentence: str(data.sentence), rulingId: str(data.rulingId) });
+    }
+    return decisionEntry(found, settled);
+  },
+});
+
 export const messages = query({
   args: {},
   handler: async (ctx) => {
@@ -511,28 +563,10 @@ export const messages = query({
     // A refused or unanswered ask took nothing in his name: it is no decision
     // he settles.
     const decisions = decisionRows.flatMap((row) => {
-      const data = (row.data ?? {}) as { refused?: unknown; decision?: unknown };
-      if (data.refused === true || typeof data.decision !== "string") return [];
-      const decision = decisionOf(row, settled);
-      if (decision === null || decision.decision === null) return [];
-      const { askId, question, reason, restedOn, wouldChange, caller, model, todoId, decidedByTom, waitedMs } = decision;
-      return [{ kind: "decision" as const, id: row._id, at: row.at, askId, question, decision: decision.decision,
-        reason, restedOn, wouldChange, caller, model, todoId, decidedByTom, waitedMs,
-        settled: decision.settled === null ? null
-          : { at: decision.settled.at, verdict: decision.settled.verdict, sentence: decision.settled.sentence },
-      }];
+      const entry = decisionEntry(row, settled);
+      return entry === null ? [] : [entry];
     });
-    const suggestions = suggestionRows.map((row) => {
-      const data = (row.data ?? {}) as {
-        class: string; built: boolean; restsOn?: { text?: unknown; source?: unknown };
-        answer?: { at: number; text: string; messageId: string };
-      };
-      const restsOn = str(data.restsOn?.text) === null ? null
-        : { text: data.restsOn!.text as string, source: str(data.restsOn!.source) ?? "" };
-      return { kind: "suggestion" as const, id: row._id, at: row.at, subject: row.subject as string,
-        href: suggestionHref(ctx, row.subject as string), class: data.class, built: data.built, restsOn,
-        answer: data.answer ?? null, text: row.text ?? "" };
-    });
+    const suggestions = suggestionRows.map((row) => suggestionEntry(ctx, row));
     const checks = checkRows.flatMap((row) => {
       const data = row.data as { part: string; check: string; measure: number; target: number | null;
         result: string; agentHref?: unknown };
@@ -819,13 +853,7 @@ export async function openCounts(ctx: QueryCtx, live: { live: Doc<"claudeSession
  *  an unsettled decision, it waits on him, and the stream reads 60 days. */
 async function openSuggestions(ctx: QueryCtx, budget: ReadBudget) {
   const rows = await readWithin(budget.allot("suggestions", MIB / 2), unclosed(ctx, SUGGESTION), Number.POSITIVE_INFINITY);
-  return rows
-    .filter((row) => (row.data as { answer?: unknown }).answer === undefined)
-    .map((row) => {
-      const data = row.data as { class: string; built: boolean };
-      return { id: row._id, at: row.at, class: data.class, built: data.built, text: row.text ?? "",
-        subject: row.subject as string, href: suggestionHref(ctx, row.subject as string) };
-    });
+  return rows.filter((row) => (row.data as { answer?: unknown }).answer === undefined).map((row) => suggestionEntry(ctx, row));
 }
 
 /** Every decision of the delegate's he has not settled, whatever its age. */
@@ -834,10 +862,9 @@ async function openDecisions(ctx: QueryCtx, budget: ReadBudget) {
   const settlementsRead = budget.allot("decisions' settlements", MIB / 4);
   const open = [];
   for (const row of rows) {
-    const decision = await decisionState(ctx, row, settlementsRead);
-    if (decision === null || isCut(decision)) continue;
-    const { askId, question, reason, wouldChange } = decision;
-    open.push({ id: row._id, at: row.at, askId, question, decision: decision.decision, reason, wouldChange });
+    const state = await decisionState(ctx, row, settlementsRead);
+    const entry = state === null || isCut(state) ? null : decisionEntry(row, new Map());
+    if (entry !== null) open.push(entry);
   }
   return open;
 }
