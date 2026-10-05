@@ -3,6 +3,7 @@ import {
   DELEGATE_ONLY_KINDS,
   EVENT_KINDS,
   HANDOFF_TRANSITIONS,
+  JARVIS_EVENT_ONLY_KINDS,
   JOB_KINDS_WITH_DURATION,
   PART_ROW_DATA_MAX_BYTES,
   PART_ROW_TEXT_MAX_BYTES,
@@ -531,8 +532,19 @@ describe("use, issue and presence rows", () => {
     expect(validateEvent({ ...issue, text: "x".repeat(PART_ROW_TEXT_MAX_BYTES + 1) }).error).toBe(`an issue event's text is over ${PART_ROW_TEXT_MAX_BYTES} bytes`);
     expect(validateEvent({ kind: "use", subject: "deploy", data: { part: "deploy", what: "ran" }, text: "x".repeat(PART_ROW_TEXT_MAX_BYTES + 1) }).error).toBe(`a use event's text is over ${PART_ROW_TEXT_MAX_BYTES} bytes`);
     const padded = { part: "deploy", what: "ran", note: "x".repeat(PART_ROW_DATA_MAX_BYTES) };
-    expect(validateEvent({ kind: "use", subject: "deploy", data: padded }).error).toBe(`a use event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes`);
-    expect(validateEvent({ ...issue, data: { ...padded, what: undefined }, text: "t" }).error).toBe(`an issue event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes`);
+    expect(validateEvent({ kind: "use", subject: "deploy", data: padded }).error).toBe(`a use event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes as stored`);
+    expect(validateEvent({ ...issue, data: { ...padded, what: undefined }, text: "t" }).error).toBe(`an issue event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes as stored`);
+    // Under the cap as posted, over it once by and what are filled in: refused.
+    const base = { part: "deploy", note: "" };
+    const room = PART_ROW_DATA_MAX_BYTES - JSON.stringify(base).length - 5;
+    const near = { part: "deploy", note: "x".repeat(room) };
+    expect(JSON.stringify(near).length).toBeLessThan(PART_ROW_DATA_MAX_BYTES);
+    expect(validateEvent({ kind: "use", subject: "deploy", data: near, text: "ran" }).error).toBe(`a use event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes as stored`);
+    // The same for a resolution, whose resolvedAt the record fills in.
+    const resolving = { part: "deploy", by: "job", resolvedBy: "L1", note: "" };
+    const nearResolving = { ...resolving, note: "x".repeat(PART_ROW_DATA_MAX_BYTES - JSON.stringify(resolving).length - 5) };
+    expect(JSON.stringify(nearResolving).length).toBeLessThan(PART_ROW_DATA_MAX_BYTES);
+    expect(validateEvent({ kind: "issue", subject: "deploy", data: nearResolving, text: "fixed" }).error).toBe(`an issue event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes as stored`);
     expect(PART_ROW_TEXT_MAX_BYTES).toBe(16_000);
     expect(PART_ROW_DATA_MAX_BYTES).toBe(8 * 1024);
   });
@@ -543,6 +555,7 @@ describe("use, issue and presence rows", () => {
       expect(TOM_ONLY_KINDS).not.toContain(kind);
       expect(DELEGATE_ONLY_KINDS).not.toContain(kind);
       expect(REPEATS_BY_DATA_ID).toContain(kind);
+      expect(JARVIS_EVENT_ONLY_KINDS).toContain(kind);
     }
     expect(THREAD_REPLY_KINDS).toEqual(["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back"]);
     expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "no-issues" }, text: "working, written as a use row on digest: event e1" }).ok).toBe(true);

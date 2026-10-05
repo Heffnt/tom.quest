@@ -354,6 +354,27 @@ describe("the rows through the route and the thread", () => {
     expect((await viewer.query(api.jarvis.partStates.partStates, { parts }))[0]).toMatchObject({ state: "issue", row: { text: "deploy broke" } });
   });
 
+  it("POST /tts/event refuses a use, issue or presence row, so an unchecked one never reaches the part-state read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const unchecked = [
+      { kind: "use", key: "deploy", data: null },
+      { kind: "issue", key: "deploy", data: null },
+      { kind: "presence", key: "tom", data: null },
+    ];
+    for (const body of unchecked) {
+      const res = await t.fetch("/tts/event", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) });
+      expect(res.status).toBe(403);
+    }
+    const stored = await t.run((ctx) => ctx.db.query("events").collect());
+    expect(stored.filter((row) => ["use", "issue", "presence"].includes(row.kind))).toHaveLength(0);
+    const viewer = await tom(t);
+    const parts = [{ id: "deploy", schedule: null, file: null }];
+    expect(await viewer.query(api.jarvis.partStates.partStates, { parts })).toEqual([{ part: "deploy", state: "unverified", row: null, capped: false }]);
+  });
+
   it("Tom reports an issue and then no issues on a part from the thread; nobody else can", async () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);

@@ -190,9 +190,11 @@ export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thr
 /** Events only POST /jarvis/event writes, which checks each one's shape with
  *  validateEvent. POST /tts/event copies a row into the record unchecked
  *  (convex/jarvis/events.ts copyDtsRow), so it refuses these: a registry row
- *  it stored could become the registry convex/jarvis/design.ts reads. */
+ *  it stored could become the registry convex/jarvis/design.ts reads, and a
+ *  use or issue row it stored, with no data.by or data over its cap, would
+ *  reach the part-state read (convex/jarvis/partStates.ts) unchecked. */
 /** @type {const} */
-export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation"];
+export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation", "use", "issue", "presence"];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
@@ -699,15 +701,24 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  */
 function checkPartRow(kind, subject, data, text, provenance, at, now) {
   const an = kind === "issue" ? "an" : "a";
-  if (!isPlainObject(data)) return { ok: false, error: `${an} ${kind} event names data as an object` };
   // A part-state read is bounded by bytes (convex/jarvis/partStates.ts), and
-  // these rows are what it reads, so each row's size is bounded where it is written.
+  // these rows are what it reads, so each row's size is bounded where it is
+  // written: the text as given, the data as it will be stored, with by, what
+  // and resolvedAt filled in.
   if (text !== undefined && utf8Bytes(text) > PART_ROW_TEXT_MAX_BYTES) {
     return { ok: false, error: `${an} ${kind} event's text is over ${PART_ROW_TEXT_MAX_BYTES} bytes` };
   }
-  if (utf8Bytes(JSON.stringify(data)) > PART_ROW_DATA_MAX_BYTES) {
-    return { ok: false, error: `${an} ${kind} event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes` };
+  const filled = fillPartRow(kind, subject, data, text, provenance, at, now);
+  if (filled.ok && utf8Bytes(JSON.stringify(filled.data)) > PART_ROW_DATA_MAX_BYTES) {
+    return { ok: false, error: `${an} ${kind} event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes as stored` };
   }
+  return filled;
+}
+
+/** A use or issue row's fields, checked; answers the data as stored. */
+function fillPartRow(kind, subject, data, text, provenance, at, now) {
+  const an = kind === "issue" ? "an" : "a";
+  if (!isPlainObject(data)) return { ok: false, error: `${an} ${kind} event names data as an object` };
   if (kind === "use" || data.part !== null) {
     if (!nonEmptyString(data.part)) return { ok: false, error: `${an} ${kind} event names data.part as a part id` };
     if (data.part !== subject) return { ok: false, error: `${an} ${kind} event names data.part as its subject` };
