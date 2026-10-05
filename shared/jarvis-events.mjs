@@ -333,6 +333,10 @@ export const REPEATS_BY_DATA_ID = [
   "use",
   "issue",
   "presence",
+  // A worker run's row (Jarvis worker/agents/work-run.mjs) is re-posted when
+  // the answer to its post was lost; data.id names the run and is the same on
+  // every post of it. A row without data.id is recorded each time it is posted.
+  "work-run",
 ];
 
 /** The kinds whose data may carry `durationMs`, the job's runtime when it
