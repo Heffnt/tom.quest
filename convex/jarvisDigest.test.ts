@@ -212,6 +212,16 @@ describe("the thread digest, appended by the record's cron", () => {
     expect((today?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["pending"]);
   });
 
+  it("copies the digest answer's supersededCursor onto the row, as it keeps windowEnd", async () => {
+    const t = setup(MORNING);
+    const answer = await t.query(internal.ttsDigest.internalComposeToday,
+      { day: DAY, now: MORNING, since: MORNING - 86_400_000, canReply: false });
+    await appendDigest(t);
+    const [row] = await ofKind(t, "events", "thread-digest");
+    expect((row.data as { supersededCursor?: unknown }).supersededCursor)
+      .toEqual((answer as { supersededCursor?: unknown }).supersededCursor);
+  });
+
   it("cuts an item's text to its byte bound and stops the list at its byte budget", async () => {
     const t = setup(MORNING);
     await t.run(async (ctx) => {

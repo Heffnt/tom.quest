@@ -355,6 +355,9 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
     itemBytes += size;
   }
   await markSurfaced(ctx, composed.surfacedTodoIds, day, own.allot(THREAD_OWN_READS.surfaced.what, THREAD_OWN_READS.surfaced.bytes));
+  // #344's composer marks the last superseded-ruling line it printed; the row
+  // keeps it as it keeps windowEnd, so the next digest prints the rest.
+  const { supersededCursor } = composed as { supersededCursor?: unknown };
   const id = await insertEvent(ctx, {
     kind: THREAD_DIGEST,
     at: now,
@@ -366,6 +369,7 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
       objectionAskIds: composed.objectionAskIds,
       items,
       openingsFrom,
+      ...(supersededCursor === undefined ? {} : { supersededCursor }),
     },
   });
   // One push for the digest; its text stays in the record, as the needs-you
