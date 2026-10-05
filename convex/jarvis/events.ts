@@ -68,9 +68,8 @@ export async function recordEvent(
       input = { ...input, data: { ...data, rulingId: ruling } };
     }
   }
-  // A build row names a todo that exists, and a handoff the one before it
-  // (build.ts); the row keeps the plain id.
-  if (input.kind === TODO_STATE || input.kind === HANDOFF) input = await prepareBuildRow(ctx, input);
+  // A build row names a todo that exists, and a handoff the one before it (build.ts).
+  if (input.kind === TODO_STATE || input.kind === HANDOFF) await prepareBuildRow(ctx, input);
   // A RETRY IS NOT A SECOND FACT. A kind whose writer re-posts with a stable
   // data.id (shared/jarvis-events.mjs REPEATS_BY_DATA_ID) is recorded once:
   // a row of the kind with the same data.id already stands for it (one point

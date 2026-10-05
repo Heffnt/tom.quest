@@ -79,9 +79,8 @@ describe("a build's rows through POST /jarvis/event", () => {
     vi.stubEnv("JARVIS_KEY", KEY);
     const t = convexTest({ schema, modules });
     const todo = await seedTodo(t);
-    // The todo named in its old id form is kept as its plain id.
-    const first = await written(t, todoState(todo.old, { state: "in session", from: "waiting" }));
-    const h1 = await written(t, handoff(todo.old, "exploration to design", { sentences: [{ at: 1, text: "design the refusals" }] }));
+    const first = await written(t, todoState(todo.plain, { state: "in session", from: "waiting" }));
+    const h1 = await written(t, handoff(todo.plain, "exploration to design", { sentences: [{ at: 1, text: "design the refusals" }] }));
     const h2 = await written(t, handoff(todo.plain, "design to build", { previous: h1.id, order: order(todo.plain) }));
     await written(t, todoState(todo.plain, { state: "building", from: "in session", orderRowId: h2.id, builder: "session" }));
     const h3 = await written(t, handoff(todo.plain, "build to review", { previous: h2.id }));
@@ -101,8 +100,8 @@ describe("a build's rows through POST /jarvis/event", () => {
     expect(rows.map((row) => row.kind)).toEqual(["todo-state", "handoff", "handoff", "todo-state", "handoff", "handoff", "handoff", "todo-state", "todo-state"]);
     expect(rows[0]._id).toBe(first.id);
 
-    // The read: the newest of each on the todo, named in either id form.
-    const res = await t.fetch(`/jarvis/build-state?todo=${todo.old}`, { headers: HEADERS });
+    // The read: the newest of each on the todo.
+    const res = await t.fetch(`/jarvis/build-state?todo=${todo.plain}`, { headers: HEADERS });
     const body = await res.json();
     expect(body.todos).toHaveLength(1);
     expect(body.todos[0]).toMatchObject({
@@ -116,9 +115,12 @@ describe("a build's rows through POST /jarvis/event", () => {
   it("refuses a row whose subject names no todo, and one the shared check refuses", async () => {
     vi.stubEnv("JARVIS_KEY", KEY);
     const t = convexTest({ schema, modules });
-    expect(await refused(t, todoState("no-such-todo", { state: "in session", from: "waiting" }))).toBe("a todo-state event names its todo as its subject");
-    expect(await refused(t, handoff("no-such-todo", "exploration to design"))).toBe("a handoff event names its todo as its subject");
+    expect(await refused(t, todoState("no-such-todo", { state: "in session", from: "waiting" }))).toBe("a todo-state event names its todo's id as its subject");
+    expect(await refused(t, handoff("no-such-todo", "exploration to design"))).toBe("a handoff event names its todo's id as its subject");
     const todo = await seedTodo(t);
+    // A legacy id from the old todos table is refused, though it names the same todo.
+    expect(await refused(t, todoState(todo.old, { state: "in session", from: "waiting" }))).toBe("a todo-state event names its todo's id as its subject");
+    expect(await refused(t, handoff(todo.old, "exploration to design"))).toBe("a handoff event names its todo's id as its subject");
     expect(await refused(t, todoState(todo.plain, { state: "started", from: "waiting" }))).toContain("data.state as one of");
     expect(await refused(t, { ...handoff(todo.plain, "exploration to design"), data: { state: "x" } })).toContain("data.transition as one of");
     expect(await t.run((ctx) => ctx.db.query("events").collect())).toHaveLength(0);
@@ -195,8 +197,8 @@ describe("a build's rows through POST /jarvis/event", () => {
       ["todo a", "waiting"],
       ["todo b", "in session"],
     ]);
-    // A todo named with no build row answers both as null; an unknown id is left out.
-    const named = await (await t.fetch(`/jarvis/build-state?todo=${quiet.plain}&todo=nothing`, { headers: HEADERS })).json();
+    // A todo named with no build row answers both as null; an unknown id and a legacy id are left out.
+    const named = await (await t.fetch(`/jarvis/build-state?todo=${quiet.plain}&todo=nothing&todo=${quiet.old}`, { headers: HEADERS })).json();
     expect(named.todos).toEqual([{ todoId: quiet.plain, statement: "todo with no build row", status: "active", todoState: null, handoff: null }]);
     expect((await t.fetch("/jarvis/build-state")).status).toBe(401);
   });
@@ -240,7 +242,7 @@ describe("Tom's door for a build's rows", () => {
     const todo = await seedTodo(t);
     const { id } = await viewer.mutation(api.jarvis.events.recordForTom, {
       kind: "todo-state",
-      subject: todo.old,
+      subject: todo.plain,
       data: { state: "done", from: "in session", sentence: "this one is done" },
       text: `todo ${todo.plain} is done`,
     });

@@ -96,8 +96,8 @@ export const EVENT_KINDS = [
   // "work-runs" (Jarvis worker/jobs/evals.mjs) reads these rows as its items.
   "work-run",
   // A session building a todo (convex/jarvis/build.ts; the box posts both
-  // with Jarvis `jarvis write`). Subject the todo's id, in either form; the
-  // record keeps the plain id and refuses one that names no todo.
+  // with Jarvis `jarvis write`). Subject the todo's id in its current form;
+  // the record refuses one that names no todo, a legacy id included.
   // A todo-state is where the todo stands in a build, and its newest row per
   // todo is the todo's build state: data { state, from, by, orderRowId?,
   // builder?, mergeRowId?, pullRequest?, sentence? }. state and from (the

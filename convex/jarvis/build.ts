@@ -10,7 +10,10 @@
 //               order.
 //
 // WHAT THE RECORD ADDS TO THE SHARED CHECK, before the insert (prepareBuildRow):
-// the subject names a todo that exists, and is kept as its plain id; a
+// the subject is the id of a todo that exists, in its current form (the
+// one tts-search and the todo page show; a legacy id from the old todos
+// table is refused, since every door that creates a todo has answered the
+// current id since step C and no writer of these rows holds an older one); a
 // handoff after the first on a todo names the todo's newest handoff as
 // data.previous (the one the record inserted last, whatever its `at`), so
 // the handoffs of one todo are one chain with no fork; an ordered or
@@ -36,7 +39,6 @@ import { applyStatusChange } from "../tts";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { checkEvent } from "./record";
 import type { EventInput } from "./record";
-import { resolveId } from "./tables";
 import { MIB, ReadBudget, getWithin, readWithin, type ReadCut } from "../readBudget";
 
 export const TODO_STATE = "todo-state";
@@ -57,15 +59,16 @@ async function newestOf(ctx: QueryCtx, kind: string, todoId: string): Promise<Do
 }
 
 /**
- * Check a todo-state or handoff against the record before it is inserted,
- * and answer it with the todo's plain id as subject. Throws one sentence
- * naming the first thing wrong.
+ * Check a todo-state or handoff against the record before it is inserted.
+ * Throws one sentence naming the first thing wrong.
  */
-export async function prepareBuildRow(ctx: MutationCtx, input: EventInput): Promise<EventInput> {
+export async function prepareBuildRow(ctx: MutationCtx, input: EventInput): Promise<void> {
   const checked = checkEvent(input);
   if (!checked.ok) throw new Error(checked.error);
-  const todoId = input.subject === undefined ? null : await resolveId(ctx, "todos", input.subject);
-  if (todoId === null) throw new Error(`a ${input.kind} event names its todo as its subject`);
+  const todoId = input.subject === undefined ? null : ctx.db.normalizeId("todos", input.subject);
+  if (todoId === null || (await ctx.db.get(todoId)) === null) {
+    throw new Error(`a ${input.kind} event names its todo's id as its subject`);
+  }
   const data = checked.event.data as { previous?: string; state?: string; orderRowId?: string };
   if (input.kind === HANDOFF) {
     const newest = await newestOf(ctx, HANDOFF, todoId);
@@ -84,7 +87,7 @@ export async function prepareBuildRow(ctx: MutationCtx, input: EventInput): Prom
       throw new Error(`a todo-state ${data.state} names data.orderRowId as the todo's design to build handoff`);
     }
   }
-  return { ...input, subject: todoId };
+
 }
 
 /** A todo-state "done" sets the todo's status to done; every other state leaves the todo alone. */
@@ -127,7 +130,8 @@ const RECENT_ROWS_BYTES = 2 * MIB;
 
 /**
  * Per todo, its newest todo-state and newest handoff. The todos are the ones
- * named, in either id form (an unknown id is left out; a todo with no build
+ * named, each read once (an id that names no todo, a legacy id included, is
+ * left out unread; a todo with no build
  * row answers both as null, which is waiting), or with none named, the todos
  * of the newest todo-state rows, the most recently moved first. Every row is
  * read under one ReadBudget, newest first: once it is spent the read stops,
@@ -151,7 +155,7 @@ async function buildStates(ctx: QueryCtx, todoIds: string[] | undefined): Promis
   const todos: BuildState[] = [];
   for (const given of named) {
     if (todos.length === TODOS_MAX) break;
-    const id = ctx.db.normalizeId("todos", given) ?? (await resolveId(ctx, "todos", given));
+    const id = ctx.db.normalizeId("todos", given);
     if (id === null || seen.has(id)) continue;
     seen.add(id);
     const todo = await getWithin(reads, () => ctx.db.get(id));
