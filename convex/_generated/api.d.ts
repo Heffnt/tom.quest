@@ -27,6 +27,7 @@ import type * as http from "../http.js";
 import type * as intent from "../intent.js";
 import type * as intentParse from "../intentParse.js";
 import type * as jarvis_auth from "../jarvis/auth.js";
+import type * as jarvis_build from "../jarvis/build.js";
 import type * as jarvis_context from "../jarvis/context.js";
 import type * as jarvis_design from "../jarvis/design.js";
 import type * as jarvis_digest from "../jarvis/digest.js";
@@ -107,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   intent: typeof intent;
   intentParse: typeof intentParse;
   "jarvis/auth": typeof jarvis_auth;
+  "jarvis/build": typeof jarvis_build;
   "jarvis/context": typeof jarvis_context;
   "jarvis/design": typeof jarvis_design;
   "jarvis/digest": typeof jarvis_digest;

@@ -95,6 +95,38 @@ export const EVENT_KINDS = [
   // worker; both are null when none was named. The eval runner's set
   // "work-runs" (Jarvis worker/jobs/evals.mjs) reads these rows as its items.
   "work-run",
+  // A session building a todo (convex/jarvis/build.ts; the box posts both
+  // with Jarvis `jarvis write`). Subject the todo's id in its current form;
+  // the record refuses one that names no todo, a legacy id included.
+  // A todo-state is where the todo stands in a build, and its newest row per
+  // todo is the todo's build state: data { state, from, by, orderRowId?,
+  // builder?, mergeRowId?, pullRequest?, sentence? }. state and from (the
+  // state before) are TODO_STATES; by is the agent id of the session or the
+  // orchestrator that moved it, or "tom" through his own door; orderRowId
+  // (the todo's "design to build" handoff) and builder (one of BUILDERS)
+  // when ordered or building; mergeRowId (the landing row) and pullRequest
+  // { repo, number } when returned; sentence, Tom's sentence verbatim, when
+  // done and when a return goes back to "in session". A "done" sets the
+  // todo's status to done in the same mutation.
+  // A handoff is what the next turn, process or session continues from:
+  // data { transition, previous?, sentences, state, next, pointers, order?,
+  // gate?, mergeRowId?, commit?, measures?, shownPages?, unblock? }.
+  // transition is one of HANDOFF_TRANSITIONS; previous is the todo's newest
+  // handoff before this one, which the record requires after the first;
+  // sentences are Tom's since then, verbatim, [{ at, text }]; state is one
+  // paragraph on where the work stands and next one sentence; pointers is
+  // { rows, agents, files, branch, head, pullRequest } and nothing else, each
+  // absent until it exists: rows event ids, agents [{ id, knows }], files
+  // repository paths, branch and head strings, pullRequest { repo, number }.
+  // On "design to build" order is the seven-part work order { todo, design,
+  // checks, decisions, outOfScope, walls, agents } with its builder;
+  // on "review to landing" gate is { testsRunRowId, auditVerdictRowId }; on
+  // "landing to return" mergeRowId and commit; on "leaving" unblock, what
+  // only Tom can unblock, one line each. A handoff's data is at most
+  // HANDOFF_MAX_BYTES and a todo-state's at most TODO_STATE_MAX_BYTES. Both
+  // kinds carry a one-line text of at most BUILD_TEXT_MAX_BYTES.
+  "todo-state",
+  "handoff",
   // A part of Jarvis was turned off before its code is deleted; subject is
   // the part's name (a job such as "poll-dump", or a record part such as
   // "dump-capture"). Data { id, part, replacedBy, ruling }: part equals
@@ -152,9 +184,45 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
 /**
  * The kinds whose subject is their identity, refused without one: a
  * decision's askId (settle, "revert <n>" and the digest find it there), a
- * digest line's askId or job, an eval run's set, a work run's repo and commit.
+ * digest line's askId or job, an eval run's set, a work run's repo and commit,
+ * a build row's todo.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff"];
+
+/** A todo-state's `data.state` and `data.from`: where a todo stands in a build. */
+/** @type {const} */
+export const TODO_STATES = ["waiting", "in session", "ordered", "building", "returned", "done", "archived"];
+
+/** A handoff's `data.transition`: the five transitions between a session's
+ *  six phases (exploration, design, build, review, landing, return), and
+ *  Tom leaving the session. */
+/** @type {const} */
+export const HANDOFF_TRANSITIONS = [
+  "exploration to design",
+  "design to build",
+  "build to review",
+  "review to landing",
+  "landing to return",
+  "leaving",
+];
+
+/** Who builds a work order: the session that wrote it, or an orchestrator it started. */
+const BUILDERS = ["session", "orchestrator"];
+
+/** A work order check's `type`: a command's exit, a judgement, or a page shown. */
+const CHECK_TYPES = ["mechanical", "judged", "shown"];
+
+/** The most a handoff's data may hold, in UTF-8 bytes of its JSON: its
+ *  pointers and Tom's sentences fit in far less, and detail past this
+ *  belongs in a file or a subagent the pointers name. */
+const HANDOFF_MAX_BYTES = 64 * 1024;
+
+/** The most a todo-state's data may hold, in UTF-8 bytes of its JSON: ids, a
+ *  state, and at most one sentence of Tom's. */
+const TODO_STATE_MAX_BYTES = 8 * 1024;
+
+/** The most a build row's one-line text may hold, in UTF-8 bytes. */
+const BUILD_TEXT_MAX_BYTES = 2048;
 
 /** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
 export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
@@ -190,6 +258,125 @@ export const PROVENANCE_FIELDS = ["agentId", "job", "session", "user"];
 
 const isPlainObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 const nonEmptyString = (value) => typeof value === "string" && value.trim().length > 0;
+const isPullRequest = (value) =>
+  isPlainObject(value) && nonEmptyString(value.repo) && Number.isInteger(value.number) && value.number > 0;
+const isList = (value, each) => Array.isArray(value) && value.every(each);
+
+/** The first thing wrong with a todo-state's data and text, or null. */
+function todoStateError(data, text) {
+  if (!isPlainObject(data) || !TODO_STATES.includes(data.state)) {
+    return `a todo-state names data.state as one of ${TODO_STATES.join(", ")}`;
+  }
+  if (!TODO_STATES.includes(data.from)) {
+    return `a todo-state names data.from, the state before, as one of ${TODO_STATES.join(", ")}`;
+  }
+  if (!nonEmptyString(data.by)) return "a todo-state names data.by, the agent id that moved the todo";
+  if (data.state === "ordered" || data.state === "building") {
+    if (!nonEmptyString(data.orderRowId)) return `a todo-state ${data.state} names data.orderRowId, the handoff carrying the order`;
+    if (!BUILDERS.includes(data.builder)) return `a todo-state ${data.state} names data.builder as one of ${BUILDERS.join(", ")}`;
+  }
+  if (data.state === "returned") {
+    if (!nonEmptyString(data.mergeRowId)) return "a todo-state returned names data.mergeRowId, the landing row";
+    if (!isPullRequest(data.pullRequest)) return "a todo-state returned names data.pullRequest as { repo, number }";
+  }
+  if ((data.state === "done" || data.from === "returned") && !nonEmptyString(data.sentence)) {
+    return `a todo-state ${data.state} after a return names data.sentence, Tom's sentence verbatim`;
+  }
+  if (!nonEmptyString(text)) return "a todo-state names its one-line text";
+  if (utf8Bytes(text) > BUILD_TEXT_MAX_BYTES) return `a todo-state's text is at most ${BUILD_TEXT_MAX_BYTES} bytes`;
+  if (utf8Bytes(JSON.stringify(data)) > TODO_STATE_MAX_BYTES) {
+    return `a todo-state's data is at most ${TODO_STATE_MAX_BYTES} bytes`;
+  }
+  return null;
+}
+
+/** The first thing wrong with a "design to build" handoff's work order, or null. */
+function workOrderError(order) {
+  if (!isPlainObject(order)) return "a design to build handoff names data.order, the work order";
+  if (!isList(order.todo, (t) => isPlainObject(t) && nonEmptyString(t.id) && nonEmptyString(t.statement)) || order.todo.length === 0) {
+    return "a work order names order.todo as a list of { id, statement }";
+  }
+  if (!nonEmptyString(order.design)) return "a work order names order.design, the state the change leaves behind";
+  if (!isList(order.checks, (c) => isPlainObject(c) && CHECK_TYPES.includes(c.type)) || order.checks.length === 0) {
+    return `a work order names order.checks as a list, each of type ${CHECK_TYPES.join(", ")}`;
+  }
+  if (!isPlainObject(order.decisions) || !isList(order.decisions.sentences, nonEmptyString) || !isList(order.decisions.answered, isPlainObject)) {
+    return "a work order names order.decisions as { sentences, answered }";
+  }
+  if (!Array.isArray(order.outOfScope)) return "a work order names order.outOfScope as a list";
+  if (!Array.isArray(order.walls)) return "a work order names order.walls as a list";
+  const tasks = isPlainObject(order.agents) ? order.agents.tasks : undefined;
+  if (!isList(tasks, (t) => isPlainObject(t) && nonEmptyString(t.name) && nonEmptyString(t.check)) || tasks.length === 0) {
+    return "a work order names order.agents.tasks as a list, each task with its name and check";
+  }
+  if (!BUILDERS.includes(order.builder)) return `a work order names order.builder as one of ${BUILDERS.join(", ")}`;
+  return null;
+}
+
+/** What each field of a handoff's `data.pointers` holds; each is absent until it exists. */
+const POINTER_FIELDS = {
+  rows: ["a list of event ids", (value) => isList(value, nonEmptyString)],
+  agents: [
+    "a list of { id, knows }: an agent id holding detail and one line on what it knows",
+    (value) => isList(value, (a) => isPlainObject(a) && nonEmptyString(a.id) && nonEmptyString(a.knows)),
+  ],
+  files: ["a list of repository paths", (value) => isList(value, nonEmptyString)],
+  branch: ["a branch name", nonEmptyString],
+  head: ["a commit", nonEmptyString],
+  pullRequest: ["{ repo, number }", isPullRequest],
+};
+
+/** The first thing wrong with a handoff's `data.pointers`, or null. */
+function handoffPointersError(pointers) {
+  if (!isPlainObject(pointers)) return "a handoff names data.pointers as an object";
+  for (const [field, value] of Object.entries(pointers)) {
+    const spec = POINTER_FIELDS[field];
+    if (spec === undefined) {
+      return `a handoff's data.pointers holds only ${Object.keys(POINTER_FIELDS).join(", ")}; ${field} is not one`;
+    }
+    if (!spec[1](value)) return `a handoff names data.pointers.${field}, when it exists, as ${spec[0]}`;
+  }
+  return null;
+}
+
+/** The first thing wrong with a handoff's data and text, or null. */
+function handoffError(data, text) {
+  if (!isPlainObject(data) || !HANDOFF_TRANSITIONS.includes(data.transition)) {
+    return `a handoff names data.transition as one of ${HANDOFF_TRANSITIONS.join(", ")}`;
+  }
+  if (data.previous !== undefined && !nonEmptyString(data.previous)) {
+    return "a handoff names data.previous, when given, as the previous handoff's id";
+  }
+  if (!isList(data.sentences, (s) => isPlainObject(s) && Number.isFinite(s.at) && nonEmptyString(s.text))) {
+    return "a handoff names data.sentences as Tom's sentences since the previous handoff, [{ at, text }]";
+  }
+  if (!nonEmptyString(data.state)) return "a handoff names data.state, where the work stands";
+  if (!nonEmptyString(data.next)) return "a handoff names data.next, the next step";
+  const pointersError = handoffPointersError(data.pointers);
+  if (pointersError !== null) return pointersError;
+  if (data.transition === "design to build") {
+    const error = workOrderError(data.order);
+    if (error !== null) return error;
+  }
+  if (data.transition === "review to landing") {
+    const gate = data.gate;
+    if (!isPlainObject(gate) || !nonEmptyString(gate.testsRunRowId) || !nonEmptyString(gate.auditVerdictRowId)) {
+      return "a review to landing handoff names data.gate as { testsRunRowId, auditVerdictRowId }";
+    }
+  }
+  if (data.transition === "landing to return" && (!nonEmptyString(data.mergeRowId) || !nonEmptyString(data.commit))) {
+    return "a landing to return handoff names data.mergeRowId and data.commit";
+  }
+  if (data.transition === "leaving" && !isList(data.unblock, nonEmptyString)) {
+    return "a leaving handoff names data.unblock, what only Tom can unblock, one line each";
+  }
+  if (!nonEmptyString(text)) return "a handoff names its one-line text";
+  if (utf8Bytes(text) > BUILD_TEXT_MAX_BYTES) return `a handoff's text is at most ${BUILD_TEXT_MAX_BYTES} bytes`;
+  if (utf8Bytes(JSON.stringify(data)) > HANDOFF_MAX_BYTES) {
+    return `a handoff's data is at most ${HANDOFF_MAX_BYTES} bytes; detail belongs in a file or a subagent its pointers name`;
+  }
+  return null;
+}
 
 /**
  * Check a body posted to POST /jarvis/event, or built by a box job before it
@@ -285,6 +472,10 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
     if ((data.check === null) !== (data.checkPassed === null)) {
       return { ok: false, error: "a work-run event names data.check and data.checkPassed as both null or both non-null" };
     }
+  }
+  if (kind === "todo-state" || kind === "handoff") {
+    const error = kind === "todo-state" ? todoStateError(data, text) : handoffError(data, text);
+    if (error !== null) return { ok: false, error };
   }
   if (text !== undefined && typeof text !== "string") {
     return { ok: false, error: "text, when given, is a string" };

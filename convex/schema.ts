@@ -106,6 +106,12 @@ export default defineSchema({
     // and the digest's read of one condition, without a scan of every job's
     // failures (convex/jarvis/jobs.ts).
     .index("by_kind_subject_at", ["kind", "subject", "at"])
+    // One subject's rows of one kind in the order the record inserted them
+    // (Convex orders an index's ties by _creationTime): the newest todo-state
+    // and handoff on a todo (convex/jarvis/build.ts) is the one written last,
+    // whatever `at` its writer gave, so a backdated handoff still becomes
+    // the head of the todo's chain.
+    .index("by_kind_subject", ["kind", "subject"])
     // One kind's rows that are not a standing condition's repeat (a
     // job-failed posted while its condition stands carries
     // data.standingSince): the digest's read of the failures that opened a

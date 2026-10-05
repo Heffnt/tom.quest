@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_KINDS, JOB_KINDS_WITH_DURATION, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, registryDiffOf, validateEvent } from "../jarvis-events.mjs";
+import {
+  EVENT_KINDS,
+  HANDOFF_TRANSITIONS,
+  JOB_KINDS_WITH_DURATION,
+  REPEATS_BY_DATA_ID,
+  SUBJECT_REQUIRED,
+  TODO_STATES,
+  TOM_ONLY_KINDS,
+  registryDiffOf,
+  validateEvent,
+} from "../jarvis-events.mjs";
 
 describe("validateEvent", () => {
   it("fills at and data, keeps subject and text, and drops nothing it was given", () => {
@@ -272,5 +282,151 @@ describe("registryDiffOf", () => {
     expect(registryDiffOf({ ...diff, base: "" })).toBeNull();
     expect(registryDiffOf({ ...diff, added: ["Not An Id"] })).toBeNull();
     expect(registryDiffOf("a diff")).toBeNull();
+  });
+});
+
+// The rows a session writes while it builds a todo (convex/jarvis/build.ts).
+describe("the build rows: todo-state and handoff", () => {
+  const TODO = "k57todo";
+  const state = (data, extra = {}) =>
+    validateEvent({ kind: "todo-state", subject: TODO, data: { from: "waiting", by: "claude:box:s1", ...data }, text: `todo ${TODO} is ${data.state}`, ...extra });
+  const order = {
+    todo: [{ id: TODO, statement: "refuse a whitespace-only statement" }],
+    design: "every door that stores a statement refuses a whitespace-only one",
+    checks: [{ type: "mechanical", command: "pnpm vitest run convex/tts.test.ts", expected: "exit 0" }],
+    decisions: { sentences: ["go"], answered: [] },
+    outOfScope: ["the Jarvis guard"],
+    walls: [],
+    agents: { tasks: [{ n: 1, name: "refusals and tests", role: "worker", check: "the vitest command exits 0" }] },
+    builder: "session",
+  };
+  const base = { sentences: [{ at: 1, text: "design the refusals" }], state: "explored", next: "design", pointers: {} };
+  const handoff = (transition, data = {}, extra = {}) =>
+    validateEvent({ kind: "handoff", subject: TODO, data: { transition, ...base, ...data }, text: `${transition} on todo ${TODO}`, ...extra });
+
+  it("both are kinds, each refused without its todo as subject", () => {
+    for (const kind of ["todo-state", "handoff"]) {
+      expect(EVENT_KINDS).toContain(kind);
+      expect(SUBJECT_REQUIRED).toContain(kind);
+    }
+    expect(state({ state: "in session" }, { subject: undefined })).toEqual({ ok: false, error: "a todo-state event names its subject" });
+    expect(handoff("exploration to design", {}, { subject: undefined })).toEqual({ ok: false, error: "a handoff event names its subject" });
+  });
+
+  it("takes a todo-state in each of the seven states with its fields", () => {
+    expect(TODO_STATES).toEqual(["waiting", "in session", "ordered", "building", "returned", "done", "archived"]);
+    const fields = {
+      ordered: { orderRowId: "e1", builder: "orchestrator" },
+      building: { orderRowId: "e1", builder: "session" },
+      returned: { mergeRowId: "e2", pullRequest: { repo: "tom.quest", number: 350 } },
+      done: { sentence: "done" },
+    };
+    for (const s of TODO_STATES) expect(state({ state: s, ...fields[s] }).ok).toBe(true);
+  });
+
+  it("refuses a todo-state whose state or from is off the list, or with no mover or text", () => {
+    expect(state({ state: "reviewing" }).error).toBe(`a todo-state names data.state as one of ${TODO_STATES.join(", ")}`);
+    expect(state({ state: "in session", from: "started" }).error).toContain("data.from");
+    expect(state({ state: "in session", by: " " }).error).toContain("data.by");
+    expect(state({ state: "in session" }, { text: undefined }).error).toBe("a todo-state names its one-line text");
+    expect(validateEvent({ kind: "todo-state", subject: TODO, text: "x" }).ok).toBe(false);
+  });
+
+  it("refuses a todo-state missing the fields its state needs", () => {
+    expect(state({ state: "building", builder: "session" }).error).toContain("data.orderRowId");
+    expect(state({ state: "ordered", orderRowId: "e1", builder: "worker" }).error).toContain("data.builder");
+    expect(state({ state: "returned", mergeRowId: "e2" }).error).toContain("data.pullRequest");
+    expect(state({ state: "returned", mergeRowId: "e2", pullRequest: { repo: "tom.quest", number: 0 } }).ok).toBe(false);
+    expect(state({ state: "done" }).error).toContain("data.sentence");
+    // A return sent back to the session carries his sentence too.
+    expect(state({ state: "in session", from: "returned" }).error).toContain("data.sentence");
+    expect(state({ state: "in session", from: "returned", sentence: "the empty-line case still passes" }).ok).toBe(true);
+  });
+
+  it("takes a handoff at each transition with the fields it needs", () => {
+    expect(HANDOFF_TRANSITIONS).toEqual(["exploration to design", "design to build", "build to review", "review to landing", "landing to return", "leaving"]);
+    const fields = {
+      "design to build": { order },
+      "review to landing": { gate: { testsRunRowId: "e3", auditVerdictRowId: "e4" } },
+      "landing to return": { mergeRowId: "e5", commit: "abc1234" },
+      leaving: { unblock: ["the OpenRouter key"] },
+    };
+    for (const t of HANDOFF_TRANSITIONS) expect(handoff(t, { previous: "e0", ...fields[t] })).toMatchObject({ ok: true });
+  });
+
+  it("refuses a handoff without a transition on the list", () => {
+    expect(validateEvent({ kind: "handoff", subject: TODO, data: base, text: "x" }).error).toBe(
+      `a handoff names data.transition as one of ${HANDOFF_TRANSITIONS.join(", ")}`,
+    );
+    expect(handoff("design to review").ok).toBe(false);
+  });
+
+  it("refuses a handoff missing its sentences, state, next step, pointers or text", () => {
+    expect(handoff("exploration to design", { sentences: [{ text: "no time" }] }).error).toContain("data.sentences");
+    expect(handoff("exploration to design", { sentences: "go" }).error).toContain("data.sentences");
+    expect(handoff("exploration to design", { state: "" }).error).toContain("data.state");
+    expect(handoff("exploration to design", { next: undefined }).error).toContain("data.next");
+    expect(handoff("exploration to design", { pointers: [] }).error).toContain("data.pointers");
+    expect(handoff("exploration to design", { previous: "" }).error).toContain("data.previous");
+    expect(handoff("exploration to design", {}, { text: " " }).error).toBe("a handoff names its one-line text");
+    expect(handoff("exploration to design", { sentences: [] }).ok).toBe(true);
+  });
+
+  it("takes complete pointers, and refuses a pointer of the wrong type or a field the contract does not name", () => {
+    const complete = {
+      rows: ["e1", "e2"],
+      agents: [{ id: "codex:box:run-1", knows: "the diff of task 1 and why each hunk" }],
+      files: ["convex/tts.ts", "convex/tts.test.ts"],
+      branch: "session/w577k3ah",
+      head: "9666e0f1da5c5bd47dc36224b497b8ab493c52b0",
+      pullRequest: { repo: "tom.quest", number: 350 },
+    };
+    expect(handoff("build to review", { pointers: complete })).toMatchObject({ ok: true, event: { data: { pointers: complete } } });
+    const pointers = (value) => handoff("build to review", { pointers: value }).error;
+    expect(pointers({ rows: 7 })).toBe("a handoff names data.pointers.rows, when it exists, as a list of event ids");
+    expect(pointers({ rows: ["e1", ""] })).toContain("data.pointers.rows");
+    expect(pointers({ branch: 5 })).toBe("a handoff names data.pointers.branch, when it exists, as a branch name");
+    expect(pointers({ branch: null })).toContain("data.pointers.branch");
+    expect(pointers({ head: "" })).toContain("data.pointers.head");
+    expect(pointers({ agents: ["codex:box:run-1"] })).toContain("data.pointers.agents");
+    expect(pointers({ files: "convex/tts.ts" })).toContain("data.pointers.files");
+    expect(pointers({ pullRequest: { repo: "tom.quest" } })).toContain("data.pointers.pullRequest");
+    expect(pointers({ ...complete, worktree: "/tmp/x" })).toBe(
+      "a handoff's data.pointers holds only rows, agents, files, branch, head, pullRequest; worktree is not one",
+    );
+  });
+
+  it("refuses a design to build handoff whose work order lacks a part or a builder", () => {
+    expect(handoff("design to build").error).toBe("a design to build handoff names data.order, the work order");
+    const without = (part, value) => handoff("design to build", { order: { ...order, [part]: value } }).error;
+    expect(without("todo", [])).toContain("order.todo");
+    expect(without("design", undefined)).toContain("order.design");
+    expect(without("checks", [{ type: "eyeballed" }])).toContain("order.checks");
+    expect(without("decisions", { sentences: ["go"] })).toContain("order.decisions");
+    expect(without("outOfScope", undefined)).toContain("order.outOfScope");
+    expect(without("walls", undefined)).toContain("order.walls");
+    expect(without("agents", { tasks: [{ name: "no check" }] })).toContain("order.agents.tasks");
+    expect(without("builder", "worker")).toContain("order.builder");
+  });
+
+  it("refuses the other transitions without their fields", () => {
+    expect(handoff("review to landing", { gate: { testsRunRowId: "e3" } }).error).toContain("data.gate");
+    expect(handoff("landing to return", { mergeRowId: "e5" }).error).toContain("data.commit");
+    expect(handoff("leaving").error).toContain("data.unblock");
+  });
+
+  it("refuses a todo-state whose data passes 8 KiB, and a build row whose text passes 2,048 bytes", () => {
+    expect(state({ state: "done", sentence: "x".repeat(8 * 1024) }).error).toBe("a todo-state's data is at most 8192 bytes");
+    expect(state({ state: "done", sentence: "x".repeat(7 * 1024) }).ok).toBe(true);
+    expect(state({ state: "in session" }, { text: "x".repeat(2049) }).error).toBe("a todo-state's text is at most 2048 bytes");
+    expect(state({ state: "in session" }, { text: "é".repeat(1025) }).ok).toBe(false);
+    expect(state({ state: "in session" }, { text: "x".repeat(2048) }).ok).toBe(true);
+    expect(handoff("exploration to design", {}, { text: "x".repeat(2049) }).error).toBe("a handoff's text is at most 2048 bytes");
+  });
+
+  it("refuses a handoff whose data passes 64 KiB", () => {
+    const long = "x".repeat(64 * 1024);
+    expect(handoff("exploration to design", { state: long }).error).toContain("at most 65536 bytes");
+    expect(handoff("exploration to design", { state: "x".repeat(60 * 1024) }).ok).toBe(true);
   });
 });
