@@ -115,9 +115,11 @@ export const EVENT_KINDS = [
   // handoff before this one, which the record requires after the first;
   // sentences are Tom's since then, verbatim, [{ at, text }]; state is one
   // paragraph on where the work stands and next one sentence; pointers is
-  // { rows, agents, files, branch, head, pullRequest }, each absent until it
-  // exists. On "design to build" order is the seven-part work order { todo,
-  // design, checks, decisions, outOfScope, walls, agents } with its builder;
+  // { rows, agents, files, branch, head, pullRequest } and nothing else, each
+  // absent until it exists: rows event ids, agents [{ id, knows }], files
+  // repository paths, branch and head strings, pullRequest { repo, number }.
+  // On "design to build" order is the seven-part work order { todo, design,
+  // checks, decisions, outOfScope, walls, agents } with its builder;
   // on "review to landing" gate is { testsRunRowId, auditVerdictRowId }; on
   // "landing to return" mergeRowId and commit; on "leaving" unblock, what
   // only Tom can unblock, one line each. A handoff's data is at most
@@ -299,6 +301,32 @@ function workOrderError(order) {
   return null;
 }
 
+/** What each field of a handoff's `data.pointers` holds; each is absent until it exists. */
+const POINTER_FIELDS = {
+  rows: ["a list of event ids", (value) => isList(value, nonEmptyString)],
+  agents: [
+    "a list of { id, knows }: an agent id holding detail and one line on what it knows",
+    (value) => isList(value, (a) => isPlainObject(a) && nonEmptyString(a.id) && nonEmptyString(a.knows)),
+  ],
+  files: ["a list of repository paths", (value) => isList(value, nonEmptyString)],
+  branch: ["a branch name", nonEmptyString],
+  head: ["a commit", nonEmptyString],
+  pullRequest: ["{ repo, number }", isPullRequest],
+};
+
+/** The first thing wrong with a handoff's `data.pointers`, or null. */
+function handoffPointersError(pointers) {
+  if (!isPlainObject(pointers)) return "a handoff names data.pointers as an object";
+  for (const [field, value] of Object.entries(pointers)) {
+    const spec = POINTER_FIELDS[field];
+    if (spec === undefined) {
+      return `a handoff's data.pointers holds only ${Object.keys(POINTER_FIELDS).join(", ")}; ${field} is not one`;
+    }
+    if (!spec[1](value)) return `a handoff names data.pointers.${field}, when it exists, as ${spec[0]}`;
+  }
+  return null;
+}
+
 /** The first thing wrong with a handoff's data and text, or null. */
 function handoffError(data, text) {
   if (!isPlainObject(data) || !HANDOFF_TRANSITIONS.includes(data.transition)) {
@@ -312,7 +340,8 @@ function handoffError(data, text) {
   }
   if (!nonEmptyString(data.state)) return "a handoff names data.state, where the work stands";
   if (!nonEmptyString(data.next)) return "a handoff names data.next, the next step";
-  if (!isPlainObject(data.pointers)) return "a handoff names data.pointers as an object";
+  const pointersError = handoffPointersError(data.pointers);
+  if (pointersError !== null) return pointersError;
   if (data.transition === "design to build") {
     const error = workOrderError(data.order);
     if (error !== null) return error;

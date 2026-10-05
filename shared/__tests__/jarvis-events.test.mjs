@@ -372,6 +372,30 @@ describe("the build rows: todo-state and handoff", () => {
     expect(handoff("exploration to design", { sentences: [] }).ok).toBe(true);
   });
 
+  it("takes complete pointers, and refuses a pointer of the wrong type or a field the contract does not name", () => {
+    const complete = {
+      rows: ["e1", "e2"],
+      agents: [{ id: "codex:box:run-1", knows: "the diff of task 1 and why each hunk" }],
+      files: ["convex/tts.ts", "convex/tts.test.ts"],
+      branch: "session/w577k3ah",
+      head: "9666e0f1da5c5bd47dc36224b497b8ab493c52b0",
+      pullRequest: { repo: "tom.quest", number: 350 },
+    };
+    expect(handoff("build to review", { pointers: complete })).toMatchObject({ ok: true, event: { data: { pointers: complete } } });
+    const pointers = (value) => handoff("build to review", { pointers: value }).error;
+    expect(pointers({ rows: 7 })).toBe("a handoff names data.pointers.rows, when it exists, as a list of event ids");
+    expect(pointers({ rows: ["e1", ""] })).toContain("data.pointers.rows");
+    expect(pointers({ branch: 5 })).toBe("a handoff names data.pointers.branch, when it exists, as a branch name");
+    expect(pointers({ branch: null })).toContain("data.pointers.branch");
+    expect(pointers({ head: "" })).toContain("data.pointers.head");
+    expect(pointers({ agents: ["codex:box:run-1"] })).toContain("data.pointers.agents");
+    expect(pointers({ files: "convex/tts.ts" })).toContain("data.pointers.files");
+    expect(pointers({ pullRequest: { repo: "tom.quest" } })).toContain("data.pointers.pullRequest");
+    expect(pointers({ ...complete, worktree: "/tmp/x" })).toBe(
+      "a handoff's data.pointers holds only rows, agents, files, branch, head, pullRequest; worktree is not one",
+    );
+  });
+
   it("refuses a design to build handoff whose work order lacks a part or a builder", () => {
     expect(handoff("design to build").error).toBe("a design to build handoff names data.order, the work order");
     const without = (part, value) => handoff("design to build", { order: { ...order, [part]: value } }).error;
