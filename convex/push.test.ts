@@ -75,6 +75,27 @@ describe("push", () => {
     expect(after).toEqual([b]);
   });
 
+  it("liveSubscriptions keeps the later-created row when rows of one endpoint share a millisecond", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 9, 5, 4, 0));
+    const a1 = subscription("https://push.example/a");
+    const a2 = subscription("https://push.example/a", "p256dh-a2");
+    await tom.mutation(api.push.saveSubscription, { subscription: a1 });
+    await tom.mutation(api.push.saveSubscription, { subscription: a2 });
+    const rows = await pushRows(t);
+    expect(new Set(rows.map((row) => row.at)).size).toBe(1);
+    expect(await t.query(internal.push.liveSubscriptions, {})).toEqual([a2]);
+
+    // A markGone in the same millisecond is the newer fact.
+    await t.mutation(internal.push.markGone, { endpoint: a1.endpoint, reason: "push service answered 410" });
+    expect(await t.query(internal.push.liveSubscriptions, {})).toEqual([]);
+    // And a save after it, still in that millisecond, is live again.
+    await tom.mutation(api.push.saveSubscription, { subscription: a1 });
+    expect(await t.query(internal.push.liveSubscriptions, {})).toEqual([a1]);
+  });
+
   it("POST /jarvis/push answers 401 without the key, 400 without a title, and 503 when VAPID is unset", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
