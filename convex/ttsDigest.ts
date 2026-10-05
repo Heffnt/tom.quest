@@ -45,7 +45,7 @@ import { displayTime } from "../shared/clock.mjs";
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
 import { decidedByText } from "../shared/decided-by.mjs";
-import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
+import { DIGEST_LINE, THREAD_DIGEST, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
 import { readTodo } from "./jarvis/tables";
 import { MAX_DOCUMENT_BYTES, MIB, ReadBudget, getWithin, readWithin, type ReadCut } from "./readBudget";
@@ -418,7 +418,6 @@ export async function gatherTodayFacts(
     since,
     earlierCuts = [],
     bytes = GATHER_BYTES,
-    supersededFrom: supersededStart,
   }: {
     day: string;
     now: number;
@@ -427,9 +426,6 @@ export async function gatherTodayFacts(
     earlierCuts?: ReadCut[];
     /** The gather's budget: GATHER_BYTES, or THREAD_GATHER_BYTES. */
     bytes?: number;
-    /** Where the previous digest's read of superseded rulings stopped (its
-     *  row's data.supersededCursor); absent, the read starts at `since`. */
-    supersededFrom?: SupersededCursor;
   },
 ): Promise<TodayFacts> {
   const { start: dayStart, end: dayEnd } = nyCalendarDayBoundsUtc(day);
@@ -1109,7 +1105,7 @@ export async function gatherTodayFacts(
   //    position the last digest recorded, oldest first, under their own byte
   //    share, so no other kind's rows can crowd one out. What this digest does
   //    not print, the next reads again (supersededCursorAfter).
-  const supersededFrom = supersededStart ?? { at: since, after: 0 };
+  const supersededFrom = (await previousSupersededCursor(ctx)) ?? { at: since, after: 0 };
   const supersededBudget = budget.allot(SUPERSEDED_READ, READ_BYTES.superseded);
   const supersededRows = await readWithin(
     supersededBudget,
@@ -1460,11 +1456,32 @@ const SUPERSEDED_READ = "superseded rulings";
 
 /** The position a digest recorded on its row (`supersededCursor`, on a
  *  thread-digest or digest-sent row), or null when it recorded none. */
-export function supersededCursorOf(row: { data?: unknown } | null): SupersededCursor | null {
+function supersededCursorOf(row: { data?: unknown } | null): SupersededCursor | null {
   const c = ((row?.data ?? {}) as { supersededCursor?: unknown }).supersededCursor as
     | { at?: unknown; after?: unknown }
     | undefined;
   return typeof c?.at === "number" && typeof c?.after === "number" ? { at: c.at, after: c.after } : null;
+}
+
+/**
+ * Where this digest's read of superseded rulings starts: the further along of
+ * the cursors the newest digest-sent row (the Slack path, POST /jarvis/digest)
+ * and the newest thread-digest row (the record's cron, convex/jarvis/digest.ts
+ * appendDigestToThread) recorded, one row read each; null when neither
+ * recorded one. Every superseded ruling before it was printed by the digest
+ * that recorded it, whichever path wrote that one.
+ */
+async function previousSupersededCursor(ctx: QueryCtx): Promise<SupersededCursor | null> {
+  const [sent, thread] = await Promise.all([
+    lastDigest(ctx),
+    ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST)).order("desc").first(),
+  ]);
+  let further: SupersededCursor | null = null;
+  for (const cursor of [supersededCursorOf(sent), supersededCursorOf(thread)]) {
+    if (cursor === null) continue;
+    if (further === null || cursor.at > further.at || (cursor.at === further.at && cursor.after > further.after)) further = cursor;
+  }
+  return further;
 }
 
 /**
@@ -1512,8 +1529,6 @@ export const internalComposeToday = internalQuery({
       skipped: v.number(),
       by: v.union(v.literal("bytes"), v.literal("rows")),
     }))),
-    // Where the previous digest's read of superseded rulings stopped.
-    supersededFrom: v.optional(v.object({ at: v.number(), after: v.number() })),
   },
   handler: (ctx, args) => composeToday(ctx, args),
 });
@@ -1523,13 +1538,12 @@ export const internalComposeToday = internalQuery({
  *  which passes THREAD_GATHER_BYTES so its reads stay at DIGEST_READ_BOUND. */
 export async function composeToday(
   ctx: QueryCtx,
-  { day, now, since: givenSince, canReply, earlierCuts, gatherBytes, supersededFrom }: {
+  { day, now, since: givenSince, canReply, earlierCuts, gatherBytes }: {
     day: string; now: number; since?: number; canReply?: boolean; earlierCuts?: ReadCut[]; gatherBytes?: number;
-    supersededFrom?: SupersededCursor;
   },
 ) {
   const since = givenSince ?? (await digestWindowStart(ctx, now));
-  const facts = await gatherTodayFacts(ctx, { day, now, since, earlierCuts, bytes: gatherBytes, supersededFrom });
+  const facts = await gatherTodayFacts(ctx, { day, now, since, earlierCuts, bytes: gatherBytes });
   const reply = canReply ?? false;
   const { message, truncated } = composeTodayFitted(facts, { canReply: reply });
   return {

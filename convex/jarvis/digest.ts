@@ -41,7 +41,7 @@ import type { Doc } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { logEvent } from "../tts";
 import { resolveId } from "./tables";
-import { THREAD_GATHER_BYTES, THREAD_OWN_BYTES, composeToday, rollMissed, supersededCursorOf } from "../ttsDigest";
+import { THREAD_GATHER_BYTES, THREAD_OWN_BYTES, composeToday, rollMissed } from "../ttsDigest";
 import { ReadBudget, readWithin } from "../readBudget";
 import { getDocumentSize } from "convex/values";
 import { insertEvent } from "./record";
@@ -133,8 +133,7 @@ export const compose = internalMutation({
   handler: async (ctx): Promise<ComposeAnswer> => {
     const now = Date.now();
     const day = ttsDayKey(now);
-    const lastRow = await lastDigest(ctx);
-    const last = digestFacts(lastRow);
+    const last = digestFacts(await lastDigest(ctx));
     if (nyLocalHour(now) < TTS_DIGEST_NY_HOUR) {
       return { due: false, day, reason: "before 5 a.m. New York" };
     }
@@ -163,8 +162,6 @@ export const compose = internalMutation({
       since,
       canReply: replyRouteLive(),
       earlierCuts: cuts,
-      // Superseded rulings from where the last digest-sent row stopped.
-      supersededFrom: supersededCursorOf(lastRow) ?? undefined,
     });
     return {
       due: true,
@@ -299,8 +296,6 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
     day,
     now,
     since,
-    // Superseded rulings from where the previous thread digest stopped.
-    supersededFrom: supersededCursorOf(recentDigests[0] ?? null) ?? undefined,
     // The composer's invitations describe Slack's "revert 2" and line-level
     // "done" grammar, which the Jarvis thread does not route.
     canReply: false,

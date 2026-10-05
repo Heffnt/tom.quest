@@ -400,8 +400,17 @@ describe("the digest's superseded rulings", () => {
     },
   });
 
-  const compose = (t: T, now: number, since: number, supersededFrom?: { at: number; after: number }) =>
-    t.query(internal.ttsDigest.internalComposeToday, { day: DAY, now, since, ...(supersededFrom === undefined ? {} : { supersededFrom }) });
+  const compose = (t: T, now: number, since: number) =>
+    t.query(internal.ttsDigest.internalComposeToday, { day: DAY, now, since });
+
+  /** A digest's row as its writer leaves it, carrying the cursor. */
+  const digestRow = (kind: "thread-digest" | "digest-sent", at: number, cursor: { at: number; after: number }) => ({
+    kind,
+    at,
+    provenance: {},
+    subject: `day-${at}`,
+    data: { day: `day-${at}`, windowEnd: at, supersededCursor: cursor },
+  });
 
   it("lists an older supersession behind 200 newer digest lines", async () => {
     const t = convexTest({ schema, modules });
@@ -437,26 +446,50 @@ describe("the digest's superseded rulings", () => {
     const seen: number[] = [];
     let since = SINCE;
     let now = NOW;
-    let cursor: { at: number; after: number } | undefined;
     let digests = 0;
     for (let digest = 0; digest < 5 && seen.length < 40; digest += 1) {
       digests += 1;
-      const out = await compose(t, now, since, cursor);
+      const out = await compose(t, now, since);
       expect(out.text.length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
       const printed = printedIn(out.text);
       expect(printed.length).toBeGreaterThan(0);
       // Each digest prints the oldest ones not yet printed, in order.
       expect(printed).toEqual(Array.from({ length: printed.length }, (_, i) => seen.length + i));
       seen.push(...printed);
-      // The writer records the cursor on its row; the next digest starts
-      // past it (the thread writer's own path is the next test).
-      cursor = out.supersededCursor;
+      // Only a thread-digest row carries the cursor, as the record's cron
+      // writes it; the next digest reads it back and starts past it.
+      await t.run(async (ctx) => {
+        await ctx.db.insert("events", digestRow("thread-digest", now, out.supersededCursor));
+      });
       since = now;
       now += 86_400_000;
     }
     expect(seen).toEqual(Array.from({ length: 40 }, (_, n) => n));
     // The forty did not fit one message, so some were carried.
     expect(digests).toBeGreaterThan(1);
+  });
+
+  it("starts from the further along of the newest digest-sent and thread-digest cursors", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await t.run(async (ctx) => {
+      const out: string[] = [];
+      for (let n = 0; n < 6; n += 1) out.push(await ctx.db.insert("events", ended(n, SINCE + 1_000 + n)));
+      return out;
+    });
+    const created = async (n: number) => (await t.run(async (ctx) => ctx.db.get(ids[n] as never)))?._creationTime as number;
+    const printed = (text: string) => Array.from({ length: 6 }, (_, n) => n).filter((n) => text.includes(`Your ruling ${n} in scope part:p${n} `));
+    // The Slack row's cursor is past ruling 3, the thread row's past ruling 1.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", digestRow("digest-sent", SINCE + 5_000, { at: SINCE + 1_003, after: 0 }));
+      await ctx.db.insert("events", digestRow("thread-digest", SINCE + 6_000, { at: SINCE + 1_001, after: 0 }));
+    });
+    expect(printed((await compose(t, NOW, SINCE)).text)).toEqual([3, 4, 5]);
+    // The other way round: the thread row's cursor is the further one.
+    const past4 = { at: SINCE + 1_004, after: await created(4) };
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", digestRow("thread-digest", SINCE + 7_000, past4));
+    });
+    expect(printed((await compose(t, NOW, SINCE)).text)).toEqual([5]);
   });
 
   it("the record's thread digest records the cursor on its row and prints the carried rulings the next morning", async () => {
