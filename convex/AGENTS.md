@@ -45,6 +45,8 @@
 
 - Dropping a table from `convex/schema.ts` deletes nothing: `convex deploy` validates only declared tables and the rows persist undeclared. Purging data takes the dashboard or the CLI with credentials.
 - The model-of-tom publication table fails closed until the nightly post has written its singleton; there is no backfill door any more.
+- A read whose rows grow with a table carries a cap, named beside the read: a `.take(n)`, a `.paginate()`, or a byte budget. An index range is a cap only when it returns a bounded number of rows by construction, one row per key or a key whose rows cannot accumulate; one key whose rows keep accumulating, such as `by_readiness` on "prepared", is not a cap. `.collect()` is not written on a read whose rows grow.
+- Why: the digest's `gatherTodayFacts` read every prepared todo on the `by_readiness` index with `.collect()` (1,588 rows, 8.9 MB) beside other uncapped reads, passed Convex's 16 MiB limit on what one function may read on 2026-09-29, and the digest failed on every run from that day until its reads were capped.
 
 <!-- convex-ai-start -->
 
