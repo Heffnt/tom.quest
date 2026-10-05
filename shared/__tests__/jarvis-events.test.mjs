@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_KINDS, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
+import { EVENT_KINDS, JOB_KINDS_WITH_DURATION, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
 
 describe("validateEvent", () => {
   it("fills at and data, keeps subject and text, and drops nothing it was given", () => {
@@ -136,6 +136,28 @@ describe("validateEvent", () => {
   it("keeps thread-message as a Tom-only kind", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
+  });
+
+  it("takes a job row's runtime as data.durationMs and keeps it", () => {
+    for (const kind of ["job-ok", "job-failed"]) {
+      const result = validateEvent({ kind, provenance: { job: "poll-gmail" }, subject: "poll-gmail:auth", data: { job: "poll-gmail", durationMs: 4210 } }, { now: 1000 });
+      expect(result).toMatchObject({ ok: true, event: { data: { job: "poll-gmail", durationMs: 4210 } } });
+    }
+    expect(validateEvent({ kind: "job-ok", data: { job: "deploy", durationMs: 0 } }).ok).toBe(true);
+    // A row without it is the row every job posted before the field existed.
+    expect(validateEvent({ kind: "job-ok", data: { job: "deploy", key: "deploy" } }).ok).toBe(true);
+    expect(JOB_KINDS_WITH_DURATION).toEqual(["job-ok", "job-failed"]);
+  });
+
+  it("refuses a job row whose durationMs is not non-negative milliseconds", () => {
+    for (const durationMs of [-1, "4210", null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(validateEvent({ kind: "job-failed", data: { job: "deploy", error: "x", durationMs } })).toEqual({
+        ok: false,
+        error: "a job-failed event names data.durationMs, when given, as non-negative milliseconds",
+      });
+    }
+    // Another kind's durationMs is that kind's business (a work-run carries its own).
+    expect(validateEvent({ kind: "digest-line", subject: "deploy", data: { durationMs: "n/a" } }).ok).toBe(true);
   });
 
   it("lists every kind once", () => {

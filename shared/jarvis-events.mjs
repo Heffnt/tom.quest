@@ -22,6 +22,9 @@
 export const EVENT_KINDS = [
   // Jobs on the box (convex/jarvis/jobs.ts): a clean run, a failure, and the
   // Convex-written close of a keyed failure when the job next runs clean.
+  // A job-ok or job-failed may carry data.durationMs: how long the job's
+  // process had run when it posted the row, in milliseconds (Jarvis
+  // worker/jobs/clock.mjs runDurationMs), so a job's runtime is in the record.
   "job-ok",
   "job-failed",
   "job-recovered",
@@ -153,6 +156,11 @@ export const REPEATS_BY_DATA_ID = [
   "part-disabled",
 ];
 
+/** The kinds whose data may carry `durationMs`, the job's runtime when it
+ *  posted the row; validateEvent refuses one that is not a non-negative
+ *  number. */
+export const JOB_KINDS_WITH_DURATION = ["job-ok", "job-failed"];
+
 /** The provenance fields an event may carry, and nothing else. */
 export const PROVENANCE_FIELDS = ["agentId", "job", "session", "user"];
 
@@ -200,6 +208,11 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
     }
     if (!isPlainObject(data) || !THREAD_REPLY_KINDS.includes(data.kind)) {
       return { ok: false, error: `a thread-reply names data.kind as one of ${THREAD_REPLY_KINDS.join(", ")}` };
+    }
+  }
+  if (JOB_KINDS_WITH_DURATION.includes(kind) && isPlainObject(data) && data.durationMs !== undefined) {
+    if (!(typeof data.durationMs === "number" && Number.isFinite(data.durationMs) && data.durationMs >= 0)) {
+      return { ok: false, error: `a ${kind} event names data.durationMs, when given, as non-negative milliseconds` };
     }
   }
   if (kind === "part-disabled") {

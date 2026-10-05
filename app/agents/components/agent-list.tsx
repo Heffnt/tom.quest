@@ -26,6 +26,7 @@ import {
   isLive,
   orderSessions,
   previewLine,
+  runDurationText,
   runStatusChipClass,
   sessionModel,
   statusChipClass,
@@ -246,6 +247,9 @@ function RootRuns({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
                 <span className="font-mono">
                   {new Date(run.startedAt).toISOString().slice(0, 16).replace("T", " ")}
                 </span>
+                {runDurationText(run) !== "" && (
+                  <span className="font-mono">ran {runDurationText(run)}</span>
+                )}
                 {costText(run.outcome?.costUsd) !== "" && (
                   <span className="font-mono">{costText(run.outcome?.costUsd)}</span>
                 )}

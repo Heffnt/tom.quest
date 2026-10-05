@@ -25,6 +25,7 @@ import {
   VOCABULARY_COUNT_NAMES,
 } from "./ttsShared";
 import { isNarrowListId } from "./ttsShared";
+import { RUN_END_REASONS, type RunEndReason } from "./agents";
 import { auditVerdictOf, mergedOnMain } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
@@ -559,7 +560,7 @@ http.route({
 });
 
 // POST /tts/job-failed — a box job reporting its own failure in plain words
-// (the lifeos update, phase 6). Body: { job, error, key? }.
+// (the lifeos update, phase 6). Body: { job, error, key?, durationMs? }.
 //
 // This is the channel convex/ttsDigest.ts already reads: every "-failed" event
 // kind becomes a line in the morning digest's job-failures section. Until now nothing on the Jarvis Box could write one — a cron job's
@@ -575,6 +576,12 @@ http.route({
 // tick would bury the one fact under its own repetitions. A report without a
 // key is about the job itself: its condition is the job's name
 // (convex/jarvis/jobs.ts onJobFailed), cleared by the job's next clean run.
+// A job report's optional runtime (shared/jarvis-events.mjs
+// JOB_KINDS_WITH_DURATION): absent, or non-negative milliseconds.
+const DURATION_MS_ERROR = "durationMs, when given, is non-negative milliseconds";
+const durationMsOk = (value: unknown) =>
+  value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
+
 const ttsJobFailed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -594,10 +601,12 @@ const ttsJobFailed = httpAction(async (ctx, request) => {
   if (b.key !== undefined && (typeof b.key !== "string" || b.key.trim() === "")) {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
   }
+  if (!durationMsOk(b.durationMs)) return jsonResponse(400, { error: DURATION_MS_ERROR });
   const result = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
     job: b.job,
     error: b.error,
     key: typeof b.key === "string" ? b.key : undefined,
+    durationMs: b.durationMs as number | undefined,
   });
   return jsonResponse(200, { ok: true, ...result });
 });
@@ -605,7 +614,8 @@ const ttsJobFailed = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/job-failed", method: "POST", handler: ttsJobFailed });
 
 // POST /tts/job-ok — the same box job saying it just ran clean. Body:
-// { job, key }.
+// { job, key, durationMs? }; durationMs, on this route and on job-failed's,
+// is how long the job had run when it posted, and lands in the row's data.
 //
 // The other half of the keyed report above, and the only thing that re-arms
 // it: a run that ends a reported failure writes the recovery row and the next
@@ -628,9 +638,11 @@ const ttsJobOk = httpAction(async (ctx, request) => {
   if (typeof b.key !== "string" || b.key.trim().length === 0) {
     return jsonResponse(400, { error: "key (non-empty string) required" });
   }
+  if (!durationMsOk(b.durationMs)) return jsonResponse(400, { error: DURATION_MS_ERROR });
   const result = await ctx.runMutation(internal.ttsJobs.internalReportJobOk, {
     job: b.job,
     key: b.key,
+    durationMs: b.durationMs as number | undefined,
   });
   return jsonResponse(200, { ok: true, ...result });
 });
@@ -2841,6 +2853,43 @@ const agentsOverflow = httpAction(async (ctx, request) => {
   } catch { return jsonResponse(400, { error: "overflow chunk rejected" }); }
 });
 http.route({ path: "/agents/overflow", method: "POST", handler: agentsOverflow });
+
+// POST /agents/run-end — the end of one run, as the box saw it: { agentId,
+// endedAt (epoch ms), endReason (one of agents.RUN_END_REASONS) }. Posted by
+// the sweep from the end marker a SessionEnd or SubagentStop hook, a launcher
+// or the Codex runner wrote, after the run's page is in. The key and the wire
+// spelling are the other /agents routes'. A run the record does not hold yet
+// answers 404, so the box keeps the end and posts it again; any other refusal
+// is a 400 the box does not retry.
+const agentsRunEnd = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const old = oldSpelling(b, { runId: "agentId" });
+  if (old) return jsonResponse(400, { error: old });
+  if (!validAgentId(b.agentId)) return jsonResponse(400, { error: "agentId invalid" });
+  if (typeof b.endedAt !== "number" || !Number.isFinite(b.endedAt) || b.endedAt <= 0) {
+    return jsonResponse(400, { error: "endedAt (epoch ms) required" });
+  }
+  if (typeof b.endReason !== "string" || !(RUN_END_REASONS as readonly string[]).includes(b.endReason)) {
+    return jsonResponse(400, { error: `endReason must be one of ${RUN_END_REASONS.join(", ")}` });
+  }
+  const result = await ctx.runMutation(internal.agents.internalRecordRunEnd, {
+    runId: b.agentId,
+    endedAt: b.endedAt,
+    endReason: b.endReason as RunEndReason,
+  });
+  if (!result.ok) return jsonResponse(result.reason === "no run" ? 404 : 400, { error: result.reason });
+  const { runId, ...rest } = result;
+  return jsonResponse(200, { ...rest, agentId: runId });
+});
+http.route({ path: "/agents/run-end", method: "POST", handler: agentsRunEnd });
 
 const agentsOverflowStamp = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);

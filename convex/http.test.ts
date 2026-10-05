@@ -504,6 +504,82 @@ describe("POST /agents/ingest", () => {
   });
 });
 
+describe("POST /agents/run-end", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  function postEnd(t: ReturnType<typeof convexTest>, value: unknown, key = "right") {
+    return t.fetch("/agents/run-end", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": key }, body: JSON.stringify(value) });
+  }
+  const end = { agentId: "claude:laptop:http-run", endedAt: 5_000, endReason: "ended" };
+
+  it("sets the end on a run the record holds, behind the session worker key", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    expect((await postEnd(t, end, "wrong")).status).toBe(401);
+    expect((await post(t, wireBody, "right")).status).toBe(200);
+    const response = await postEnd(t, end);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, agentId: "claude:laptop:http-run", endedAt: 5_000, endReason: "ended", kept: false });
+    const stored = await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:http-run")).first());
+    expect(stored).toMatchObject({ endedAt: 5_000, endReason: "ended" });
+  });
+
+  it("answers 404 for a run the record does not hold yet, so the box posts it again", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    const response = await postEnd(t, end);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "no run" });
+  });
+
+  it("refuses the run spelling, a bad id, a missing instant and a reason outside the list", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    expect((await post(t, wireBody, "right")).status).toBe(200);
+    const refused = async (value: unknown, error: string) => {
+      const response = await postEnd(t, value);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error });
+    };
+    await refused({ ...end, runId: end.agentId }, "runId is no longer read; send agentId");
+    await refused({ ...end, agentId: "nobody" }, "agentId invalid");
+    await refused({ ...end, endedAt: "5000" }, "endedAt (epoch ms) required");
+    await refused({ ...end, endReason: "done" }, "endReason must be one of ended, failed, limit, stopped, unknown");
+    await refused({ ...end, endedAt: 0.5 }, "endedAt is before the run started");
+  });
+});
+
+describe("POST /tts/job-ok and /tts/job-failed carry the job's runtime", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  function postJob(t: ReturnType<typeof convexTest>, route: string, value: unknown) {
+    return t.fetch(route, { method: "POST", headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" }, body: JSON.stringify(value) });
+  }
+  async function jobRows(t: ReturnType<typeof convexTest>, kind: string) {
+    return await t.run(async (ctx) => (await ctx.db.query("events").collect()).filter((e) => e.kind === kind));
+  }
+
+  it("keeps durationMs in the row's data when the job sends it, and writes none when it does not", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    expect((await postJob(t, "/tts/job-failed", { job: "agents-sweep", key: "agents-sweep:disk", error: "low disk", durationMs: 812 })).status).toBe(200);
+    expect((await postJob(t, "/tts/job-ok", { job: "agents-sweep", key: "agents-sweep:disk", durationMs: 1_204 })).status).toBe(200);
+    expect((await postJob(t, "/tts/job-ok", { job: "agents-sweep", key: "agents-sweep:retention" })).status).toBe(200);
+    expect((await jobRows(t, "job-failed")).map((e) => e.data)).toEqual([{ job: "agents-sweep", error: "low disk", durationMs: 812 }]);
+    const ok = (await jobRows(t, "job-ok")).map((e) => e.data);
+    expect(ok).toContainEqual({ job: "agents-sweep", key: "agents-sweep:retention" });
+  });
+
+  it("refuses a durationMs that is not non-negative milliseconds", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    for (const durationMs of [-5, "812"]) {
+      const response = await postJob(t, "/tts/job-ok", { job: "deploy", key: "deploy", durationMs });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "durationMs, when given, is non-negative milliseconds" });
+    }
+    expect(await jobRows(t, "job-ok")).toHaveLength(0);
+  });
+});
+
 describe("POST /agents/overflow: bounded chunks", () => {
   afterEach(() => vi.unstubAllEnvs());
   function overflowBodyAt(byteLength: number, text: string, seq: number) {

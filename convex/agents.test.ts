@@ -1199,3 +1199,63 @@ describe("agents: a registration token belongs to one agent", () => {
     expect(await duplicates(t)).toEqual([]);
   });
 });
+
+describe("a run's end", () => {
+  const RUN_ID = "claude:laptop:root-run";
+  async function stored(t: ReturnType<typeof convexTest<typeof schema>>) {
+    return await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
+  }
+
+  it("sets endedAt and endReason on the run and nothing else", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ status: "running", startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    const before = await stored(t);
+    const result = await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" });
+    expect(result).toEqual({ ok: true, runId: RUN_ID, endedAt: 5_000, endReason: "ended", kept: false });
+    const after = await stored(t);
+    expect(after).toMatchObject({ endedAt: 5_000, endReason: "ended", status: "running", lastLineAt: 2_000 });
+    const { endedAt: _endedAt, endReason: _endReason, ...rest } = after!;
+    expect(rest).toEqual(before);
+  });
+
+  it("refuses a run the record does not hold, so the box keeps its end and posts it again", async () => {
+    const t = convexTest(schema, modules);
+    expect(await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" }))
+      .toEqual({ ok: false, reason: "no run" });
+  });
+
+  it("refuses an end before the start, in the future, or not in milliseconds, and an invalid id", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    const refused = async (args: { runId: string; endedAt: number }, reason: string) =>
+      expect(await t.mutation(internal.agents.internalRecordRunEnd, { ...args, endReason: "failed" })).toEqual({ ok: false, reason });
+    await refused({ runId: RUN_ID, endedAt: 999 }, "endedAt is before the run started");
+    await refused({ runId: RUN_ID, endedAt: Date.now() + 6 * 60_000 }, "endedAt is more than 5 minutes in the future");
+    await refused({ runId: RUN_ID, endedAt: 0 }, "endedAt is not epoch milliseconds");
+    await refused({ runId: "not-an-agent", endedAt: 5_000 }, "invalid runId");
+    expect((await stored(t))?.endedAt).toBeUndefined();
+  });
+
+  it("keeps the later of two ends, so a retried first end cannot move a resumed session's end back", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 9_000, endReason: "stopped" });
+    expect(await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" }))
+      .toEqual({ ok: true, runId: RUN_ID, endedAt: 9_000, endReason: "stopped", kept: true });
+    await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 12_000, endReason: "limit" });
+    expect(await stored(t)).toMatchObject({ endedAt: 12_000, endReason: "limit" });
+  });
+
+  it("is not taken back by a later page of the same run", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" });
+    await t.mutation(internal.agents.internalIngest, retry(run({ status: "ended", startedAt: 1_000, lastLineAt: 3_000 })) as never);
+    expect(await stored(t)).toMatchObject({ status: "ended", lastLineAt: 3_000, endedAt: 5_000, endReason: "ended" });
+  });
+
+  it("names the closed list of reasons the schema holds", async () => {
+    const { RUN_END_REASONS } = await import("./agents");
+    expect(RUN_END_REASONS).toEqual(["ended", "failed", "limit", "stopped", "unknown"]);
+  });
+});

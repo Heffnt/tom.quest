@@ -213,6 +213,10 @@ function mark(run: Doc<"runs">) {
     origin: run.origin,
     startedAt: run.startedAt,
     lastLineAt: run.lastLineAt,
+    // The end the box posted (POST /agents/run-end), and why; null on a run
+    // whose end nothing saw, where the page falls back to lastLineAt.
+    endedAt: run.endedAt ?? null,
+    endReason: run.endReason ?? null,
     // The outcome a mark opens to. Four numbers and a word, which is what the
     // run row itself holds; the transcript stays on the agent page.
     endedReason: run.outcome?.endedReason ?? null,

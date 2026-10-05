@@ -9,6 +9,7 @@ import { LIVE_STATUSES, SESSION_MODEL } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { inboundRowIdOf } from "./sessionRows";
 import { eitherId, resolveId } from "./jarvis/tables";
+import { MAX_FUTURE_SKEW_MS } from "../shared/jarvis-events.mjs";
 
 const AGENT_KIND = v.union(
   v.literal("session"), v.literal("job"), v.literal("delegate"),
@@ -649,6 +650,48 @@ async function sha256(text: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+
+// ── A run's end ──────────────────────────────────────────────────────────────
+//
+// WHY THE END IS ITS OWN WRITE. A run's page (internalIngest) is a reading of
+// its file, and a file cannot say when its process stopped: the last line is
+// written before the CLI exits, a Codex run killed at its limit writes no last
+// line at all, and a page swept two minutes later says nothing of when. So the
+// box posts the end it saw (a SessionEnd or SubagentStop hook, a launcher's
+// exit, the Codex runner's exit) to POST /agents/run-end, and this is the one
+// writer of `endedAt` and `endReason`. The ingest does not list either field,
+// so no later page can take an end back.
+
+/** Why a run ended: the closed list the schema holds (convex/schema.ts runs.endReason). */
+export const RUN_END_REASONS = ["ended", "failed", "limit", "stopped", "unknown"] as const;
+export type RunEndReason = (typeof RUN_END_REASONS)[number];
+const RUN_END_REASON = v.union(v.literal("ended"), v.literal("failed"), v.literal("limit"), v.literal("stopped"), v.literal("unknown"));
+
+/**
+ * Set a run's end. Refused, with a fixed reason and no write: a run the record
+ * does not hold ("no run"; the box keeps its end and posts it again after the
+ * run's first page lands), an instant that is not epoch milliseconds, one
+ * before the run started, or one more than the events table's skew past the
+ * record's clock. A second end for the same run keeps the later instant: a
+ * resumed session ends again after its first end, and a retried post of the
+ * first end must not move it back.
+ */
+export const internalRecordRunEnd = internalMutation({
+  args: { runId: v.string(), endedAt: v.number(), endReason: RUN_END_REASON },
+  handler: async (ctx, { runId, endedAt, endReason }) => {
+    if (!validAgentId(runId)) return { ok: false as const, reason: "invalid runId" };
+    if (!Number.isFinite(endedAt) || endedAt <= 0) return { ok: false as const, reason: "endedAt is not epoch milliseconds" };
+    if (endedAt > Date.now() + MAX_FUTURE_SKEW_MS) return { ok: false as const, reason: "endedAt is more than 5 minutes in the future" };
+    const run = await agentAt(ctx, runId);
+    if (run === null) return { ok: false as const, reason: "no run" };
+    if (endedAt < run.startedAt) return { ok: false as const, reason: "endedAt is before the run started" };
+    if (run.endedAt !== undefined && run.endedAt > endedAt) {
+      return { ok: true as const, runId, endedAt: run.endedAt, endReason: run.endReason ?? "unknown", kept: true };
+    }
+    await ctx.db.patch(run._id, { endedAt, endReason });
+    return { ok: true as const, runId, endedAt, endReason, kept: false };
+  },
+});
 
 export const internalIngestOverflow = internalMutation({
   args: { runId: v.string(), seq: v.number(), index: v.number(), chunkCount: v.number(), text: v.string() },

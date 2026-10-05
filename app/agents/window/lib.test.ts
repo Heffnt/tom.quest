@@ -37,6 +37,8 @@ const RUN: RunMark = {
   origin: "cron:time-notes",
   startedAt: 1_000,
   lastLineAt: 2_000,
+  endedAt: null,
+  endReason: null,
   endedReason: null,
   turns: null,
   toolCalls: null,
@@ -181,6 +183,14 @@ describe("how a run ended", () => {
   it("says how long it ran in the shortest true unit", () => {
     expect(lasted(run({ startedAt: 0, lastLineAt: 30_000 }), 0)).toBe("30s");
     expect(lasted(run({ startedAt: 0, lastLineAt: 5 * 60_000 }), 0)).toBe("5m");
+  });
+
+  it("measures an ended run to the end the box posted, not its last line", () => {
+    const ended = run({ status: "ended", startedAt: 0, lastLineAt: 30_000, endedAt: 3 * 60_000, endReason: "ended" });
+    expect(barEnd(ended, 10 * 60_000)).toBe(3 * 60_000);
+    expect(lasted(ended, 10 * 60_000)).toBe("3m");
+    // A running run runs to now whatever an earlier end said: a resumed session.
+    expect(barEnd(run({ status: "running", startedAt: 0, lastLineAt: 30_000, endedAt: 60_000 }), 120_000)).toBe(120_000);
   });
 });
 

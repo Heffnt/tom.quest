@@ -59,6 +59,8 @@ export type RunMark = {
   origin: string;
   startedAt: number;
   lastLineAt: number;
+  endedAt: number | null;
+  endReason: string | null;
   endedReason: string | null;
   turns: number | null;
   toolCalls: number | null;
@@ -108,11 +110,12 @@ export function laneOfRun(run: RunMark): Lane {
   return "runners";
 }
 
-/** When a bar ends. A run still going runs to now; anything else ends at the
- *  last line the record holds for it, which is the last thing it was seen to
- *  do. */
+/** When a bar ends. A run still going runs to now; a run whose end the box
+ *  posted ends then; anything else ends at the last line the record holds for
+ *  it, which is the last thing it was seen to do. */
 export function barEnd(run: RunMark, now: number): number {
-  return run.status === "running" ? Math.max(run.lastLineAt, now) : run.lastLineAt;
+  if (run.status === "running") return Math.max(run.lastLineAt, now);
+  return run.endedAt ?? run.lastLineAt;
 }
 
 /** The repositories a run may have worked in. */

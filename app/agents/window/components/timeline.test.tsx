@@ -27,6 +27,8 @@ const RUN: RunMark = {
   origin: "cron:time-notes",
   startedAt: 100,
   lastLineAt: 400,
+  endedAt: null,
+  endReason: null,
   endedReason: null,
   turns: 2,
   toolCalls: 4,
