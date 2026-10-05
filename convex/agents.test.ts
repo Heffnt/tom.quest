@@ -1202,17 +1202,14 @@ describe("agents: a registration token belongs to one agent", () => {
 
 describe("a run's end", () => {
   const RUN_ID = "claude:laptop:root-run";
-  async function stored(t: ReturnType<typeof convexTest<typeof schema>>) {
-    return await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
-  }
 
   it("sets endedAt and endReason on the run and nothing else", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.agents.internalIngest, ingest(run({ status: "running", startedAt: 1_000, lastLineAt: 2_000 })) as never);
-    const before = await stored(t);
+    const before = await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
     const result = await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" });
     expect(result).toEqual({ ok: true, runId: RUN_ID, endedAt: 5_000, endReason: "ended", kept: false });
-    const after = await stored(t);
+    const after = await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
     expect(after).toMatchObject({ endedAt: 5_000, endReason: "ended", status: "running", lastLineAt: 2_000 });
     const { endedAt: _endedAt, endReason: _endReason, ...rest } = after!;
     expect(rest).toEqual(before);
@@ -1233,7 +1230,7 @@ describe("a run's end", () => {
     await refused({ runId: RUN_ID, endedAt: Date.now() + 6 * 60_000 }, "endedAt is more than 5 minutes in the future");
     await refused({ runId: RUN_ID, endedAt: 0 }, "endedAt is not epoch milliseconds");
     await refused({ runId: "not-an-agent", endedAt: 5_000 }, "invalid runId");
-    expect((await stored(t))?.endedAt).toBeUndefined();
+    expect((await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first()))?.endedAt).toBeUndefined();
   });
 
   it("keeps the later of two ends, so a retried first end cannot move a resumed session's end back", async () => {
@@ -1243,7 +1240,7 @@ describe("a run's end", () => {
     expect(await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" }))
       .toEqual({ ok: true, runId: RUN_ID, endedAt: 9_000, endReason: "stopped", kept: true });
     await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 12_000, endReason: "limit" });
-    expect(await stored(t)).toMatchObject({ endedAt: 12_000, endReason: "limit" });
+    expect(await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first())).toMatchObject({ endedAt: 12_000, endReason: "limit" });
   });
 
   it("is not taken back by a later page of the same run", async () => {
@@ -1251,7 +1248,7 @@ describe("a run's end", () => {
     await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: 1_000, lastLineAt: 2_000 })) as never);
     await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" });
     await t.mutation(internal.agents.internalIngest, retry(run({ status: "ended", startedAt: 1_000, lastLineAt: 3_000 })) as never);
-    expect(await stored(t)).toMatchObject({ status: "ended", lastLineAt: 3_000, endedAt: 5_000, endReason: "ended" });
+    expect(await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first())).toMatchObject({ status: "ended", lastLineAt: 3_000, endedAt: 5_000, endReason: "ended" });
   });
 
   it("names the closed list of reasons the schema holds", async () => {
