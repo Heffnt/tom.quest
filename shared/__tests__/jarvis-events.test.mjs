@@ -562,7 +562,7 @@ describe("use, issue and presence rows", () => {
       expect(REPEATS_BY_DATA_ID).toContain(kind);
       expect(JARVIS_EVENT_ONLY_KINDS).toContain(kind);
     }
-    expect(THREAD_REPLY_KINDS).toEqual(["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back"]);
+    expect(THREAD_REPLY_KINDS).toEqual(["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back", "answer"]);
     expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "no-issues" }, text: "working, written as a use row on digest: event e1" }).ok).toBe(true);
   });
 });

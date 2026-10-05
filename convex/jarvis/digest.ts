@@ -225,6 +225,30 @@ type ThreadDigestAnswer = { appended: false; day: string; reason: string; id?: s
  * Jarvis thread once the TTS day has begun, and push once. convex/crons.ts
  * runs it at the top of every hour: the 05:00 New York run appends, and a
  * later run appends only when no digest for the day exists yet. */
+/** The first `rows` rows of `query` under `budget`, which is checked before
+ *  each row is fetched. Unlike readWithin it reads no row past `rows` to learn
+ *  whether more exist: taking the newest few is the read's whole intent, not
+ *  a cut. A stop at the budget is recorded, as readWithin records it. */
+async function firstRows(budget: ReadBudget, query: AsyncIterable<Doc<"events">>, rows: number): Promise<Doc<"events">[]> {
+  const out: Doc<"events">[] = [];
+  const iterator = query[Symbol.asyncIterator]();
+  try {
+    while (out.length < rows) {
+      if (!budget.open) {
+        budget.stop("bytes");
+        break;
+      }
+      const next = await iterator.next();
+      if (next.done === true) break;
+      budget.charge(next.value);
+      out.push(next.value);
+    }
+  } finally {
+    await iterator.return?.();
+  }
+  return out;
+}
+
 export const appendThreadDigest = internalMutation({ args: {}, handler: (ctx) => appendDigestToThread(ctx) });
 
 /** appendThreadDigest's work, in the caller's transaction (a test counts its
@@ -237,7 +261,7 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
   }
   const own = ReadBudget.of(THREAD_OWN_BYTES);
   const digestReads = own.allot(THREAD_OWN_READS.digests.what, THREAD_OWN_READS.digests.bytes);
-  const [existing] = await readWithin(digestReads, ctx.db
+  const [existing] = await firstRows(digestReads, ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_DIGEST).eq("subject", day))
     .order("desc"), 1);
@@ -250,7 +274,7 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
   const needsFrom = now - NEEDS_YOU_WINDOW_MS;
   // The newest digests in the needs-you window; the newest of all, which
   // may be older, gives the window start when none is in it.
-  const recentDigests = await readWithin(digestReads, ctx.db
+  const recentDigests = await firstRows(digestReads, ctx.db
     .query("events")
     .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST))
     .order("desc"), DIGESTS_IN_WINDOW);
@@ -273,10 +297,12 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
     for (const item of (row.data as { items: DigestItem[] }).items) listedKeys.add(item.key);
     for (const item of await laterDigestItems(ctx, row._id, itemReads)) listedKeys.add(item.key);
   }
-  // A listed key the budget left unread could be listed twice, so a cut
-  // here lists no opening today and leaves the next digest's start where
-  // this one's was.
-  const listedComplete = own.cuts().length === 0;
+  // A listed key the budget left unread could be listed twice, so a byte cut
+  // of the two reads the keys come from (the digest rows, the items posted
+  // under them) lists no opening today and leaves the next digest's start
+  // where this one's was. No other cut stops the scan.
+  const listedComplete = !own.cuts().some((cut) => cut.by === "bytes"
+    && (cut.what === THREAD_OWN_READS.digests.what || cut.what === THREAD_OWN_READS.items.what));
   // An opening is listed once, in the first thread digest after it opened,
   // found by its key. The scan starts where the previous digest stopped
   // (data.openingsFrom), so an opening it listed is not read again, except

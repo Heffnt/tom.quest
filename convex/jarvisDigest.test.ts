@@ -193,6 +193,25 @@ describe("the thread digest, appended by the record's cron", () => {
     expect(listed.sort()).toEqual(["large-1", "large-2", "later"]);
   });
 
+  // witness: the read of the four newest digests looked at a fifth to learn
+  // whether it was cut, recorded a row cut, and every cut stopped the scan of
+  // openings, so from the sixth digest on no opening was listed.
+  it("lists a pending opening on the seventh morning, after six digests", async () => {
+    const t = setup(MORNING);
+    await t.run(async (ctx) => {
+      for (let d = 6; d >= 1; d -= 1) {
+        const at = MORNING - d * 86_400_000;
+        await ctx.db.insert("events", { kind: "thread-digest", at, provenance: { job: "digest" }, subject: `earlier-${d}`,
+          data: { day: `earlier-${d}`, windowEnd: at, objectionAskIds: [], items: [] }, text: "Earlier digest." });
+      }
+      await ctx.db.insert("events", { kind: "needs-you-opened", at: MORNING - 3_600_000, provenance: {},
+        subject: "pending", data: { key: "pending" }, text: "Pending." });
+    });
+    expect(await appendDigest(t)).toMatchObject({ appended: true, day: DAY });
+    const today = (await ofKind(t, "events", "thread-digest")).find((row) => row.subject === DAY);
+    expect((today?.data as { items: Array<{ key: string }> }).items.map((item) => item.key)).toEqual(["pending"]);
+  });
+
   it("cuts an item's text to its byte bound and stops the list at its byte budget", async () => {
     const t = setup(MORNING);
     await t.run(async (ctx) => {
