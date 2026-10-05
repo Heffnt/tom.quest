@@ -99,6 +99,7 @@ describe("rulings under their plain name", () => {
       "leftPage",
       "leftToRemap",
       "newestTodoEvents",
+      "readTodo",
       "resolveId",
       "todoEvents",
       "todoHasEventSince",
@@ -140,7 +141,9 @@ describe("copyBack: the old tables made to hold what the plain ones do", () => {
     const plain = await t.run(async (ctx) => {
       const oldTodo = (await resolveId(ctx, "todos", old.todoId))!;
       const oldBlock = (await resolveId(ctx, "blocks", old.blockId))!;
-      const fresh = await ctx.db.insert("todos", { ...todo, statement: "new", needs: [oldTodo] });
+      // It carries the rollover's mark, which the old table declares so the
+      // copy can hold it.
+      const fresh = await ctx.db.insert("todos", { ...todo, statement: "new", needs: [oldTodo], rolledOverDueAt: 5 });
       const later = await ctx.db.insert("todos", { ...todo, statement: "later" });
       await ctx.db.patch(fresh, { needs: [oldTodo, later] });
       await ctx.db.patch(oldTodo, { statement: "old, edited", body: undefined });
@@ -166,7 +169,7 @@ describe("copyBack: the old tables made to hold what the plain ones do", () => {
       const fresh = (await ctx.db.get(plain.fresh))!;
       const later = (await ctx.db.get(plain.later))!;
       const oldFresh = (await ctx.db.get(ctx.db.normalizeId("dtsTodos", fresh.legacyId!)!))!;
-      expect(oldFresh).toMatchObject({ statement: "new", needs: [old.todoId, later.legacyId] });
+      expect(oldFresh).toMatchObject({ statement: "new", needs: [old.todoId, later.legacyId], rolledOverDueAt: 5 });
       expect(await ctx.db.get(old.todoId)).toMatchObject({ statement: "old, edited" });
       expect(await ctx.db.get(old.todoId)).not.toHaveProperty("body");
       expect(await ctx.db.get(old.blockId)).toBeNull();

@@ -11,7 +11,7 @@ import {
   type TodoOutcome,
 } from "./ttsCompose";
 import { internalMutation, internalQuery } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
@@ -45,7 +45,8 @@ import { redactSecrets } from "../shared/redact.mjs";
 import { decidedByText } from "../shared/decided-by.mjs";
 import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
-import { resolveId, todoEvents, todoReader } from "./jarvis/tables";
+import { readTodo } from "./jarvis/tables";
+import { MAX_DOCUMENT_BYTES, MIB, ReadBudget, getWithin, readWithin, type ReadCut } from "./readBudget";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -153,8 +154,9 @@ export const ROLLOVER_NOTE = "passed without an outcome; recorded at the 5 a.m. 
 // At 5 a.m. New York, before composing: every active dated todo whose date is
 // before the new calendar day and which has no outcome recorded for that date
 // gets the outcome "missed", ONCE, through tts.recordMissedKeepingDate. That
-// path writes the outcome row and NOTHING else — the date stays, its dateKind
-// stays, and updatedAt is not bumped (see the comment there). The item is then
+// path writes the outcome row and the rollover's mark and NOTHING else — the
+// date stays, its dateKind stays, and updatedAt is not bumped (see the
+// comment there). The item is then
 // still listed as overdue with its original date until Tom replies done or
 // gives a new one. Idempotent: the outcome row's dueAt equals the todo's dueAt
 // afterwards, and that equality is the "already recorded" check.
@@ -168,27 +170,56 @@ export function isPassedWithoutOutcome(
   return !(todo.dateOutcomes ?? []).some((o) => o.dueAt === dueAt);
 }
 
-export const internalRollMissed = internalMutation({
-  args: { day: v.string() },
-  handler: async (ctx, { day }) => {
-    const { start } = nyCalendarDayBoundsUtc(day);
-    // The rows the rollover can possibly touch, and no others: active, dated,
-    // and dated before the new day. The `gte(0)` lower bound excludes the
-    // undated rows, which sort before every number in a Convex index.
-    const passed = await ctx.db
+export async function rollMissed(
+  ctx: MutationCtx,
+  day: string,
+): Promise<{ rolled: Id<"todos">[]; cuts: ReadCut[] }> {
+  const { start } = nyCalendarDayBoundsUtc(day);
+  const budget = ReadBudget.of(ROLLOVER_BYTES);
+  // The rows the rollover has not settled for their current date, and no
+  // others: active, dated before the new day, and without the rollover's
+  // mark (schema todos.rolledOverDueAt). Rows settled on earlier mornings
+  // are outside the range, so they never use up this read; the oldest
+  // unsettled dates come first, and when the budget stops the read the rest
+  // are the first read the next morning. The `gte(0)` lower bound excludes
+  // undated rows, which sort before every number in a Convex index.
+  const unsettled = await readWithin(
+    budget.allot("past-dated todos for the missed rollover", ROLLOVER_BYTES / 2),
+    ctx.db
       .query("todos")
-      .withIndex("by_status_and_due", (q) =>
-        q.eq("status", "active").gte("dueAt", 0).lt("dueAt", start),
+      .withIndex("by_status_rollover_due", (q) =>
+        q.eq("status", "active").eq("rolledOverDueAt", undefined).gte("dueAt", 0).lt("dueAt", start),
       )
-      .collect();
-    const rolled: Id<"todos">[] = [];
-    for (const todo of passed) {
-      if (!isPassedWithoutOutcome(todo, start)) continue;
+      .order("asc"),
+    Number.POSITIVE_INFINITY,
+  );
+  // Every row read is settled here and leaves the range: marked missed, or,
+  // when an outcome for its date is already recorded (Tom's, or a missed mark
+  // from before the field existed), given the mark alone. A patch reads the
+  // row it changes; that read is counted under the other half of the budget.
+  // The rows patched are the rows read above, so this half binds only where
+  // that one did; a row it skips stays unsettled for the next morning.
+  const patches = budget.allot("past-dated todos settled", ROLLOVER_BYTES / 2);
+  const rolled: Id<"todos">[] = [];
+  for (const todo of unsettled) {
+    if (!patches.open) {
+      patches.skip();
+      continue;
+    }
+    patches.charge(todo);
+    if (isPassedWithoutOutcome(todo, start)) {
       await recordMissedKeepingDate(ctx, todo, ROLLOVER_NOTE);
       rolled.push(todo._id);
+    } else {
+      await ctx.db.patch(todo._id, { rolledOverDueAt: todo.dueAt });
     }
-    return rolled;
-  },
+  }
+  return { rolled, cuts: budget.cuts() };
+}
+
+export const internalRollMissed = internalMutation({
+  args: { day: v.string() },
+  handler: async (ctx, { day }) => (await rollMissed(ctx, day)).rolled,
 });
 
 // ── Gathering the day's facts ────────────────────────────────────────────────
@@ -235,21 +266,68 @@ export function calendarLeadText(spans: { start: number; end: number; allDay: bo
   return `Your day is committed from ${from} to ${to}.`;
 }
 
-// Bounded newest-first walk of dtsEvents for a kind, the internalLastEventAt
-// pattern: dtsEvents is busy instrumentation, and if the kind is not inside
-// this many rows "never" is the honest answer.
+// ── What one digest reads ───────────────────────────────────────────────────
+// Every read gathering the day's facts has a row cap and a byte allotment
+// (convex/readBudget.ts), and the allotments share one gather budget. The row
+// caps bound the rows a read walks; the bytes are what Convex limits.
+
+/** A day normally has hundreds of legacy events; the cap bounds the busy instrumentation window. */
 const EVENT_SCAN = 2000;
-/** The most box-change rows, and deploy rows, one digest reads. A day holds
- *  tens (every sudo run, unit change, login and state change, folded). */
+/** A day normally has tens of deploy rows; the cap bounds that kind's catch-up window. */
 const BOX_SCAN = 2000;
 
-// The same shape for the email-capture read: the newest rows on the source
-// index, cut at the window. A window holding more email captures than this is
-// a mail flood, and the morning message is a morning read.
+/** A day normally has tens of email captures; the cap bounds a mail-flood window. */
 const CAPTURE_SCAN = 500;
 
-// How many delegate decisions one morning's objection list is gathered from.
+/** A day normally has a handful of decisions; the cap bounds each objection source. */
 const OBJECTION_SCAN = 200;
+
+/** A day normally has tens of dated todos; the cap keeps a long backlog inside one digest read. */
+const DATED_SCAN = 500;
+/** A day normally has tens of calendar rows; the cap bounds each 31-day overlap scan. */
+const CALENDAR_SCAN = 500;
+/** A day normally has tens of prepared todos. */
+const READY_SCAN = 200;
+/** A todo is marked surfaced once per digest that showed it. */
+const SURFACED_SCAN = 50;
+
+/** The bytes one gather reads in all. The missed rollover reads up to
+ *  ROLLOVER_BYTES in the same transaction (convex/jarvis/digest.ts compose),
+ *  and each of the two budgets can overshoot by one document, so together
+ *  they read at most 11 + 1.5 + 2 × 1 = 14.5 MiB of Convex's 16. */
+export const GATHER_BYTES = 11 * MIB;
+export const ROLLOVER_BYTES = 1.5 * MIB;
+
+/** Each read's allotment of GATHER_BYTES; they sum to it. Read from
+ *  production on 2026-10-04, over the window since the last digest that went
+ *  out (2026-09-28): the 1,000 agent runs read were 2.8 MB, the 2,000 events
+ *  1.4 MB, and 1,588 todos 8.9 MB (5.6 KB each on average, an explanation up
+ *  to 64 KB). */
+export const READ_BYTES = {
+  dated: 1.5 * MIB,
+  blocks: 0.25 * MIB,
+  calendarEvents: 0.25 * MIB,
+  emailCaptures: 0.5 * MIB,
+  objectionEvents: 0.5 * MIB,
+  nightEvents: 1.5 * MIB,
+  workOutcomes: 0.5 * MIB,
+  evalRuns: 0.125 * MIB,
+  decisions: 0.125 * MIB,
+  digestLines: 0.125 * MIB,
+  settlements: 0.125 * MIB,
+  jobReports: 0.25 * MIB,
+  prepared: 1.5 * MIB,
+  needs: 0.5 * MIB,
+  lookups: 0.5 * MIB,
+  surfacedMarks: 0.125 * MIB,
+  deploys: 0.125 * MIB,
+  boxChanges: 0.5 * MIB,
+  runs: 2 * MIB,
+} as const;
+
+/** The most one digest's transaction reads (GATHER_BYTES above); the tests
+ *  hold it under CONVEX_READ_LIMIT. */
+export const DIGEST_READ_BOUND = GATHER_BYTES + ROLLOVER_BYTES + 2 * MAX_DOCUMENT_BYTES;
 
 /**
  * The newest "digest-sent" row: which day went out last, and where that run's
@@ -325,31 +403,47 @@ export async function gatherTodayFacts(
     day,
     now,
     since,
+    earlierCuts = [],
   }: {
     day: string;
     now: number;
     since: number;
+    /** Reads the same transaction stopped before the gather (the rollover). */
+    earlierCuts?: ReadCut[];
   },
 ): Promise<TodayFacts> {
   const { start: dayStart, end: dayEnd } = nyCalendarDayBoundsUtc(day);
+  const budget = ReadBudget.of(GATHER_BYTES);
 
-  // Names for the ids the sections actually touch, fetched one at a time and
-  // remembered. The whole dtsTodos and batches tables were read here before —
-  // two full-table scans that grow with the record forever, for a handful of
-  // lookups. An id comes in either form (a stored reference holds the old
-  // one: convex/jarvis/tables.ts); the row is the plain one.
-  const todoOf = todoReader(ctx);
+  // Every row looked up by id (a todo a row names, a session) shares one
+  // allotment. Todos are fetched one at a time and remembered; an id comes
+  // in either form (a stored reference holds the old
+  // one: convex/jarvis/tables.ts) and the row is the plain one. Undefined:
+  // the allotment was spent and the row was not read.
+  const lookups = budget.allot("rows looked up by id", READ_BYTES.lookups);
+  const seenTodos = new Map<string, Doc<"todos"> | null | undefined>();
+  const todoOf = async (id: string | undefined): Promise<Doc<"todos"> | null | undefined> => {
+    if (id === undefined) return null;
+    if (seenTodos.has(id)) return seenTodos.get(id);
+    const row = await getWithin(lookups, () => readTodo(ctx, id));
+    seenTodos.set(id, row);
+    return row;
+  };
 
   // 1. Dated and late: every active dated todo due today or earlier, oldest
   //    date first — what the cap drops has to be the newest, because an item
   //    three weeks late is the one Tom needs named in the morning.
   const dated = (
-    await ctx.db
-      .query("todos")
-      .withIndex("by_status_and_due", (q) =>
-        q.eq("status", "active").gte("dueAt", 0).lt("dueAt", dayEnd),
-      )
-      .collect()
+    await readWithin(
+      budget.allot("dated todos", READ_BYTES.dated),
+      ctx.db
+        .query("todos")
+        .withIndex("by_status_and_due", (q) =>
+          q.eq("status", "active").gte("dueAt", 0).lt("dueAt", dayEnd),
+        )
+        .order("asc"),
+      DATED_SCAN,
+    )
   )
     .filter((t) => t.dueAt !== undefined)
     .sort((a, b) => (a.dueAt as number) - (b.dueAt as number))
@@ -372,10 +466,13 @@ export async function gatherTodayFacts(
   //    with EVERY ROW FROM A PRIVATE FEED DROPPED (Tom 2026-09-09): the family
   //    calendar stays in the record, and nothing he reads names it.
   const privateFeeds = privateFeedNames(process.env.TTS_ICS_FEEDS);
-  const blockRows = await ctx.db
-    .query("blocks")
-    .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
-    .collect();
+  const blockRows = await readWithin(
+    budget.allot("calendar blocks", READ_BYTES.blocks),
+    ctx.db
+      .query("blocks")
+      .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd)),
+    CALENDAR_SCAN,
+  );
   const spans: { start: number; end: number; title: string; allDay: boolean }[] = [];
   for (const b of blockRows) {
     if (b.end <= dayStart) continue;
@@ -386,10 +483,14 @@ export async function gatherTodayFacts(
       allDay: false,
     });
   }
-  for (const e of await ctx.db
-    .query("ttsCalendarEvents")
-    .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
-    .collect()) {
+  const calendarRows = await readWithin(
+    budget.allot("calendar events", READ_BYTES.calendarEvents),
+    ctx.db
+      .query("ttsCalendarEvents")
+      .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd)),
+    CALENDAR_SCAN,
+  );
+  for (const e of calendarRows) {
     if (e.end <= dayStart) continue;
     if (feedIsPrivate(e.feed, privateFeeds)) continue;
     spans.push({ start: e.start, end: e.end, title: e.title, allDay: e.allDay });
@@ -405,11 +506,14 @@ export async function gatherTodayFacts(
   //    is a thing to do today and reaches him through the ready count below; a
   //    capture that is not ready is a row, not a line (§4.3). Read only to
   //    keep them out of the ready list twice.
-  const recentEmail = await ctx.db
-    .query("todos")
-    .withIndex("by_source", (q) => q.eq("source", "email"))
-    .order("desc")
-    .take(CAPTURE_SCAN);
+  const recentEmail = await readWithin(
+    budget.allot("email captures", READ_BYTES.emailCaptures),
+    ctx.db
+      .query("todos")
+      .withIndex("by_source", (q) => q.eq("source", "email"))
+      .order("desc"),
+    CAPTURE_SCAN,
+  );
   const emailCaptures = recentEmail.filter((t) => t.createdAt >= since && t.createdAt < now);
   const emailCaptureIds = new Set(emailCaptures.map((t) => t._id as string));
 
@@ -424,15 +528,32 @@ export async function gatherTodayFacts(
   //    field is never cleared: it is what the triage judged at capture, and
   //    the reader decides what is still to be said. Gmail's "email" is the one
   //    mail source that captures today; Outlook's joins when its poller does.
+  //    Shown means a "surfaced" row the digest wrote (via "digest"); other
+  //    writers of that kind do not count. The todo's surfaced rows are read
+  //    on by_todo_kind, per id form it is stored under, at most SURFACED_SCAN
+  //    each; a mark not read because a cap or the allotment stopped the read
+  //    counts as not shown: the error stays toward saying twice.
   const flagged = recentEmail.filter(
     (t) => t.needsTomToday !== undefined && t.status === "active" && t.createdAt < now,
   );
+  const surfacedBudget = budget.allot("surfaced marks of flagged emails", READ_BYTES.surfacedMarks);
   const unshown: typeof flagged = [];
   for (const t of flagged) {
-    // The surfaced rows name the todo by either id.
-    const shown = (await todoEvents(ctx, t._id)).some(
-      (e) => e.kind === "surfaced" && (e.data as { via?: unknown } | undefined)?.via === "digest",
-    );
+    const old = t.legacyId === undefined ? null : ctx.db.normalizeId("dtsTodos", t.legacyId);
+    let shown = false;
+    for (const form of old === null ? [t._id] : [t._id, old]) {
+      const marks = await readWithin(
+        surfacedBudget,
+        ctx.db
+          .query("dtsEvents")
+          .withIndex("by_todo_kind", (q) => q.eq("todoId", form).eq("kind", "surfaced")),
+        SURFACED_SCAN,
+      );
+      if (marks.some((e) => (e.data as { via?: unknown } | undefined)?.via === "digest")) {
+        shown = true;
+        break;
+      }
+    }
     if (!shown) unshown.push(t);
   }
   const needsYou = unshown
@@ -447,21 +568,30 @@ export async function gatherTodayFacts(
   //    instrumentation must not push a decision taken in his name (a /tts/ask
   //    row), a merge or a message sent as him out of the window before the
   //    kind is looked at. The scan keeps the rest.
+  //    The five kinds share one allotment and are read one after another
+  //    (convex/readBudget.ts says why not in parallel).
   const objectionKinds = new Set<string>([DELEGATE_DECISION, MERGE, SENT_AS_TOM, SIMPLIFY_PROPOSAL, REMOVAL_LOOP_PR]);
-  const byKind = await Promise.all(
-    [...objectionKinds].map(async (kind) =>
-      await ctx.db
+  const objectionBudget = budget.allot("objection-list events", READ_BYTES.objectionEvents);
+  const byKind: Doc<"dtsEvents">[][] = [];
+  for (const kind of objectionKinds) {
+    const rows = await readWithin(
+      objectionBudget,
+      ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since).lt("at", now))
-        .order("desc")
-        .take(OBJECTION_SCAN),
-    ),
+        .order("desc"),
+      OBJECTION_SCAN,
+    );
+    byKind.push(rows);
+  }
+  const scanned = await readWithin(
+    budget.allot("events of the night", READ_BYTES.nightEvents),
+    ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at", (q) => q.gte("at", since).lt("at", now))
+      .order("desc"),
+    EVENT_SCAN,
   );
-  const scanned = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_at", (q) => q.gte("at", since).lt("at", now))
-    .order("desc")
-    .take(EVENT_SCAN);
   // THE WORK QUEUE'S OUTCOMES (Jarvis worker/jobs/work-queue.mjs) come
   //    through POST /jarvis/event into the record's events table, the todo as
   //    subject, and join the night's rows as an outcome on that todo. A row
@@ -469,14 +599,22 @@ export async function gatherTodayFacts(
   //    (subject = its key), which the scan above already read. Newest first,
   //    as the scan above: past the cap it is the oldest that go, never the
   //    night's last.
+  //    An outcome whose todo the lookups could not read is left out, and
+  //    counted in their cut line.
   const worked: NightRow[] = [];
-  for (const w of await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", SESSION_OUTCOME).gte("at", since).lt("at", now))
-    .order("desc")
-    .take(EVENT_SCAN)) {
-    const todoId = w.subject === undefined ? null : await resolveId(ctx, "todos", w.subject);
-    if (todoId !== null) worked.push({ at: w.at, kind: w.kind, todoId, data: w.data, key: undefined });
+  const workRows = await readWithin(
+    budget.allot("work outcomes", READ_BYTES.workOutcomes),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", SESSION_OUTCOME).gte("at", since).lt("at", now))
+      .order("desc"),
+    EVENT_SCAN,
+  );
+  for (const w of workRows) {
+    const todo = await todoOf(w.subject);
+    if (todo !== null && todo !== undefined) {
+      worked.push({ at: w.at, kind: w.kind, todoId: todo._id, data: w.data, key: undefined });
+    }
   }
   const events: NightRow[] = [...scanned.filter((e) => !objectionKinds.has(e.kind)), ...byKind.flat(), ...worked].sort(
     (a, b) => a.at - b.at,
@@ -488,11 +626,14 @@ export async function gatherTodayFacts(
   // gone, joins the one tail row, printed last.
   const byTodo = new Map<string, TodoOutcome>();
   const finishedSessions = new Set<string>();
+  //    Null when the lookups were spent before the row was read: the event
+  //    is then left out, and counted in their cut line.
   const todoOutcomeFor = async (
     todoId: string | undefined,
     sessionId: string | undefined,
-  ): Promise<TodoOutcome> => {
+  ): Promise<TodoOutcome | null> => {
     const todo = await todoOf(todoId);
+    if (todo === undefined) return null;
     const key = todo === null ? "none" : (todo._id as string);
     let row = byTodo.get(key);
     if (row === undefined) {
@@ -508,6 +649,11 @@ export async function gatherTodayFacts(
     // Events are read oldest first, so the last one seen is the newest.
     if (sessionId !== undefined) row.sessionId = sessionId;
     return row;
+  };
+
+  const sessionOf = async (sessionId: string | undefined) => {
+    const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
+    return rowId === null ? null : await getWithin(lookups, () => ctx.db.get(rowId));
   };
 
   const failures = new Map<string, BrokenFact>();
@@ -573,11 +719,14 @@ export async function gatherTodayFacts(
   //    has both. The decision row is the one read for it; the ask row is read
   //    only for an ask whose decision row was not read here (no answer came
   //    back, a capped ask, or a decision row outside this window or cap).
-  const decided = await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
-    .order("desc")
-    .take(OBJECTION_SCAN);
+  const decided = await readWithin(
+    budget.allot("delegate decisions", READ_BYTES.decisions),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
+      .order("desc"),
+    OBJECTION_SCAN,
+  );
   const decidedAskIds = new Set<string>();
   for (const row of decided) {
     const d = (row.data ?? {}) as Record<string, unknown>;
@@ -603,12 +752,11 @@ export async function gatherTodayFacts(
     switch (e.kind) {
       case "session-outcome": {
         const sessionId = str(d.sessionId);
-        const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
-        const session = rowId ? await ctx.db.get(rowId) : null;
+        const session = await sessionOf(sessionId);
         const todoOutcome = await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId);
         // A completed → errored correction is a second outcome event for the
         // same session, not a second session that ended.
-        if (sessionId === undefined || !finishedSessions.has(sessionId)) {
+        if (todoOutcome !== null && (sessionId === undefined || !finishedSessions.has(sessionId))) {
           todoOutcome.finished += 1;
           if (sessionId !== undefined) finishedSessions.add(sessionId);
         }
@@ -623,11 +771,10 @@ export async function gatherTodayFacts(
       }
       case "session-created": {
         const sessionId = str(d.sessionId);
-        const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
-        const session = rowId ? await ctx.db.get(rowId) : null;
-        const live = session !== null && LIVE_STATUSES.includes(session.status as never);
+        const session = await sessionOf(sessionId);
+        const live = session !== null && session !== undefined && LIVE_STATUSES.includes(session.status as never);
         const todoRow = await todoOutcomeFor(session?.todoId ?? e.todoId, sessionId);
-        if (live) todoRow.running = true;
+        if (todoRow !== null && live) todoRow.running = true;
         break;
       }
       case "session-ended": {
@@ -819,7 +966,12 @@ export async function gatherTodayFacts(
   //    of one job are two lines, and one recovering says nothing about the
   //    other. Every report names its job and its condition: onJobFailed
   //    files a report sent without a key under the job's name.
-  const reports = await failuresInWindow(ctx, since, now);
+  const reports = await failuresInWindow(
+    ctx,
+    since,
+    now,
+    budget.allot("job failures and recoveries", READ_BYTES.jobReports),
+  );
   const recoveredAt = new Map<string, number>();
   for (const row of reports.recovered) recoveredAt.set(row.subject as string, row.at);
   const failedKeys = new Set<string>();
@@ -853,11 +1005,14 @@ export async function gatherTodayFacts(
   //    run (convex/ttsEvals.ts EVAL_RUN, subject the set). A set whose newest
   //    run in the window failed items is one broken line; a clean run is the
   //    weekly's fact and /intent's pass rate, not a morning line.
-  const evalRuns = await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", EVAL_RUN).gte("at", since).lt("at", now))
-    .order("desc")
-    .take(OBJECTION_SCAN);
+  const evalRuns = await readWithin(
+    budget.allot("eval runs", READ_BYTES.evalRuns),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", EVAL_RUN).gte("at", since).lt("at", now))
+      .order("desc"),
+    OBJECTION_SCAN,
+  );
   const setsRead = new Set<string>();
   for (const row of evalRuns) {
     // Every eval-run, decision and digest-line row names its subject: the
@@ -883,11 +1038,14 @@ export async function gatherTodayFacts(
   //    listForDigest): a decision taken in his name joins the objection list,
   //    a failure the broken section — what #tts-decisions and #tts-broken
   //    carried as it happened, before there was one output channel.
-  const lines = await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_LINE).gte("at", since).lt("at", now))
-    .order("desc")
-    .take(OBJECTION_SCAN);
+  const lines = await readWithin(
+    budget.allot("digest lines", READ_BYTES.digestLines),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_LINE).gte("at", since).lt("at", now))
+      .order("desc"),
+    OBJECTION_SCAN,
+  );
   for (const row of lines) {
     const d = (row.data ?? {}) as Record<string, unknown>;
     if (d.section === "broken") {
@@ -910,11 +1068,14 @@ export async function gatherTodayFacts(
   // His settlements on /intent (convex/jarvis/intent.ts settle, kind
   //    "disagreement-settled"): one line each, the text settle wrote, read on
   //    the kind's own index over the same window, oldest first.
-  const settledRows = await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED).gte("at", since).lt("at", now))
-    .order("desc")
-    .take(OBJECTION_SCAN);
+  const settledRows = await readWithin(
+    budget.allot("settlements", READ_BYTES.settlements),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED).gte("at", since).lt("at", now))
+      .order("desc"),
+    OBJECTION_SCAN,
+  );
   const settled = settledRows
     .reverse()
     .flatMap((row) => {
@@ -926,18 +1087,30 @@ export async function gatherTodayFacts(
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
   //    so the scan is the prepared list itself. §4.3: the ready SECTION is
   //    gone; the count is the today section's last sentence.
-  const preparedRows: Doc<"todos">[] = await ctx.db
-    .query("todos")
-    .withIndex("by_readiness", (q) => q.eq("readiness", "prepared"))
-    .collect();
+  //    Newest first. When the row cap or the allotment stops the read the
+  //    ready count is a floor; the allotment's stop has a cut line. A prepared todo
+  //    whose needs were not all read is left out of the count, never counted
+  //    as ready on a guess; the needs' cut line counts the needs left unread.
+  const preparedRows = await readWithin(
+    budget.allot("prepared todos", READ_BYTES.prepared),
+    ctx.db
+      .query("todos")
+      .withIndex("by_readiness", (q) => q.eq("readiness", "prepared"))
+      .order("desc"),
+    READY_SCAN,
+  );
+  const needsBudget = budget.allot("needs of prepared todos", READ_BYTES.needs);
   const readyIds = new Set<string>();
   for (const t of preparedRows) {
     if (t.status !== "active" || datedIds.has(t._id as string)) continue;
     const needRows: Doc<"todos">[] = [];
+    let unread = 0;
     for (const id of t.needs ?? []) {
-      const need = await ctx.db.get(id);
-      if (need) needRows.push(need);
+      const need = await getWithin(needsBudget, () => ctx.db.get(id));
+      if (need === undefined) unread += 1;
+      else if (need !== null) needRows.push(need);
     }
+    if (unread > 0) continue;
     if (!isReadyForTom(t, buildDoneSet(needRows), now)) continue;
     readyIds.add(t._id as string);
   }
@@ -953,7 +1126,7 @@ export async function gatherTodayFacts(
   // plain id, which the ready and dated sets above are keyed on, and none
   // for an id naming no row.
   for (const o of rawObjections) {
-    if (o.todoId !== undefined) o.todoId = (await resolveId(ctx, "todos", o.todoId)) ?? undefined;
+    if (o.todoId !== undefined) o.todoId = (await todoOf(o.todoId))?._id ?? undefined;
   }
   const objections = rawObjections
     // The newest OBJECTION_SCAN of every source together: the reads above
@@ -984,12 +1157,21 @@ export async function gatherTodayFacts(
   //    last digest, from the record's events table (convex/boxChanges.ts
   //    boxChangesInWindow), and the deploy job's own rows, each read on its
   //    own kind's index so a busy night of other events cannot crowd them out.
-  const deployRows = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_at", (q) => q.eq("kind", DEPLOY).gte("at", since).lt("at", now))
-    .take(BOX_SCAN);
+  const deployRows = await readWithin(
+    budget.allot("deploys", READ_BYTES.deploys),
+    ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", DEPLOY).gte("at", since).lt("at", now)),
+    BOX_SCAN,
+  );
+  const boxWindow = await boxChangesInWindow(
+    ctx,
+    since,
+    now,
+    budget.allot("box changes", READ_BYTES.boxChanges),
+  );
   const boxChanges = boxChangeLines(
-    await boxChangesInWindow(ctx, since, now),
+    boxWindow,
     deployRows.map((row) => {
       const d = (row.data ?? {}) as Record<string, unknown>;
       return { at: row.at, repo: str(d.repo), to: str(d.to), commits: d.commits };
@@ -1001,11 +1183,14 @@ export async function gatherTodayFacts(
   //    reaches, so the rows are read and summed here, newest first and bounded:
   //    past the bound it is the oldest that go, and the text says the figures
   //    are floors.
-  const started = await ctx.db
-    .query("runs")
-    .withIndex("by_started", (q) => q.gte("startedAt", since).lt("startedAt", now))
-    .order("desc")
-    .take(SPEND_SCAN);
+  const started = await readWithin(
+    budget.allot("agent runs", READ_BYTES.runs),
+    ctx.db
+      .query("runs")
+      .withIndex("by_started", (q) => q.gte("startedAt", since).lt("startedAt", now))
+      .order("desc"),
+    SPEND_SCAN,
+  );
 
   // The tail row, if any, last: it is the one line that names no todo.
   const overnightByTodo = [...byTodo.values()].sort(
@@ -1044,13 +1229,14 @@ export async function gatherTodayFacts(
     settled,
     boxChanges,
     spend: spendOf(started, started.length >= SPEND_SCAN),
+    readCuts: [
+      ...earlierCuts,
+      ...budget.cuts(),
+    ],
   };
 }
 
-/** The most agents one digest reads for the spend section. It bounds the
- *  read far below a query's read limit whatever the rows hold, so a busy day
- *  costs the section its completeness, said in its text, and never costs the
- *  digest. */
+/** A day normally has hundreds of agent runs; the cap bounds the spend read and makes its totals floors. */
 const SPEND_SCAN = 1000;
 
 type RunFields = Pick<Doc<"runs">, "model" | "cli" | "kind" | "parentRunId" | "outcome">;
@@ -1235,10 +1421,17 @@ export const internalComposeToday = internalQuery({
     // reply invitation in every message is conditional on it and on nothing
     // else, so the composer stays pure and this is the one place it enters.
     canReply: v.optional(v.boolean()),
+    // Reads the same transaction stopped before this one (the rollover's).
+    earlierCuts: v.optional(v.array(v.object({
+      what: v.string(),
+      read: v.number(),
+      skipped: v.number(),
+      by: v.union(v.literal("bytes"), v.literal("rows")),
+    }))),
   },
-  handler: async (ctx, { day, now, since: givenSince, canReply }) => {
+  handler: async (ctx, { day, now, since: givenSince, canReply, earlierCuts }) => {
     const since = givenSince ?? (await digestWindowStart(ctx, now));
-    const facts = await gatherTodayFacts(ctx, { day, now, since });
+    const facts = await gatherTodayFacts(ctx, { day, now, since, earlierCuts });
     const reply = canReply ?? false;
     const { message, truncated } = composeTodayFitted(facts, { canReply: reply });
     return {

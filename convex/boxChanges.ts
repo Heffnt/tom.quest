@@ -45,6 +45,7 @@ import { requireTom } from "./authRoles";
 import { redactSecrets } from "../shared/redact.mjs";
 import type { BoxChangeFact } from "./ttsCompose";
 import { listForDigest } from "./jarvis/outbox";
+import { MIB, ReadBudget, readWithin } from "./readBudget";
 
 export const BOX_CHANGE = "box-change";
 /** The deploy job's own row (Jarvis worker/jobs/deploy.mjs): data
@@ -325,19 +326,34 @@ export const BOX_CHANGE_HISTORY_CUT = Date.UTC(2026, 8, 26, 8, 38, 58);
  * copied events to their pre-cut dtsEvents source rows. The copy wrote no
  * marker, so its exact inclusive upper bound is the durable partition. */
 export const BOX_CHANGE_HISTORY_COPIED_THROUGH = 1_790_412_428_617.723;
+/** A day holds tens; the cap keeps a long outage's window inside the read limit. */
+export const BOX_CHANGE_SCAN = 2000;
+/** The bytes one read of the window takes when the caller gives no budget. */
+const BOX_CHANGE_BYTES = 0.5 * MIB;
 
-export async function boxChangesInWindow(ctx: QueryCtx, from: number, to: number): Promise<BoxChange[]> {
+/** The window's box changes, oldest first, stopping at BOX_CHANGE_SCAN rows
+ *  or when `budget` is spent; a stop is recorded on the budget, which the
+ *  digest says in its cut run. */
+export async function boxChangesInWindow(
+  ctx: QueryCtx,
+  from: number,
+  to: number,
+  budget: ReadBudget = ReadBudget.of(BOX_CHANGE_BYTES).allot("box changes", BOX_CHANGE_BYTES),
+): Promise<BoxChange[]> {
   if (to <= BOX_CHANGE_HISTORY_COPIED_THROUGH) return [];
-  const query = ctx.db
-    .query("events")
-    .withIndex("by_kind", (q) => {
-      const kind = q.eq("kind", BOX_CHANGE);
-      return from <= BOX_CHANGE_HISTORY_COPIED_THROUGH
-        ? kind.gt("_creationTime", BOX_CHANGE_HISTORY_COPIED_THROUGH).lt("_creationTime", to)
-        : kind.gte("_creationTime", from).lt("_creationTime", to);
-    });
-  const rows: Doc<"events">[] = [];
-  for await (const row of query) rows.push(row);
+  const rows = await readWithin(
+    budget,
+    ctx.db
+      .query("events")
+      .withIndex("by_kind", (q) => {
+        const kind = q.eq("kind", BOX_CHANGE);
+        return from <= BOX_CHANGE_HISTORY_COPIED_THROUGH
+          ? kind.gt("_creationTime", BOX_CHANGE_HISTORY_COPIED_THROUGH).lt("_creationTime", to)
+          : kind.gte("_creationTime", from).lt("_creationTime", to);
+      })
+      .order("asc"),
+    BOX_CHANGE_SCAN,
+  );
   return rows
     .map((row) => row.data as BoxChange)
     .sort((a, b) => a.at - b.at);

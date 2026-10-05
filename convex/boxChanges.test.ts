@@ -18,6 +18,7 @@ import {
   AGENTS_WINDOW_URL,
   BOX_CHANGE_HISTORY_COPIED_THROUGH,
   BOX_CHANGE_HISTORY_CUT,
+  BOX_CHANGE_SCAN,
   boxChangeFaults,
   boxChangeLines,
   boxChangesInWindow,
@@ -25,12 +26,84 @@ import {
   type BoxChange,
 } from "./boxChanges";
 import { SILENCE_INTERVALS } from "./ttsJobs";
+import {
+  DIGEST_READ_BOUND,
+  GATHER_BYTES,
+  READ_BYTES,
+  ROLLOVER_BYTES,
+  gatherTodayFacts,
+  rollMissed,
+} from "./ttsDigest";
+import { CONVEX_READ_LIMIT, MAX_DOCUMENT_BYTES, MIB, ReadBudget } from "./readBudget";
+import { composeTodayFitted, readCutLine, readCutsLead } from "./ttsCompose";
+import { nyCalendarDayBoundsUtc } from "./ttsShared";
+import type { MutationCtx } from "./_generated/server";
+import { getDocumentSize, type Value } from "convex/values";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const AT = Date.UTC(2026, 8, 25, 5, 8, 34);
 const AGENT = "claude:box:bc34b0d6-a223-4529-bfb0-af12442b8c6a";
 const TOKEN = `ghp_${"a1B2".repeat(9)}`;
+
+/** ctx.db with every document it returns sized as Convex sizes reads
+ *  (getDocumentSize) and added up: the bytes a function reads, whatever path
+ *  the read takes (a range walked row by row, a terminal, a get, the row a
+ *  patch changes). */
+function dbCountingReturnedBytes(db: MutationCtx["db"], add: (bytes: number) => void): MutationCtx["db"] {
+  const size = (doc: unknown) => add(getDocumentSize(doc as Record<string, Value>));
+  const terminals = new Set<PropertyKey>(["take", "first", "unique", "collect", "paginate"]);
+  const wrap = (chain: object): object =>
+    new Proxy(chain, {
+      get(target, key) {
+        const member = Reflect.get(target, key);
+        if (typeof member !== "function") return member;
+        if (key === Symbol.asyncIterator) {
+          return async function* () {
+            const iterator = Reflect.apply(member, target, []) as AsyncIterator<unknown>;
+            for (;;) {
+              const result = await iterator.next();
+              if (result.done) return;
+              size(result.value);
+              yield result.value;
+            }
+          };
+        }
+        if (terminals.has(key)) {
+          return async (...args: unknown[]) => {
+            const result = await Reflect.apply(member, target, args) as unknown;
+            if (Array.isArray(result)) result.forEach(size);
+            else if (result !== null && typeof result === "object" && "page" in result && Array.isArray(result.page)) result.page.forEach(size);
+            else if (result !== null) size(result);
+            return result;
+          };
+        }
+        return (...args: unknown[]) => {
+          const result = Reflect.apply(member, target, args) as unknown;
+          return result !== null && typeof result === "object" ? wrap(result) : result;
+        };
+      },
+    });
+  return new Proxy(db, {
+    get(target, key) {
+      const member = Reflect.get(target, key);
+      if (typeof member !== "function") return member;
+      if (key === "query") return (...args: unknown[]) => wrap(Reflect.apply(member, target, args) as object);
+      if (key === "get") return async (...args: unknown[]) => {
+        const result = await Reflect.apply(member, target, args) as unknown;
+        if (result !== null) size(result);
+        return result;
+      };
+      // A patch or replace reads the row it changes: counted as a read of it.
+      if (key === "patch" || key === "replace") return async (...args: unknown[]) => {
+        const before = await target.get(args[0] as never);
+        if (before !== null) size(before);
+        return await Reflect.apply(member, target, args);
+      };
+      return member.bind(target);
+    },
+  });
+}
 
 const change = (over: Partial<BoxChange> = {}): BoxChange => ({
   source: "sudo",
@@ -252,26 +325,26 @@ describe("the box-change door", () => {
     }
   });
 
-  // witness: taking 2,000 rows and then advancing the digest through the
-  // whole window permanently skipped every later row in that same window.
-  it("reads every box change when a window holds more than 2,000", async () => {
+  it("returns the first 2,000 box changes and records the stop on its budget", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
       const recordedAt = BOX_CHANGE_HISTORY_COPIED_THROUGH + 10_000;
       vi.setSystemTime(recordedAt);
       await t.run(async (ctx) => {
-        for (let n = 0; n < 2_001; n += 1) {
+        for (let n = 0; n <= BOX_CHANGE_SCAN; n += 1) {
           const data = change({ at: AT + n, id: `window-${n}` });
           await ctx.db.insert("events", { ...eventOf(data), provenance: eventOf(data).provenance });
         }
       });
+      const budget = ReadBudget.of(8 * MIB);
       const rows = await t.run(async (ctx) =>
-        boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_COPIED_THROUGH + 1, recordedAt + 100),
+        boxChangesInWindow(ctx, BOX_CHANGE_HISTORY_COPIED_THROUGH + 1, recordedAt + 100, budget.allot("box changes", 8 * MIB)),
       );
-      expect(rows).toHaveLength(2_001);
+      expect(rows).toHaveLength(BOX_CHANGE_SCAN);
       expect(rows[0].id).toBe("window-0");
-      expect(rows[2_000].id).toBe("window-2000");
+      expect(rows[BOX_CHANGE_SCAN - 1].id).toBe(`window-${BOX_CHANGE_SCAN - 1}`);
+      expect(budget.cuts()).toEqual([{ what: "box changes", read: BOX_CHANGE_SCAN, skipped: 0, by: "rows" }]);
     } finally {
       vi.useRealTimers();
     }
@@ -309,6 +382,176 @@ describe("the box-change door", () => {
       "data.count must be a positive integer",
       "data.change.what must be a non-empty string",
     ]);
+  });
+});
+
+describe("the digest read budget", () => {
+  it("holds the budgets' sum under Convex's read limit", () => {
+    const allotted = Object.values(READ_BYTES).reduce((sum, bytes) => sum + bytes, 0);
+    expect(allotted).toBe(GATHER_BYTES);
+    expect(DIGEST_READ_BOUND).toBe(GATHER_BYTES + ROLLOVER_BYTES + 2 * MAX_DOCUMENT_BYTES);
+    expect(DIGEST_READ_BOUND).toBeLessThan(CONVEX_READ_LIMIT);
+  });
+
+  // witness: the prepared todos were read 200 at a time whatever they held,
+  // each one's needs fetched whole, and the rollover read every past-dated
+  // todo, so 200 todos of 64 KB were 12.8 MB before any other read.
+  it("reads at most its byte bound when the sources hold more than Convex's read limit", async () => {
+    const t = convexTest({ schema, modules });
+    const recordedAt = Date.UTC(2026, 8, 27, 9);
+    const now = recordedAt + 60_000;
+    const since = recordedAt - 3_600_000;
+    const day = "2026-09-27";
+    const { start: dayStart } = nyCalendarDayBoundsUtc(day);
+    vi.setSystemTime(recordedAt);
+    // One explanation as long as the ones the audit named.
+    const pad = "x".repeat(64 * 1024);
+
+    let seeded = 0;
+    await t.run(async (ctx) => {
+      const insert = async (table: "todos" | "blocks" | "dtsEvents" | "events" | "runs", doc: Record<string, unknown>) => {
+        const id = await ctx.db.insert(table, doc as never);
+        seeded += getDocumentSize((await ctx.db.get(id)) as Record<string, Value>);
+        return id;
+      };
+      const late = [];
+      for (let n = 0; n < 60; n += 1) {
+        late.push(await insert("todos", {
+          statement: `late ${n}`, groundUpExplanation: pad, readiness: "unprepared", status: "active",
+          timingClass: "dated", dueAt: dayStart - (n + 1) * 60_000, dateKind: "external", source: "synthetic",
+          createdAt: recordedAt - n, updatedAt: recordedAt - n,
+        }));
+      }
+      for (let n = 0; n < 60; n += 1) {
+        await insert("todos", {
+          statement: `prepared ${n}`, groundUpExplanation: pad, readiness: "prepared", status: "active",
+          timingClass: "whenever", needs: [late[n]], source: "synthetic",
+          createdAt: recordedAt - n, updatedAt: recordedAt - n,
+        });
+      }
+      for (let n = 0; n < 20; n += 1) {
+        await insert("todos", {
+          statement: `flagged email ${n}`, groundUpExplanation: pad, needsTomToday: { why: "only Tom can answer" },
+          readiness: "unprepared", status: "active", timingClass: "whenever", source: "email",
+          createdAt: recordedAt - n, updatedAt: recordedAt - n,
+        });
+      }
+      for (let n = 0; n < 20; n += 1) {
+        await insert("blocks", { start: dayStart + n, end: dayStart + n + 60_000, todoId: late[n], createdAt: recordedAt });
+      }
+      for (let n = 0; n < 80; n += 1) {
+        await insert("dtsEvents", { at: recordedAt - n, kind: "synthetic-note", data: { pad } });
+      }
+      for (let n = 0; n < 60; n += 1) {
+        await insert("runs", {
+          runId: `run-${n}`, rootRunId: `run-${n}`, depth: 0, linkKnown: true, origin: pad, host: "box",
+          environment: "worker", cli: "claude", parserVersion: "1", kind: "job", status: "ended",
+          startedAt: recordedAt - n, lastLineAt: recordedAt - n, attachments: [], ingestedAt: recordedAt,
+          file: { path: `run-${n}.jsonl`, sourceHash: "h", storedHash: "h", bytes: 0, storedBytes: 0, committedLine: 0, committedPrefixSha256: "h" },
+        });
+      }
+    });
+    // Without the bounds one digest would read every byte seeded.
+    expect(seeded).toBeGreaterThan(CONVEX_READ_LIMIT);
+
+    let bytesRead = 0;
+    const facts = await t.run(async (ctx) => {
+      const counted = { ...ctx, db: dbCountingReturnedBytes(ctx.db, (bytes) => { bytesRead += bytes; }) } as MutationCtx;
+      const { cuts } = await rollMissed(counted, day);
+      return await gatherTodayFacts(counted, { day, now, since, earlierCuts: cuts });
+    });
+    expect(bytesRead).toBeLessThanOrEqual(DIGEST_READ_BOUND);
+    expect(bytesRead).toBeGreaterThan(8 * MIB);
+
+    const cuts = facts.readCuts ?? [];
+    expect(cuts.map((cut) => cut.what)).toEqual(expect.arrayContaining([
+      "past-dated todos for the missed rollover",
+      "dated todos",
+      "email captures",
+      "events of the night",
+      "prepared todos",
+      "needs of prepared todos",
+      "rows looked up by id",
+      "agent runs",
+    ]));
+    expect(cuts.find((cut) => cut.what === "rows looked up by id")?.skipped).toBeGreaterThan(0);
+    const { message } = composeTodayFitted(facts, { canReply: false });
+    expect(renderSlack(message)).toContain(readCutsLead(cuts.length));
+    for (const cut of cuts) expect(renderSlack(message)).toContain(readCutLine(cut));
+  }, 120_000);
+
+  it("puts only a flagged email without a surfaced row in needs-you", async () => {
+    const t = convexTest({ schema, modules });
+    const recordedAt = Date.UTC(2026, 8, 27, 9);
+    vi.setSystemTime(recordedAt);
+    await t.run(async (ctx) => {
+      const surfaced = await ctx.db.insert("todos", {
+        statement: "surfaced flagged email",
+        needsTomToday: { why: "only Tom can answer" },
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        createdAt: recordedAt,
+        updatedAt: recordedAt,
+      });
+      await ctx.db.insert("dtsEvents", { at: recordedAt, kind: "surfaced", todoId: surfaced, data: { via: "digest", day: "2026-09-26" } });
+      // witness: a surfaced row from another writer hid the email from the digest.
+      const elsewhere = await ctx.db.insert("todos", {
+        statement: "flagged email surfaced elsewhere",
+        needsTomToday: { why: "only Tom can answer" },
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        createdAt: recordedAt + 2,
+        updatedAt: recordedAt + 2,
+      });
+      await ctx.db.insert("dtsEvents", { at: recordedAt, kind: "surfaced", todoId: elsewhere, data: { via: "page" } });
+      await ctx.db.insert("todos", {
+        statement: "unsurfaced flagged email",
+        needsTomToday: { why: "only Tom can answer" },
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        createdAt: recordedAt + 1,
+        updatedAt: recordedAt + 1,
+      });
+    });
+
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, {
+      day: "2026-09-27",
+      now: recordedAt + 1_000,
+      since: recordedAt - 1,
+    }));
+    expect(facts.needsYou.map((item) => item.statement)).toEqual(["unsurfaced flagged email", "flagged email surfaced elsewhere"]);
+  });
+
+  // witness: the prepared read stopped at 200 rows and the ready count was
+  // short with no line saying so.
+  it("says a read stopped at its row cap and how many rows it read", async () => {
+    const t = convexTest({ schema, modules });
+    const recordedAt = Date.UTC(2026, 8, 27, 9);
+    vi.setSystemTime(recordedAt);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 201; n += 1) {
+        await ctx.db.insert("todos", {
+          statement: `prepared ${n}`, readiness: "prepared", status: "active", timingClass: "whenever",
+          source: "synthetic", createdAt: recordedAt - n, updatedAt: recordedAt - n,
+        });
+      }
+    });
+    const facts = await t.run(async (ctx) => gatherTodayFacts(ctx, {
+      day: "2026-09-27",
+      now: recordedAt + 1_000,
+      since: recordedAt - 1,
+    }));
+    expect(facts.readyBeyond).toBe(200);
+    expect(facts.readCuts).toEqual([{ what: "prepared todos", read: 200, skipped: 0, by: "rows" }]);
+    expect(renderSlack(composeTodayFitted(facts, { canReply: false }).message)).toContain(
+      "Prepared todos: 200 read, stopped at the row limit.",
+    );
   });
 });
 

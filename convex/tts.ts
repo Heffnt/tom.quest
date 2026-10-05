@@ -232,6 +232,7 @@ export const updateTodo = mutation({
       if (value === undefined) continue;
       patch[key] = value === null ? undefined : value;
     }
+    if (patch.dueAt !== undefined) Object.assign(patch, DATE_MOVED);
     // Setting a due date on a whenever item promotes it to dated (spec §5.2);
     // an explicit timingClass in the same call wins.
     if (
@@ -248,6 +249,12 @@ export const updateTodo = mutation({
     await logEvent(ctx, "updated", id, { fields: Object.keys(fields) });
   },
 });
+
+/** What a write that changes a todo's dueAt also writes: the rollover's mark
+ *  for the old date no longer holds (schema todos.rolledOverDueAt), so the
+ *  5 a.m. rollover reads the row again once its new date passes. Every write
+ *  of dueAt carries it. */
+export const DATE_MOVED = { rolledOverDueAt: undefined } as const;
 
 // The ONE place an open date resolves as kept when an item completes — called
 // by setStatus(done) and recordDateOutcome(done) so the kept-dates side
@@ -266,6 +273,7 @@ function resolveDateAsDone(
       { dueAt: todo.dueAt, outcome: "done" as const, recordedAt: now, note },
     ];
     patch.dueAt = undefined;
+    Object.assign(patch, DATE_MOVED);
   }
 }
 
@@ -369,6 +377,7 @@ export const internalTriage = internalMutation({
       }
       await ctx.db.patch(normalized, {
         dueAt,
+        ...DATE_MOVED,
         dateKind: "self-imposed",
         timingClass: "dated",
         updatedAt: Date.now(),
@@ -479,9 +488,11 @@ export async function applyDateOutcome(
     resolveDateAsDone(todo, now, note, patch); // overwrites dateOutcomes consistently
   } else if (newDueAt !== undefined) {
     patch.dueAt = newDueAt;
+    Object.assign(patch, DATE_MOVED);
     if (todo.dateKind === undefined) patch.dateKind = "self-imposed";
   } else {
     patch.dueAt = undefined;
+    Object.assign(patch, DATE_MOVED);
     patch.timingClass = "whenever";
   }
   await ctx.db.patch(todo._id, patch);
@@ -499,7 +510,9 @@ export async function applyDateOutcome(
 //   - updatedAt is NOT bumped. This is an annotation by a cron, not a content
 //     edit, and the needs-me predicate resurfaces an already-ruled gate when
 //     ruledAt < updatedAt (the same reasoning as internalBulkUpdate's).
-// The outcome row itself is written in the one shape every reader knows.
+// The outcome row itself is written in the one shape every reader knows. The
+// row also gets the rollover's mark (rolledOverDueAt, the date it settled),
+// which keeps it out of the next morning's rollover read.
 export async function recordMissedKeepingDate(
   ctx: MutationCtx,
   todo: Doc<"todos">,
@@ -512,15 +525,19 @@ export async function recordMissedKeepingDate(
       ...(todo.dateOutcomes ?? []),
       { dueAt: todo.dueAt, outcome: "missed" as const, recordedAt: now, note },
     ],
+    rolledOverDueAt: todo.dueAt,
   });
   // `rollover: true` marks the row as the system's, not Tom's: the weekly
   // gather counts a date outcome as a touch of his unless it carries this
-  // (convex/ttsWeekly.ts isTomTouch).
-  await logEvent(ctx, "date-outcome", todo._id, {
-    outcome: "missed",
-    newDueAt: todo.dueAt,
-    note,
-    rollover: true,
+  // (convex/ttsWeekly.ts isTomTouch). Written here, not through logEvent: the
+  // row is in hand and its id is the plain one, and logEvent would read the
+  // whole todo again to resolve that id, a read the rollover's byte budget
+  // (convex/ttsDigest.ts rollMissed) does not count.
+  await ctx.db.insert("dtsEvents", {
+    at: now,
+    kind: "date-outcome",
+    todoId: todo._id,
+    data: { outcome: "missed", newDueAt: todo.dueAt, note, rollover: true },
   });
 }
 
@@ -1099,6 +1116,7 @@ export const internalApplyTimeNote = internalMutation({
           }
           await ctx.db.patch(todo._id, {
             dueAt: action.dueAt,
+            ...DATE_MOVED,
             dateKind: action.dateKind ?? "self-imposed",
             timingClass: "dated",
             updatedAt: now,
@@ -1442,6 +1460,7 @@ export const internalPrepareTodo = internalMutation({
         await logEvent(ctx, "due-skipped", normalized, { dueAt });
       } else {
         patch.dueAt = dueAt;
+        Object.assign(patch, DATE_MOVED);
         patch.dateKind = dateKind ?? "self-imposed";
         patch.timingClass = "dated";
       }

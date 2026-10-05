@@ -146,6 +146,22 @@ export function todoReader(ctx: QueryCtx | MutationCtx): (id: string | undefined
 }
 
 /**
+ * The plain todo an id in either form names, in ONE document read: the row
+ * itself for a plain id, the copy found on by_legacy for an old one. A reader
+ * that counts its bytes (convex/readBudget.ts) uses this, because resolveId
+ * and then get read the same row twice.
+ */
+export async function readTodo(ctx: QueryCtx | MutationCtx, id: string): Promise<Doc<"todos"> | null> {
+  const direct = ctx.db.normalizeId("todos", id);
+  if (direct !== null) return await ctx.db.get(direct);
+  if (ctx.db.normalizeId("dtsTodos", id) === null) return null;
+  return await ctx.db
+    .query("todos")
+    .withIndex("by_legacy", (q) => q.eq("legacyId", id))
+    .first();
+}
+
+/**
  * Rows holding a stored todo reference (a ruling's, an event's, a session's),
  * as a reader hands them out: the todoId is the plain row's id, whichever
  * form the row stores. One lookup per todo named, however many rows name it.

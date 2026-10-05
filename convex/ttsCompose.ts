@@ -279,7 +279,8 @@ function sectionRuns(lines: Line[]): { start: number; end: number }[] {
 /** Reduce until it fits: each run to its lead plus ONE whole sentence with a
  *  link, from the last back; the first run is never reduced, nor is the
  *  needs-you-today run, which names what no one else tells him (Tom,
- *  2026-09-21); then, still over, lines are dropped by lastResortDrop.
+ *  2026-09-21), nor the cut run, which says which lists above are lower
+ *  bounds; then, still over, lines are dropped by lastResortDrop.
  *  Returns whether anything was reduced (recorded on the digest-sent row as
  *  `truncated`, as today). */
 export function fit(
@@ -294,7 +295,8 @@ export function fit(
     // The last run that is still more than a lead and one line under it.
     let target = -1;
     for (let i = runs.length - 1; i >= 1; i -= 1) {
-      if (current.lines[runs[i].start].section === PROTECTED_RUN) continue;
+      const section = current.lines[runs[i].start].section;
+      if (section === PROTECTED_RUN || section === CUT_RUN) continue;
       if (runs[i].end - runs[i].start > 2) {
         target = i;
         break;
@@ -341,18 +343,24 @@ export function fit(
  *  other run first; then the last needs-you-today line, since an item whose
  *  line is dropped is not marked surfaced and comes back the next morning;
  *  then the first run's last line, but never its lead and first item, which
- *  the first line names. */
+ *  the first line names; then, last of all, the cut run's last line. The cut
+ *  run is one line per bounded read, about twenty at most, so it reaches
+ *  that step only when the first run alone nearly fills the message. */
 function lastResortDrop(lines: Line[]): number {
   const runs = sectionRuns(lines);
   const first = runs[0];
   const inFirst = (i: number) => first !== undefined && i >= first.start && i < first.end;
+  const isProtected = (i: number) => lines[i].section === PROTECTED_RUN || lines[i].section === CUT_RUN;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (!inFirst(i) && lines[i].section !== PROTECTED_RUN) return i;
+    if (!inFirst(i) && !isProtected(i)) return i;
   }
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (lines[i].section === PROTECTED_RUN && lines[i].role !== "lead") return i;
   }
   if (first !== undefined && first.end - first.start > 2) return first.end - 1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].section === CUT_RUN && lines[i].role !== "lead") return i;
+  }
   return -1;
 }
 
@@ -371,6 +379,10 @@ function withoutEmptyRuns(lines: Line[]): Line[] {
 /** The run `fit` never reduces, and whose lines the last resort drops only
  *  after every other run but the first. */
 const PROTECTED_RUN = "needs-you-today";
+
+/** The run saying which reads stopped with rows left: `fit` never reduces
+ *  it, and the last resort drops its lines after every other line. */
+const CUT_RUN = "cut";
 
 // ── The dedup index — one appearance per item per day ────────────────────────
 
@@ -539,6 +551,9 @@ export type TodayFacts = {
   /** What the agents that started in the window cost (convex/ttsDigest.ts
    *  spendOf). Absent: no agent started in it. */
   spend?: SpendFact;
+  /** The reads a byte budget stopped (convex/readBudget.ts), so the lists
+   *  and counts they feed can leave rows out. Absent or empty: none did. */
+  readCuts?: ReadCut[];
 };
 
 /** The spend section's facts. Every sum is of the agents' own `costUsd`, the
@@ -720,6 +735,30 @@ function todoOutcomeUrl(o: TodoOutcome): string {
 const OVERNIGHT_LEAD = "Overnight, the box's sessions worked on these todos.";
 /** The box-changes run's lead (plan-root T1). */
 export const BOX_LEAD = "What ran as root and what changed on the Jarvis Box.";
+
+/** A read that stopped with rows left (convex/readBudget.ts): how many rows
+ *  it returned, how many it knows it left unread (a lookup by id knows; a
+ *  range read does not), and what stopped it: its byte budget, or its row
+ *  cap with a further row seen. `what` is plain words, plural: "prepared
+ *  todos". */
+export type ReadCut = { what: string; read: number; skipped: number; by: "bytes" | "rows" };
+
+/** The cut run's lead: how many reads stopped. */
+export function readCutsLead(count: number): string {
+  return `The digest stopped ${countWord(count)} ${plural(count, "read", "reads")} at a row or byte limit, so the counts above can leave rows out and are lower bounds.`;
+}
+
+/** One stopped read, short enough that every read the digest makes (21)
+ *  fits one message with the first line. A row cap that bound saw the next
+ *  row; a lookup by id knows how many rows it left unread; a range read
+ *  stopped by bytes does not, because knowing would mean reading them. */
+export function readCutLine(cut: ReadCut): string {
+  const what = `${capitalise(cut.what)}: ${cut.read.toLocaleString("en-US")} read`;
+  if (cut.by === "rows") return `${what}, stopped at the row limit.`;
+  return cut.skipped > 0
+    ? `${what}, stopped at the byte budget, ${cut.skipped.toLocaleString("en-US")} left unread.`
+    : `${what}, stopped at the byte budget.`;
+}
 
 /** WHAT IT MEANS FOR HIM FIRST, then the detail, then how many times — in one
  *  sentence, so `statement` cuts the detail before it cuts the meaning. */
@@ -1020,7 +1059,8 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   // 7. What changed on the box (plan-root T1, guarantee G4): the last run,
   //    so the first `fit` reduces. No reply invitation: a change is objected
   //    to where it happened, and a change to who can act already has its own
-  //    line on the objection list.
+  //    line on the objection list. A box-change read that stopped is said in
+  //    the cut run below, which fitting the message does not reduce.
   if ((f.boxChanges ?? []).length > 0) {
     pushRun(
       lines,
@@ -1028,6 +1068,22 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
       BOX_LEAD,
       (f.boxChanges ?? []).map((b) => ({ text: b.text, url: b.url })),
       SECTION_CAPS.box,
+    );
+  }
+
+  // 8. The reads that stopped with rows left, last: every one, since each
+  //    says which count above is a lower bound. A PROTECTED RUN (CUT_RUN):
+  //    `fit` never reduces it, and the last resort drops its lines only
+  //    after every other line, because otherwise the posted digest does not
+  //    say which counts are lower bounds.
+  const cuts = f.readCuts ?? [];
+  if (cuts.length > 0) {
+    pushRun(
+      lines,
+      CUT_RUN,
+      readCutsLead(cuts.length),
+      cuts.map((cut) => ({ text: readCutLine(cut), url: TAB_EVERYTHING })),
+      cuts.length,
     );
   }
 
@@ -1180,7 +1236,8 @@ export function composeContinued(f: ContinuedFact): Message {
 
 export type Fact = {
   /** A fact the digest prints on a line of its own: each item that needs
-   *  Tom today, which no one else tells him (Tom, 2026-09-21). */
+   *  Tom today, which no one else tells him (Tom, 2026-09-21), and each read
+   *  that stopped with rows left (the cut run). */
   required?: true;
   id: string;
   /** The deterministic sentence about this fact. */
@@ -1277,5 +1334,10 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     [lead, ...items].forEach((text, index) => facts.push(fact(`spend:${index}`, text, [spend.url])));
   }
   for (const b of f.boxChanges ?? []) facts.push(fact(b.id, b.text, [b.url]));
+  const cuts = f.readCuts ?? [];
+  if (cuts.length > 0) facts.push({ ...fact("cut:count", readCutsLead(cuts.length), [], [cuts.length]), required: true });
+  cuts.forEach((cut, index) =>
+    facts.push({ ...fact(`cut:${index}`, readCutLine(cut), [TAB_EVERYTHING], [cut.read, cut.skipped]), required: true }),
+  );
   return { kind: "today", day: f.day, canReply, facts };
 }
