@@ -517,7 +517,7 @@ export function landingKey(repo: string, sha: string): string {
 
 /** Write the recovery of a standing landing report for `repo@sha` when the
  *  gate is now open for it. Reads nothing more when no report stands. */
-export async function clearLandingReportIfOpen(ctx: MutationCtx, repo: string, sha: string) {
+async function clearLandingReportIfOpen(ctx: MutationCtx, repo: string, sha: string) {
   const key = landingKey(repo, sha);
   const failed = await ctx.db
     .query("events")
