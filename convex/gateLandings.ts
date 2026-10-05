@@ -16,7 +16,9 @@
 //         LANDING_JOB, one job-failed row per commit), which the digest shows
 //         once among what is broken and which is cleared when the gate opens;
 //   a commit that belongs to no pull request
-//       — the same report, keyed on the commit itself.
+//       — the same report, keyed on the commit itself; except on main of a
+//         repository in MAIN_TAKES_PUSHES (WikiTom, whose main takes the
+//         nightly job's pushes), where such a commit is filed as nothing.
 //
 // WHICH COMMITS ARRIVED. The record keeps, per repository, the newest commit
 // on main it has accounted for (the table gateMainHeads). A refresh asks
@@ -49,7 +51,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { ActionCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
-import { GATED_REPOS, SESSION_REPOS } from "../shared/session-constants.mjs";
+import { GATED_REPOS, MAIN_TAKES_PUSHES, SESSION_REPOS } from "../shared/session-constants.mjs";
 import { LANDING_JOB, landingKey, mergeGateFor } from "./ttsMerge";
 
 /** The branch the gate guards. */
@@ -213,6 +215,7 @@ export async function accountForMain(ctx: ActionCtx, token: string): Promise<str
   for (const repo of GATED_REPOS) {
     const slug = SESSION_REPOS[repo];
     const fail = (why: string) => failures.push(`gate landings: ${repo} ${why}`);
+    const takesPushes = (MAIN_TAKES_PUSHES as readonly string[]).includes(repo);
     const seen = await ctx.runQuery(internal.gateLandings.internalMainSeen, { repo });
     if (seen === null) {
       const head = await ask(slug, `commits/${MAIN}`);
@@ -270,6 +273,7 @@ export async function accountForMain(ctx: ActionCtx, token: string): Promise<str
         }
         pull = asked.body.map(landedOf).find((one): one is Landed => one !== null) ?? null;
       }
+      if (pull === null && takesPushes) continue;
       await ctx.runMutation(internal.gateLandings.internalAccountForCommit, {
         repo,
         commit: commit.sha,

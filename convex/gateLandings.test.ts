@@ -1,7 +1,8 @@
 // Every commit that arrives on main of a repository under the merge gate is
 // filed by the record's own refresh (convex/gateLandings.ts): a merge row when
 // the gate was open for its head, a report of a landing past the gate when it
-// was shut or when the commit belongs to no pull request. These run the timed
+// was shut or when the commit belongs to no pull request (except on WikiTom's
+// main, which takes the nightly job's direct pushes). These run the timed
 // task itself, observeMerge.refreshOpenPulls, against a GitHub played by
 // `fakeGitHub` below.
 
@@ -76,11 +77,11 @@ const landed = (number: number, head: string, landedAs: string) => ({
   base: { ref: "main" },
 });
 
-async function seedGate(t: TestConvex<typeof schema>, head: string, verdict = "APPROVED") {
+async function seedGate(t: TestConvex<typeof schema>, head: string, verdict = "APPROVED", repo = REPO) {
   await t.run(async (ctx) => {
-    const key = commitKey(REPO, head);
-    await ctx.db.insert("dtsEvents", { at: Date.now(), kind: TESTS_RUN, key, data: { repo: REPO, sha: head, ok: true } });
-    await ctx.db.insert("dtsEvents", { at: Date.now(), kind: AUDIT_VERDICT, key, data: { repo: REPO, sha: head, verdict } });
+    const key = commitKey(repo, head);
+    await ctx.db.insert("dtsEvents", { at: Date.now(), kind: TESTS_RUN, key, data: { repo, sha: head, ok: true } });
+    await ctx.db.insert("dtsEvents", { at: Date.now(), kind: AUDIT_VERDICT, key, data: { repo, sha: head, verdict } });
   });
 }
 
@@ -100,11 +101,13 @@ const reports = async (t: TestConvex<typeof schema>) =>
 
 let gh: ReturnType<typeof fakeGitHub>;
 
-/** Main of both repositories under the gate at BASE, and the first refresh
- *  run, so every test starts from a record that has accounted for BASE. */
+const WIKITOM_SLUG = "Heffnt/WikiTom";
+
+/** Main of the three repositories under the gate at BASE, and the first
+ *  refresh run, so every test starts from a record that has accounted for BASE. */
 async function started() {
   const t = convexTest({ schema, modules });
-  for (const slug of ["Heffnt/tom.quest", SLUG]) {
+  for (const slug of ["Heffnt/tom.quest", SLUG, WIKITOM_SLUG]) {
     gh.state.head.set(slug, BASE);
     gh.state.history.set(slug, [commit(BASE, [])]);
   }
@@ -112,10 +115,14 @@ async function started() {
   return t;
 }
 
-/** Main of Jarvis moves by these commits. */
+/** Main of Jarvis (or, through arriveAt, of the repository at `slug`) moves
+ *  by these commits. */
 function arrive(...commits: Commit[]) {
-  gh.state.history.get(SLUG)!.push(...commits);
-  gh.state.head.set(SLUG, commits[commits.length - 1].sha);
+  arriveAt(SLUG, ...commits);
+}
+function arriveAt(slug: string, ...commits: Commit[]) {
+  gh.state.history.get(slug)!.push(...commits);
+  gh.state.head.set(slug, commits[commits.length - 1].sha);
 }
 
 beforeEach(() => {
@@ -147,14 +154,15 @@ describe("what arrived on main", () => {
     expect(gh.asked.filter((path) => path.endsWith("/commits/main"))).toEqual([
       "Heffnt/tom.quest/commits/main",
       `${SLUG}/commits/main`,
+      `${WIKITOM_SLUG}/commits/main`,
     ]);
     gh.asked.length = 0;
     expect(await refresh(t)).toEqual({ open: 0, failures: [] });
-    // One comparison per repository, and nothing else about main; WikiTom is
-    // outside the gate and is not read.
+    // One comparison per repository, and nothing else about main.
     expect(gh.asked.filter((path) => !path.includes("pulls?state=open"))).toEqual([
       `Heffnt/tom.quest/compare/${BASE}...main`,
       `${SLUG}/compare/${BASE}...main`,
+      `${WIKITOM_SLUG}/compare/${BASE}...main`,
     ]);
     expect(await mergeRows(t)).toHaveLength(0);
     expect(await reports(t)).toHaveLength(0);
@@ -223,6 +231,37 @@ describe("what arrived on main", () => {
     gh.state.pullsOf.set(rebased, [landed(43, head, sha("9"))]);
     expect(await refresh(t)).toEqual({ open: 0, failures: [] });
     expect((await mergeRows(t)).map((row) => row.key)).toEqual([mergeKey(REPO, head)]);
+  });
+
+  it("writes the merge row of a WikiTom pull request, and files nothing for a nightly push straight to WikiTom's main", async () => {
+    const t = await started();
+    const head = sha("a");
+    const squash = sha("b");
+    const nightly = sha("c");
+    await seedGate(t, head, "APPROVED", "WikiTom");
+    arriveAt(WIKITOM_SLUG, commit(nightly, [BASE], "snapshot: the nightly copy"), commit(squash, [nightly]));
+    gh.state.closed.set(WIKITOM_SLUG, [landed(57, head, squash)]);
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    // The push was asked about, found to belong to no pull request, and is
+    // not reported.
+    expect(gh.asked).toContain(`${WIKITOM_SLUG}/commits/${nightly}/pulls`);
+    expect(await reports(t)).toHaveLength(0);
+    const [row] = await mergeRows(t);
+    expect(row.key).toBe(mergeKey("WikiTom", head));
+    expect(row.data).toMatchObject({ repo: "WikiTom", sha: head, subject: "pull request 57" });
+    gh.asked.length = 0;
+    await refresh(t);
+    expect(gh.asked).toContain(`${WIKITOM_SLUG}/compare/${squash}...main`);
+  });
+
+  it("reports a WikiTom pull request that landed with the gate shut", async () => {
+    const t = await started();
+    const head = sha("a");
+    arriveAt(WIKITOM_SLUG, commit(sha("b"), [BASE]));
+    gh.state.closed.set(WIKITOM_SLUG, [landed(58, head, sha("b"))]);
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    expect(await mergeRows(t)).toHaveLength(0);
+    expect((await reports(t)).map((row) => row.subject)).toEqual([landingKey("WikiTom", head)]);
   });
 
   it("clears the report when a late row opens the gate for that commit", async () => {
