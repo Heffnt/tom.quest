@@ -103,6 +103,20 @@ export const EVENT_KINDS = [
   // "part-disabled:<part>"; the box deploy job posts it from Jarvis
   // worker/parts-disabled.json.
   "part-disabled",
+  // The design page (convex/jarvis/design.ts, tom.quest/design).
+  //   registry: the registry of Jarvis's parts (Jarvis worker/parts.json) the
+  //     box deployed. Subject "Jarvis@<sha>", the deployed commit; data
+  //     { id: "registry:Jarvis@<sha>", repo: "Jarvis", sha, parts (the rows,
+  //     whole, in file order), count }; text "registry of Jarvis at <7-char
+  //     sha>: <count> parts". The box's deploy job posts one per deployed
+  //     commit. The validator checks each row's id, type, fate and serves
+  //     only: the registry check on the box is the wall for the rest.
+  //   explanation: a ground-up explanation of one part, written by the
+  //     session that explained it. Subject the part id; data { title, html },
+  //     html one complete HTML document with no script and no src attribute;
+  //     provenance.agentId or provenance.session the agent that wrote it.
+  "registry",
+  "explanation",
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
@@ -133,7 +147,7 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * decision's askId (settle, "revert <n>" and the digest find it there), a
  * digest line's askId or job, an eval run's set, a work run's repo and commit.
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation"];
 
 /** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
 export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
@@ -154,6 +168,9 @@ export const REPEATS_BY_DATA_ID = [
   // The deploy job re-posts every listed part on each deploy; data.id is
   // "part-disabled:<part>".
   "part-disabled",
+  // The deploy job re-posts the deployed registry until a post lands; data.id
+  // is "registry:<subject>".
+  "registry",
 ];
 
 /** The kinds whose data may carry `durationMs`, the job's runtime when it
@@ -232,6 +249,14 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
       return { ok: false, error: "a part-disabled event names data.ruling as a non-empty string" };
     }
   }
+  if (kind === "registry") {
+    const problem = registryProblem(subject, data);
+    if (problem !== null) return { ok: false, error: problem };
+  }
+  if (kind === "explanation") {
+    const problem = explanationProblem(subject, data, prov);
+    if (problem !== null) return { ok: false, error: problem };
+  }
   if (kind === "work-run") {
     if (!isPlainObject(data)) return { ok: false, error: "a work-run event names data as an object" };
     for (const field of ["repo", "baseCommit", "model", "briefKey", "preStatePatchKey", "resultDiffKey"]) {
@@ -266,4 +291,84 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   if (subject !== undefined) event.subject = subject;
   if (text !== undefined) event.text = text;
   return { ok: true, event };
+}
+
+// ── The registry of Jarvis's parts ──────────────────────────────────────────
+// A row of Jarvis worker/parts.json, as far as the record checks it.
+
+/** A part's type, one shape each in the drawings (shared/parts-drawing.mjs). */
+/** @type {const} */
+export const PART_TYPES = ["page", "program", "agent", "store", "external", "wall", "document", "person"];
+/** A part's fate in 2.0. */
+/** @type {const} */
+export const PART_FATES = ["kept", "replaced", "removed", "proposed"];
+/** A part id: lowercase words joined by hyphens (Jarvis scripts/check-parts.mjs ID_FORM). */
+export const PART_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/** The largest registry event, as UTF-8 JSON: 93 rows are about 90 KB, and a
+ *  registry past this fails at the post rather than at a read. */
+export const REGISTRY_MAX_BYTES = 512 * 1024;
+/** The largest explanation document, as UTF-8. */
+export const EXPLANATION_MAX_BYTES = 256 * 1024;
+
+const utf8Bytes = (text) => new TextEncoder().encode(text).length;
+
+/** What is wrong with a registry event's subject and data, or null. */
+function registryProblem(subject, data) {
+  if (!isPlainObject(data)) return "a registry event names data as an object";
+  if (data.repo !== "Jarvis") return 'a registry event names data.repo as "Jarvis"';
+  if (!nonEmptyString(data.sha)) return "a registry event names data.sha as the deployed commit";
+  if (subject !== `Jarvis@${data.sha}`) return "a registry event names Jarvis@<data.sha> as its subject";
+  if (data.id !== `registry:${subject}`) return "a registry event names data.id as registry:<subject>";
+  if (!Array.isArray(data.parts)) return "a registry event names data.parts as the list of rows";
+  if (data.count !== data.parts.length) return "a registry event names data.count as the number of rows";
+  for (const [index, row] of data.parts.entries()) {
+    const at = `data.parts[${index}]`;
+    if (!isPlainObject(row)) return `a registry event's ${at} is not an object`;
+    if (typeof row.id !== "string" || !PART_ID.test(row.id)) return `a registry event's ${at}.id is not plain hyphenated words`;
+    if (!PART_TYPES.includes(row.type)) return `a registry event's row ${row.id} has a type not one of ${PART_TYPES.join(", ")}`;
+    if (!isPlainObject(row.fate) || !PART_FATES.includes(row.fate.type)) {
+      return `a registry event's row ${row.id} has a fate.type not one of ${PART_FATES.join(", ")}`;
+    }
+    if (!Array.isArray(row.serves)) return `a registry event's row ${row.id} has no serves list`;
+  }
+  if (utf8Bytes(JSON.stringify(data)) > REGISTRY_MAX_BYTES) return `a registry event's data is over ${REGISTRY_MAX_BYTES} bytes`;
+  return null;
+}
+
+/** What is wrong with an explanation event's subject, data and author, or null. */
+function explanationProblem(subject, data, provenance) {
+  if (!PART_ID.test(subject)) return "an explanation event names a part id as its subject";
+  if (!nonEmptyString(provenance.agentId) && !nonEmptyString(provenance.session)) {
+    return "an explanation event names the agent that wrote it as provenance.agentId or provenance.session";
+  }
+  if (!isPlainObject(data) || !nonEmptyString(data.title)) return "an explanation event names data.title as one line";
+  if (typeof data.html !== "string" || !/^<!doctype html>/i.test(data.html.trimStart())) {
+    return "an explanation event's data.html is one HTML document beginning <!doctype html>";
+  }
+  if (/<script/i.test(data.html) || /src\s*=/i.test(data.html)) {
+    return "an explanation event's data.html holds no script and no src attribute";
+  }
+  if (utf8Bytes(data.html) > EXPLANATION_MAX_BYTES) return `an explanation event's data.html is over ${EXPLANATION_MAX_BYTES} bytes`;
+  return null;
+}
+
+/**
+ * A head's registry diff, checked: `{ base, added, removed, changed, rows }`
+ * as the box's pull-request-checks job posts it on a Jarvis head's tests row
+ * (POST /tts/tests), or null when it is not that shape. `rows` holds the
+ * head's row for each id in `added` and `changed`, and nothing else.
+ */
+export function registryDiffOf(value) {
+  if (!isPlainObject(value)) return null;
+  const { base, added, removed, changed, rows } = value;
+  if (!nonEmptyString(base)) return null;
+  const ids = (list) => Array.isArray(list) && list.every((id) => typeof id === "string" && PART_ID.test(id));
+  if (!ids(added) || !ids(removed) || !ids(changed)) return null;
+  if (!isPlainObject(rows)) return null;
+  const named = new Set([...added, ...changed]);
+  for (const [id, row] of Object.entries(rows)) {
+    if (!named.has(id) || !isPlainObject(row) || row.id !== id) return null;
+  }
+  return { base: base.trim(), added, removed, changed, rows };
 }

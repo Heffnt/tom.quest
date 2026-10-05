@@ -37,7 +37,7 @@ import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly"
 // reads it, so it goes through the one redaction on the way in — the same
 // import convex/ttsMerge.ts makes for the same reason.
 import { redactSecrets } from "../shared/redact.mjs";
-import { DELEGATE_ONLY_KINDS, SUBJECT_REQUIRED, TOM_ONLY_KINDS } from "../shared/jarvis-events.mjs";
+import { DELEGATE_ONLY_KINDS, registryDiffOf, SUBJECT_REQUIRED, TOM_ONLY_KINDS } from "../shared/jarvis-events.mjs";
 
 const http = httpRouter();
 
@@ -1536,7 +1536,8 @@ http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
 // POST /tts/tests — the Guardrails run's own result, posted by the `report` job
 // once the other four have answered (scripts/tests-report.mjs). Body:
-// { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest? }.
+// { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest?,
+// registryDiff? }.
 //
 // EITHER KEY: CI holds the narrow evals key and posts this fact, while the box
 // holds the worker key and posts its own local runs. The worker key is
@@ -1587,6 +1588,7 @@ const ttsTests = httpAction(async (ctx, request) => {
   if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
   const durations = numberRecord(b.durations);
   const slowest = slowestFiles(b.slowest);
+  const registryDiff = registryDiffOf(b.registryDiff);
   const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
     repo: (b.repo as string).trim(),
     sha: (b.sha as string).trim(),
@@ -1602,6 +1604,10 @@ const ttsTests = httpAction(async (ctx, request) => {
     ...(typeof b.files === "number" && Number.isFinite(b.files) ? { files: b.files } : {}),
     ...(durations === null ? {} : { durations }),
     ...(slowest === null ? {} : { slowest }),
+    // WHAT A JARVIS HEAD DOES TO THE REGISTRY of parts (shared/jarvis-events.mjs
+    // registryDiffOf), which tom.quest/design draws. Dropped like the timing
+    // when malformed, for the same reason.
+    ...(registryDiff === null ? {} : { registryDiff }),
   });
   //  rather than : the answer's own ok says the POST landed, and
   // the row's ok says whether the tests were green.

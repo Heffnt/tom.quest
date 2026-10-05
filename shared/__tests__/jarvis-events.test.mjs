@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_KINDS, JOB_KINDS_WITH_DURATION, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
+import { EVENT_KINDS, JOB_KINDS_WITH_DURATION, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, registryDiffOf, validateEvent } from "../jarvis-events.mjs";
 
 describe("validateEvent", () => {
   it("fills at and data, keeps subject and text, and drops nothing it was given", () => {
@@ -162,5 +162,73 @@ describe("validateEvent", () => {
 
   it("lists every kind once", () => {
     expect(new Set(EVENT_KINDS).size).toBe(EVENT_KINDS.length);
+  });
+});
+
+describe("the design page's events", () => {
+  const row = (id, extra = {}) => ({ id, name: id, type: "program", fate: { type: "kept", by: null }, serves: [{ guarantee: "G4" }], ...extra });
+  const registry = (data = {}, extra = {}) => {
+    const parts = data.parts ?? [row("deploy"), row("sweep")];
+    return {
+      kind: "registry",
+      subject: "Jarvis@abc1234",
+      provenance: { job: "deploy" },
+      data: { id: "registry:Jarvis@abc1234", repo: "Jarvis", sha: "abc1234", parts, count: parts.length, ...data },
+      text: "registry of Jarvis at abc1234: 2 parts",
+      ...extra,
+    };
+  };
+
+  it("takes a registry named by its deployed commit, and is retried by data.id", () => {
+    expect(validateEvent(registry()).ok).toBe(true);
+    expect(SUBJECT_REQUIRED).toContain("registry");
+    expect(REPEATS_BY_DATA_ID).toContain("registry");
+  });
+
+  it("refuses a registry with no subject, a row with no id, an unknown type or fate, or a count that is not the rows'", () => {
+    expect(validateEvent(registry({}, { subject: undefined })).error).toBe("a registry event names its subject");
+    expect(validateEvent(registry({ parts: [{ name: "x", type: "program", fate: { type: "kept" }, serves: [] }], count: 1 })).error).toContain("data.parts[0].id");
+    expect(validateEvent(registry({ parts: [row("x", { type: "kind" })], count: 1 })).error).toContain("row x has a type");
+    expect(validateEvent(registry({ parts: [row("x", { fate: { kind: "kept" } })], count: 1 })).error).toContain("row x has a fate.type");
+    expect(validateEvent(registry({ parts: [row("x", { serves: undefined })], count: 1 })).error).toContain("row x has no serves list");
+    expect(validateEvent(registry({ count: 3 })).error).toContain("data.count");
+    expect(validateEvent(registry({ id: "registry:other" })).error).toContain("data.id");
+    expect(validateEvent(registry({}, { subject: "Jarvis@other" })).error).toContain("Jarvis@<data.sha>");
+  });
+
+  const explanation = (data = {}, extra = {}) => ({
+    kind: "explanation",
+    subject: "deploy",
+    provenance: { session: "aaa9ae16" },
+    data: { title: "The deploy job", html: "<!doctype html><html><body><h1>The deploy job</h1></body></html>", ...data },
+    text: "The deploy job",
+    ...extra,
+  });
+
+  it("takes an explanation of a part by the agent that wrote it", () => {
+    expect(validateEvent(explanation()).ok).toBe(true);
+    expect(validateEvent(explanation({ html: "  <!DOCTYPE html><p>x</p>" })).ok).toBe(true);
+    expect(SUBJECT_REQUIRED).toContain("explanation");
+  });
+
+  it("refuses an explanation with a script, a src attribute, no doctype, no author or no subject", () => {
+    expect(validateEvent(explanation({ html: "<!doctype html><script>alert(1)</script>" })).error).toContain("no script");
+    expect(validateEvent(explanation({ html: '<!doctype html><img src="x">' })).error).toContain("no script");
+    expect(validateEvent(explanation({ html: "<html></html>" })).error).toContain("<!doctype html>");
+    expect(validateEvent(explanation({}, { provenance: { job: "x" } })).error).toContain("the agent that wrote it");
+    expect(validateEvent(explanation({}, { subject: undefined })).error).toContain("names its subject");
+  });
+});
+
+describe("registryDiffOf", () => {
+  const diff = { base: "abcdef0", added: ["new-part"], changed: ["deploy"], removed: ["sweep"], rows: { deploy: { id: "deploy" }, "new-part": { id: "new-part" } } };
+
+  it("takes a well-formed diff and refuses a malformed one", () => {
+    expect(registryDiffOf(diff)).toEqual(diff);
+    expect(registryDiffOf({ ...diff, base: "" })).toBeNull();
+    expect(registryDiffOf({ ...diff, added: ["Not An Id"] })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { sweep: { id: "sweep" } } })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { deploy: { id: "other" } } })).toBeNull();
+    expect(registryDiffOf("a diff")).toBeNull();
   });
 });
