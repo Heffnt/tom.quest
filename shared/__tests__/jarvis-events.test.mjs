@@ -4,6 +4,8 @@ import {
   EVENT_KINDS,
   HANDOFF_TRANSITIONS,
   JOB_KINDS_WITH_DURATION,
+  PART_ROW_DATA_MAX_BYTES,
+  PART_ROW_TEXT_MAX_BYTES,
   registryDiffOf,
   REPEATS_BY_DATA_ID,
   SUBJECT_REQUIRED,
@@ -520,6 +522,19 @@ describe("use, issue and presence rows", () => {
       [{ kind: "presence", subject: "tom", data: { away: "yes" } }, "a presence event names data.away as a boolean"],
     ];
     for (const [candidate, error] of cases) expect(validateEvent(candidate)).toEqual({ ok: false, error });
+  });
+
+  it("refuses a use or issue row whose text or data is over its stated size, and takes any message Tom can send", () => {
+    const issue = { kind: "issue", subject: "deploy", data: { part: "deploy" } };
+    // A thread message is at most 4,000 characters; at 3 bytes each that is 12,000 bytes.
+    expect(validateEvent({ ...issue, text: "中".repeat(4000) }).ok).toBe(true);
+    expect(validateEvent({ ...issue, text: "x".repeat(PART_ROW_TEXT_MAX_BYTES + 1) }).error).toBe(`an issue event's text is over ${PART_ROW_TEXT_MAX_BYTES} bytes`);
+    expect(validateEvent({ kind: "use", subject: "deploy", data: { part: "deploy", what: "ran" }, text: "x".repeat(PART_ROW_TEXT_MAX_BYTES + 1) }).error).toBe(`a use event's text is over ${PART_ROW_TEXT_MAX_BYTES} bytes`);
+    const padded = { part: "deploy", what: "ran", note: "x".repeat(PART_ROW_DATA_MAX_BYTES) };
+    expect(validateEvent({ kind: "use", subject: "deploy", data: padded }).error).toBe(`a use event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes`);
+    expect(validateEvent({ ...issue, data: { ...padded, what: undefined }, text: "t" }).error).toBe(`an issue event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes`);
+    expect(PART_ROW_TEXT_MAX_BYTES).toBe(16_000);
+    expect(PART_ROW_DATA_MAX_BYTES).toBe(8 * 1024);
   });
 
   it("keeps the three kinds writable by the box, and the four reply kinds on the list", () => {

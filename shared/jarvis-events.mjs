@@ -18,6 +18,8 @@
 // dtsEvents table (convex/jarvis/events.ts copyDtsRow) keep the kind they
 // had; the list governs what is POSTED, not what was.
 
+import { DAY_LOG_ENTRY_MAX } from "./day-log-entry.mjs";
+
 /** @type {const} */
 export const EVENT_KINDS = [
   // Jobs on the box (convex/jarvis/jobs.ts): a clean run, a failure, and the
@@ -676,6 +678,16 @@ export function registryDiffOf(value) {
 /** The longest data.what a use row keeps: one line. */
 export const USE_WHAT_MAX = 200;
 
+/**
+ * The most a use or issue row's text may hold, in UTF-8 bytes. Its text is
+ * Tom's message on /thread when the box writes it for one (Jarvis
+ * worker/jobs/thread-reply.mjs), and a message is at most DAY_LOG_ENTRY_MAX
+ * characters of at most 4 bytes each, so every message he can send fits.
+ */
+export const PART_ROW_TEXT_MAX_BYTES = 4 * DAY_LOG_ENTRY_MAX;
+/** The most a use or issue row's data may hold, in UTF-8 bytes of its JSON: a part id, ids and one line. */
+export const PART_ROW_DATA_MAX_BYTES = 8 * 1024;
+
 /** A control character (a newline among them): data.what is one line of text. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
@@ -688,6 +700,14 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
 function checkPartRow(kind, subject, data, text, provenance, at, now) {
   const an = kind === "issue" ? "an" : "a";
   if (!isPlainObject(data)) return { ok: false, error: `${an} ${kind} event names data as an object` };
+  // A part-state read is bounded by bytes (convex/jarvis/partStates.ts), and
+  // these rows are what it reads, so each row's size is bounded where it is written.
+  if (text !== undefined && utf8Bytes(text) > PART_ROW_TEXT_MAX_BYTES) {
+    return { ok: false, error: `${an} ${kind} event's text is over ${PART_ROW_TEXT_MAX_BYTES} bytes` };
+  }
+  if (utf8Bytes(JSON.stringify(data)) > PART_ROW_DATA_MAX_BYTES) {
+    return { ok: false, error: `${an} ${kind} event's data is over ${PART_ROW_DATA_MAX_BYTES} bytes` };
+  }
   if (kind === "use" || data.part !== null) {
     if (!nonEmptyString(data.part)) return { ok: false, error: `${an} ${kind} event names data.part as a part id` };
     if (data.part !== subject) return { ok: false, error: `${an} ${kind} event names data.part as its subject` };

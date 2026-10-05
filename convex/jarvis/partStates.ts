@@ -58,6 +58,7 @@ import { requireTom } from "../authRoles";
 import { USE_STATE_WORKING } from "../../shared/jarvis-events.mjs";
 import { MERGE } from "../ttsMerge";
 import { mergeKey } from "../ttsShared";
+import { getWithin, MIB, ReadBudget } from "../readBudget";
 
 export const IN_USE_DAYS = 30;
 export const WORKING_AFTER_DAYS = 7;
@@ -167,16 +168,45 @@ function lastReceivedFirst(ctx: QueryCtx, kind: string, subject: string) {
 
 /**
  * THE CAP (convex/AGENTS.md: a read whose rows grow carries one). One query
- * reads at most QUERY_ROW_BUDGET use and issue rows across every part it
- * answers: at about 0.5 KB a row, 8 MB, half of what one Convex function may
- * read. A read that spends the budget before it reaches its stop stops, and
- * its part's answer says `capped: true`: its state was read from the rows
- * received last only, and is shown as such rather than taken as the whole
- * history.
+ * reads at most PART_STATE_BYTES of documents across every part it answers,
+ * counted as Convex counts them (convex/readBudget.ts): half of the 16 MiB one
+ * function may read. A row count does not bound that, since a row's size is
+ * its own; the validator also caps each use and issue row's text and data
+ * (shared/jarvis-events.mjs). A read that finds the budget spent before it
+ * reaches its stop stops, and its part's answer says `capped: true`: its state
+ * was read from the rows received last only, and is shown as such rather
+ * than taken as the whole history. The reads run one after another, never in
+ * parallel, so the budget is overshot by at most one document.
  */
-const QUERY_ROW_BUDGET = 16_000;
+const PART_STATE_BYTES = 8 * MIB;
 
-type Budget = { left: number };
+/**
+ * Rows of `rows` one at a time while `budget` is open, each charged as it is
+ * read; `take` answers whether to read on. Answers true when the budget, not
+ * `take` or the end of the rows, stopped the read.
+ */
+async function readWhile(
+  budget: ReadBudget,
+  rows: AsyncIterable<Doc<"events">>,
+  take: (row: Doc<"events">) => boolean,
+): Promise<boolean> {
+  const iterator = rows[Symbol.asyncIterator]();
+  let done = false;
+  try {
+    for (;;) {
+      if (!budget.open) return true;
+      const next = await iterator.next();
+      if (next.done === true) {
+        done = true;
+        return false;
+      }
+      budget.charge(next.value);
+      if (!take(next.value)) return false;
+    }
+  } finally {
+    if (!done) await iterator.return?.();
+  }
+}
 
 /**
  * One part's rows out of the record, each read last received first and
@@ -196,58 +226,55 @@ async function rowsFor(
   ctx: QueryCtx,
   part: PartRef,
   landings: Received[],
-  budget: Budget,
+  budget: ReadBudget,
   now: number,
 ): Promise<{ rows: PartRows; capped: boolean }> {
   const cutoff = newest(landings)?.receivedAt ?? -Infinity;
   const windowStart = recentSince(cutoff, now);
   const schedule = part.schedule;
-  const jobOk =
+  const jobOkRead =
     schedule === null || schedule === undefined || schedule === ""
       ? null
-      : await ctx.db
-          .query("events")
-          .withIndex("by_kind_job", (q) => q.eq("kind", "job-ok").eq("provenance.job", schedule))
-          .order("desc")
-          .first();
-  let capped = false;
+      : await getWithin(budget, () =>
+          ctx.db
+            .query("events")
+            .withIndex("by_kind_job", (q) => q.eq("kind", "job-ok").eq("provenance.job", schedule))
+            .order("desc")
+            .first(),
+        );
+  let capped = jobOkRead === undefined;
+  const jobOk = jobOkRead ?? null;
   const issues: IssueRow[] = [];
   let lastIssue = -Infinity;
   let closed = false;
-  for await (const row of lastReceivedFirst(ctx, "issue", part.id)) {
-    if (budget.left <= 0) {
-      capped = true;
-      break;
-    }
-    budget.left--;
-    const resolves = typeof (row.data as { resolvedBy?: unknown } | undefined)?.resolvedBy === "string";
-    issues.push({ ...received(row), resolves });
-    if (resolves) closed = true;
-    else {
+  capped =
+    (await readWhile(budget, lastReceivedFirst(ctx, "issue", part.id), (row) => {
+      const resolves = typeof (row.data as { resolvedBy?: unknown } | undefined)?.resolvedBy === "string";
+      issues.push({ ...received(row), resolves });
+      if (resolves) {
+        closed = true;
+        return true;
+      }
       lastIssue = row._creationTime;
-      break;
-    }
-  }
+      return false;
+    })) || capped;
   // A closing "no issues" is only looked for when an issue stands with no
   // resolution received after it.
   let seeking = lastIssue > -Infinity && !closed;
   const uses: UseRow[] = [];
-  for await (const row of lastReceivedFirst(ctx, "use", part.id)) {
-    const at = row._creationTime;
-    const wanted = at > windowStart || (at > cutoff && uses.length === 0) || (seeking && at > lastIssue);
-    if (!wanted) break;
-    if (budget.left <= 0) {
-      capped = true;
-      break;
-    }
-    budget.left--;
-    // Every stored use row names data.by: the validator fills it in
-    // (shared/jarvis-events.mjs rowBy), and no copy writes a use row past it.
-    const data = row.data as { by: string; state?: unknown };
-    const use = { ...received(row), by: data.by, working: data.state === USE_STATE_WORKING };
-    uses.push(use);
-    if (use.by === "tom" && use.working && at > lastIssue) seeking = false;
-  }
+  capped =
+    (await readWhile(budget, lastReceivedFirst(ctx, "use", part.id), (row) => {
+      const at = row._creationTime;
+      const wanted = at > windowStart || (at > cutoff && uses.length === 0) || (seeking && at > lastIssue);
+      if (!wanted) return false;
+      // Every stored use row names data.by: the validator fills it in
+      // (shared/jarvis-events.mjs rowBy), and no copy writes a use row past it.
+      const data = row.data as { by: string; state?: unknown };
+      const use = { ...received(row), by: data.by, working: data.state === USE_STATE_WORKING };
+      uses.push(use);
+      if (use.by === "tom" && use.working && at > lastIssue) seeking = false;
+      return true;
+    })) || capped;
   return { rows: { landings, jobOk: jobOk === null ? null : received(jobOk), uses, issues }, capped };
 }
 
@@ -267,7 +294,7 @@ export async function readPartStates(
   parts: readonly PartRef[],
   landed: readonly Landed[],
   now: number,
-  budget: Budget = { left: QUERY_ROW_BUDGET },
+  budget: ReadBudget = ReadBudget.of(PART_STATE_BYTES),
 ): Promise<{ part: string; state: PartState; row: StateRow | null; capped: boolean }[]> {
   const refs = landed.map((pull) => ({
     pull,
@@ -280,24 +307,34 @@ export async function readPartStates(
       text: `pull request #${pull.pullRequest}`,
     },
   }));
-  return await Promise.all(
-    parts.map(async (part) => {
-      const mine = refs.filter((ref) => touches(part, ref.pull.files));
-      const read = await rowsFor(ctx, part, mine.map((ref) => ref.row), budget, now);
-      const { capped } = read;
-      const { state, row } = derivePartState(read.rows, now);
-      // An unverified part with a landing rests on its newest landing (the row
-      // derivePartState answers); that landing's row in the record is read by key.
-      const landing = newest(mine);
-      if (state !== "unverified" || landing === null) return { part: part.id, state, row, capped };
-      const { repo, headSha } = landing.pull;
-      const recorded = await ctx.db
+  // One part after another: the reads share one byte budget (see THE CAP).
+  const answers: { part: string; state: PartState; row: StateRow | null; capped: boolean }[] = [];
+  for (const part of parts) {
+    const mine = refs.filter((ref) => touches(part, ref.pull.files));
+    const read = await rowsFor(ctx, part, mine.map((ref) => ref.row), budget, now);
+    const { state, row } = derivePartState(read.rows, now);
+    // An unverified part with a landing rests on its newest landing (the row
+    // derivePartState answers); that landing's row in the record is read by key.
+    const landing = newest(mine);
+    if (state !== "unverified" || landing === null) {
+      answers.push({ part: part.id, state, row, capped: read.capped });
+      continue;
+    }
+    const { repo, headSha } = landing.pull;
+    const recorded = await getWithin(budget, () =>
+      ctx.db
         .query("events")
         .withIndex("by_kind_subject_at", (q) => q.eq("kind", MERGE).eq("subject", mergeKey(repo, headSha)))
-        .first();
-      return { part: part.id, state, row: recorded === null ? strip(landing.row) : strip(received(recorded)), capped };
-    }),
-  );
+        .first(),
+    );
+    answers.push({
+      part: part.id,
+      state,
+      row: recorded === null || recorded === undefined ? strip(landing.row) : strip(received(recorded)),
+      capped: read.capped || recorded === undefined,
+    });
+  }
+  return answers;
 }
 
 export const partStates = query({

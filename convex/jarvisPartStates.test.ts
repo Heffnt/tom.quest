@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Doc } from "./_generated/dataModel";
+import { ReadBudget } from "./readBudget";
 import {
   derivePartState,
   readPartStates,
@@ -225,8 +226,8 @@ describe("the rows through the route and the thread", () => {
     const viewer = await tom(t);
     const parts = [{ id: "deploy", schedule: null, file: "worker/jobs/deploy.mjs" }];
     expect((await viewer.query(api.jarvis.partStates.partStates, { parts }))[0]).toMatchObject({ state: "working", row: { at: NOW - 20 * DAY }, capped: false });
-    // Under a budget of 100 rows the read stops at the newest 100 and says so, instead of answering run as if that were the whole history.
-    const small = await t.run(async (ctx) => await readPartStates(ctx, parts, [], NOW, { left: 100 }));
+    // Under a budget of 20,000 bytes the read stops among the rows received last and says so, instead of answering run as if that were the whole history.
+    const small = await t.run(async (ctx) => await readPartStates(ctx, parts, [], NOW, ReadBudget.of(20_000)));
     expect(small[0]).toMatchObject({ part: "deploy", state: "run", capped: true });
     // A landing after it starts the part over: the 49 job rows after the landing make it run, and the rows before it are about the old code.
     const landings = [{ repo: "Jarvis", pullRequest: 251, headSha: "fff", landedAt: NOW - 10 * DAY + 100 * 60_000, files: ["worker/jobs/deploy.mjs"] }];
@@ -311,13 +312,30 @@ describe("the rows through the route and the thread", () => {
       { id: "sweep", schedule: null, file: null },
       { id: "deploy", schedule: null, file: null },
     ];
-    const budget = { left: 5 };
-    const states = await t.run(async (ctx) => await readPartStates(ctx, parts, [], NOW, budget));
+    // 2,000 bytes holds a few rows of this size, not 200: the old part's one row leaves the rest for the part after it.
+    const states = await t.run(async (ctx) => await readPartStates(ctx, parts, [], NOW, ReadBudget.of(2_000)));
     expect(states).toMatchObject([
       { part: "sweep", state: "run", capped: false },
       { part: "deploy", state: "working", capped: false },
     ]);
-    expect(budget.left).toBe(3);
+  });
+
+  it("stops a read over rows of about 1 MB each at the 8 MiB budget and answers capped, not a failed query", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const t = convexTest({ schema, modules });
+    // Rows written past the validator's caps (by an older writer, say) are as large as Convex allows.
+    await storeAsReceived(t, Array.from({ length: 12 }, (_, i) => ({
+      kind: "use", at: NOW - DAY + i * 60_000, provenance: { job: "deploy" }, subject: "deploy",
+      text: "x".repeat(900_000), data: { part: "deploy", by: "job", what: "ran" },
+    })));
+    const viewer = await tom(t);
+    const parts = [{ id: "deploy", schedule: null, file: null }, { id: "sweep", schedule: "sweep", file: null }];
+    const states = await viewer.query(api.jarvis.partStates.partStates, { parts });
+    expect(states).toMatchObject([
+      { part: "deploy", state: "run", capped: true },
+      { part: "sweep", state: "unverified", capped: true },
+    ]);
   });
 
   it("a \"no issues\" row postdated five minutes does not close an issue reported a minute after the record received it", async () => {
