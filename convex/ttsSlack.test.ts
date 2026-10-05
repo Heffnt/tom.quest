@@ -498,6 +498,24 @@ describe("the #tts thread for a todo that needs Tom", () => {
       expect(await opened(t)).toHaveLength(0);
     });
 
+    it("stores a question's options on the item and shows them lettered", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const id = await aTodo(t);
+      const question = "Do I move the appointment to Thursday?";
+      const options = ["Move it to Thursday.", "Leave it Wednesday."];
+      // Question and options go together, and the options are 2 to 5.
+      expect((await open(t, { todoId: id, reason: "It recommends a.", key: KEY, question })).status).toBe(400);
+      expect((await open(t, { todoId: id, reason: "It recommends a.", key: KEY, question, options: ["Only one."] })).status).toBe(400);
+      expect(await events(t, "needs-tom")).toHaveLength(0);
+      const res = await open(t, { todoId: id, reason: "It recommends a.", key: KEY, question, options });
+      expect(res.status).toBe(200);
+      const [row] = await events(t, "needs-tom");
+      expect(row.data).toMatchObject({ question, options });
+      const [item] = await opened(t);
+      expect(item.text).toContain("Only you can settle this: do I move the appointment to Thursday? Options: a) Move it to Thursday; b) Leave it Wednesday. It recommends a.");
+    });
+
     it("refuses a body that is not JSON at all", async () => {
       vi.stubEnv("TTS_WORKER_KEY", "s3cret");
       const t = convexTest(schema, modules);

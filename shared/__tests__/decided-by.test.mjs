@@ -3,7 +3,7 @@
 // read this one function, so they cannot disagree on what a reply names.
 
 import { describe, expect, it } from "vitest";
-import { decidedByText, decisionOfAnswer, optionNamed } from "../decided-by.mjs";
+import { askShown, decidedByText, decisionOfAnswer, optionNamed } from "../decided-by.mjs";
 
 const OPTIONS = ["Move it to Thursday morning.", "Leave it Wednesday."];
 
@@ -24,6 +24,12 @@ describe("optionNamed", () => {
   it("makes his own words the decision when they name no option", () => {
     expect(decisionOfAnswer("a", OPTIONS)).toBe("Move it to Thursday morning.");
     expect(decisionOfAnswer("  Ask the consulate first. ", OPTIONS)).toBe("Ask the consulate first.");
+  });
+});
+
+describe("askShown", () => {
+  it("letters the options in order after the question", () => {
+    expect(askShown(" Move it? ", OPTIONS)).toBe("Move it? Options: a) Move it to Thursday morning; b) Leave it Wednesday.");
   });
 });
 

@@ -3,7 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { DAY_MS } from "./ttsShared";
+import { DAY_MS, NEEDS_TOM } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
@@ -222,22 +222,39 @@ function tomAnswerKey(askId: string): string {
  * record refuses it. A decision row in his name is written when his own
  * reply to this ask's needs-you item named it, and refused otherwise.
  *
- * Three checks, each against the record and none against the body:
+ * Four checks, each against the record:
  * 1. `needsTomId` is this ask's item (`delegate-ask:<askId>`), so a reply of
  *    his to some other item cannot back this ask;
- * 2. the newest `needs-tom-answered` row under it was written as his
+ * 2. the item's needs-tom row stores the question and options he was shown
+ *    (POST /tts/needs-tom), and the ask's question and options are those, so
+ *    a caller cannot pair his reply with another question or another option
+ *    list;
+ * 3. the newest `needs-tom-answered` row under it was written as his
  *    (provenance user tom) and carries an answer;
- * 3. the decision is what that answer names (shared/decided-by.mjs
- *    decisionOfAnswer, the mapping the box uses): the option its letter or
- *    words name, or else his words.
+ * 4. the decision is what that answer names among the options he was shown
+ *    (shared/decided-by.mjs decisionOfAnswer, the mapping the box uses): the
+ *    option its letter or words name, or else his words.
  */
 async function tomAnswer(
   ctx: QueryCtx,
-  args: { askId: string; needsTomId?: string; options: string[]; decision: string | null },
+  args: { askId: string; needsTomId?: string; question: string; options: string[]; decision: string | null },
 ): Promise<{ eventId: string; answer: string }> {
   const key = tomAnswerKey(args.askId);
   if (args.needsTomId !== key) {
     throw new Error(`a decision by Tom names this ask's needs-you item, ${key}`);
+  }
+  const item = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_TOM).eq("key", key))
+    .first();
+  const shown = (item?.data ?? {}) as { question?: unknown; options?: unknown };
+  const shownOptions = Array.isArray(shown.options) ? shown.options.filter((o): o is string => typeof o === "string") : null;
+  if (item === null || typeof shown.question !== "string" || shownOptions === null || shownOptions.length === 0) {
+    throw new Error(`the record holds no question with options shown to Tom under ${key}`);
+  }
+  if (args.question !== shown.question) throw new Error(`the question is not the one Tom was shown under ${key}`);
+  if (args.options.length !== shownOptions.length || args.options.some((option, i) => option !== shownOptions[i])) {
+    throw new Error(`the options are not the ones Tom was shown under ${key}`);
   }
   const row = await ctx.db
     .query("events")
@@ -249,7 +266,7 @@ async function tomAnswer(
   const said = (row.data as { answer?: unknown } | undefined)?.answer;
   const answer = typeof said === "string" ? said.trim() : "";
   if (answer === "") throw new Error(`the answer to ${key} is empty`);
-  if (args.decision !== decisionOfAnswer(answer, args.options)) {
+  if (args.decision !== decisionOfAnswer(answer, shownOptions)) {
     throw new Error(`the decision is not what Tom's answer to ${key} names`);
   }
   return { eventId: row._id, answer };

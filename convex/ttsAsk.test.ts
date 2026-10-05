@@ -488,6 +488,20 @@ describe("POST /tts/ask — the delegate's record", () => {
   });
 });
 
+// The needs-you item a trade-off was shown to Tom as, as POST /tts/needs-tom
+// stores it (convex/ttsSlack.ts internalOpenNeedsTomThread): the question and
+// the options he read, which his reply's letter is read against.
+async function showItem(t: TestConvex<typeof schema>, key: string) {
+  await t.run(async (ctx) =>
+    ctx.db.insert("dtsEvents", {
+      at: Date.now(),
+      kind: "needs-tom",
+      key,
+      data: { key, reason: "It recommends a.", question: body().question, options: body().options },
+    }),
+  );
+}
+
 // A DECISION BY TOM: Jarvis `jarvis decide --trade-off` (Jarvis #262) held a
 // question for him on /thread, and his numbered reply is the decision. The
 // record writes it only when his own needs-tom-answered row backs it.
@@ -527,6 +541,7 @@ describe("POST /tts/ask — a decision by Tom", () => {
   it("writes his answer as a decision row in his name, naming the reply that backs it", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
+    await showItem(t, KEY_OF);
     const replyId = await answer(t, "b");
     const response = await post(t, byTom());
     expect(response.status).toBe(200);
@@ -555,6 +570,7 @@ describe("POST /tts/ask — a decision by Tom", () => {
   it("takes his own words as the decision when they name no option", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
+    await showItem(t, KEY_OF);
     await answer(t, "Ask the consulate first.");
     expect((await post(t, byTom({ decision: "Ask the consulate first." }))).status).toBe(200);
     expect((await decisionsOf(t))[0].data.decision).toBe("Ask the consulate first.");
@@ -563,6 +579,7 @@ describe("POST /tts/ask — a decision by Tom", () => {
   it("refuses a decision by Tom that no answer of his backs, and writes nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
+    await showItem(t, KEY_OF);
     const refusal = async (payload: Record<string, unknown>) => {
       const response = await post(t, payload);
       expect(response.status).toBe(400);
@@ -591,11 +608,41 @@ describe("POST /tts/ask — a decision by Tom", () => {
     expect(await decisionsOf(t)).toHaveLength(1);
   });
 
+  it("reads his letter against the question and options he was shown, not the caller's", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const refusal = async (payload: Record<string, unknown>) => {
+      const response = await post(t, payload);
+      expect(response.status).toBe(400);
+      return ((await response.json()) as { error: string }).error;
+    };
+    await answer(t, "b");
+    // No question with options was stored on the item: his "b" names nothing.
+    expect(await refusal(byTom())).toContain("holds no question with options shown to Tom");
+    await showItem(t, KEY_OF);
+    // The same "b" against the options swapped: b is now "Move it to Thursday
+    // morning.", which he did not choose. Refused, and nothing is written.
+    const swapped = [...body().options].reverse();
+    expect(await refusal(byTom({ options: swapped, recommendation: swapped[0], decision: swapped[1] }))).toContain(
+      "the options are not the ones Tom was shown",
+    );
+    // A third option added, or the question changed, is refused the same way.
+    expect(await refusal(byTom({ options: [...body().options, "Cancel it."] }))).toContain("the options are not the ones Tom was shown");
+    expect(await refusal(byTom({ question: "Do I cancel the passport appointment?" }))).toContain("the question is not the one Tom was shown");
+    expect(await rows(t)).toEqual([]);
+    expect(await decisionsOf(t)).toEqual([]);
+    // The options he was shown: his "b" is option b.
+    expect((await post(t, byTom())).status).toBe(200);
+    expect((await decisionsOf(t))[0].data.decision).toBe("Leave it Wednesday and warn him it may be shut.");
+  });
+
   it("sends no push for his own decision", async () => {
     vi.useFakeTimers();
     try {
       vi.stubEnv("TTS_WORKER_KEY", KEY);
       const t = convexTest({ schema, modules });
+      await showItem(t, KEY_OF);
+    await showItem(t, KEY_OF);
       await answer(t, "b");
       expect((await post(t, byTom())).status).toBe(200);
       const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
@@ -608,6 +655,7 @@ describe("POST /tts/ask — a decision by Tom", () => {
   it("passes neither the attended check nor the cap, and does not spend the caller's cap", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
+    await showItem(t, KEY_OF);
     await answer(t, "b");
     const attended = await seedSession(t);
     const own = await post(t, byTom({ job: undefined, sessionId: attended }));
@@ -615,6 +663,7 @@ describe("POST /tts/ask — a decision by Tom", () => {
     expect((await decisionsOf(t))[0].data.refused).toBe(false);
     // Three decisions of his for poll-gmail leave its three delegate asks intact.
     for (const askId of ["7a000001", "7a000002", "7a000003"]) {
+      await showItem(t, `delegate-ask:${askId}`);
       await t.run(async (ctx) =>
         ctx.db.insert("events", {
           kind: "needs-tom-answered", at: Date.now(), provenance: { user: "tom" },
@@ -652,6 +701,7 @@ describe("POST /tts/ask — the wait for Tom is stored", () => {
     expect((await rows(t))[0].data).toMatchObject({ waitedMs: 7_200_000 });
     // An ask that was not a trade-off records no wait, as before.
     await post(t, body({ job: "poll-canvas", askId: "c0ffee00" }));
+    await showItem(t, "delegate-ask:7e000001");
     await t.run(async (ctx) =>
       ctx.db.insert("events", {
         kind: "needs-tom-answered", at: Date.now(), provenance: { user: "tom" },

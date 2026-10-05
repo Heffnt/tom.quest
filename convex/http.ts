@@ -495,6 +495,20 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   if (typeof b.key !== "string" || b.key.trim().length === 0) {
     return jsonResponse(400, { error: "key (non-empty string) required" });
   }
+  // A QUESTION WITH LETTERED OPTIONS (Jarvis `jarvis decide --trade-off`):
+  // the record stores both on the item and composes the lines Tom reads from
+  // them, so a reply of his naming a letter is later read against the options
+  // he was shown (convex/ttsAsk.ts tomAnswer), not against a caller's copy.
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if ((b.question === undefined) !== (b.options === undefined)) {
+    return jsonResponse(400, { error: "question and options go together" });
+  }
+  if (b.question !== undefined && (!nonempty(b.question) || (b.question as string).trim().length > 400)) {
+    return jsonResponse(400, { error: "question, when given, is 1-400 characters" });
+  }
+  if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length >= 2 && b.options.length <= 5 && b.options.every(nonempty))) {
+    return jsonResponse(400, { error: "options, when given, are 2-5 non-empty strings" });
+  }
   // A REPLY UNDER THE DAY'S DIGEST in the one output channel, posted by the
   // box's digest job (convex/jarvis/digest.ts); no channel of its own.
   try {
@@ -502,6 +516,9 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
       todoId: b.todoId,
       reason: b.reason,
       key: b.key,
+      ...(b.question === undefined
+        ? {}
+        : { question: (b.question as string).trim(), options: (b.options as string[]).map((option) => option.trim()) }),
       // The reply invitation is printed only when a reply would reach TTS.
       canReply: Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID),
     });

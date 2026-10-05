@@ -16,6 +16,22 @@
 export const OPTION_LETTERS = ["a", "b", "c", "d", "e"];
 
 /**
+ * The question and its lettered options as the needs-you item shows them to
+ * Tom: "Do I move it? Options: a) Move it to Thursday; b) Leave it." The
+ * record composes this from the question and options it stores on the item
+ * (convex/ttsSlack.ts internalOpenNeedsTomThread), so the letters he reads
+ * are the letters his reply is later read against.
+ *
+ * @param {string} question
+ * @param {readonly string[]} options
+ * @returns {string}
+ */
+export function askShown(question, options) {
+  const lettered = options.map((option, i) => `${OPTION_LETTERS[i]}) ${String(option).trim().replace(/[.;]+$/, "")}`);
+  return `${String(question).trim()} Options: ${lettered.join("; ")}.`;
+}
+
+/**
  * The option an answer of Tom's names: its letter ("b", "b)", "(b)",
  * "option b") or its words (case, outer spaces and a closing full stop or
  * exclamation mark ignored). Null when it names none; his words are then the
