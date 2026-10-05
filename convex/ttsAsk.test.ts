@@ -316,11 +316,16 @@ describe("POST /tts/ask — the delegate's record", () => {
         .map((job) => job.args[0]);
 
     expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(200);
+    // A tap opens the decision's row on the Jarvis thread.
+    const row = await t.run(async (ctx) => ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", "3f9c1a22"))
+      .first());
     expect(await pushes()).toEqual([
       {
         title: "Delegate decision",
         body: `${body().question}\n${body().decision}`,
-        url: "/intent#decision-3f9c1a22",
+        url: `/thread#${row!._id}`,
       },
     ]);
     // The same askId again writes no second row, so no second push.
@@ -656,7 +661,11 @@ describe("POST /tts/ask — a decision by Tom", () => {
         .filter((job) => job.name.includes("pushSend"))
         .map((job) => (job.args[0] as { url: string }).url),
     );
-    expect(pushes).toEqual(["/intent#decision-d0000001"]);
+    const delegated = await t.run(async (ctx) => ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", "d0000001"))
+      .first());
+    expect(pushes).toEqual([`/thread#${delegated!._id}`]);
   });
 
   it("passes neither the attended check nor the cap, and does not spend the caller's cap", async () => {

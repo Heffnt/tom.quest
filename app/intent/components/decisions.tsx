@@ -1,117 +1,44 @@
 "use client";
 
-// THE DISAGREEMENT CANDIDATES: what stands as his until he says otherwise.
-//
-// A DELEGATE DECISION, with the lines it rested on. Each `restedOn` reference
-// the delegate cited is drawn as the line it names when the list holds that
-// line (pressing it opens the line's evidence in the drawer), and as the bare
-// reference when it does not, so a citation nothing backs looks different
-// from one that lands. Accept records that the decision stands; object opens
-// the one fixed dialog for his sentence. Both are jarvis/intent.settle.
-//
-// A FAILING EVAL ITEM, with the ruling it tests. The judge, given his ruling's
-// statement, answered another verdict; the note says which. "stands" records
-// that his ruling stands as it is; "rule" takes the sentence the rules should
-// carry so that the judge answers as he did.
+// THE FAILING EVAL ITEMS: what stands as his until he says otherwise, with
+// the ruling each tests. The judge, given his ruling's statement, answered
+// another verdict; the note says which. "stands" records that his ruling
+// stands as it is; "rule" takes the sentence the rules should carry so that
+// the judge answers as he did. Both are jarvis/intent.settle. The delegate's
+// decisions are settled on the Jarvis thread (app/thread).
 
 import { useState } from "react";
-import type { Decision, EvalItem } from "@/convex/jarvis/intent";
+import type { EvalItem } from "@/convex/jarvis/intent";
 import Info from "@/app/jarvis/components/info";
 import { errMessage } from "@/app/jarvis/lib";
 import RulingDialog from "@/app/jarvis/components/ruling-dialog";
-import { evalItemLineSuffix, linesRestedOn, rulingLineHasSuffix, type IntentLine } from "../lib";
+import { evalItemLineSuffix, rulingLineHasSuffix, type IntentLine } from "../lib";
 import { displayForm } from "@/shared/clock.mjs";
-import { decidedByText } from "@/shared/decided-by.mjs";
 
 type Verdict = "approve" | "revise";
 
 type Pending = { subject: string; statement: string; action: string; confirm: string };
 
 export default function Decisions({
-  decisions,
   evalItems,
-  focusAskId = null,
   lines,
   selected,
   onSelect,
   onSettle,
 }: {
-  decisions: Decision[];
   evalItems: EvalItem[];
-  /** The decision a phone notification opened (/intent#decision-<askId>):
-   *  its row is marked. Nothing here scrolls (app/AGENTS.md: never
-   *  auto-scroll); the row's element id equals the fragment, so the browser's
-   *  own jump to a fragment's element applies when the row is drawn as the
-   *  fragment is read. */
-  focusAskId?: string | null;
   lines: IntentLine[];
   selected: string | null;
   onSelect: (line: IntentLine) => void;
   onSettle: (args: { subject: string; verdict: Verdict; sentence?: string }) => Promise<unknown>;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
-  // Only a decision the delegate took stands in his name: a refused or
-  // unanswered one took nothing, so it is no disagreement candidate.
-  const disagreementDecisions = decisions.filter(
-    (decision): decision is Decision & { decision: string } => !decision.refused && decision.decision !== null,
-  );
   const failing = evalItems.filter((item) => item.pass === false);
   const scored = evalItems.filter((item) => item.pass !== null).length;
   const skipped = evalItems.length - scored;
 
   return (
     <div className="space-y-5">
-      <section>
-        <h2 className="flex items-baseline gap-2 border-b border-border pb-1">
-          <span className="text-[13px] font-semibold text-text">delegate decisions</span>
-          <span className="text-[11px] font-mono text-text-faint">{disagreementDecisions.length}</span>
-          <Info call="jarvis/intent.decisions()" side="below">
-            Every decision the delegate took in his place, newest first: the question, what it decided and why,
-            and the lines of this page it rested on. A question he answered himself on /thread is listed with who
-            decided and after how long, and without accept and object.
-          </Info>
-        </h2>
-        {disagreementDecisions.length === 0 && <p className="mt-2 text-[12px] text-text-muted">No delegate disagreement in the record.</p>}
-        <ul>
-          {disagreementDecisions.map((decision) => (
-            <li
-              key={decision.id}
-              id={decisionRowId(decision.askId)}
-              aria-current={decision.askId === focusAskId ? "true" : undefined}
-              className={`border-b border-border/50 px-2 py-2 ${decision.askId === focusAskId ? "bg-surface-alt" : ""}`}
-            >
-              <p className="text-[13px] leading-snug text-text">{decision.question}</p>
-              <p className="mt-0.5 text-[13px] leading-snug text-accent">{decision.decision}</p>
-              {decision.reason !== null && <p className="mt-0.5 text-[12px] leading-snug text-text-muted">{decision.reason}</p>}
-              {decision.wouldChange !== null && (
-                <p className="mt-0.5 text-[11px] leading-snug text-text-faint">would change: {decision.wouldChange}</p>
-              )}
-              {decidedByText(decision.decidedByTom, decision.waitedMs) !== null && (
-                <p className="mt-0.5 text-[11px] leading-snug text-text-muted">{decidedByText(decision.decidedByTom, decision.waitedMs)}</p>
-              )}
-              <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-[10px] font-mono text-text-faint">
-                <span>{displayForm(decision.at)}</span>
-                <span>{decision.caller}</span>
-                {decision.model !== null && <span>{decision.model}</span>}
-                <span>{decision.askId}</span>
-              </p>
-              <RestedOn refs={decision.restedOn} lines={lines} selected={selected} onSelect={onSelect} />
-              {/* His own decision is not one to accept or object to. */}
-              {!decision.decidedByTom && <Settle
-                subject={`decision:${decision.askId}`}
-                settled={decision.settled}
-                accept="accept"
-                object="object"
-                statement={decision.decision}
-                onAccept={(subject) => onSettle({ subject, verdict: "approve" })}
-                onObject={(subject, statement) =>
-                  setPending({ subject, statement, action: "object", confirm: "record objection" })}
-              />}
-            </li>
-          ))}
-        </ul>
-      </section>
-
       <section>
         <h2 className="flex items-baseline gap-2 border-b border-border pb-1">
           <span className="text-[13px] font-semibold text-text">failing eval items</span>
@@ -165,7 +92,7 @@ export default function Decisions({
           placeholder="his sentence"
           required
           call={`jarvis/intent.settle({ subject: "${pending.subject}", verdict: "revise", sentence })`}
-          effect="Records his sentence as an event of the record; when the decision was about a todo, writes his revise ruling on that todo too."
+          effect="Records his sentence as an event of the record."
           statement={pending.statement}
           onConfirm={(sentence) => onSettle({ subject: pending.subject, verdict: "revise", sentence })}
           onClose={() => setPending(null)}
@@ -175,12 +102,6 @@ export default function Decisions({
   );
 }
 
-/** The element id of a decision's row: the fragment a notification opens,
- *  so the fragment is an anchor on the row. */
-function decisionRowId(askId: string): string {
-  return `decision-${askId}`;
-}
-
 /** What the failing list says when nothing failed: a skipped item was not
  *  scored, so a run whose items were all skipped passed nothing. */
 function noFailureText(scored: number, skipped: number): string {
@@ -188,37 +109,6 @@ function noFailureText(scored: number, skipped: number): string {
   if (scored === 0) return `No item of the newest runs was scored: all ${skipped} were skipped.`;
   if (skipped === 0) return "Every item of the newest runs passed.";
   return `Every scored item of the newest runs passed; ${skipped} ${skipped === 1 ? "was" : "were"} skipped.`;
-}
-
-function RestedOn({
-  refs,
-  lines,
-  selected,
-  onSelect,
-}: {
-  refs: string[];
-  lines: IntentLine[];
-  selected: string | null;
-  onSelect: (line: IntentLine) => void;
-}) {
-  if (refs.length === 0) return <p className="mt-1 text-[11px] text-text-faint">rested on nothing it named</p>;
-  return (
-    <ul className="mt-1 space-y-0.5">
-      {refs.map((ref) => {
-        const matched = linesRestedOn(ref, lines);
-        return (
-          <li key={ref}>
-            <span className="text-[10px] font-mono text-text-faint">{ref}</span>
-            {matched.length === 0 ? (
-              <span className="ml-2 text-[10px] font-mono text-text-faint">(no line)</span>
-            ) : (
-              matched.map((line) => <LineRef key={line.id} line={line} selected={selected} onSelect={onSelect} />)
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
 }
 
 function LineRef({
@@ -306,7 +196,7 @@ function Settle({
           call={`jarvis/intent.settle({ subject: "${subject}", verdict: "approve" | "revise", sentence? })`}
           side="below"
         >
-          {`"${accept}" records that this stands, as an event of the record with his name on it, and "${object}" takes his sentence first and records it; when a decision was about a todo, each writes his ruling on that todo too (approve, or revise with his sentence).`}
+          {`"${accept}" records that this stands, as an event of the record with his name on it, and "${object}" takes his sentence first and records it.`}
         </Info>
       </div>
       {/* Below the controls, not in their row: the row stays the controls. */}

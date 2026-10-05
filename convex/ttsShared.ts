@@ -887,8 +887,7 @@ export function isLive(status: string): boolean {
 /** Deep link to one item on the /tts page (Everything tab), optionally
  * carrying an intent the page confirms before acting (state changes only on
  * the confirmed click — Slack's link-preview crawler fetches URLs, spec §7).
- * The single producer of the ?item=&intent= vocabulary consumed by app/jarvis.
- * Old /inventory links redirect to /tts with params preserved. */
+ * The single producer of the ?item=&intent= vocabulary consumed by app/jarvis. */
 export type TtsLinkIntent = "done" | "archive" | "engage";
 export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
   return `https://tom.quest/tts?item=${todoId}${intent ? `&intent=${intent}` : ""}`;

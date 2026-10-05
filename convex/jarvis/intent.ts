@@ -6,9 +6,9 @@
 // reason, and `restedOn`: the lines, rulings and evidence entries it rested
 // on, in the spellings the delegate's prompt asks for — `ruling:<id>`,
 // `model-of-tom/<page>.md#<Heading>`, `model-of-tom/evidence/<page>.md:<heading>`).
-// The page shows each decision beside the lines it rested on, as a
-// disagreement candidate: a decision taken as he would have, until he says
-// otherwise.
+// The Jarvis thread shows each decision the delegate took, with his
+// settlement of it (convex/thread.ts reads decisionOf and settlements here):
+// a decision taken as he would have, until he says otherwise.
 //
 // AN EVAL RUN is an event of kind `eval-run` (Jarvis worker/jobs/evals.mjs):
 // one set, its items each `{ name, pass, note }`. A rule item is named
@@ -42,8 +42,7 @@ const SURFACE = "Intent";
  *  in its settled run (convex/ttsDigest.ts, convex/ttsCompose.ts). */
 export const DISAGREEMENT_SETTLED = "disagreement-settled";
 
-/** The most decisions, settlements and eval runs one read takes. */
-const DECISIONS_MAX = 200;
+/** The most settlements and eval runs one read takes. */
 const SETTLED_MAX = 500;
 const EVAL_RUNS_MAX = 60;
 
@@ -152,20 +151,6 @@ export function decisionOf(row: Doc<"events">, settled: Map<string, Settlement>)
     settled: settled.get(decisionSubject(askId)) ?? null,
   };
 }
-
-/** Every delegate decision in the record, newest first, with his settlement
- *  of it when he has made one. */
-export const decisions = query({
-  args: {},
-  handler: async (ctx): Promise<Decision[]> => {
-    await requireTom(ctx, SURFACE);
-    const [rows, settled] = await Promise.all([
-      ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).order("desc").take(DECISIONS_MAX),
-      settlements(ctx),
-    ]);
-    return rows.map((row) => decisionOf(row, settled)).filter((one): one is Decision => one !== null);
-  },
-});
 
 /**
  * The eval items as the newest run of each set reports them, with each
@@ -303,7 +288,9 @@ export async function settleDecision(
     kind: DISAGREEMENT_SETTLED,
     provenance: { user: "tom" },
     subject,
-    data: { subject, verdict, sentence: sentence === "" ? null : sentence, rulingId },
+    // The decision's row id: the digest links the settlement to that row on
+    // the Jarvis thread without reading the decision again.
+    data: { subject, verdict, sentence: sentence === "" ? null : sentence, rulingId, decisionId: decision._id },
     text: verdict === "approve"
       ? `Tom accepted the delegate's decision "${taken}" (${askId}).`
       : `Tom objected to the delegate's decision "${taken}" (${askId}): ${sentence}`,

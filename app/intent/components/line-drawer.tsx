@@ -9,24 +9,21 @@
 //
 // WHAT THE RECORD DID WITH THE LINE comes after the evidence: the eval items
 // that name it (a ruling given to the judge; each run's pass, and the note
-// on a fail) and the delegate decisions that rested on it.
+// on a fail).
 //
 // Fixed, so opening it moves nothing on the page behind it.
 
-import type { Decision, EvalItem } from "@/convex/jarvis/intent";
+import type { EvalItem } from "@/convex/jarvis/intent";
 import { dateLabel, type IntentLine } from "../lib";
-import { displayDay } from "@/shared/clock.mjs";
 
 export default function LineDrawer({
   line,
   onClose,
   evalItems,
-  decisions,
 }: {
   line: IntentLine | null;
   onClose: () => void;
   evalItems: EvalItem[];
-  decisions: Decision[];
 }) {
   if (line === null) return null;
   return (
@@ -78,23 +75,6 @@ export default function LineDrawer({
                     {item.passed}/{item.runs} runs passed · newest {item.pass === true ? "pass" : item.pass === false ? "fail" : "skipped"}
                   </span>
                   {item.note !== "" && <p className="text-text-muted">{item.note}</p>}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-        {decisions.length > 0 && (
-          <section className="mt-4">
-            <h3 className="text-[10px] font-mono text-text-faint">delegate decisions that rested on this line</h3>
-            <ul className="mt-1 space-y-2">
-              {decisions.map((decision) => (
-                <li key={decision.id} className="text-[12px] leading-snug">
-                  <p className="text-text">{decision.question}</p>
-                  <p className="text-accent">{decision.refused ? "refused" : decision.decision}</p>
-                  <p className="font-mono text-[10px] text-text-faint">
-                    {displayDay(decision.at)} · {decision.caller}
-                    {decision.settled !== null && ` · ${decision.settled.verdict === "approve" ? "stands" : "objected"}`}
-                  </p>
                 </li>
               ))}
             </ul>

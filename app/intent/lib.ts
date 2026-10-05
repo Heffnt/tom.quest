@@ -185,44 +185,9 @@ export function joinLines(parts: AgentPart[], lines: IntentLine[]): AgentRow[] {
 
 // ── What the record says beside a line ──────────────────────────────────────
 //
-// A delegate decision's `restedOn` names what it rested on in the spellings
-// its prompt asks for: `ruling:<id>`, a page section `<path>#<Heading>`, an
-// evidence entry `<evidence path>:<heading>`. A rule eval item is named
-// `rule/ruling-<last 8 of the ruling id>`. Both resolve to lines of the list
-// here, in one place, so the page and its tests agree on what "beside" means.
-
-/** The lines one `restedOn` reference names; empty when it names none.
- *  A parser, not an id lookup, because the delegate cites what its prompt
- *  prints (Jarvis worker/jobs/delegate.mjs: `ruling:<id>`, `path:heading`, or
- *  a page path and heading), and the /intent line ids are not in that prompt. */
-export function linesRestedOn(ref: string, lines: IntentLine[]): IntentLine[] {
-  const trimmed = ref.trim();
-  if (trimmed.startsWith("ruling:")) {
-    // The delegate cites the ruling spelling its prompt prints: the ruling's
-    // id, or for a ruling copied from dtsRulings, the id it had there.
-    const cited = trimmed.slice("ruling:".length);
-    return lines.filter((line) => line.kind === "ruling" && (line.id === `rulings/${cited}` || line.legacyId === cited));
-  }
-  const cut = trimmed.search(/[#:]/);
-  if (cut === -1) return [];
-  const heading = trimmed.slice(cut + 1).trim();
-  if (heading === "") return [];
-  // A repo's evidence file (`model-of-tom/evidence/repos/<Repo>.md:<file>#<heading>`)
-  // stands behind that repo's AGENTS.md rules, whose source is `<Repo> <file>`.
-  const repo = /^model-of-tom\/evidence\/repos\/([^/]+)\.md$/.exec(trimmed.slice(0, cut));
-  if (repo !== null) {
-    // The delegate cites the repository evidence spelling its prompt prints.
-    const inner = heading.indexOf("#");
-    if (inner === -1) return [];
-    const source = `${repo[1]} ${heading.slice(0, inner).trim()}`;
-    const wanted = heading.slice(inner + 1).trim().toLowerCase();
-    return lines.filter((line) => line.source === source && line.section.toLowerCase() === wanted);
-  }
-  // The delegate cites the page-section spelling its prompt prints.
-  const path = trimmed.slice(0, cut).replace("/evidence/", "/");
-  const wanted = heading.toLowerCase();
-  return lines.filter((line) => line.source === path && line.section.toLowerCase() === wanted);
-}
+// A rule eval item is named `rule/ruling-<last 8 of the ruling id>`; it
+// resolves to a line of the list here, in one place, so the page and its
+// tests agree on what "beside" means.
 
 /** The ruling id suffix an eval item names, or null for an item that names no line.
  *  Eight characters because that is the name the rule set's writer gives an
@@ -257,31 +222,18 @@ export function passRate(items: { passed: number; runs: number }[]): { passed: n
 }
 
 /**
- * The disagreements still open, as the view's badge counts them: the delegate
- * decisions he has not settled (a decision he took himself on /thread is not
- * one), the failing eval items he has not settled, and
- * the vocabulary's disagreements (settled in the files, so every one listed is
- * open). Null until all three reads have answered; a vocabulary with no row
- * (null) has none.
+ * The disagreements still open, as the view's badge counts them: the failing
+ * eval items he has not settled, and the vocabulary's disagreements (settled
+ * in the files, so every one listed is open). Null until both reads have
+ * answered; a vocabulary with no row (null) has none.
  */
 export function openDisagreements(
-  decisions: { decision: string | null; refused: boolean; settled: unknown; decidedByTom?: boolean }[] | undefined,
   evalItems: { pass: boolean | null; settled: unknown }[] | undefined,
   vocabulary: { disagreements: unknown[] } | null | undefined,
 ): number | null {
-  if (decisions === undefined || evalItems === undefined || vocabulary === undefined) return null;
+  if (evalItems === undefined || vocabulary === undefined) return null;
   return (
-    decisions.filter((one) => !one.refused && one.decision !== null && one.settled === null && !one.decidedByTom).length +
     evalItems.filter((one) => one.pass === false && one.settled === null).length +
     (vocabulary?.disagreements.length ?? 0)
   );
-}
-
-/** The askId a `#decision-<askId>` fragment names, or null for any other
- *  fragment. A delegate decision's phone notification opens
- *  /intent#decision-<askId> (convex/ttsAsk.ts insertDecision), so a tap lands
- *  on that decision's row in the disagreements view. */
-export function decisionFragment(hash: string): string | null {
-  // An askId is 8 lowercase hex characters (POST /tts/ask refuses any other).
-  return /^#decision-([0-9a-f]{8})$/.exec(hash)?.[1] ?? null;
 }

@@ -278,8 +278,8 @@ async function tomAnswer(
  *
  *  A DECISION THE DELEGATE TOOK IS ALSO ONE WEB PUSH to every live
  *  subscription (convex/pushSend.ts sendToAll): the question on one line, the
- *  decision on the next, and a tap opens that decision's row on /intent
- *  (app/intent/intent-client.tsx reads the #decision-<askId> fragment). Tom's
+ *  decision on the next, and a tap opens that decision's row on /thread
+ *  (app/thread reads the #<row id> fragment, expanded with accept and object). Tom's
  *  answer of 2026-10-04 to the question about decisions taken while he is
  *  reachable but not in the session: "agreed. lets send notifications to my
  *  phone for this." A refusal took nothing in his name and is not pushed: the
@@ -293,7 +293,7 @@ async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
   // tells him what the delegate decided while he was away (tom.quest #340),
   // and he wrote this one himself.
   const byTom = ask.decidedBy === "tom";
-  await insertEvent(ctx, {
+  const id = await insertEvent(ctx, {
     kind: "decision",
     provenance: byTom ? { user: "tom" } : ask.sessionId !== null ? { session: ask.sessionId } : { job: ask.job ?? undefined },
     subject: ask.askId,
@@ -322,9 +322,7 @@ async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
   await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, {
     title: "Delegate decision",
     body: `${pushLine(ask.question)}\n${pushLine(ask.decision)}`,
-    // The askId is 8 lowercase hex characters (POST /tts/ask refuses any
-    // other), so it goes into the fragment as it is.
-    url: `/intent#decision-${ask.askId}`,
+    url: `/thread#${id}`,
   });
 }
 

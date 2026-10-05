@@ -2,13 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   countVoices,
   dateLabel,
-  decisionFragment,
   filterLines,
   groupByKind,
   evalItemLineSuffix,
   evalItemsForLine,
   joinLines,
-  linesRestedOn,
   openDisagreements,
   passRate,
   rulingLineHasSuffix,
@@ -173,48 +171,10 @@ describe("joinLines", () => {
   });
 });
 
-describe("linesRestedOn", () => {
-  const lines = [
-    line(),
-    line({ id: "model-of-tom/intent.md#9", section: "Directions" }),
-    line({ id: "model-of-tom/agent-rules.md#3", kind: "standing-rule", source: "model-of-tom/agent-rules.md", section: "How you work" }),
-    line({ id: "CMT AGENTS.md#4", kind: "standing-rule", source: "CMT AGENTS.md", section: "commands", voice: "unattributed" }),
-    line({ id: "rulings/qs7abc758ddm40", kind: "ruling", source: "rulings", section: "life", locator: "qs7abc758ddm40" }),
-  ];
-
-  it("resolves a page section, whatever its case, to the lines under it", () => {
-    expect(linesRestedOn("model-of-tom/intent.md#what to protect", lines).map((l) => l.id)).toEqual(["model-of-tom/intent.md#5"]);
-    expect(linesRestedOn("model-of-tom/agent-rules.md#How you work", lines).map((l) => l.id)).toEqual(["model-of-tom/agent-rules.md#3"]);
-  });
-
-  it("resolves an evidence entry to the page's lines, and a repo's evidence entry to its AGENTS.md rules", () => {
-    expect(linesRestedOn("model-of-tom/evidence/intent.md:Directions", lines).map((l) => l.id)).toEqual(["model-of-tom/intent.md#9"]);
-    expect(linesRestedOn("model-of-tom/evidence/repos/CMT.md:AGENTS.md#commands", lines).map((l) => l.id)).toEqual(["CMT AGENTS.md#4"]);
-  });
-
-  it("resolves a ruling id and a line number, and nothing it cannot read", () => {
-    expect(linesRestedOn("ruling:qs7abc758ddm40", lines).map((l) => l.id)).toEqual(["rulings/qs7abc758ddm40"]);
-    // The delegate cites a page by path and heading (Jarvis delegate.mjs),
-    // never by line number: a number names no section and no line.
-    expect(linesRestedOn("model-of-tom/intent.md#9", lines)).toEqual([]);
-    expect(linesRestedOn("model-of-tom/intent.md#Nowhere", lines)).toEqual([]);
-    expect(linesRestedOn("just words", lines)).toEqual([]);
-    expect(linesRestedOn("model-of-tom/evidence/repos/CMT.md:commands", lines)).toEqual([]);
-  });
-});
-
 // witness: a ruling copied from dtsRulings answered only to its new id, so
-// the delegate's `ruling:<old id>` and a rule item named from the old id
-// attached to no line.
+// a rule item named from the old id attached to no line.
 describe("a ruling copied from dtsRulings", () => {
   const copied = line({ id: "rulings/kn2new0000aaaa", kind: "ruling", source: "rulings", locator: "kn2new0000aaaa", legacyId: "jd7old00fe3kq2x9" });
-  const lines = [line(), copied];
-
-  it("is the line a reference by its old id rests on, as by its new one", () => {
-    expect(linesRestedOn("ruling:jd7old00fe3kq2x9", lines).map((l) => l.id)).toEqual(["rulings/kn2new0000aaaa"]);
-    expect(linesRestedOn("ruling:kn2new0000aaaa", lines).map((l) => l.id)).toEqual(["rulings/kn2new0000aaaa"]);
-    expect(linesRestedOn("ruling:jd7old00", lines)).toEqual([]);
-  });
 
   it("is the line an eval item named from either id's last eight names", () => {
     const items = [
@@ -251,42 +211,19 @@ describe("evalItemsForLine", () => {
 });
 
 describe("openDisagreements", () => {
-  it("counts the vocabulary's disagreements beside the unsettled decisions and failing items", () => {
-    const decisions = [
-      { decision: "One.", refused: false, settled: null },
-      { decision: "Two.", refused: false, settled: { verdict: "approve" } },
-      { decision: null, refused: true, settled: null },
-      { decision: null, refused: false, settled: null },
-    ];
+  it("counts the vocabulary's disagreements beside the unsettled failing items", () => {
     const items = [
       { pass: false, settled: null },
       { pass: false, settled: { verdict: "revise" } },
       { pass: true, settled: null },
       { pass: null, settled: null },
     ];
-    expect(openDisagreements(decisions, items, { disagreements: [1, 2, 3] })).toBe(5);
-    expect(openDisagreements(decisions, items, null)).toBe(2);
-    // A decision he took himself on /thread is no disagreement.
-    expect(openDisagreements([...decisions, { decision: "Three.", refused: false, settled: null, decidedByTom: true }], items, null)).toBe(2);
+    expect(openDisagreements(items, { disagreements: [1, 2, 3] })).toBe(4);
+    expect(openDisagreements(items, null)).toBe(1);
   });
 
   it("says nothing until every read has answered", () => {
-    expect(openDisagreements(undefined, [], null)).toBeNull();
-    expect(openDisagreements([], undefined, null)).toBeNull();
-    expect(openDisagreements([], [], undefined)).toBeNull();
-  });
-});
-
-describe("decisionFragment", () => {
-  it("reads the askId a decision notification's fragment names", () => {
-    expect(decisionFragment("#decision-3f9c1a22")).toBe("3f9c1a22");
-  });
-
-  it("answers null for any other fragment", () => {
-    expect(decisionFragment("")).toBeNull();
-    expect(decisionFragment("#vocabulary")).toBeNull();
-    expect(decisionFragment("#decision-")).toBeNull();
-    expect(decisionFragment("#decision-3F9C1A22")).toBeNull();
-    expect(decisionFragment("#decision-3f9c1a2")).toBeNull();
+    expect(openDisagreements(undefined, null)).toBeNull();
+    expect(openDisagreements([], undefined)).toBeNull();
   });
 });

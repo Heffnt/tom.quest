@@ -1082,9 +1082,11 @@ export async function gatherTodayFacts(
     });
   }
 
-  // His settlements on /intent (convex/jarvis/intent.ts settle, kind
-  //    "disagreement-settled"): one line each, the text settle wrote, read on
-  //    the kind's own index over the same window, oldest first.
+  // His settlements (convex/jarvis/intent.ts, kind "disagreement-settled"):
+  //    one line each, the text the settlement wrote, read on the kind's own
+  //    index over the same window, oldest first. A decision's settlement
+  //    links its row on the Jarvis thread, where he settles decisions; an eval
+  //    item's links /intent.
   const settledRows = await readWithin(
     budget.allot("settlements", READ_BYTES.settlements),
     ctx.db
@@ -1093,11 +1095,19 @@ export async function gatherTodayFacts(
       .order("desc"),
     OBJECTION_SCAN,
   );
+  // The link is built from the settlement row alone: a decision's names its
+  // row by data.decisionId (convex/jarvis/intent.ts settleDecision), and one
+  // written before that field links the thread itself.
   const settled = settledRows
     .reverse()
     .flatMap((row) => {
       const text = safeStr(row.text);
-      return text === undefined ? [] : [{ id: row._id as string, text }];
+      if (text === undefined) return [];
+      const decisionId = safeStr((row.data as { decisionId?: unknown } | undefined)?.decisionId);
+      const url = row.subject?.startsWith("decision:") === true
+        ? `https://tom.quest/thread${decisionId === undefined ? "" : `#${decisionId}`}`
+        : "https://tom.quest/intent";
+      return [{ id: row._id as string, text, url }];
     });
 
   // His standing rulings that new information ended and no digest has

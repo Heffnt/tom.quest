@@ -72,8 +72,8 @@ export default function JarvisClient() {
   }, []);
 
   // Tab state stays local: user-facing quest URLs avoid query params
-  // (AGENTS.md routing). Incoming ?tab= links (e.g. the /focus redirect) are
-  // honored by the read-once effect above; clicks do not write the URL.
+  // (AGENTS.md routing). Incoming ?tab= links are honored by the read-once
+  // effect above; clicks do not write the URL.
   const selectTab = (next: Tab) => setTab(next);
 
   const clearLink = () => {

@@ -71,20 +71,21 @@ describe("GET /jarvis/context", () => {
 });
 
 describe("jarvis/intent", () => {
-  it("lists decisions newest first with the settlement he made, and refuses a stranger", async () => {
+  it("shows decisions on the thread with the settlement he made, and refuses a stranger", async () => {
     const t = convexTest({ schema, modules });
-    await event(t, "decision", "86f2f341", DECISION, 1_700_000_000_000);
-    await event(t, "decision", "14606c4b", { ...DECISION, askId: "14606c4b", decision: "Two." }, 1_700_000_001_000);
+    const now = Date.now();
+    await event(t, "decision", "86f2f341", DECISION, now - 2_000);
+    await event(t, "decision", "14606c4b", { ...DECISION, askId: "14606c4b", decision: "Two." }, now - 1_000);
     const tom = await asTom(t);
-    const before = await tom.query(api.jarvis.intent.decisions, {});
-    expect(before.map((one) => one.askId)).toEqual(["14606c4b", "86f2f341"]);
-    expect(before[1].restedOn).toEqual(DECISION.restedOn);
-    expect(before[1].settled).toBeNull();
+    const shown = async () => (await tom.query(api.thread.messages, {})).entries.flatMap((one) => one.kind === "decision" ? [one] : []);
+    const before = await shown();
+    expect(before.map((one) => one.askId)).toEqual(["86f2f341", "14606c4b"]);
+    expect(before[0].restedOn).toEqual(DECISION.restedOn);
+    expect(before[0].settled).toBeNull();
 
     await tom.mutation(api.jarvis.intent.settle, { subject: "decision:86f2f341", verdict: "approve" });
-    const after = await tom.query(api.jarvis.intent.decisions, {});
-    expect(after[1].settled?.verdict).toBe("approve");
-    expect(after[1].settled?.rulingId).toBeNull();
+    const after = await shown();
+    expect(after[0].settled?.verdict).toBe("approve");
     const settled = await t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "disagreement-settled")).collect());
     expect(settled).toHaveLength(1);
     expect(settled[0].provenance).toEqual({ user: "tom" });
@@ -94,7 +95,7 @@ describe("jarvis/intent", () => {
     await expect(tom.mutation(api.jarvis.intent.settle, { subject: "decision:86f2f341", verdict: "revise" })).rejects.toThrow("sentence");
     await expect(tom.mutation(api.jarvis.intent.settle, { subject: "decision:nope", verdict: "approve" })).rejects.toThrow("no decision");
     const stranger = await t.run(async (ctx) => ctx.db.insert("users", { name: "x", email: "x@x", role: "user" }));
-    await expect(t.withIdentity({ subject: stranger }).query(api.jarvis.intent.decisions, {})).rejects.toThrow();
+    await expect(t.withIdentity({ subject: stranger }).mutation(api.jarvis.intent.settle, { subject: "decision:86f2f341", verdict: "approve" })).rejects.toThrow();
   });
 
   it("takes no accept on a refused or unanswered decision, and writes no ruling for one", async () => {
@@ -198,10 +199,11 @@ describe("jarvis/intent", () => {
 
   it("files a decision under its row's subject and skips one without", async () => {
     const t = convexTest({ schema, modules });
-    await event(t, "decision", "filed1", { ...DECISION, askId: "a-different-spelling" });
-    await t.run(async (ctx) => ctx.db.insert("events", { kind: "decision", at: 1, provenance: {}, data: { ...DECISION, askId: "unfiled" } }));
+    await event(t, "decision", "filed1", { ...DECISION, askId: "a-different-spelling" }, Date.now());
+    await t.run(async (ctx) => ctx.db.insert("events", { kind: "decision", at: Date.now(), provenance: {}, data: { ...DECISION, askId: "unfiled" } }));
     const tom = await asTom(t);
-    expect((await tom.query(api.jarvis.intent.decisions, {})).map((one) => one.askId)).toEqual(["filed1"]);
+    const shown = (await tom.query(api.thread.messages, {})).entries.flatMap((one) => one.kind === "decision" ? [one.askId] : []);
+    expect(shown).toEqual(["filed1"]);
   });
 });
 
@@ -221,7 +223,7 @@ describe("the digest's settled run", () => {
     const now = Date.UTC(2026, 8, 27, 9, 30);
     const t = convexTest({ schema, modules });
     await event(t, "decision", "0ld5e771", { ...DECISION, askId: "0ld5e771", decision: "Three." }, before - 1_000);
-    await event(t, "decision", "86f2f341", DECISION, since + 1_000);
+    const decisionRow = await event(t, "decision", "86f2f341", DECISION, since + 1_000);
     const tom = await asTom(t);
     vi.setSystemTime(before);
     await tom.mutation(api.jarvis.intent.settle, { subject: "decision:0ld5e771", verdict: "approve" });
@@ -233,10 +235,42 @@ describe("the digest's settled run", () => {
     expect(lead).toBeGreaterThan(-1);
     const line = `Tom objected to the delegate's decision "One." (86f2f341): Two, in worktrees.`;
     expect(lines[lead + 1]).toContain(line);
-    expect(lines[lead + 1]).toContain("https://tom.quest/intent");
+    // Settled on the thread: the line links the decision's row there.
+    expect(lines[lead + 1]).toContain(`https://tom.quest/thread#${decisionRow}`);
+    expect(text).not.toContain("intent page");
     expect(text).not.toContain("0ld5e771");
     expect((facts as { facts: { id: string; text: string }[] }).facts.filter((one) => one.id.startsWith("settled:"))).toEqual([
       expect.objectContaining({ id: `settled:${settled.id}`, text: line }),
     ]);
+  });
+
+  // witness: the link was built from a read of the decision under the
+  // digest's lookup budget, and a spent budget linked a decision to /intent.
+  it("links each settlement from its own row, with no read of the decision", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const since = Date.UTC(2026, 8, 26, 9);
+    const now = Date.UTC(2026, 8, 27, 9, 30);
+    const t = convexTest({ schema, modules });
+    const decisionRow = await event(t, "decision", "86f2f341", DECISION, since + 1_000);
+    const tom = await asTom(t);
+    vi.setSystemTime(since + 2_000);
+    await tom.mutation(api.jarvis.intent.settle, { subject: "decision:86f2f341", verdict: "approve" });
+    // Nothing the digest could read names the decision any more.
+    await t.run(async (ctx) => ctx.db.delete(decisionRow));
+    // A decision's settlement from before the row carried decisionId, and an eval item's.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("events", { kind: "disagreement-settled", at: since + 3_000, provenance: { user: "tom" },
+        subject: "decision:0ld5e771", data: { subject: "decision:0ld5e771", verdict: "approve", sentence: null, rulingId: null },
+        text: "Tom accepted an older decision." });
+      await ctx.db.insert("events", { kind: "disagreement-settled", at: since + 4_000, provenance: { user: "tom" },
+        subject: "eval:run1:rule/a", data: { subject: "eval:run1:rule/a", verdict: "approve", sentence: null, rulingId: null },
+        text: "Tom let the ruling behind eval item rule/a stand." });
+    });
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, { day: "2026-09-27", now, since });
+    const lines = text.split("\n");
+    const of = (needle: string) => lines.find((one) => one.includes(needle)) ?? "";
+    expect(of("accepted the delegate's decision")).toContain(`https://tom.quest/thread#${decisionRow}`);
+    expect(of("an older decision")).toContain("<https://tom.quest/thread|");
+    expect(of("eval item rule/a")).toContain("https://tom.quest/intent");
   });
 });

@@ -75,10 +75,10 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  The calendar run is printed between "needs-you-today" and "overnight" and is not
  *  named here: it is his day, not a ranked list, and it has no page of its own
  *  to send him to. `fit` reduces it in printed order like any other run. The
- *  settled run (his own settlements on /intent) is printed right after the
- *  objection list, and the superseded run (his standing rulings that new
- *  information ended) right after it; neither is named here: nothing in
- *  them waits on him.
+ *  settled run (his own settlements, of decisions on the Jarvis thread and of
+ *  eval items on /intent) is printed right after the objection list, and the
+ *  superseded run (his standing rulings that new information ended) right
+ *  after it; neither is named here: nothing in them waits on him.
  */
 export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnight", "broken", "spend", "box"] as const;
 
@@ -570,9 +570,10 @@ export type TodayFacts = {
   /** What sessions did overnight, one row per todo, the tail last. */
   overnightByTodo: TodoOutcome[];
   broken: BrokenFact[];
-  /** His settlements on /intent since the last digest (convex/jarvis/intent.ts
-   *  settle writes each as a `disagreement-settled` event whose text is the
-   *  line), oldest first. Absent or empty: he settled nothing. */
+  /** His settlements since the last digest (convex/jarvis/intent.ts writes
+   *  each as a `disagreement-settled` event whose text is the line), oldest
+   *  first, each with where it was made: a decision's row on the Jarvis
+   *  thread, or /intent for an eval item. Absent or empty: he settled nothing. */
   settled?: SettledFact[];
   /** His standing rulings that new information ended and no digest has
    *  printed yet (convex/ttsDigest.ts reads them off the ruling rows), in the
@@ -611,7 +612,7 @@ export type SpendFact = {
 };
 
 /** One settlement of a disagreement: the event's id and the line settle wrote. */
-type SettledFact = { id: string; text: string };
+type SettledFact = { id: string; text: string; url: string };
 
 /** Where a superseded ruling sits in the order the digest reads them: when it
  *  was ended (`at`, its data.supersededAt) and, among rulings ended in the
@@ -622,10 +623,8 @@ export type SupersededCursor = { at: number; after: number };
 /** One superseded ruling: its row id, the line supersede wrote, its position. */
 export type SupersededFact = { id: string; text: string; cursor: SupersededCursor };
 
-/** The /intent page, where every settlement was made and can be read. */
-const INTENT_URL = "https://tom.quest/intent";
 /** The settled run's lead. */
-export const SETTLED_LEAD = "What you settled on the intent page since the last digest.";
+export const SETTLED_LEAD = "What you settled since the last digest.";
 /** The superseded run's lead. */
 const SUPERSEDED_LEAD = "Rulings of yours that no longer stand, each with the new information that ended it.";
 
@@ -1035,7 +1034,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     note(lines, "objections", o.canReply, 'reply "revert 2", or "2: what to do instead".');
   }
 
-  // 2b. What he settled on /intent since the last digest: the answer to the
+  // 2b. What he settled since the last digest: the answer to the
   //     objection list's decisions and the failing eval items, one line
   //     each, as settle wrote it (convex/jarvis/intent.ts). Not numbered and
   //     not ranked: nothing here waits on him.
@@ -1044,7 +1043,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
       lines,
       "settled",
       SETTLED_LEAD,
-      (f.settled ?? []).map((row) => ({ text: row.text, url: INTENT_URL })),
+      (f.settled ?? []).map((row) => ({ text: row.text, url: row.url })),
       SECTION_CAPS.settled,
     );
   }
@@ -1372,7 +1371,7 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     const line = objectionLine(objection, index + 1);
     facts.push(fact(`ask:${objection.askId}`, line.text, [line.url], [index + 1]));
   });
-  for (const row of f.settled ?? []) facts.push(fact(`settled:${row.id}`, row.text, [INTENT_URL]));
+  for (const row of f.settled ?? []) facts.push(fact(`settled:${row.id}`, row.text, [row.url]));
   for (const row of f.superseded ?? []) facts.push(fact(`superseded:${row.id}`, row.text, [TAB_EVERYTHING]));
   if (f.needsYou.length > 0) {
     facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));

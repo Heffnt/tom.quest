@@ -963,7 +963,7 @@ describe("the lines saying a digest read stopped", () => {
       boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
       broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
       calendar: Array.from({ length: 14 }, (_, n) => ({ title: long("Meeting", n), when: "09:00 to 10:00", allDay: false })),
-      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
+      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n), url: "https://tom.quest/intent" })),
       readCuts: allCuts,
     });
     expect(renderSlack(composeToday(facts, { canReply: false })).length).toBeGreaterThan(MESSAGE_MAX_CHARS);
@@ -988,7 +988,7 @@ describe("the superseded run", () => {
   it("prints his rulings that no longer stand right after the settled run, one line each", () => {
     const message = composeToday(
       sept9({
-        settled: [{ id: "s1", text: "Tom accepted the delegate's decision \"One.\" (86f2f341)." }],
+        settled: [{ id: "s1", text: "Tom accepted the delegate's decision \"One.\" (86f2f341).", url: "https://tom.quest/thread" }],
         superseded: [
           {
             id: "r1",
@@ -1044,7 +1044,7 @@ describe("the superseded run", () => {
     }));
     const facts = sept9({
       superseded,
-      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
+      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n), url: "https://tom.quest/intent" })),
       boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
       broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
     });

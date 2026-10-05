@@ -8,8 +8,7 @@
 // is hundreds of lines long.
 //
 // A ROW ALSO SAYS WHAT THE RECORD DID WITH THE LINE: how often the eval items
-// naming it passed (a ruling given to the judge), and how many delegate
-// decisions rested on it.
+// naming it passed (a ruling given to the judge).
 
 import { dateLabel, VOICE_CLASS, type IntentKind, type IntentLine } from "../lib";
 
@@ -25,15 +24,12 @@ export default function LineList({
   selected,
   onSelect,
   evals,
-  decisions,
 }: {
   groups: { kind: IntentKind; lines: IntentLine[] }[];
   selected: string | null;
   onSelect: (line: IntentLine) => void;
   /** Per line id: how often the eval items naming it passed, over the runs read. */
   evals: Map<string, { passed: number; runs: number }>;
-  /** Per line id: how many delegate decisions rested on it. */
-  decisions: Map<string, number>;
 }) {
   return (
     <div className="space-y-4">
@@ -68,7 +64,6 @@ export default function LineList({
                         evals {evals.get(line.id)!.passed}/{evals.get(line.id)!.runs}
                       </span>
                     )}
-                    {(decisions.get(line.id) ?? 0) > 0 && <span>{decisions.get(line.id)} decisions</span>}
                   </span>
                 </button>
               </li>

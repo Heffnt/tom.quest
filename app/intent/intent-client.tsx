@@ -21,12 +21,12 @@
 // VOCABULARY. Every word as `tts search` prints it (vocabulary.tsx). The
 // /vocabulary page was this view; its address redirects here.
 //
-// DISAGREEMENTS. What stands as his until he says otherwise: the delegate's
-// decisions beside the lines they rested on, the eval items the judge failed,
-// and the words the spec and the code disagree on. The first two he settles
-// here (jarvis/intent.settle); the words he settles in the files.
+// DISAGREEMENTS. What stands as his until he says otherwise: the eval items
+// the judge failed, which he settles here (jarvis/intent.settle), and the
+// words the spec and the code disagree on, which he settles in the files. The
+// delegate's decisions are settled on the Jarvis thread (app/thread).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
@@ -42,17 +42,14 @@ import VocabularyDisagreements from "./components/vocabulary-disagreements";
 import {
   countVoices,
   dateLabel,
-  decisionFragment,
   evalItemsForLine,
   filterLines,
   groupByKind,
-  linesRestedOn,
   openDisagreements,
   passRate,
   sourcesOf,
   KINDS,
   VOICES,
-  type IntentLine,
 } from "./lib";
 import { INTENT_VIEWS, useIntentStore, type IntentView } from "./store";
 
@@ -70,28 +67,17 @@ export default function IntentClient() {
   const agent = useQuery(api.intent.agentView, isTom && view === "agent" ? {} : "skip");
   // Read on every view: the disagreements badge counts its disagreements.
   const vocabulary = useQuery(api.vocabulary.current, isTom ? {} : "skip");
-  const decisions = useQuery(api.jarvis.intent.decisions, isTom ? {} : "skip");
   const evalItems = useQuery(api.jarvis.intent.evalItems, isTom ? {} : "skip");
   const settle = useMutation(api.jarvis.intent.settle);
 
-  // Two fragments pick a view. The /vocabulary address redirects to
-  // /intent#vocabulary (next.config.ts): that fragment picks the vocabulary
-  // view on arrival and on a hash change, and moves nothing. It stays while Slack messages
-  // and old links name /vocabulary; the redirect alone would land them on the
-  // default view. A delegate decision's phone notification opens
-  // /intent#decision-<askId> (convex/ttsAsk.ts insertDecision): that fragment
-  // picks the disagreements view and the decision's row, read on arrival and
-  // again on a hash change, since a tap on a second notification while the
-  // page is open changes only the fragment. No link names another fragment.
-  const [focusAskId, setFocusAskId] = useState<string | null>(null);
+  // The /vocabulary address redirects to /intent#vocabulary (next.config.ts):
+  // that fragment picks the vocabulary view on arrival and on a hash change,
+  // and moves nothing. It stays while Slack messages and old links name
+  // /vocabulary; the redirect alone would land them on the default view. No
+  // link names another fragment.
   useEffect(() => {
     const read = () => {
       if (window.location.hash === "#vocabulary") setView("vocabulary");
-      const askId = decisionFragment(window.location.hash);
-      if (askId !== null) {
-        setView("disagreements");
-        setFocusAskId(askId);
-      }
     };
     read();
     window.addEventListener("hashchange", read);
@@ -115,16 +101,7 @@ export default function IntentClient() {
     }
     return byLine;
   }, [lines, evalItems]);
-  const decisionsByLine = useMemo(() => {
-    const count = new Map<string, number>();
-    for (const decision of decisions ?? []) {
-      for (const line of lines) {
-        if (decision.restedOn.some((ref) => matchesLine(ref, line))) count.set(line.id, (count.get(line.id) ?? 0) + 1);
-      }
-    }
-    return count;
-  }, [lines, decisions]);
-  const open = openDisagreements(decisions, evalItems, vocabulary);
+  const open = openDisagreements(evalItems, vocabulary);
 
   return (
     <TomGate label="Intent">
@@ -220,7 +197,6 @@ export default function IntentClient() {
                 selected={selected?.id ?? null}
                 onSelect={select}
                 evals={evals}
-                decisions={decisionsByLine}
               />
             </>
           )}
@@ -228,9 +204,7 @@ export default function IntentClient() {
           {view === "disagreements" && (
             <div className="space-y-5">
               <Decisions
-                decisions={decisions ?? []}
                 evalItems={evalItems ?? []}
-                focusAskId={focusAskId}
                 lines={lines}
                 selected={selected?.id ?? null}
                 onSelect={select}
@@ -245,12 +219,7 @@ export default function IntentClient() {
         line={selected}
         onClose={() => select(null)}
         evalItems={selected === null ? [] : evalItemsForLine(selected, evalItems ?? [])}
-        decisions={selected === null ? [] : (decisions ?? []).filter((one) => one.restedOn.some((ref) => matchesLine(ref, selected)))}
       />
     </TomGate>
   );
-}
-
-function matchesLine(ref: string, line: IntentLine): boolean {
-  return linesRestedOn(ref, [line]).length > 0;
 }
