@@ -8,8 +8,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 
-vi.mock("next/font/google", () => ({
-  Manrope: () => ({ className: "manrope", style: { fontFamily: "Manrope" } }),
+vi.mock("next/font/local", () => ({
+  default: () => ({ className: "manrope", style: { fontFamily: "Manrope" } }),
 }));
 
 import TomLogo from "./tom-logo";

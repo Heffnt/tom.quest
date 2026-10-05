@@ -1,7 +1,7 @@
 "use client";
 
 import { useLayoutEffect, useRef, useState } from "react";
-import { Manrope } from "next/font/google";
+import localFont from "next/font/local";
 import TomSymbol, {
   DEFAULT_TOM_PARAMS,
   tomSymbolMetrics,
@@ -9,7 +9,13 @@ import TomSymbol, {
   type TomSymbolParams,
 } from "./tom-symbol";
 
-const manrope = Manrope({ subsets: ["latin"], weight: ["700"], display: "swap" });
+// Self-hosted like app/layout.tsx's fonts; app/fonts/manrope/OFL.txt is its licence.
+const manrope = localFont({
+  src: "../fonts/manrope/manrope-latin-700-normal.woff2",
+  weight: "700",
+  style: "normal",
+  display: "swap",
+});
 const MANROPE_FAMILY = manrope.style.fontFamily;
 
 /* Horizontal crop of the symbol viewBox: x=70..570 pads the dot/tail extent,
