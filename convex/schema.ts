@@ -1925,6 +1925,14 @@ export default defineSchema({
     mode: v.optional(v.union(v.literal("interactive"), v.literal("autonomous"))),
     startedAt: v.number(),
     lastLineAt: v.number(),
+    // When the run ended, epoch ms, and why, from the closed list
+    // RUN_END_REASONS (convex/agents.ts). Written only by POST /agents/run-end
+    // (agents.internalRecordRunEnd), which the box posts from the end a hook
+    // or a launcher saw; the ingest never writes them, so a page swept later
+    // cannot take them back. Absent on every run before 2026-10-05 and on any
+    // run whose end nothing saw: lastLineAt is then the only measure.
+    endedAt: v.optional(v.number()),
+    endReason: v.optional(v.union(v.literal("ended"), v.literal("failed"), v.literal("limit"), v.literal("stopped"), v.literal("unknown"))),
     context: v.optional(v.object({
       wikitomCommit: v.optional(v.string()), layersKnown: v.optional(v.boolean()), layersGiven: v.optional(v.array(v.string())), layersDenied: v.optional(v.array(v.string())), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
       registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),

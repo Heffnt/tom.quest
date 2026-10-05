@@ -502,6 +502,17 @@ export function durationText(ms: number): string {
 }
 
 /**
+ * How long a run ran, from its start to the end the box posted
+ * (runs.endedAt), as durationText writes it; "" for a run still running or
+ * one whose end nothing saw (every run that ended before 2026-10-05 has no
+ * endedAt), so the list shows nothing rather than a guess.
+ */
+export function runDurationText(run: { status: string; startedAt: number; endedAt?: number }): string {
+  if (run.status === "running" || run.endedAt === undefined) return "";
+  return durationText(run.endedAt - run.startedAt);
+}
+
+/**
  * Token classes for a run status chip — the same vocabulary as
  * statusChipClass above, so a run and a session read as one surface.
  * "abandoned" and "unknown" are the muted pair: neither is a failure, both are

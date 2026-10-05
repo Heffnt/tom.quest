@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
+import { runDurationText } from "../app/agents/lib";
+import { barEnd, lasted, type RunMark } from "../app/agents/window/lib";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -1216,5 +1218,91 @@ describe("agents: a registration token belongs to one agent", () => {
     expect(await t.mutation(internal.agents.internalIngest, retry(agent(FIRST)) as never)).toMatchObject({ ok: true, inserted: 0, skipped: 1 });
     expect(await t.mutation(internal.agents.internalIngest, retry(agent(FIRST), [row(0), row(1, { digest: "fedcba9876543210", kind: "assistant-text" })]) as never)).toMatchObject({ ok: true, inserted: 1 });
     expect(await duplicates(t)).toEqual([]);
+  });
+});
+
+describe("a run's end", () => {
+  const RUN_ID = "claude:laptop:root-run";
+
+  it("sets endedAt, endReason and the status the reason implies, and nothing else", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ status: "running", startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    const before = await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
+    const result = await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" });
+    expect(result).toEqual({ ok: true, runId: RUN_ID, endedAt: 5_000, endReason: "ended", kept: false });
+    const after = await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
+    expect(after).toMatchObject({ endedAt: 5_000, endReason: "ended", status: "ended", lastLineAt: 2_000 });
+    // toEqual reads an undefined field as an absent one.
+    expect({ ...after!, endedAt: undefined, endReason: undefined, status: "running" }).toEqual(before);
+  });
+
+  it("names a failed end failed, and any other reason ended, and clears an abandonment mark", async () => {
+    for (const [endReason, status] of [["failed", "failed"], ["limit", "ended"], ["stopped", "ended"], ["unknown", "ended"]] as const) {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.agents.internalIngest, ingest(run({ status: "abandoned", abandonedAt: 3_000, startedAt: 1_000, lastLineAt: 2_000 })) as never);
+      await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason });
+      const stored = await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first());
+      expect(stored).toMatchObject({ status, endReason });
+      expect(stored?.abandonedAt).toBeUndefined();
+    }
+  });
+
+  it("shows the run's duration on the agents page and stops its timeline bar at the end", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ status: "running", startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    const tom = await withTom(t);
+    // Before the end: a running run shows no duration and its bar runs to now.
+    const [rootBefore] = await tom.query(api.agents.roots, {});
+    expect(runDurationText(rootBefore)).toBe("");
+    await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 125_000, endReason: "ended" });
+    // The root list's row reads "ran 2m 04s".
+    const [root] = await tom.query(api.agents.roots, {});
+    expect(runDurationText(root)).toBe("2m 04s");
+    // The window's bar ends at the posted end, not at now and not at the last line.
+    const window = await tom.query(api.observe.runsInWindow, { from: 0, to: 10_000, paginationOpts: { cursor: null, numItems: 10 } });
+    const mark = window.page.find((entry) => entry.runId === RUN_ID)!;
+    expect(barEnd(mark as RunMark, 10 * 60_000)).toBe(125_000);
+    expect(lasted(mark as RunMark, 10 * 60_000)).toBe("2m");
+  });
+
+  it("refuses a run the record does not hold", async () => {
+    const t = convexTest(schema, modules);
+    expect(await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" }))
+      .toEqual({ ok: false, reason: "no run" });
+  });
+
+  it("refuses an end before the start, in the future, or not in milliseconds, and an invalid id", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    const refused = async (args: { runId: string; endedAt: number }, reason: string) =>
+      expect(await t.mutation(internal.agents.internalRecordRunEnd, { ...args, endReason: "failed" })).toEqual({ ok: false, reason });
+    await refused({ runId: RUN_ID, endedAt: 999 }, "endedAt is before the run started");
+    await refused({ runId: RUN_ID, endedAt: Date.now() + 6 * 60_000 }, "endedAt is more than 5 minutes in the future");
+    await refused({ runId: RUN_ID, endedAt: 0 }, "endedAt is not epoch milliseconds");
+    await refused({ runId: "not-an-agent", endedAt: 5_000 }, "invalid runId");
+    expect((await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first()))?.endedAt).toBeUndefined();
+  });
+
+  it("keeps the later of two ends, so a retried first end cannot move a resumed session's end back", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 9_000, endReason: "stopped" });
+    expect(await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" }))
+      .toEqual({ ok: true, runId: RUN_ID, endedAt: 9_000, endReason: "stopped", kept: true });
+    await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 12_000, endReason: "limit" });
+    expect(await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first())).toMatchObject({ endedAt: 12_000, endReason: "limit" });
+  });
+
+  it("is not taken back by a later page of the same run", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.agents.internalIngest, ingest(run({ startedAt: 1_000, lastLineAt: 2_000 })) as never);
+    await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 5_000, endReason: "ended" });
+    await t.mutation(internal.agents.internalIngest, retry(run({ status: "ended", startedAt: 1_000, lastLineAt: 3_000 })) as never);
+    expect(await t.run(async (ctx) => await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", RUN_ID)).first())).toMatchObject({ status: "ended", lastLineAt: 3_000, endedAt: 5_000, endReason: "ended" });
+  });
+
+  it("names the closed list of reasons the schema holds", async () => {
+    const { RUN_END_REASONS } = await import("./agents");
+    expect(RUN_END_REASONS).toEqual(["ended", "failed", "limit", "stopped", "unknown"]);
   });
 });

@@ -15,13 +15,13 @@ import { checkSilence, JOB_FAILED, JOB_OK } from "./jarvis/jobs";
 export { JOB_FAILED, JOB_RECOVERED, SILENCE_INTERVALS } from "./jarvis/jobs";
 
 export const internalReportJobFailed = internalMutation({
-  args: { job: v.string(), error: v.string(), key: v.optional(v.string()) },
-  handler: async (ctx, { job, error, key }): Promise<{ reported: boolean; since?: number }> => {
+  args: { job: v.string(), error: v.string(), key: v.optional(v.string()), durationMs: v.optional(v.number()) },
+  handler: async (ctx, { job, error, key, durationMs }): Promise<{ reported: boolean; since?: number }> => {
     const { result } = await recordEvent(ctx, {
       kind: JOB_FAILED,
       provenance: { job },
       subject: key,
-      data: { job, error },
+      data: { job, error, ...(durationMs === undefined ? {} : { durationMs }) },
       text: error,
     });
     return result as { reported: boolean; since?: number };
@@ -29,13 +29,13 @@ export const internalReportJobFailed = internalMutation({
 });
 
 export const internalReportJobOk = internalMutation({
-  args: { job: v.string(), key: v.string() },
-  handler: async (ctx, { job, key }): Promise<{ recovered: boolean; since?: number }> => {
+  args: { job: v.string(), key: v.string(), durationMs: v.optional(v.number()) },
+  handler: async (ctx, { job, key, durationMs }): Promise<{ recovered: boolean; since?: number }> => {
     const { result } = await recordEvent(ctx, {
       kind: JOB_OK,
       provenance: { job },
       subject: key,
-      data: { job, key },
+      data: { job, key, ...(durationMs === undefined ? {} : { durationMs }) },
     });
     return result as { recovered: boolean; since?: number };
   },

@@ -22,6 +22,7 @@ import {
   costText,
   describeOverflow,
   durationText,
+  runDurationText,
   errorTextOf,
   modelOfTomHeadOf,
   orderSessions,
@@ -361,6 +362,18 @@ describe("persistedOutputOf", () => {
     expect(persistedOutputOf({ persistedOutput: {} })).toBeNull();
     expect(persistedOutputOf("ok")).toBeNull();
     expect(persistedOutputOf(null)).toBeNull();
+  });
+});
+
+describe("runDurationText", () => {
+  it("reads an ended run from its start to the end the box posted", () => {
+    expect(runDurationText({ status: "ended", startedAt: 1_000, endedAt: 125_000 })).toBe("2m 04s");
+    expect(runDurationText({ status: "failed", startedAt: 1_000, endedAt: 2_200 })).toBe("1.2s");
+  });
+
+  it("says nothing for a running run or one whose end nothing saw", () => {
+    expect(runDurationText({ status: "running", startedAt: 1_000, endedAt: 125_000 })).toBe("");
+    expect(runDurationText({ status: "ended", startedAt: 1_000 })).toBe("");
   });
 });
 
