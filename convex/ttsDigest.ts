@@ -608,11 +608,12 @@ export async function gatherTodayFacts(
         // about it. It is reported here for objection, and its wording never
         // assigns the merge to the delegate.
         //
-        // A merge row filed after the fact (convex/gateLandings.ts
-        // backfillLandings) is dated when it landed, so a landing days old
-        // is outside a one-day window already; one older than a day is left
-        // out of a longer window too (a morning after missed ones), because
-        // its revert is no longer the night's question.
+        // A merge row filed after the fact carries `backfilled: true` (the
+        // 30 landings of 2026-09-28 to 2026-10-05 a one-time backfill filed,
+        // tom.quest #342, since removed). It is dated when it landed, so a
+        // landing days old is outside a one-day window already; one older
+        // than a day is left out of a longer window too (a morning after
+        // missed ones), because its revert is no longer the night's question.
         if (d.backfilled === true && e.at < now - DAY_MS) break;
         const repo = str(d.repo) ?? "repo";
         const sha = (str(d.sha) ?? "").slice(0, 7);
