@@ -506,7 +506,13 @@ async function showItem(t: TestConvex<typeof schema>, key: string) {
 // question for him on /thread, and his numbered reply is the decision. The
 // record writes it only when his own needs-tom-answered row backs it.
 describe("POST /tts/ask — a decision by Tom", () => {
-  afterEach(() => vi.unstubAllEnvs());
+  // A delegate decision schedules its push (tom.quest #340); held timers keep
+  // it a scheduled row, never a send after the test's teardown.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
 
   const KEY_OF = "delegate-ask:3f9c1a22";
   const decisionsOf = (t: TestConvex<typeof schema>) =>
@@ -636,20 +642,21 @@ describe("POST /tts/ask — a decision by Tom", () => {
     expect((await decisionsOf(t))[0].data.decision).toBe("Leave it Wednesday and warn him it may be shut.");
   });
 
-  it("sends no push for his own decision", async () => {
-    vi.useFakeTimers();
-    try {
-      vi.stubEnv("TTS_WORKER_KEY", KEY);
-      const t = convexTest({ schema, modules });
-      await showItem(t, KEY_OF);
+  it("sends no push for his own decision, while the delegate's decision beside it is pushed", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
     await showItem(t, KEY_OF);
-      await answer(t, "b");
-      expect((await post(t, byTom())).status).toBe(200);
-      const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
-      expect(scheduled.filter((job) => job.name.includes("pushSend"))).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
+    await answer(t, "b");
+    expect((await post(t, byTom())).status).toBe(200);
+    // A delegate decision for the same caller, so the read below is shown to
+    // see a push when one is scheduled (tom.quest #340).
+    expect((await post(t, body({ job: "poll-gmail", askId: "d0000001" }))).status).toBe(200);
+    const pushes = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect())
+        .filter((job) => job.name.includes("pushSend"))
+        .map((job) => (job.args[0] as { url: string }).url),
+    );
+    expect(pushes).toEqual(["/intent#decision-d0000001"]);
   });
 
   it("passes neither the attended check nor the cap, and does not spend the caller's cap", async () => {
@@ -681,7 +688,13 @@ describe("POST /tts/ask — a decision by Tom", () => {
 });
 
 describe("POST /tts/ask — the wait for Tom is stored", () => {
-  afterEach(() => vi.unstubAllEnvs());
+  // A delegate decision schedules its push (tom.quest #340); held timers keep
+  // it a scheduled row, never a send after the test's teardown.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
 
   it("keeps waitedMs and waitNote on the ask and the decision row, and the digest says who decided after how long", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
