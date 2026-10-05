@@ -351,23 +351,25 @@ describe("POST /tts/ask — the delegate's record", () => {
     expect(await pushes()).toHaveLength(1);
   });
 
-  it("puts the question and the decision on one line each, cut and redacted", async () => {
+  it("puts the question and the decision on one line each, redacted, and cuts the decision at the question's limit", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     // Built by concatenation, so no credential-shaped literal sits in the source.
     const token = "ghp_" + "A".repeat(36);
-    const long = `Do I\n  paste ${token} and keep the ${"very ".repeat(40)}long branch?`;
-    await post(t, body({ job: "poll-gmail", question: long, options: ["Keep it.", "Drop it."], recommendation: "Keep it.", decision: "Keep it." }));
+    const question = `Do I\n  paste ${token}\u0007 and keep the long branch?`;
+    // POST /tts/ask caps the question at 400 characters and the decision not at all.
+    const long = `Keep it: ${"very ".repeat(100)}long.`;
+    await post(t, body({ job: "poll-gmail", question, options: [long, "Drop it."], recommendation: long, decision: long }));
     const [push] = (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()))
       .filter((job) => job.name.includes("sendToAll"))
       .map((job) => job.args[0] as { body: string });
-    const [question, decision, ...rest] = push.body.split("\n");
+    const [first, second, ...rest] = push.body.split("\n");
     expect(rest).toEqual([]);
     expect(push.body).not.toContain(token);
-    expect(question.startsWith("Do I paste [redacted:github] and keep the very")).toBe(true);
-    expect(question.length).toBeLessThanOrEqual(120);
-    expect(question.endsWith("…")).toBe(true);
-    expect(decision).toBe("Keep it.");
+    expect(first).toBe("Do I paste [redacted:github] and keep the long branch?");
+    expect(second.startsWith("Keep it: very very")).toBe(true);
+    expect(second.length).toBeLessThanOrEqual(400);
+    expect(second.endsWith("…")).toBe(true);
   });
 
   it("a retry of an ask recorded before the decision row was written here writes it, once", async () => {

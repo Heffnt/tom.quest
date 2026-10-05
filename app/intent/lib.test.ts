@@ -278,13 +278,13 @@ describe("openDisagreements", () => {
 describe("decisionFragment", () => {
   it("reads the askId a decision notification's fragment names", () => {
     expect(decisionFragment("#decision-3f9c1a22")).toBe("3f9c1a22");
-    expect(decisionFragment("#decision-a%20b")).toBe("a b");
   });
 
   it("answers null for any other fragment", () => {
     expect(decisionFragment("")).toBeNull();
     expect(decisionFragment("#vocabulary")).toBeNull();
     expect(decisionFragment("#decision-")).toBeNull();
-    expect(decisionFragment("#decision-%E0%A4%A")).toBeNull();
+    expect(decisionFragment("#decision-3F9C1A22")).toBeNull();
+    expect(decisionFragment("#decision-3f9c1a2")).toBeNull();
   });
 });

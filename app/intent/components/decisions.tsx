@@ -14,7 +14,7 @@
 // that his ruling stands as it is; "rule" takes the sentence the rules should
 // carry so that the judge answers as he did.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Decision, EvalItem } from "@/convex/jarvis/intent";
 import Info from "@/app/jarvis/components/info";
 import { errMessage } from "@/app/jarvis/lib";
@@ -37,7 +37,10 @@ export default function Decisions({
   decisions: Decision[];
   evalItems: EvalItem[];
   /** The decision a phone notification opened (/intent#decision-<askId>):
-   *  its row is marked and scrolled into view once it is drawn. */
+   *  its row is marked. Nothing here scrolls (app/AGENTS.md: never
+   *  auto-scroll); the row's element id equals the fragment, so the browser's
+   *  own jump to a fragment's element applies when the row is drawn as the
+   *  fragment is read. */
   focusAskId?: string | null;
   lines: IntentLine[];
   selected: string | null;
@@ -50,12 +53,6 @@ export default function Decisions({
   const disagreementDecisions = decisions.filter(
     (decision): decision is Decision & { decision: string } => !decision.refused && decision.decision !== null,
   );
-  // The list arrives after the page does, so the scroll waits for the row.
-  const focusDrawn = focusAskId !== null && disagreementDecisions.some((decision) => decision.askId === focusAskId);
-  useEffect(() => {
-    if (!focusDrawn || focusAskId === null) return;
-    document.getElementById(decisionRowId(focusAskId))?.scrollIntoView?.({ block: "center" });
-  }, [focusAskId, focusDrawn]);
   const failing = evalItems.filter((item) => item.pass === false);
   const scored = evalItems.filter((item) => item.pass !== null).length;
   const skipped = evalItems.length - scored;
@@ -171,7 +168,8 @@ export default function Decisions({
   );
 }
 
-/** The element id of a decision's row: the fragment a notification opens. */
+/** The element id of a decision's row: the fragment a notification opens,
+ *  so the fragment is an anchor on the row. */
 function decisionRowId(askId: string): string {
   return `decision-${askId}`;
 }

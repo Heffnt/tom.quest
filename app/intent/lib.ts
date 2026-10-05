@@ -281,11 +281,6 @@ export function openDisagreements(
  *  /intent#decision-<askId> (convex/ttsAsk.ts insertDecision), so a tap lands
  *  on that decision's row in the disagreements view. */
 export function decisionFragment(hash: string): string | null {
-  const match = /^#decision-(.+)$/.exec(hash);
-  if (match === null) return null;
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    return null;
-  }
+  // An askId is 8 lowercase hex characters (POST /tts/ask refuses any other).
+  return /^#decision-([0-9a-f]{8})$/.exec(hash)?.[1] ?? null;
 }

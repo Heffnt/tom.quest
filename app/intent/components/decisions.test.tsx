@@ -71,7 +71,7 @@ describe("Decisions", () => {
     expect(screen.queryByText("Unanswered question")).toBeNull();
   });
 
-  it("marks the row a notification opened and scrolls it into view", () => {
+  it("marks the row a notification opened, as the fragment's anchor, and scrolls nothing", () => {
     const scrolled: string[] = [];
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (this: Element) {
@@ -83,9 +83,10 @@ describe("Decisions", () => {
       Element.prototype.scrollIntoView = original;
     }
     const row = document.getElementById("decision-86f2f341");
+    expect(row?.tagName).toBe("LI");
     expect(row?.getAttribute("aria-current")).toBe("true");
     expect(document.getElementById("decision-11111111")?.getAttribute("aria-current")).toBeNull();
-    expect(scrolled).toEqual(["decision-86f2f341"]);
+    expect(scrolled).toEqual([]);
   });
 
   it("does not call a run whose items were all skipped a pass", () => {

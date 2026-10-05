@@ -162,14 +162,20 @@ type StoredAsk = {
   nearMissed?: unknown;
 };
 
-/** The most characters of the question, and of the decision, a phone
- *  notification carries: each is one line of the notification's body. */
-const PUSH_LINE_MAX = 120;
+/** The most characters of the question, and of the decision, a notification
+ *  carries. A push service may refuse a payload over 4,096 bytes (RFC 8030
+ *  section 7.2; the RFC 8291 encryption takes about 100 of them), and a refused
+ *  send is lost. POST /tts/ask caps the question at 400 characters and the
+ *  decision not at all, so the decision is cut at the question's own limit:
+ *  two lines of 400 characters, at most 3 UTF-8 bytes each once control
+ *  characters are collapsed, plus the title and url, stay under 2,600 bytes. */
+const PUSH_LINE_MAX = 400;
 
-/** One line of a notification: whitespace and line breaks collapsed, secrets
- *  redacted as the digest redacts them, cut at PUSH_LINE_MAX with an ellipsis. */
+/** One line of a notification: whitespace, line breaks and other control
+ *  characters collapsed to one space, secrets redacted as the digest redacts
+ *  them, cut at PUSH_LINE_MAX with an ellipsis. */
 function pushLine(text: string): string {
-  const line = redactSecrets(text).replace(/\s+/g, " ").trim();
+  const line = redactSecrets(text).replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim();
   return line.length <= PUSH_LINE_MAX ? line : `${line.slice(0, PUSH_LINE_MAX - 1).trimEnd()}…`;
 }
 
@@ -211,7 +217,9 @@ async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
   await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, {
     title: "Delegate decision",
     body: `${pushLine(ask.question)}\n${pushLine(ask.decision)}`,
-    url: `/intent#decision-${encodeURIComponent(ask.askId)}`,
+    // The askId is 8 lowercase hex characters (POST /tts/ask refuses any
+    // other), so it goes into the fragment as it is.
+    url: `/intent#decision-${ask.askId}`,
   });
 }
 
