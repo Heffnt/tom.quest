@@ -70,7 +70,10 @@ export const liveSubscriptions = internalQuery({
     for (const row of rows) {
       const data = (row.data ?? {}) as Record<string, unknown>;
       const prior = latest.get(row.subject ?? "");
-      if (prior === undefined || row.at > prior.at) {
+      // by_kind_subject_at orders rows of one time by creation, so ">=" keeps
+      // the later-created of two rows written in the same millisecond (two
+      // saves, or a save and a markGone).
+      if (prior === undefined || row.at >= prior.at) {
         latest.set(row.subject ?? "", {
           at: row.at,
           live: data.live === true,
