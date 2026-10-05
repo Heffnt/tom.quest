@@ -106,7 +106,7 @@ describe("POST /jarvis/standing-ruling", () => {
     const rulings = async () =>
       t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "ruling")).collect());
     expect((await rulings()).map((row) => row._id)).toEqual([answer.id]);
-    expect((await rulings())[0].data).toMatchObject({ id: expect.stringMatching(/^ruling:thread:[^:]+:repo:Jarvis:[0-9a-f]{64}$/) });
+    expect((await rulings())[0].data).toMatchObject({ id: expect.stringMatching(/^ruling:[0-9a-f]{64}$/) });
 
     // Superseding the id the retry returned ends the one ruling there is.
     const later = await rule(t, "repo:Jarvis", "it is good once", { threadMessageId: messageId });
@@ -120,6 +120,25 @@ describe("POST /jarvis/standing-ruling", () => {
     // The same sentence in another scope, or from another source, is a new ruling.
     expect(await (await post(t, "/jarvis/standing-ruling", { ...body, scope: "all" })).json()).toMatchObject({ duplicate: false });
     expect(await (await post(t, "/jarvis/standing-ruling", { ...body, provenance: { session: "aaa9ae16" } })).json()).toMatchObject({ duplicate: false });
+  });
+
+  it("keeps two rulings apart whose source and scope would spell the same key joined by a colon", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const sentence = "the same words";
+    const one = await post(t, "/jarvis/standing-ruling", { sentence, scope: "part:all", question: "q", provenance: { session: "a" } });
+    const two = await post(t, "/jarvis/standing-ruling", { sentence, scope: "all", question: "q", provenance: { session: "a:part" } });
+    const first = await one.json();
+    const second = await two.json();
+    expect(first).toMatchObject({ ok: true, duplicate: false });
+    expect(second).toMatchObject({ ok: true, duplicate: false });
+    expect(second.id).not.toBe(first.id);
+    const rows = await t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "ruling")).collect());
+    expect(rows.map((row) => [row.subject, (row.data as { provenance: unknown }).provenance])).toEqual([
+      ["part:all", { session: "a" }],
+      ["all", { session: "a:part" }],
+    ]);
+    expect(new Set(rows.map((row) => (row.data as { id: string }).id)).size).toBe(2);
   });
 
   it("refuses a sentence the cited thread message does not hold, and an id that is not a thread message", async () => {
@@ -160,7 +179,7 @@ describe("POST /jarvis/standing-ruling", () => {
   it("is the only door: both worker event routes refuse a ruling", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("TTS_WORKER_KEY", "k");
-    const data = { id: "ruling:session:a:all:00", sentence: "s", scope: "all", question: "q", provenance: { session: "a" }, standing: true };
+    const data = { id: `ruling:${"00".repeat(32)}`, sentence: "s", scope: "all", question: "q", provenance: { session: "a" }, standing: true };
     const jarvis = await post(t, "/jarvis/event", { kind: "ruling", subject: "all", data });
     expect(jarvis.status).toBe(403);
     expect((await jarvis.json()).error).toContain("POST /jarvis/standing-ruling");

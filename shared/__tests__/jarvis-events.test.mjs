@@ -575,7 +575,7 @@ describe("a ruling event", () => {
     kind: "ruling",
     subject: "repo:Jarvis",
     data: {
-      id: "ruling:thread:k17abc:repo:Jarvis:0f",
+      id: `ruling:${"0f".repeat(32)}`,
       sentence: "if I say it is good once then that holds",
       scope: "repo:Jarvis",
       question: "May the merge gate's audit run on Codex?",
@@ -613,7 +613,7 @@ describe("a ruling event", () => {
   it("names the key a retry is matched on", () => {
     expect(validateEvent(ruling({ id: undefined })).error).toContain("data.id");
     expect(validateEvent(ruling({ id: "thread:k17abc" })).error).toContain("data.id");
-    expect(REPEATS_BY_DATA_ID).toContain("ruling");
+    expect(validateEvent(ruling({ id: "ruling:thread:k17abc:repo:Jarvis:0f" })).error).toContain("data.id");
   });
 
   it("is written standing, never already superseded", () => {
