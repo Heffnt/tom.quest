@@ -7,6 +7,8 @@ import {
   todayFactsBlock,
   type BrokenFact,
   type SpendFact,
+  type SupersededCursor,
+  type SupersededFact,
   type TodayFacts,
   type TodoOutcome,
 } from "./ttsCompose";
@@ -43,7 +45,7 @@ import { displayTime } from "../shared/clock.mjs";
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
 import { decidedByText } from "../shared/decided-by.mjs";
-import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
+import { DIGEST_LINE, THREAD_DIGEST, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
 import { readTodo } from "./jarvis/tables";
 import { MAX_DOCUMENT_BYTES, MIB, ReadBudget, getWithin, readWithin, type ReadCut } from "./readBudget";
@@ -314,6 +316,7 @@ export const READ_BYTES = {
   evalRuns: 0.125 * MIB,
   decisions: 0.125 * MIB,
   digestLines: 0.125 * MIB,
+  superseded: 0.125 * MIB,
   settlements: 0.125 * MIB,
   jobReports: 0.25 * MIB,
   prepared: 1.5 * MIB,
@@ -322,7 +325,7 @@ export const READ_BYTES = {
   surfacedMarks: 0.125 * MIB,
   deploys: 0.125 * MIB,
   boxChanges: 0.5 * MIB,
-  runs: 2 * MIB,
+  runs: 1.875 * MIB,
 } as const;
 
 /** The most one digest's transaction reads (GATHER_BYTES above); the tests
@@ -1096,6 +1099,35 @@ export async function gatherTodayFacts(
       return text === undefined ? [] : [{ id: row._id as string, text }];
     });
 
+  // His standing rulings that new information ended and no digest has
+  //    printed yet (convex/jarvis/rulings.ts supersede writes supersededAt and
+  //    supersededLine on the ruling row): read on their own index from the
+  //    position the last digest recorded, oldest first, under their own byte
+  //    share, so no other kind's rows can crowd one out. What this digest does
+  //    not print, the next reads again (supersededCursorAfter).
+  const supersededFrom = (await previousSupersededCursor(ctx)) ?? { at: since, after: 0 };
+  const supersededBudget = budget.allot(SUPERSEDED_READ, READ_BYTES.superseded);
+  const supersededRows = await readWithin(
+    supersededBudget,
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_standing_superseded_at", (q) =>
+        q.eq("kind", "ruling").eq("data.standing", false).gte("data.supersededAt", supersededFrom.at).lt("data.supersededAt", now),
+      )
+      .order("asc"),
+    Number.POSITIVE_INFINITY,
+  );
+  const superseded: SupersededFact[] = supersededRows.flatMap((row) => {
+    const d = (row.data ?? {}) as { supersededAt?: unknown; supersededLine?: unknown };
+    const text = safeStr(d.supersededLine);
+    if (typeof d.supersededAt !== "number" || text === undefined) return [];
+    // Ended in the same millisecond as the last one printed, and created
+    // before or with it: printed already.
+    if (d.supersededAt === supersededFrom.at && row._creationTime <= supersededFrom.after) return [];
+    return [{ id: row._id as string, text, cursor: { at: d.supersededAt, after: row._creationTime } }];
+  });
+  const supersededComplete = !budget.cuts().some((cut) => cut.what === SUPERSEDED_READ);
+
   // 5. Ready for Tom (not already dated) — ruling 18's computation
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
   //    so the scan is the prepared list itself. §4.3: the ready SECTION is
@@ -1240,6 +1272,9 @@ export async function gatherTodayFacts(
     overnightByTodo,
     broken: [...failures.values()],
     settled,
+    superseded,
+    supersededFrom,
+    supersededComplete,
     boxChanges,
     spend: spendOf(started, started.length >= SPEND_SCAN),
     readCuts: [
@@ -1416,6 +1451,59 @@ function printedObjectionAskIds(
   return printed;
 }
 
+/** The superseded-rulings read's name in the digest's cut lines. */
+const SUPERSEDED_READ = "superseded rulings";
+
+/** The position a digest recorded on its row (`supersededCursor`, on a
+ *  thread-digest or digest-sent row), or null when it recorded none. */
+function supersededCursorOf(row: { data?: unknown } | null): SupersededCursor | null {
+  const c = ((row?.data ?? {}) as { supersededCursor?: unknown }).supersededCursor as
+    | { at?: unknown; after?: unknown }
+    | undefined;
+  return typeof c?.at === "number" && typeof c?.after === "number" ? { at: c.at, after: c.after } : null;
+}
+
+/**
+ * Where this digest's read of superseded rulings starts: the further along of
+ * the cursors the newest digest-sent row (the Slack path, POST /jarvis/digest)
+ * and the newest thread-digest row (the record's cron, convex/jarvis/digest.ts
+ * appendDigestToThread) recorded, one row read each; null when neither
+ * recorded one. Every superseded ruling before it was printed by the digest
+ * that recorded it, whichever path wrote that one.
+ */
+async function previousSupersededCursor(ctx: QueryCtx): Promise<SupersededCursor | null> {
+  const [sent, thread] = await Promise.all([
+    lastDigest(ctx),
+    ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST)).order("desc").first(),
+  ]);
+  let further: SupersededCursor | null = null;
+  for (const cursor of [supersededCursorOf(sent), supersededCursorOf(thread)]) {
+    if (cursor === null) continue;
+    if (further === null || cursor.at > further.at || (cursor.at === further.at && cursor.after > further.after)) further = cursor;
+  }
+  return further;
+}
+
+/**
+ * Where the next digest's read of superseded rulings starts, after this one:
+ * the position of the last superseded line the FITTED message printed (fit
+ * drops them from the end, so the printed lines are the oldest ones read);
+ * with none printed, where this read started, unless it read every ruling
+ * there was and found none, when the next starts at `now`.
+ */
+function supersededCursorAfter(
+  message: { lines: { role: string; section?: string }[] },
+  facts: TodayFacts,
+  now: number,
+): SupersededCursor {
+  const printed = message.lines.filter((line) => line.role === "item" && line.section === "superseded").length;
+  const read = facts.superseded ?? [];
+  const from = facts.supersededFrom ?? { at: now, after: 0 };
+  if (printed > 0) return read[printed - 1].cursor;
+  if (read.length === 0 && facts.supersededComplete === true) return { at: now, after: 0 };
+  return from;
+}
+
 /**
  * The morning message's facts, its template text, and the FACTS BLOCK the
  * Fable writer on the box is given (Tom 2026-09-09, amendment 2). Everything
@@ -1478,6 +1566,11 @@ export async function composeToday(
     // plus one "N more lines are on the page" line, and a number resolved
     // against a list Tom never saw reverts something he never read.
     objectionAskIds: printedObjectionAskIds(message, facts),
+    // Where the next digest's read of superseded rulings starts: past the
+    // last one this message printed. The writer records it on the digest's
+    // row, as it records windowEnd; the lines that did not fit are read
+    // again and printed by the next digest.
+    supersededCursor: supersededCursorAfter(message, facts, now),
     // The facts the text was rendered from, each with an id, its link and
     // its numbers: the box keeps them on the digest-sent row.
     facts: todayFactsBlock(facts, reply),

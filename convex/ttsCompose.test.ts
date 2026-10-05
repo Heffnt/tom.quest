@@ -983,3 +983,91 @@ describe("the lines saying a digest read stopped", () => {
     expect(composeToday(sept9(), { canReply: false }).lines.some((line) => line.section === "cut")).toBe(false);
   });
 });
+
+describe("the superseded run", () => {
+  it("prints his rulings that no longer stand right after the settled run, one line each", () => {
+    const message = composeToday(
+      sept9({
+        settled: [{ id: "s1", text: "Tom accepted the delegate's decision \"One.\" (86f2f341)." }],
+        superseded: [
+          {
+            id: "r1",
+            text: 'Your ruling of 2026-10-04 in scope repo:Jarvis no longer stands, because a later sentence of yours in the same scope replaced it: "not yet"; it said "ship it"',
+            cursor: { at: 1, after: 1 },
+          },
+        ],
+      }),
+      { canReply: false },
+    );
+    const leads = message.lines.filter((line) => line.role === "lead").map((line) => line.section);
+    expect(leads.indexOf("superseded")).toBe(leads.indexOf("settled") + 1);
+    const items = message.lines.filter((line) => line.section === "superseded" && line.role === "item");
+    expect(items).toHaveLength(1);
+    expect(items[0].text).toContain("in scope repo:Jarvis no longer stands");
+    // No page lists ruling rows yet, so the line links to the /tts page and
+    // not to /intent.
+    expect(items[0]).toMatchObject({ url: TAB_EVERYTHING });
+    const facts = todayFactsBlock(sept9({ superseded: [{ id: "r1", text: "Your ruling no longer stands.", cursor: { at: 1, after: 1 } }] }), false);
+    expect(JSON.stringify(facts)).toContain("superseded:r1");
+  });
+
+  it("prints every superseded ruling and says of none that it is on a page, fitted or not", () => {
+    const superseded = Array.from({ length: 14 }, (_, n) => ({
+      id: `r${n}`,
+      text: `Your ruling of 2026-10-04 in scope part:p${n} no longer stands, because a later sentence of yours replaced it`,
+      cursor: { at: n, after: n },
+    }));
+    const whole = composeToday(sept9({ superseded }), { canReply: false });
+    const printed = whole.lines.filter((line) => line.section === "superseded" && line.role === "item");
+    expect(printed).toHaveLength(14);
+    expect(printed.some((line) => line.text.includes("on the page"))).toBe(false);
+
+    const long = (what: string, n: number) => `${what} ${n} ${"carries enough words to fill the line ".repeat(3)}`;
+    const facts = sept9({
+      superseded,
+      boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
+      broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
+    });
+    const { message, truncated } = composeTodayFitted(facts, { canReply: false });
+    expect(truncated).toBe(true);
+    const kept = message.lines.filter((line) => line.section === "superseded");
+    expect(kept.filter((line) => line.role === "item").length).toBeGreaterThan(0);
+    expect(kept.some((line) => line.text.includes("on the page"))).toBe(false);
+  });
+
+  it("fits the message when the digest is over its length even after every run is reduced, printing the oldest superseded lines and leaving the rest", () => {
+    const long = (what: string, n: number) => `${what} ${n} ${"carries enough words to fill the line ".repeat(3)}`;
+    const superseded = Array.from({ length: 22 }, (_, n) => ({
+      id: `r${n}`,
+      text: `Your ruling of 2026-10-04 in scope part:p${n} no longer stands, because a later sentence of yours in the same scope replaced it`,
+      cursor: { at: n, after: n },
+    }));
+    const facts = sept9({
+      superseded,
+      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
+      boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
+      broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
+    });
+    const sectionsBefore = new Set(composeToday(facts, { canReply: false }).lines.map((line) => line.section));
+    const { message, truncated } = composeTodayFitted(facts, { canReply: false });
+    const sectionsAfter = new Set(message.lines.map((line) => line.section));
+    expect(truncated).toBe(true);
+    // The last-resort drop ran: a run present before the fit is gone whole,
+    // which reduction alone never does (it keeps a lead and one line).
+    expect([...sectionsBefore].some((section) => !sectionsAfter.has(section))).toBe(true);
+    // The message fits one Slack message.
+    expect(renderSlack(message).length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
+    // The superseded lines printed are the oldest, in order; the rest are left
+    // for the next digest (convex/ttsDigest.ts carries them by the position
+    // of the last line printed, which jarvisStandingRulings.test.ts checks).
+    const kept = message.lines.filter((line) => line.section === "superseded" && line.role === "item");
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(superseded.length);
+    expect(kept.map((line) => line.text)).toEqual(superseded.slice(0, kept.length).map((row) => statement(row.text)));
+  });
+
+  it("prints nothing when no ruling was superseded", () => {
+    const message = composeToday(sept9({ superseded: [] }), { canReply: false });
+    expect(message.lines.some((line) => line.section === "superseded")).toBe(false);
+  });
+});

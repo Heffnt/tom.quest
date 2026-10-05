@@ -37,7 +37,7 @@ import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly"
 // reads it, so it goes through the one redaction on the way in — the same
 // import convex/ttsMerge.ts makes for the same reason.
 import { redactSecrets } from "../shared/redact.mjs";
-import { DELEGATE_ONLY_KINDS, JARVIS_EVENT_ONLY_KINDS, RECORD_ONLY_KINDS, registryDiffOf, SUBJECT_REQUIRED, TOM_ONLY_KINDS } from "../shared/jarvis-events.mjs";
+import { DELEGATE_ONLY_KINDS, JARVIS_EVENT_ONLY_KINDS, RECORD_ONLY_KINDS, registryDiffOf, STANDING_RULING_ONLY_KINDS, SUBJECT_REQUIRED, TOM_ONLY_KINDS } from "../shared/jarvis-events.mjs";
 
 const http = httpRouter();
 
@@ -2568,6 +2568,11 @@ const ttsEvent = httpAction(async (ctx, request) => {
   }
   if ((RECORD_ONLY_KINDS as readonly string[]).includes(b.kind)) {
     return jsonResponse(403, { error: `${b.kind} is written only by the record` });
+  }
+  // This route's row is copied into events unchecked (jarvis/events
+  // copyDtsRow), so a ruling posted here would skip the sentence check.
+  if ((STANDING_RULING_ONLY_KINDS as readonly string[]).includes(b.kind)) {
+    return jsonResponse(403, { error: `${b.kind} is written only by POST /jarvis/standing-ruling` });
   }
   if (b.key !== undefined && (typeof b.key !== "string" || b.key.trim() === "")) {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });

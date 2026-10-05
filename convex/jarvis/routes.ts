@@ -17,6 +17,10 @@
 // posting its reply cannot mint the entry twice on its next run. Answers
 // { ok: true, id }.
 //
+// POST /jarvis/standing-ruling and POST /jarvis/standing-ruling/new-information:
+// a standing ruling of Tom's and the new information that ends one
+// (rulings.ts holds both bodies).
+//
 // HOW AN AREA ADDS A ROUTE: a handler here (or in its own file under
 // convex/jarvis/), one line in register() below. convex/http.ts calls
 // register once; nothing else in http.ts changes for a new /jarvis/ route.
@@ -30,12 +34,12 @@ import { internal } from "../_generated/api";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { checkEvent } from "./record";
 import { register as registerContext } from "./context";
-import { postRuling } from "./rulings";
+import { postNewInformation, postRuling, postStandingRuling } from "./rulings";
 import { getBuildState } from "./build";
 import { channelRoute, digestRoute, needsYouRoute } from "./digest";
 import { tickRoute } from "./tick";
 import { pushRoute } from "../push";
-import { DELEGATE_ONLY_KINDS, RECORD_ONLY_KINDS, TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
+import { DELEGATE_ONLY_KINDS, RECORD_ONLY_KINDS, STANDING_RULING_ONLY_KINDS, TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
 
 export const postEvent = httpAction(async (ctx, request) => {
   const denied = jarvisAuth(request);
@@ -56,6 +60,9 @@ export const postEvent = httpAction(async (ctx, request) => {
   }
   if ((RECORD_ONLY_KINDS as readonly string[]).includes(checked.event.kind)) {
     return jsonResponse(403, { error: `${checked.event.kind} is written only by the record` });
+  }
+  if ((STANDING_RULING_ONLY_KINDS as readonly string[]).includes(checked.event.kind)) {
+    return jsonResponse(403, { error: `${checked.event.kind} is written only by POST /jarvis/standing-ruling` });
   }
   try {
     const { id, result } = await ctx.runMutation(internal.jarvis.events.record, checked.event);
@@ -119,6 +126,8 @@ export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/build-state", method: "GET", handler: getBuildState }); // build.ts
   registerContext(http); // GET /jarvis/context?for=<caller> (context.ts)
   http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
+  http.route({ path: "/jarvis/standing-ruling", method: "POST", handler: postStandingRuling });
+  http.route({ path: "/jarvis/standing-ruling/new-information", method: "POST", handler: postNewInformation });
   http.route({ path: "/jarvis/digest", method: "POST", handler: digestRoute });
   http.route({ path: "/jarvis/digest/needs-you", method: "GET", handler: needsYouRoute });
   http.route({ path: "/jarvis/digest/channel", method: "GET", handler: channelRoute });

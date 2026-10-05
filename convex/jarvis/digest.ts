@@ -121,6 +121,10 @@ type ComposeAnswer =
       truncated: boolean;
       surfacedTodoIds: string[];
       objectionAskIds: string[];
+      // Where the next digest's read of superseded rulings starts; the sender
+      // records it on the digest-sent row with windowEnd (convex/ttsDigest.ts
+      // supersededCursorAfter).
+      supersededCursor: { at: number; after: number };
       facts: unknown;
     };
 
@@ -144,7 +148,14 @@ export const compose = internalMutation({
     // The rollover's read cut, if any, is said in the digest's cut lines.
     const { cuts } = await rollMissed(ctx, day);
     const since = last.windowEnd ?? now - DAY_MS;
-    const composed: { text: string; truncated: boolean; surfacedTodoIds: string[]; objectionAskIds: string[]; facts: unknown } =
+    const composed: {
+      text: string;
+      truncated: boolean;
+      surfacedTodoIds: string[];
+      objectionAskIds: string[];
+      supersededCursor: { at: number; after: number };
+      facts: unknown;
+    } =
       await ctx.runQuery(internal.ttsDigest.internalComposeToday, {
       day,
       now,
@@ -162,6 +173,7 @@ export const compose = internalMutation({
       truncated: composed.truncated,
       surfacedTodoIds: composed.surfacedTodoIds,
       objectionAskIds: composed.objectionAskIds,
+      supersededCursor: composed.supersededCursor,
       facts: composed.facts,
     };
   },
@@ -366,6 +378,8 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
       objectionAskIds: composed.objectionAskIds,
       items,
       openingsFrom,
+      // Where the next digest's read of superseded rulings starts.
+      supersededCursor: composed.supersededCursor,
     },
   });
   // One push for the digest; its text stays in the record, as the needs-you

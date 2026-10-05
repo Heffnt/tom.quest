@@ -12,6 +12,7 @@ import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 import { redactSecrets } from "../shared/redact.mjs";
 import { decisionOfAnswer } from "../shared/decided-by.mjs";
+import { standingRulings } from "./jarvis/rulings";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -451,7 +452,14 @@ export async function recordedDecision(ctx: QueryCtx, askId: string): Promise<Do
 }
 
 export const internalAskContext = internalQuery({
-  args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },
+  args: {
+    sessionId: v.optional(v.string()),
+    job: v.optional(v.string()),
+    todoId: v.optional(v.string()),
+    // The scopes the question is in (shared/jarvis-events.mjs isRulingScope);
+    // the rulings standing in them, and in "all", come back with the context.
+    scopes: v.optional(v.array(v.string())),
+  },
   handler: async (ctx, args) => {
     const asked = await callerAsks(ctx, args, capFor(args) + 1);
     const priorObjections: { askId: string; at: number; revert: boolean; sentence: string | null; decision: string | null }[] = [];
@@ -472,7 +480,20 @@ export const internalAskContext = internalQuery({
         priorObjections.push({ askId, at: event.at, revert: data.revert === true, sentence: typeof data.sentence === "string" ? data.sentence : null, decision: typeof decisionData.decision === "string" ? decisionData.decision : null });
       }
     }
-    return { asked, cap: capFor(args), priorObjections };
+    // His standing rulings in the question's scopes: a ruling here answers
+    // the question unless new information has superseded it, so the asker
+    // reads it before it asks him or the delegate (Tom, 2026-10-04: "if I
+    // say it is good once then that holds").
+    const standing = await standingRulings(ctx, args.scopes ?? []);
+    return {
+      asked,
+      cap: capFor(args),
+      priorObjections,
+      standingRulings: standing.rulings,
+      // False when the read of rulings stopped at its byte budget: the list
+      // can then leave a standing ruling out.
+      standingRulingsComplete: standing.complete,
+    };
   },
 });
 

@@ -76,7 +76,9 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  named here: it is his day, not a ranked list, and it has no page of its own
  *  to send him to. `fit` reduces it in printed order like any other run. The
  *  settled run (his own settlements on /intent) is printed right after the
- *  objection list and is not named here either: nothing in it waits on him.
+ *  objection list, and the superseded run (his standing rulings that new
+ *  information ended) right after it; neither is named here: nothing in
+ *  them waits on him.
  */
 export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnight", "broken", "spend", "box"] as const;
 
@@ -296,7 +298,7 @@ export function fit(
     let target = -1;
     for (let i = runs.length - 1; i >= 1; i -= 1) {
       const section = current.lines[runs[i].start].section;
-      if (section === PROTECTED_RUN || section === CUT_RUN) continue;
+      if (isProtectedRun(section)) continue;
       if (runs[i].end - runs[i].start > 2) {
         target = i;
         break;
@@ -350,9 +352,14 @@ function lastResortDrop(lines: Line[]): number {
   const runs = sectionRuns(lines);
   const first = runs[0];
   const inFirst = (i: number) => first !== undefined && i >= first.start && i < first.end;
-  const isProtected = (i: number) => lines[i].section === PROTECTED_RUN || lines[i].section === CUT_RUN;
+  const isProtected = (i: number) => isProtectedRun(lines[i].section);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!inFirst(i) && !isProtected(i)) return i;
+  }
+  // A superseded line next, from the end: the lines kept are the oldest, and
+  // the next digest prints the rest.
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].section === SUPERSEDED_RUN && lines[i].role === "item") return i;
   }
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (lines[i].section === PROTECTED_RUN && lines[i].role !== "lead") return i;
@@ -383,6 +390,17 @@ const PROTECTED_RUN = "needs-you-today";
 /** The run saying which reads stopped with rows left: `fit` never reduces
  *  it, and the last resort drops its lines after every other line. */
 const CUT_RUN = "cut";
+/** His standing rulings that new information ended (composeToday 2c). */
+const SUPERSEDED_RUN = "superseded";
+/** The runs neither fit's reduction nor the first pass of its last-resort
+ *  drop touches: one list, so the two cannot disagree. The superseded run
+ *  is here because no page lists ruling rows yet, so its reduction to "on
+ *  the page" would point at nothing. Its lines are the first protected lines
+ *  the last-resort drop takes, from the end, because a superseded line the
+ *  digest does not print is printed by the next one (convex/ttsDigest.ts
+ *  carries it by the position of the last line printed). */
+const PROTECTED_RUNS: readonly string[] = [PROTECTED_RUN, CUT_RUN, SUPERSEDED_RUN];
+const isProtectedRun = (section: string | undefined) => section !== undefined && PROTECTED_RUNS.includes(section);
 
 // ── The dedup index — one appearance per item per day ────────────────────────
 
@@ -544,6 +562,15 @@ export type TodayFacts = {
    *  settle writes each as a `disagreement-settled` event whose text is the
    *  line), oldest first. Absent or empty: he settled nothing. */
   settled?: SettledFact[];
+  /** His standing rulings that new information ended and no digest has
+   *  printed yet (convex/ttsDigest.ts reads them off the ruling rows), in the
+   *  order they were ended. Absent or empty: none is waiting. */
+  superseded?: SupersededFact[];
+  /** Where this digest's read of superseded rulings started, and whether it
+   *  read every one there was: what the sender's cursor is computed from
+   *  (convex/ttsDigest.ts supersededCursorAfter). Not printed. */
+  supersededFrom?: SupersededCursor;
+  supersededComplete?: boolean;
   /** What changed on the Jarvis Box since the last digest (convex/boxChanges.ts
    *  boxChangeLines): one line per agent that ran root commands, per deploy,
    *  per setup run, per other kind of change. Absent or empty: nothing did. */
@@ -574,10 +601,21 @@ export type SpendFact = {
 /** One settlement of a disagreement: the event's id and the line settle wrote. */
 type SettledFact = { id: string; text: string };
 
+/** Where a superseded ruling sits in the order the digest reads them: when it
+ *  was ended (`at`, its data.supersededAt) and, among rulings ended in the
+ *  same millisecond, its row's _creationTime (`after`). A digest records the
+ *  position of the last one it printed; the next reads from past it. */
+export type SupersededCursor = { at: number; after: number };
+
+/** One superseded ruling: its row id, the line supersede wrote, its position. */
+export type SupersededFact = { id: string; text: string; cursor: SupersededCursor };
+
 /** The /intent page, where every settlement was made and can be read. */
 const INTENT_URL = "https://tom.quest/intent";
 /** The settled run's lead. */
 export const SETTLED_LEAD = "What you settled on the intent page since the last digest.";
+/** The superseded run's lead. */
+const SUPERSEDED_LEAD = "Rulings of yours that no longer stand, each with the new information that ended it.";
 
 /** One line of the box-changes run: its fact id (`box:…`), its sentence, and
  *  its link. Declared here, not imported, for the import restriction above. */
@@ -999,6 +1037,23 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
+  // 2c. His standing rulings that new information ended: an asker in that
+  //     scope no longer reads them (convex/jarvis/rulings.ts
+  //     standingRulings). Not numbered: his answer is a new ruling, written
+  //     where he says it.
+  if ((f.superseded ?? []).length > 0) {
+    pushRun(
+      lines,
+      SUPERSEDED_RUN,
+      SUPERSEDED_LEAD,
+      (f.superseded ?? []).map((row) => ({ text: row.text, url: TAB_EVERYTHING })),
+      // No "more lines are on the page" line: no page lists ruling rows yet.
+      // When the message is too long, fit drops these lines from the end and
+      // the next digest prints them (lastResortDrop).
+      (f.superseded ?? []).length,
+    );
+  }
+
   // 3. What the email triage judged to need him today. No worker opens a
   //    needs-you thread for these (Tom, 2026-09-21: workers "should not reach
   //    me at all directly"), so this run is where he hears of them, and a
@@ -1306,6 +1361,7 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     facts.push(fact(`ask:${objection.askId}`, line.text, [line.url], [index + 1]));
   });
   for (const row of f.settled ?? []) facts.push(fact(`settled:${row.id}`, row.text, [INTENT_URL]));
+  for (const row of f.superseded ?? []) facts.push(fact(`superseded:${row.id}`, row.text, [TAB_EVERYTHING]));
   if (f.needsYou.length > 0) {
     facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));
   }
