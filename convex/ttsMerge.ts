@@ -710,6 +710,20 @@ export const internalRecordTests = internalMutation({
      *  vitest run inside the tests job. */
     durations: v.optional(v.record(v.string(), v.number())),
     slowest: v.optional(v.array(v.object({ file: v.string(), seconds: v.number() }))),
+    /** What a Jarvis head does to the registry of parts against its merge
+     *  base with main: the ids added, removed and changed, and the head's row
+     *  for each added or changed id (shared/jarvis-events.mjs registryDiffOf;
+     *  tom.quest/design draws it). The box's pull-request-checks job
+     *  computes it. */
+    registryDiff: v.optional(
+      v.object({
+        base: v.string(),
+        added: v.array(v.string()),
+        removed: v.array(v.string()),
+        changed: v.array(v.string()),
+        rows: v.record(v.string(), v.any()),
+      }),
+    ),
   },
   handler: async (ctx, args) => {
     const key = commitKey(args.repo, args.sha);

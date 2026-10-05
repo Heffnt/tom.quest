@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EVENT_KINDS, JOB_KINDS_WITH_DURATION, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, validateEvent } from "../jarvis-events.mjs";
+import { EVENT_KINDS, JOB_KINDS_WITH_DURATION, REPEATS_BY_DATA_ID, SUBJECT_REQUIRED, TOM_ONLY_KINDS, registryDiffOf, validateEvent } from "../jarvis-events.mjs";
 
 describe("validateEvent", () => {
   it("fills at and data, keeps subject and text, and drops nothing it was given", () => {
@@ -162,5 +162,115 @@ describe("validateEvent", () => {
 
   it("lists every kind once", () => {
     expect(new Set(EVENT_KINDS).size).toBe(EVENT_KINDS.length);
+  });
+});
+
+/** A complete registry row: every field Jarvis scripts/check-parts.mjs requires. */
+const row = (id, extra = {}) => ({
+  id,
+  name: id,
+  type: "program",
+  file: `worker/jobs/${id}.mjs`,
+  starts: [],
+  reads: ["record"],
+  writes: ["record"],
+  refuses: [],
+  routes: ["/jarvis/event"],
+  schedule: id,
+  fate: { type: "kept", by: null },
+  serves: [{ guarantee: "G4" }],
+  designed_by: "outcomes",
+  note: `The ${id} part.`,
+  ...extra,
+});
+
+describe("the design page's events", () => {
+  const registry = (data = {}, extra = {}) => {
+    const parts = data.parts ?? [row("deploy"), row("sweep")];
+    return {
+      kind: "registry",
+      subject: "Jarvis@abc1234",
+      provenance: { job: "deploy" },
+      data: { id: "registry:Jarvis@abc1234", repo: "Jarvis", sha: "abc1234", parts, count: parts.length, ...data },
+      text: "registry of Jarvis at abc1234: 2 parts",
+      ...extra,
+    };
+  };
+
+  it("takes a registry named by its deployed commit, and is retried by data.id", () => {
+    expect(validateEvent(registry()).ok).toBe(true);
+    expect(SUBJECT_REQUIRED).toContain("registry");
+    expect(REPEATS_BY_DATA_ID).toContain("registry");
+  });
+
+  it("refuses a registry with no subject, a row with no id, an unknown type or fate, or a count that is not the rows'", () => {
+    expect(validateEvent(registry({}, { subject: undefined })).error).toBe("a registry event names its subject");
+    expect(validateEvent(registry({ parts: [{ name: "x", type: "program", fate: { type: "kept" }, serves: [] }], count: 1 })).error).toContain("data.parts[0].id");
+    expect(validateEvent(registry({ parts: [row("x", { type: "kind" })], count: 1 })).error).toContain("row x has a type");
+    expect(validateEvent(registry({ parts: [row("x", { fate: { kind: "kept" } })], count: 1 })).error).toContain("row x has a fate.type");
+    expect(validateEvent(registry({ parts: [row("x", { serves: undefined })], count: 1 })).error).toContain("row x has no serves list");
+    expect(validateEvent(registry({ count: 3 })).error).toContain("data.count");
+    expect(validateEvent(registry({ id: "registry:other" })).error).toContain("data.id");
+    expect(validateEvent(registry({}, { subject: "Jarvis@other" })).error).toContain("Jarvis@<data.sha>");
+  });
+
+  it("refuses a registry row missing any field the registry check requires", () => {
+    for (const field of ["name", "file", "starts", "reads", "writes", "refuses", "routes", "schedule", "serves", "designed_by", "note"]) {
+      const partial = row("x");
+      delete partial[field];
+      expect(validateEvent(registry({ parts: [partial], count: 1 })).error, field).toContain("row x");
+    }
+    expect(validateEvent(registry({ parts: [row("x", { fate: { type: "kept", by: 3 } })], count: 1 })).error).toContain("fate.by");
+    expect(validateEvent(registry({ parts: [row("x", { file: null, schedule: null })], count: 1 })).ok).toBe(true);
+  });
+
+  const explanation = (data = {}, extra = {}) => ({
+    kind: "explanation",
+    subject: "deploy",
+    provenance: { session: "aaa9ae16" },
+    data: { title: "The deploy job", html: "<!doctype html><html><body><h1>The deploy job</h1></body></html>", ...data },
+    text: "The deploy job",
+    ...extra,
+  });
+
+  it("takes an explanation of a part by the agent that wrote it", () => {
+    expect(validateEvent(explanation()).ok).toBe(true);
+    expect(validateEvent(explanation({ html: "  <!DOCTYPE html><p>x</p>" })).ok).toBe(true);
+    expect(SUBJECT_REQUIRED).toContain("explanation");
+  });
+
+  it("refuses an explanation with a script, a src attribute, no doctype, no author or no subject", () => {
+    expect(validateEvent(explanation({ html: "<!doctype html><script>alert(1)</script>" })).error).toContain("no script");
+    expect(validateEvent(explanation({ html: '<!doctype html><img src="x">' })).error).toContain("no script");
+    expect(validateEvent(explanation({ html: "<html></html>" })).error).toContain("<!doctype html>");
+    expect(validateEvent(explanation({}, { provenance: { job: "x" } })).error).toContain("the agent that wrote it");
+    expect(validateEvent(explanation({}, { subject: undefined })).error).toContain("names its subject");
+  });
+});
+
+describe("registryDiffOf", () => {
+  const diff = { base: "abcdef0", added: ["new-part"], changed: ["deploy"], removed: ["sweep"], rows: { deploy: row("deploy", { note: "changed" }), "new-part": row("new-part") } };
+
+  it("takes a diff with a complete row for each added and changed id", () => {
+    expect(registryDiffOf(diff)).toEqual(diff);
+    expect(registryDiffOf({ base: "abcdef0", added: [], changed: [], removed: ["sweep"], rows: {} })).toEqual({ base: "abcdef0", added: [], changed: [], removed: ["sweep"], rows: {} });
+  });
+
+  it("refuses a diff missing the row of an added or changed id", () => {
+    expect(registryDiffOf({ ...diff, rows: { deploy: diff.rows.deploy } })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { "new-part": diff.rows["new-part"] } })).toBeNull();
+  });
+
+  it("refuses a row holding only its id, or failing the registry row check", () => {
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, deploy: { id: "deploy" } } })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, deploy: row("deploy", { type: "kind" }) } })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, deploy: row("other") } })).toBeNull();
+  });
+
+  it("refuses a row for an id neither added nor changed, and a malformed list or base", () => {
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, sweep: row("sweep") } })).toBeNull();
+    expect(registryDiffOf({ ...diff, base: "" })).toBeNull();
+    expect(registryDiffOf({ ...diff, added: ["Not An Id"] })).toBeNull();
+    expect(registryDiffOf("a diff")).toBeNull();
   });
 });
