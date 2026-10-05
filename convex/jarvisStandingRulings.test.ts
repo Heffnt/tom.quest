@@ -123,6 +123,31 @@ describe("POST /jarvis/standing-ruling", () => {
     expect(await (await post(t, "/jarvis/standing-ruling", { ...body, provenance: { session: "aaa9ae16" } })).json()).toMatchObject({ duplicate: false });
   });
 
+  it("records one sentence answering two questions as two rulings, and a resend of the same question and sentence as one", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const messageId = await threadMessage(t, HIS_MESSAGE);
+    const ask = (question: string) =>
+      post(t, "/jarvis/standing-ruling", {
+        sentence: "if I say it is good once then that holds",
+        scope: "repo:Jarvis",
+        question,
+        provenance: { threadMessageId: messageId },
+      });
+    const first = await (await ask("May the audit run on Codex?")).json();
+    const second = await (await ask("May a landing skip the second approval?")).json();
+    expect(first).toMatchObject({ ok: true, duplicate: false });
+    expect(second).toMatchObject({ ok: true, duplicate: false });
+    expect(second.id).not.toBe(first.id);
+    // The same question and sentence again is a resend: the first row's id.
+    expect(await (await ask("May the audit run on Codex?")).json()).toMatchObject({ id: first.id, duplicate: true });
+    const rows = await t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "ruling")).collect());
+    expect(rows.map((row) => (row.data as { question: string }).question)).toEqual([
+      "May the audit run on Codex?",
+      "May a landing skip the second approval?",
+    ]);
+  });
+
   it("keeps two rulings apart whose source and scope would spell the same key joined by a colon", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");

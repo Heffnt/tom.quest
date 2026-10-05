@@ -219,16 +219,19 @@ export const recordStanding = internalMutation({
     }
     // A RETRY IS NOT A SECOND RULING. A worker that lost the answer to a
     // write posts it again; a second row would stay standing after the first
-    // is superseded. The key is where he said it, the scope and the
-    // sentence's bytes, so the retry finds the first row (standing or not)
+    // is superseded. The key is where he said it, the scope, the sentence's
+    // bytes and the question it answered (as stored), so the retry finds the
+    // first row (standing or not)
     // on events.by_kind_data_id and is answered with its id. The parts are
     // JSON-encoded as one array before hashing: a session id and a scope may
     // each hold a colon, and joined by one they could spell another ruling's
-    // key ("a" with "part:all" and "a:part" with "all").
+    // key ("a" with "part:all" and "a:part" with "all"). One sentence that
+    // answers two questions is two rulings, so the question is in the key.
+    const question = args.question.trim();
     const source = "threadMessageId" in args.provenance
       ? ["thread", args.provenance.threadMessageId]
       : ["session", args.provenance.session];
-    const key = `ruling:${await sha256Hex(JSON.stringify([...source, args.scope, sentence]))}`;
+    const key = `ruling:${await sha256Hex(JSON.stringify([...source, args.scope, sentence, question]))}`;
     const earlier = await ctx.db
       .query("events")
       .withIndex("by_kind_data_id", (q) => q.eq("kind", RULING).eq("data.id", key))
@@ -238,7 +241,7 @@ export const recordStanding = internalMutation({
       kind: RULING,
       subject: args.scope,
       provenance: "session" in args.provenance ? { session: args.provenance.session } : {},
-      data: { id: key, sentence, scope: args.scope, question: args.question.trim(), provenance: args.provenance, standing: true },
+      data: { id: key, sentence, scope: args.scope, question, provenance: args.provenance, standing: true },
       text: sentence,
     });
     return { id, duplicate: false };

@@ -200,9 +200,9 @@ export const EVENT_KINDS = [
   // an asker reads the rulings in its scope on events.by_kind_subject_at.
   // Data { id, sentence, scope, question, provenance: { threadMessageId } or
   // { session }, standing: true }; id is "ruling:" and the sha-256 of the
-  // JSON array [source type, source id, scope, sentence], the key a retry is
-  // matched on (convex/jarvis/rulings.ts recordStanding looks it up before
-  // it inserts). A ruling holds until new information is recorded against
+  // JSON array [source type, source id, scope, sentence, question], the key
+  // a retry is matched on (convex/jarvis/rulings.ts recordStanding looks it
+  // up before it inserts). A ruling holds until new information is recorded against
   // it; then the record sets standing false, supersededBy to the id of the
   // row that carried the new information, supersededAt to the instant and
   // supersededLine to the digest's sentence for it.
