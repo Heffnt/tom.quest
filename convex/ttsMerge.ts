@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
 import { resolveId } from "./jarvis/tables";
+import { JOB_FAILED, JOB_RECOVERED } from "./jarvis/jobs";
 import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
 import { copyDtsRow } from "./jarvis/events";
@@ -487,10 +488,51 @@ export const internalGateStatus = internalQuery({
     await gateStatusFor(ctx, repo, sha),
 });
 
-/** Schedule the status post for one commit. Called by the two writers of the
- *  gate's rows, after the row is written, so the status follows every change. */
+/** Schedule the status post for one commit, and clear a standing report of a
+ *  landing past the gate once the gate has opened for it. Called by the two
+ *  writers of the gate's rows, after the row is written, so the status and the
+ *  report follow every change. */
 async function scheduleGateStatus(ctx: MutationCtx, repo: string, sha: string) {
   await ctx.scheduler.runAfter(0, internal.ttsMerge.internalPostGateStatus, { repo, sha });
+  await clearLandingReportIfOpen(ctx, repo, sha);
+}
+
+// ── A COMMIT ON MAIN THAT DID NOT PASS THE GATE ──────────────────────────────
+// convex/gateLandings.ts accounts for every commit that arrives on main of a
+// repository under the gate. One that landed with the gate shut for its head,
+// or that belongs to no pull request, gets no merge row: it is reported as a
+// job-failed row of its own, one per commit, under LANDING_JOB and
+// landingKey, which the digest shows once among what is broken. The report is
+// cleared (job-ok, which writes the recovery) when the gate opens for that
+// commit, which happens when a row arrives late.
+
+/** The job name a landing past the gate is reported under. */
+export const LANDING_JOB = "main-landing";
+
+/** The condition one landing past the gate is: the repository and the commit
+ *  the gate is keyed on (a pull request's head, or the commit itself). */
+export function landingKey(repo: string, sha: string): string {
+  return `${LANDING_JOB}:${commitKey(repo, sha)}`;
+}
+
+/** Write the recovery of a standing landing report for `repo@sha` when the
+ *  gate is now open for it. Reads nothing more when no report stands. */
+async function clearLandingReportIfOpen(ctx: MutationCtx, repo: string, sha: string) {
+  const key = landingKey(repo, sha);
+  const failed = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_FAILED).eq("subject", key))
+    .order("desc")
+    .first();
+  if (failed === null) return;
+  const recovered = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_RECOVERED).eq("subject", key))
+    .order("desc")
+    .first();
+  if (recovered !== null && recovered.at >= failed.at) return;
+  if (!(await mergeGateFor(ctx, repo, sha)).allowed) return;
+  await ctx.runMutation(internal.ttsJobs.internalReportJobOk, { job: LANDING_JOB, key });
 }
 
 /**
@@ -870,10 +912,12 @@ export const internalRecordAudit = internalMutation({
  * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
  * recorded, and the reporter can post again. ONE EXCEPTION, said in `why`:
  * a repository GitHub will not show the record's token at all (404 on the
- * repository itself; GITHUB_MIRROR_TOKEN does not cover WikiTom, see
- * convex/ttsSync.ts). Refusing there would leave every merge of that
- * repository with no row and no line to object to, which costs Tom more than
- * a row that says it was not checked; the row and its decisions line say so.
+ * repository itself, as GITHUB_MIRROR_TOKEN answered for Jarvis until
+ * 2026-09-25; it reads tom.quest, Jarvis and WikiTom since, and
+ * convex/gateLandings.ts reads all three with it). Refusing there would leave
+ * every merge of that repository with no row and no line to object to, which
+ * costs Tom more than a row that says it was not checked; the row and its
+ * decisions line say so.
  */
 export async function mergedOnMain(
   repo: string,
