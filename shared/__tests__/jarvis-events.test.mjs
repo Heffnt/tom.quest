@@ -153,6 +153,7 @@ describe("validateEvent", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
     expect(RECORD_ONLY_KINDS).toContain("thread-digest");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
+    expect(RECORD_ONLY_KINDS).toContain("silence-alarm");
     expect(SUBJECT_REQUIRED).toContain("needs-you-opened");
     expect(validateEvent({ kind: "needs-you-opened", data: { key: "k" }, text: "No subject." }))
       .toEqual({ ok: false, error: "a needs-you-opened event names its subject" });

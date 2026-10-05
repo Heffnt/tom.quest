@@ -27,8 +27,8 @@
 // its silence is the thing to hear: checkSilence reads each watched job's
 // newest `job-ok` on events.by_kind_job_at, and a job whose last clean run is
 // older than three of its intervals is a job-failed row under `<job>:silent`
-// (a line in the digest's broken section) and one line in the output channel
-// in the alarm's own words; the first clean run after it writes the recovery,
+// (a line in the digest's broken section) and one silence-alarm line on the
+// Jarvis thread in the alarm's own words, with one web push; the first clean run after it writes the recovery,
 // which re-arms the alarm. A job with no job-ok row yet is not watched: the
 // alarm is armed by the job's first clean run, so it cannot fire before the
 // job is deployed.
@@ -36,8 +36,8 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { nyLocalHour, outputChannel, ttsDayKey } from "../ttsShared";
-import { digestFacts, lastDigest } from "./outbox";
+import { nyLocalHour, ttsDayKey } from "../ttsShared";
+import { SILENCE_ALARM, THREAD_DIGEST } from "./outbox";
 import { insertEvent } from "./record";
 import { ReadBudget, readWithin } from "../readBudget";
 
@@ -201,32 +201,32 @@ const SILENCE_WATCH = [
   { job: "box-watch", everyMs: 2 * 60_000, feeds: "changes to the box" },
   { job: "box-state", everyMs: 10 * 60_000, feeds: "the box's state comparison" },
   { job: "agents-sweep", everyMs: 2 * 60_000, feeds: "the agents' transcripts" },
-  // The box's digest writer (Jarvis worker/jobs/write-slack.mjs): the one
-  // thing that writes to the output channel. The hourly update's idea — the
-  // ABSENT message is the alarm — lives here now: when it stops, this says so.
-  { job: "write-slack", everyMs: 2 * 60_000, feeds: "the digest and the needs-you replies" },
   // The box's record-tick (Jarvis worker/jobs/record-tick.mjs), which starts
-  // the record's timed tasks now that Convex's crons are gone (tick.ts).
+  // the record's timed tasks (tick.ts).
   { job: "record-tick", everyMs: 60_000, feeds: "the record's timed work (calendar, pull requests, repeats)" },
 ] as const;
 
-/** The New York hour by which today's digest should be in the channel: an
- *  hour after it is due at 5, so a box that was briefly down is not an alarm. */
+/** The New York hour by which today's digest should be on the thread: an
+ *  hour after it is due at 5, so one failed 05:00 run is retried once by the
+ *  hourly cron (convex/crons.ts) before it is an alarm. */
 const DIGEST_LATE_NY_HOUR = 6;
 
-/** A condition the alarm raises: the row and one line in the output channel,
- *  through the one Slack door, once until it recovers. The row directly, not
- *  recordEvent: the line is the alarm's own, and the job-failed hook's would
- *  be a second. */
+/** A condition the alarm raises: the row, one silence-alarm line on the
+ *  Jarvis thread and one web push, once until it recovers. The row directly,
+ *  not recordEvent: the line is the alarm's own, and the job-failed hook's
+ *  would be a second. The push carries the line: it is made of job names and
+ *  durations, none of them private. */
 async function raise(ctx: MutationCtx, job: string, key: string, error: string, now: number): Promise<void> {
   await insertEvent(ctx, { kind: JOB_FAILED, at: now, provenance: { job }, subject: key, data: { job, error }, text: error });
-  const channel = outputChannel();
-  if (channel === null) return;
-  await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-    channel,
-    text: `${error} ${AGENTS_WINDOW_URL}`,
-    subject: { kind: "job", id: key },
+  await insertEvent(ctx, {
+    kind: SILENCE_ALARM,
+    at: now,
+    provenance: { job },
+    subject: key,
+    data: { job, href: AGENTS_WINDOW_URL },
+    text: error,
   });
+  await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, { title: "Silence alarm", body: error, url: "/thread" });
 }
 
 /** How many intervals of silence make a job silent: the plan's three, so one
@@ -272,20 +272,23 @@ export async function checkSilence(ctx: MutationCtx): Promise<{ silent: string[]
       recovered.push(job);
     }
   }
-  // THE MORNING IS NEVER SILENT. The digest used to have a second writer (a
-  // Convex template behind the model); it has one now, on the box, so its
-  // absence is this alarm's to say: past 6 a.m. New York with no digest-sent
-  // for today, one line, once, closed when the digest goes out.
+  // THE MORNING DIGEST IS CHECKED HERE. The record's digest cron appends
+  // today's thread-digest from 5 a.m. New York (convex/jarvis/digest.ts
+  // appendThreadDigest); past 6 a.m. with no thread-digest for today, one
+  // line, once, closed when the digest is appended.
   if (nyLocalHour(now) >= DIGEST_LATE_NY_HOUR) {
     const day = ttsDayKey(now);
     const key = `digest:${day}`;
     const standing = await standingFailure(ctx, key);
-    const sentToday = digestFacts(await lastDigest(ctx)).day === day;
-    if (!sentToday && standing === null) {
+    const onThread = (await ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_DIGEST).eq("subject", day))
+      .first()) !== null;
+    if (!onThread && standing === null) {
       silent.push("digest");
-      await raise(ctx, "write-slack", key, `Today's digest (${day}) has not gone out: the box's write-slack job has not posted it.`, now);
-    } else if (sentToday && standing !== null) {
-      await recover(ctx, "write-slack", key, standing.at, now);
+      await raise(ctx, "digest", key, `Today's digest (${day}) is not on the thread: the record's digest cron has not appended it.`, now);
+    } else if (onThread && standing !== null) {
+      await recover(ctx, "digest", key, standing.at, now);
       recovered.push("digest");
     }
   }

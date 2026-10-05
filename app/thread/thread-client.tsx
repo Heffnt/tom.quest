@@ -1,13 +1,13 @@
 "use client";
 
 // The Jarvis thread: Tom's one standing conversation with Jarvis. It reads
-// four sources merged by time — his messages and Jarvis's daily digests
-// (api.thread.messages), Jarvis's changes (api.thread.changes), the day log
-// (api.dayLog.page, the /log page's query) and the #dump captures
-// (api.tts.listTodos, filtered to source "slack-capture"). A message he types
-// is appended to the events table; replies to changes appear under the
-// change, replies to digests are nested under the digest, and a box job
-// answers ordinary messages.
+// four sources merged by time — his messages, Jarvis's daily digests and the
+// silence alarm's lines (api.thread.messages), Jarvis's changes
+// (api.thread.changes), the day log (api.dayLog.page, the /log page's query)
+// and the #dump captures (api.tts.listTodos, filtered to source
+// "slack-capture"). A message he types is appended to the events table;
+// replies to changes appear under the change, replies to digests are nested
+// under the digest, and a box job answers ordinary messages.
 
 import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
@@ -41,10 +41,12 @@ type ThreadMessage =
       items: Array<{ n: number; text: string }>;
       replies: Array<{ id: Id<"events">; at: number; text: string; reply: Reply }> }
   | { kind: "item"; id: Id<"events">; at: number; digestId: Id<"events">;
-      day: string; n: number; text: string };
+      day: string; n: number; text: string }
+  | { kind: "alarm"; id: Id<"events">; at: number; text: string; href: string };
 
 type DigestEntry = Extract<ThreadMessage, { kind: "digest" }>;
 type NeedsYouEntry = Extract<ThreadMessage, { kind: "item" }>;
+type AlarmEntry = Extract<ThreadMessage, { kind: "alarm" }>;
 
 type AgentChange = {
   id: Id<"events">;
@@ -58,6 +60,7 @@ type FeedItem =
   | { type: "said"; id: string; at: number; day: string; said: Said }
   | { type: "digest"; id: string; at: number; day: string; digest: DigestEntry }
   | { type: "item"; id: string; at: number; day: string; item: NeedsYouEntry }
+  | { type: "alarm"; id: string; at: number; day: string; alarm: AlarmEntry }
   | { type: "change"; id: string; at: number; day: string; change: AgentChange; replies: Said[] };
 
 type ReplyTarget =
@@ -185,6 +188,12 @@ export default function ThreadClient() {
         at: message.at,
         day: message.day,
         item: message,
+      }] : message.kind === "alarm" ? [{
+        type: "alarm",
+        id: message.id,
+        at: message.at,
+        day: newYorkDay(message.at),
+        alarm: message,
       }] : []),
       ...(changes ?? []).map((change): FeedItem => ({
         type: "change",
@@ -301,6 +310,21 @@ function NeedsYouRow({ item, replying, onReply }: { item: NeedsYouEntry; replyin
   );
 }
 
+function AlarmRow({ alarm }: { alarm: AlarmEntry }) {
+  return (
+    <li className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-0.5">
+      <time dateTime={new Date(alarm.at).toISOString()} className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint">{displayTime(alarm.at)}</time>
+      <div className="min-w-0">
+        <p className="font-mono text-[11px] leading-5 text-text-faint">Jarvis · silence alarm</p>
+        <p className="break-words border-l-2 border-border pl-3 text-[15px] leading-6 text-text">
+          {alarm.text}
+          <a href={alarm.href} className="ml-2 underline underline-offset-2 transition-colors hover:text-accent">agents</a>
+        </p>
+      </div>
+    </li>
+  );
+}
+
 function ThreadView({ days, loading, cuts }: { days: Array<[string, FeedItem[]]>; loading: boolean; cuts: string[] }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -356,6 +380,8 @@ function ThreadView({ days, loading, cuts }: { days: Array<[string, FeedItem[]]>
                       ? null
                       : { kind: "digest", id: item.digest.id, day: item.day })}
                   />
+                ) : item.type === "alarm" ? (
+                  <AlarmRow key={item.id} alarm={item.alarm} />
                 ) : item.type === "item" ? (
                   <NeedsYouRow
                     key={item.id}
