@@ -187,14 +187,18 @@ export const recordStanding = internalMutation({
     provenance: v.union(v.object({ threadMessageId: v.string() }), v.object({ session: v.string() })),
   },
   handler: async (ctx, args): Promise<{ id: Id<"events">; duplicate: boolean }> => {
-    const sentence = args.sentence.trim();
+    // His words exactly as posted: not trimmed or normalised, so what is
+    // checked against the thread message, hashed and stored are the same
+    // bytes, and a space the message does not hold is refused.
+    const sentence = args.sentence;
+    if (sentence.trim() === "") throw new Error("sentence (non-empty string) required");
     if ("threadMessageId" in args.provenance) {
       const id = ctx.db.normalizeId("events", args.provenance.threadMessageId);
       const message = id === null ? null : await ctx.db.get(id);
       if (message === null || message.kind !== "thread-message") {
         throw new Error(`no thread message ${args.provenance.threadMessageId} in the record`);
       }
-      if (sentence === "" || !(message.text ?? "").includes(sentence)) {
+      if (!(message.text ?? "").includes(sentence)) {
         throw new Error("the sentence does not occur verbatim in the thread message it cites");
       }
     }

@@ -141,6 +141,30 @@ describe("POST /jarvis/standing-ruling", () => {
     expect(new Set(rows.map((row) => (row.data as { id: string }).id)).size).toBe(2);
   });
 
+  it("keeps his sentence byte for byte: a leading or trailing space is refused unless the message holds it", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const messageId = await threadMessage(t, HIS_MESSAGE);
+    const send = (sentence: string) =>
+      post(t, "/jarvis/standing-ruling", { sentence, scope: "all", question: "q", provenance: { threadMessageId: messageId } });
+    for (const sentence of ["if I say it is good once then that holds\n", "  if I say it is good once", "it.  "]) {
+      const res = await send(sentence);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain("verbatim");
+    }
+    // The message holds " if I say" (after "times.") and "holds " (before
+    // "as long"), so those are his words and are stored with their spaces.
+    const leading = await (await send(" if I say it is good once")).json();
+    const trailing = await (await send("then that holds ")).json();
+    const stored = async (id: string) => ((await eventRow(t, id))?.data as { sentence: string }).sentence;
+    expect(await stored(leading.id)).toBe(" if I say it is good once");
+    expect(await stored(trailing.id)).toBe("then that holds ");
+    // The bare words are a different sentence with a different key.
+    const bare = await (await send("if I say it is good once")).json();
+    expect(bare).toMatchObject({ duplicate: false });
+    expect(bare.id).not.toBe(leading.id);
+  });
+
   it("refuses a sentence the cited thread message does not hold, and an id that is not a thread message", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");

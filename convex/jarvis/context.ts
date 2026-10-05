@@ -115,7 +115,7 @@ const READERS: Record<string, Reader> = {
       sessionId,
       job,
       todoId: nonempty(params.get("todoId")),
-      ...(scopes.length === 0 ? {} : { scopes }),
+      scopes,
     });
     return jsonResponse(200, context);
   },
