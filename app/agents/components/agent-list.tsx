@@ -30,6 +30,7 @@ import {
   sessionModel,
   statusChipClass,
 } from "../lib";
+import { displayForm } from "@/shared/clock.mjs";
 
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
@@ -244,7 +245,7 @@ function RootRuns({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
                   <span className={MODEL_CHIP_CLASS}>{run.model}</span>
                 )}
                 <span className="font-mono">
-                  {new Date(run.startedAt).toISOString().slice(0, 16).replace("T", " ")}
+                  {displayForm(run.startedAt)}
                 </span>
                 {costText(run.outcome?.costUsd) !== "" && (
                   <span className="font-mono">{costText(run.outcome?.costUsd)}</span>

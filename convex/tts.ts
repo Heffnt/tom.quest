@@ -20,6 +20,7 @@ import {
   nyOffsetHours,
 } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
+import { ZONE } from "../shared/clock.mjs";
 import { clearBlock, eitherId, resolveId, withPlainTodoIds } from "./jarvis/tables";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
@@ -1226,15 +1227,15 @@ export const internalApplyTimeNote = internalMutation({
   },
 });
 
-// The server owns the clock (the /tts/state prepDay convention): the worker
-// never computes New York time itself, it repeats back what this returns.
+// The record's clock for the planner and time-notes jobs, read through
+// shared/clock.mjs (the box reads the same zone through its own clock.mjs).
 export function nowContext(utcMs: number) {
   return {
     now: utcMs,
     nowIso: new Date(utcMs).toISOString(),
     nyCalendarDay: nyCalendarDayKey(utcMs),
     nyOffsetHours: nyOffsetHours(utcMs),
-    timezone: "America/New_York",
+    timezone: ZONE,
   };
 }
 

@@ -46,6 +46,7 @@ import {
   type RunMark,
   type TimeWindow,
 } from "../lib";
+import { displayDay, displayTime } from "@/shared/clock.mjs";
 
 const ROW_H = 13;
 const BAR_H = 9;
@@ -402,13 +403,13 @@ function Detail({ mark, onClose }: { mark: Mark | null; onClose: () => void }) {
   );
 }
 
-/** Seven ticks across the window, in the reader's own clock. */
+/** Seven ticks across the window, in America/New_York. */
 function Axis({ win }: { win: TimeWindow }) {
   const ticks = Array.from({ length: 7 }, (_, index) => win.from + ((win.to - win.from) * index) / 6);
   const label = (at: number) =>
     win.kind === "day"
-      ? new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
-      : new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      ? displayTime(at)
+      : displayDay(at);
   return (
     <div className="flex items-center gap-2 border-b border-border px-2 py-1">
       <div className="w-24 shrink-0" />

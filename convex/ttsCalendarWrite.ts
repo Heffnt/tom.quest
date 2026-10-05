@@ -27,6 +27,7 @@ import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
+import { ZONE } from "../shared/clock.mjs";
 import { CALENDAR_CHANNEL, calendarRecipient, deliverAsTom, DeliveryRefused, invitationText } from "./ttsSignoff";
 
 export type CreateEventArgs = {
@@ -60,11 +61,11 @@ export function buildEventBody(args: CreateEventArgs) {
     location: args.location,
     start: {
       dateTime: new Date(args.start).toISOString(),
-      timeZone: "America/New_York",
+      timeZone: ZONE,
     },
     end: {
       dateTime: new Date(args.end).toISOString(),
-      timeZone: "America/New_York",
+      timeZone: ZONE,
     },
     recurrence: args.recurrence,
     ...(args.guests !== undefined && args.guests.length > 0

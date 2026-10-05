@@ -32,6 +32,7 @@ import {
   runStatusChipClass,
   thinkingTextOf,
   toolInputObjectOf,
+  formatClock,
 } from "./lib";
 
 // Both rows are the parser's own output: the first is a production row's
@@ -510,5 +511,11 @@ describe("box changes among an agent's rows", () => {
     expect(boxChangeText({ id: "s", at: T, source: "setup", why: "setup", user: "jarvis", commit: "0123456789abcdef", change: { what: "setup", after: "folded: 2 unit changes" } }))
       .toBe("setup ran at 0123456: folded: 2 unit changes");
     expect(boxChangeText({ id: "u", at: T, source: "systemd", why: "unit", user: "root", change: { what: "cron.service", after: "restart" } })).toBe("cron.service: restart");
+  });
+});
+
+describe("formatClock", () => {
+  it("prints the New York time in the display form", () => {
+    expect(formatClock(Date.parse("2026-10-05T01:58:00Z"))).toBe("9:58 pm");
   });
 });

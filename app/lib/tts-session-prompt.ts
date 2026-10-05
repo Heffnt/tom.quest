@@ -10,6 +10,7 @@
 import type { Doc } from "../../convex/_generated/dataModel";
 import { briefForPrompt } from "../../shared/context-relevance.mjs";
 import { INBOUND_ROW_LABEL } from "../../shared/session-constants.mjs";
+import { ZONE, displayForm } from "../../shared/clock.mjs";
 
 // The FRAMING says what this session is and how wide it is; it is only true
 // here, so it lives only here. insertSession prepends the model-of-tom files
@@ -86,7 +87,7 @@ export function buildBlockSessionPrompt(
         fact("timing", t.timingClass),
         fact(
           "due",
-          t.dueAt !== undefined ? new Date(t.dueAt).toISOString() : undefined,
+          t.dueAt !== undefined ? `${displayForm(t.dueAt)} (${ZONE})` : undefined,
         ),
         fact("entry action", t.entryAction),
         fact("work description", t.workDescription),
@@ -173,7 +174,7 @@ export function buildTodoSessionPrompt(
     fact("timing", todo.timingClass),
     fact(
       "due",
-      todo.dueAt !== undefined ? new Date(todo.dueAt).toISOString() : undefined,
+      todo.dueAt !== undefined ? `${displayForm(todo.dueAt)} (${ZONE})` : undefined,
     ),
     fact("work description", todo.workDescription),
     fact("entry action", todo.entryAction),

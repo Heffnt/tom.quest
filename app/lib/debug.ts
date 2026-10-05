@@ -1,3 +1,5 @@
+import { newYorkParts } from "@/shared/clock.mjs";
+
 type DebugFields = Record<string, unknown>;
 type DebugStateProvider = () => DebugFields;
 
@@ -40,8 +42,10 @@ function pad(value: number, width = 2): string {
   return String(value).padStart(width, "0");
 }
 
+/** "21:58:07.123", the New York wall clock: a debug line's stamp. */
 function formatTimestamp(date = new Date()): string {
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+  const { hour, minute, second } = newYorkParts(date.getTime());
+  return `${pad(hour)}:${pad(minute)}:${pad(second)}.${pad(date.getMilliseconds(), 3)}`;
 }
 
 function redactionLabelForKey(key: string): string | null {

@@ -20,6 +20,7 @@ import Info from "@/app/jarvis/components/info";
 import { errMessage } from "@/app/jarvis/lib";
 import RulingDialog from "@/app/jarvis/components/ruling-dialog";
 import { evalItemLineSuffix, linesRestedOn, rulingLineHasSuffix, type IntentLine } from "../lib";
+import { displayForm } from "@/shared/clock.mjs";
 
 type Verdict = "approve" | "revise";
 
@@ -72,7 +73,7 @@ export default function Decisions({
                 <p className="mt-0.5 text-[11px] leading-snug text-text-faint">would change: {decision.wouldChange}</p>
               )}
               <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-[10px] font-mono text-text-faint">
-                <span>{new Date(decision.at).toISOString().slice(0, 16).replace("T", " ")}</span>
+                <span>{displayForm(decision.at)}</span>
                 <span>{decision.caller}</span>
                 {decision.model !== null && <span>{decision.model}</span>}
                 <span>{decision.askId}</span>
@@ -246,7 +247,7 @@ function Settle({
     return (
       <p className="mt-1 text-[11px] font-mono text-text-faint">
         {settled.verdict === "approve" ? "stands" : "objected"} ·{" "}
-        {new Date(settled.at).toISOString().slice(0, 16).replace("T", " ")}
+        {displayForm(settled.at)}
         {settled.sentence !== null && <span className="ml-2 text-text-muted">{settled.sentence}</span>}
       </p>
     );

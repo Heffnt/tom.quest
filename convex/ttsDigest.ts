@@ -31,10 +31,10 @@ import {
   isReadyForTom,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
-  nyHhmm,
   privateFeedNames,
   ttsSessionLink,
 } from "./ttsShared";
+import { displayTime } from "../shared/clock.mjs";
 // THE ONE CHOKE POINT for a credential-shaped span, the same pure helper
 // convex/ttsSearch.ts and worker/session-host use — never a second copy of the
 // patterns. Every free-text error, reason, summary or title below passes
@@ -229,8 +229,8 @@ export function calendarLeadText(spans: { start: number; end: number; allDay: bo
       allDay === 1 ? "entry that runs" : "entries that run"
     } all day and nothing timed.`;
   }
-  const from = nyHhmm(timed[0].start);
-  const to = nyHhmm(Math.max(...timed.map((s) => s.end)));
+  const from = displayTime(timed[0].start);
+  const to = displayTime(Math.max(...timed.map((s) => s.end)));
   return `Your day is committed from ${from} to ${to}.`;
 }
 
@@ -388,7 +388,7 @@ export async function gatherTodayFacts(
   spans.sort((a, b) => a.start - b.start);
   const calendar = spans.map((s) => ({
     title: s.title,
-    when: s.allDay ? "" : `${nyHhmm(s.start)} to ${nyHhmm(s.end)}`,
+    when: s.allDay ? "" : `${displayTime(s.start)} to ${displayTime(s.end)}`,
     allDay: s.allDay,
   }));
 
@@ -641,7 +641,7 @@ export async function gatherTodayFacts(
         rawObjections.push({
           at: e.at,
           askId: "",
-          decision: `sent as you to ${recipient} on ${where}${signedAt === undefined ? "" : `, signed at ${nyHhmm(signedAt)}`}`,
+          decision: `sent as you to ${recipient} on ${where}${signedAt === undefined ? "" : `, signed at ${displayTime(signedAt)}`}`,
           refused: false,
           merged: false,
           sentAsTom: true,
@@ -781,8 +781,8 @@ export async function gatherTodayFacts(
     failure(
       `${row.subject}:recovered`,
       job === LANDING_JOB
-        ? `A change that reached main past the merge gate passes it since ${nyHhmm(row.at)}: ${landingCommit(String(row.subject))}.`
-        : `The ${job} job is running clean again, since ${nyHhmm(row.at)}.`,
+        ? `A change that reached main past the merge gate passes it since ${displayTime(row.at)}: ${landingCommit(String(row.subject))}.`
+        : `The ${job} job is running clean again, since ${displayTime(row.at)}.`,
     );
   }
 
@@ -1111,8 +1111,8 @@ function landingCommit(subject: string): string {
  *  no job running clean. */
 function recoveredClause(job: string, at: number): string {
   return job === LANDING_JOB
-    ? `The merge gate has passed it since ${nyHhmm(at)}.`
-    : `It has run clean again since ${nyHhmm(at)}.`;
+    ? `The merge gate has passed it since ${displayTime(at)}.`
+    : `It has run clean again since ${displayTime(at)}.`;
 }
 
 // ── Composing the morning message ────────────────────────────────────────────

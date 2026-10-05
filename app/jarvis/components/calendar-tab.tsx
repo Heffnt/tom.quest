@@ -47,7 +47,15 @@ import TimeNoteField, {
   NO_NOTES,
   type TimeNote,
 } from "./time-note-field";
-import { errMessage, isoDate, selectToday } from "../lib";
+import { errMessage, selectToday } from "../lib";
+import { nyCalendarDayBoundsUtc } from "@/convex/ttsShared";
+import {
+  addDays,
+  displayDayKey,
+  displayForm,
+  newYorkDay,
+  newYorkParts,
+} from "@/shared/clock.mjs";
 
 type Block = Doc<"blocks">;
 
@@ -55,44 +63,34 @@ const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 const capCls = "text-[10px] font-mono text-text-faint";
 
-// ── Local-time week math ─────────────────────────────────────────────────────
-// All day boundaries via new Date(y, m, d) so DST transitions cannot shift a
-// column; ms arithmetic on day lengths is deliberately avoided.
+// ── New York week math ───────────────────────────────────────────────────────
+// A column is a New York calendar day, named by its YYYY-MM-DD key; its bounds
+// come from nyCalendarDayBoundsUtc, so a daylight-saving day is 23 or 25 hours
+// and the browser's zone does not enter.
 
-/** Monday 00:00 local of the week containing ms. */
-function mondayStartMs(ms: number): number {
-  const d = new Date(ms);
-  const back = (d.getDay() + 6) % 7; // Sun=0 → back 6, Mon=1 → back 0
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - back).getTime();
+/** The Monday (YYYY-MM-DD, New York) of the week containing ms. */
+function mondayKey(ms: number): string {
+  const day = newYorkDay(ms);
+  const back = (new Date(Date.parse(day)).getUTCDay() + 6) % 7; // Sun=0 → back 6, Mon=1 → back 0
+  return addDays(day, -back);
 }
 
-/** Same local wall-clock midnight, n days later. */
-function shiftDays(ms: number, n: number): number {
-  const d = new Date(ms);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n).getTime();
-}
-
-/** "9a", "2:30p" — dense time-of-day for chips. */
+/** "9a", "2:30p" — dense time-of-day for chips, in New York. */
 function fmtTime(ms: number): string {
-  const d = new Date(ms);
-  const h = d.getHours() % 12 || 12;
-  const m = d.getMinutes();
-  const ap = d.getHours() < 12 ? "a" : "p";
-  return m === 0 ? `${h}${ap}` : `${h}:${String(m).padStart(2, "0")}${ap}`;
+  const { hour, minute } = newYorkParts(ms);
+  const h = hour % 12 || 12;
+  const ap = hour < 12 ? "a" : "p";
+  return minute === 0 ? `${h}${ap}` : `${h}:${String(minute).padStart(2, "0")}${ap}`;
 }
 
-/** "Sep 1" */
-function monthDay(ms: number): string {
-  return new Date(ms).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  });
+/** "Sep 1" for a YYYY-MM-DD day. */
+function monthDay(day: string): string {
+  return displayDayKey(day).slice(4);
 }
 
-/** "Mon 1" */
-function dayHeading(ms: number): string {
-  const d = new Date(ms);
-  return `${d.toLocaleDateString("en-US", { weekday: "short" })} ${d.getDate()}`;
+/** "Mon 1" for a YYYY-MM-DD day. */
+function dayHeading(day: string): string {
+  return `${displayDayKey(day).slice(0, 3)} ${Number(day.slice(8))}`;
 }
 
 // ── One placed block chip: collapsed = time + target; expanded = note, a
@@ -220,19 +218,23 @@ export default function CalendarTab({
   // refused by Convex regardless of what renders here.
   const canRead = canReadSurface("TTS");
   const now = Date.now();
-  const [weekStart, setWeekStart] = useState(() => mondayStartMs(Date.now()));
+  const [weekStart, setWeekStart] = useState(() => mondayKey(Date.now()));
+  const weekRange = {
+    start: nyCalendarDayBoundsUtc(weekStart).start,
+    end: nyCalendarDayBoundsUtc(addDays(weekStart, 7)).start,
+  };
   const todos = useQuery(api.tts.listTodos, canRead ? {} : "skip");
   // Only the visible week's blocks ride the subscription (the blocks table grows
   // forever; the by_start index serves the range).
   const blocks = useQuery(
     api.tts.listBlocks,
-    canRead ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+    canRead ? weekRange : "skip",
   );
   // External-calendar mirror rows (Google/Outlook/Canvas ICS feeds) for the
   // visible week — read-only schedule knowledge next to the blocks.
   const calendarEvents = useQuery(
     api.ttsCalendar.listCalendarEvents,
-    canRead ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
+    canRead ? weekRange : "skip",
   );
   // ONE time-note subscription for the whole tab; days and blocks slice it.
   const timeNotes = useQuery(api.tts.listTimeNotes, canRead ? {} : "skip");
@@ -259,14 +261,14 @@ export default function CalendarTab({
         .sort((a, b) => a.statement.localeCompare(b.statement)),
     [todos],
   );
-  // `key` is the column's calendar-day label from its own local date parts
-  // (isoDate) — that string IS the day a note is filed against, so the note
-  // never carries an instant that a timezone could re-date.
+  // `key` is the column's New York calendar day — that string IS the day a
+  // note is filed against, so the note never carries an instant that a zone
+  // could re-date.
   const days = useMemo(
     () =>
       Array.from({ length: 7 }, (_, i) => {
-        const start = shiftDays(weekStart, i);
-        return { start, end: shiftDays(weekStart, i + 1), key: isoDate(start) };
+        const key = addDays(weekStart, i);
+        return { ...nyCalendarDayBoundsUtc(key), key };
       }),
     [weekStart],
   );
@@ -313,24 +315,24 @@ export default function CalendarTab({
       <div className="flex items-center gap-2">
         <button
           className={btnCls}
-          onClick={() => setWeekStart((w) => shiftDays(w, -7))}
+          onClick={() => setWeekStart((w) => addDays(w, -7))}
         >
           ‹
         </button>
         <button
           className={btnCls}
-          onClick={() => setWeekStart(mondayStartMs(Date.now()))}
+          onClick={() => setWeekStart(mondayKey(Date.now()))}
         >
           today
         </button>
         <button
           className={btnCls}
-          onClick={() => setWeekStart((w) => shiftDays(w, 7))}
+          onClick={() => setWeekStart((w) => addDays(w, 7))}
         >
           ›
         </button>
         <span className="text-sm text-text-muted">
-          {monthDay(days[0].start)} – {monthDay(days[6].start)}
+          {monthDay(days[0].key)} – {monthDay(days[6].key)}
         </span>
       </div>
 
@@ -389,7 +391,7 @@ export default function CalendarTab({
                       isToday ? "text-accent" : "text-text-muted"
                     }`}
                   >
-                    {dayHeading(day.start)}
+                    {dayHeading(day.key)}
                   </span>
                   <span className="flex items-baseline gap-0.5">
                     <button
@@ -456,7 +458,7 @@ export default function CalendarTab({
                     <div
                       key={`due-${t._id}`}
                       className="px-1 text-[11px] truncate"
-                      title={`due ${new Date(t.dueAt ?? 0).toLocaleString()} (${t.dateKind ?? "self-imposed"}) — ${t.statement}`}
+                      title={`due ${displayForm(t.dueAt ?? 0)} (${t.dateKind ?? "self-imposed"}) — ${t.statement}`}
                     >
                       <span
                         className={past ? "text-warning" : "text-text-faint"}
@@ -477,7 +479,7 @@ export default function CalendarTab({
                   <div
                     key={`wake-${t._id}`}
                     className="px-1 text-[11px] text-text-muted truncate"
-                    title={`wakes ${new Date(t.wakeAt ?? 0).toLocaleString()} — ${t.statement}`}
+                    title={`wakes ${displayForm(t.wakeAt ?? 0)} — ${t.statement}`}
                   >
                     <span className="text-text-faint">○ wakes</span>{" "}
                     {t.statement}

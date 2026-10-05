@@ -15,8 +15,8 @@ import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
+import { addDays, displayDay, displayDayKey, displayTime, newYorkDay } from "@/shared/clock.mjs";
 
-const ZONE = "America/New_York";
 const WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
 
 type Kind = "fact" | "todo" | "rule" | "errand" | "question";
@@ -74,10 +74,6 @@ type LogEntry = {
   items: LogItem[];
 };
 
-const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: ZONE, year: "numeric", month: "2-digit", day: "2-digit" });
-const clock = new Intl.DateTimeFormat("en-US", { timeZone: ZONE, hour: "numeric", minute: "2-digit" });
-const dayName = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
-const dueName = new Intl.DateTimeFormat("en-US", { timeZone: ZONE, weekday: "short", month: "short", day: "numeric" });
 
 function words(value: string): string {
   return value.replaceAll("_", " ");
@@ -106,7 +102,7 @@ function fromLog(entry: LogEntry): Said {
 }
 
 function fromCapture(todo: Doc<"todos">): Said {
-  const base = { id: todo._id, at: todo.createdAt, day: dayKey.format(todo.createdAt), text: todo.statement, processed: true, needsTom: false };
+  const base = { id: todo._id, at: todo.createdAt, day: newYorkDay(todo.createdAt), text: todo.statement, processed: true, needsTom: false };
   // Terminal status first: needsTomToday is kept on a todo after it is done
   // or archived, so checking it first would show a finished capture as a
   // live question.
@@ -114,14 +110,14 @@ function fromCapture(todo: Doc<"todos">): Said {
   if (todo.status === "archived") return { ...base, kind: "todo", line: "a todo, archived" };
   if (todo.needsTomToday) return { ...base, kind: "question", line: todo.needsTomToday.why || "waiting for your answer", needsTom: true };
   if (todo.timingClass === "dated" && todo.dueAt !== undefined) {
-    return { ...base, kind: "errand", line: `on the calendar for ${dueName.format(todo.dueAt)}` };
+    return { ...base, kind: "errand", line: `on the calendar for ${displayDay(todo.dueAt)}` };
   }
   if (todo.readiness === "prepared") return { ...base, kind: "todo", line: "a todo, prepared" };
   return { ...base, kind: "todo", line: "waiting for a session" };
 }
 
 function fromThread(message: ThreadMessage): Said {
-  const base = { id: message.id, at: message.at, day: dayKey.format(message.at), text: message.text };
+  const base = { id: message.id, at: message.at, day: newYorkDay(message.at), text: message.text };
   if (message.reply !== null) {
     const kind = message.reply.kind as Kind;
     return {
@@ -136,7 +132,7 @@ function fromThread(message: ThreadMessage): Said {
 }
 
 function dayLabel(day: string, today: string, yesterday: string): string {
-  const date = dayName.format(new Date(`${day}T12:00:00Z`));
+  const date = displayDayKey(day);
   if (day === today) return `Today · ${date}`;
   if (day === yesterday) return `Yesterday · ${date}`;
   return date;
@@ -167,7 +163,7 @@ export default function ThreadClient() {
         type: "change",
         id: change.id,
         at: change.at,
-        day: dayKey.format(change.at),
+        day: newYorkDay(change.at),
         change,
         replies: (replies.get(change.id) ?? []).sort((a, b) => a.at - b.at),
       })),
@@ -194,8 +190,8 @@ function ThreadView({ days, loading }: { days: Array<[string, FeedItem[]]>; load
   const [replying, setReplying] = useState<AgentChange | null>(null);
   const send = useMutation(api.thread.send);
   const now = Date.now();
-  const today = dayKey.format(now);
-  const yesterday = dayKey.format(now - 24 * 60 * 60 * 1000);
+  const today = newYorkDay(now);
+  const yesterday = addDays(today, -1);
   const canSend = draft.trim() !== "" && !sending;
 
   async function submit() {
@@ -279,7 +275,7 @@ function MessageRow({ message: s }: { message: Said }) {
         dateTime={new Date(s.at).toISOString()}
         className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint"
       >
-        {clock.format(s.at)}
+        {displayTime(s.at)}
       </time>
       <p className="whitespace-pre-wrap break-words border-l-2 border-accent/60 pl-3 text-[15px] leading-6 text-text">
         {s.text}
@@ -301,7 +297,7 @@ function ChangeRow({ change, onReply }: { change: AgentChange; onReply: () => vo
         dateTime={new Date(change.at).toISOString()}
         className="pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-text-faint"
       >
-        {clock.format(change.at)}
+        {displayTime(change.at)}
       </time>
       <p className="break-words border-l-2 border-border pl-3 text-[15px] leading-6 text-text-muted">
         {change.line}

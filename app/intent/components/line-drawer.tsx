@@ -15,6 +15,7 @@
 
 import type { Decision, EvalItem } from "@/convex/jarvis/intent";
 import { dateLabel, type IntentLine } from "../lib";
+import { displayDay } from "@/shared/clock.mjs";
 
 export default function LineDrawer({
   line,
@@ -91,7 +92,7 @@ export default function LineDrawer({
                   <p className="text-text">{decision.question}</p>
                   <p className="text-accent">{decision.refused ? "refused" : decision.decision}</p>
                   <p className="font-mono text-[10px] text-text-faint">
-                    {new Date(decision.at).toISOString().slice(0, 10)} · {decision.caller}
+                    {displayDay(decision.at)} · {decision.caller}
                     {decision.settled !== null && ` · ${decision.settled.verdict === "approve" ? "stands" : "objected"}`}
                   </p>
                 </li>

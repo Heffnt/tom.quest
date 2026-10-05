@@ -16,16 +16,13 @@ import Info from "@/app/jarvis/components/info";
 import { errMessage } from "@/app/jarvis/lib";
 import { DAY_LOG_ENTRY_MAX, dayLogEntryState } from "@/shared/day-log-entry.mjs";
 import LineChart from "./components/line-chart";
+import { displayTime } from "@/shared/clock.mjs";
 
 const controlClass = "rounded-md border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-faint focus:border-accent/60 focus:outline-none";
 const explanation = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${title}</h1><p>${body}</p></body></html>`;
 
 function time(at: number): string {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(at));
+  return displayTime(at);
 }
 
 type Entry = {

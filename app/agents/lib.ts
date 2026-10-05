@@ -43,6 +43,7 @@ import {
 // (convex/ttsSkills.ts writes it into the prompt; modelOfTomHeadOf below reads
 // it back off the row).
 import type { SessionModel } from "@/convex/ttsShared";
+import { displayTime } from "@/shared/clock.mjs";
 
 // The model list, its default and its family test all come from the one home
 // (convex/ttsShared.ts) — this surface re-exports rather than re-listing, so a
@@ -247,13 +248,11 @@ function safeJson(value: unknown): string {
 }
 
 /**
- * Local wall-clock "14:05" — 24-hour, zero-padded, no Intl (the surface must
- * render identically on the server pass and in the browser).
+ * "2:05 pm" in America/New_York. The zone is named, so the server pass and the
+ * browser render the same text.
  */
 export function formatClock(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return displayTime(ms);
 }
 
 // ── The cut payload, and what a reassembly is allowed to claim ──────────────

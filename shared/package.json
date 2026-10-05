@@ -7,6 +7,7 @@
   "exports": {
     "./checkin-rules.mjs": "./checkin-rules.mjs",
     "./clip.mjs": "./clip.mjs",
+    "./clock.mjs": "./clock.mjs",
     "./context-relevance.mjs": "./context-relevance.mjs",
     "./day-log-entry.mjs": "./day-log-entry.mjs",
     "./day-log-trends.mjs": "./day-log-trends.mjs",

@@ -1,8 +1,7 @@
 // TTS time helpers — the 5 a.m. America/New_York day boundary (spec §7).
-// Implemented without Intl so behavior is identical in the Convex runtime,
-// Node (the Jarvis Box), and the browser. US DST rules: clocks spring forward at
-// 2:00 EST (07:00 UTC) on the second Sunday of March and fall back at 2:00 EDT
-// (06:00 UTC) on the first Sunday of November.
+// Every zone conversion is shared/clock.mjs's, the one home the site imports
+// too; the functions below keep their names for their many callers and add
+// only day arithmetic on top.
 //
 // THE THREE DAY QUESTIONS (they have different answers before 5 a.m. — mixing
 // them up was this module's original sin, caught in review):
@@ -14,6 +13,16 @@
 //                       yesterday' would be wrong.
 
 import { v, type Infer } from "convex/values";
+import {
+  DAY_START_HOUR,
+  addDays,
+  newYorkDay,
+  newYorkHhmm,
+  newYorkInstant,
+  newYorkOffsetHours,
+  newYorkParts,
+  ttsDayKey as sharedTtsDayKey,
+} from "../shared/clock.mjs";
 
 // The session constants the box reads too: the narrow list, the repo map, the
 // model table and the daemon's staleness window. Their one home is
@@ -233,48 +242,27 @@ export const DAY_MS = 86_400_000;
  * now that the fallback queue's condition lane is gone. */
 export const CONDITION_WINDOW_MS = 14 * DAY_MS;
 
-// The scheduling anchors (single source of truth for the guard hours; the UTC
-// cron times in convex/crons.ts and worker/setup.sh are derived as hour+4
-// (EDT) and hour+5 (EST) and say so in their comments).
+// The scheduling anchors: the guard hours the record's own clock reads.
 export const TTS_PREP_NY_HOUR = 4; // prep jobs run in the 4 a.m. hour
-export const TTS_DIGEST_NY_HOUR = 5; // the digest sends at 5 — the day boundary
-
-function nthSundayUtcMs(year: number, monthIndex: number, n: number): number {
-  const first = Date.UTC(year, monthIndex, 1);
-  const firstDow = new Date(first).getUTCDay(); // 0 = Sunday
-  const firstSundayDate = 1 + ((7 - firstDow) % 7);
-  return Date.UTC(year, monthIndex, firstSundayDate + (n - 1) * 7);
-}
+export const TTS_DIGEST_NY_HOUR = DAY_START_HOUR; // the digest sends at 5 — the day boundary
 
 /** UTC offset of America/New_York in hours (-4 in EDT, -5 in EST). */
-export function nyOffsetHours(utcMs: number): number {
-  const year = new Date(utcMs).getUTCFullYear();
-  const springMs = nthSundayUtcMs(year, 2, 2) + 7 * HOUR_MS; // 2:00 EST
-  const fallMs = nthSundayUtcMs(year, 10, 1) + 6 * HOUR_MS; // 2:00 EDT
-  return utcMs >= springMs && utcMs < fallMs ? -4 : -5;
-}
+export const nyOffsetHours = newYorkOffsetHours;
 
 /** Local wall-clock hour (0-23) in America/New_York. */
 export function nyLocalHour(utcMs: number): number {
-  return new Date(utcMs + nyOffsetHours(utcMs) * HOUR_MS).getUTCHours();
+  return newYorkParts(utcMs).hour;
 }
 
 /** The NY calendar date (YYYY-MM-DD) of an instant — plain wall-clock date. */
-export function nyCalendarDayKey(utcMs: number): string {
-  return new Date(utcMs + nyOffsetHours(utcMs) * HOUR_MS)
-    .toISOString()
-    .slice(0, 10);
-}
+export const nyCalendarDayKey = newYorkDay;
 
 /**
  * The TTS day key (YYYY-MM-DD) for an instant: the NY calendar date, with the
  * day rolling over at 5 a.m. local rather than midnight — so 2 a.m. Tuesday
  * still belongs to Monday's day. Used by getToday and the digest send.
  */
-export function ttsDayKey(utcMs: number): string {
-  const shifted = utcMs + (nyOffsetHours(utcMs) - TTS_DIGEST_NY_HOUR) * HOUR_MS;
-  return new Date(shifted).toISOString().slice(0, 10);
-}
+export const ttsDayKey = sharedTtsDayKey;
 
 /**
  * The day a PREP run is building: the day of the next 5 a.m. digest. During
@@ -288,21 +276,6 @@ export function ttsPrepDay(utcMs: number): string {
 }
 
 /**
- * The UTC instant of `hourNy` o'clock New York on the calendar date whose UTC
- * midnight is `utcMidnight`. The offset must be sampled AT the instant we are
- * solving for, not at some fixed hour of the date: on a transition day midnight
- * and midday sit on opposite sides of the 2 a.m. switch. So: guess with the
- * offset at the naive instant, then re-sample at the candidate — one correction
- * is enough, because the two candidates are an hour apart and the switch is one
- * hour wide.
- */
-function nyHourUtcMs(utcMidnight: number, hourNy: number): number {
-  const naive = utcMidnight + hourNy * HOUR_MS;
-  const guess = naive - nyOffsetHours(naive) * HOUR_MS;
-  return naive - nyOffsetHours(guess) * HOUR_MS;
-}
-
-/**
  * UTC bounds [start, end) of the NY day named by a YYYY-MM-DD key, running from
  * `hourNy` local on that date to `hourNy` local the next. DST-correct at both
  * edges: a spring-forward day is 23 hours long, a fall-back day 25.
@@ -311,10 +284,9 @@ function nyDayBoundsUtc(
   day: string,
   hourNy: number,
 ): { start: number; end: number } {
-  const utcMidnight = Date.parse(day);
   return {
-    start: nyHourUtcMs(utcMidnight, hourNy),
-    end: nyHourUtcMs(utcMidnight + DAY_MS, hourNy),
+    start: newYorkInstant(day, hourNy),
+    end: newYorkInstant(addDays(day, 1), hourNy),
   };
 }
 
@@ -328,15 +300,11 @@ export function ttsDayBoundsUtc(day: string): { start: number; end: number } {
 
 /**
  * The UTC instant of a NY wall-clock time on a YYYY-MM-DD calendar date —
- * minute precision. Same one-correction DST logic as nyHourUtcMs. The
- * repeating-todo generator uses this to place an instance's dueAt at the
- * rule's timeOfDay ("18:30") on the day it is generating.
+ * minute precision. The repeating-todo generator uses this to place an
+ * instance's dueAt at the rule's timeOfDay ("18:30") on the day it is
+ * generating.
  */
-export function nyTimeUtcMs(day: string, hour: number, minute = 0): number {
-  const naive = Date.parse(day) + hour * HOUR_MS + minute * 60_000;
-  const guess = naive - nyOffsetHours(naive) * HOUR_MS;
-  return naive - nyOffsetHours(guess) * HOUR_MS;
-}
+export const nyTimeUtcMs: (day: string, hour: number, minute?: number) => number = newYorkInstant;
 
 /** Plain lowercase weekday word ("monday"…"sunday") of a YYYY-MM-DD date. */
 export const WEEKDAY_WORDS = [
@@ -389,16 +357,10 @@ export function countdownText(dueAt: number, now: number): string {
 }
 
 /**
- * New York wall-clock "HH:MM" of an instant. The Slack messages (the digest,
- * the hourly update) print block and calendar spans with it; one home so the
- * plain-runtime composer and the "use node" sender agree on the clock.
+ * New York wall-clock "HH:MM", 24-hour, of an instant: for the record's own
+ * arithmetic (convex/jarvis/tick.ts). Text Tom reads uses displayTime.
  */
-export function nyHhmm(at: number): string {
-  const d = new Date(at + nyOffsetHours(at) * HOUR_MS);
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(
-    d.getUTCMinutes(),
-  ).padStart(2, "0")}`;
-}
+export const nyHhmm = newYorkHhmm;
 
 // ── Readiness: two values (ruling 18, the lifeos update, 2026-09-05) ────────
 // THE ONE HOME for what the readiness field means. Tom, 2026-08-27: "theres no

@@ -98,7 +98,7 @@ describe("day log", () => {
         metrics: { weight: { unit: "lb", min: 60, max: 600 } },
         bounds: { maxItems: 20 },
       },
-      entries: [{ id, text: entry.text, createdAt: entry.createdAt, day: entry.day, time: expect.stringMatching(/^[0-9]+:[0-9]{2} [ap]\.m\.$/) }],
+      entries: [{ id, text: entry.text, createdAt: entry.createdAt, day: entry.day, time: expect.stringMatching(/^[0-9]+:[0-9]{2} [ap]m$/) }],
     });
     expect(body).not.toHaveProperty("openTodos");
     expect(body.vocabulary).not.toHaveProperty("warningClasses");

@@ -8,18 +8,15 @@ import { useAuth } from "@/app/lib/auth";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import { debug } from "@/app/lib/debug";
 import { resolveLlm, type Provider } from "../lib/models";
+import { displayDay, displayTime } from "@/shared/clock.mjs";
 
 const log = debug.scoped("canvas.chat");
 
 type LlmSetting = { provider: Provider; model: string };
 
 function dateLabel(ts: number): string {
-  const d = new Date(ts);
-  const now = Date.now();
-  if (now - ts < 86_400_000) {
-    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  }
-  return d.toLocaleDateString();
+  if (Date.now() - ts < 86_400_000) return displayTime(ts);
+  return displayDay(ts);
 }
 
 export default function ChatSidebar({
@@ -221,10 +218,7 @@ export default function ChatSidebar({
 
 function MessageRow({ message }: { message: Doc<"canvasMessages"> }) {
   const { kind, content, createdAt } = message;
-  const time = new Date(createdAt).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const time = displayTime(createdAt);
 
   if (kind === "user") {
     return (

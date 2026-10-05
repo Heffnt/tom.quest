@@ -14,7 +14,8 @@ import {
   DAY_LOG_VOCABULARY,
 } from "./dayLogVocabulary";
 import { trainingDay as parseTrainingDay } from "./trainingDay";
-import { nyCalendarDayKey, nyOffsetHours, weekdayWordOf } from "./ttsShared";
+import { nyCalendarDayKey, weekdayWordOf } from "./ttsShared";
+import { addDays, displayTime } from "../shared/clock.mjs";
 import { DAY_LOG_ENTRY_MAX } from "../shared/day-log-entry.mjs";
 export { DAY_LOG_ENTRY_MAX };
 
@@ -160,12 +161,6 @@ export function dayLogResultLine(
   return clauses.length === 0 ? "Jarvis found nothing to record." : `Jarvis recorded ${joinClauses(clauses)}.`;
 }
 
-function timeLabel(at: number): string {
-  const date = new Date(at + nyOffsetHours(at) * 3_600_000);
-  const hour = date.getUTCHours();
-  const minute = String(date.getUTCMinutes()).padStart(2, "0");
-  return `${hour % 12 || 12}:${minute} ${hour < 12 ? "a.m." : "p.m."}`;
-}
 
 /** The ONE writer of a day-log entry. `submit` is Tom's door; the worker's
  * internal door below calls this with a threadMessageId so a re-run of the
@@ -221,7 +216,7 @@ export const page = query({
   args: {},
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
-    const since = new Date(Date.now() - PAGE_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const since = addDays(nyCalendarDayKey(Date.now()), -PAGE_DAYS);
     const entries = await ctx.db.query("dayLogEntries").withIndex("by_day", (q) => q.gte("day", since)).order("desc").take(500);
     return await Promise.all(entries.map(async (entry) => ({
       ...entry,
@@ -249,7 +244,7 @@ export const series = query({
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
     const today = nyCalendarDayKey(Date.now());
-    const since = new Date(Date.parse(today) - SERIES_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const since = addDays(today, -SERIES_DAYS);
     const measurements = (await Promise.all(Object.keys(DAY_LOG_METRICS).map(async (metric) => {
       const rows = [];
       const rowsInRange = ctx.db
@@ -297,7 +292,7 @@ export const internalPending = internalQuery({
     return {
       today: nyCalendarDayKey(now),
       now,
-      entries: entries.map((entry) => ({ id: entry._id, text: entry.text, createdAt: entry.createdAt, day: entry.day, time: timeLabel(entry.createdAt) })),
+      entries: entries.map((entry) => ({ id: entry._id, text: entry.text, createdAt: entry.createdAt, day: entry.day, time: displayTime(entry.createdAt) })),
       vocabulary: DAY_LOG_VOCABULARY,
     };
   },

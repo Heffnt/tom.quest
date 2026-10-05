@@ -12,6 +12,7 @@ import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import Info from "@/app/jarvis/components/info";
+import { displayForm } from "@/shared/clock.mjs";
 
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
@@ -19,12 +20,7 @@ const primaryBtnCls =
   "bg-accent text-bg rounded-md px-3 py-1 text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:pointer-events-none";
 
 function when(ms: number): string {
-  return new Date(ms).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return displayForm(ms);
 }
 
 // A Convex error arrives wrapped in request ids and a stack; the refusal
