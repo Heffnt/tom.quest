@@ -14,6 +14,7 @@
     "./jarvis-events.mjs": "./jarvis-events.mjs",
     "./learning-change-names.mjs": "./learning-change-names.mjs",
     "./markdown-sections.mjs": "./markdown-sections.mjs",
+    "./parts-drawing.mjs": "./parts-drawing.mjs",
     "./redact.mjs": "./redact.mjs",
     "./session-constants.mjs": "./session-constants.mjs",
     "./skill-router.mjs": "./skill-router.mjs",
