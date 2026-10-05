@@ -117,6 +117,10 @@ const REPO_LIST_ALLOWED = new Set([
   // the ⓘ popover renders, and one of them names the three known repos
   // in a sentence. It carries no repo list that anything branches on.
   "app/jarvis/explanations.ts",
+  // The overview drawing's frame labels ("Where Tom meets Jarvis",
+  // "tom.quest"), display text that the Jarvis generator's committed page
+  // must match word for word; nothing branches on them.
+  "shared/parts-drawing.mjs",
 ]);
 const REPO_NAME_WINDOW = 300;
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
