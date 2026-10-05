@@ -1905,6 +1905,9 @@ export default defineSchema({
     spawnedByToolUseId: v.optional(v.string()),
     linkKnown: v.boolean(),
     origin: v.string(),
+    // The origin string the run's page carried when the ingest did not
+    // recognise it; origin is then "unknown". convex/agents.ts storedOrigin.
+    originGiven: v.optional(v.string()),
     continuesRunId: v.optional(v.string()),
     host: v.union(v.literal("laptop"), v.literal("box")),
     // Where the run ran: a session Tom talks to, an unattended worker, or a

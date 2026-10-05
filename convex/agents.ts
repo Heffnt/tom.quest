@@ -218,10 +218,18 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 // the record's runners are gone (2026-09-26), so nothing reads the id.
 // `desktop` is a box session no launcher started, which scripts/agent-hook.mjs
 // records as Tom's: his laptop app's Code tab over ssh, or `claude` typed there.
-// REMOVAL CHECK: the list is the ingest's refusal of an origin nobody wrote on
-// purpose; without this entry every desktop session's row is refused.
+// The list is the record's vocabulary of origins. An origin outside it is not
+// a reason to refuse the agent: scripts/codex-run.mjs passes TTS_AGENT_ORIGIN
+// through as any string (`trial:one-auditor`, `probe-worker`), and refusing
+// the page lost the whole agent. storedOrigin keeps such a run as "unknown"
+// and keeps the string it was given in originGiven.
+// REMOVAL CHECK: without the `desktop` entry every desktop session's origin
+// reads "unknown".
 function validOrigin(origin: string) {
   return ["session", "planner", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "desktop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin) || /^runner:[a-z0-9]{1,64}$/.test(origin);
+}
+function storedOrigin(origin: string): { origin: string; originGiven?: string } {
+  return validOrigin(origin) ? { origin } : { origin: "unknown", originGiven: origin };
 }
 async function fileVersionAt(ctx: MutationCtx, runId: string, fileVersion: string) {
   return await ctx.db
@@ -255,7 +263,7 @@ function validAgentPayload(run: {
   if (run.continuesRunId !== undefined && !validAgentId(run.continuesRunId)) return false;
   if (run.mode !== undefined && run.kind !== "session") return false;
   if (!nonNegativeInteger(run.depth) || !nonNegativeInteger(run.startedAt) || !nonNegativeInteger(run.lastLineAt) || !validFile(run.file)) return false;
-  if (!validOrigin(run.origin) || (run.linkKnown && run.parentRunId !== undefined && !run.spawnedByToolUseId)) return false;
+  if (run.linkKnown && run.parentRunId !== undefined && !run.spawnedByToolUseId) return false;
   if (run.context?.baseInstructionsHash !== undefined && !validHash(run.context.baseInstructionsHash)) return false;
   if (run.context?.contextWindow !== undefined && !nonNegativeInteger(run.context.contextWindow)) return false;
   if (run.outcome !== undefined && !validOutcome(run.outcome)) return false;
@@ -413,7 +421,7 @@ export const internalIngest = internalMutation({
     // and none for an id naming no row (convex/jarvis/tables.ts resolveId):
     // refusing it would dead-letter the whole run.
     const todoId = args.run.todoId === undefined ? undefined : ((await resolveId(ctx, "todos", args.run.todoId)) ?? undefined);
-    let linked = { ...args.run, todoId, rootRunId, depth };
+    let linked = { ...args.run, ...storedOrigin(args.run.origin), todoId, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
     // itself without a second worker round trip.
@@ -564,7 +572,7 @@ export const internalIngest = internalMutation({
       for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "environment", "continuesRunId", "todoId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
       if (run.sessionId !== undefined && existing.sessionId === undefined) patch.sessionId = run.sessionId;
       if (existing.kind === "unknown") patch.kind = run.kind;
-      if (existing.origin === "unknown") patch.origin = run.origin;
+      if (existing.origin === "unknown") { patch.origin = run.origin; patch.originGiven = run.originGiven; }
       if (!existing.linkKnown && run.linkKnown && run.spawnedByToolUseId) { patch.linkKnown = true; patch.spawnedByToolUseId = run.spawnedByToolUseId; }
       if (isStubFile(existing.file)) Object.assign(patch, { parentRunId: run.parentRunId, rootRunId: run.rootRunId, depth: run.depth, host: run.host, cli: run.cli, environment: run.environment, startedAt: run.startedAt });
       if (sessionEnded && existing.abandonedAt !== undefined) patch.abandonedAt = undefined;
