@@ -415,6 +415,15 @@ describe("the build rows: todo-state and handoff", () => {
     expect(handoff("leaving").error).toContain("data.unblock");
   });
 
+  it("refuses a todo-state whose data passes 8 KiB, and a build row whose text passes 2,048 bytes", () => {
+    expect(state({ state: "done", sentence: "x".repeat(8 * 1024) }).error).toBe("a todo-state's data is at most 8192 bytes");
+    expect(state({ state: "done", sentence: "x".repeat(7 * 1024) }).ok).toBe(true);
+    expect(state({ state: "in session" }, { text: "x".repeat(2049) }).error).toBe("a todo-state's text is at most 2048 bytes");
+    expect(state({ state: "in session" }, { text: "é".repeat(1025) }).ok).toBe(false);
+    expect(state({ state: "in session" }, { text: "x".repeat(2048) }).ok).toBe(true);
+    expect(handoff("exploration to design", {}, { text: "x".repeat(2049) }).error).toBe("a handoff's text is at most 2048 bytes");
+  });
+
   it("refuses a handoff whose data passes 64 KiB", () => {
     const long = "x".repeat(64 * 1024);
     expect(handoff("exploration to design", { state: long }).error).toContain("at most 65536 bytes");

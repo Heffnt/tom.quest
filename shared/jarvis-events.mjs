@@ -123,7 +123,8 @@ export const EVENT_KINDS = [
   // on "review to landing" gate is { testsRunRowId, auditVerdictRowId }; on
   // "landing to return" mergeRowId and commit; on "leaving" unblock, what
   // only Tom can unblock, one line each. A handoff's data is at most
-  // HANDOFF_MAX_BYTES. Both kinds carry a one-line text.
+  // HANDOFF_MAX_BYTES and a todo-state's at most TODO_STATE_MAX_BYTES. Both
+  // kinds carry a one-line text of at most BUILD_TEXT_MAX_BYTES.
   "todo-state",
   "handoff",
   // A part of Jarvis was turned off before its code is deleted; subject is
@@ -216,6 +217,13 @@ const CHECK_TYPES = ["mechanical", "judged", "shown"];
  *  belongs in a file or a subagent the pointers name. */
 const HANDOFF_MAX_BYTES = 64 * 1024;
 
+/** The most a todo-state's data may hold, in UTF-8 bytes of its JSON: ids, a
+ *  state, and at most one sentence of Tom's. */
+const TODO_STATE_MAX_BYTES = 8 * 1024;
+
+/** The most a build row's one-line text may hold, in UTF-8 bytes. */
+const BUILD_TEXT_MAX_BYTES = 2048;
+
 /** The kinds a thread-reply's `data.kind` may name; the writer refuses anything else. */
 export const THREAD_REPLY_KINDS = ["fact", "todo", "rule", "errand", "question"];
 
@@ -275,6 +283,10 @@ function todoStateError(data, text) {
     return `a todo-state ${data.state} after a return names data.sentence, Tom's sentence verbatim`;
   }
   if (!nonEmptyString(text)) return "a todo-state names its one-line text";
+  if (utf8Bytes(text) > BUILD_TEXT_MAX_BYTES) return `a todo-state's text is at most ${BUILD_TEXT_MAX_BYTES} bytes`;
+  if (utf8Bytes(JSON.stringify(data)) > TODO_STATE_MAX_BYTES) {
+    return `a todo-state's data is at most ${TODO_STATE_MAX_BYTES} bytes`;
+  }
   return null;
 }
 
@@ -359,7 +371,8 @@ function handoffError(data, text) {
     return "a leaving handoff names data.unblock, what only Tom can unblock, one line each";
   }
   if (!nonEmptyString(text)) return "a handoff names its one-line text";
-  if (new TextEncoder().encode(JSON.stringify(data)).length > HANDOFF_MAX_BYTES) {
+  if (utf8Bytes(text) > BUILD_TEXT_MAX_BYTES) return `a handoff's text is at most ${BUILD_TEXT_MAX_BYTES} bytes`;
+  if (utf8Bytes(JSON.stringify(data)) > HANDOFF_MAX_BYTES) {
     return `a handoff's data is at most ${HANDOFF_MAX_BYTES} bytes; detail belongs in a file or a subagent its pointers name`;
   }
   return null;

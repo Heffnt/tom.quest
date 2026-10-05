@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { insertCopied } from "../test/core-tables";
+import { BUILD_STATE_BYTES } from "./jarvis/build";
 
 // A session building a todo writes todo-state and handoff rows on it
 // (shared/jarvis-events.mjs has the shapes; convex/jarvis/build.ts the
@@ -199,6 +200,32 @@ describe("a build's rows through POST /jarvis/event", () => {
     expect(named.todos).toEqual([{ todoId: quiet.plain, statement: "todo with no build row", status: "active", todoState: null, handoff: null }]);
     expect((await t.fetch("/jarvis/build-state")).status).toBe(401);
   });
+
+  it("stops the read when its byte budget is spent, answers the todos read so far, and says it was cut", async () => {
+    vi.stubEnv("JARVIS_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    // Twelve moved todos of about 1,000,000 bytes each: more than the budget holds.
+    const big = "x".repeat(1_000_000);
+    const ids = await t.run(async (ctx) => {
+      const out = [];
+      for (let i = 0; i < 12; i++) {
+        const id = await ctx.db.insert("todos", { statement: `todo ${i}`, body: big, readiness: "unprepared", status: "active", timingClass: "whenever", source: "manual", createdAt: 1, updatedAt: 1 });
+        await ctx.db.insert("events", { kind: "todo-state", at: 1000 + i, provenance: {}, subject: id, data: { state: "in session", from: "waiting", by: AGENT }, text: "x" });
+        out.push(id);
+      }
+      return out;
+    });
+    const body = await (await t.fetch("/jarvis/build-state", { headers: HEADERS })).json();
+    const read = Math.floor(BUILD_STATE_BYTES / 1_000_000);
+    // Newest first, and the todo whose read crossed the budget is left out.
+    expect(body.todos.map((s: { todoId: string }) => s.todoId)).toEqual(ids.slice().reverse().slice(0, read));
+    expect(read).toBeLessThan(12);
+    expect(body.cuts).toEqual([expect.objectContaining({ what: "todos and their newest build rows", by: "bytes" })]);
+    // Named todos are read under the same budget.
+    const named = await (await t.fetch(`/jarvis/build-state?${ids.map((id) => `todo=${id}`).join("&")}`, { headers: HEADERS })).json();
+    expect(named.todos).toHaveLength(read);
+    expect(named.cuts[0]).toMatchObject({ by: "bytes" });
+  });
 });
 
 describe("Tom's door for a build's rows", () => {
@@ -220,7 +247,7 @@ describe("Tom's door for a build's rows", () => {
     const row = await t.run((ctx) => ctx.db.get(id));
     expect(row).toMatchObject({ subject: todo.plain, provenance: { user: "tom" }, data: { state: "done", by: "tom" } });
     expect((await t.run((ctx) => ctx.db.get(todo.plain)))?.status).toBe("done");
-    expect((await viewer.query(api.jarvis.build.newestForTom, { todoIds: [todo.plain] }))[0]).toMatchObject({ todoState: { _id: id } });
+    expect((await viewer.query(api.jarvis.build.newestForTom, { todoIds: [todo.plain] })).todos[0]).toMatchObject({ todoState: { _id: id } });
 
     await expect(
       viewer.mutation(api.jarvis.events.recordForTom, { kind: "handoff", subject: todo.plain, data: { transition: "leaving" }, text: "x" }),
