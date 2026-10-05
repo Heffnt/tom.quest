@@ -20,7 +20,7 @@
 // how the /agents chat finds it (convex/boxChanges.ts forAgent).
 
 import { v } from "convex/values";
-import { internalMutation, internalQuery, query } from "../_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "../_generated/server";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
@@ -30,6 +30,7 @@ import { onJobFailed, onJobOk } from "./jobs";
 import { assertBoxChange, BOX_CHANGE, boxChangeSubject, onBoxChange } from "../boxChanges";
 import { onDigestSent, onNeedsYouPosted } from "./digest";
 import { resolveId } from "./tables";
+import { HANDOFF, onTodoState, prepareBuildRow, TODO_STATE } from "./build";
 import { SESSION_OUTCOME } from "../ttsShared";
 import { REPEATS_BY_DATA_ID } from "../../shared/jarvis-events.mjs";
 
@@ -40,6 +41,7 @@ const AFTER_RECORD: Record<string, (ctx: MutationCtx, row: Doc<"events">) => Pro
   "box-change": onBoxChange,
   "digest-sent": onDigestSent,
   "needs-you-posted": onNeedsYouPosted,
+  [TODO_STATE]: onTodoState,
 };
 
 /** Insert one event and run its kind's hook. The hook's answer rides along. */
@@ -66,6 +68,9 @@ export async function recordEvent(
       input = { ...input, data: { ...data, rulingId: ruling } };
     }
   }
+  // A build row names a todo that exists, and a handoff the one before it
+  // (build.ts); the row keeps the plain id.
+  if (input.kind === TODO_STATE || input.kind === HANDOFF) input = await prepareBuildRow(ctx, input);
   // A RETRY IS NOT A SECOND FACT. A kind whose writer re-posts with a stable
   // data.id (shared/jarvis-events.mjs REPEATS_BY_DATA_ID) is recorded once:
   // a row of the kind with the same data.id already stands for it (one point
@@ -98,6 +103,29 @@ export async function recordEvent(
 export const record = internalMutation({
   args: eventArgs,
   handler: async (ctx, args) => await recordEvent(ctx, args),
+});
+
+/**
+ * Tom's own door for the rows a build writes on a todo (build.ts): the same
+ * checks and hook as the box's route, his provenance, and data.by "tom" on a
+ * todo-state that names no other mover.
+ */
+export const recordForTom = mutation({
+  args: {
+    kind: v.union(v.literal(TODO_STATE), v.literal(HANDOFF)),
+    subject: v.string(),
+    data: v.any(),
+    text: v.string(),
+  },
+  handler: async (ctx, { kind, subject, data, text }) => {
+    await requireTom(ctx, "Agents");
+    const given = data as Record<string, unknown> | null;
+    const stamped =
+      kind === TODO_STATE && typeof given === "object" && given !== null && given.by === undefined
+        ? { ...given, by: "tom" }
+        : data;
+    return await recordEvent(ctx, { kind, subject, data: stamped, text, provenance: { user: "tom" } });
+  },
 });
 
 /** The most rows one read answers. */
