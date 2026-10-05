@@ -546,6 +546,40 @@ export async function gatherTodayFacts(
     sentAsTom?: boolean;
   }[] = [];
 
+  // The delegate's decisions recorded by `jarvis decide` (convex/jarvis/
+  //    intent.ts, kind "decision"): the same objection list as the
+  //    delegate-decision rows below, numbered with them.
+  //    Newest first before the cap, so a busy window drops its oldest rows.
+  //    The askId is the row's subject, which is what the objection resolver
+  //    (convex/ttsAsk.ts internalRecordDelegateObjection) and jarvis/intent
+  //    settle find it by. The model's words go through safeStr like every other.
+  //
+  //    ONE ROW PER DECISION. internalRecordAsk (convex/ttsAsk.ts) writes the
+  //    ask's delegate-decision row and, for an ask the delegate answered, a
+  //    decision row built from it in the same transaction, so a decided ask
+  //    has both. The decision row is the one read for it; the ask row is read
+  //    only for an ask whose decision row was not read here (no answer came
+  //    back, a capped ask, or a decision row outside this window or cap).
+  const decided = await ctx.db
+    .query("events")
+    .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
+    .order("desc")
+    .take(OBJECTION_SCAN);
+  const decidedAskIds = new Set<string>();
+  for (const row of decided) {
+    const d = (row.data ?? {}) as Record<string, unknown>;
+    decidedAskIds.add(row.subject as string);
+    rawObjections.push({
+      at: row.at,
+      askId: row.subject as string,
+      todoId: str(d.todoId),
+      decision: safeStr(d.decision) ?? null,
+      reason: safeStr(d.reason),
+      refused: d.refused === true,
+      refusedBecause: safeStr(d.refusedBecause),
+    });
+  }
+
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     switch (e.kind) {
@@ -591,9 +625,12 @@ export async function gatherTodayFacts(
         // An attended ask is a prompt bug, not a decision taken for him while
         // he slept: ttsAsk refuses it and it is not a morning line.
         if (d.attended === true) break;
+        const askId = str(d.askId) ?? (e.key ?? "");
+        // Its decision row, read above, is this decision's one line.
+        if (decidedAskIds.has(askId)) break;
         rawObjections.push({
           at: e.at,
-          askId: str(d.askId) ?? (e.key ?? ""),
+          askId,
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
           decision: safeStr(d.decision) ?? null,
           reason: safeStr(d.reason),
@@ -821,31 +858,6 @@ export async function gatherTodayFacts(
       (item): item is Record<string, unknown> => item !== null && typeof item === "object" && (item as Record<string, unknown>).pass === false,
     );
     if (first !== undefined) f.detail = `${safeStr(first.name) ?? "an item"} — ${safeStr(first.note) ?? ""}`;
-  }
-
-  // The delegate's decisions recorded by `jarvis decide` (convex/jarvis/
-  //    intent.ts, kind "decision"): the same objection list as the older
-  //    delegate-decision rows above, numbered with them.
-  //    Newest first before the cap, so a busy window drops its oldest rows.
-  //    The askId is the row's subject, which is what the objection resolver
-  //    (convex/ttsAsk.ts internalRecordDelegateObjection) and jarvis/intent
-  //    settle find it by. The model's words go through safeStr like every other.
-  const decided = await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", "decision").gte("at", since).lt("at", now))
-    .order("desc")
-    .take(OBJECTION_SCAN);
-  for (const row of decided) {
-    const d = (row.data ?? {}) as Record<string, unknown>;
-    rawObjections.push({
-      at: row.at,
-      askId: row.subject as string,
-      todoId: str(d.todoId),
-      decision: safeStr(d.decision) ?? null,
-      reason: safeStr(d.reason),
-      refused: d.refused === true,
-      refusedBecause: safeStr(d.refusedBecause),
-    });
   }
 
   // The lines producers put on this digest (convex/jarvis/outbox.ts
