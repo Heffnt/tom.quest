@@ -198,8 +198,10 @@ export const EVENT_KINDS = [
   // /jarvis/standing-ruling): his sentence verbatim, the scope it holds in,
   // the question it answered and where he said it. Subject is the scope, so
   // an asker reads the rulings in its scope on events.by_kind_subject_at.
-  // Data { sentence, scope, question, provenance: { threadMessageId } or
-  // { session }, standing: true }. A ruling holds until new information is
+  // Data { id, sentence, scope, question, provenance: { threadMessageId } or
+  // { session }, standing: true }; id is "ruling:<thread:<message id> or
+  // session:<session id>>:<scope>:<sha-256 of the sentence>", the key a
+  // retry is matched on. A ruling holds until new information is
   // recorded against it; then the record sets standing false and
   // supersededBy to the id of the row that carried the new information.
   "ruling",
@@ -366,6 +368,11 @@ export const REPEATS_BY_DATA_ID = [
   "use",
   "issue",
   "presence",
+  // A worker that lost the answer to a standing ruling posts it again;
+  // data.id is "ruling:<source>:<scope>:<sentence hash>" (convex/jarvis/
+  // rulings.ts recordStanding, which does the lookup itself, since the
+  // ruling's own route writes the row).
+  "ruling",
 ];
 
 /** The kinds whose data may carry `durationMs`, the job's runtime when it
@@ -584,6 +591,9 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
     const named = isPlainObject(from) ? Object.keys(from) : [];
     if (named.length !== 1 || !["session", "threadMessageId"].includes(named[0]) || !nonEmptyString(from[named[0]])) {
       return { ok: false, error: "a ruling event names data.provenance as { session } or { threadMessageId }, one non-empty string" };
+    }
+    if (typeof data.id !== "string" || !data.id.startsWith("ruling:")) {
+      return { ok: false, error: "a ruling event names data.id as ruling:<source>:<scope>:<sentence hash>" };
     }
     if (data.standing !== true) return { ok: false, error: "a ruling event is written with data.standing true" };
     if (data.supersededBy !== undefined) return { ok: false, error: "a ruling event is written without data.supersededBy" };

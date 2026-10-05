@@ -85,6 +85,43 @@ describe("POST /jarvis/standing-ruling", () => {
     });
   });
 
+  it("answers a retry after a lost response with the first row's id, so superseding that id leaves no copy standing", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const messageId = await threadMessage(t, HIS_MESSAGE);
+    const body = {
+      sentence: "if I say it is good once then that holds",
+      scope: "repo:Jarvis",
+      question: "May Jarvis land without asking again?",
+      provenance: { threadMessageId: messageId },
+    };
+    // The first post is written; its answer is taken to be lost on the way
+    // back, so the worker posts the same body again.
+    const first = await post(t, "/jarvis/standing-ruling", body);
+    expect(await first.json()).toMatchObject({ ok: true, duplicate: false });
+    const retry = await post(t, "/jarvis/standing-ruling", body);
+    expect(retry.status).toBe(200);
+    const answer = await retry.json();
+    expect(answer.duplicate).toBe(true);
+    const rulings = async () =>
+      t.run(async (ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "ruling")).collect());
+    expect((await rulings()).map((row) => row._id)).toEqual([answer.id]);
+    expect((await rulings())[0].data).toMatchObject({ id: expect.stringMatching(/^ruling:thread:[^:]+:repo:Jarvis:[0-9a-f]{64}$/) });
+
+    // Superseding the id the retry returned ends the one ruling there is.
+    const later = await rule(t, "repo:Jarvis", "it is good once", { threadMessageId: messageId });
+    expect((await post(t, "/jarvis/standing-ruling/new-information", { rulingId: answer.id, type: "sentence", id: later })).status).toBe(200);
+    expect((await standing(t, ["repo:Jarvis"])).map((one) => one.id)).toEqual([later]);
+    // A retry arriving after the supersession is still the first row, and
+    // does not bring a standing copy back.
+    expect(await (await post(t, "/jarvis/standing-ruling", body)).json()).toMatchObject({ id: answer.id, duplicate: true });
+    expect((await standing(t, ["repo:Jarvis"])).map((one) => one.id)).toEqual([later]);
+
+    // The same sentence in another scope, or from another source, is a new ruling.
+    expect(await (await post(t, "/jarvis/standing-ruling", { ...body, scope: "all" })).json()).toMatchObject({ duplicate: false });
+    expect(await (await post(t, "/jarvis/standing-ruling", { ...body, provenance: { session: "aaa9ae16" } })).json()).toMatchObject({ duplicate: false });
+  });
+
   it("refuses a sentence the cited thread message does not hold, and an id that is not a thread message", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
@@ -123,7 +160,7 @@ describe("POST /jarvis/standing-ruling", () => {
   it("is the only door: both worker event routes refuse a ruling", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("TTS_WORKER_KEY", "k");
-    const data = { sentence: "s", scope: "all", question: "q", provenance: { session: "a" }, standing: true };
+    const data = { id: "ruling:session:a:all:00", sentence: "s", scope: "all", question: "q", provenance: { session: "a" }, standing: true };
     const jarvis = await post(t, "/jarvis/event", { kind: "ruling", subject: "all", data });
     expect(jarvis.status).toBe(403);
     expect((await jarvis.json()).error).toContain("POST /jarvis/standing-ruling");

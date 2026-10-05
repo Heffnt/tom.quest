@@ -34,7 +34,9 @@
 // verbatim; with a threadMessageId it must occur in that thread-message row's
 // text, which only Tom writes. A session's turns carry no author in the
 // record (above), so a ruling citing a session rests on the poster's word.
-// Answers { ok: true, id }.
+// Answers { ok: true, id, duplicate }: the same sentence posted again with
+// the same scope and provenance is a retry, answered with the first row's id
+// and duplicate true, and writes no second row.
 //
 // POST /jarvis/standing-ruling/new-information. Body { rulingId, type, id }:
 // type "sentence" (id: a later ruling row of his in the same scope),
@@ -56,6 +58,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { isRulingVerdict } from "../ttsRulings";
 import { nyCalendarDayKey } from "../ttsShared";
+import { sha256Hex } from "../ttsSignoff";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { listForDigest } from "./outbox";
 import { insertEvent } from "./record";
@@ -183,7 +186,7 @@ export const recordStanding = internalMutation({
     question: v.string(),
     provenance: v.union(v.object({ threadMessageId: v.string() }), v.object({ session: v.string() })),
   },
-  handler: async (ctx, args): Promise<Id<"events">> => {
+  handler: async (ctx, args): Promise<{ id: Id<"events">; duplicate: boolean }> => {
     const sentence = args.sentence.trim();
     if ("threadMessageId" in args.provenance) {
       const id = ctx.db.normalizeId("events", args.provenance.threadMessageId);
@@ -195,13 +198,26 @@ export const recordStanding = internalMutation({
         throw new Error("the sentence does not occur verbatim in the thread message it cites");
       }
     }
-    return await insertEvent(ctx, {
+    // A RETRY IS NOT A SECOND RULING. A worker that lost the answer to a
+    // write posts it again; a second row would stay standing after the first
+    // is superseded. The key is where he said it, the scope and the
+    // sentence's bytes, so the retry finds the first row (standing or not)
+    // on events.by_kind_data_id and is answered with its id.
+    const source = "threadMessageId" in args.provenance ? `thread:${args.provenance.threadMessageId}` : `session:${args.provenance.session}`;
+    const key = `ruling:${source}:${args.scope}:${await sha256Hex(sentence)}`;
+    const earlier = await ctx.db
+      .query("events")
+      .withIndex("by_kind_data_id", (q) => q.eq("kind", RULING).eq("data.id", key))
+      .first();
+    if (earlier !== null) return { id: earlier._id, duplicate: true };
+    const id = await insertEvent(ctx, {
       kind: RULING,
       subject: args.scope,
       provenance: "session" in args.provenance ? { session: args.provenance.session } : {},
-      data: { sentence, scope: args.scope, question: args.question.trim(), provenance: args.provenance, standing: true },
+      data: { id: key, sentence, scope: args.scope, question: args.question.trim(), provenance: args.provenance, standing: true },
       text: sentence,
     });
+    return { id, duplicate: false };
   },
 });
 
@@ -296,13 +312,13 @@ export const postStandingRuling = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "provenance is { threadMessageId } or { session }, one non-empty string" });
   }
   try {
-    const id = await ctx.runMutation(internal.jarvis.rulings.recordStanding, {
+    const { id, duplicate } = await ctx.runMutation(internal.jarvis.rulings.recordStanding, {
       sentence: b.sentence,
       scope: b.scope,
       question: b.question,
       provenance,
     });
-    return jsonResponse(200, { ok: true, id });
+    return jsonResponse(200, { ok: true, id, duplicate });
   } catch (e) {
     return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
   }
