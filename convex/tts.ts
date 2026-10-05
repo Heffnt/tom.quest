@@ -66,6 +66,9 @@ export async function logEvent(
   // The indexed lookup key (schema: dtsEvents.key) — set on the kinds the
   // schema comment lists, and on no other.
   key?: string,
+  // When the fact happened, if not now: only a merge row filed after the
+  // fact (convex/ttsMerge.ts internalRecordMerge backfilledAt) passes it.
+  at?: number,
 ) {
   // A failure row (convex/ttsShared.ts isFailureKind) is a line in the
   // digest's broken section, which reads its window; nothing posts here.
@@ -73,7 +76,7 @@ export async function logEvent(
   // session or a Slack thread may hold the old one); an id naming no row
   // names no todo (convex/jarvis/tables.ts resolveId).
   const id = await ctx.db.insert("dtsEvents", {
-    at: Date.now(),
+    at: at ?? Date.now(),
     kind,
     todoId: todoId === undefined ? undefined : ((await resolveId(ctx, "todos", todoId)) ?? undefined),
     data: data === undefined ? undefined : data,

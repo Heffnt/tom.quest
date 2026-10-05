@@ -51,13 +51,27 @@
 // the next refresh reads the same commits again. Filing one twice writes
 // nothing twice: a merge row is written once per head, and a report already
 // standing is a repeat the digest does not show again.
+//
+// THE LANDINGS BEFORE THE FIRST REFRESH ARE FILED ONCE, BY HAND
+// (backfillLandings below). It files the commits of one range of main
+// (fromSha, not itself, through toSha) exactly as a refresh would, through the
+// same functions, with two differences: a merge row carries the time GitHub
+// says its pull request landed as its `at`, and `backfilled: true` in its
+// data, so the digest does not list a landing days old as one of the night's
+// (convex/ttsDigest.ts); and it refuses a range any commit of which already
+// has a row, and a range that reaches past the commit the refresh started
+// from, so no landing is filed by both. Run once per repository, from the box:
+//
+//   jarvis convex run gateLandings:backfillLandings \
+//     '{"repo":"Jarvis","fromSha":"<the landing of the last merge row>","toSha":"<main before the first landing a refresh filed>"}'
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { ActionCtx } from "./_generated/server";
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { GATED_REPOS, MAIN_TAKES_PUSHES, SESSION_REPOS } from "../shared/session-constants.mjs";
-import { LANDING_JOB, landingKey, mergeGateFor } from "./ttsMerge";
+import { JOB_FAILED } from "./jarvis/jobs";
+import { LANDING_JOB, MERGE, landingKey, mergeGateFor, mergeKey } from "./ttsMerge";
 
 /** The branch the gate guards. */
 const MAIN = "main";
@@ -93,7 +107,32 @@ type GitHubPull = {
 };
 
 /** A pull request GitHub shows landed on main, in the few fields used here. */
-type Landed = { number: number; title: string; headSha: string; landedAs: string | null };
+type Landed = { number: number; title: string; headSha: string; landedAs: string | null; landedAt: number };
+
+/** One commit of main's first-parent line and the pull request it landed, or
+ *  null for a commit of no pull request. */
+type Resolved = { commit: GitHubCommit; pull: Landed | null };
+
+/** One GET of GitHub's API for a repository: its status, and its JSON when it
+ *  answered 2xx. Never throws: an unreachable GitHub is status 0. */
+type Ask = (slug: string, path: string) => Promise<{ status: number; body: unknown }>;
+
+function askGitHub(token: string): Ask {
+  return async (slug, path) => {
+    try {
+      const res = await fetch(`https://api.github.com/repos/${slug}/${path}`, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "tts-gate-landings",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      return { status: res.status, body: res.ok ? ((await res.json()) as unknown) : null };
+    } catch {
+      return { status: 0, body: null };
+    }
+  };
+}
 
 /** The newest commit on main the record has accounted for, or null before the
  *  first refresh. */
@@ -132,8 +171,11 @@ export const internalAccountForCommit = internalMutation({
     /** The first line of its message, the subject of a commit of no pull request. */
     subject: v.string(),
     pull: v.optional(v.object({ number: v.number(), title: v.string(), headSha: v.string() })),
+    /** Set by backfillLandings only: when GitHub says the pull request landed,
+     *  the merge row's `at` (convex/ttsMerge.ts internalRecordMerge). */
+    backfilledAt: v.optional(v.number()),
   },
-  handler: async (ctx, { repo, commit, subject, pull }): Promise<{ filed: "merge" | "report" }> => {
+  handler: async (ctx, { repo, commit, subject, pull, backfilledAt }): Promise<{ filed: "merge" | "report" }> => {
     const short = (sha: string) => sha.slice(0, 7);
     if (pull === undefined) {
       // No pull request is no landing through the gate, whatever rows the
@@ -154,6 +196,7 @@ export const internalAccountForCommit = internalMutation({
         // The sentence mergedOnMain writes for the same fact, and where it
         // landed: this file read it from GitHub's own list.
         mainCheck: `${short(pull.headSha)} is the head of pull request #${pull.number}, merged into ${MAIN} as ${short(commit)}`,
+        ...(backfilledAt === undefined ? {} : { backfilledAt }),
       });
       return { filed: "merge" };
     }
@@ -171,11 +214,14 @@ function landedOf(value: unknown): Landed | null {
   const pull = (value ?? {}) as GitHubPull;
   if (typeof pull.number !== "number" || typeof pull.merged_at !== "string") return null;
   if (pull.base?.ref !== MAIN || typeof pull.head?.sha !== "string") return null;
+  const landedAt = Date.parse(pull.merged_at);
+  if (Number.isNaN(landedAt)) return null;
   return {
     number: pull.number,
     title: typeof pull.title === "string" ? pull.title : "",
     headSha: pull.head.sha,
     landedAs: typeof pull.merge_commit_sha === "string" ? pull.merge_commit_sha : null,
+    landedAt,
   };
 }
 
@@ -205,6 +251,116 @@ function subjectOf(commit: GitHubCommit): string {
 }
 
 /**
+ * Every commit of GitHub's comparison of `base` with `head` (the commits on
+ * `head` since `base`, not `base` itself), page by page, and the comparison's
+ * status ("ahead" when `base` is on `head`'s history). The pages come in no
+ * one order, which does not matter: firstParentLine reads parents, not order.
+ * A comparison not read whole is `unread`, a sentence saying why.
+ */
+async function readComparison(
+  ask: Ask,
+  slug: string,
+  base: string,
+  head: string,
+): Promise<{ status: string; arrived: GitHubCommit[] } | { unread: string }> {
+  const arrived: GitHubCommit[] = [];
+  const held = new Set<string>();
+  let total = 0;
+  let status = "";
+  for (let page = 1; ; page += 1) {
+    const compare = await ask(slug, `compare/${base}...${head}?per_page=${COMPARE_PAGE}&page=${page}`);
+    const body = compare.body as { status?: unknown; total_commits?: unknown; commits?: unknown } | null;
+    if (body === null || !Array.isArray(body.commits)) {
+      return { unread: `${head} could not be compared with ${base.slice(0, 7)} (page ${page}, status ${compare.status})` };
+    }
+    if (typeof body.status === "string") status = body.status;
+    const fresh = (body.commits as GitHubCommit[]).filter(
+      (commit) => typeof commit?.sha === "string" && !held.has(commit.sha),
+    );
+    for (const commit of fresh) {
+      held.add(commit.sha);
+      arrived.push(commit);
+    }
+    total = typeof body.total_commits === "number" ? body.total_commits : arrived.length;
+    if (arrived.length >= total || fresh.length === 0) break;
+  }
+  if (arrived.length < total) {
+    return {
+      unread: `${head} moved by ${total} commits since ${base.slice(0, 7)} and GitHub listed ${arrived.length} of them; none was accounted for`,
+    };
+  }
+  return { status, arrived };
+}
+
+/**
+ * The pull request each commit of `line` landed: named by the recently closed
+ * pull requests (read once), or else asked about on its own. A commit whose
+ * pull requests cannot be read leaves the whole line `unread`.
+ */
+async function pullsOfLine(
+  ask: Ask,
+  slug: string,
+  line: readonly GitHubCommit[],
+): Promise<{ resolved: Resolved[] } | { unread: string }> {
+  const closed = await ask(
+    slug,
+    `pulls?state=closed&base=${MAIN}&sort=updated&direction=desc&per_page=${CLOSED_PULLS_READ}`,
+  );
+  if (!Array.isArray(closed.body)) return { unread: `closed pull requests could not be read (status ${closed.status})` };
+  const byLanding = new Map<string, Landed>();
+  const byHead = new Map<string, Landed>();
+  for (const value of closed.body) {
+    const landed = landedOf(value);
+    if (landed === null) continue;
+    if (landed.landedAs !== null) byLanding.set(landed.landedAs, landed);
+    byHead.set(landed.headSha, landed);
+  }
+  const resolved: Resolved[] = [];
+  for (const commit of line) {
+    let pull = byLanding.get(commit.sha) ?? byHead.get(commit.sha) ?? null;
+    if (pull === null) {
+      const asked = await ask(slug, `commits/${commit.sha}/pulls`);
+      if (!Array.isArray(asked.body)) {
+        return { unread: `the pull requests of ${commit.sha.slice(0, 7)} could not be read (status ${asked.status})` };
+      }
+      pull = asked.body.map(landedOf).find((one): one is Landed => one !== null) ?? null;
+    }
+    resolved.push({ commit, pull });
+  }
+  return { resolved };
+}
+
+/** The commits of `resolved` that are filed: all of them, except on main of a
+ *  repository in MAIN_TAKES_PUSHES a commit of no pull request. */
+function toFile(repo: string, resolved: readonly Resolved[]): Resolved[] {
+  const takesPushes = (MAIN_TAKES_PUSHES as readonly string[]).includes(repo);
+  return resolved.filter((one) => one.pull !== null || !takesPushes);
+}
+
+/** File each commit (internalAccountForCommit), oldest first. A backfill
+ *  stamps each merge row with when its pull request landed. Answers how many
+ *  of each it filed. */
+async function fileCommits(
+  ctx: ActionCtx,
+  repo: string,
+  commits: readonly Resolved[],
+  backfill: boolean,
+): Promise<{ merge: number; report: number }> {
+  const filed = { merge: 0, report: 0 };
+  for (const { commit, pull } of commits) {
+    const answer = await ctx.runMutation(internal.gateLandings.internalAccountForCommit, {
+      repo,
+      commit: commit.sha,
+      subject: subjectOf(commit),
+      ...(pull === null ? {} : { pull: { number: pull.number, title: pull.title, headSha: pull.headSha } }),
+      ...(backfill && pull !== null ? { backfilledAt: pull.landedAt } : {}),
+    });
+    filed[answer.filed] += 1;
+  }
+  return filed;
+}
+
+/**
  * One refresh's accounting, for every repository under the gate. Answers the
  * failures, one sentence each, for the timed task's own row
  * (convex/jarvis/tick.ts failuresOf); a repository that failed is read again,
@@ -217,24 +373,10 @@ function subjectOf(commit: GitHubCommit): string {
  */
 export async function accountForMain(ctx: ActionCtx, token: string): Promise<string[]> {
   const failures: string[] = [];
-  const ask = async (slug: string, path: string): Promise<{ status: number; body: unknown }> => {
-    try {
-      const res = await fetch(`https://api.github.com/repos/${slug}/${path}`, {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "tts-gate-landings",
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      return { status: res.status, body: res.ok ? ((await res.json()) as unknown) : null };
-    } catch {
-      return { status: 0, body: null };
-    }
-  };
+  const ask = askGitHub(token);
   for (const repo of GATED_REPOS) {
     const slug = SESSION_REPOS[repo];
     const fail = (why: string) => failures.push(`gate landings: ${repo} ${why}`);
-    const takesPushes = (MAIN_TAKES_PUSHES as readonly string[]).includes(repo);
     const seen = await ctx.runQuery(internal.gateLandings.internalMainSeen, { repo });
     if (seen === null) {
       const head = await ask(slug, `commits/${MAIN}`);
@@ -246,79 +388,115 @@ export async function accountForMain(ctx: ActionCtx, token: string): Promise<str
       await ctx.runMutation(internal.gateLandings.internalSetMainSeen, { repo, sha });
       continue;
     }
-    // Every commit of the comparison, page by page. The pages come in no one
-    // order, which does not matter: firstParentLine reads parents, not order.
     // A comparison not read whole accounts for nothing and moves nothing
     // forward, so the next refresh reads it again from the same commit.
-    const arrived: GitHubCommit[] = [];
-    const held = new Set<string>();
-    let total = 0;
-    let unread: string | null = null;
-    for (let page = 1; ; page += 1) {
-      const compare = await ask(slug, `compare/${seen}...${MAIN}?per_page=${COMPARE_PAGE}&page=${page}`);
-      const body = compare.body as { total_commits?: unknown; commits?: unknown } | null;
-      if (body === null || !Array.isArray(body.commits)) {
-        unread = `main could not be compared with ${seen.slice(0, 7)} (page ${page}, status ${compare.status})`;
-        break;
-      }
-      const fresh = (body.commits as GitHubCommit[]).filter(
-        (commit) => typeof commit?.sha === "string" && !held.has(commit.sha),
-      );
-      for (const commit of fresh) {
-        held.add(commit.sha);
-        arrived.push(commit);
-      }
-      total = typeof body.total_commits === "number" ? body.total_commits : arrived.length;
-      if (arrived.length >= total || fresh.length === 0) break;
-    }
-    if (unread === null && arrived.length < total) {
-      unread = `main moved by ${total} commits since ${seen.slice(0, 7)} and GitHub listed ${arrived.length} of them; none was accounted for`;
-    }
-    if (unread !== null) {
-      fail(unread);
+    const compared = await readComparison(ask, slug, seen, MAIN);
+    if ("unread" in compared) {
+      fail(compared.unread);
       continue;
     }
-    if (arrived.length === 0) continue;
-    const line = firstParentLine(arrived);
-    const closed = await ask(
-      slug,
-      `pulls?state=closed&base=${MAIN}&sort=updated&direction=desc&per_page=${CLOSED_PULLS_READ}`,
-    );
-    if (!Array.isArray(closed.body)) {
-      fail(`closed pull requests could not be read (status ${closed.status})`);
+    if (compared.arrived.length === 0) continue;
+    const line = firstParentLine(compared.arrived);
+    const pulls = await pullsOfLine(ask, slug, line);
+    if ("unread" in pulls) {
+      fail(pulls.unread);
       continue;
     }
-    const byLanding = new Map<string, Landed>();
-    const byHead = new Map<string, Landed>();
-    for (const value of closed.body) {
-      const landed = landedOf(value);
-      if (landed === null) continue;
-      if (landed.landedAs !== null) byLanding.set(landed.landedAs, landed);
-      byHead.set(landed.headSha, landed);
-    }
-    let finished = true;
-    for (const commit of line) {
-      let pull = byLanding.get(commit.sha) ?? byHead.get(commit.sha) ?? null;
-      if (pull === null) {
-        const asked = await ask(slug, `commits/${commit.sha}/pulls`);
-        if (!Array.isArray(asked.body)) {
-          fail(`the pull requests of ${commit.sha.slice(0, 7)} could not be read (status ${asked.status})`);
-          finished = false;
-          break;
-        }
-        pull = asked.body.map(landedOf).find((one): one is Landed => one !== null) ?? null;
-      }
-      if (pull === null && takesPushes) continue;
-      await ctx.runMutation(internal.gateLandings.internalAccountForCommit, {
-        repo,
-        commit: commit.sha,
-        subject: subjectOf(commit),
-        ...(pull === null ? {} : { pull: { number: pull.number, title: pull.title, headSha: pull.headSha } }),
-      });
-    }
-    if (finished && line.length > 0) {
+    await fileCommits(ctx, repo, toFile(repo, pulls.resolved), false);
+    if (line.length > 0) {
       await ctx.runMutation(internal.gateLandings.internalSetMainSeen, { repo, sha: line[line.length - 1].sha });
     }
   }
   return failures;
 }
+
+/** The rows already written for any of these commits, one phrase each: a
+ *  merge row for its pull request's head, or a report of its landing. */
+export const internalRowsWritten = internalQuery({
+  args: {
+    repo: v.string(),
+    commits: v.array(v.object({ commit: v.string(), headSha: v.optional(v.string()) })),
+  },
+  handler: async (ctx, { repo, commits }): Promise<string[]> => {
+    const found: string[] = [];
+    for (const { commit, headSha } of commits) {
+      if (headSha !== undefined) {
+        const merge = await ctx.db
+          .query("dtsEvents")
+          .withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", mergeKey(repo, headSha)))
+          .first();
+        if (merge !== null) {
+          found.push(`${commit.slice(0, 7)} has a merge row for its head ${headSha.slice(0, 7)}`);
+          continue;
+        }
+      }
+      const key = headSha === undefined ? noPullRequestKey(repo, commit) : landingKey(repo, headSha);
+      const report = await ctx.db
+        .query("events")
+        .withIndex("by_kind_subject_at", (q) => q.eq("kind", JOB_FAILED).eq("subject", key))
+        .first();
+      if (report !== null) found.push(`${commit.slice(0, 7)} has a report under ${key}`);
+    }
+    return found;
+  },
+});
+
+/**
+ * File, once, the commits of main from `fromSha` (not itself) through `toSha`
+ * as a refresh would have filed them, each merge row at the time its pull
+ * request landed and marked `backfilled: true`. Refuses, before it writes
+ * anything: a repository not under the gate; a repository no refresh has
+ * started on; a `toSha` past the commit the refresh holds (gateMainHeads),
+ * whose commits the refresh accounts for itself; a `fromSha` not on `toSha`'s
+ * history; and a range any commit of which already has a row. Answers what it
+ * filed.
+ */
+export const backfillLandings = internalAction({
+  args: { repo: v.string(), fromSha: v.string(), toSha: v.string() },
+  handler: async (
+    ctx,
+    { repo, fromSha, toSha },
+  ): Promise<{ commits: number; merge: number; report: number; nothing: number }> => {
+    if (!(GATED_REPOS as readonly string[]).includes(repo)) {
+      throw new Error(`backfill refused: ${repo} is not under the merge gate (GATED_REPOS)`);
+    }
+    const token = process.env.GITHUB_MIRROR_TOKEN;
+    if (!token) throw new Error("backfill refused: GITHUB_MIRROR_TOKEN is not set");
+    const ask = askGitHub(token);
+    const slug = SESSION_REPOS[repo as keyof typeof SESSION_REPOS];
+    const seen = await ctx.runQuery(internal.gateLandings.internalMainSeen, { repo });
+    if (seen === null) {
+      throw new Error(`backfill refused: no refresh has recorded a commit of ${repo} main yet (gateMainHeads)`);
+    }
+    const past = await ask(slug, `compare/${toSha}...${seen}?per_page=1&page=1`);
+    const pastStatus = (past.body as { status?: unknown } | null)?.status;
+    if (pastStatus !== "identical" && pastStatus !== "ahead") {
+      throw new Error(
+        `backfill refused: ${toSha.slice(0, 7)} is not ${seen.slice(0, 7)}, the commit the refresh holds, or behind it (GitHub: ${String(pastStatus ?? past.status)})`,
+      );
+    }
+    const compared = await readComparison(ask, slug, fromSha, toSha);
+    if ("unread" in compared) throw new Error(`backfill failed: ${repo} ${compared.unread}`);
+    if (compared.status !== "ahead") {
+      throw new Error(`backfill refused: ${fromSha.slice(0, 7)} is not behind ${toSha.slice(0, 7)} (GitHub: ${compared.status})`);
+    }
+    const line = firstParentLine(compared.arrived);
+    const pulls = await pullsOfLine(ask, slug, line);
+    if ("unread" in pulls) throw new Error(`backfill failed: ${repo} ${pulls.unread}`);
+    const filing = toFile(repo, pulls.resolved);
+    const written = await ctx.runQuery(internal.gateLandings.internalRowsWritten, {
+      repo,
+      commits: filing.map(({ commit, pull }) => ({
+        commit: commit.sha,
+        ...(pull === null ? {} : { headSha: pull.headSha }),
+      })),
+    });
+    if (written.length > 0) {
+      throw new Error(
+        `backfill refused: ${written.length} commits of ${fromSha.slice(0, 7)}..${toSha.slice(0, 7)} already have rows: ${written.join("; ")}`,
+      );
+    }
+    const filed = await fileCommits(ctx, repo, filing, true);
+    return { commits: line.length, ...filed, nothing: line.length - filing.length };
+  },
+});
