@@ -254,7 +254,7 @@ export const updateTodo = mutation({
  *  for the old date no longer holds (schema todos.rolledOverDueAt), so the
  *  5 a.m. rollover reads the row again once its new date passes. Every write
  *  of dueAt carries it. */
-const DATE_MOVED = { rolledOverDueAt: undefined } as const;
+export const DATE_MOVED = { rolledOverDueAt: undefined } as const;
 
 // The ONE place an open date resolves as kept when an item completes — called
 // by setStatus(done) and recordDateOutcome(done) so the kept-dates side

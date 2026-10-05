@@ -128,6 +128,36 @@ describe("internalSyncCanvasTodos", () => {
     expect(updated[0].data).toEqual({ fields: ["dueAt"], via: "canvas-sync" });
   });
 
+  // witness: the sync moved a rolled-over assignment's date without clearing
+  // the rollover's mark (todos.rolledOverDueAt), so the rollover's index left
+  // the row out and the new date was never marked missed.
+  it("marks a moved date missed when it passes, after the old one was rolled over", async () => {
+    const t = convexTest({ schema, modules });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.UTC(2026, 8, 3, 9)); // 2026-09-03 05:00 EDT
+      await sync(t, [assignment()]);
+      const [first] = await allTodos(t);
+      expect(await t.mutation(internal.ttsDigest.internalRollMissed, { day: "2026-09-03" })).toEqual([first._id]);
+      expect((await allTodos(t))[0].rolledOverDueAt).toBe(DUE);
+
+      const moved = DUE + 2 * DAY_MS; // 2026-09-04 23:59 EDT
+      expect((await sync(t, [assignment({ dueAt: moved })])).dateMoved).toBe(1);
+      expect((await allTodos(t))[0].rolledOverDueAt).toBeUndefined();
+
+      vi.setSystemTime(Date.UTC(2026, 8, 5, 9)); // 2026-09-05 05:00 EDT
+      expect(await t.mutation(internal.ttsDigest.internalRollMissed, { day: "2026-09-05" })).toEqual([first._id]);
+      const todo: Doc<"todos"> = (await allTodos(t))[0];
+      expect(todo.dateOutcomes?.map((o) => [o.dueAt, o.outcome])).toEqual([
+        [DUE, "missed"],
+        [moved, "missed"],
+      ]);
+      expect(todo.rolledOverDueAt).toBe(moved);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("completes an open todo when Canvas shows a submission", async () => {
     const t = convexTest({ schema, modules });
     await sync(t, [assignment()]);

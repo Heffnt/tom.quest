@@ -493,6 +493,10 @@ export default defineSchema({
         }),
       ),
     ),
+    // The plain table's rollover mark (todos.rolledOverDueAt), declared here
+    // so jarvis/tables.ts copyBack, which copies every field, can copy a row
+    // that carries it. Nothing reads it on this table.
+    rolledOverDueAt: v.optional(v.number()),
     // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
     // sentence about the world that says the goal is met ("the lease is
     // signed", "cmt-014 is closed upstream"). One reading now: the trigger

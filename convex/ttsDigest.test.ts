@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -333,6 +335,40 @@ describe("the missed rollover", () => {
     expect(row.rolledOverDueAt).toBe(second);
     expect(row.dateOutcomes?.filter((o) => o.outcome === "missed").map((o) => o.dueAt)).toEqual([first, first, second]);
     vi.useRealTimers();
+  });
+
+  // witness: the Canvas sync wrote a new dueAt without DATE_MOVED, so a
+  // rolled-over assignment's moved date stayed outside the rollover's index
+  // and was never marked missed. The rollover skips settled rows only while
+  // every date write clears the mark; this holds the repository to it.
+  it("clears the rollover's mark in every patch that writes a todo's dueAt", () => {
+    const dir = __dirname;
+    const files = (readdirSync(dir, { recursive: true }) as string[]).filter(
+      (name) => name.endsWith(".ts") && !name.endsWith(".test.ts") && !name.startsWith("_generated"),
+    );
+    const missing: string[] = [];
+    for (const name of files) {
+      const src = readFileSync(join(dir, name), "utf8");
+      // A patch call whose object sets dueAt as a key of its own.
+      for (const call of src.matchAll(/ctx\.db\.patch\(/g)) {
+        let depth = 0;
+        let end = call.index + call[0].length - 1;
+        for (; end < src.length; end += 1) {
+          if (src[end] === "(") depth += 1;
+          else if (src[end] === ")" && --depth === 0) break;
+        }
+        const text = src.slice(call.index, end + 1);
+        const setsDue = /^\s*dueAt\b\s*[:,]/m.test(text) || /patch\([^,]+,\s*\{\s*dueAt\b/.test(text);
+        if (setsDue && !text.includes("DATE_MOVED")) missing.push(`${name}: ${text.split("\n")[0].trim()}`);
+      }
+      // A patch object built first and given dueAt by assignment.
+      for (const set of src.matchAll(/\bpatch\.dueAt\s*=/g)) {
+        const after = src.slice(set.index, src.indexOf("\n", set.index) + 1);
+        const next = src.slice(set.index).split("\n").slice(0, 3).join("\n");
+        if (!next.includes("DATE_MOVED")) missing.push(`${name}: ${after.trim()}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 
   it("treats 23:59 New York as that day, not the next", async () => {

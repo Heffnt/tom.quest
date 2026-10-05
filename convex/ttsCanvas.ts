@@ -32,7 +32,7 @@ import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { applyDateOutcome, applyStatusChange, logEvent } from "./tts";
+import { DATE_MOVED, applyDateOutcome, applyStatusChange, logEvent } from "./tts";
 import { todoEvents } from "./jarvis/tables";
 
 export const ASSIGNMENT_INPUT = v.object({
@@ -181,6 +181,7 @@ export const internalSyncCanvasTodos = internalMutation({
       ) {
         await ctx.db.patch(todo._id, {
           dueAt: a.dueAt,
+          ...DATE_MOVED,
           timingClass: "dated",
           updatedAt: now,
         });
