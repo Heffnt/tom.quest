@@ -976,8 +976,29 @@ async function namedObjection(
         .take(DIGEST_OBJECTION_LOOKBACK)
     ).find(onDay);
   const printed = (sent?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
+  return await recordLineObjection(ctx, text, printed, day, at);
+}
+
+/**
+ * The objection a reply makes to one printed objection line, recorded, or
+ * undefined when the reply is not an objection or its number named no line.
+ * `printed` is the digest's objectionAskIds in printed order. Shared by the
+ * Slack digest's thread (namedObjection) and the Jarvis thread's digest
+ * (convex/thread.ts), whose `at` is { channel: "thread", ts: Tom's message's
+ * event id, threadTs: the digest's }.
+ */
+export async function recordLineObjection(
+  ctx: MutationCtx,
+  text: string,
+  printed: unknown,
+  day: string,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<string | undefined> {
+  const parsed = parseObjectionReply(text);
+  if (parsed === null) return undefined;
   const askId = Array.isArray(printed) ? printed[parsed.n - 1] : undefined;
-  // A number that named no printed line is not an objection: fall through, and
+  // A number that named no printed line, or a line printed with an empty id
+  // (one no objection applies to), is not an objection: fall through, and
   // the reply is kept as the fact it is. Nothing is lost.
   if (typeof askId !== "string" || askId === "") return undefined;
   await ctx.runMutation(internal.ttsAsk.internalRecordDelegateObjection, {

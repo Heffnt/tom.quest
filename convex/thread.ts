@@ -18,7 +18,7 @@ import {
 } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 import { logEvent } from "./tts";
-import { answerNeedsYou, numberedReply } from "./ttsSlack";
+import { answerNeedsYou, numberedReply, parseObjectionReply, recordLineObjection } from "./ttsSlack";
 import { SESSION_REPOS, type SlackSubject } from "./ttsShared";
 import { THREAD_REPLY_KINDS } from "../shared/jarvis-events.mjs";
 
@@ -243,6 +243,22 @@ export const internalAnswerDigestReply = internalMutation({
   handler: async (ctx, { digestId, messageId, text }): Promise<null> => {
     const digest = await ctx.db.get(digestId);
     if (digest?.kind !== THREAD_DIGEST || typeof digest.subject !== "string") throw new Error("A reply on the thread names a digest");
+    // The digest numbers its objection lines 1..k (data.objectionAskIds, in
+    // printed order) and its needs-you items from k + 1, so "revert 2" or
+    // "2: leave it" on a line up to k objects to that line's decision, through
+    // the same code as the reply under the Slack digest. This branch cannot be
+    // deleted: the Slack route is reached only by a Slack reply, so without it
+    // a reply here would be a note, not an objection.
+    const objected = await recordLineObjection(ctx, text, (digest.data as { objectionAskIds?: unknown }).objectionAskIds,
+      digest.subject, { channel: "thread", ts: messageId, threadTs: digestId });
+    const objection = objected === undefined ? null : parseObjectionReply(text);
+    if (objection !== null) {
+      await insertEvent(ctx, { kind: "thread-reply", subject: messageId,
+        data: { kind: "answer", outcome: "objection", n: objection.n },
+        text: `Line ${objection.n}: your objection is recorded.`,
+      });
+      return null;
+    }
     const parsed = numberedReply(text);
     const items = [...digestItems(digest.data), ...await laterDigestItems(ctx, digestId)];
     const item = parsed === null ? undefined : items.find((one) => one.n === parsed.n);

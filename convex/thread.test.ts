@@ -83,6 +83,7 @@ async function activeTodo(t: ReturnType<typeof convexTest>, statement = "Do the 
 async function threadDigest(
   t: ReturnType<typeof convexTest>,
   items: Array<{ n: number; key: string; text: string; todoId?: string; job?: string }>,
+  objectionAskIds: string[] = [],
 ) {
   return await t.run(async (ctx) => ctx.db.insert("events", {
     kind: "thread-digest",
@@ -95,7 +96,7 @@ async function threadDigest(
       windowEnd: Date.now(),
       truncated: false,
       surfacedTodoIds: [],
-      objectionAskIds: [],
+      objectionAskIds,
       items,
     },
     text: "Synthetic daily digest.",
@@ -417,6 +418,57 @@ describe("thread", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps a reply to a line printed with an empty id as a note, as the Slack route does", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    const digestId = await threadDigest(t, [
+      { n: 3, key: "placeholder-job", text: "Answer the synthetic job.", job: "synthetic" },
+    ], ["", "ask-2"]);
+    const { id: revertId } = await viewer.mutation(api.thread.send, { text: "revert 1", subject: digestId });
+    const { id: sentenceId } = await viewer.mutation(api.thread.send, { text: "1: leave it", subject: digestId });
+    const objections = await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect())
+      .filter((row) => row.kind === "delegate-objection"));
+    expect(objections).toEqual([]);
+    const replies = await t.run(async (ctx) => (await ctx.db.query("events").collect())
+      .filter((row) => row.kind === "thread-reply"));
+    expect(replies.find((row) => row.subject === revertId)).toMatchObject({ text: "Kept as a note on the 2026-10-02 digest." });
+    expect(replies.find((row) => row.subject === sentenceId))
+      .toMatchObject({ text: "Kept as a note on the 2026-10-02 digest; no item is numbered 1." });
+  });
+
+  it("records a numbered objection to a digest line, and routes a number past the objection lines to its item", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    await t.run(async (ctx) => {
+      for (const askId of ["ask-1", "ask-2"]) {
+        await ctx.db.insert("events", {
+          kind: "decision", at: Date.now(), provenance: { job: "delegate" }, subject: askId,
+          data: { askId, decision: `Synthetic decision ${askId}.` },
+        });
+      }
+    });
+    const digestId = await threadDigest(t, [
+      { n: 3, key: "objection-job", text: "Answer the synthetic job.", job: "synthetic" },
+    ], ["ask-1", "ask-2"]);
+
+    const { id: revertId } = await viewer.mutation(api.thread.send, { text: "revert 2", subject: digestId });
+    const { id: sentenceId } = await viewer.mutation(api.thread.send, { text: "1: leave it until Friday", subject: digestId });
+    const { id: itemId } = await viewer.mutation(api.thread.send, { text: "3: noted", subject: digestId });
+
+    const objections = await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect())
+      .filter((row) => row.kind === "delegate-objection"));
+    expect(objections.map((row) => row.data)).toEqual([
+      expect.objectContaining({ askId: "ask-2", n: 2, day: "2026-10-02", revert: true, sentence: null, channel: "thread", ts: revertId, threadTs: digestId }),
+      expect.objectContaining({ askId: "ask-1", n: 1, revert: false, sentence: "leave it until Friday", ts: sentenceId }),
+    ]);
+    const replies = await t.run(async (ctx) => (await ctx.db.query("events").collect())
+      .filter((row) => row.kind === "thread-reply"));
+    const replyTo = (id: string) => replies.find((row) => row.subject === id);
+    expect(replyTo(revertId)).toMatchObject({ text: "Line 2: your objection is recorded.", data: { kind: "answer", outcome: "objection", n: 2 } });
+    expect(replyTo(sentenceId)).toMatchObject({ text: "Line 1: your objection is recorded." });
+    expect(replyTo(itemId)).toMatchObject({ text: "Item 3: your reply is a note on the synthetic job." });
   });
   it("loads 60 digests of near-cap replies under its read budget and reports the read it stopped", async () => {
     const t = convexTest({ schema, modules });

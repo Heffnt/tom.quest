@@ -477,10 +477,13 @@ export const internalAskContext = internalQuery({
 });
 
 /**
- * Tom's objection to one decision. It is his BY CONSTRUCTION: the only caller
- * is convex/ttsSlack.ts's thread-reply route, which is reached only for a
+ * Tom's objection to one decision. It is his BY CONSTRUCTION: its two callers
+ * are convex/ttsSlack.ts's thread-reply route, which is reached only for a
  * message it matched to TOM_SLACK_USER_ID in a thread whose subject it
- * resolved. No agent can write this row through any door.
+ * resolved, and convex/thread.ts's reply under a thread digest, which is
+ * reached only through thread.send after requireTom. There the channel is
+ * "thread", ts his message's event id and threadTs the digest's. No agent
+ * can write this row through any door.
  *
  * `n` and `day` name the digest line he answered. Both are absent on an
  * objection recorded before the one output channel, from the retired
