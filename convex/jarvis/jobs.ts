@@ -39,6 +39,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { nyLocalHour, outputChannel, ttsDayKey } from "../ttsShared";
 import { digestFacts, lastDigest } from "./outbox";
 import { insertEvent } from "./record";
+import { ReadBudget, readWithin } from "../readBudget";
 
 /** The kind the digest reads as a job failure. */
 export const JOB_FAILED = "job-failed";
@@ -121,19 +122,28 @@ export async function failuresInWindow(
   ctx: QueryCtx,
   from: number,
   to: number,
+  // The digest passes its allotment (convex/readBudget.ts); the weekly reads
+  // by rows alone.
+  budget: ReadBudget = ReadBudget.of(Number.POSITIVE_INFINITY),
 ): Promise<{ failed: Doc<"events">[]; recovered: Doc<"events">[] }> {
-  const failed = await ctx.db
-    .query("events")
-    .withIndex("by_kind_standing_at", (q) =>
-      q.eq("kind", JOB_FAILED).eq("data.standingSince", undefined).gte("at", from).lt("at", to),
-    )
-    .order("asc")
-    .take(WINDOW_MAX);
-  const recovered = await ctx.db
-    .query("events")
-    .withIndex("by_kind_at", (q) => q.eq("kind", JOB_RECOVERED).gte("at", from).lt("at", to))
-    .order("asc")
-    .take(WINDOW_MAX);
+  const failed = await readWithin(
+    budget,
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_standing_at", (q) =>
+        q.eq("kind", JOB_FAILED).eq("data.standingSince", undefined).gte("at", from).lt("at", to),
+      )
+      .order("asc"),
+    WINDOW_MAX,
+  );
+  const recovered = await readWithin(
+    budget,
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_at", (q) => q.eq("kind", JOB_RECOVERED).gte("at", from).lt("at", to))
+      .order("asc"),
+    WINDOW_MAX,
+  );
   return { failed, recovered };
 }
 

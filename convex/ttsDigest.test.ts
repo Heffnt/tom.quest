@@ -17,6 +17,7 @@ import {
   latenessText,
   objectionRank,
   stripNarrowListId,
+  rollMissed,
 } from "./ttsDigest";
 import { MESSAGE_MAX_CHARS, TAB_EVERYTHING } from "./ttsCompose";
 import { nyCalendarDayBoundsUtc, ttsItemLink, ttsSessionLink } from "./ttsShared";
@@ -239,6 +240,99 @@ describe("the missed rollover", () => {
     expect(
       await t.mutation(internal.ttsDigest.internalRollMissed, { day: "2026-11-01" }),
     ).toEqual([fall]);
+  });
+
+  // A todo as the record holds one with a long explanation: 64 KB, so a
+  // few dozen fill the rollover's 1.5 MiB budget.
+  const heavyTodo = (statement: string, dueAt: number, more: Record<string, unknown> = {}) => ({
+    statement,
+    groundUpExplanation: "x".repeat(64 * 1024),
+    readiness: "unprepared" as const,
+    status: "active" as const,
+    timingClass: "dated" as const,
+    dueAt,
+    dateKind: "external" as const,
+    source: "synthetic",
+    createdAt: dueAt,
+    updatedAt: dueAt,
+    ...more,
+  });
+
+  // witness: the rollover read every active past-dated todo newest first,
+  // marked ones included, so more marked todos than its budget held kept an
+  // older unmarked one from ever being read.
+  it("reads none of the todos it settled before, however many there are", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const { start } = nyCalendarDayBoundsUtc(DAY_KEY);
+    const older = await t.run(async (ctx) => {
+      for (let n = 0; n < 40; n += 1) {
+        const dueAt = start - (n + 1) * 60_000;
+        await ctx.db.insert("todos", heavyTodo(`settled ${n}`, dueAt, {
+          dateOutcomes: [{ dueAt, outcome: "missed" as const, recordedAt: dueAt }],
+          rolledOverDueAt: dueAt,
+        }));
+      }
+      return await ctx.db.insert("todos", heavyTodo("older, never rolled", start - 30 * DAY));
+    });
+    const { rolled, cuts } = await t.run(async (ctx) => rollMissed(ctx, DAY_KEY));
+    expect(rolled).toEqual([older]);
+    expect(cuts).toEqual([]);
+    const row = await t.run(async (ctx) => (await ctx.db.get(older))!);
+    expect(row.rolledOverDueAt).toBe(row.dueAt);
+    vi.useRealTimers();
+  });
+
+  it("settles todos marked missed before the mark existed a budget at a time, and reaches the unmarked one", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const { start } = nyCalendarDayBoundsUtc(DAY_KEY);
+    const unmarked = await t.run(async (ctx) => {
+      for (let n = 0; n < 40; n += 1) {
+        const dueAt = start - 30 * DAY + n * 60_000;
+        await ctx.db.insert("todos", heavyTodo(`marked before the field ${n}`, dueAt, {
+          dateOutcomes: [{ dueAt, outcome: "missed" as const, recordedAt: dueAt }],
+        }));
+      }
+      return await ctx.db.insert("todos", heavyTodo("passed overnight", start - 60_000));
+    });
+    const mornings: Array<{ rolled: string[]; cut: boolean }> = [];
+    for (let morning = 0; morning < 8 && !mornings.some((m) => m.rolled.includes(unmarked)); morning += 1) {
+      const { rolled, cuts } = await t.run(async (ctx) => rollMissed(ctx, DAY_KEY));
+      mornings.push({ rolled, cut: cuts.length > 0 });
+    }
+    // The first morning's budget is spent on the old rows, and later
+    // mornings go on from where it stopped instead of rereading them.
+    expect(mornings[0].cut).toBe(true);
+    expect(mornings.at(-1)!.rolled).toEqual([unmarked]);
+    expect(mornings.length).toBeLessThanOrEqual(5);
+    const settled = await t.run(async (ctx) =>
+      (await ctx.db.query("todos").collect()).every((todo) => todo.rolledOverDueAt === todo.dueAt),
+    );
+    expect(settled).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("rolls a todo again once a date set after its rollover passes", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const first = Date.UTC(2026, 8, 3, 16);
+    const todo = await plainId(t, await tom.mutation(api.tts.createTodo, { statement: "file the claim", dueAt: first }));
+    expect(await t.mutation(internal.ttsDigest.internalRollMissed, { day: DAY_KEY })).toEqual([todo]);
+    // Tom records the miss and gives a new date, which passes in turn.
+    const second = Date.UTC(2026, 8, 6, 16);
+    await tom.mutation(api.tts.recordDateOutcome, { id: todo, outcome: "missed", newDueAt: second });
+    expect((await t.run(async (ctx) => (await ctx.db.get(todo))!)).rolledOverDueAt).toBeUndefined();
+    vi.setSystemTime(Date.UTC(2026, 8, 7, 9));
+    expect(await t.mutation(internal.ttsDigest.internalRollMissed, { day: "2026-09-07" })).toEqual([todo]);
+    const row = await t.run(async (ctx) => (await ctx.db.get(todo))!);
+    expect(row.rolledOverDueAt).toBe(second);
+    expect(row.dateOutcomes?.filter((o) => o.outcome === "missed").map((o) => o.dueAt)).toEqual([first, first, second]);
+    vi.useRealTimers();
   });
 
   it("treats 23:59 New York as that day, not the next", async () => {

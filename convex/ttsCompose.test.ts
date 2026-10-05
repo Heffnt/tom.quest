@@ -16,6 +16,8 @@ import {
   itemUrl,
   objectionLine,
   objectionsLead,
+  readCutLine,
+  readCutsLead,
   renderSlack,
   sessionUrl,
   spendLines,
@@ -890,5 +892,68 @@ describe("the spend section", () => {
     const facts = todayFactsBlock(sept9({ spend: spendFact({ unpriced: 2 }) }), false).facts.filter((f) => f.id.startsWith("spend:"));
     expect(facts.map((f) => f.id)).toEqual(["spend:0", "spend:1", "spend:2", "spend:3"]);
     expect(facts[0]).toMatchObject({ urls: [AGENTS_WINDOW], numbers: expect.arrayContaining(["57", "12.35"]) });
+  });
+});
+
+// ── Where a read stopped ─────────────────────────────────────────────────────
+describe("the lines saying a digest read stopped", () => {
+  // Every read the digest makes: the rollover's two and the gather's
+  // nineteen (convex/ttsDigest.ts READ_BYTES), each at its longest.
+  const every = [
+    "past-dated todos for the missed rollover", "past-dated todos settled", "rows looked up by id",
+    "dated todos", "calendar blocks", "calendar events", "email captures", "surfaced marks of flagged emails",
+    "objection-list events", "events of the night", "work outcomes", "job failures and recoveries",
+    "eval runs", "delegate decisions", "digest lines", "settlements", "prepared todos",
+    "needs of prepared todos", "deploys", "box changes", "agent runs",
+  ];
+  const allCuts = every.map((what, n) => ({
+    what,
+    read: 123_456,
+    skipped: n < 3 ? 123_456 : 0,
+    by: n % 2 === 0 ? ("bytes" as const) : ("rows" as const),
+  }));
+
+  it("words each kind of stop", () => {
+    expect(readCutLine({ what: "prepared todos", read: 200, skipped: 0, by: "rows" })).toBe(
+      "Prepared todos: 200 read, stopped at the row limit.",
+    );
+    expect(readCutLine({ what: "rows looked up by id", read: 10, skipped: 7, by: "bytes" })).toBe(
+      "Rows looked up by id: 10 read, stopped at the byte budget, 7 left unread.",
+    );
+    expect(readCutLine({ what: "events of the night", read: 1_812, skipped: 0, by: "bytes" })).toBe(
+      "Events of the night: 1,812 read, stopped at the byte budget.",
+    );
+    expect(readCutsLead(2)).toBe(
+      "The digest stopped two reads at a row or byte limit, so the counts above can leave rows out and are lower bounds.",
+    );
+  });
+
+  // witness: fitting a long digest reduced the cut run to "N more lines are
+  // on the page", and the box run with the line saying its read stopped to
+  // its lead, so the posted digest no longer said which reads had stopped.
+  it("keeps every stopped read when a digest of every run over its cap is fitted", () => {
+    const long = (what: string, n: number) => `${what} ${n} ${"carries enough words to fill the line ".repeat(3)}`;
+    const facts = sept9({
+      boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
+      broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
+      calendar: Array.from({ length: 14 }, (_, n) => ({ title: long("Meeting", n), when: "09:00 to 10:00", allDay: false })),
+      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
+      readCuts: allCuts,
+    });
+    expect(renderSlack(composeToday(facts, { canReply: false })).length).toBeGreaterThan(MESSAGE_MAX_CHARS);
+    const { message, truncated } = composeTodayFitted(facts, { canReply: false });
+    const text = renderSlack(message);
+    expect(truncated).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
+    expect(text).toContain(readCutsLead(allCuts.length));
+    for (const cut of allCuts) expect(text).toContain(readCutLine(cut));
+    expect(message.lines.at(-1)?.section).toBe("cut");
+    const facts21 = todayFactsBlock(facts, false).facts.filter((fact) => fact.id.startsWith("cut:"));
+    expect(facts21).toHaveLength(allCuts.length + 1);
+    expect(facts21.every((fact) => fact.required === true)).toBe(true);
+  });
+
+  it("prints no cut run when no read stopped", () => {
+    expect(composeToday(sept9(), { canReply: false }).lines.some((line) => line.section === "cut")).toBe(false);
   });
 });

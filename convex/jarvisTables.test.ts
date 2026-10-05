@@ -99,6 +99,7 @@ describe("rulings under their plain name", () => {
       "leftPage",
       "leftToRemap",
       "newestTodoEvents",
+      "readTodo",
       "resolveId",
       "todoEvents",
       "todoHasEventSince",

@@ -686,6 +686,14 @@ export default defineSchema({
         }),
       ),
     ),
+    // THE ROLLOVER'S MARK: the date the 5 a.m. missed rollover last settled
+    // this todo for, by marking it missed or finding an outcome already
+    // recorded for that date (convex/ttsDigest.ts rollMissed). The rollover
+    // reads only active past-dated rows without it (by_status_rollover_due),
+    // so rows it settled on earlier mornings never use up its read budget.
+    // Every write that changes dueAt clears it (convex/tts.ts DATE_MOVED), so
+    // a new date that passes is rolled again.
+    rolledOverDueAt: v.optional(v.number()),
     // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
     // sentence about the world that says the goal is met ("the lease is
     // signed", "cmt-014 is closed upstream"). One reading now: the trigger
@@ -820,6 +828,10 @@ export default defineSchema({
     // number in the index, so a range starting at gte("dueAt", 0) reads the
     // dated ones only.
     .index("by_status_and_due", ["status", "dueAt"])
+    // The missed rollover's read: active rows it has not settled for their
+    // current date (no rolledOverDueAt), by date. A missing field indexes as
+    // undefined, so eq("rolledOverDueAt", undefined) is the unsettled range.
+    .index("by_status_rollover_due", ["status", "rolledOverDueAt", "dueAt"])
     .index("by_readiness", ["readiness"])
     .index("by_batch", ["batchId"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo

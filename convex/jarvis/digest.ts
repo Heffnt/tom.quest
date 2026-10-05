@@ -35,6 +35,7 @@ import type { Doc } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { logEvent } from "../tts";
 import { resolveId } from "./tables";
+import { rollMissed } from "../ttsDigest";
 import { needsYouInThread, recordSlackSent } from "../ttsSlack";
 import {
   DAY_MS,
@@ -96,7 +97,8 @@ export const compose = internalMutation({
       // not a quiet one (Jarvis worker/jobs/write-slack.mjs).
       return { due: false, day, reason: NO_CHANNEL };
     }
-    await ctx.runMutation(internal.ttsDigest.internalRollMissed, { day });
+    // The rollover's read cut, if any, is said in the digest's cut lines.
+    const { cuts } = await rollMissed(ctx, day);
     const since = last.windowEnd ?? now - DAY_MS;
     const composed: { text: string; truncated: boolean; surfacedTodoIds: string[]; objectionAskIds: string[]; facts: unknown } =
       await ctx.runQuery(internal.ttsDigest.internalComposeToday, {
@@ -104,6 +106,7 @@ export const compose = internalMutation({
       now,
       since,
       canReply: replyRouteLive(),
+      earlierCuts: cuts,
     });
     return {
       due: true,

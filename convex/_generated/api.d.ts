@@ -42,6 +42,7 @@ import type * as observe from "../observe.js";
 import type * as observeMerge from "../observeMerge.js";
 import type * as push from "../push.js";
 import type * as pushSend from "../pushSend.js";
+import type * as readBudget from "../readBudget.js";
 import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as sessionRows from "../sessionRows.js";
@@ -120,6 +121,7 @@ declare const fullApi: ApiFromModules<{
   observeMerge: typeof observeMerge;
   push: typeof push;
   pushSend: typeof pushSend;
+  readBudget: typeof readBudget;
   secrets: typeof secrets;
   serverHealth: typeof serverHealth;
   sessionRows: typeof sessionRows;
