@@ -52,14 +52,16 @@ function fakeGitHub() {
     const tail = rest.join("/");
     if (tail.startsWith("pulls?state=open")) return Response.json([]);
     if (tail === "commits/main") return Response.json({ sha: state.head.get(slug) ?? BASE });
-    const compared = /^compare\/([0-9a-f]+)\.\.\.main\?per_page=(\d+)&page=(\d+)$/.exec(tail);
+    const compared = /^compare\/([0-9a-f]+)\.\.\.([0-9a-f]+|main)\?per_page=(\d+)&page=(\d+)$/.exec(tail);
     if (compared !== null) {
       const history = state.history.get(slug) ?? [];
       const from = history.findIndex((one) => one.sha === compared[1]);
-      const arrived = history.slice(from + 1);
-      const size = Number(compared[2]);
-      const page = arrived.slice((Number(compared[3]) - 1) * size, Number(compared[3]) * size);
-      return Response.json({ status: arrived.length === 0 ? "identical" : "ahead", total_commits: arrived.length, commits: page });
+      const to = compared[2] === "main" ? history.length - 1 : history.findIndex((one) => one.sha === compared[2]);
+      const arrived = history.slice(from + 1, to + 1);
+      const size = Number(compared[3]);
+      const page = arrived.slice((Number(compared[4]) - 1) * size, Number(compared[4]) * size);
+      const status = to === from ? "identical" : to > from ? "ahead" : "behind";
+      return Response.json({ status, total_commits: arrived.length, commits: page });
     }
     if (tail.startsWith("pulls?state=closed")) return Response.json(state.closed.get(slug) ?? []);
     const ofCommit = /^commits\/([0-9a-f]+)\/pulls$/.exec(tail);
@@ -70,10 +72,10 @@ function fakeGitHub() {
 }
 
 /** A pull request GitHub shows landed on main. */
-const landed = (number: number, head: string, landedAs: string) => ({
+const landed = (number: number, head: string, landedAs: string, mergedAt = "2026-09-28T12:00:00Z") => ({
   number,
   title: `pull request ${number}`,
-  merged_at: "2026-09-28T12:00:00Z",
+  merged_at: mergedAt,
   merge_commit_sha: landedAs,
   head: { sha: head },
   base: { ref: "main" },
@@ -367,7 +369,169 @@ describe("what arrived on main", () => {
   });
 });
 
+describe("the backfill of the landings before the first refresh", () => {
+  // Main of Jarvis before the first refresh: BASE, then four landings, the
+  // last of which the first refresh records and starts from.
+  const head60 = sha("1");
+  const squash60 = sha("2");
+  const pushed = sha("3");
+  const head61 = sha("4");
+  const landing61 = sha("5");
+  const head62 = sha("6");
+  const squash62 = sha("7");
+  const landedAt60 = "2026-09-30T10:00:00Z";
+  const landedAt62 = "2026-10-01T10:00:00Z";
+
+  async function startedAfterLandings() {
+    const t = convexTest({ schema, modules });
+    for (const slug of ["Heffnt/tom.quest", WIKITOM_SLUG]) {
+      gh.state.head.set(slug, BASE);
+      gh.state.history.set(slug, [commit(BASE, [])]);
+    }
+    gh.state.head.set(SLUG, BASE);
+    gh.state.history.set(SLUG, [commit(BASE, [])]);
+    arrive(
+      commit(squash60, [BASE]),
+      commit(pushed, [squash60], "a push straight to main"),
+      commit(landing61, [pushed]),
+      commit(squash62, [landing61]),
+    );
+    gh.state.closed.set(SLUG, [
+      landed(60, head60, squash60, landedAt60),
+      landed(61, head61, landing61),
+      landed(62, head62, squash62, landedAt62),
+    ]);
+    await seedGate(t, head60);
+    await seedGate(t, head62);
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    // The first refresh started from main's newest commit and filed nothing.
+    expect(await mergeRows(t)).toHaveLength(0);
+    return t;
+  }
+
+  const backfill = (t: TestConvex<typeof schema>, fromSha: string, toSha: string, repo = REPO) =>
+    t.action(internal.gateLandings.backfillLandings, { repo, fromSha, toSha });
+
+  it("files the range as a refresh would have, each merge row dated when it landed and marked backfilled", async () => {
+    const t = await startedAfterLandings();
+    expect(await backfill(t, BASE, squash62)).toEqual({ commits: 4, merge: 2, report: 2, nothing: 0 });
+    const rows = await mergeRows(t);
+    expect(rows.map((row) => [row.key, row.at])).toEqual([
+      [mergeKey(REPO, head60), Date.parse(landedAt60)],
+      [mergeKey(REPO, head62), Date.parse(landedAt62)],
+    ]);
+    for (const row of rows) expect(row.data).toMatchObject({ backfilled: true });
+    expect(rows[0].data).toMatchObject({
+      repo: REPO,
+      sha: head60,
+      subject: "pull request 60",
+      mainCheck: "1111111 is the head of pull request #60, merged into main as 2222222",
+    });
+    // The copy the Jarvis thread reads carries the same time.
+    expect((await eventsOf(t, MERGE)).map((row) => row.at)).toEqual([Date.parse(landedAt60), Date.parse(landedAt62)]);
+    expect((await reports(t)).map((row) => row.subject)).toEqual([
+      noPullRequest(REPO, pushed),
+      landingKey(REPO, head61),
+    ]);
+    // It asked whether the range ends at or behind the commit the refresh holds.
+    expect(gh.asked).toContain(`${SLUG}/compare/${squash62}...${squash62}?per_page=1&page=1`);
+  });
+
+  it("refuses a range that overlaps rows already written, and writes nothing", async () => {
+    const t = await startedAfterLandings();
+    await backfill(t, BASE, squash62);
+    await expect(backfill(t, BASE, squash62)).rejects.toThrow(
+      /backfill refused: 4 commits of 0000000\.\.7777777 already have rows/,
+    );
+    // One landing already filed in a range is enough to refuse the range.
+    await expect(backfill(t, landing61, squash62)).rejects.toThrow(/7777777 has a merge row for its head 6666666/);
+    expect(await mergeRows(t)).toHaveLength(2);
+    expect(await reports(t)).toHaveLength(2);
+  });
+
+  it("refuses a range that overlaps a landing a refresh already filed", async () => {
+    const t = await startedAfterLandings();
+    const head63 = sha("8");
+    const squash63 = sha("9");
+    await seedGate(t, head63);
+    arrive(commit(squash63, [squash62]));
+    gh.state.closed.set(SLUG, [...gh.state.closed.get(SLUG)!, landed(63, head63, squash63)]);
+    await refresh(t);
+    expect((await mergeRows(t)).map((row) => row.key)).toEqual([mergeKey(REPO, head63)]);
+    await expect(backfill(t, BASE, squash63)).rejects.toThrow(/9999999 has a merge row for its head 8888888/);
+    expect((await mergeRows(t)).map((row) => row.key)).toEqual([mergeKey(REPO, head63)]);
+  });
+
+  it("refuses a range that reaches past the commit the refresh holds", async () => {
+    const t = await startedAfterLandings();
+    const later = sha("8");
+    arrive(commit(later, [squash62], "not yet read by a refresh"));
+    await expect(backfill(t, BASE, later)).rejects.toThrow(
+      /backfill refused: 8888888 is not 7777777, the commit the refresh holds, or behind it/,
+    );
+    expect(await mergeRows(t)).toHaveLength(0);
+    expect(await reports(t)).toHaveLength(0);
+  });
+
+  it("files nothing for a push straight to WikiTom's main, as a refresh does", async () => {
+    const t = convexTest({ schema, modules });
+    for (const slug of ["Heffnt/tom.quest", SLUG, WIKITOM_SLUG]) {
+      gh.state.head.set(slug, BASE);
+      gh.state.history.set(slug, [commit(BASE, [])]);
+    }
+    const nightly = sha("c");
+    arriveAt(WIKITOM_SLUG, commit(nightly, [BASE], "snapshot: the nightly copy"), commit(squash60, [nightly]));
+    gh.state.closed.set(WIKITOM_SLUG, [landed(52, head60, squash60, landedAt60)]);
+    await seedGate(t, head60, "APPROVED", "WikiTom");
+    await refresh(t);
+    expect(await backfill(t, BASE, squash60, "WikiTom")).toEqual({ commits: 2, merge: 1, report: 0, nothing: 1 });
+    expect(await reports(t)).toHaveLength(0);
+  });
+});
+
 describe("the digest", () => {
+  it("leaves out a backfilled landing older than a day, even when the window is longer", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    const old = sha("a");
+    const recent = sha("b");
+    await seedGate(t, old);
+    await seedGate(t, recent);
+    await t.mutation(internal.ttsMerge.internalRecordMerge, {
+      repo: REPO,
+      sha: old,
+      subject: "landed three days ago",
+      mainCheck: "checked",
+      backfilledAt: now - 3 * DAY_MS,
+    });
+    await t.mutation(internal.ttsMerge.internalRecordMerge, {
+      repo: REPO,
+      sha: recent,
+      subject: "landed two hours ago",
+      mainCheck: "checked",
+      backfilledAt: now - 2 * 60 * 60 * 1000,
+    });
+    // A landing of the same age that the refresh or POST /tts/merge wrote
+    // at the time stays in a window that covers it.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: now - 3 * DAY_MS,
+        kind: MERGE,
+        key: mergeKey(REPO, sha("c")),
+        data: { repo: REPO, sha: sha("c"), subject: "recorded three days ago", mainCheck: "checked", reason: "" },
+      });
+    });
+    const decisions = await t.run(async (ctx) =>
+      (await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now: now + 1, since: now - 5 * DAY_MS })).objections.map(
+        (o) => o.decision,
+      ),
+    );
+    expect(decisions.filter((line) => line.startsWith("merged"))).toEqual([
+      "merged Jarvis@bbbbbbb: landed two hours ago",
+      "merged Jarvis@ccccccc: recorded three days ago",
+    ]);
+  });
+
   it("shows a landing past the gate once among what is broken, and says when the gate passed it", async () => {
     const t = await started();
     const head = sha("a");
