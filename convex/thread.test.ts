@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { describe, expect, it, vi } from "vitest";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { AGENT_CHANGE_KINDS, agentChange } from "./thread";
 import { insertTodo } from "../test/core-tables";
@@ -400,6 +400,24 @@ describe("thread", () => {
     expect(found.some((entry) => entry.id === messageId)).toBe(false);
   });
 
+  it("returns a line of the silence alarm as its own entry from Jarvis", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    vi.useFakeTimers();
+    // 07:00 New York (EDT): past the late-digest hour, with no thread digest.
+    vi.setSystemTime(Date.UTC(2026, 9, 2, 11, 0));
+    try {
+      await t.mutation(internal.ttsJobs.internalCheckSilence, {});
+      const found = (await viewer.query(api.thread.messages, {})).entries;
+      expect(found).toEqual([expect.objectContaining({
+        kind: "alarm",
+        text: "Today's digest (2026-10-02) is not on the thread: the record's digest cron has not appended it.",
+        href: "https://tom.quest/agents?view=window",
+      })]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("loads 60 digests of near-cap replies under its read budget and reports the read it stopped", async () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);

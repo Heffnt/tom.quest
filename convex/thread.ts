@@ -1,9 +1,10 @@
 // thread.ts — the Jarvis thread's record side: Tom's one standing conversation
 // with Jarvis, on the /thread page. A message he types is an appended row of
 // the record's append-only `events` table. The box appends its one-line reply
-// under an ordinary message. The record appends each day's thread-digest;
-// Tom's messages under a digest are nested beneath it, and a numbered reply is
-// routed to the digest's matching needs-you item here.
+// under an ordinary message. The record appends each day's thread-digest and
+// each line of the silence alarm (convex/jarvis/jobs.ts); Tom's messages under
+// a digest are nested beneath it, and a numbered reply is routed to the
+// digest's matching needs-you item here.
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -13,7 +14,7 @@ import { DAY_LOG_ENTRY_MAX } from "./dayLog";
 import { MIB, ReadBudget, getWithin, readWithin } from "./readBudget";
 import { readCutLine } from "./ttsCompose";
 import {
-  NEEDS_TOM_ANSWERED, THREAD_DIGEST, THREAD_NEEDS_YOU, laterDigestItems, type DigestItem,
+  NEEDS_TOM_ANSWERED, SILENCE_ALARM, THREAD_DIGEST, THREAD_NEEDS_YOU, laterDigestItems, type DigestItem,
 } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
 import { logEvent } from "./tts";
@@ -282,13 +283,14 @@ export const internalAnswerDigestReply = internalMutation({
 type Reply = { at: number; text: string | undefined; kind: (typeof THREAD_REPLY_KINDS)[number] | null } | null;
 
 /** What /thread's messages query reads, newest first, each under its own
- *  allotment of one ReadBudget (convex/readBudget.ts): 8 MiB in all, plus
+ *  allotment of one ReadBudget (convex/readBudget.ts): 8.25 MiB in all, plus
  *  at most one document per read past it, under Convex's 16 MiB limit. The
  *  reads run one after another, as ReadBudget requires. */
 const PAGE_READS = {
   messages: { what: "thread messages", bytes: 2 * MIB, rows: 500 },
   digests: { what: "thread digests", bytes: 4 * MIB, rows: 60 },
   items: { what: "needs-you items", bytes: MIB, rows: 500 },
+  alarms: { what: "silence-alarm lines", bytes: MIB / 4, rows: 200 },
   replies: { what: "Jarvis's replies", bytes: MIB },
 };
 
@@ -297,7 +299,7 @@ export const messages = query({
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
     const since = Date.now() - 60 * 24 * 60 * 60 * 1000;
-    const budget = ReadBudget.of(MIB * 8);
+    const budget = ReadBudget.of(MIB * 8.25);
     const newest = (kind: string, read: { what: string; bytes: number; rows: number }) => readWithin(
       budget.allot(read.what, read.bytes),
       ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since)).order("desc"),
@@ -308,6 +310,7 @@ export const messages = query({
     const messageRows = await newest("thread-message", PAGE_READS.messages);
     const digestRows = await newest(THREAD_DIGEST, PAGE_READS.digests);
     const itemRows = await newest(THREAD_NEEDS_YOU, PAGE_READS.items);
+    const alarmRows = await newest(SILENCE_ALARM, PAGE_READS.alarms);
     const replyBudget = budget.allot(PAGE_READS.replies.what, PAGE_READS.replies.bytes);
     const said = new Map<string, { id: Id<"events">; at: number; text: string; reply: Reply }>();
     for (const row of messageRows) {
@@ -338,8 +341,10 @@ export const messages = query({
       return [{ kind: "item" as const, id: row._id, at: row.at, digestId, day,
         n: (row.data as { n: number }).n, text: row.text ?? "" }];
     });
+    const alarms = alarmRows.map((row) => ({ kind: "alarm" as const, id: row._id, at: row.at, text: row.text ?? "",
+      href: (row.data as { href: string }).href }));
     return {
-      entries: [...messages, ...digests, ...items].sort((a, b) => a.at - b.at),
+      entries: [...messages, ...digests, ...items, ...alarms].sort((a, b) => a.at - b.at),
       cuts: budget.cuts().map(readCutLine),
     };
   },

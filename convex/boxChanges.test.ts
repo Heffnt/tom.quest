@@ -840,10 +840,26 @@ describe("the silence alarm", () => {
     expect(await scheduled(t)).toHaveLength(0);
   });
 
+  // witness: the record sent "The write-slack job has not run clean" to Slack
+  // each morning from 2026-09-30, and held a standing write-slack:silent
+  // condition from 2026-10-04, for a job that Jarvis then deleted.
+  it("does not watch write-slack, which Jarvis deleted, and sends nothing to Slack", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
+    vi.setSystemTime(AT);
+    await ok(t, "write-slack");
+    vi.setSystemTime(AT + 60 * 60_000);
+    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: [] });
+    const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(rows.filter((row) => row.kind === "silence-alarm" || row.kind === "job-failed")).toEqual([]);
+    expect(await scheduled(t)).toEqual([]);
+    const slack = await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === "slack-sent"));
+    expect(slack).toEqual([]);
+  });
+
   it("posts one line when a heartbeat is three intervals old, and writes the recovery when it beats again", async () => {
     const t = convexTest({ schema, modules });
-    // The alarm's line goes to the one output channel.
-    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
+    // The alarm's line goes to the Jarvis thread, with a web push.
     vi.setSystemTime(AT);
     await ok(t, "box-watch");
     await ok(t, "box-state");
@@ -865,11 +881,13 @@ describe("the silence alarm", () => {
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["box-watch"], recovered: [] });
     const failed = await t.run(async (ctx) => ctx.db.query("events").collect());
     expect(failed.filter((row) => row.kind === "job-failed").map((row) => row.subject)).toEqual(["box-watch:silent"]);
+    const lines = failed.filter((row) => row.kind === "silence-alarm");
+    expect(lines.map((row) => row.subject)).toEqual(["box-watch:silent"]);
+    expect(lines[0].text).toContain("has not run clean for 6 minutes");
     const jobs = await scheduled(t);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toContain("sendSlack");
-    expect(jobs[0].args[0]).toMatchObject({ channel: "C0TODAY", subject: { kind: "job", id: "box-watch:silent" } });
-    expect(String((jobs[0].args[0] as { text: string }).text)).toContain("has not run clean for 6 minutes");
+    expect(jobs[0].name).toContain("sendToAll");
+    expect(jobs[0].args[0]).toMatchObject({ title: "Silence alarm", body: lines[0].text, url: "/thread" });
 
     await ok(t, "box-watch");
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: ["box-watch"] });

@@ -694,21 +694,30 @@ describe("numberedReply", () => {
 });
 
 describe("the silence alarm and the digest", () => {
-  it("says once in the output channel that today's digest is late, and closes it when the digest goes out", async () => {
+  it("says once on the thread, with a push, that today's digest is late, and closes it when the thread digest is appended", async () => {
     const t = setup(MORNING);
     const first = await t.mutation(internal.ttsJobs.internalCheckSilence, {});
     expect(first.silent).toContain("digest");
     await t.mutation(internal.ttsJobs.internalCheckSilence, {});
     const failed = await ofKind(t, "events", "job-failed");
     expect(failed).toHaveLength(1);
-    expect(failed[0]).toMatchObject({ subject: `digest:${DAY}` });
-    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    const lines = scheduled.filter((f) => f.name.includes("sendSlack"));
+    expect(failed[0]).toMatchObject({ subject: `digest:${DAY}`, provenance: { job: "digest" } });
+    const lines = await ofKind(t, "events", "silence-alarm");
     expect(lines).toHaveLength(1);
-    expect(lines[0].args[0]).toMatchObject({ channel: CHANNEL, subject: { kind: "job", id: `digest:${DAY}` } });
+    expect(lines[0]).toMatchObject({
+      subject: `digest:${DAY}`,
+      text: `Today's digest (${DAY}) is not on the thread: the record's digest cron has not appended it.`,
+      data: { job: "digest", href: "https://tom.quest/agents?view=window" },
+    });
+    expect(await pushesOf(t)).toEqual([{ title: "Silence alarm", body: lines[0].text, url: "/thread" }]);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("sendSlack"))).toEqual([]);
 
+    // The Slack digest's row no longer closes it; the thread digest does.
     const answer = await (await post(t, "/jarvis/digest", {})).json();
     await recordSent(t, answer, "1758882600.000100");
+    expect((await t.mutation(internal.ttsJobs.internalCheckSilence, {})).recovered).not.toContain("digest");
+    await appendDigest(t);
     expect((await t.mutation(internal.ttsJobs.internalCheckSilence, {})).recovered).toContain("digest");
   });
 

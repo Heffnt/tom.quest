@@ -23,13 +23,12 @@ const crons = cronJobs();
 // 5 a.m. check).
 crons.cron("thread digest", "0 * * * *", internal.jarvis.digest.appendThreadDigest, {});
 
-// THE SILENCE ALARM (plan-root T3; convex/jarvis/jobs.ts checkSilence): a line
-// in the output channel when a watched box job — the box-change reader, the
-// state comparison, the sweep, the digest writer, the record tick — has not
-// run clean for three of its intervals, and when 6 a.m. New York passes with
-// no digest. It is the one timed thing that cannot live on the box: it is how
-// the box's silence is heard. Every two minutes, the shortest interval it
-// watches.
+// THE SILENCE ALARM (convex/jarvis/jobs.ts checkSilence): a line on the Jarvis
+// thread and a web push when a watched box job — the box-change reader, the
+// state comparison, the sweep, the record tick — has not run clean for three
+// of its intervals, and when 6 a.m. New York passes with no thread digest for
+// the day. It is how the box's silence is heard, so it runs here and not on
+// the box. Every two minutes, the shortest interval it watches.
 crons.interval("box silence alarm", { minutes: 2 }, internal.ttsJobs.internalCheckSilence, {});
 
 export default crons;

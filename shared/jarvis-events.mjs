@@ -72,18 +72,21 @@ export const EVENT_KINDS = [
   "session-outcome",
   // The Jarvis thread (convex/thread.ts, the /thread page): a message Tom
   // typed there, Jarvis's one-line answer posted back by the box, the day's
-  // digest, and a needs-you item that opened after it. appendThreadDigest in
-  // convex/jarvis/digest.ts writes the digest once per day from the record's
-  // cron; subject is the day key, text is the rendered digest, and data is
-  // { day, since, windowEnd, truncated, surfacedTodoIds, objectionAskIds,
-  // items, openingsFrom }, where items is the numbered needs-you list
-  // [{ n, key, text, todoId?, job? }] and openingsFrom the time the next
-  // digest's scan of openings starts. A thread-needs-you has the digest id as
-  // subject, the item's text, and data { n, key, todoId?, job? }.
+  // digest, a needs-you item that opened after it, and a line of the silence
+  // alarm. appendThreadDigest in convex/jarvis/digest.ts writes the digest once
+  // per day from the record's cron; subject is the day key, text is the
+  // rendered digest, and data is { day, since, windowEnd, truncated,
+  // surfacedTodoIds, objectionAskIds, items, openingsFrom }, where items is
+  // the numbered needs-you list [{ n, key, text, todoId?, job? }] and
+  // openingsFrom the time the next digest's scan of openings starts. A thread-needs-you has
+  // the digest id as subject, the item's text, and data { n, key, todoId?,
+  // job? }. A silence-alarm (convex/jarvis/jobs.ts raise) has the condition's
+  // key as subject, the alarm's line as text, and data { job, href }.
   "thread-message",
   "thread-reply",
   "thread-digest",
   "thread-needs-you",
+  "silence-alarm",
   // Tom answered a needs-tom ask on the Jarvis thread; actor Tom
   // (provenance { user: "tom" }), subject the ask's key, data
   // { answer, via: "thread" }.
@@ -221,11 +224,12 @@ export const DELEGATE_ONLY_KINDS = ["decision"];
 /** Events only the record's own mutations write. thread-digest is written by
  *  appendThreadDigest in convex/jarvis/digest.ts, which checks the hour,
  *  renders the digest and appends once per day; thread-needs-you by
- *  openNeedsYou in convex/jarvis/outbox.ts. The worker-key event routes
- *  refuse them, so no row can stand in for the real one, and their readers
- *  may trust the shape the writer gives them. */
+ *  openNeedsYou in convex/jarvis/outbox.ts; silence-alarm by the silence
+ *  alarm in convex/jarvis/jobs.ts. The worker-key event routes refuse them,
+ *  so no row can stand in for the real one, and their readers may trust the
+ *  shape the writer gives them. */
 /** @type {const} */
-export const RECORD_ONLY_KINDS = ["thread-digest", "thread-needs-you"];
+export const RECORD_ONLY_KINDS = ["thread-digest", "thread-needs-you", "silence-alarm"];
 
 /** How far past the writer's clock an event's `at` may lie. The silence alarm
  *  reads a job's newest row (convex/jarvis/jobs.ts), so a row dated in the
@@ -240,7 +244,7 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * a build row's todo, a needs-you opening's key (the thread digest lists an
  * opening by its key).
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened", "silence-alarm"];
 
 /** A todo-state's `data.state` and `data.from`: where a todo stands in a build. */
 /** @type {const} */
