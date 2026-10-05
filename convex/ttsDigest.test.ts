@@ -823,6 +823,62 @@ describe("internalComposeToday", () => {
     expect(text).toContain('reply "revert 2", or "2: what to do instead".');
   });
 
+  // witness: internalRecordAsk writes a decided ask's delegate-decision row
+  // and its decision row, and the gather read both, so the list numbered one
+  // decision twice and the lead counted two.
+  const ASK = {
+    askId: "5b7d2e10",
+    job: "work-queue",
+    question: "Do I move the passport appointment to Thursday, or leave it Wednesday?",
+    options: ["Move it to Thursday morning.", "Leave it Wednesday."],
+    recommendation: "Move it to Thursday morning.",
+    fallback: "Leave it Wednesday and say so in the outcome summary.",
+    decision: "Move it to Thursday morning." as string | null,
+    reason: "The consulate closes Wednesdays in September.",
+    refused: false,
+    refusedBecause: null,
+    model: "fable",
+    ms: 41_200,
+    promptSha: "9c1a22b0",
+  };
+
+  it("lists a decided ask once, from its decision row, and counts it once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3600_000);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.mutation(internal.ttsAsk.internalRecordAsk, ASK);
+    const rows = await t.run(async (ctx) => ({
+      asks: await ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", DELEGATE_DECISION)).collect(),
+      decisions: await ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect(),
+    }));
+    expect([rows.asks.length, rows.decisions.length]).toEqual([1, 1]);
+    vi.setSystemTime(FIVE_AM);
+    const { text, objectionAskIds } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM, canReply: true });
+    expect(objectionAskIds).toEqual(["5b7d2e10"]);
+    expect(text).toContain("One thing was decided in your name while you were asleep; silence means they stand.");
+    expect(text.match(/Move it to Thursday morning/g)).toHaveLength(1);
+    expect(text).not.toContain("2. ");
+  });
+
+  it("lists an ask with no decision row yet once, from its ask row", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM - 3600_000);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.mutation(internal.ttsAsk.internalRecordAsk, { ...ASK, decision: null, reason: "No answer within the timeout." });
+    const decisions = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "decision")).collect(),
+    );
+    expect(decisions).toHaveLength(0);
+    vi.setSystemTime(FIVE_AM);
+    const { text, objectionAskIds } = await composeToday(t, { day: DAY_KEY, now: FIVE_AM, canReply: true });
+    expect(objectionAskIds).toEqual(["5b7d2e10"]);
+    expect(text).toContain("One thing was decided in your name while you were asleep; silence means they stand.");
+    expect(text).toContain("1. No answer came back, so the agent took its own fallback");
+    expect(text).not.toContain("2. ");
+  });
+
   // A merge is reported for objection too, and its wording never assigns it to
   // the delegate: nothing was decided in Tom's name, three checks passed.
   it("reports a mechanically gated merge in the same list, under its own key", async () => {
