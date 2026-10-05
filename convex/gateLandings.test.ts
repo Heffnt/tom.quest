@@ -52,12 +52,14 @@ function fakeGitHub() {
     const tail = rest.join("/");
     if (tail.startsWith("pulls?state=open")) return Response.json([]);
     if (tail === "commits/main") return Response.json({ sha: state.head.get(slug) ?? BASE });
-    const compared = /^compare\/([0-9a-f]+)\.\.\.main$/.exec(tail);
+    const compared = /^compare\/([0-9a-f]+)\.\.\.main\?per_page=(\d+)&page=(\d+)$/.exec(tail);
     if (compared !== null) {
       const history = state.history.get(slug) ?? [];
       const from = history.findIndex((one) => one.sha === compared[1]);
       const arrived = history.slice(from + 1);
-      return Response.json({ status: arrived.length === 0 ? "identical" : "ahead", total_commits: arrived.length, commits: arrived });
+      const size = Number(compared[2]);
+      const page = arrived.slice((Number(compared[3]) - 1) * size, Number(compared[3]) * size);
+      return Response.json({ status: arrived.length === 0 ? "identical" : "ahead", total_commits: arrived.length, commits: page });
     }
     if (tail.startsWith("pulls?state=closed")) return Response.json(state.closed.get(slug) ?? []);
     const ofCommit = /^commits\/([0-9a-f]+)\/pulls$/.exec(tail);
@@ -84,6 +86,12 @@ async function seedGate(t: TestConvex<typeof schema>, head: string, verdict = "A
     await ctx.db.insert("dtsEvents", { at: Date.now(), kind: AUDIT_VERDICT, key, data: { repo, sha: head, verdict } });
   });
 }
+
+/** The first page of the comparison of main with `from`, as the refresh asks for it. */
+const compared = (slug: string, from: string, page = 1) => `${slug}/compare/${from}...main?per_page=100&page=${page}`;
+
+/** The report of a commit that belongs to no pull request. */
+const noPullRequest = (repo: string, commit: string) => `${landingKey(repo, commit)}:no-pull-request`;
 
 const refresh = (t: TestConvex<typeof schema>) => t.action(internal.observeMerge.refreshOpenPulls, {});
 
@@ -160,9 +168,9 @@ describe("what arrived on main", () => {
     expect(await refresh(t)).toEqual({ open: 0, failures: [] });
     // One comparison per repository, and nothing else about main.
     expect(gh.asked.filter((path) => !path.includes("pulls?state=open"))).toEqual([
-      `Heffnt/tom.quest/compare/${BASE}...main`,
-      `${SLUG}/compare/${BASE}...main`,
-      `${WIKITOM_SLUG}/compare/${BASE}...main`,
+      compared("Heffnt/tom.quest", BASE),
+      compared(SLUG, BASE),
+      compared(WIKITOM_SLUG, BASE),
     ]);
     expect(await mergeRows(t)).toHaveLength(0);
     expect(await reports(t)).toHaveLength(0);
@@ -216,10 +224,58 @@ describe("what arrived on main", () => {
     expect(await refresh(t)).toEqual({ open: 0, failures: [] });
     expect(gh.asked).toContain(`${SLUG}/commits/${pushed}/pulls`);
     const [report] = await reports(t);
-    expect(report.subject).toBe(landingKey(REPO, pushed));
+    expect(report.subject).toBe(noPullRequest(REPO, pushed));
     expect((report.data as { error: string }).error).toBe(
-      "Jarvis commit eeeeeee arrived on main with no pull request, and the merge gate is shut for it: missing tests, audit.",
+      'Jarvis commit eeeeeee arrived on main with no pull request: "a push straight to main".',
     );
+  });
+
+  it("reports a commit that belongs to no pull request even when the gate is open for it, and the gate never clears that report", async () => {
+    const t = await started();
+    const pushed = sha("e");
+    await seedGate(t, pushed);
+    arrive(commit(pushed, [BASE], "a push straight to main"));
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    expect(await mergeRows(t)).toHaveLength(0);
+    expect((await reports(t)).map((row) => row.subject)).toEqual([noPullRequest(REPO, pushed)]);
+    await t.mutation(internal.ttsMerge.internalRecordTests, { repo: REPO, sha: pushed, ok: true });
+    expect(await eventsOf(t, "job-recovered")).toHaveLength(0);
+  });
+
+  it("reads a comparison longer than one page whole, and accounts for every commit in it", async () => {
+    const t = await started();
+    const pushes: Commit[] = [];
+    for (let i = 1; i <= 150; i += 1) {
+      const id = i.toString(16).padStart(40, "0");
+      pushes.push(commit(id, [pushes.length === 0 ? BASE : pushes[pushes.length - 1].sha]));
+    }
+    arrive(...pushes);
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    expect(gh.asked).toContain(compared(SLUG, BASE, 2));
+    expect(await reports(t)).toHaveLength(150);
+    gh.asked.length = 0;
+    await refresh(t);
+    expect(gh.asked).toContain(compared(SLUG, pushes[149].sha));
+  });
+
+  it("accounts for nothing and moves nothing forward when a page of the comparison cannot be read", async () => {
+    const t = await started();
+    const pushes: Commit[] = [];
+    for (let i = 1; i <= 150; i += 1) {
+      const id = i.toString(16).padStart(40, "0");
+      pushes.push(commit(id, [pushes.length === 0 ? BASE : pushes[pushes.length - 1].sha]));
+    }
+    arrive(...pushes);
+    gh.state.failing = /Jarvis\/compare\/.*page=2$/;
+    expect((await refresh(t)).failures).toEqual([
+      "gate landings: Jarvis main could not be compared with 0000000 (page 2, status 502)",
+    ]);
+    expect(await reports(t)).toHaveLength(0);
+    gh.state.failing = null;
+    gh.asked.length = 0;
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    expect(gh.asked).toContain(compared(SLUG, BASE, 2));
+    expect(await reports(t)).toHaveLength(150);
   });
 
   it("finds the pull request of a commit the closed list does not name, by asking about that commit", async () => {
@@ -251,7 +307,7 @@ describe("what arrived on main", () => {
     expect(row.data).toMatchObject({ repo: "WikiTom", sha: head, subject: "pull request 57" });
     gh.asked.length = 0;
     await refresh(t);
-    expect(gh.asked).toContain(`${WIKITOM_SLUG}/compare/${squash}...main`);
+    expect(gh.asked).toContain(compared(WIKITOM_SLUG, squash));
   });
 
   it("reports a WikiTom pull request that landed with the gate shut", async () => {
@@ -302,12 +358,12 @@ describe("what arrived on main", () => {
     gh.asked.length = 0;
     expect(await refresh(t)).toEqual({ open: 0, failures: [] });
     // Read again from the same commit.
-    expect(gh.asked).toContain(`${SLUG}/compare/${BASE}...main`);
-    expect((await reports(t)).map((row) => row.subject)).toEqual([landingKey(REPO, pushed)]);
+    expect(gh.asked).toContain(compared(SLUG, BASE));
+    expect((await reports(t)).map((row) => row.subject)).toEqual([noPullRequest(REPO, pushed)]);
     expect((await mergeRows(t)).map((row) => row.key)).toEqual([mergeKey(REPO, head)]);
     gh.asked.length = 0;
     await refresh(t);
-    expect(gh.asked).toContain(`${SLUG}/compare/${sha("b")}...main`);
+    expect(gh.asked).toContain(compared(SLUG, sha("b")));
   });
 });
 

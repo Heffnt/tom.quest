@@ -16,13 +16,18 @@
 //         LANDING_JOB, one job-failed row per commit), which the digest shows
 //         once among what is broken and which is cleared when the gate opens;
 //   a commit that belongs to no pull request
-//       — the same report, keyed on the commit itself; except on main of a
-//         repository in MAIN_TAKES_PUSHES (WikiTom, whose main takes the
-//         nightly job's pushes), where such a commit is filed as nothing.
+//       — a report of its own whatever rows its commit has, keyed on the
+//         commit (noPullRequestKey), which the gate opening never clears;
+//         except on main of a repository in MAIN_TAKES_PUSHES (WikiTom, whose
+//         main takes the nightly job's pushes), where such a commit is filed
+//         as nothing.
 //
 // WHICH COMMITS ARRIVED. The record keeps, per repository, the newest commit
 // on main it has accounted for (the table gateMainHeads). A refresh asks
-// GitHub to compare that commit with main. The commits that arrived are the
+// GitHub to compare that commit with main, page by page until it holds every
+// commit the comparison counts (total_commits); a comparison it cannot read
+// whole is a failure and accounts for nothing, so no commit is ever skipped.
+// The commits that arrived are the
 // ones on main's FIRST-PARENT line since it: each landing is one such commit
 // (a merge commit, a squash commit, a fast-forwarded head), and a merge
 // commit's other commits are the pull request's own, which arrive with it and
@@ -60,6 +65,17 @@ const MAIN = "main";
 /** How many recently closed pull requests one refresh reads: GitHub's page
  *  maximum, far more than land in five minutes. */
 const CLOSED_PULLS_READ = 100;
+
+/** How many commits of a comparison one read asks for: GitHub's page maximum.
+ *  Main moving by more than this in five minutes takes a second page. */
+const COMPARE_PAGE = 100;
+
+/** The report of a commit that belongs to no pull request. Not landingKey: a
+ *  gate that opens later for that commit (clearLandingReportIfOpen) does not
+ *  make a change that reached main without a pull request one that had one. */
+function noPullRequestKey(repo: string, sha: string): string {
+  return `${landingKey(repo, sha)}:no-pull-request`;
+}
 
 type GitHubCommit = {
   sha: string;
@@ -104,9 +120,9 @@ export const internalSetMainSeen = internalMutation({
 });
 
 /**
- * File one commit that arrived on main: a merge row when the gate is open for
- * the head it is keyed on, a report of a landing past the gate otherwise.
- * Answers which it wrote.
+ * File one commit that arrived on main: a report when it belongs to no pull
+ * request; for a pull request, a merge row when the gate is open for its head,
+ * a report of a landing past the gate otherwise. Answers which it wrote.
  */
 export const internalAccountForCommit = internalMutation({
   args: {
@@ -118,31 +134,33 @@ export const internalAccountForCommit = internalMutation({
     pull: v.optional(v.object({ number: v.number(), title: v.string(), headSha: v.string() })),
   },
   handler: async (ctx, { repo, commit, subject, pull }): Promise<{ filed: "merge" | "report" }> => {
-    const gateSha = pull?.headSha ?? commit;
-    const gate = await mergeGateFor(ctx, repo, gateSha);
     const short = (sha: string) => sha.slice(0, 7);
+    if (pull === undefined) {
+      // No pull request is no landing through the gate, whatever rows the
+      // commit itself has.
+      await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
+        job: LANDING_JOB,
+        key: noPullRequestKey(repo, commit),
+        error: `${repo} commit ${short(commit)} arrived on ${MAIN} with no pull request: "${subject}".`,
+      });
+      return { filed: "report" };
+    }
+    const gate = await mergeGateFor(ctx, repo, pull.headSha);
     if (gate.allowed) {
       await ctx.runMutation(internal.ttsMerge.internalRecordMerge, {
         repo,
-        sha: gateSha,
-        subject: pull?.title || subject,
+        sha: pull.headSha,
+        subject: pull.title || subject,
         // The sentence mergedOnMain writes for the same fact, and where it
         // landed: this file read it from GitHub's own list.
-        mainCheck:
-          pull === undefined
-            ? `${short(commit)} is on ${MAIN}`
-            : `${short(gateSha)} is the head of pull request #${pull.number}, merged into ${MAIN} as ${short(commit)}`,
+        mainCheck: `${short(pull.headSha)} is the head of pull request #${pull.number}, merged into ${MAIN} as ${short(commit)}`,
       });
       return { filed: "merge" };
     }
-    const missing = gate.missing.join(", ");
     await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
       job: LANDING_JOB,
-      key: landingKey(repo, gateSha),
-      error:
-        pull === undefined
-          ? `${repo} commit ${short(commit)} arrived on ${MAIN} with no pull request, and the merge gate is shut for it: missing ${missing}.`
-          : `${repo} pull request #${pull.number} landed on ${MAIN} as ${short(commit)} with the merge gate shut for its head ${short(gateSha)}: missing ${missing}.`,
+      key: landingKey(repo, pull.headSha),
+      error: `${repo} pull request #${pull.number} landed on ${MAIN} as ${short(commit)} with the merge gate shut for its head ${short(pull.headSha)}: missing ${gate.missing.join(", ")}.`,
     });
     return { filed: "report" };
   },
@@ -193,8 +211,9 @@ function subjectOf(commit: GitHubCommit): string {
  * from the same commit, on the next refresh.
  *
  * GitHub is asked, per repository: once when main has not moved (the
- * comparison); and when it has, once more for the recently closed pull
- * requests, and once for each arrived commit they do not name.
+ * comparison's first page); and when it has, once per further page of the
+ * comparison, once for the recently closed pull requests, and once for each
+ * arrived commit they do not name.
  */
 export async function accountForMain(ctx: ActionCtx, token: string): Promise<string[]> {
   const failures: string[] = [];
@@ -227,23 +246,39 @@ export async function accountForMain(ctx: ActionCtx, token: string): Promise<str
       await ctx.runMutation(internal.gateLandings.internalSetMainSeen, { repo, sha });
       continue;
     }
-    const compare = await ask(slug, `compare/${seen}...${MAIN}`);
-    const body = compare.body as { status?: unknown; total_commits?: unknown; commits?: unknown } | null;
-    if (body === null || !Array.isArray(body.commits)) {
-      fail(`main could not be compared with ${seen.slice(0, 7)} (status ${compare.status})`);
+    // Every commit of the comparison, page by page. The pages come in no one
+    // order, which does not matter: firstParentLine reads parents, not order.
+    // A comparison not read whole accounts for nothing and moves nothing
+    // forward, so the next refresh reads it again from the same commit.
+    const arrived: GitHubCommit[] = [];
+    const held = new Set<string>();
+    let total = 0;
+    let unread: string | null = null;
+    for (let page = 1; ; page += 1) {
+      const compare = await ask(slug, `compare/${seen}...${MAIN}?per_page=${COMPARE_PAGE}&page=${page}`);
+      const body = compare.body as { total_commits?: unknown; commits?: unknown } | null;
+      if (body === null || !Array.isArray(body.commits)) {
+        unread = `main could not be compared with ${seen.slice(0, 7)} (page ${page}, status ${compare.status})`;
+        break;
+      }
+      const fresh = (body.commits as GitHubCommit[]).filter(
+        (commit) => typeof commit?.sha === "string" && !held.has(commit.sha),
+      );
+      for (const commit of fresh) {
+        held.add(commit.sha);
+        arrived.push(commit);
+      }
+      total = typeof body.total_commits === "number" ? body.total_commits : arrived.length;
+      if (arrived.length >= total || fresh.length === 0) break;
+    }
+    if (unread === null && arrived.length < total) {
+      unread = `main moved by ${total} commits since ${seen.slice(0, 7)} and GitHub listed ${arrived.length} of them; none was accounted for`;
+    }
+    if (unread !== null) {
+      fail(unread);
       continue;
     }
-    const arrived = (body.commits as GitHubCommit[]).filter((commit) => typeof commit?.sha === "string");
     if (arrived.length === 0) continue;
-    if (typeof body.total_commits === "number" && body.total_commits > arrived.length) {
-      // GitHub lists at most 250 commits of a comparison. Past that the newest
-      // commit is not in the list, and nothing here can say which arrived.
-      fail(`main moved by ${body.total_commits} commits since ${seen.slice(0, 7)}, more than one read lists; they were not accounted for`);
-      const head = await ask(slug, `commits/${MAIN}`);
-      const sha = (head.body as { sha?: unknown } | null)?.sha;
-      if (typeof sha === "string") await ctx.runMutation(internal.gateLandings.internalSetMainSeen, { repo, sha });
-      continue;
-    }
     const line = firstParentLine(arrived);
     const closed = await ask(
       slug,
