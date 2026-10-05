@@ -10,6 +10,7 @@ import { logEvent } from "./tts";
 import { newestTodoEvents, resolveId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
+import { redactSecrets } from "../shared/redact.mjs";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -161,8 +162,36 @@ type StoredAsk = {
   nearMissed?: unknown;
 };
 
+/** The most characters of the question, and of the decision, a notification
+ *  carries. A push service may refuse a payload over 4,096 bytes (RFC 8030
+ *  section 7.2; the RFC 8291 encryption takes about 100 of them), and a refused
+ *  send is lost. POST /tts/ask caps the question at 400 characters and the
+ *  decision not at all, so the decision is cut at the question's own limit:
+ *  two lines of 400 characters, at most 3 UTF-8 bytes each once control
+ *  characters are collapsed, plus the title and url, stay under 2,600 bytes. */
+const PUSH_LINE_MAX = 400;
+
+/** One line of a notification: whitespace, line breaks and other control
+ *  characters collapsed to one space, secrets redacted as the digest redacts
+ *  them, cut at PUSH_LINE_MAX with an ellipsis. */
+function pushLine(text: string): string {
+  const line = redactSecrets(text).replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim();
+  return line.length <= PUSH_LINE_MAX ? line : `${line.slice(0, PUSH_LINE_MAX - 1).trimEnd()}…`;
+}
+
 /** The decision row (events kind "decision", convex/jarvis/intent.ts) for one
- *  answered ask, built from the ask as recorded; only internalRecordAsk calls it. */
+ *  answered ask, built from the ask as recorded; only internalRecordAsk calls it.
+ *
+ *  A DECISION THE DELEGATE TOOK IS ALSO ONE WEB PUSH to every live
+ *  subscription (convex/pushSend.ts sendToAll): the question on one line, the
+ *  decision on the next, and a tap opens that decision's row on /intent
+ *  (app/intent/intent-client.tsx reads the #decision-<askId> fragment). Tom's
+ *  answer of 2026-10-04 to the question about decisions taken while he is
+ *  reachable but not in the session: "agreed. lets send notifications to my
+ *  phone for this." A refusal took nothing in his name and is not pushed: the
+ *  caller took its fallback, and the digest lists it as "REFUSED and parked"
+ *  (convex/ttsCompose.ts objectionLine). The push is scheduled, so a send that
+ *  fails (no VAPID pair, a push service error) never undoes the row. */
 async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
   await insertEvent(ctx, {
     kind: "decision",
@@ -183,6 +212,14 @@ async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
       model: ask.model,
       ...(ask.nearMissed === undefined ? {} : { nearMissed: ask.nearMissed }),
     },
+  });
+  if (ask.refused || ask.decision === null) return;
+  await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, {
+    title: "Delegate decision",
+    body: `${pushLine(ask.question)}\n${pushLine(ask.decision)}`,
+    // The askId is 8 lowercase hex characters (POST /tts/ask refuses any
+    // other), so it goes into the fragment as it is.
+    url: `/intent#decision-${ask.askId}`,
   });
 }
 

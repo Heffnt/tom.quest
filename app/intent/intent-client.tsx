@@ -26,7 +26,7 @@
 // and the words the spec and the code disagree on. The first two he settles
 // here (jarvis/intent.settle); the words he settles in the files.
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
@@ -42,6 +42,7 @@ import VocabularyDisagreements from "./components/vocabulary-disagreements";
 import {
   countVoices,
   dateLabel,
+  decisionFragment,
   evalItemsForLine,
   filterLines,
   groupByKind,
@@ -73,13 +74,28 @@ export default function IntentClient() {
   const evalItems = useQuery(api.jarvis.intent.evalItems, isTom ? {} : "skip");
   const settle = useMutation(api.jarvis.intent.settle);
 
-  // The /vocabulary address redirects to /intent#vocabulary (next.config.ts):
-  // the fragment picks that view once, on arrival, and moves nothing. It stays
-  // while Slack messages and old links name /vocabulary; the redirect alone
-  // would land them on the default view. No link names another view's
-  // fragment, so no other one is read.
+  // Two fragments pick a view. The /vocabulary address redirects to
+  // /intent#vocabulary (next.config.ts): that fragment picks the vocabulary
+  // view on arrival and on a hash change, and moves nothing. It stays while Slack messages
+  // and old links name /vocabulary; the redirect alone would land them on the
+  // default view. A delegate decision's phone notification opens
+  // /intent#decision-<askId> (convex/ttsAsk.ts insertDecision): that fragment
+  // picks the disagreements view and the decision's row, read on arrival and
+  // again on a hash change, since a tap on a second notification while the
+  // page is open changes only the fragment. No link names another fragment.
+  const [focusAskId, setFocusAskId] = useState<string | null>(null);
   useEffect(() => {
-    if (window.location.hash === "#vocabulary") setView("vocabulary");
+    const read = () => {
+      if (window.location.hash === "#vocabulary") setView("vocabulary");
+      const askId = decisionFragment(window.location.hash);
+      if (askId !== null) {
+        setView("disagreements");
+        setFocusAskId(askId);
+      }
+    };
+    read();
+    window.addEventListener("hashchange", read);
+    return () => window.removeEventListener("hashchange", read);
   }, [setView]);
 
   const lines = useMemo(() => answer?.lines ?? [], [answer]);
@@ -214,6 +230,7 @@ export default function IntentClient() {
               <Decisions
                 decisions={decisions ?? []}
                 evalItems={evalItems ?? []}
+                focusAskId={focusAskId}
                 lines={lines}
                 selected={selected?.id ?? null}
                 onSelect={select}

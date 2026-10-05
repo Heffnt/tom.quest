@@ -1,5 +1,5 @@
 import { convexTest, type TestConvex } from "convex-test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { gatherTodayFacts } from "./ttsDigest";
@@ -87,7 +87,14 @@ const rows = (t: TestConvex<typeof schema>) =>
   );
 
 describe("POST /tts/ask — the delegate's record", () => {
-  afterEach(() => vi.unstubAllEnvs());
+  // A decision taken schedules its phone notification (convex/pushSend.ts
+  // sendToAll); held timers keep it a scheduled row the tests read, never a
+  // send.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
 
   it("writes one row keyed by the askId, with the todo on the column", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
@@ -297,6 +304,72 @@ describe("POST /tts/ask — the delegate's record", () => {
     await post(t, body({ job: "poll-gmail", askId: "dddddddd", decision: null })); // no answer
     expect((await decisions()).map((d) => d.subject)).toEqual(["3f9c1a22"]);
     expect((await post(t, body({ job: "poll-gmail", askId: "eeeeeeee", restedOn: "ruling:abc" }))).status).toBe(400);
+  });
+
+  // Tom, 2026-10-04: "agreed. lets send notifications to my phone for this."
+  it("pushes one notification for a decision taken, and none for a refusal or an ask that took nothing", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const pushes = async () =>
+      (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+        .filter((job) => job.name.includes("sendToAll"))
+        .map((job) => job.args[0]);
+
+    expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(200);
+    expect(await pushes()).toEqual([
+      {
+        title: "Delegate decision",
+        body: `${body().question}\n${body().decision}`,
+        url: "/intent#decision-3f9c1a22",
+      },
+    ]);
+    // The same askId again writes no second row, so no second push.
+    expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(200);
+    expect(await pushes()).toHaveLength(1);
+
+    // A refusal writes its decision row (the parked option) and pushes nothing.
+    const refusal = await post(
+      t,
+      body({
+        job: "poll-gmail",
+        askId: "aaaaaaaa",
+        refused: true,
+        refusedBecause: "message-in-his-name — writing to the consulate is a message to another human in his name.",
+      }),
+    );
+    expect(refusal.status).toBe(200);
+    const refusedRow = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", "aaaaaaaa")).first(),
+    );
+    expect(refusedRow?.data).toMatchObject({ refused: true });
+    // An attended ask, an unanswered one and a capped one write no row and push nothing.
+    await post(t, body({ sessionId: await seedSession(t), askId: "cccccccc" }));
+    await post(t, body({ job: "poll-gmail", askId: "dddddddd", decision: null }));
+    // poll-gmail's fourth ask in a day (3f9c1a22, aaaaaaaa, dddddddd before it) is past its cap.
+    expect(DELEGATE_MAX_PER_JOB).toBe(3);
+    expect(await (await post(t, body({ job: "poll-gmail", askId: "ffffffff" }))).json()).toMatchObject({ capped: true });
+    expect(await pushes()).toHaveLength(1);
+  });
+
+  it("puts the question and the decision on one line each, redacted, and cuts the decision at the question's limit", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    // Built by concatenation, so no credential-shaped literal sits in the source.
+    const token = "ghp_" + "A".repeat(36);
+    const question = `Do I\n  paste ${token}\u0007 and keep the long branch?`;
+    // POST /tts/ask caps the question at 400 characters and the decision not at all.
+    const long = `Keep it: ${"very ".repeat(100)}long.`;
+    await post(t, body({ job: "poll-gmail", question, options: [long, "Drop it."], recommendation: long, decision: long }));
+    const [push] = (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+      .filter((job) => job.name.includes("sendToAll"))
+      .map((job) => job.args[0] as { body: string });
+    const [first, second, ...rest] = push.body.split("\n");
+    expect(rest).toEqual([]);
+    expect(push.body).not.toContain(token);
+    expect(first).toBe("Do I paste [redacted:github] and keep the long branch?");
+    expect(second.startsWith("Keep it: very very")).toBe(true);
+    expect(second.length).toBeLessThanOrEqual(400);
+    expect(second.endsWith("…")).toBe(true);
   });
 
   it("a retry of an ask recorded before the decision row was written here writes it, once", async () => {

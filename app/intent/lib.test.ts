@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   countVoices,
   dateLabel,
+  decisionFragment,
   filterLines,
   groupByKind,
   evalItemLineSuffix,
@@ -271,5 +272,19 @@ describe("openDisagreements", () => {
     expect(openDisagreements(undefined, [], null)).toBeNull();
     expect(openDisagreements([], undefined, null)).toBeNull();
     expect(openDisagreements([], [], undefined)).toBeNull();
+  });
+});
+
+describe("decisionFragment", () => {
+  it("reads the askId a decision notification's fragment names", () => {
+    expect(decisionFragment("#decision-3f9c1a22")).toBe("3f9c1a22");
+  });
+
+  it("answers null for any other fragment", () => {
+    expect(decisionFragment("")).toBeNull();
+    expect(decisionFragment("#vocabulary")).toBeNull();
+    expect(decisionFragment("#decision-")).toBeNull();
+    expect(decisionFragment("#decision-3F9C1A22")).toBeNull();
+    expect(decisionFragment("#decision-3f9c1a2")).toBeNull();
   });
 });

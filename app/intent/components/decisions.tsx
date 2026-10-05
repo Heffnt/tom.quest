@@ -29,6 +29,7 @@ type Pending = { subject: string; statement: string; action: string; confirm: st
 export default function Decisions({
   decisions,
   evalItems,
+  focusAskId = null,
   lines,
   selected,
   onSelect,
@@ -36,6 +37,12 @@ export default function Decisions({
 }: {
   decisions: Decision[];
   evalItems: EvalItem[];
+  /** The decision a phone notification opened (/intent#decision-<askId>):
+   *  its row is marked. Nothing here scrolls (app/AGENTS.md: never
+   *  auto-scroll); the row's element id equals the fragment, so the browser's
+   *  own jump to a fragment's element applies when the row is drawn as the
+   *  fragment is read. */
+  focusAskId?: string | null;
   lines: IntentLine[];
   selected: string | null;
   onSelect: (line: IntentLine) => void;
@@ -65,7 +72,12 @@ export default function Decisions({
         {disagreementDecisions.length === 0 && <p className="mt-2 text-[12px] text-text-muted">No delegate disagreement in the record.</p>}
         <ul>
           {disagreementDecisions.map((decision) => (
-            <li key={decision.id} className="border-b border-border/50 px-2 py-2">
+            <li
+              key={decision.id}
+              id={decisionRowId(decision.askId)}
+              aria-current={decision.askId === focusAskId ? "true" : undefined}
+              className={`border-b border-border/50 px-2 py-2 ${decision.askId === focusAskId ? "bg-surface-alt" : ""}`}
+            >
               <p className="text-[13px] leading-snug text-text">{decision.question}</p>
               <p className="mt-0.5 text-[13px] leading-snug text-accent">{decision.decision}</p>
               {decision.reason !== null && <p className="mt-0.5 text-[12px] leading-snug text-text-muted">{decision.reason}</p>}
@@ -155,6 +167,12 @@ export default function Decisions({
       )}
     </div>
   );
+}
+
+/** The element id of a decision's row: the fragment a notification opens,
+ *  so the fragment is an anchor on the row. */
+function decisionRowId(askId: string): string {
+  return `decision-${askId}`;
 }
 
 /** What the failing list says when nothing failed: a skipped item was not
