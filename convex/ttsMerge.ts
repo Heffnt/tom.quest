@@ -1078,7 +1078,25 @@ export const internalRecordMerge = internalMutation({
     }
     const key = mergeKey(args.repo, args.sha);
     const existing = await rowFor(ctx, MERGE, key);
-    if (existing) return { recorded: true, id: existing._id, existing: true, gate };
+    if (existing) {
+      // The landing observer (convex/observeMerge.ts) records a landing it
+      // sees first, without the pull request's metadata; the gate's landing
+      // writer (convex/gateLandings.ts) arrives second with it. Whichever runs
+      // first, the row ends with both, on the dts row and its record copy.
+      const missing = {
+        ...(args.pull !== undefined && (existing.data as { pull?: unknown } | undefined)?.pull === undefined ? { pull: args.pull } : {}),
+        ...(args.claim !== undefined && (existing.data as { claim?: unknown } | undefined)?.claim === undefined ? { claim: args.claim } : {}),
+      };
+      if (Object.keys(missing).length > 0) {
+        await ctx.db.patch(existing._id, { data: { ...(existing.data as Record<string, unknown>), ...missing } });
+        const copy = await ctx.db
+          .query("events")
+          .withIndex("by_kind_subject_at", (q) => q.eq("kind", MERGE).eq("subject", key))
+          .first();
+        if (copy !== null) await ctx.db.patch(copy._id, { data: { ...(copy.data as Record<string, unknown>), ...missing } });
+      }
+      return { recorded: true, id: existing._id, existing: true, gate };
+    }
     const at = Date.now();
     const data = {
       repo: args.repo,

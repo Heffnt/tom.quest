@@ -209,6 +209,13 @@ describe("validateEvent", () => {
     expect(validateEvent({ kind: "pause", ...pause, data: noQuestion }))
       .toEqual({ ok: false, error: "a pause awaiting Tom names data.question" });
     expect(validateEvent({ kind: "pause", subject: "s", data: { reason: "slot at cap", sessionId: "s", liftsAt: 1 } }).ok).toBe(true);
+    // His answer goes to the session the pause names: it is the subject.
+    const noSession = { ...pause.data };
+    delete noSession.sessionId;
+    for (const data of [noSession, { ...pause.data, sessionId: "another-session" }]) {
+      expect(validateEvent({ kind: "pause", ...pause, data }))
+        .toEqual({ ok: false, error: "a pause names data.sessionId as its subject" });
+    }
   });
 
   it("refuses a suggestion, a quality check or a diagnosis whose fixed fields are malformed", () => {

@@ -270,9 +270,11 @@ export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thr
  *  (convex/jarvis/events.ts copyDtsRow), so it refuses these: a registry row
  *  it stored could become the registry convex/jarvis/design.ts reads, and a
  *  use or issue row it stored, with no data.by or data over its cap, would
- *  reach the part-state read (convex/jarvis/partStates.ts) unchecked. */
+ *  reach the part-state read (convex/jarvis/partStates.ts) unchecked; a
+ *  pause, suggestion, quality check or diagnosis it stored would reach the
+ *  Jarvis thread's reads (convex/thread.ts), which trust their shapes. */
 /** @type {const} */
-export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation", "use", "issue", "presence"];
+export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation", "use", "issue", "presence", "pause", "suggestion", "quality-check", "diagnosis"];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
@@ -677,6 +679,10 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   if (kind === "pause") {
     if (!isPlainObject(data) || !PAUSE_REASONS.includes(data.reason)) {
       return { ok: false, error: `a pause names data.reason as one of ${PAUSE_REASONS.join(", ")}` };
+    }
+    // The thread routes his answer to the session the pause names.
+    if (!nonEmptyString(data.sessionId) || data.sessionId !== subject) {
+      return { ok: false, error: "a pause names data.sessionId as its subject" };
     }
     if (data.reason === "awaiting you, present" && !nonEmptyString(data.question)) {
       return { ok: false, error: "a pause awaiting Tom names data.question" };

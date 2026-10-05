@@ -191,6 +191,23 @@ describe("what arrived on main", () => {
     });
   });
 
+  it("fills the pull request and claim on a merge row the landing observer recorded first", async () => {
+    const t = await started();
+    const head = sha("a");
+    const squash = sha("b");
+    await seedGate(t, head);
+    // The landing observer (convex/observeMerge.ts) records it first, without the metadata.
+    await t.mutation(internal.ttsMerge.internalRecordMerge, { repo: REPO, sha: head, subject: "pull request 41", mainCheck: "observed" });
+    expect((await eventsOf(t, MERGE))[0].data).not.toHaveProperty("pull");
+    arrive(commit(squash, [BASE]));
+    gh.state.closed.set(SLUG, [{ ...landed(41, head, squash), body: "The claim.\n\nThe rest." }]);
+    await refresh(t);
+    const rows = await eventsOf(t, MERGE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toMatchObject({ pull: { number: 41, title: "pull request 41" }, claim: "The claim.", mainCheck: "observed" });
+    expect((await mergeRows(t))[0].data).toMatchObject({ pull: { number: 41, title: "pull request 41" }, claim: "The claim." });
+  });
+
   it("leaves the claim off a merge row whose pull request has no body", async () => {
     const t = await started();
     const head = sha("a");

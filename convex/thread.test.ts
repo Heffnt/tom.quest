@@ -875,3 +875,23 @@ describe("thread.send, a reply per row type", () => {
     );
   });
 });
+
+describe("the thread's row types and POST /tts/event", () => {
+  it("refuses the four types the thread trusts, so a malformed one cannot break the stream", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    try {
+      const t = convexTest({ schema, modules });
+      const viewer = await tom(t);
+      const post = (body: unknown) => t.fetch("/tts/event", {
+        method: "POST", headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      for (const kind of ["pause", "suggestion", "quality-check", "diagnosis"]) {
+        expect((await post({ kind, key: "digest", data: { part: "digest" } })).status).toBe(403);
+      }
+      expect(await t.run((ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "diagnosis")).collect())).toEqual([]);
+      expect((await viewer.query(api.thread.messages, {})).entries).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
