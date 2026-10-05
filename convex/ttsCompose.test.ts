@@ -1003,8 +1003,34 @@ describe("the superseded run", () => {
     const items = message.lines.filter((line) => line.section === "superseded" && line.role === "item");
     expect(items).toHaveLength(1);
     expect(items[0].text).toContain("in scope repo:Jarvis no longer stands");
+    // No page lists ruling rows yet, so the line links to the /tts page and
+    // not to /intent.
+    expect(items[0]).toMatchObject({ url: TAB_EVERYTHING });
     const facts = todayFactsBlock(sept9({ superseded: [{ id: "r1", text: "Your ruling no longer stands." }] }), false);
     expect(JSON.stringify(facts)).toContain("superseded:r1");
+  });
+
+  it("prints every superseded ruling and says of none that it is on a page, fitted or not", () => {
+    const superseded = Array.from({ length: 14 }, (_, n) => ({
+      id: `r${n}`,
+      text: `Your ruling of 2026-10-04 in scope part:p${n} no longer stands, because a later sentence of yours replaced it`,
+    }));
+    const whole = composeToday(sept9({ superseded }), { canReply: false });
+    const printed = whole.lines.filter((line) => line.section === "superseded" && line.role === "item");
+    expect(printed).toHaveLength(14);
+    expect(printed.some((line) => line.text.includes("on the page"))).toBe(false);
+
+    const long = (what: string, n: number) => `${what} ${n} ${"carries enough words to fill the line ".repeat(3)}`;
+    const facts = sept9({
+      superseded,
+      boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
+      broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
+    });
+    const { message, truncated } = composeTodayFitted(facts, { canReply: false });
+    expect(truncated).toBe(true);
+    const kept = message.lines.filter((line) => line.section === "superseded");
+    expect(kept.filter((line) => line.role === "item").length).toBeGreaterThan(0);
+    expect(kept.some((line) => line.text.includes("on the page"))).toBe(false);
   });
 
   it("prints nothing when no ruling was superseded", () => {

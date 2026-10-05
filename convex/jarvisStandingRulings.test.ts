@@ -236,6 +236,37 @@ describe("the ask reader's standing rulings", () => {
     expect(first).toMatchObject({ id: all, scope: "all", sentence: "all yes", question: "May Jarvis proceed in all?", provenance: { session: "a" } });
   });
 
+  it("finds a standing ruling behind 150 newer superseded ones in its scope", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const base = 1_700_000_000_000;
+    const ruling = (n: number, standing: boolean) => ({
+      kind: "ruling",
+      at: base + n,
+      provenance: {},
+      subject: "repo:Jarvis",
+      data: {
+        id: `ruling:${n.toString(16).padStart(64, "0")}`,
+        sentence: `sentence ${n}`,
+        scope: "repo:Jarvis",
+        question: "q",
+        provenance: { session: "a" },
+        standing,
+        ...(standing ? {} : { supersededBy: "k17later" }),
+      },
+      text: `sentence ${n}`,
+    });
+    const kept = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("events", ruling(0, true));
+      for (let n = 1; n <= 150; n += 1) await ctx.db.insert("events", ruling(n, false));
+      return id;
+    });
+    const res = await t.fetch("/jarvis/context?for=ask&job=work-queue&scope=repo:Jarvis", { headers: KEY });
+    const body = await res.json();
+    expect(body.standingRulings.map((one: { id: string }) => one.id)).toEqual([kept]);
+    expect(body.standingRulingsComplete).toBe(true);
+  });
+
   it("refuses a scope off the four forms", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");

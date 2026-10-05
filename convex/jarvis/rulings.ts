@@ -58,6 +58,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { isRulingVerdict } from "../ttsRulings";
 import { nyCalendarDayKey } from "../ttsShared";
+import { MIB, ReadBudget, readWithin } from "../readBudget";
 import { sha256Hex } from "../ttsSignoff";
 import { jarvisAuth, jsonResponse } from "./auth";
 import { listForDigest } from "./outbox";
@@ -128,8 +129,10 @@ const NEW_INFORMATION = {
 } as const;
 type NewInformationType = keyof typeof NEW_INFORMATION;
 
-/** Per scope, the most ruling rows one read takes. */
-const STANDING_SCAN = 100;
+/** The bytes of ruling rows one ask may read, across its scopes. A read of
+ *  standing rows only, by bytes and not by a row count (convex/readBudget.ts),
+ *  so ended rulings cannot crowd a standing one out of the answer. */
+const STANDING_BYTES = 4 * MIB;
 
 type StandingRuling = {
   id: string;
@@ -153,28 +156,40 @@ const rulingData = (row: Doc<"events">) => (row.data ?? {}) as RulingData;
 
 /**
  * The rulings that stand in the given scopes and in "all", newest first: what
- * an asker reads before it asks. A ruling with supersededBy set is left out.
+ * an asker reads before it asks. The index holds data.standing, so a
+ * superseded ruling (standing false) is never read. `complete` is false when
+ * the byte budget stopped a read with rows possibly left.
  */
-export async function standingRulings(ctx: QueryCtx, scopes: readonly string[]): Promise<StandingRuling[]> {
+export async function standingRulings(
+  ctx: QueryCtx,
+  scopes: readonly string[],
+): Promise<{ rulings: StandingRuling[]; complete: boolean }> {
   const wanted = [...new Set([...scopes, "all"])];
-  const rows = (
-    await Promise.all(
-      wanted.map((scope) =>
+  const budget = ReadBudget.of(STANDING_BYTES);
+  const rows: Doc<"events">[] = [];
+  // One scope after another, never in parallel: reads under one budget run
+  // in turn (convex/readBudget.ts).
+  for (const scope of wanted) {
+    rows.push(
+      ...(await readWithin(
+        budget.allot(`standing rulings in ${scope}`, STANDING_BYTES),
         ctx.db
           .query("events")
-          .withIndex("by_kind_subject_at", (q) => q.eq("kind", RULING).eq("subject", scope))
-          .order("desc")
-          .take(STANDING_SCAN),
-      ),
-    )
-  ).flat();
-  return rows
-    .filter((row) => rulingData(row).standing === true && rulingData(row).supersededBy === undefined)
+          .withIndex("by_kind_subject_standing_at", (q) =>
+            q.eq("kind", RULING).eq("subject", scope).eq("data.standing", true),
+          )
+          .order("desc"),
+        Number.POSITIVE_INFINITY,
+      )),
+    );
+  }
+  const rulings = rows
     .sort((a, b) => b.at - a.at)
     .map((row) => {
       const d = rulingData(row);
       return { id: row._id, at: row.at, scope: d.scope, sentence: d.sentence, question: d.question, provenance: d.provenance };
     });
+  return { rulings, complete: budget.cuts().length === 0 };
 }
 
 /** Write one standing ruling, after checking the sentence against the thread

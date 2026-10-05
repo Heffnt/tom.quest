@@ -129,6 +129,10 @@ export default defineSchema({
     // (convex/jarvis/events.ts recordEvent), and of a standing ruling
     // (convex/jarvis/rulings.ts recordStanding).
     .index("by_kind_data_id", ["kind", "data.id"])
+    // One scope's standing rulings, newest first: the ask reader's read
+    // (convex/jarvis/rulings.ts standingRulings). data.standing is in the
+    // index so a superseded ruling is never read, however many there are.
+    .index("by_kind_subject_standing_at", ["kind", "subject", "data.standing", "at"])
     // One kind's rows by when the record wrote them (_creationTime, which ends
     // every index): the digest's read of post-history-cut box changes recorded
     // in its window, however long after they happened (convex/boxChanges.ts).

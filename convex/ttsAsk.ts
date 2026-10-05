@@ -484,8 +484,16 @@ export const internalAskContext = internalQuery({
     // the question unless new information has superseded it, so the asker
     // reads it before it asks him or the delegate (Tom, 2026-10-04: "if I
     // say it is good once then that holds").
-    const rulings = await standingRulings(ctx, args.scopes ?? []);
-    return { asked, cap: capFor(args), priorObjections, standingRulings: rulings };
+    const standing = await standingRulings(ctx, args.scopes ?? []);
+    return {
+      asked,
+      cap: capFor(args),
+      priorObjections,
+      standingRulings: standing.rulings,
+      // False when the read of rulings stopped at its byte budget: the list
+      // can then leave a standing ruling out.
+      standingRulingsComplete: standing.complete,
+    };
   },
 });
 

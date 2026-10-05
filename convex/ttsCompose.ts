@@ -89,7 +89,6 @@ export const SECTION_CAPS = {
   objections: 12,
   calendar: 12,
   settled: 6,
-  superseded: 6,
   overnight: 6,
   broken: 4,
   box: 8,
@@ -299,7 +298,9 @@ export function fit(
     let target = -1;
     for (let i = runs.length - 1; i >= 1; i -= 1) {
       const section = current.lines[runs[i].start].section;
-      if (section === PROTECTED_RUN || section === CUT_RUN) continue;
+      // The superseded run is not reduced either: its reduction would say
+      // its lines are on a page, and no page lists ruling rows yet.
+      if (section === PROTECTED_RUN || section === CUT_RUN || section === SUPERSEDED_RUN) continue;
       if (runs[i].end - runs[i].start > 2) {
         target = i;
         break;
@@ -386,6 +387,8 @@ const PROTECTED_RUN = "needs-you-today";
 /** The run saying which reads stopped with rows left: `fit` never reduces
  *  it, and the last resort drops its lines after every other line. */
 const CUT_RUN = "cut";
+/** His standing rulings that new information ended (composeToday 2c). */
+const SUPERSEDED_RUN = "superseded";
 
 // ── The dedup index — one appearance per item per day ────────────────────────
 
@@ -1015,10 +1018,12 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   if ((f.superseded ?? []).length > 0) {
     pushRun(
       lines,
-      "superseded",
+      SUPERSEDED_RUN,
       SUPERSEDED_LEAD,
-      (f.superseded ?? []).map((row) => ({ text: row.text, url: INTENT_URL })),
-      SECTION_CAPS.superseded,
+      (f.superseded ?? []).map((row) => ({ text: row.text, url: TAB_EVERYTHING })),
+      // Every line printed: no page lists ruling rows yet, so a "more lines
+      // are on the page" line would send him to a page without them.
+      (f.superseded ?? []).length,
     );
   }
 
@@ -1329,7 +1334,7 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     facts.push(fact(`ask:${objection.askId}`, line.text, [line.url], [index + 1]));
   });
   for (const row of f.settled ?? []) facts.push(fact(`settled:${row.id}`, row.text, [INTENT_URL]));
-  for (const row of f.superseded ?? []) facts.push(fact(`superseded:${row.id}`, row.text, [INTENT_URL]));
+  for (const row of f.superseded ?? []) facts.push(fact(`superseded:${row.id}`, row.text, [TAB_EVERYTHING]));
   if (f.needsYou.length > 0) {
     facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));
   }
