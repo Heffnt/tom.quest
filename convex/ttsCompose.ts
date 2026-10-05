@@ -442,6 +442,15 @@ export type ObjectionFact = {
    *  (convex/ttsSignoff.ts): he decided it by pressing "sign and send", so
    *  the lead credits it to neither the delegate nor the gates. */
   sentAsTom?: boolean;
+  /** TRUE FOR A DECISION TOM TOOK HIMSELF: his reply on /thread to a
+   *  question `jarvis decide` held for him (convex/ttsAsk.ts, decidedBy
+   *  "tom"). The lead counts it apart from the delegate's decisions. */
+  decidedByTom?: boolean;
+  /** Who decided and how long the question waited for him first, spelled by
+   *  the gatherer (shared/decided-by.mjs decidedByText): "decided by Tom
+   *  after 12 minutes", "decided by the delegate after waiting 120 minutes".
+   *  Absent for a decision with no recorded wait. */
+  decidedByText?: string;
 };
 
 /** One line per TODO, from every session event in the window that named it
@@ -510,6 +519,9 @@ export type TodayFacts = {
   /** How many of the WHOLE objection list are messages sent in his name on
    *  his sign-off. Absent means "count the printed ones". */
   objectionSent?: number;
+  /** How many of the WHOLE objection list Tom decided himself on /thread.
+   *  Absent means "count the printed ones". */
+  objectionTom?: number;
   /** Captured since the last morning message, still active, and judged by the
    *  triage to need him today; oldest first. */
   needsYou: NeedsYouTodayFact[];
@@ -625,8 +637,15 @@ export function objectionLine(o: ObjectionFact, n: number): { text: string; url:
       url,
     };
   }
+  // WHO DECIDED comes before the reason, so a long reason is what the line
+  // cut takes. Tom's own decision carries no reason: his reply is the
+  // reason, and the decision is what it named.
+  const who = o.decidedByText ? `, ${stripStop(o.decidedByText)}` : "";
+  if (o.decidedByTom) {
+    return { text: statement(`${n}. ${capitalise(stripStop(o.decision))}${who || ", decided by Tom"}`), url };
+  }
   const because = o.reason ? `, because ${stripStop(o.reason)}` : "";
-  return { text: statement(`${n}. ${capitalise(stripStop(o.decision))}${because}`), url };
+  return { text: statement(`${n}. ${capitalise(stripStop(o.decision))}${who}${because}`), url };
 }
 
 /** One needs-you-today item: the todo's statement, then the triage's reason
@@ -790,6 +809,11 @@ function objectionSentCount(f: TodayFacts): number {
   return f.objectionSent ?? f.objections.filter((o) => o.sentAsTom === true).length;
 }
 
+/** How many of the objection list Tom decided himself, counted the same way. */
+function objectionTomCount(f: TodayFacts): number {
+  return f.objectionTom ?? f.objections.filter((o) => o.decidedByTom === true).length;
+}
+
 /**
  * The objection list's lead. TWO KINDS SHARE THE LIST and the lead names each
  * for what it is: things were DECIDED in his name (the delegate's decisions, a
@@ -798,7 +822,19 @@ function objectionSentCount(f: TodayFacts): number {
  * morning of merges credited to the delegate is a false statement about who
  * acted, which is the one thing this list exists to let him object to.
  */
-export function objectionsLead(all: number, merges: number, sent = 0): string {
+export function objectionsLead(all: number, merges: number, sent = 0, tom = 0): string {
+  // THE FOURTH KIND: a question Tom decided himself, replying on /thread to
+  // one `jarvis decide` held for him. It is his, so it is named first, apart
+  // from the delegate's, and silence lets only the others stand.
+  if (tom > 0) {
+    const decidedForYou = Math.max(0, all - merges - sent - tom);
+    const parts = [`you decided ${countWord(tom)} ${plural(tom, "question", "questions")} on /thread`];
+    if (decidedForYou > 0) parts.push(`${countWord(decidedForYou)} ${plural(decidedForYou, "thing was", "things were")} decided in your name`);
+    if (merges > 0) parts.push(`${countWord(merges)} ${plural(merges, "merge", "merges")} landed on ${plural(merges, "its", "their")} own`);
+    if (sent > 0) parts.push(`${countWord(sent)} ${plural(sent, "message", "messages")} went out on your sign-off`);
+    const joined = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+    return `${capitalise(joined)}${decidedForYou + merges > 0 ? "; silence means the others stand" : ""}.`;
+  }
   const decided = Math.max(0, all - merges - sent);
   const stand = "silence means they stand";
   // THE THIRD KIND: a message that went out in his name on his own sign-off.
@@ -897,7 +933,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     pushRun(
       lines,
       "objections",
-      objectionsLead(all, objectionMergeCount(f), objectionSentCount(f)),
+      objectionsLead(all, objectionMergeCount(f), objectionSentCount(f), objectionTomCount(f)),
       f.objections.map((objection, index) => objectionLine(objection, index + 1)),
       SECTION_CAPS.objections,
       beyond > 0

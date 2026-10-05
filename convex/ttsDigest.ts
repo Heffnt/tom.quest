@@ -42,6 +42,7 @@ import { displayTime } from "../shared/clock.mjs";
 // worker/jobs/nightly.mjs reports git stderr verbatim, and git stderr can name
 // a tokenised remote.
 import { redactSecrets } from "../shared/redact.mjs";
+import { decidedByText } from "../shared/decided-by.mjs";
 import { DIGEST_LINE, digestFacts, lastDigest } from "./jarvis/outbox";
 import { DISAGREEMENT_SETTLED } from "./jarvis/intent";
 import { resolveId, todoEvents, todoReader } from "./jarvis/tables";
@@ -287,6 +288,14 @@ export const internalDigestWindow = internalQuery({
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+/** The clause naming who took a decision row and how long its question
+ *  waited for Tom first, as the objection line carries it; nothing for a
+ *  delegate decision with no recorded wait. */
+function whoDecided(d: Record<string, unknown>): { decidedByText?: string } {
+  const text = decidedByText(d.decidedBy === "tom", d.waitedMs);
+  return text === null ? {} : { decidedByText: text };
 }
 
 /** `str`, with every credential-shaped span taken out. EVERY FREE-TEXT ERROR
@@ -544,6 +553,10 @@ export async function gatherTodayFacts(
     // A message sent in his name on his own sign-off: his decision, counted
     // apart from both.
     sentAsTom?: boolean;
+    // A question Tom decided himself on /thread (convex/ttsAsk.ts decidedBy
+    // "tom"), and the clause naming who decided after how long.
+    decidedByTom?: boolean;
+    decidedByText?: string;
   }[] = [];
 
   // The delegate's decisions recorded by `jarvis decide` (convex/jarvis/
@@ -577,6 +590,11 @@ export async function gatherTodayFacts(
       reason: safeStr(d.reason),
       refused: d.refused === true,
       refusedBecause: safeStr(d.refusedBecause),
+      // Who decided and how long the question waited for Tom: a decision
+      // by Tom has this row, written in its ask's transaction, so this
+      // reading is the one that says so.
+      ...(d.decidedBy === "tom" ? { decidedByTom: true } : {}),
+      ...whoDecided(d),
     });
   }
 
@@ -958,6 +976,8 @@ export async function gatherTodayFacts(
       fallback: o.fallback,
       merged: o.merged === true,
       ...(o.sentAsTom === true ? { sentAsTom: true } : {}),
+      ...(o.decidedByTom === true ? { decidedByTom: true } : {}),
+      ...(o.decidedByText === undefined ? {} : { decidedByText: o.decidedByText }),
     }));
 
   // 7. What changed on the box (plan-root T1): the box changes since the
@@ -1006,6 +1026,7 @@ export async function gatherTodayFacts(
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
     objectionSent: objections.filter((o) => o.sentAsTom === true).length,
+    objectionTom: objections.filter((o) => o.decidedByTom === true).length,
     // A flagged capture that preparation has since dated keeps its lateness
     // here, and is said once, in the needs-you run (composeToday). Dated ones
     // lead the run in the today list's own oldest-first order, so the item the

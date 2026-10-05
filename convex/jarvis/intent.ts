@@ -61,6 +61,12 @@ export type Decision = {
   refusedBecause: string | null;
   model: string | null;
   todoId: string | null;
+  /** "tom" when his reply on /thread is the decision (convex/ttsAsk.ts
+   *  decidedBy "tom"); false for the delegate's. */
+  decidedByTom: boolean;
+  /** How long the question waited for him before it was decided; null when
+   *  no wait was recorded. */
+  waitedMs: number | null;
   settled: Settlement | null;
 };
 
@@ -136,6 +142,8 @@ function decisionOf(row: Doc<"events">, settled: Map<string, Settlement>): Decis
     refusedBecause: str(data.refusedBecause),
     model: str(data.model),
     todoId: str(data.todoId),
+    decidedByTom: data.decidedBy === "tom",
+    waitedMs: typeof data.waitedMs === "number" && Number.isFinite(data.waitedMs) ? data.waitedMs : null,
     settled: settled.get(decisionSubject(askId)) ?? null,
   };
 }

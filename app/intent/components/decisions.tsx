@@ -21,6 +21,7 @@ import { errMessage } from "@/app/jarvis/lib";
 import RulingDialog from "@/app/jarvis/components/ruling-dialog";
 import { evalItemLineSuffix, linesRestedOn, rulingLineHasSuffix, type IntentLine } from "../lib";
 import { displayForm } from "@/shared/clock.mjs";
+import { decidedByText } from "@/shared/decided-by.mjs";
 
 type Verdict = "approve" | "revise";
 
@@ -66,7 +67,8 @@ export default function Decisions({
           <span className="text-[11px] font-mono text-text-faint">{disagreementDecisions.length}</span>
           <Info call="jarvis/intent.decisions()" side="below">
             Every decision the delegate took in his place, newest first: the question, what it decided and why,
-            and the lines of this page it rested on.
+            and the lines of this page it rested on. A question he answered himself on /thread is listed with who
+            decided and after how long, and without accept and object.
           </Info>
         </h2>
         {disagreementDecisions.length === 0 && <p className="mt-2 text-[12px] text-text-muted">No delegate disagreement in the record.</p>}
@@ -84,6 +86,9 @@ export default function Decisions({
               {decision.wouldChange !== null && (
                 <p className="mt-0.5 text-[11px] leading-snug text-text-faint">would change: {decision.wouldChange}</p>
               )}
+              {decidedByText(decision.decidedByTom, decision.waitedMs) !== null && (
+                <p className="mt-0.5 text-[11px] leading-snug text-text-muted">{decidedByText(decision.decidedByTom, decision.waitedMs)}</p>
+              )}
               <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-[10px] font-mono text-text-faint">
                 <span>{displayForm(decision.at)}</span>
                 <span>{decision.caller}</span>
@@ -91,7 +96,8 @@ export default function Decisions({
                 <span>{decision.askId}</span>
               </p>
               <RestedOn refs={decision.restedOn} lines={lines} selected={selected} onSelect={onSelect} />
-              <Settle
+              {/* His own decision is not one to accept or object to. */}
+              {!decision.decidedByTom && <Settle
                 subject={`decision:${decision.askId}`}
                 settled={decision.settled}
                 accept="accept"
@@ -100,7 +106,7 @@ export default function Decisions({
                 onAccept={(subject) => onSettle({ subject, verdict: "approve" })}
                 onObject={(subject, statement) =>
                   setPending({ subject, statement, action: "object", confirm: "record objection" })}
-              />
+              />}
             </li>
           ))}
         </ul>

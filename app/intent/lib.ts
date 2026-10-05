@@ -258,19 +258,20 @@ export function passRate(items: { passed: number; runs: number }[]): { passed: n
 
 /**
  * The disagreements still open, as the view's badge counts them: the delegate
- * decisions he has not settled, the failing eval items he has not settled, and
+ * decisions he has not settled (a decision he took himself on /thread is not
+ * one), the failing eval items he has not settled, and
  * the vocabulary's disagreements (settled in the files, so every one listed is
  * open). Null until all three reads have answered; a vocabulary with no row
  * (null) has none.
  */
 export function openDisagreements(
-  decisions: { decision: string | null; refused: boolean; settled: unknown }[] | undefined,
+  decisions: { decision: string | null; refused: boolean; settled: unknown; decidedByTom?: boolean }[] | undefined,
   evalItems: { pass: boolean | null; settled: unknown }[] | undefined,
   vocabulary: { disagreements: unknown[] } | null | undefined,
 ): number | null {
   if (decisions === undefined || evalItems === undefined || vocabulary === undefined) return null;
   return (
-    decisions.filter((one) => !one.refused && one.decision !== null && one.settled === null).length +
+    decisions.filter((one) => !one.refused && one.decision !== null && one.settled === null && !one.decidedByTom).length +
     evalItems.filter((one) => one.pass === false && one.settled === null).length +
     (vocabulary?.disagreements.length ?? 0)
   );
