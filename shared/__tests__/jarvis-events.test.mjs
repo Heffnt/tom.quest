@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  DELEGATE_ONLY_KINDS,
   EVENT_KINDS,
   HANDOFF_TRANSITIONS,
   JOB_KINDS_WITH_DURATION,
+  registryDiffOf,
   REPEATS_BY_DATA_ID,
   SUBJECT_REQUIRED,
+  THREAD_REPLY_KINDS,
   TODO_STATES,
   TOM_ONLY_KINDS,
-  registryDiffOf,
   validateEvent,
 } from "../jarvis-events.mjs";
 
@@ -428,5 +430,106 @@ describe("the build rows: todo-state and handoff", () => {
     const long = "x".repeat(64 * 1024);
     expect(handoff("exploration to design", { state: long }).error).toContain("at most 65536 bytes");
     expect(handoff("exploration to design", { state: "x".repeat(60 * 1024) }).ok).toBe(true);
+  });
+});
+
+describe("use, issue and presence rows", () => {
+  // The rows Jarvis worker/jobs/thread-reply.mjs posts (Jarvis #247), byte for byte.
+  const prov = { job: "thread-reply" };
+  const said = "the digest works.";
+
+  it("takes the box's no-issues use row and stores it as Tom's, with what from the text", () => {
+    const body = { kind: "use", provenance: prov, subject: "write-slack", data: { part: "write-slack", state: "working", threadMessageId: "m1" }, text: said };
+    expect(validateEvent(body, { now: 1000 })).toEqual({
+      ok: true,
+      event: {
+        kind: "use", at: 1000, provenance: prov, subject: "write-slack", text: said,
+        data: { part: "write-slack", state: "working", threadMessageId: "m1", by: "tom", what: said },
+      },
+    });
+  });
+
+  it("takes the box's issue row with a part and with none", () => {
+    const named = validateEvent({ kind: "issue", provenance: prov, subject: "digest", data: { part: "digest", threadMessageId: "m2" }, text: "the digest is broken" });
+    expect(named).toMatchObject({ ok: true, event: { subject: "digest", data: { part: "digest", threadMessageId: "m2", by: "tom" } } });
+    const none = validateEvent({ kind: "issue", provenance: prov, data: { part: null, threadMessageId: "m3" }, text: "something is off" });
+    expect(none).toMatchObject({ ok: true, event: { data: { part: null, by: "tom" } } });
+    expect(none.event).not.toHaveProperty("subject");
+  });
+
+  it("takes the box's presence rows", () => {
+    for (const away of [true, false]) {
+      expect(validateEvent({ kind: "presence", provenance: prov, subject: "tom", data: { away, threadMessageId: "m4" }, text: "im back" }).ok).toBe(true);
+    }
+  });
+
+  it("says who a row is by when the writer did not", () => {
+    const use = (provenance, data = {}) => validateEvent({ kind: "use", provenance, subject: "p", data: { part: "p", what: "ran", ...data } }).event.data.by;
+    expect(use({ job: "deploy" })).toBe("job");
+    expect(use({ agentId: "codex:box:1" })).toBe("agent");
+    expect(use({ session: "s1" })).toBe("agent");
+    expect(use({ user: "tom" })).toBe("tom");
+    expect(use({ job: "deploy" }, { by: "agent" })).toBe("agent");
+  });
+
+  it("dates a resolving issue row by the record, and refuses a backdated or future time from the writer", () => {
+    const now = 1_700_000_000_000;
+    const issue = { kind: "issue", subject: "deploy", data: { part: "deploy", resolvedBy: "landing-row" }, text: "fixed by #250" };
+    expect(validateEvent(issue, { now })).toMatchObject({ ok: true, event: { at: now, data: { resolvedAt: now, resolvedBy: "landing-row" } } });
+    const fromWriter = "an issue event's data.resolvedAt is set by the record to the row's own time";
+    expect(validateEvent({ ...issue, data: { ...issue.data, resolvedAt: now - 86_400_000 } }, { now }).error).toBe(fromWriter);
+    expect(validateEvent({ ...issue, data: { ...issue.data, resolvedAt: now + 86_400_000 } }, { now }).error).toBe(fromWriter);
+    const ownAt = "an issue event that resolves is dated by the record's clock, within 5 minutes";
+    expect(validateEvent({ ...issue, at: now - 86_400_000 }, { now }).error).toBe(ownAt);
+    expect(validateEvent({ ...issue, at: now - 6 * 60_000 }, { now }).error).toBe(ownAt);
+    // The stored row validates again unchanged: the record's insert re-checks what the route checked.
+    const stored = validateEvent(issue, { now }).event;
+    expect(validateEvent(stored, { now: now + 50 })).toEqual({ ok: true, event: stored });
+    expect(validateEvent({ kind: "issue", subject: "deploy", data: { part: "deploy", resolvedAt: now }, text: "t" }, { now }).error).toBe("an issue event names data.resolvedAt only with data.resolvedBy");
+    expect(validateEvent({ ...issue, data: { part: "deploy", resolvedBy: "" } }, { now }).error).toBe("an issue event's data.resolvedBy is a landing row id or a thread message id");
+    expect(validateEvent({ kind: "issue", data: { part: null, resolvedBy: "x" }, text: "t" }, { now }).error).toBe("an issue event that resolves names its part");
+    // An issue that resolves nothing keeps the writer's at.
+    expect(validateEvent({ kind: "issue", subject: "deploy", at: now - 1000, data: { part: "deploy" }, text: "t" }, { now }).event.at).toBe(now - 1000);
+  });
+
+  it("keeps data.what to one line: refuses a newline or other control character, and takes the first line of text", () => {
+    const use = (what) => validateEvent({ kind: "use", subject: "p", data: { part: "p", what } });
+    const oneLine = "a use event's data.what is one line, with no newline or other control character";
+    expect(use("ran\nand more").error).toBe(oneLine);
+    expect(use("ran\r").error).toBe(oneLine);
+    expect(use("ran\tthere").error).toBe(oneLine);
+    expect(use("ran there").ok).toBe(true);
+    const fromText = validateEvent({ kind: "use", subject: "p", data: { part: "p" }, text: "first\tline\r\nsecond" });
+    expect(fromText.event.data.what).toBe("first line");
+  });
+
+  it("refuses a use or issue row that names its part wrongly or lacks its words", () => {
+    const cases = [
+      [{ kind: "use", data: { part: "p", what: "x" } }, "a use event names its subject"],
+      [{ kind: "use", subject: "q", data: { part: "p", what: "x" } }, "a use event names data.part as its subject"],
+      [{ kind: "use", subject: "p", data: { part: "", what: "x" } }, "a use event names data.part as a part id"],
+      [{ kind: "use", subject: "p", data: null }, "a use event names data as an object"],
+      [{ kind: "use", subject: "p", data: { part: "p" } }, "a use event names data.what or its text"],
+      [{ kind: "use", subject: "p", data: { part: "p", what: "x", state: "broken" } }, 'a use event\'s data.state, when given, is "working"'],
+      [{ kind: "use", subject: "p", data: { part: "p", what: "x", by: "someone" } }, "a use event names data.by as one of tom, agent, job"],
+      [{ kind: "use", subject: "p", data: { part: "p", what: "x", threadMessageId: "" } }, "a use event's data.threadMessageId, when given, is a non-empty string"],
+      [{ kind: "issue", subject: "p", data: { part: "p" } }, "an issue event names its text"],
+      [{ kind: "issue", subject: "p", data: { part: null }, text: "t" }, "an issue event with data.part null names no subject"],
+      [{ kind: "issue", subject: "p", data: {}, text: "t" }, "an issue event names data.part as a part id"],
+      [{ kind: "presence", subject: "someone", data: { away: true } }, 'a presence event names "tom" as its subject'],
+      [{ kind: "presence", subject: "tom", data: { away: "yes" } }, "a presence event names data.away as a boolean"],
+    ];
+    for (const [candidate, error] of cases) expect(validateEvent(candidate)).toEqual({ ok: false, error });
+  });
+
+  it("keeps the three kinds writable by the box, and the four reply kinds on the list", () => {
+    for (const kind of ["use", "issue", "presence"]) {
+      expect(EVENT_KINDS).toContain(kind);
+      expect(TOM_ONLY_KINDS).not.toContain(kind);
+      expect(DELEGATE_ONLY_KINDS).not.toContain(kind);
+      expect(REPEATS_BY_DATA_ID).toContain(kind);
+    }
+    expect(THREAD_REPLY_KINDS).toEqual(["fact", "todo", "rule", "errand", "question", "issue", "no-issues", "leaving", "back"]);
+    expect(validateEvent({ kind: "thread-reply", subject: "m1", data: { kind: "no-issues" }, text: "working, written as a use row on digest: event e1" }).ok).toBe(true);
   });
 });

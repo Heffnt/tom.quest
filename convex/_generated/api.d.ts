@@ -35,6 +35,7 @@ import type * as jarvis_events from "../jarvis/events.js";
 import type * as jarvis_intent from "../jarvis/intent.js";
 import type * as jarvis_jobs from "../jarvis/jobs.js";
 import type * as jarvis_outbox from "../jarvis/outbox.js";
+import type * as jarvis_partStates from "../jarvis/partStates.js";
 import type * as jarvis_record from "../jarvis/record.js";
 import type * as jarvis_routes from "../jarvis/routes.js";
 import type * as jarvis_rulings from "../jarvis/rulings.js";
@@ -116,6 +117,7 @@ declare const fullApi: ApiFromModules<{
   "jarvis/intent": typeof jarvis_intent;
   "jarvis/jobs": typeof jarvis_jobs;
   "jarvis/outbox": typeof jarvis_outbox;
+  "jarvis/partStates": typeof jarvis_partStates;
   "jarvis/record": typeof jarvis_record;
   "jarvis/routes": typeof jarvis_routes;
   "jarvis/rulings": typeof jarvis_rulings;

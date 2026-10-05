@@ -10,6 +10,7 @@ import { requireTom } from "./authRoles";
 import { insertEvent } from "./jarvis/record";
 import { DAY_LOG_ENTRY_MAX } from "./dayLog";
 import { SESSION_REPOS } from "./ttsShared";
+import { THREAD_REPLY_KINDS } from "../shared/jarvis-events.mjs";
 
 const SURFACE = "Thread";
 
@@ -163,6 +164,31 @@ export const send = mutation({
   },
 });
 
+/**
+ * Tom says on the thread that a part has an issue, or that it has none: an
+ * `issue` row, or a `use` row with state "working", by him, subject the part
+ * (shared/jarvis-events.mjs; convex/jarvis/partStates.ts reads both). The box's
+ * thread-reply job writes the same rows when it reads either from a message.
+ */
+export const reportOnPart = mutation({
+  args: { part: v.string(), report: v.union(v.literal("issue"), v.literal("no-issues")), text: v.string() },
+  handler: async (ctx, { part, report, text }) => {
+    await requireTom(ctx, SURFACE);
+    // The validator refuses an empty part and an empty text; it bounds no
+    // text's length, so the thread's message limit is kept here, as send keeps it.
+    if (text.length > DAY_LOG_ENTRY_MAX) throw new Error(`A report is at most ${DAY_LOG_ENTRY_MAX} characters`);
+    const id = await insertEvent(ctx, {
+      kind: report === "issue" ? "issue" : "use",
+      at: Date.now(),
+      provenance: { user: "tom" },
+      subject: part,
+      data: report === "issue" ? { part, by: "tom" } : { part, by: "tom", state: "working" },
+      text,
+    });
+    return { id };
+  },
+});
+
 export const messages = query({
   args: {},
   handler: async (ctx) => {
@@ -180,7 +206,7 @@ export const messages = query({
         .order("desc")
         .first();
       const kind =
-        typeof reply?.data?.kind === "string" ? (reply.data.kind as "fact" | "todo" | "rule" | "errand" | "question") : null;
+        typeof reply?.data?.kind === "string" ? (reply.data.kind as (typeof THREAD_REPLY_KINDS)[number]) : null;
       return {
         id: row._id,
         at: row.at,
