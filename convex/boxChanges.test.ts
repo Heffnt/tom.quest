@@ -188,6 +188,33 @@ it("records a worker run through POST /jarvis/event", async () => {
   expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toMatchObject([event]);
 });
 
+it("keeps one row when a worker run's row is re-posted with the same data.id, and a new one for another", async () => {
+  const t = convexTest({ schema, modules });
+  const baseCommit = "b".repeat(40);
+  const event = {
+    kind: "work-run",
+    provenance: { agentId: "codex:box:synthetic-session", job: "work-queue" },
+    subject: `example@${baseCommit}`,
+    data: {
+      id: "work-run:box:run-1",
+      repo: "example", remote: "https://example.invalid/repo.git", cwd: "/workspace/example", baseCommit,
+      briefKey: "runs/example/brief", preStatePatchKey: "runs/example/pre.patch", resultDiffKey: "runs/example/result.patch",
+      bytes: { brief: 120, preStatePatch: 0, resultDiff: 240 }, check: null, checkPassed: null,
+      model: "synthetic-model", effort: "high", sandbox: "workspace-write", durationMs: 1234,
+      costUsd: 0.01, exitCode: 0, harness: "codex", agentToken: "synthetic-agent-token",
+    },
+    text: "example on synthetic-model completed",
+  };
+  const first = await (await recordEvent(t, event)).json();
+  expect(first).toMatchObject({ ok: true, duplicate: false });
+  expect(await (await recordEvent(t, event)).json()).toEqual({ ok: true, id: first.id, duplicate: true });
+  expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(1);
+  const other = await (await recordEvent(t, { ...event, data: { ...event.data, id: "work-run:box:run-2" } })).json();
+  expect(other).toMatchObject({ ok: true, duplicate: false });
+  expect(other.id).not.toBe(first.id);
+  expect(await t.run(async (ctx) => ctx.db.query("events").collect())).toHaveLength(2);
+});
+
 it("keeps one row when the deploy job re-posts the same disabled part", async () => {
   const t = convexTest({ schema, modules });
   const event = {
