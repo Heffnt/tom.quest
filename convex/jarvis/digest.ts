@@ -41,7 +41,7 @@ import type { Doc } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
 import { logEvent } from "../tts";
 import { resolveId } from "./tables";
-import { THREAD_GATHER_BYTES, THREAD_OWN_BYTES, composeToday, rollMissed } from "../ttsDigest";
+import { THREAD_GATHER_BYTES, THREAD_OWN_BYTES, composeToday, rollMissed, supersededCursorOf } from "../ttsDigest";
 import { ReadBudget, readWithin } from "../readBudget";
 import { getDocumentSize } from "convex/values";
 import { insertEvent } from "./record";
@@ -121,6 +121,10 @@ type ComposeAnswer =
       truncated: boolean;
       surfacedTodoIds: string[];
       objectionAskIds: string[];
+      // Where the next digest's read of superseded rulings starts; the sender
+      // records it on the digest-sent row with windowEnd (convex/ttsDigest.ts
+      // supersededCursorAfter).
+      supersededCursor: { at: number; after: number };
       facts: unknown;
     };
 
@@ -129,7 +133,8 @@ export const compose = internalMutation({
   handler: async (ctx): Promise<ComposeAnswer> => {
     const now = Date.now();
     const day = ttsDayKey(now);
-    const last = digestFacts(await lastDigest(ctx));
+    const lastRow = await lastDigest(ctx);
+    const last = digestFacts(lastRow);
     if (nyLocalHour(now) < TTS_DIGEST_NY_HOUR) {
       return { due: false, day, reason: "before 5 a.m. New York" };
     }
@@ -144,13 +149,22 @@ export const compose = internalMutation({
     // The rollover's read cut, if any, is said in the digest's cut lines.
     const { cuts } = await rollMissed(ctx, day);
     const since = last.windowEnd ?? now - DAY_MS;
-    const composed: { text: string; truncated: boolean; surfacedTodoIds: string[]; objectionAskIds: string[]; facts: unknown } =
+    const composed: {
+      text: string;
+      truncated: boolean;
+      surfacedTodoIds: string[];
+      objectionAskIds: string[];
+      supersededCursor: { at: number; after: number };
+      facts: unknown;
+    } =
       await ctx.runQuery(internal.ttsDigest.internalComposeToday, {
       day,
       now,
       since,
       canReply: replyRouteLive(),
       earlierCuts: cuts,
+      // Superseded rulings from where the last digest-sent row stopped.
+      supersededFrom: supersededCursorOf(lastRow) ?? undefined,
     });
     return {
       due: true,
@@ -162,6 +176,7 @@ export const compose = internalMutation({
       truncated: composed.truncated,
       surfacedTodoIds: composed.surfacedTodoIds,
       objectionAskIds: composed.objectionAskIds,
+      supersededCursor: composed.supersededCursor,
       facts: composed.facts,
     };
   },
@@ -284,6 +299,8 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
     day,
     now,
     since,
+    // Superseded rulings from where the previous thread digest stopped.
+    supersededFrom: supersededCursorOf(recentDigests[0] ?? null) ?? undefined,
     // The composer's invitations describe Slack's "revert 2" and line-level
     // "done" grammar, which the Jarvis thread does not route.
     canReply: false,
@@ -366,6 +383,8 @@ export async function appendDigestToThread(ctx: MutationCtx): Promise<ThreadDige
       objectionAskIds: composed.objectionAskIds,
       items,
       openingsFrom,
+      // Where the next digest's read of superseded rulings starts.
+      supersededCursor: composed.supersededCursor,
     },
   });
   // One push for the digest; its text stays in the record, as the needs-you

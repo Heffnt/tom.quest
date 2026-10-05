@@ -7,6 +7,8 @@ import {
   todayFactsBlock,
   type BrokenFact,
   type SpendFact,
+  type SupersededCursor,
+  type SupersededFact,
   type TodayFacts,
   type TodoOutcome,
 } from "./ttsCompose";
@@ -314,6 +316,7 @@ export const READ_BYTES = {
   evalRuns: 0.125 * MIB,
   decisions: 0.125 * MIB,
   digestLines: 0.125 * MIB,
+  superseded: 0.125 * MIB,
   settlements: 0.125 * MIB,
   jobReports: 0.25 * MIB,
   prepared: 1.5 * MIB,
@@ -322,7 +325,7 @@ export const READ_BYTES = {
   surfacedMarks: 0.125 * MIB,
   deploys: 0.125 * MIB,
   boxChanges: 0.5 * MIB,
-  runs: 2 * MIB,
+  runs: 1.875 * MIB,
 } as const;
 
 /** The most one digest's transaction reads (GATHER_BYTES above); the tests
@@ -415,6 +418,7 @@ export async function gatherTodayFacts(
     since,
     earlierCuts = [],
     bytes = GATHER_BYTES,
+    supersededFrom: supersededStart,
   }: {
     day: string;
     now: number;
@@ -423,6 +427,9 @@ export async function gatherTodayFacts(
     earlierCuts?: ReadCut[];
     /** The gather's budget: GATHER_BYTES, or THREAD_GATHER_BYTES. */
     bytes?: number;
+    /** Where the previous digest's read of superseded rulings stopped (its
+     *  row's data.supersededCursor); absent, the read starts at `since`. */
+    supersededFrom?: SupersededCursor;
   },
 ): Promise<TodayFacts> {
   const { start: dayStart, end: dayEnd } = nyCalendarDayBoundsUtc(day);
@@ -1059,16 +1066,8 @@ export async function gatherTodayFacts(
       .order("desc"),
     OBJECTION_SCAN,
   );
-  const superseded: { id: string; text: string }[] = [];
   for (const row of lines) {
     const d = (row.data ?? {}) as Record<string, unknown>;
-    // A standing ruling of his that new information ended (convex/jarvis/
-    //    rulings.ts supersede): its own run, oldest first.
-    if (d.section === "superseded") {
-      const text = safeStr(d.statement);
-      if (text !== undefined) superseded.unshift({ id: row._id as string, text });
-      continue;
-    }
     if (d.section === "broken") {
       const job = str(d.job) ?? "a job";
       failure(job, safeStr(d.statement) ?? brokenStatement(job), str(d.url)).detail = safeStr(d.detail);
@@ -1103,6 +1102,35 @@ export async function gatherTodayFacts(
       const text = safeStr(row.text);
       return text === undefined ? [] : [{ id: row._id as string, text }];
     });
+
+  // His standing rulings that new information ended and no digest has
+  //    printed yet (convex/jarvis/rulings.ts supersede writes supersededAt and
+  //    supersededLine on the ruling row): read on their own index from the
+  //    position the last digest recorded, oldest first, under their own byte
+  //    share, so no other kind's rows can crowd one out. What this digest does
+  //    not print, the next reads again (supersededCursorAfter).
+  const supersededFrom = supersededStart ?? { at: since, after: 0 };
+  const supersededBudget = budget.allot(SUPERSEDED_READ, READ_BYTES.superseded);
+  const supersededRows = await readWithin(
+    supersededBudget,
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_standing_superseded_at", (q) =>
+        q.eq("kind", "ruling").eq("data.standing", false).gte("data.supersededAt", supersededFrom.at).lt("data.supersededAt", now),
+      )
+      .order("asc"),
+    Number.POSITIVE_INFINITY,
+  );
+  const superseded: SupersededFact[] = supersededRows.flatMap((row) => {
+    const d = (row.data ?? {}) as { supersededAt?: unknown; supersededLine?: unknown };
+    const text = safeStr(d.supersededLine);
+    if (typeof d.supersededAt !== "number" || text === undefined) return [];
+    // Ended in the same millisecond as the last one printed, and created
+    // before or with it: printed already.
+    if (d.supersededAt === supersededFrom.at && row._creationTime <= supersededFrom.after) return [];
+    return [{ id: row._id as string, text, cursor: { at: d.supersededAt, after: row._creationTime } }];
+  });
+  const supersededComplete = !budget.cuts().some((cut) => cut.what === SUPERSEDED_READ);
 
   // 5. Ready for Tom (not already dated) — ruling 18's computation
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
@@ -1249,6 +1277,8 @@ export async function gatherTodayFacts(
     broken: [...failures.values()],
     settled,
     superseded,
+    supersededFrom,
+    supersededComplete,
     boxChanges,
     spend: spendOf(started, started.length >= SPEND_SCAN),
     readCuts: [
@@ -1425,6 +1455,38 @@ function printedObjectionAskIds(
   return printed;
 }
 
+/** The superseded-rulings read's name in the digest's cut lines. */
+const SUPERSEDED_READ = "superseded rulings";
+
+/** The position a digest recorded on its row (`supersededCursor`, on a
+ *  thread-digest or digest-sent row), or null when it recorded none. */
+export function supersededCursorOf(row: { data?: unknown } | null): SupersededCursor | null {
+  const c = ((row?.data ?? {}) as { supersededCursor?: unknown }).supersededCursor as
+    | { at?: unknown; after?: unknown }
+    | undefined;
+  return typeof c?.at === "number" && typeof c?.after === "number" ? { at: c.at, after: c.after } : null;
+}
+
+/**
+ * Where the next digest's read of superseded rulings starts, after this one:
+ * the position of the last superseded line the FITTED message printed (fit
+ * drops them from the end, so the printed lines are the oldest ones read);
+ * with none printed, where this read started, unless it read every ruling
+ * there was and found none, when the next starts at `now`.
+ */
+function supersededCursorAfter(
+  message: { lines: { role: string; section?: string }[] },
+  facts: TodayFacts,
+  now: number,
+): SupersededCursor {
+  const printed = message.lines.filter((line) => line.role === "item" && line.section === "superseded").length;
+  const read = facts.superseded ?? [];
+  const from = facts.supersededFrom ?? { at: now, after: 0 };
+  if (printed > 0) return read[printed - 1].cursor;
+  if (read.length === 0 && facts.supersededComplete === true) return { at: now, after: 0 };
+  return from;
+}
+
 /**
  * The morning message's facts, its template text, and the FACTS BLOCK the
  * Fable writer on the box is given (Tom 2026-09-09, amendment 2). Everything
@@ -1450,6 +1512,8 @@ export const internalComposeToday = internalQuery({
       skipped: v.number(),
       by: v.union(v.literal("bytes"), v.literal("rows")),
     }))),
+    // Where the previous digest's read of superseded rulings stopped.
+    supersededFrom: v.optional(v.object({ at: v.number(), after: v.number() })),
   },
   handler: (ctx, args) => composeToday(ctx, args),
 });
@@ -1459,12 +1523,13 @@ export const internalComposeToday = internalQuery({
  *  which passes THREAD_GATHER_BYTES so its reads stay at DIGEST_READ_BOUND. */
 export async function composeToday(
   ctx: QueryCtx,
-  { day, now, since: givenSince, canReply, earlierCuts, gatherBytes }: {
+  { day, now, since: givenSince, canReply, earlierCuts, gatherBytes, supersededFrom }: {
     day: string; now: number; since?: number; canReply?: boolean; earlierCuts?: ReadCut[]; gatherBytes?: number;
+    supersededFrom?: SupersededCursor;
   },
 ) {
   const since = givenSince ?? (await digestWindowStart(ctx, now));
-  const facts = await gatherTodayFacts(ctx, { day, now, since, earlierCuts, bytes: gatherBytes });
+  const facts = await gatherTodayFacts(ctx, { day, now, since, earlierCuts, bytes: gatherBytes, supersededFrom });
   const reply = canReply ?? false;
   const { message, truncated } = composeTodayFitted(facts, { canReply: reply });
   return {
@@ -1487,6 +1552,11 @@ export async function composeToday(
     // plus one "N more lines are on the page" line, and a number resolved
     // against a list Tom never saw reverts something he never read.
     objectionAskIds: printedObjectionAskIds(message, facts),
+    // Where the next digest's read of superseded rulings starts: past the
+    // last one this message printed. The writer records it on the digest's
+    // row, as it records windowEnd; the lines that did not fit are read
+    // again and printed by the next digest.
+    supersededCursor: supersededCursorAfter(message, facts, now),
     // The facts the text was rendered from, each with an id, its link and
     // its numbers: the box keeps them on the digest-sent row.
     facts: todayFactsBlock(facts, reply),

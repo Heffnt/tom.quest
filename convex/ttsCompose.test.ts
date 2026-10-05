@@ -993,6 +993,7 @@ describe("the superseded run", () => {
           {
             id: "r1",
             text: 'Your ruling of 2026-10-04 in scope repo:Jarvis no longer stands, because a later sentence of yours in the same scope replaced it: "not yet"; it said "ship it"',
+            cursor: { at: 1, after: 1 },
           },
         ],
       }),
@@ -1006,7 +1007,7 @@ describe("the superseded run", () => {
     // No page lists ruling rows yet, so the line links to the /tts page and
     // not to /intent.
     expect(items[0]).toMatchObject({ url: TAB_EVERYTHING });
-    const facts = todayFactsBlock(sept9({ superseded: [{ id: "r1", text: "Your ruling no longer stands." }] }), false);
+    const facts = todayFactsBlock(sept9({ superseded: [{ id: "r1", text: "Your ruling no longer stands.", cursor: { at: 1, after: 1 } }] }), false);
     expect(JSON.stringify(facts)).toContain("superseded:r1");
   });
 
@@ -1014,6 +1015,7 @@ describe("the superseded run", () => {
     const superseded = Array.from({ length: 14 }, (_, n) => ({
       id: `r${n}`,
       text: `Your ruling of 2026-10-04 in scope part:p${n} no longer stands, because a later sentence of yours replaced it`,
+      cursor: { at: n, after: n },
     }));
     const whole = composeToday(sept9({ superseded }), { canReply: false });
     const printed = whole.lines.filter((line) => line.section === "superseded" && line.role === "item");
@@ -1033,11 +1035,12 @@ describe("the superseded run", () => {
     expect(kept.some((line) => line.text.includes("on the page"))).toBe(false);
   });
 
-  it("keeps every superseded line when the digest is over its length even after every run is reduced", () => {
+  it("fits the message when the digest is over its length even after every run is reduced, printing the oldest superseded lines and leaving the rest", () => {
     const long = (what: string, n: number) => `${what} ${n} ${"carries enough words to fill the line ".repeat(3)}`;
     const superseded = Array.from({ length: 22 }, (_, n) => ({
       id: `r${n}`,
       text: `Your ruling of 2026-10-04 in scope part:p${n} no longer stands, because a later sentence of yours in the same scope replaced it`,
+      cursor: { at: n, after: n },
     }));
     const facts = sept9({
       superseded,
@@ -1052,8 +1055,15 @@ describe("the superseded run", () => {
     // The last-resort drop ran: a run present before the fit is gone whole,
     // which reduction alone never does (it keeps a lead and one line).
     expect([...sectionsBefore].some((section) => !sectionsAfter.has(section))).toBe(true);
+    // The message fits one Slack message.
+    expect(renderSlack(message).length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
+    // The superseded lines printed are the oldest, in order; the rest are left
+    // for the next digest (convex/ttsDigest.ts carries them by the position
+    // of the last line printed, which jarvisStandingRulings.test.ts checks).
     const kept = message.lines.filter((line) => line.section === "superseded" && line.role === "item");
-    expect(kept.map((line) => line.text)).toEqual(superseded.map((row) => statement(row.text)));
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(superseded.length);
+    expect(kept.map((line) => line.text)).toEqual(superseded.slice(0, kept.length).map((row) => statement(row.text)));
   });
 
   it("prints nothing when no ruling was superseded", () => {

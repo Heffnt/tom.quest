@@ -133,6 +133,10 @@ export default defineSchema({
     // (convex/jarvis/rulings.ts standingRulings). data.standing is in the
     // index so a superseded ruling is never read, however many there are.
     .index("by_kind_subject_standing_at", ["kind", "subject", "data.standing", "at"])
+    // Superseded rulings in the order they were ended: the digest's read of
+    // the ones it has not yet printed (convex/ttsDigest.ts), on their own
+    // index so no other kind's rows can crowd one out.
+    .index("by_kind_standing_superseded_at", ["kind", "data.standing", "data.supersededAt"])
     // One kind's rows by when the record wrote them (_creationTime, which ends
     // every index): the digest's read of post-history-cut box changes recorded
     // in its window, however long after they happened (convex/boxChanges.ts).

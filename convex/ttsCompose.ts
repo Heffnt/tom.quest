@@ -356,6 +356,11 @@ function lastResortDrop(lines: Line[]): number {
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!inFirst(i) && !isProtected(i)) return i;
   }
+  // A superseded line next, from the end: the lines kept are the oldest, and
+  // the next digest prints the rest.
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i].section === SUPERSEDED_RUN && lines[i].role === "item") return i;
+  }
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (lines[i].section === PROTECTED_RUN && lines[i].role !== "lead") return i;
   }
@@ -389,10 +394,11 @@ const CUT_RUN = "cut";
 const SUPERSEDED_RUN = "superseded";
 /** The runs neither fit's reduction nor the first pass of its last-resort
  *  drop touches: one list, so the two cannot disagree. The superseded run
- *  is here because no page lists ruling rows yet and no later digest
- *  repeats one, so a superseded line dropped or reduced to "on the page"
- *  would be gone; the last-resort drop's later passes take lines of the
- *  needs-you and cut runs only, never of this one. */
+ *  is here because no page lists ruling rows yet, so its reduction to "on
+ *  the page" would point at nothing. Its lines are the first protected lines
+ *  the last-resort drop takes, from the end, because a superseded line the
+ *  digest does not print is printed by the next one (convex/ttsDigest.ts
+ *  carries it by the position of the last line printed). */
 const PROTECTED_RUNS: readonly string[] = [PROTECTED_RUN, CUT_RUN, SUPERSEDED_RUN];
 const isProtectedRun = (section: string | undefined) => section !== undefined && PROTECTED_RUNS.includes(section);
 
@@ -556,10 +562,15 @@ export type TodayFacts = {
    *  settle writes each as a `disagreement-settled` event whose text is the
    *  line), oldest first. Absent or empty: he settled nothing. */
   settled?: SettledFact[];
-  /** His standing rulings that new information ended since the last digest
-   *  (convex/jarvis/rulings.ts supersede puts each on the digest as a
-   *  `digest-line` of section "superseded"), oldest first. */
-  superseded?: SettledFact[];
+  /** His standing rulings that new information ended and no digest has
+   *  printed yet (convex/ttsDigest.ts reads them off the ruling rows), in the
+   *  order they were ended. Absent or empty: none is waiting. */
+  superseded?: SupersededFact[];
+  /** Where this digest's read of superseded rulings started, and whether it
+   *  read every one there was: what the sender's cursor is computed from
+   *  (convex/ttsDigest.ts supersededCursorAfter). Not printed. */
+  supersededFrom?: SupersededCursor;
+  supersededComplete?: boolean;
   /** What changed on the Jarvis Box since the last digest (convex/boxChanges.ts
    *  boxChangeLines): one line per agent that ran root commands, per deploy,
    *  per setup run, per other kind of change. Absent or empty: nothing did. */
@@ -590,12 +601,21 @@ export type SpendFact = {
 /** One settlement of a disagreement: the event's id and the line settle wrote. */
 type SettledFact = { id: string; text: string };
 
+/** Where a superseded ruling sits in the order the digest reads them: when it
+ *  was ended (`at`, its data.supersededAt) and, among rulings ended in the
+ *  same millisecond, its row's _creationTime (`after`). A digest records the
+ *  position of the last one it printed; the next reads from past it. */
+export type SupersededCursor = { at: number; after: number };
+
+/** One superseded ruling: its row id, the line supersede wrote, its position. */
+export type SupersededFact = { id: string; text: string; cursor: SupersededCursor };
+
 /** The /intent page, where every settlement was made and can be read. */
 const INTENT_URL = "https://tom.quest/intent";
 /** The settled run's lead. */
 export const SETTLED_LEAD = "What you settled on the intent page since the last digest.";
 /** The superseded run's lead. */
-const SUPERSEDED_LEAD = "Rulings of yours that no longer stand since the last digest, each with the new information that ended it.";
+const SUPERSEDED_LEAD = "Rulings of yours that no longer stand, each with the new information that ended it.";
 
 /** One line of the box-changes run: its fact id (`box:…`), its sentence, and
  *  its link. Declared here, not imported, for the import restriction above. */
@@ -1027,8 +1047,9 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
       SUPERSEDED_RUN,
       SUPERSEDED_LEAD,
       (f.superseded ?? []).map((row) => ({ text: row.text, url: TAB_EVERYTHING })),
-      // Every line printed: no page lists ruling rows yet, so a "more lines
-      // are on the page" line would send him to a page without them.
+      // No "more lines are on the page" line: no page lists ruling rows yet.
+      // When the message is too long, fit drops these lines from the end and
+      // the next digest prints them (lastResortDrop).
       (f.superseded ?? []).length,
     );
   }

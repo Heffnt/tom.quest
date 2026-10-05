@@ -44,9 +44,10 @@
 // "measure" (id: a quality-check row whose subject is the ruling's scope, a
 // measure that crossed his target). A ruling scoped "all" takes a diagnosis
 // or measure row of any subject. The ruling's data gets standing false and
-// supersededBy the id, and the next digest lists it. Answers { ok: true,
-// rulingId, supersededBy, listed }; the same post again answers the same
-// with duplicate: true.
+// supersededBy the id, supersededAt the instant and supersededLine the
+// digest's sentence for it; the next digest lists it, or a later one when it
+// does not fit. Answers { ok: true, rulingId, supersededBy }; the same post
+// again answers the same with duplicate: true.
 //
 // The asker's read is standingRulings below, served on GET
 // /jarvis/context?for=ask&scope=<scope> (convex/ttsAsk.ts).
@@ -61,7 +62,6 @@ import { nyCalendarDayKey } from "../ttsShared";
 import { MIB, ReadBudget, readWithin } from "../readBudget";
 import { sha256Hex } from "../ttsSignoff";
 import { jarvisAuth, jsonResponse } from "./auth";
-import { listForDigest } from "./outbox";
 import { insertEvent } from "./record";
 
 export const postRuling = httpAction(async (ctx, request) => {
@@ -265,7 +265,7 @@ function supersededStatement(ruling: Doc<"events">, type: NewInformationType, by
 async function supersede(
   ctx: MutationCtx,
   { rulingId, type, id }: { rulingId: string; type: NewInformationType; id: string },
-): Promise<{ rulingId: string; supersededBy: string; listed: boolean; duplicate?: true }> {
+): Promise<{ rulingId: string; supersededBy: string; duplicate?: true }> {
   const rulingKey = ctx.db.normalizeId("events", rulingId);
   const ruling = rulingKey === null ? null : await ctx.db.get(rulingKey);
   if (ruling === null || ruling.kind !== RULING) throw new Error(`no ruling ${rulingId} in the record`);
@@ -275,7 +275,7 @@ async function supersede(
     throw new Error(`a ${type} is recorded by a ${NEW_INFORMATION[type]} row; ${id} is not one`);
   }
   const d = rulingData(ruling);
-  if (d.supersededBy === by._id) return { rulingId: ruling._id, supersededBy: by._id, listed: false, duplicate: true };
+  if (d.supersededBy === by._id) return { rulingId: ruling._id, supersededBy: by._id, duplicate: true };
   if (d.standing !== true || d.supersededBy !== undefined) {
     throw new Error(`ruling ${rulingId} no longer stands; it was superseded by ${d.supersededBy ?? "an earlier row"}`);
   }
@@ -287,13 +287,20 @@ async function supersede(
   } else if (d.scope !== "all" && by.subject !== d.scope) {
     throw new Error(`a ${type} row in scope ${d.scope} names it as its subject`);
   }
-  await ctx.db.patch(ruling._id, { data: { ...d, standing: false, supersededBy: by._id } });
-  const { listed } = await listForDigest(ctx, {
-    section: "superseded",
-    rulingId: ruling._id,
-    statement: supersededStatement(ruling, type, by),
+  // The row itself carries what the digest prints and when it was ended:
+  // the digest reads superseded rulings on their own index
+  // (events.by_kind_standing_superseded_at, convex/ttsDigest.ts), so no
+  // other row has to be written, and none can be crowded out.
+  await ctx.db.patch(ruling._id, {
+    data: {
+      ...d,
+      standing: false,
+      supersededBy: by._id,
+      supersededAt: Date.now(),
+      supersededLine: supersededStatement(ruling, type, by),
+    },
   });
-  return { rulingId: ruling._id, supersededBy: by._id, listed };
+  return { rulingId: ruling._id, supersededBy: by._id };
 }
 
 export const recordNewInformation = internalMutation({

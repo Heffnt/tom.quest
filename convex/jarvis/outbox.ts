@@ -235,8 +235,7 @@ export async function openNeedsYou(
  * #tts-decisions or #tts-broken as they happened; with one output channel
  * they are sections of the digest (convex/ttsDigest.ts reads these rows).
  * `section` "decisions" is a line on the objection list, where "revert <n>"
- * in the digest's thread reaches `askId`; "broken" is a failure line;
- * "superseded" names a ruling of his that no longer stands.
+ * in the digest's thread reaches `askId`; "broken" is a failure line.
  */
 type DigestLine =
   | {
@@ -248,14 +247,10 @@ type DigestLine =
       refused?: boolean;
       refusedBecause?: string;
     }
-  | { section: "broken"; job: string; statement: string; detail?: string; url?: string }
-  // A standing ruling of his that new information ended (convex/jarvis/
-  // rulings.ts recordNewInformation); the statement names the ruling, its
-  // sentence and the row that carried the new information.
-  | { section: "superseded"; rulingId: string; statement: string };
+  | { section: "broken"; job: string; statement: string; detail?: string; url?: string };
 
 export async function listForDigest(ctx: MutationCtx, line: DigestLine): Promise<{ listed: boolean }> {
-  const subject = line.section === "decisions" ? line.askId : line.section === "superseded" ? line.rulingId : line.job;
+  const subject = line.section === "decisions" ? line.askId : line.job;
   // ONCE PER DIGEST WINDOW PER SUBJECT: a rerun that
   // offers the same decision again (a Friday job's --overwrite), or a job that
   // fails on every run, is one line, not one per offer.

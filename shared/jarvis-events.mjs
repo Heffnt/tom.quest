@@ -202,9 +202,10 @@ export const EVENT_KINDS = [
   // { session }, standing: true }; id is "ruling:" and the sha-256 of the
   // JSON array [source type, source id, scope, sentence], the key a retry is
   // matched on (convex/jarvis/rulings.ts recordStanding looks it up before
-  // it inserts). A ruling holds until new information is
-  // recorded against it; then the record sets standing false and
-  // supersededBy to the id of the row that carried the new information.
+  // it inserts). A ruling holds until new information is recorded against
+  // it; then the record sets standing false, supersededBy to the id of the
+  // row that carried the new information, supersededAt to the instant and
+  // supersededLine to the digest's sentence for it.
   "ruling",
 ];
 
