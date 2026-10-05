@@ -192,6 +192,25 @@ describe("agents", () => {
     expect(await t.run((ctx) => ctx.db.query("runs").collect())).toEqual([]);
   });
 
+  it("stores an origin outside the record's list as unknown, keeps the given string, and accepts the agent", async () => {
+    const t = convexTest(schema, modules);
+    const runs = () => t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
+    // scripts/codex-run.mjs passes TTS_AGENT_ORIGIN through as any string.
+    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ origin: "probe-worker" })) as never)).toMatchObject({ ok: true, inserted: 1 });
+    expect(await runs()).toMatchObject({ origin: "unknown", originGiven: "probe-worker" });
+    // A later page that names a listed origin replaces both.
+    expect(await t.mutation(internal.agents.internalIngest, retry(run({ origin: "job" })) as never)).toMatchObject({ ok: true });
+    const repaired = await runs();
+    expect(repaired?.origin).toBe("job");
+    expect(repaired?.originGiven).toBeUndefined();
+    // A listed origin is stored as given, with no originGiven.
+    const listed = run({ runId: "claude:laptop:cron-run", rootRunId: "claude:laptop:cron-run", origin: "cron:nightly" });
+    expect(await t.mutation(internal.agents.internalIngest, ingest(listed) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:cron-run")).unique());
+    expect(stored?.origin).toBe("cron:nightly");
+    expect(stored?.originGiven).toBeUndefined();
+  });
+
   it("takes a Workflow's agent as an ordinary child with no spawning tool-use id", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.agents.internalIngest, ingest(run()) as never);
