@@ -165,8 +165,26 @@ describe("validateEvent", () => {
   });
 });
 
+/** A complete registry row: every field Jarvis scripts/check-parts.mjs requires. */
+const row = (id, extra = {}) => ({
+  id,
+  name: id,
+  type: "program",
+  file: `worker/jobs/${id}.mjs`,
+  starts: [],
+  reads: ["record"],
+  writes: ["record"],
+  refuses: [],
+  routes: ["/jarvis/event"],
+  schedule: id,
+  fate: { type: "kept", by: null },
+  serves: [{ guarantee: "G4" }],
+  designed_by: "outcomes",
+  note: `The ${id} part.`,
+  ...extra,
+});
+
 describe("the design page's events", () => {
-  const row = (id, extra = {}) => ({ id, name: id, type: "program", fate: { type: "kept", by: null }, serves: [{ guarantee: "G4" }], ...extra });
   const registry = (data = {}, extra = {}) => {
     const parts = data.parts ?? [row("deploy"), row("sweep")];
     return {
@@ -196,6 +214,16 @@ describe("the design page's events", () => {
     expect(validateEvent(registry({}, { subject: "Jarvis@other" })).error).toContain("Jarvis@<data.sha>");
   });
 
+  it("refuses a registry row missing any field the registry check requires", () => {
+    for (const field of ["name", "file", "starts", "reads", "writes", "refuses", "routes", "schedule", "serves", "designed_by", "note"]) {
+      const partial = row("x");
+      delete partial[field];
+      expect(validateEvent(registry({ parts: [partial], count: 1 })).error, field).toContain("row x");
+    }
+    expect(validateEvent(registry({ parts: [row("x", { fate: { type: "kept", by: 3 } })], count: 1 })).error).toContain("fate.by");
+    expect(validateEvent(registry({ parts: [row("x", { file: null, schedule: null })], count: 1 })).ok).toBe(true);
+  });
+
   const explanation = (data = {}, extra = {}) => ({
     kind: "explanation",
     subject: "deploy",
@@ -221,14 +249,28 @@ describe("the design page's events", () => {
 });
 
 describe("registryDiffOf", () => {
-  const diff = { base: "abcdef0", added: ["new-part"], changed: ["deploy"], removed: ["sweep"], rows: { deploy: { id: "deploy" }, "new-part": { id: "new-part" } } };
+  const diff = { base: "abcdef0", added: ["new-part"], changed: ["deploy"], removed: ["sweep"], rows: { deploy: row("deploy", { note: "changed" }), "new-part": row("new-part") } };
 
-  it("takes a well-formed diff and refuses a malformed one", () => {
+  it("takes a diff with a complete row for each added and changed id", () => {
     expect(registryDiffOf(diff)).toEqual(diff);
+    expect(registryDiffOf({ base: "abcdef0", added: [], changed: [], removed: ["sweep"], rows: {} })).toEqual({ base: "abcdef0", added: [], changed: [], removed: ["sweep"], rows: {} });
+  });
+
+  it("refuses a diff missing the row of an added or changed id", () => {
+    expect(registryDiffOf({ ...diff, rows: { deploy: diff.rows.deploy } })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { "new-part": diff.rows["new-part"] } })).toBeNull();
+  });
+
+  it("refuses a row holding only its id, or failing the registry row check", () => {
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, deploy: { id: "deploy" } } })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, deploy: row("deploy", { type: "kind" }) } })).toBeNull();
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, deploy: row("other") } })).toBeNull();
+  });
+
+  it("refuses a row for an id neither added nor changed, and a malformed list or base", () => {
+    expect(registryDiffOf({ ...diff, rows: { ...diff.rows, sweep: row("sweep") } })).toBeNull();
     expect(registryDiffOf({ ...diff, base: "" })).toBeNull();
     expect(registryDiffOf({ ...diff, added: ["Not An Id"] })).toBeNull();
-    expect(registryDiffOf({ ...diff, rows: { sweep: { id: "sweep" } } })).toBeNull();
-    expect(registryDiffOf({ ...diff, rows: { deploy: { id: "other" } } })).toBeNull();
     expect(registryDiffOf("a diff")).toBeNull();
   });
 });

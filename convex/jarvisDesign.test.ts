@@ -18,14 +18,22 @@ async function tom(t: T) {
   return t.withIdentity({ subject: id });
 }
 
+/** A complete registry row: every field Jarvis scripts/check-parts.mjs requires. */
 const row = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
   name: id,
   type: "program",
   file: null,
+  starts: [],
+  reads: [],
+  writes: [],
+  refuses: [],
+  routes: [],
   schedule: null,
   fate: { type: "kept", by: null },
   serves: [{ guarantee: "G4" }],
+  designed_by: "outcomes",
+  note: `The ${id} part.`,
   ...extra,
 });
 const PARTS = [row("ran", { schedule: "ran" }), row("idle")];
@@ -77,11 +85,15 @@ describe("the registry diff on a head's tests row", () => {
     const viewer = await tom(t);
     expect((await post(t, "/tts/tests", { repo: "Jarvis", sha: "head1", ok: true, registryDiff: diff })).status).toBe(200);
     expect((await post(t, "/tts/tests", { repo: "Jarvis", sha: "head2", ok: true, registryDiff: { ...diff, added: "ran" } })).status).toBe(200);
+    // A changed id whose row holds only its id is dropped the same way.
+    expect((await post(t, "/tts/tests", { repo: "Jarvis", sha: "head3", ok: true, registryDiff: { ...diff, rows: { ran: { id: "ran" } } } })).status).toBe(200);
     const rows = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     const of = (key: string) => rows.find((r) => r.kind === "tests-run" && r.key === key)?.data as Record<string, unknown>;
     expect(of("Jarvis@head1").registryDiff).toEqual(diff);
     expect(of("Jarvis@head2")).toMatchObject({ ok: true });
     expect(of("Jarvis@head2")).not.toHaveProperty("registryDiff");
+    expect(of("Jarvis@head3")).toMatchObject({ ok: true });
+    expect(of("Jarvis@head3")).not.toHaveProperty("registryDiff");
 
     expect(await viewer.query(api.jarvis.design.diff, { head: "Jarvis@head2" })).toBeNull();
     expect(await viewer.query(api.jarvis.design.diff, { head: "no-sha" })).toBeNull();

@@ -304,6 +304,41 @@ export const PART_TYPES = ["page", "program", "agent", "store", "external", "wal
 export const PART_FATES = ["kept", "replaced", "removed", "proposed"];
 /** A part id: lowercase words joined by hyphens (Jarvis scripts/check-parts.mjs ID_FORM). */
 export const PART_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** Who designs a part: Tom in session, or outcomes govern it. */
+/** @type {const} */
+export const PART_DESIGNERS = ["tom", "outcomes"];
+
+const isStringList = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+const stringOrNull = (value) => value === null || typeof value === "string";
+
+/**
+ * What is wrong with one registry row, or null. The required fields are
+ * Jarvis scripts/check-parts.mjs FIELDS: id, name, type, file, starts, reads,
+ * writes, refuses, routes, schedule, fate, serves, designed_by and note. The
+ * record checks each field's form; the registry check on the box holds what
+ * the fields say (that a file exists, that an id names a row). The one row
+ * check of the registry event and of a head's registry diff.
+ */
+function registryRowProblem(row, at) {
+  if (!isPlainObject(row)) return `${at} is not an object`;
+  if (typeof row.id !== "string" || !PART_ID.test(row.id)) return `${at}.id is not plain hyphenated words`;
+  const named = `row ${row.id}`;
+  if (!nonEmptyString(row.name)) return `${named} has no name`;
+  if (!PART_TYPES.includes(row.type)) return `${named} has a type not one of ${PART_TYPES.join(", ")}`;
+  if (!stringOrNull(row.file)) return `${named} has a file that is not a path or null`;
+  for (const field of ["starts", "reads", "writes", "refuses", "routes"]) {
+    if (!isStringList(row[field])) return `${named} has a ${field} that is not a list of strings`;
+  }
+  if (!stringOrNull(row.schedule)) return `${named} has a schedule that is not a job name or null`;
+  if (!isPlainObject(row.fate) || !PART_FATES.includes(row.fate.type)) {
+    return `${named} has a fate.type not one of ${PART_FATES.join(", ")}`;
+  }
+  if (!stringOrNull(row.fate.by)) return `${named} has a fate.by that is not a part id or null`;
+  if (!Array.isArray(row.serves)) return `${named} has no serves list`;
+  if (!PART_DESIGNERS.includes(row.designed_by)) return `${named} has a designed_by not one of ${PART_DESIGNERS.join(", ")}`;
+  if (typeof row.note !== "string") return `${named} has no note`;
+  return null;
+}
 
 /** The largest registry event, as UTF-8 JSON: 93 rows are about 90 KB, and a
  *  registry past this fails at the post rather than at a read. */
@@ -323,14 +358,8 @@ function registryProblem(subject, data) {
   if (!Array.isArray(data.parts)) return "a registry event names data.parts as the list of rows";
   if (data.count !== data.parts.length) return "a registry event names data.count as the number of rows";
   for (const [index, row] of data.parts.entries()) {
-    const at = `data.parts[${index}]`;
-    if (!isPlainObject(row)) return `a registry event's ${at} is not an object`;
-    if (typeof row.id !== "string" || !PART_ID.test(row.id)) return `a registry event's ${at}.id is not plain hyphenated words`;
-    if (!PART_TYPES.includes(row.type)) return `a registry event's row ${row.id} has a type not one of ${PART_TYPES.join(", ")}`;
-    if (!isPlainObject(row.fate) || !PART_FATES.includes(row.fate.type)) {
-      return `a registry event's row ${row.id} has a fate.type not one of ${PART_FATES.join(", ")}`;
-    }
-    if (!Array.isArray(row.serves)) return `a registry event's row ${row.id} has no serves list`;
+    const problem = registryRowProblem(row, `data.parts[${index}]`);
+    if (problem !== null) return `a registry event's ${problem}`;
   }
   if (utf8Bytes(JSON.stringify(data)) > REGISTRY_MAX_BYTES) return `a registry event's data is over ${REGISTRY_MAX_BYTES} bytes`;
   return null;
@@ -357,7 +386,10 @@ function explanationProblem(subject, data, provenance) {
  * A head's registry diff, checked: `{ base, added, removed, changed, rows }`
  * as the box's pull-request-checks job posts it on a Jarvis head's tests row
  * (POST /tts/tests), or null when it is not that shape. `rows` holds the
- * head's row for each id in `added` and `changed`, and nothing else.
+ * head's complete row for each id in `added` and `changed`, each passing the
+ * row check of the registry event, and no row for any other id: the head's
+ * registry is the base's with `rows` applied and `removed` taken out, so a
+ * missing or partial row would draw a part that is not the head's.
  */
 export function registryDiffOf(value) {
   if (!isPlainObject(value)) return null;
@@ -367,8 +399,10 @@ export function registryDiffOf(value) {
   if (!ids(added) || !ids(removed) || !ids(changed)) return null;
   if (!isPlainObject(rows)) return null;
   const named = new Set([...added, ...changed]);
-  for (const [id, row] of Object.entries(rows)) {
-    if (!named.has(id) || !isPlainObject(row) || row.id !== id) return null;
+  if (Object.keys(rows).some((id) => !named.has(id))) return null;
+  for (const id of named) {
+    const row = rows[id];
+    if (row === undefined || registryRowProblem(row, `rows.${id}`) !== null || row.id !== id) return null;
   }
   return { base: base.trim(), added, removed, changed, rows };
 }
