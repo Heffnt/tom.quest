@@ -324,7 +324,7 @@ describe("POST /tts/ask — the delegate's record", () => {
       },
     ]);
     // The same askId again writes no second row, so no second push.
-    await post(t, body({ job: "poll-gmail" }));
+    expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(200);
     expect(await pushes()).toHaveLength(1);
 
     // A refusal writes its decision row (the parked option) and pushes nothing.
@@ -342,23 +342,29 @@ describe("POST /tts/ask — the delegate's record", () => {
       ctx.db.query("events").withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", "aaaaaaaa")).first(),
     );
     expect(refusedRow?.data).toMatchObject({ refused: true });
-    // An attended ask, a capped one and an unanswered one write no row and push nothing.
+    // An attended ask, an unanswered one and a capped one write no row and push nothing.
     await post(t, body({ sessionId: await seedSession(t), askId: "cccccccc" }));
     await post(t, body({ job: "poll-gmail", askId: "dddddddd", decision: null }));
+    // poll-gmail's fourth ask in a day (3f9c1a22, aaaaaaaa, dddddddd before it) is past its cap.
+    expect(DELEGATE_MAX_PER_JOB).toBe(3);
+    expect(await (await post(t, body({ job: "poll-gmail", askId: "ffffffff" }))).json()).toMatchObject({ capped: true });
     expect(await pushes()).toHaveLength(1);
   });
 
   it("puts the question and the decision on one line each, cut and redacted", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
-    const long = `Do I\n  keep the ${"very ".repeat(40)}long branch?`;
+    // Built by concatenation, so no credential-shaped literal sits in the source.
+    const token = "ghp_" + "A".repeat(36);
+    const long = `Do I\n  paste ${token} and keep the ${"very ".repeat(40)}long branch?`;
     await post(t, body({ job: "poll-gmail", question: long, options: ["Keep it.", "Drop it."], recommendation: "Keep it.", decision: "Keep it." }));
     const [push] = (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()))
       .filter((job) => job.name.includes("sendToAll"))
       .map((job) => job.args[0] as { body: string });
     const [question, decision, ...rest] = push.body.split("\n");
     expect(rest).toEqual([]);
-    expect(question.startsWith("Do I keep the very")).toBe(true);
+    expect(push.body).not.toContain(token);
+    expect(question.startsWith("Do I paste [redacted:github] and keep the very")).toBe(true);
     expect(question.length).toBeLessThanOrEqual(120);
     expect(question.endsWith("…")).toBe(true);
     expect(decision).toBe("Keep it.");

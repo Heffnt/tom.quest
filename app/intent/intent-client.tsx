@@ -76,7 +76,7 @@ export default function IntentClient() {
 
   // Two fragments pick a view. The /vocabulary address redirects to
   // /intent#vocabulary (next.config.ts): that fragment picks the vocabulary
-  // view once, on arrival, and moves nothing. It stays while Slack messages
+  // view on arrival and on a hash change, and moves nothing. It stays while Slack messages
   // and old links name /vocabulary; the redirect alone would land them on the
   // default view. A delegate decision's phone notification opens
   // /intent#decision-<askId> (convex/ttsAsk.ts insertDecision): that fragment
