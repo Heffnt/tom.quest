@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { displayDay } from "@/shared/clock.mjs";
 
 type CanvasRow = {
   _id: Id<"canvases">;
@@ -13,13 +14,12 @@ type CanvasRow = {
 };
 
 function formatDate(ts: number): string {
-  const d = new Date(ts);
   const now = Date.now();
   const ageMs = now - ts;
   if (ageMs < 60_000) return "just now";
   if (ageMs < 3600_000) return `${Math.floor(ageMs / 60_000)}m ago`;
   if (ageMs < 86_400_000) return `${Math.floor(ageMs / 3600_000)}h ago`;
-  return d.toLocaleDateString();
+  return displayDay(ts);
 }
 
 export default function MenuBubble({

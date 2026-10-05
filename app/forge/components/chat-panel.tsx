@@ -7,6 +7,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
 import { useTuring } from "@/app/lib/hooks/use-turing";
 import type { ServeStatus, ChatResponse } from "../types";
+import { displayTime } from "@/shared/clock.mjs";
 
 const SERVE_POLL_SECONDS = 5;
 
@@ -171,7 +172,7 @@ export default function ChatPanel({
 }
 
 function MessageRow({ role, content, createdAt }: { role: string; content: string; createdAt: number }) {
-  const time = new Date(createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const time = displayTime(createdAt);
   if (role === "user") {
     return (
       <div className="flex flex-col items-end">

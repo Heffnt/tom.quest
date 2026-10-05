@@ -347,6 +347,8 @@ ${WHAT_TTS_IS}
 
 <p>The note does nothing by itself. It is stored, and a separate job reads it, works out what it meant against its context, carries that out, and writes back one sentence saying what it did.</p>
 
+<p>All times are America/New_York. That is the name under which the operating system's zone table holds Tom's clock rule, including the change to daylight time on the second Sunday of March and back on the first Sunday of November. Every page, the digest and the thread show a stored moment in that zone, whatever zone the browser is in; a day column is a New York calendar day; and the job reads and writes New York wall-clock time.</p>
+
 <h2>The three contexts, and why exactly one</h2>
 
 <table>

@@ -4,6 +4,8 @@
 // the SINGLE phrasing for that hover tooltip, shared by the inventory perfume
 // slots and the cauldron output perfumes so the two never drift.
 
+import { displayDay, newYorkParts } from "@/shared/clock.mjs";
+
 // The minimal flat-provenance shape both instance kinds project to.
 export type ProvenanceView = {
   brewedByKey: string;
@@ -37,11 +39,7 @@ export function makeNameResolver(
 function formatDate(at: number): string {
   if (!at) return "unknown date";
   try {
-    return new Date(at).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+    return `${displayDay(at)}, ${newYorkParts(at).year}`;
   } catch {
     return "unknown date";
   }

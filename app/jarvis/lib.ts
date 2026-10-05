@@ -2,6 +2,7 @@
 // All persisted dates are epoch-ms numbers (convex/schema.ts todos).
 
 import type { Doc, Id } from "@/convex/_generated/dataModel";
+import { displayDay, newYorkDay, newYorkParts } from "@/shared/clock.mjs";
 
 export type Todo = Doc<"todos">;
 export type MirrorRow = Doc<"dtsCodeTodoMirror">;
@@ -255,22 +256,13 @@ export function errMessage(e: unknown): string {
 // single producer of ?item=&intent= links); this is just its local name.
 export type { TtsLinkIntent as LinkIntent } from "@/convex/ttsShared";
 
-/** "Aug 30, 2026" — absolute date, shown small/faint next to countdown text. */
+/** "Sun Aug 30, 2026" — absolute New York date, shown small/faint next to countdown text. */
 export function fmtDate(ms: number): string {
-  return new Date(ms).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return `${displayDay(ms)}, ${newYorkParts(ms).year}`;
 }
 
-/** "2026-08-30" in local time — for date-history lines. */
-export function isoDate(ms: number): string {
-  const d = new Date(ms);
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${m}-${day}`;
-}
+/** "2026-08-30", the New York date — for date-history lines. */
+export const isoDate = newYorkDay;
 
 /** Descriptive age: "12 min ago", "3 h ago", "1 day ago", "41 days ago". */
 export function ageText(ms: number, now: number): string {

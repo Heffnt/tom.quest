@@ -288,7 +288,7 @@ describe("calendarLeadText", () => {
         { start: Date.UTC(2026, 8, 5, 20), end: Date.UTC(2026, 8, 5, 21), allDay: false },
         { start: Date.UTC(2026, 8, 6, 3), end: Date.UTC(2026, 8, 6, 3, 30), allDay: false },
       ]),
-    ).toBe("Your day is committed from 16:00 to 23:30.");
+    ).toBe("Your day is committed from 4:00 pm to 11:30 pm.");
     expect(calendarLeadText([{ start: 0, end: 0, allDay: true }])).toBe(
       "Your day carries one entry that runs all day and nothing timed.",
     );
@@ -739,7 +739,7 @@ describe("internalComposeToday", () => {
       day: DAY_KEY,
       now: FIVE_AM + 1,
     });
-    expect(text).toContain("PT runs 16:00 to 17:00.");
+    expect(text).toContain("PT runs 4:00 pm to 5:00 pm.");
     expect(text).not.toContain("Dinner with the family");
     expect(text).not.toContain("private");
     expect(JSON.stringify(facts)).not.toContain("Dinner with the family");
@@ -935,7 +935,7 @@ describe("internalComposeToday", () => {
       canReply: true,
     });
     expect(text).toContain("One message went out on your sign-off.");
-    expect(text).toMatch(/1\. Sent as you to Sarah Chen on Slack C0SARAH01, signed at \d\d:\d\d\./);
+    expect(text).toMatch(/1\. Sent as you to Sarah Chen on Slack C0SARAH01, signed at \d{1,2}:\d\d [ap]m\./);
     expect(text).not.toContain("decided in your name");
     expect(objectionAskIds).toEqual([""]);
   });

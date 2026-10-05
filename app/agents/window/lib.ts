@@ -5,6 +5,7 @@
 
 import { SESSION_REPOS, isChangeSubject, isFailureKind } from "@/convex/ttsShared";
 import type { Lane, Tally } from "./map-data";
+import { displayDay, displayForm, displayTime } from "@/shared/clock.mjs";
 
 // ── The window ───────────────────────────────────────────────────────────────
 
@@ -35,12 +36,8 @@ export function windowBounds(kind: WindowKind, offset: number, now: number): Tim
 
 /** Where a window sits, in the record's own dates. */
 export function windowLabel(win: TimeWindow): string {
-  const day = (ms: number) =>
-    new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const clock = (ms: number) =>
-    new Date(ms).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-  if (win.kind === "day") return `${day(win.from)} ${clock(win.from)} — ${day(win.to)} ${clock(win.to)}`;
-  return `${day(win.from)} — ${day(win.to)}`;
+  if (win.kind === "day") return `${displayForm(win.from)} — ${displayForm(win.to)}`;
+  return `${displayDay(win.from)} — ${displayDay(win.to)}`;
 }
 
 // ── Runs ─────────────────────────────────────────────────────────────────────
@@ -446,11 +443,11 @@ export function ago(at: number | null, now: number): string {
 }
 
 export function clock(at: number): string {
-  return new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return displayTime(at);
 }
 
 export function dayAndClock(at: number): string {
-  return `${new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${clock(at)}`;
+  return displayForm(at);
 }
 
 // ── Grouping the workers ─────────────────────────────────────────────────────

@@ -12,6 +12,8 @@ import { describe, expect, it } from "vitest";
 import { subjectKey } from "@/convex/ttsRulings";
 import {
   codeSubjectKey,
+  fmtDate,
+  isoDate,
   liveRulingsByKey,
   rulingSubjectKey,
   selectNeedsMe,
@@ -292,5 +294,12 @@ describe("selectToday", () => {
     const view = selectToday(todos, [], { start: DAY_START, end: DAY_END }, NOW);
     expect(view.due.map((t) => t._id)).toEqual(["sooner", "later"]);
     expect(selectToday([], [], { start: DAY_START, end: DAY_END }, NOW).entries).toEqual([]);
+  });
+});
+
+describe("the dates on the todo rows", () => {
+  it("are the New York date, so an evening instant is not dated tomorrow", () => {
+    expect(isoDate(Date.parse("2026-10-05T01:58:00Z"))).toBe("2026-10-04");
+    expect(fmtDate(Date.parse("2026-10-05T01:58:00Z"))).toBe("Sun Oct 4, 2026");
   });
 });

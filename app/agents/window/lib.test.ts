@@ -21,6 +21,9 @@ import {
   type RulingRow,
   type RunMark,
   type WindowData,
+  clock,
+  dayAndClock,
+  windowLabel,
 } from "./lib";
 import { EDGES, NODES } from "./map-data";
 
@@ -321,5 +324,15 @@ describe("words for a time", () => {
     expect(fractionOf(-5, { from: 0, to: 10 })).toBe(0);
     expect(fractionOf(50, { from: 0, to: 10 })).toBe(1);
     expect(fractionOf(5, { from: 0, to: 10 })).toBe(0.5);
+  });
+});
+
+describe("the times on the agents page", () => {
+  it("are America/New_York in the display form, whatever the browser's zone", () => {
+    const evening = Date.parse("2026-10-05T01:58:00Z"); // 9:58 pm on Sun Oct 4 in New York
+    expect(clock(evening)).toBe("9:58 pm");
+    expect(dayAndClock(evening)).toBe("Sun Oct 4, 9:58 pm");
+    expect(windowLabel({ from: evening - 86_400_000, to: evening, kind: "day", offset: 0 })).toBe("Sat Oct 3, 9:58 pm — Sun Oct 4, 9:58 pm");
+    expect(windowLabel({ from: evening - 7 * 86_400_000, to: evening, kind: "week", offset: 0 })).toBe("Sun Sep 27 — Sun Oct 4");
   });
 });

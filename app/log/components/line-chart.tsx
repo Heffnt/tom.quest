@@ -1,16 +1,14 @@
 "use client";
 
+import { displayDayKey } from "@/shared/clock.mjs";
+
 type LinePoint = { x: string; y: number; label?: string };
 
 function dateLabel(value: string): string {
   const match = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(value);
   if (match === null) return value;
-  const at = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3] ?? "1")));
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "UTC",
-    month: "short",
-    day: "numeric",
-  }).format(at);
+  // "Oct 4": a calendar day has no zone; a month key reads as its first day.
+  return displayDayKey(`${match[1]}-${match[2]}-${match[3] ?? "01"}`).slice(4);
 }
 
 /** A compact, dependency-free SVG line chart for the day-log measures. */

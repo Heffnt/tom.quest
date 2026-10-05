@@ -13,6 +13,7 @@ import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import type { IntentLine } from "@/app/intent/lib";
 import { RULINGS_STEP, useMockIntentStore, type SectionKey } from "./store";
+import { displayDay } from "@/shared/clock.mjs";
 
 type Group = { label: string; value?: string; lines: IntentLine[] | null; count?: number };
 
@@ -35,7 +36,7 @@ function inFileOrder(lines: IntentLine[]): IntentLine[] {
 
 function shortDate(ms: number | null): string {
   if (ms === null) return "";
-  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+  return displayDay(ms);
 }
 
 function countOf(groups: Group[]): number {

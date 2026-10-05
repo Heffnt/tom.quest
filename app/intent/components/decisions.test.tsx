@@ -97,3 +97,10 @@ describe("Decisions", () => {
     expect(screen.getByText(/takes his sentence/)).toBeTruthy();
   });
 });
+
+describe("Decisions, times", () => {
+  it("prints when a decision was taken in the display form, in America/New_York", () => {
+    draw([{ ...DECISION, at: Date.parse("2026-10-05T01:58:00Z") }], []);
+    expect(screen.getByText("Sun Oct 4, 9:58 pm")).toBeTruthy();
+  });
+});

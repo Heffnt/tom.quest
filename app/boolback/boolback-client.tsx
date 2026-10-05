@@ -24,6 +24,7 @@ import { TreePane } from "./components/tree-pane";
 import { TablePane, type CenterView } from "./components/table-pane";
 import { ConfigPanel } from "./components/config-panel";
 import type { PlotExportHandle } from "./components/plot-panel";
+import { displayForm } from "@/shared/clock.mjs";
 
 // Layout constants.
 const MIN_LEFT = 280; // px, left tree pane floor
@@ -167,7 +168,7 @@ export default function BoolbackClient() {
         <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-3 py-1 font-mono text-xs text-warning">
           <span className="truncate">
             {source.origin === "cache"
-              ? `Turing unreachable — showing the last snapshot this browser fetched (built ${new Date(bundle.meta.built_at).toLocaleString()})`
+              ? `Turing unreachable — showing the last snapshot this browser fetched (built ${displayForm(Date.parse(bundle.meta.built_at))})`
               : "Turing unreachable — showing bundled sample data (not real runs)"}
             {source.statusDetail ? ` · ${source.statusDetail}` : ""}
           </span>

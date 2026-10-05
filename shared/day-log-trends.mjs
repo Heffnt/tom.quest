@@ -3,6 +3,8 @@
  * Convex, and the box can use the same calculation without a chart library.
  */
 
+import { newYorkDay, newYorkParts } from "./clock.mjs";
+
 const DAY_MS = 86_400_000;
 
 function offsetDay(day, days) {
@@ -17,12 +19,7 @@ export const DAY_LOG_BENCHMARKS = Object.freeze({
 });
 
 function newYorkHour(at) {
-  const hour = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    hour: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(at)).find((part) => part.type === "hour")?.value;
-  return Number(hour);
+  return newYorkParts(at).hour;
 }
 
 function isMorningValue(item) {
@@ -63,14 +60,7 @@ function newestFirst(a, b) {
 
 /** YYYY-MM in New York for an instant. Day-log item days are already New York calendar days. */
 export function newYorkMonth(at) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-  }).formatToParts(new Date(at));
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  return `${year}-${month}`;
+  return newYorkDay(at).slice(0, 7);
 }
 
 /** Monday YYYY-MM-DD for a calendar day that is already in New York. */
