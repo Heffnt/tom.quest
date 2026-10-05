@@ -39,11 +39,17 @@ const ITEM: EvalItem = {
   settled: null,
 };
 
-function draw(decisions: Decision[], evalItems: EvalItem[], onSettle: () => Promise<unknown> = async () => {}) {
+function draw(
+  decisions: Decision[],
+  evalItems: EvalItem[],
+  onSettle: () => Promise<unknown> = async () => {},
+  focusAskId: string | null = null,
+) {
   render(
     <Decisions
       decisions={decisions}
       evalItems={evalItems}
+      focusAskId={focusAskId}
       lines={[]}
       selected={null}
       onSelect={() => {}}
@@ -63,6 +69,23 @@ describe("Decisions", () => {
     expect(screen.getAllByText("object")).toHaveLength(1);
     expect(screen.queryByText("Refused question")).toBeNull();
     expect(screen.queryByText("Unanswered question")).toBeNull();
+  });
+
+  it("marks the row a notification opened and scrolls it into view", () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.id);
+    };
+    try {
+      draw([DECISION, { ...DECISION, id: "e2", askId: "11111111", question: "Another question" }], [], async () => {}, "86f2f341");
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+    const row = document.getElementById("decision-86f2f341");
+    expect(row?.getAttribute("aria-current")).toBe("true");
+    expect(document.getElementById("decision-11111111")?.getAttribute("aria-current")).toBeNull();
+    expect(scrolled).toEqual(["decision-86f2f341"]);
   });
 
   it("does not call a run whose items were all skipped a pass", () => {

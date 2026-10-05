@@ -10,6 +10,7 @@ import { logEvent } from "./tts";
 import { newestTodoEvents, resolveId } from "./jarvis/tables";
 import { DIGEST_LINE } from "./jarvis/outbox";
 import { insertEvent } from "./jarvis/record";
+import { redactSecrets } from "../shared/redact.mjs";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
@@ -161,8 +162,30 @@ type StoredAsk = {
   nearMissed?: unknown;
 };
 
+/** The most characters of the question, and of the decision, a phone
+ *  notification carries: each is one line of the notification's body. */
+const PUSH_LINE_MAX = 120;
+
+/** One line of a notification: whitespace and line breaks collapsed, secrets
+ *  redacted as the digest redacts them, cut at PUSH_LINE_MAX with an ellipsis. */
+function pushLine(text: string): string {
+  const line = redactSecrets(text).replace(/\s+/g, " ").trim();
+  return line.length <= PUSH_LINE_MAX ? line : `${line.slice(0, PUSH_LINE_MAX - 1).trimEnd()}…`;
+}
+
 /** The decision row (events kind "decision", convex/jarvis/intent.ts) for one
- *  answered ask, built from the ask as recorded; only internalRecordAsk calls it. */
+ *  answered ask, built from the ask as recorded; only internalRecordAsk calls it.
+ *
+ *  A DECISION THE DELEGATE TOOK IS ALSO ONE WEB PUSH to every live
+ *  subscription (convex/pushSend.ts sendToAll): the question on one line, the
+ *  decision on the next, and a tap opens that decision's row on /intent
+ *  (app/intent/intent-client.tsx reads the #decision-<askId> fragment). Tom's
+ *  answer of 2026-10-04 to the question about decisions taken while he is
+ *  reachable but not in the session: "agreed. lets send notifications to my
+ *  phone for this." A refusal took nothing in his name and is not pushed: the
+ *  caller took its fallback, and the digest lists it as "REFUSED and parked"
+ *  (convex/ttsCompose.ts objectionLine). The push is scheduled, so a send that
+ *  fails (no VAPID pair, a push service error) never undoes the row. */
 async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
   await insertEvent(ctx, {
     kind: "decision",
@@ -183,6 +206,12 @@ async function insertDecision(ctx: MutationCtx, ask: StoredAsk): Promise<void> {
       model: ask.model,
       ...(ask.nearMissed === undefined ? {} : { nearMissed: ask.nearMissed }),
     },
+  });
+  if (ask.refused || ask.decision === null) return;
+  await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, {
+    title: "Delegate decision",
+    body: `${pushLine(ask.question)}\n${pushLine(ask.decision)}`,
+    url: `/intent#decision-${encodeURIComponent(ask.askId)}`,
   });
 }
 

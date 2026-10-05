@@ -1,5 +1,5 @@
 import { convexTest, type TestConvex } from "convex-test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { gatherTodayFacts } from "./ttsDigest";
@@ -87,7 +87,14 @@ const rows = (t: TestConvex<typeof schema>) =>
   );
 
 describe("POST /tts/ask — the delegate's record", () => {
-  afterEach(() => vi.unstubAllEnvs());
+  // A decision taken schedules its phone notification (convex/pushSend.ts
+  // sendToAll); held timers keep it a scheduled row the tests read, never a
+  // send.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
 
   it("writes one row keyed by the askId, with the todo on the column", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
@@ -297,6 +304,64 @@ describe("POST /tts/ask — the delegate's record", () => {
     await post(t, body({ job: "poll-gmail", askId: "dddddddd", decision: null })); // no answer
     expect((await decisions()).map((d) => d.subject)).toEqual(["3f9c1a22"]);
     expect((await post(t, body({ job: "poll-gmail", askId: "eeeeeeee", restedOn: "ruling:abc" }))).status).toBe(400);
+  });
+
+  // Tom, 2026-10-04: "agreed. lets send notifications to my phone for this."
+  it("pushes one notification for a decision taken, and none for a refusal or an ask that took nothing", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const pushes = async () =>
+      (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+        .filter((job) => job.name.includes("sendToAll"))
+        .map((job) => job.args[0]);
+
+    expect((await post(t, body({ job: "poll-gmail" }))).status).toBe(200);
+    expect(await pushes()).toEqual([
+      {
+        title: "Delegate decision",
+        body: `${body().question}\n${body().decision}`,
+        url: "/intent#decision-3f9c1a22",
+      },
+    ]);
+    // The same askId again writes no second row, so no second push.
+    await post(t, body({ job: "poll-gmail" }));
+    expect(await pushes()).toHaveLength(1);
+
+    // A refusal writes its decision row (the parked option) and pushes nothing.
+    const refusal = await post(
+      t,
+      body({
+        job: "poll-gmail",
+        askId: "aaaaaaaa",
+        refused: true,
+        refusedBecause: "message-in-his-name — writing to the consulate is a message to another human in his name.",
+      }),
+    );
+    expect(refusal.status).toBe(200);
+    const refusedRow = await t.run(async (ctx) =>
+      ctx.db.query("events").withIndex("by_kind_subject_at", (q) => q.eq("kind", "decision").eq("subject", "aaaaaaaa")).first(),
+    );
+    expect(refusedRow?.data).toMatchObject({ refused: true });
+    // An attended ask, a capped one and an unanswered one write no row and push nothing.
+    await post(t, body({ sessionId: await seedSession(t), askId: "cccccccc" }));
+    await post(t, body({ job: "poll-gmail", askId: "dddddddd", decision: null }));
+    expect(await pushes()).toHaveLength(1);
+  });
+
+  it("puts the question and the decision on one line each, cut and redacted", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const long = `Do I\n  keep the ${"very ".repeat(40)}long branch?`;
+    await post(t, body({ job: "poll-gmail", question: long, options: ["Keep it.", "Drop it."], recommendation: "Keep it.", decision: "Keep it." }));
+    const [push] = (await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+      .filter((job) => job.name.includes("sendToAll"))
+      .map((job) => job.args[0] as { body: string });
+    const [question, decision, ...rest] = push.body.split("\n");
+    expect(rest).toEqual([]);
+    expect(question.startsWith("Do I keep the very")).toBe(true);
+    expect(question.length).toBeLessThanOrEqual(120);
+    expect(question.endsWith("…")).toBe(true);
+    expect(decision).toBe("Keep it.");
   });
 
   it("a retry of an ask recorded before the decision row was written here writes it, once", async () => {

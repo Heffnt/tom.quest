@@ -275,3 +275,17 @@ export function openDisagreements(
     (vocabulary?.disagreements.length ?? 0)
   );
 }
+
+/** The askId a `#decision-<askId>` fragment names, or null for any other
+ *  fragment. A delegate decision's phone notification opens
+ *  /intent#decision-<askId> (convex/ttsAsk.ts insertDecision), so a tap lands
+ *  on that decision's row in the disagreements view. */
+export function decisionFragment(hash: string): string | null {
+  const match = /^#decision-(.+)$/.exec(hash);
+  if (match === null) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
