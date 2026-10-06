@@ -93,8 +93,8 @@ export const getSession = query({
 });
 
 // The sessions page's list (design section 5.1). The persistent sessions are
-// read by kind, so one that has lived for months never falls out of the
-// newest-100 window the rest are read through.
+// read by kind, so one that has lived for months is always there; the rest
+// are the 100 most recently active, by statusChangedAt.
 export const sessionsPage = query({
   args: {},
   handler: async (ctx) => {
@@ -103,11 +103,27 @@ export const sessionsPage = query({
       .query("claudeSessions")
       .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
       .take(20);
-    const recent = await ctx.db.query("claudeSessions").order("desc").take(100);
+    const recent = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_statusChangedAt")
+      .order("desc")
+      .take(100);
     return {
       persistent,
       others: recent.filter((session) => session.kind !== "persistent"),
     };
+  },
+});
+
+// One session for the sessions page, addressed by the id its link carries. A
+// string, not v.id: a malformed link answers null rather than throwing during
+// the page's render.
+export const sessionByLink = query({
+  args: { id: v.string() },
+  handler: async (ctx, { id }) => {
+    await requireTomId(ctx);
+    const sessionId = ctx.db.normalizeId("claudeSessions", id);
+    return sessionId === null ? null : await ctx.db.get(sessionId);
   },
 });
 
@@ -1588,6 +1604,9 @@ export const internalPoll = internalMutation({
           // poll. Its family picks the runner (Agent SDK vs Codex CLI); absent
           // means a pre-2026-09-04 row, which ran Opus.
           model: s.model,
+          // Which Claude login runs the next reply (setSessionLogin, the
+          // sessions page's selector); absent means the login the box holds.
+          login: s.login,
           // The session this one continues on a different model. The daemon
           // writes that session's transcript to .tts-transcript.md in the
           // workspace before the first turn — the fork's prompt tells the agent
