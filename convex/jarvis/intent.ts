@@ -32,6 +32,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
 import { insertRuling } from "../ttsRulings";
+import { ReadBudget, readWithin } from "../readBudget";
 import { insertEvent } from "./record";
 import { resolveId } from "./tables";
 
@@ -103,13 +104,13 @@ const decisionSubject = (askId: string) => `decision:${askId}`;
 const evalSubject = (runId: string, itemName: string) => `eval:${runId}:${itemName}`;
 
 /** His newest settlement of each thing he settled, by its subject; the
- *  Jarvis thread reads it beside this page (convex/thread.ts). */
-export async function settlements(ctx: QueryCtx): Promise<Map<string, Settlement>> {
-  const rows = await ctx.db
+ *  Jarvis thread reads it under its page budget (convex/thread.ts). */
+export async function settlements(ctx: QueryCtx, budget?: ReadBudget): Promise<Map<string, Settlement>> {
+  const newest = ctx.db
     .query("events")
     .withIndex("by_kind_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED))
-    .order("desc")
-    .take(SETTLED_MAX);
+    .order("desc");
+  const rows = budget === undefined ? await newest.take(SETTLED_MAX) : await readWithin(budget, newest, SETTLED_MAX);
   const bySubject = new Map<string, Settlement>();
   for (const row of rows) {
     if (row.subject === undefined || bySubject.has(row.subject)) continue;

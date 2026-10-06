@@ -615,6 +615,26 @@ describe("thread.open", () => {
     for (const id of [doneOpening, lapsed, settledElsewhere, answered]) expect(await closedAt(id)).toEqual(expect.any(Number));
   });
 
+  it("reads on past a slice of open decisions to close a stale one after it, in a chained run", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest({ schema, modules });
+      const big = (askId: string, at: number) => insertEventRow(t, { kind: "decision", at, subject: askId,
+        data: { ...DECISION_DATA, askId, reason: "x".repeat(900_000) } });
+      const now = Date.now();
+      await big("0pen0001", now - 3_000);
+      await big("0pen0002", now - 2_000);
+      const stale = await insertEventRow(t, { kind: "decision", at: now - 1_000, subject: "ref00001",
+        data: { ...DECISION_DATA, askId: "ref00001", decision: null, refused: true, refusedBecause: "money" } });
+      // The first run's decisions slice ends at the second open row.
+      expect(await t.mutation(internal.thread.internalCloseOpenItems, {})).toEqual({ closed: 0 });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect((await t.run((ctx) => ctx.db.get(stale)))?.data.closedAt).toEqual(expect.any(Number));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows a live session's question until he answers it here, in the session, or the session ends", async () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);
@@ -646,6 +666,29 @@ describe("thread.open", () => {
     expect((await viewer.query(api.thread.open, {})).questions).toHaveLength(1);
     await t.run(async (ctx) => ctx.db.patch(sessionId, { status: "ended" }));
     expect((await viewer.query(api.thread.open, {})).questions).toEqual([]);
+  });
+
+  it("reads a session's turns only after its pause, by status, so a long history before it neither answers nor exceeds the read", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    const sessionId = await liveSession(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 300; i += 1) {
+        await ctx.db.insert("claudeInbound", { sessionId, kind: "user-turn", text: "earlier", author: "tom", status: "done", createdAt: Date.now() });
+      }
+    });
+    vi.useFakeTimers({ now: Date.now() + 1_000 });
+    try {
+      await insertEventRow(t, { kind: "pause", at: Date.now() - 500, subject: sessionId,
+        data: { reason: "awaiting you, present", sessionId, question: "Ship it?" }, text: "Ship it?" });
+      expect((await viewer.query(api.thread.open, {})).questions).toHaveLength(1);
+      await t.run(async (ctx) => ctx.db.insert("claudeInbound", {
+        sessionId, kind: "user-turn", text: "yes", author: "tom", status: "done", createdAt: Date.now(),
+      }));
+      expect((await viewer.query(api.thread.open, {})).questions).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a live session's question behind 250 newer pauses of other sessions", async () => {
@@ -727,6 +770,18 @@ describe("thread.open", () => {
 });
 
 describe("thread.messages, the stream's new rows", () => {
+  it("reads his settlements under the page's budget and says a cut of them", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 501; i += 1) {
+        await ctx.db.insert("events", { kind: "disagreement-settled", at: Date.now() - i, provenance: {}, subject: `decision:${i}`,
+          data: { verdict: "approve" } });
+      }
+    });
+    expect((await viewer.query(api.thread.messages, {})).cuts).toEqual(["His settlements: 500 read, stopped at the row limit."]);
+  });
+
   it("returns a decision unsettled, then settled, and omits a refused one", async () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);

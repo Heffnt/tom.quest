@@ -398,11 +398,17 @@ export const internalAnswerDigestReply = internalMutation({
 
 type Reply = { at: number; text: string | undefined; kind: (typeof THREAD_REPLY_KINDS)[number] | null } | null;
 
-/** What /thread's messages query reads, newest first, each under its own
- *  allotment of one ReadBudget (convex/readBudget.ts): 8.25 MiB in all, plus
- *  at most one document per read past it, under Convex's 16 MiB limit. The
- *  reads run one after another, as ReadBudget requires. */
+/** The bytes of everything /thread's messages query reads: one ReadBudget
+ *  (convex/readBudget.ts) that every read below, the settlements too, takes
+ *  its allotment from. The allotments sum past it, so they share it: a read
+ *  starts no row once the page's bytes are spent, and the page reads at most
+ *  this plus one document (1 MiB), under Convex's 16 MiB limit, and says
+ *  each read it stopped as a cut. */
+const PAGE_READ_BYTES = 10 * MIB;
+
+/** Each read's allotment and rows, newest first, run one after another. */
 const PAGE_READS = {
+  settlements: { what: "his settlements", bytes: MIB / 2, rows: 500 },
   messages: { what: "thread messages", bytes: 2 * MIB, rows: 500 },
   digests: { what: "thread digests", bytes: 4 * MIB, rows: 60 },
   items: { what: "needs-you items", bytes: MIB, rows: 500 },
@@ -432,7 +438,9 @@ export const messages = query({
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
     const since = Date.now() - WINDOW_MS;
-    const budget = ReadBudget.of(Object.values(PAGE_READS).reduce((sum, read) => sum + read.bytes, 0));
+    const budget = ReadBudget.of(PAGE_READ_BYTES);
+    // First: whether a decision is settled rests on it.
+    const settled = await settlements(ctx, budget.allot(PAGE_READS.settlements.what, PAGE_READS.settlements.bytes));
     const newest = (kind: string, read: { what: string; bytes: number; rows: number }) => readWithin(
       budget.allot(read.what, read.bytes),
       ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since)).order("desc"),
@@ -448,9 +456,6 @@ export const messages = query({
     const suggestionRows = await newest(SUGGESTION, PAGE_READS.suggestions);
     const checkRows = await newest(QUALITY_CHECK, PAGE_READS.checks);
     const diagnosisRows = await newest(DIAGNOSIS, PAGE_READS.diagnoses);
-    // Settlements are small rows, at most SETTLED_MAX of them
-    // (convex/jarvis/intent.ts), read outside the budget.
-    const settled = await settlements(ctx);
     const replyBudget = budget.allot(PAGE_READS.replies.what, PAGE_READS.replies.bytes);
     const said = new Map<string, { id: Id<"events">; at: number; text: string; reply: Reply }>();
     for (const row of messageRows) {
@@ -612,11 +617,11 @@ export const changes = query({
 /** The bytes of the open items' reads; each read is one of its allotments. */
 const OPEN_READ_BYTES = 6 * MIB;
 
-/** The rows of one kind not closed yet, oldest first. */
-function unclosed(ctx: QueryCtx, kind: string) {
+/** The rows of one kind not closed yet, oldest first, from `from` on. */
+function unclosed(ctx: QueryCtx, kind: string, from = 0) {
   return ctx.db
     .query("events")
-    .withIndex("by_kind_closed_at", (q) => q.eq("kind", kind).eq("data.closedAt", undefined))
+    .withIndex("by_kind_closed_at", (q) => q.eq("kind", kind).eq("data.closedAt", undefined).gte("at", from))
     .order("asc");
 }
 
@@ -709,41 +714,48 @@ async function liveSessions(ctx: QueryCtx) {
   return byStatus.flat();
 }
 
+/** The turns of one session read per status after its pause; a turn past
+ *  them leaves the question shown, never hidden. */
+const TURNS_AFTER_PAUSE = 50;
+const INBOUND_STATUSES: Doc<"claudeInbound">["status"][] = ["pending", "delivered", "done", "interrupted", "failed"];
+
 /** Each live session's open question: its newest pause, read by the
  *  session's id, when that pause is a question only he can answer and he
- *  has not answered it here or in the session. */
-async function openQuestions(ctx: QueryCtx, live: Doc<"claudeSessions">[]) {
-  const questions = await Promise.all(live.map(async (session) => {
-    const sessionId = session._id as string;
-    const row = await ctx.db
-      .query("events")
-      .withIndex("by_kind_subject_at", (q) => q.eq("kind", PAUSE).eq("subject", sessionId))
-      .order("desc")
-      .first();
-    if (row === null) return [];
-    const data = row.data as { reason: string; question?: unknown };
-    if (data.reason !== AWAITING_YOU) return [];
-    const answered = await ctx.db
-      .query("events")
-      .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-message").eq("subject", row._id))
-      .first();
-    if (answered !== null) return [];
-    const turn = await ctx.db
+ *  has not answered it here or in the session. The sessions run one after
+ *  another, under the open items' budget. */
+async function openQuestions(ctx: QueryCtx, live: Doc<"claudeSessions">[], budget: ReadBudget) {
+  const turns = budget.allot("session turns", OPEN_READ_BYTES / 8);
+  const questions = [];
+  for (const session of live) questions.push(...await openQuestion(ctx, session, turns));
+  return questions.sort((a, b) => a.at - b.at);
+}
+
+async function openQuestion(ctx: QueryCtx, session: Doc<"claudeSessions">, turns: ReadBudget) {
+  const sessionId = session._id as string;
+  const row = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", PAUSE).eq("subject", sessionId))
+    .order("desc")
+    .first();
+  if (row === null) return [];
+  const data = row.data as { reason: string; question?: unknown };
+  if (data.reason !== AWAITING_YOU) return [];
+  const answered = await ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-message").eq("subject", row._id))
+    .first();
+  if (answered !== null) return [];
+  // Only a turn Tom wrote answers it: an agent's turn, an interrupt or a
+  // stop is no answer of his. Each status is an index range from the pause.
+  for (const status of INBOUND_STATUSES) {
+    const after = await readWithin(turns, ctx.db
       .query("claudeInbound")
-      .withIndex("by_session_status", (q) => q.eq("sessionId", session._id))
-      // Only a turn Tom wrote answers it: an agent's turn, an interrupt or a
-      // stop is no answer of his.
-      .filter((q) => q.and(
-        q.gt(q.field("createdAt"), row.at),
-        q.eq(q.field("kind"), "user-turn"),
-        q.eq(q.field("author"), "tom"),
-      ))
-      .first();
-    if (turn !== null) return [];
-    return [{ id: row._id, at: row.at, sessionId, title: session.title,
-      question: row.text ?? str(data.question) ?? "", href: `/agents?session=${sessionId}` }];
-  }));
-  return questions.flat().sort((a, b) => a.at - b.at);
+      .withIndex("by_session_status", (q) => q.eq("sessionId", session._id).eq("status", status).gt("_creationTime", row.at)),
+    TURNS_AFTER_PAUSE);
+    if (after.some((turn) => turn.kind === "user-turn" && turn.author === "tom")) return [];
+  }
+  return [{ id: row._id, at: row.at, sessionId, title: session.title,
+    question: row.text ?? str(data.question) ?? "", href: `/agents?session=${sessionId}` }];
 }
 
 /** The counts at the top. A count whose rows do not exist yet is absent, not
@@ -809,7 +821,8 @@ export const open = query({
     const decisions = await openDecisions(ctx, budget);
     const suggestions = await openSuggestions(ctx, budget);
     const live = await liveSessions(ctx);
-    const [questions, counts] = await Promise.all([openQuestions(ctx, live), openCounts(ctx, live)]);
+    const questions = await openQuestions(ctx, live, budget);
+    const counts = await openCounts(ctx, live);
     return { needsYou, questions, decisions, suggestions, counts };
   },
 });
@@ -823,12 +836,16 @@ const SWEEP_READ_BYTES = 6 * MIB;
  * answered, its todo done or archived, its job recovered, or never numbered
  * past the three days a digest may list it in; a decision settled, refused,
  * unanswered or his own; a suggestion answered. Scheduled after each day's
- * digest. A sweep that stops at its byte budget having closed rows runs
- * again, so the rows written before this field are closed over a few runs.
+ * digest. A read that stops at its byte budget hands the next run, scheduled
+ * at once, the time of the last row it read, so each run reads on past rows
+ * still open and the chain reaches every row; a read that ended is not read
+ * again in the chain.
  */
+const SWEEP_KINDS = { openings: v.optional(v.number()), decisions: v.optional(v.number()), suggestions: v.optional(v.number()) };
+
 export const internalCloseOpenItems = internalMutation({
-  args: {},
-  handler: async (ctx): Promise<{ closed: number }> => {
+  args: { from: v.optional(v.object(SWEEP_KINDS)) },
+  handler: async (ctx, { from }): Promise<{ closed: number }> => {
     const now = Date.now();
     const budget = ReadBudget.of(SWEEP_READ_BYTES);
     let closed = 0;
@@ -842,7 +859,18 @@ export const internalCloseOpenItems = internalMutation({
     for (const digest of digests) {
       for (const item of digestItems(digest.data)) if (!listed.has(item.key)) listed.set(item.key, { n: item.n, digestId: digest._id });
     }
-    const openings = await readWithin(budget.allot("needs-you openings", SWEEP_READ_BYTES * 3 / 8), unclosed(ctx, NEEDS_YOU_OPENED), Number.POSITIVE_INFINITY);
+    // A continuation reads only the kinds whose read stopped, each from its cursor.
+    const next: Partial<Record<keyof typeof SWEEP_KINDS, number>> = {};
+    const slice = async (name: keyof typeof SWEEP_KINDS, kind: string, bytes: number) => {
+      if (from !== undefined && from[name] === undefined) return [];
+      const start = from?.[name] ?? 0;
+      const rows = await readWithin(budget.allot(name, bytes), unclosed(ctx, kind, start), Number.POSITIVE_INFINITY);
+      const last = rows.at(-1)?.at;
+      // A slice all at its cursor's millisecond moves past it, so the chain ends.
+      if (budget.cuts().some((cut) => cut.what === name)) next[name] = last === undefined ? start : last > start ? last : start + 1;
+      return rows;
+    };
+    const openings = await slice("openings", NEEDS_YOU_OPENED, SWEEP_READ_BYTES * 3 / 8);
     for (const row of openings) {
       const data = (row.data ?? {}) as Record<string, unknown>;
       const number = typeof data.n === "number" || row.subject === undefined ? undefined : listed.get(row.subject);
@@ -854,24 +882,21 @@ export const internalCloseOpenItems = internalMutation({
         closed += 1;
       }
     }
-    const decisions = await readWithin(budget.allot("decisions", SWEEP_READ_BYTES / 4), unclosed(ctx, "decision"), Number.POSITIVE_INFINITY);
+    const decisions = await slice("decisions", "decision", SWEEP_READ_BYTES / 4);
     for (const row of decisions) {
       if (await decisionState(ctx, row) === null) {
         await closeRow(ctx, row);
         closed += 1;
       }
     }
-    const suggestions = await readWithin(budget.allot("suggestions", SWEEP_READ_BYTES / 4), unclosed(ctx, SUGGESTION), Number.POSITIVE_INFINITY);
+    const suggestions = await slice("suggestions", SUGGESTION, SWEEP_READ_BYTES / 4);
     for (const row of suggestions) {
       if ((row.data as { answer?: unknown }).answer !== undefined) {
         await closeRow(ctx, row);
         closed += 1;
       }
     }
-    // Rows left unread and rows closed: the next run reads past them.
-    if (budget.cuts().length > 0 && closed > 0) {
-      await ctx.scheduler.runAfter(0, internal.thread.internalCloseOpenItems, {});
-    }
+    if (Object.keys(next).length > 0) await ctx.scheduler.runAfter(0, internal.thread.internalCloseOpenItems, { from: next });
     return { closed };
   },
 });
