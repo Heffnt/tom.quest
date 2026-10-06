@@ -644,6 +644,9 @@ describe("Tom's day facts", () => {
   it("are four kinds of the closed list", () => {
     expect(FACT_KINDS).toEqual(["meal", "weight", "training", "did"]);
     for (const kind of FACT_KINDS) expect(EVENT_KINDS).toContain(kind);
+    // Only POST /jarvis/event writes them, through validateEvent; POST
+    // /tts/event, which copies a row into the record unchecked, refuses them.
+    for (const kind of FACT_KINDS) expect(JARVIS_EVENT_ONLY_KINDS).toContain(kind);
   });
 
   it("take the day, a summary, his words, and each kind's numbers", () => {

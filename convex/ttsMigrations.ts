@@ -34,7 +34,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { FACT_BODY_METRICS, validateEvent } from "../shared/jarvis-events.mjs";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
@@ -1443,6 +1443,16 @@ export const internalRestoreArchivedTodos = internalMutation({
 });
 
 // ── The seven ───────────────────────────────────────────────────────────────
+/** The restart rows already stored. The index range holds only rows with the
+ *  restart's source and provenance, at most seven by construction (the
+ *  insert below adds each statement once); the cap guards a hand-made copy. */
+async function restartRows(ctx: QueryCtx): Promise<Doc<"todos">[]> {
+  return await ctx.db
+    .query("todos")
+    .withIndex("by_source_provenance", (q) => q.eq("source", "manual").eq("provenance", RESTART_PROVENANCE))
+    .take(100);
+}
+
 // Inserted as Tom's own active tasks: actor tom, so the work queue never takes
 // one (it takes only actor agent); readiness prepared, so no preparer writes
 // a brief for one; tomTouchedAt set, so the planner may not rewrite one.
@@ -1450,12 +1460,8 @@ export const internalRestoreArchivedTodos = internalMutation({
 export const internalAddRestartTodos = internalMutation({
   args: { dryRun: v.optional(v.boolean()) },
   handler: async (ctx, { dryRun }) => {
-    const manual = await ctx.db
-      .query("todos")
-      .withIndex("by_source", (q) => q.eq("source", "manual"))
-      .take(1000);
     const have = new Map(
-      manual.filter(isRestartTodo).map((row) => [row.statement, row._id] as const),
+      (await restartRows(ctx)).map((row) => [row.statement, row._id] as const),
     );
     const now = Date.now();
     const inserted: Id<"todos">[] = [];
@@ -1493,11 +1499,7 @@ export const internalAddRestartTodos = internalMutation({
 export const internalRestartTodos = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const manual = await ctx.db
-      .query("todos")
-      .withIndex("by_source", (q) => q.eq("source", "manual"))
-      .take(1000);
-    const byStatement = new Map(manual.filter(isRestartTodo).map((row) => [row.statement, row] as const));
+    const byStatement = new Map((await restartRows(ctx)).map((row) => [row.statement, row] as const));
     return RESTART_TODOS.map((statement) => {
       const row = byStatement.get(statement);
       return row === undefined

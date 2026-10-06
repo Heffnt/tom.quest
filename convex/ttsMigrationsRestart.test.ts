@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -150,6 +150,50 @@ describe("the seven restart todos", () => {
 
     // The work queue takes only actor-agent todos with an approve; none of these.
     expect(await t.query(internal.ttsRulings.internalWorkQueue, {})).toEqual([]);
+  });
+});
+
+describe("the seven among many manual todos", () => {
+  it("finds the seven past a thousand older manual rows: no duplicate on a re-run, all seven read back", async () => {
+    const t = harness();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 1001; i++) {
+        await ctx.db.insert("todos", {
+          statement: `older manual todo ${i}`,
+          readiness: "unprepared",
+          status: "done",
+          timingClass: "whenever",
+          source: "manual",
+          createdAt: 1,
+          updatedAt: 1,
+        });
+      }
+    });
+    await t.mutation(internal.ttsMigrations.internalAddRestartTodos, {});
+    const again = await t.mutation(internal.ttsMigrations.internalAddRestartTodos, {});
+    expect(again).toMatchObject({ toInsert: 0, inserted: [] });
+    expect((await allTodos(t)).filter((r) => r.provenance === RESTART_PROVENANCE)).toHaveLength(7);
+    const back = await t.query(internal.ttsMigrations.internalRestartTodos, {});
+    expect(back.every((r) => r.id !== null)).toBe(true);
+  });
+});
+
+describe("the fact kinds on the legacy route", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("are refused by POST /tts/event, which copies a row into events unchecked", async () => {
+    const t = harness();
+    vi.stubEnv("TTS_WORKER_KEY", "k");
+    for (const kind of ["meal", "weight", "training", "did"]) {
+      const response = await t.fetch("/tts/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "k" },
+        body: JSON.stringify({ kind, data: { summary: "no day" } }),
+      });
+      expect(response.status).toBe(403);
+    }
+    const rows = await t.run((ctx) => ctx.db.query("events").collect());
+    expect(rows.filter((r) => ["meal", "weight", "training", "did"].includes(r.kind))).toHaveLength(0);
   });
 });
 

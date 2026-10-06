@@ -891,6 +891,11 @@ export default defineSchema({
     // never the whole key — a reader that skips the provenance match adopts
     // every other producer's rows under that name.
     .index("by_source", ["source"])
+    // The restart's seven (convex/ttsMigrations.ts internalAddRestartTodos):
+    // their insert finds the ones already there, and the read-back reads them,
+    // by source "manual" and their one provenance line, a range that holds
+    // the seven and nothing else however many manual todos accumulate.
+    .index("by_source_provenance", ["source", "provenance"])
     // The Slack Events push route's dedupe read: Slack's delivery is
     // at-least-once and its retries carry the same message ts, so a capture
     // looks itself up by ts before inserting. A scan would be a full-table
