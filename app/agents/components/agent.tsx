@@ -85,6 +85,10 @@ export default function Agent({
   onBack,
   onOpenRun,
   onOpenSession,
+  renderTop,
+  fullWidth = false,
+  controlsInComposer = false,
+  extraControls,
 }: {
   /** The run record's id. Absent only for a session whose run has not landed. */
   runId?: string;
@@ -103,6 +107,16 @@ export default function Agent({
   onOpenRun: (runId: string) => void;
   /** Re-root the page on a session (?session=). */
   onOpenSession: (sessionId: Id<"claudeSessions">) => void;
+  /** Drawn first inside the scrolling region, ahead of the outcome block, at
+   *  depth 0. Pass a stable callback: the rows stay memoized only while it is. */
+  renderTop?: (facts: { run: RunDoc | null | undefined; rows: TranscriptMessage[] }) => React.ReactNode;
+  /** Tom's rows span the width like the replies (the sessions page). */
+  fullWidth?: boolean;
+  /** The model selector sits in the composer's control row rather than the
+   *  header (the sessions page, design section 5.1). */
+  controlsInComposer?: boolean;
+  /** More session controls beside the model selector (the login selector). */
+  extraControls?: React.ReactNode;
 }) {
   const capped = depth > MAX_NESTING_DEPTH;
   const [open, setOpen] = useState(false);
@@ -284,6 +298,22 @@ export default function Agent({
       onOpenSession,
     ],
   );
+  const top = useMemo(
+    () => (depth === 0 && renderTop !== undefined ? renderTop({ run, rows }) : null),
+    [depth, renderTop, run, rows],
+  );
+  const leadWithTop = useMemo(
+    () =>
+      top === null ? (
+        lead
+      ) : (
+        <>
+          {top}
+          {lead}
+        </>
+      ),
+    [top, lead],
+  );
   const tail = useMemo(
     () =>
       unmatched.length === 0 ? null : (
@@ -418,6 +448,29 @@ export default function Agent({
     })();
   };
 
+  // The model is a control on a session: Tom picks it mid-run. An ended
+  // session has no runner to repoint, so the select is disabled rather than
+  // hidden — the fact stays readable.
+  const modelControls =
+    session && model !== undefined ? (
+      <>
+        <ModelSelect
+          ariaLabel="session model"
+          compact
+          value={model}
+          disabled={!live}
+          onChange={changeModel}
+        />
+        <Info call="claudeSessions.setSessionModel({ sessionId, model })">
+          Which model answers the next turn. Inside one family the running
+          session is simply repointed and keeps these rows. Across families
+          — Claude Code to the Codex CLI or back — it cannot be, so picking
+          one opens a dialog that starts a new session from this
+          one&rsquo;s transcript instead.
+        </Info>
+      </>
+    ) : null;
+
   const title = session
     ? session.title
     : run
@@ -502,25 +555,7 @@ export default function Agent({
           )
         )}
         {session && model !== undefined ? (
-          <>
-            {/* The model is a control on a session: Tom picks it mid-run. An
-                ended session has no runner to repoint, so the select is
-                disabled rather than hidden — the fact stays readable. */}
-            <ModelSelect
-              ariaLabel="session model"
-              compact
-              value={model}
-              disabled={!live}
-              onChange={changeModel}
-            />
-            <Info call="claudeSessions.setSessionModel({ sessionId, model })">
-              Which model answers the next turn. Inside one family the running
-              session is simply repointed and keeps these rows. Across families
-              — Claude Code to the Codex CLI or back — it cannot be, so picking
-              one opens a dialog that starts a new session from this
-              one&rsquo;s transcript instead.
-            </Info>
-          </>
+          controlsInComposer ? null : modelControls
         ) : (
           run?.model !== undefined && (
             // A finished run's model is a fact, not a control.
@@ -561,15 +596,29 @@ export default function Agent({
         sessionId={subjectSessionId}
         sessionStatus={session?.status}
         renderChildRun={renderChildRun}
-        lead={lead}
+        lead={leadWithTop}
         tail={tail}
+        fullWidth={fullWidth}
       />
 
       {/* The composer is for a session and for nothing else — never on a
           background run, never on a child, at any depth. Slack is how Tom
           interacts with a background run (§20.4), and a disabled composer on a
           run would be a control over nothing. */}
-      {session && <Composer session={session} daemonStale={daemonStale} />}
+      {session && (
+        <Composer
+          session={session}
+          daemonStale={daemonStale}
+          controls={
+            controlsInComposer ? (
+              <>
+                {modelControls}
+                {extraControls}
+              </>
+            ) : undefined
+          }
+        />
+      )}
 
       {forkTo !== null && session && (
         <ForkDialog

@@ -19,9 +19,13 @@ const MAX_TEXTAREA_PX = 160;
 export default function Composer({
   session,
   daemonStale,
+  controls,
 }: {
   session: Session;
   daemonStale: boolean;
+  /** Session controls drawn in the control row (the sessions page puts the
+   *  model and login selectors here). */
+  controls?: React.ReactNode;
 }) {
   const sendMessage = useMutation(api.claudeSessions.sendMessage);
   const sendControl = useMutation(api.claudeSessions.sendControl);
@@ -139,6 +143,9 @@ export default function Composer({
         </div>
         {error && <div className="text-xs text-error">{error}</div>}
         {textRow("Send — reopens session", true)}
+        {controls !== undefined && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">{controls}</div>
+        )}
       </div>
     );
   }
@@ -148,6 +155,7 @@ export default function Composer({
       {error && <div className="text-xs text-error">{error}</div>}
       {textRow("Send", false)}
       <div className="flex flex-wrap items-center gap-2 text-xs">
+        {controls}
         {session.status === "running" && (
           <span className="inline-flex items-center gap-0.5">
             <button

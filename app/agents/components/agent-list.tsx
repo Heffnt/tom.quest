@@ -62,7 +62,7 @@ function BoxLoadStrip() {
 const FORM_KINDS = ["adhoc", "weekly", "therapy"] as const;
 type FormKind = (typeof FORM_KINDS)[number];
 
-function NewSessionForm({
+export function NewSessionForm({
   onCreated,
 }: {
   onCreated: (id: Id<"claudeSessions">) => void;
