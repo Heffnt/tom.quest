@@ -693,6 +693,10 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
       return { ok: false, error: `a suggestion names data.class as one of ${SUGGESTION_CLASSES.join(", ")}` };
     }
     if (typeof data.built !== "boolean") return { ok: false, error: "a suggestion names data.built as a boolean" };
+    // Only his reply on the thread (thread.send) answers or closes it.
+    if ("answer" in data || "closedAt" in data) {
+      return { ok: false, error: "a suggestion is posted unanswered: data.answer and data.closedAt are set only by Tom's reply on the thread" };
+    }
   }
   if (kind === "quality-check") {
     if (!isPlainObject(data) || !nonEmptyString(data.part) || !nonEmptyString(data.check)) {

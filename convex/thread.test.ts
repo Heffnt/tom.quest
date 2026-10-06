@@ -169,7 +169,7 @@ describe("thread", () => {
         data: { repo: "tom.quest", from: "aaaa1111", to: "bbbb2222", commits: ["one"], setupNeeded: false },
       }),
     );
-    const found = await viewer.query(api.thread.changes, {});
+    const found = (await viewer.query(api.thread.changes, {})).entries;
     expect(found).toEqual([
       {
         id,
@@ -206,7 +206,7 @@ describe("thread", () => {
       });
     });
 
-    const found = await viewer.query(api.thread.changes, {});
+    const found = (await viewer.query(api.thread.changes, {})).entries;
     expect(found).toEqual([
       {
         id: validId,
@@ -615,24 +615,44 @@ describe("thread.open", () => {
     for (const id of [doneOpening, lapsed, settledElsewhere, answered]) expect(await closedAt(id)).toEqual(expect.any(Number));
   });
 
-  it("reads on past a slice of open decisions to close a stale one after it, in a chained run", async () => {
+  it("resumes three decisions sharing one millisecond exactly after a cut after the first, closing the two stale ones", async () => {
     vi.useFakeTimers();
     try {
       const t = convexTest({ schema, modules });
-      const big = (askId: string, at: number) => insertEventRow(t, { kind: "decision", at, subject: askId,
-        data: { ...DECISION_DATA, askId, reason: "x".repeat(900_000) } });
-      const now = Date.now();
-      await big("0pen0001", now - 3_000);
-      await big("0pen0002", now - 2_000);
-      const stale = await insertEventRow(t, { kind: "decision", at: now - 1_000, subject: "ref00001",
-        data: { ...DECISION_DATA, askId: "ref00001", decision: null, refused: true, refusedBecause: "money" } });
-      // The first run's decisions slice ends at the second open row.
+      const at = Date.now() - 1_000;
+      const big = (askId: string, data: Record<string, unknown>) => insertEventRow(t, { kind: "decision", at, subject: askId,
+        data: { ...DECISION_DATA, askId, reason: "x".repeat(900_000), ...data } });
+      await big("0pen0001", {});
+      const stale = [await big("ref00001", { decision: null, refused: true, refusedBecause: "money" }),
+        await big("ref00002", { decision: null, refused: true, refusedBecause: "money" })];
+      // Each run's decisions read stops after one row of 900 KB.
       expect(await t.mutation(internal.thread.internalCloseOpenItems, {})).toEqual({ closed: 0 });
       await t.finishAllScheduledFunctions(vi.runAllTimers);
-      expect((await t.run((ctx) => ctx.db.get(stale)))?.data.closedAt).toEqual(expect.any(Number));
+      for (const id of stale) expect((await t.run((ctx) => ctx.db.get(id)))?.data.closedAt).toEqual(expect.any(Number));
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reads each opening's lookups under the page budget, leaves out the items past it and says the cut", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    const now = Date.now();
+    const keys = ["k1", "k2", "k3"];
+    const todos: Id<"todos">[] = [];
+    for (const key of keys) {
+      const todo = await activeTodo(t, key);
+      await t.run(async (ctx) => ctx.db.patch(todo, { statement: "s".repeat(900_000) }));
+      todos.push(todo);
+    }
+    const digest = await digestOn(t, "2026-10-04", now - 2_000, keys.map((key, i) => ({ n: i + 1, key, text: key, todoId: todos[i] })));
+    for (const [i, key] of keys.entries()) {
+      await insertEventRow(t, { kind: "needs-you-opened", at: now - 1_000 + i, subject: key,
+        data: { key, todoId: todos[i], n: i + 1, digestId: digest }, text: key });
+    }
+    const open = await viewer.query(api.thread.open, {});
+    expect(open.needsYou.map((item) => item.key)).toEqual(["k1"]);
+    expect(open.cuts).toEqual(["Needs-you answers, todos and digests: 3 read, stopped at the byte budget, 2 left unread."]);
   });
 
   it("shows a live session's question until he answers it here, in the session, or the session ends", async () => {
@@ -848,7 +868,7 @@ describe("thread.changes, the return of a landing", () => {
       await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "audit-verdict", key: `tom.quest@${sha}`, data: { verdict: "APPROVED", model: "none" } });
       await ctx.db.insert("dtsEvents", { at: Date.now(), kind: "audit-verdict", key: `tom.quest@${other}`, data: { verdict: "APPROVED", model: "opus" } });
     });
-    const merges = (await viewer.query(api.thread.changes, {})).filter((one) => one.kind === "merge");
+    const merges = (await viewer.query(api.thread.changes, {})).entries.filter((one) => one.kind === "merge");
     const landed = merges.find((one) => "sha" in one && one.sha === sha);
     expect(landed).toMatchObject({
       line: "Merged tom.quest #341: thread: one page",
@@ -865,6 +885,22 @@ describe("thread.changes, the return of a landing", () => {
     expect(merges.find((one) => "sha" in one && one.sha === other)).toMatchObject({
       line: `Merged tom.quest ${other.slice(0, 7)}: other`, pull: null, claim: null, diff: null, parts: [], checksAlone: false,
     });
+  });
+});
+
+describe("thread.changes, under one read budget", () => {
+  it("reads each landing's tests and audit under it and says the cut past it", async () => {
+    const t = convexTest({ schema, modules });
+    const viewer = await tom(t);
+    for (let i = 0; i < 6; i += 1) {
+      const sha = String(i).repeat(40);
+      await insertEventRow(t, { kind: "merge", at: Date.now() - i, subject: `tom.quest:${sha}`, data: { repo: "tom.quest", sha, subject: `m${i}` } });
+      await t.run(async (ctx) => ctx.db.insert("dtsEvents", { at: Date.now(), kind: "tests-run", key: `tom.quest@${sha}`,
+        data: { ok: true, log: "l".repeat(900_000) } }));
+    }
+    const found = await viewer.query(api.thread.changes, {});
+    expect(found.entries).toHaveLength(6);
+    expect(found.cuts).toEqual(["Landings' tests and audits: 5 read, stopped at the byte budget, 3 left unread."]);
   });
 });
 

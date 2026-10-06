@@ -221,6 +221,10 @@ describe("validateEvent", () => {
   it("refuses a suggestion, a quality check or a diagnosis whose fixed fields are malformed", () => {
     expect(validateEvent({ kind: "suggestion", ...SHAPES.suggestion, data: { class: "idea", built: false } }).ok).toBe(false);
     expect(validateEvent({ kind: "suggestion", ...SHAPES.suggestion, data: { class: "fix" } }).ok).toBe(false);
+    for (const field of [{ answer: { at: 1, text: "yes", messageId: "m" } }, { closedAt: 1 }]) {
+      expect(validateEvent({ kind: "suggestion", ...SHAPES.suggestion, data: { ...SHAPES.suggestion.data, ...field } })).toEqual({ ok: false,
+        error: "a suggestion is posted unanswered: data.answer and data.closedAt are set only by Tom's reply on the thread" });
+    }
     const check = SHAPES["quality-check"];
     expect(validateEvent({ kind: "quality-check", ...check, data: { ...check.data, result: "red" } }).ok).toBe(false);
     expect(validateEvent({ kind: "quality-check", ...check, data: { ...check.data, measure: "9" } }).ok).toBe(false);

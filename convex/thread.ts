@@ -550,19 +550,27 @@ async function headRow(ctx: QueryCtx, kind: string, repo: string, sha: string) {
     .first();
 }
 
+/** The bytes of everything thread.changes reads, each read one of its
+ *  allotments, run one after another: at most this plus one document. */
+const CHANGES_READ_BYTES = 8 * MIB;
+
 export const changes = query({
   args: {},
   handler: async (ctx) => {
     await requireTom(ctx, SURFACE);
     const since = Date.now() - WINDOW_MS;
-    const changes = await Promise.all(
-      AGENT_CHANGE_KINDS.map(async (kind) => {
-        const byKind = await ctx.db
-          .query("events")
-          .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since))
-          .order("desc")
-          .take(TYPE_READ_MAX);
-        return await Promise.all(byKind.map(async (row) => {
+    const budget = ReadBudget.of(CHANGES_READ_BYTES);
+    const rows: Array<[Doc<"events">, (typeof AGENT_CHANGE_KINDS)[number]]> = [];
+    for (const kind of AGENT_CHANGE_KINDS) {
+      const byKind = await readWithin(budget.allot(`${kind} rows`, MIB), ctx.db
+        .query("events")
+        .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since))
+        .order("desc"), TYPE_READ_MAX);
+      rows.push(...byKind.map((row): [Doc<"events">, (typeof AGENT_CHANGE_KINDS)[number]] => [row, kind]));
+    }
+    const lookups = budget.allot("landings' tests and audits", 4 * MIB);
+    const changes = [];
+    for (const [row, kind] of rows) changes.push(await (async () => {
           const changeRow = checkedAgentChangeRow(row, kind);
           if (changeRow === null) return [];
           const { line, href } = agentChange(changeRow);
@@ -570,10 +578,9 @@ export const changes = query({
           // The return of one landing: its claim, what it touched, and
           // whether it passed on the checks alone.
           const { repo, sha, pull, claim, explanation } = changeRow.data;
-          const [tests, audit] = await Promise.all([
-            headRow(ctx, TESTS_RUN, repo, sha),
-            headRow(ctx, AUDIT_VERDICT, repo, sha),
-          ]);
+          // Past the budget the landing is drawn without its return, and the cut says so.
+          const tests = await getWithin(lookups, () => headRow(ctx, TESTS_RUN, repo, sha));
+          const audit = await getWithin(lookups, () => headRow(ctx, AUDIT_VERDICT, repo, sha));
           // What the landing did to Jarvis's registry of parts: the diff its
           // head's tests-run row carries (Jarvis pull-request-checks), checked
           // by the reader the design page uses. An added or changed part is
@@ -592,10 +599,8 @@ export const changes = query({
             claim: str(claim), diff, parts,
             checksAlone: (audit?.data as { model?: unknown } | undefined)?.model === "none",
             explanation: str(explanation) }];
-        }));
-      }),
-    );
-    return changes.flat(2).sort((a, b) => a.at - b.at);
+    })());
+    return { entries: changes.flat().sort((a, b) => a.at - b.at), cuts: budget.cuts().map(readCutLine) };
   },
 });
 
@@ -613,16 +618,38 @@ export const changes = query({
 // open and those closed since the last sweep (internalCloseOpenItems, run
 // after each day's digest). A session's question is its newest pause, read
 // per live session; a part's loop run is its newest check, read per part.
+// Every read, each lookup too, is under the one budget, one after another;
+// a read past it is left out and said as a cut.
 
 /** The bytes of the open items' reads; each read is one of its allotments. */
 const OPEN_READ_BYTES = 6 * MIB;
 
-/** The rows of one kind not closed yet, oldest first, from `from` on. */
-function unclosed(ctx: QueryCtx, kind: string, from = 0) {
+/** The rows of one kind not closed yet, oldest first. */
+function unclosed(ctx: QueryCtx, kind: string) {
   return ctx.db
     .query("events")
-    .withIndex("by_kind_closed_at", (q) => q.eq("kind", kind).eq("data.closedAt", undefined).gte("at", from))
+    .withIndex("by_kind_closed_at", (q) => q.eq("kind", kind).eq("data.closedAt", undefined))
     .order("asc");
+}
+
+/** Where a sweep resumes: after the row (at, id), in the index's order of
+ *  `at` then creation time, so rows sharing a millisecond resume exactly. */
+type Cursor = "start" | { at: number; id: Id<"events"> };
+const cursorArg = v.optional(v.union(v.literal("start"), v.object({ at: v.number(), id: v.id("events") })));
+
+/** The rows of one kind not closed yet that come after `cursor`. */
+async function* unclosedAfter(ctx: QueryCtx, kind: string, cursor: Cursor) {
+  if (cursor === "start") {
+    yield* unclosed(ctx, kind);
+    return;
+  }
+  const last = await ctx.db.get(cursor.id);
+  yield* ctx.db.query("events").withIndex("by_kind_closed_at", (q) => {
+    const same = q.eq("kind", kind).eq("data.closedAt", undefined).eq("at", cursor.at);
+    return last === null ? same : same.gt("_creationTime", last._creationTime);
+  });
+  yield* ctx.db.query("events")
+    .withIndex("by_kind_closed_at", (q) => q.eq("kind", kind).eq("data.closedAt", undefined).gt("at", cursor.at));
 }
 
 /** Mark a row as no longer waiting on him: the open items' index leaves it. */
@@ -632,43 +659,48 @@ async function closeRow(ctx: MutationCtx, row: Doc<"events">): Promise<void> {
 
 /** An opening still waiting on him, with its todo's statement; null when it
  *  was answered, its todo is done or archived (he may finish it on its own
- *  page), or its job's failure recovered after it opened. */
-async function openingState(ctx: QueryCtx, row: Doc<"events">): Promise<{ statement?: string } | null> {
+ *  page), or its job's failure recovered after it opened; undefined when a
+ *  lookup would pass `budget`. */
+async function openingState(ctx: QueryCtx, row: Doc<"events">, budget: ReadBudget): Promise<{ statement?: string } | null | undefined> {
   const key = row.subject;
   if (key === undefined) return null;
-  const answered = await ctx.db
+  const answered = await getWithin(budget, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", NEEDS_TOM_ANSWERED).eq("subject", key))
-    .first();
-  if (answered !== null) return null;
+    .first());
+  if (answered !== null) return answered === undefined ? undefined : null;
   const data = (row.data ?? {}) as { todoId?: unknown; job?: unknown };
   const todoId = str(data.todoId);
   if (todoId !== null) {
-    const plain = await resolveId(ctx, "todos", todoId);
-    const todo = plain === null ? null : await ctx.db.get(plain);
+    const todo = await getWithin(budget, async () => {
+      const plain = ctx.db.normalizeId("todos", todoId) ?? await resolveId(ctx, "todos", todoId);
+      return plain === null ? null : await ctx.db.get(plain);
+    });
+    if (todo === undefined) return undefined;
     if (todo !== null && (todo.status === "done" || todo.status === "archived")) return null;
     return todo === null ? {} : { statement: todo.statement };
   }
   if (str(data.job) !== null) {
-    const recovered = await ctx.db
+    const recovered = await getWithin(budget, () => ctx.db
       .query("events")
-      .withIndex("by_subject_at", (q) => q.eq("subject", key).gt("at", row.at))
-      .filter((q) => q.eq(q.field("kind"), "job-recovered"))
-      .first();
-    if (recovered !== null) return null;
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", "job-recovered").eq("subject", key).gt("at", row.at))
+      .first());
+    if (recovered !== null) return recovered === undefined ? undefined : null;
   }
   return {};
 }
 
 /** A decision still waiting on him: one the delegate took (not refused, not
- *  unanswered, not one he took himself) that he has not settled. */
-async function decisionState(ctx: QueryCtx, row: Doc<"events">) {
+ *  unanswered, not one he took himself) that he has not settled; undefined
+ *  when its settlement's lookup would pass `budget`. */
+async function decisionState(ctx: QueryCtx, row: Doc<"events">, budget: ReadBudget) {
   const decision = decisionOf(row, new Map());
   if (decision === null || decision.refused || decision.decision === null || decision.decidedByTom) return null;
-  const settled = await ctx.db
+  const settled = await getWithin(budget, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED).eq("subject", `decision:${decision.askId}`))
-    .first();
+    .first());
+  if (settled === undefined) return undefined;
   return settled === null ? { ...decision, decision: decision.decision } : null;
 }
 
@@ -682,14 +714,16 @@ async function decisionState(ctx: QueryCtx, row: Doc<"events">) {
  *  the next digest lists it. Every item listed is answered by number under
  *  its digest. */
 async function openNeedsYou(ctx: QueryCtx, budget: ReadBudget) {
-  const rows = await readWithin(budget.allot("needs-you openings", OPEN_READ_BYTES / 2), unclosed(ctx, NEEDS_YOU_OPENED), Number.POSITIVE_INFINITY);
-  const open = await Promise.all(rows.map(async (row) => {
+  const rows = await readWithin(budget.allot("needs-you openings", 1.5 * MIB), unclosed(ctx, NEEDS_YOU_OPENED), Number.POSITIVE_INFINITY);
+  const lookups = budget.allot("needs-you answers, todos and digests", 1.5 * MIB);
+  const open = [];
+  for (const row of rows) open.push(await (async () => {
     const data = (row.data ?? {}) as { n?: unknown; digestId?: unknown; todoId?: unknown; job?: unknown };
     const digestId = typeof data.digestId === "string" ? ctx.db.normalizeId("events", data.digestId) : null;
     if (typeof data.n !== "number" || digestId === null || row.subject === undefined) return [];
-    const state = await openingState(ctx, row);
-    const digest = state === null ? null : await ctx.db.get(digestId);
-    if (state === null || digest === null) return [];
+    const state = await openingState(ctx, row, lookups);
+    const digest = state == null ? null : await getWithin(lookups, () => ctx.db.get(digestId));
+    if (state == null || digest == null) return [];
     const todoId = str(data.todoId);
     const job = str(data.job);
     return [{
@@ -699,19 +733,20 @@ async function openNeedsYou(ctx: QueryCtx, budget: ReadBudget) {
       ...(job === null ? {} : { job }),
       n: data.n, digestId, day: digest.subject as string, digestAt: digest.at,
     }];
-  }));
+  })());
   // The newest digest's items first, by number; then each older digest's,
   // newest digest first.
   return open.flat().sort((a, b) => b.digestAt - a.digestAt || a.n - b.n);
 }
 
 /** Every session that is live: few at once, read by status. */
-async function liveSessions(ctx: QueryCtx) {
-  const byStatus = await Promise.all(LIVE_STATUSES.map((status) => ctx.db
-    .query("claudeSessions")
-    .withIndex("by_status", (q) => q.eq("status", status))
-    .collect()));
-  return byStatus.flat();
+async function liveSessions(ctx: QueryCtx, budget: ReadBudget) {
+  const sessions = budget.allot("live sessions", MIB / 2);
+  const live = [];
+  for (const status of LIVE_STATUSES) {
+    live.push(...await readWithin(sessions, ctx.db.query("claudeSessions").withIndex("by_status", (q) => q.eq("status", status)), Number.POSITIVE_INFINITY));
+  }
+  return live;
 }
 
 /** The turns of one session read per status after its pause; a turn past
@@ -724,7 +759,7 @@ const INBOUND_STATUSES: Doc<"claudeInbound">["status"][] = ["pending", "delivere
  *  has not answered it here or in the session. The sessions run one after
  *  another, under the open items' budget. */
 async function openQuestions(ctx: QueryCtx, live: Doc<"claudeSessions">[], budget: ReadBudget) {
-  const turns = budget.allot("session turns", OPEN_READ_BYTES / 8);
+  const turns = budget.allot("session questions and turns", MIB / 2);
   const questions = [];
   for (const session of live) questions.push(...await openQuestion(ctx, session, turns));
   return questions.sort((a, b) => a.at - b.at);
@@ -732,18 +767,18 @@ async function openQuestions(ctx: QueryCtx, live: Doc<"claudeSessions">[], budge
 
 async function openQuestion(ctx: QueryCtx, session: Doc<"claudeSessions">, turns: ReadBudget) {
   const sessionId = session._id as string;
-  const row = await ctx.db
+  const row = await getWithin(turns, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", PAUSE).eq("subject", sessionId))
     .order("desc")
-    .first();
-  if (row === null) return [];
+    .first());
+  if (row == null) return [];
   const data = row.data as { reason: string; question?: unknown };
   if (data.reason !== AWAITING_YOU) return [];
-  const answered = await ctx.db
+  const answered = await getWithin(turns, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-message").eq("subject", row._id))
-    .first();
+    .first());
   if (answered !== null) return [];
   // Only a turn Tom wrote answers it: an agent's turn, an interrupt or a
   // stop is no answer of his. Each status is an index range from the pause.
@@ -763,23 +798,24 @@ async function openQuestion(ctx: QueryCtx, session: Doc<"claudeSessions">, turns
  *  open while its newest check row, of any check, failed; each part of the
  *  newest deployed registry (convex/jarvis/design.ts) is read by its id,
  *  the check's subject. */
-async function openCounts(ctx: QueryCtx, live: Doc<"claudeSessions">[]) {
-  const [anyCheck, registry] = await Promise.all([
-    ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", QUALITY_CHECK)).first(),
-    ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "registry")).order("desc").first(),
-  ]);
+async function openCounts(ctx: QueryCtx, live: Doc<"claudeSessions">[], budget: ReadBudget) {
+  const checks = budget.allot("the registry and each part's newest check", MIB);
+  const anyCheck = await getWithin(checks, () => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", QUALITY_CHECK)).first());
+  const registry = anyCheck == null ? null
+    : await getWithin(checks, () => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "registry")).order("desc").first());
   const parts = ((registry?.data as { parts?: Array<{ id?: unknown }> } | undefined)?.parts ?? [])
     .flatMap((part) => (typeof part.id === "string" ? [part.id] : []));
-  const failed = anyCheck === null ? [] : await Promise.all(parts.map(async (part) => {
-    const newest = await ctx.db
+  let failed = 0;
+  for (const part of parts) {
+    const newest = await getWithin(checks, () => ctx.db
       .query("events")
       .withIndex("by_kind_subject_at", (q) => q.eq("kind", QUALITY_CHECK).eq("subject", part))
       .order("desc")
-      .first();
-    return (newest?.data as { result?: unknown } | undefined)?.result === "failed";
-  }));
+      .first());
+    if ((newest?.data as { result?: unknown } | undefined)?.result === "failed") failed += 1;
+  }
   return {
-    ...(anyCheck === null ? {} : { openLoopRuns: failed.filter(Boolean).length }),
+    ...(anyCheck == null ? {} : { openLoopRuns: failed }),
     liveSessions: live.length,
   };
 }
@@ -787,7 +823,7 @@ async function openCounts(ctx: QueryCtx, live: Doc<"claudeSessions">[]) {
 /** Every suggestion he has not answered, whatever its age, oldest first: like
  *  an unsettled decision, it waits on him, and the stream reads 60 days. */
 async function openSuggestions(ctx: QueryCtx, budget: ReadBudget) {
-  const rows = await readWithin(budget.allot("suggestions", OPEN_READ_BYTES / 4), unclosed(ctx, SUGGESTION), Number.POSITIVE_INFINITY);
+  const rows = await readWithin(budget.allot("suggestions", MIB / 2), unclosed(ctx, SUGGESTION), Number.POSITIVE_INFINITY);
   return rows
     .filter((row) => (row.data as { answer?: unknown }).answer === undefined)
     .map((row) => {
@@ -801,14 +837,16 @@ async function openSuggestions(ctx: QueryCtx, budget: ReadBudget) {
  *  age: the stream reads 60 days, and a decision older than that keeps its
  *  accept and object here. */
 async function openDecisions(ctx: QueryCtx, budget: ReadBudget) {
-  const rows = await readWithin(budget.allot("decisions", OPEN_READ_BYTES / 4), unclosed(ctx, "decision"), Number.POSITIVE_INFINITY);
-  const open = await Promise.all(rows.map(async (row) => {
-    const decision = await decisionState(ctx, row);
-    if (decision === null) return [];
+  const rows = await readWithin(budget.allot("decisions", MIB / 2), unclosed(ctx, "decision"), Number.POSITIVE_INFINITY);
+  const settlementsRead = budget.allot("decisions' settlements", MIB / 4);
+  const open = [];
+  for (const row of rows) {
+    const decision = await decisionState(ctx, row, settlementsRead);
+    if (decision == null) continue;
     const { askId, question, reason, wouldChange } = decision;
-    return [{ id: row._id, at: row.at, askId, question, decision: decision.decision, reason, wouldChange }];
-  }));
-  return open.flat();
+    open.push({ id: row._id, at: row.at, askId, question, decision: decision.decision, reason, wouldChange });
+  }
+  return open;
 }
 
 export const open = query({
@@ -820,15 +858,15 @@ export const open = query({
     const needsYou = await openNeedsYou(ctx, budget);
     const decisions = await openDecisions(ctx, budget);
     const suggestions = await openSuggestions(ctx, budget);
-    const live = await liveSessions(ctx);
+    const live = await liveSessions(ctx, budget);
     const questions = await openQuestions(ctx, live, budget);
-    const counts = await openCounts(ctx, live);
-    return { needsYou, questions, decisions, suggestions, counts };
+    const counts = await openCounts(ctx, live, budget);
+    return { needsYou, questions, decisions, suggestions, counts, cuts: budget.cuts().map(readCutLine) };
   },
 });
 
-/** The bytes one sweep reads; past them it runs again, while it closed rows. */
-const SWEEP_READ_BYTES = 6 * MIB;
+/** The bytes one sweep reads, its allotments sharing it. */
+const SWEEP_READ_BYTES = 10 * MIB;
 
 /**
  * Close every opening, decision and suggestion that no longer waits on him,
@@ -836,12 +874,12 @@ const SWEEP_READ_BYTES = 6 * MIB;
  * answered, its todo done or archived, its job recovered, or never numbered
  * past the three days a digest may list it in; a decision settled, refused,
  * unanswered or his own; a suggestion answered. Scheduled after each day's
- * digest. A read that stops at its byte budget hands the next run, scheduled
- * at once, the time of the last row it read, so each run reads on past rows
- * still open and the chain reaches every row; a read that ended is not read
- * again in the chain.
+ * digest. A kind whose read or lookups stop at the budget hands the next
+ * run, scheduled at once, the last row it decided, as (at, row id), and that
+ * run resumes right after it; a kind that ended is not read again in the
+ * chain.
  */
-const SWEEP_KINDS = { openings: v.optional(v.number()), decisions: v.optional(v.number()), suggestions: v.optional(v.number()) };
+const SWEEP_KINDS = { openings: cursorArg, decisions: cursorArg, suggestions: cursorArg };
 
 export const internalCloseOpenItems = internalMutation({
   args: { from: v.optional(v.object(SWEEP_KINDS)) },
@@ -851,7 +889,7 @@ export const internalCloseOpenItems = internalMutation({
     let closed = 0;
     // The numbers the digests of the last NEEDS_YOU_WINDOW_MS gave, by key:
     // an opening a digest listed gets its number and digest here.
-    const digests = await readWithin(budget.allot("thread digests", SWEEP_READ_BYTES / 8), ctx.db
+    const digests = await readWithin(budget.allot("thread digests", MIB * 3 / 4), ctx.db
       .query("events")
       .withIndex("by_kind_at", (q) => q.eq("kind", THREAD_DIGEST).gte("at", now - NEEDS_YOU_WINDOW_MS))
       .order("desc"), Number.POSITIVE_INFINITY);
@@ -859,43 +897,41 @@ export const internalCloseOpenItems = internalMutation({
     for (const digest of digests) {
       for (const item of digestItems(digest.data)) if (!listed.has(item.key)) listed.set(item.key, { n: item.n, digestId: digest._id });
     }
-    // A continuation reads only the kinds whose read stopped, each from its cursor.
-    const next: Partial<Record<keyof typeof SWEEP_KINDS, number>> = {};
-    const slice = async (name: keyof typeof SWEEP_KINDS, kind: string, bytes: number) => {
-      if (from !== undefined && from[name] === undefined) return [];
-      const start = from?.[name] ?? 0;
-      const rows = await readWithin(budget.allot(name, bytes), unclosed(ctx, kind, start), Number.POSITIVE_INFINITY);
-      const last = rows.at(-1)?.at;
-      // A slice all at its cursor's millisecond moves past it, so the chain ends.
-      if (budget.cuts().some((cut) => cut.what === name)) next[name] = last === undefined ? start : last > start ? last : start + 1;
-      return rows;
+    const next: Partial<Record<keyof typeof SWEEP_KINDS, Cursor>> = {};
+    // `shut` is undefined when a row's lookups would pass the budget: the
+    // kind's run ends at the row before it.
+    const sweep = async (name: keyof typeof SWEEP_KINDS, kind: string, bytes: number,
+      shut: (row: Doc<"events">, lookups: ReadBudget) => Promise<boolean | undefined>) => {
+      const cursor = from === undefined ? "start" : from[name];
+      if (cursor === undefined) return;
+      const rows = await readWithin(budget.allot(name, bytes), unclosedAfter(ctx, kind, cursor), Number.POSITIVE_INFINITY);
+      const lookups = budget.allot(`${name} lookups`, 2 * MIB);
+      let reached: Cursor = cursor;
+      for (const row of rows) {
+        const done = await shut(row, lookups);
+        if (done === undefined) break;
+        if (done) {
+          await closeRow(ctx, row);
+          closed += 1;
+        }
+        reached = { at: row.at, id: row._id };
+      }
+      if (budget.cuts().some((cut) => cut.what === name || cut.what === `${name} lookups`)) next[name] = reached;
     };
-    const openings = await slice("openings", NEEDS_YOU_OPENED, SWEEP_READ_BYTES * 3 / 8);
-    for (const row of openings) {
+    await sweep("openings", NEEDS_YOU_OPENED, 1.5 * MIB, async (row, lookups) => {
       const data = (row.data ?? {}) as Record<string, unknown>;
       const number = typeof data.n === "number" || row.subject === undefined ? undefined : listed.get(row.subject);
       if (number !== undefined) await ctx.db.patch(row._id, { data: { ...data, ...number } });
       const numbered = typeof data.n === "number" || number !== undefined;
-      const lapsed = !numbered && row.at < now - NEEDS_YOU_WINDOW_MS;
-      if (lapsed || await openingState(ctx, row) === null) {
-        await closeRow(ctx, row);
-        closed += 1;
-      }
-    }
-    const decisions = await slice("decisions", "decision", SWEEP_READ_BYTES / 4);
-    for (const row of decisions) {
-      if (await decisionState(ctx, row) === null) {
-        await closeRow(ctx, row);
-        closed += 1;
-      }
-    }
-    const suggestions = await slice("suggestions", SUGGESTION, SWEEP_READ_BYTES / 4);
-    for (const row of suggestions) {
-      if ((row.data as { answer?: unknown }).answer !== undefined) {
-        await closeRow(ctx, row);
-        closed += 1;
-      }
-    }
+      if (!numbered && row.at < now - NEEDS_YOU_WINDOW_MS) return true;
+      const state = await openingState(ctx, row, lookups);
+      return state === undefined ? undefined : state === null;
+    });
+    await sweep("decisions", "decision", MIB * 3 / 4, async (row, lookups) => {
+      const state = await decisionState(ctx, row, lookups);
+      return state === undefined ? undefined : state === null;
+    });
+    await sweep("suggestions", SUGGESTION, MIB * 3 / 4, async (row) => (row.data as { answer?: unknown }).answer !== undefined);
     if (Object.keys(next).length > 0) await ctx.scheduler.runAfter(0, internal.thread.internalCloseOpenItems, { from: next });
     return { closed };
   },

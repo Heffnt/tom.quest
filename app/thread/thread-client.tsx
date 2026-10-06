@@ -159,7 +159,8 @@ export default function ThreadClient() {
   const todos = useQuery(api.tts.listTodos, isTom ? {} : "skip") as Doc<"todos">[] | undefined;
   const page = useQuery(api.thread.messages, isTom ? {} : "skip") as { entries: ThreadMessage[]; cuts: string[] } | undefined;
   const messages = page?.entries;
-  const changes = useQuery(api.thread.changes, isTom ? {} : "skip") as AgentChange[] | undefined;
+  const changePage = useQuery(api.thread.changes, isTom ? {} : "skip") as { entries: AgentChange[]; cuts: string[] } | undefined;
+  const changes = changePage?.entries;
   const days = useMemo(() => {
     const since = Date.now() - WINDOW_MS;
     const said: Said[] = [
@@ -214,7 +215,7 @@ export default function ThreadClient() {
       <ThreadView
         days={days}
         loading={entries === undefined || todos === undefined || messages === undefined || changes === undefined}
-        cuts={page?.cuts ?? []}
+        cuts={[...(page?.cuts ?? []), ...(changePage?.cuts ?? [])]}
       />
     </TomGate>
   );
