@@ -97,9 +97,10 @@ const READERS: Record<string, Reader> = {
     return jsonResponse(200, { writingStandard, declinedIntegrations });
   },
   // What the delegate's caller sees before it asks: asks spent in the last
-  // day, its cap, every objection Tom already made about this todo, and his
+  // day, its cap, every objection Tom already made about this todo, his
   // standing rulings in each `scope` the question names (repeatable; "all"
-  // is always read).
+  // is always read), and the time of his newest session turn, with no text
+  // (tomLastTurnAt in convex/ttsAsk.ts).
   ask: async (ctx, params) => {
     const sessionId = nonempty(params.get("sessionId"));
     const job = nonempty(params.get("job"));

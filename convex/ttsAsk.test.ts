@@ -834,3 +834,42 @@ describe("stripNarrowListId", () => {
     );
   });
 });
+
+describe("GET /jarvis/context?for=ask tomLastTurnAt", () => {
+  const THERAPY_WORDS = "words said only in the therapy session";
+  const ORDINARY_WORDS = "words said in an ordinary session";
+
+  async function contextForAsk(t: TestConvex<typeof schema>): Promise<{ text: string; body: Record<string, unknown> }> {
+    const res = await t.fetch("/jarvis/context?for=ask&job=work-queue", { headers: { "X-Jarvis-Key": KEY } });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    return { text, body: JSON.parse(text) };
+  }
+
+  it("is the time of his newest turn in any session, a therapy session included, and carries no turn's text", async () => {
+    vi.stubEnv("JARVIS_KEY", KEY);
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const session = (kind: "adhoc" | "therapy") =>
+        ctx.db.insert("claudeSessions", { title: kind, kind, repo: "none", status: "running", statusChangedAt: 1, nextSeq: 0, createdAt: 1 });
+      const ordinary = await session("adhoc");
+      const therapy = await session("therapy");
+      // Inserted in time order: the index orders his rows by creation.
+      await ctx.db.insert("claudeInbound", { sessionId: ordinary, kind: "user-turn", author: "tom", text: ORDINARY_WORDS, status: "done", createdAt: 1_000 });
+      await ctx.db.insert("claudeInbound", { sessionId: therapy, kind: "user-turn", author: "tom", text: THERAPY_WORDS, status: "done", createdAt: 2_000 });
+      // An agent's turn and a stop of his after it are not his turns.
+      await ctx.db.insert("claudeInbound", { sessionId: ordinary, kind: "user-turn", author: "agent", text: "an agent's pen", status: "done", createdAt: 3_000 });
+      await ctx.db.insert("claudeInbound", { sessionId: therapy, kind: "stop", author: "tom", status: "done", createdAt: 4_000 });
+    });
+    const { text, body } = await contextForAsk(t);
+    expect(body.tomLastTurnAt).toBe(2_000);
+    expect(text).not.toContain(THERAPY_WORDS);
+    expect(text).not.toContain(ORDINARY_WORDS);
+  });
+
+  it("is null when he has no turn on the record", async () => {
+    vi.stubEnv("JARVIS_KEY", KEY);
+    const t = convexTest(schema, modules);
+    expect((await contextForAsk(t)).body.tomLastTurnAt).toBe(null);
+  });
+});
