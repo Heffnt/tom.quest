@@ -126,6 +126,16 @@ describe("the registry diff on a head's tests row", () => {
     expect(await viewer.query(api.jarvis.design.diff, { head: "Jarvis@head1" })).toMatchObject({ baseIsExact: true, base: { sha: "aaaaaaa1" } });
   });
 
+  it("is still drawn after the box's red row lands over the green row that carried it", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("JARVIS_KEY", "k");
+    const viewer = await tom(t);
+    await post(t, "/tts/tests", { repo: "Jarvis", sha: "head4", ok: true, registryDiff: diff });
+    const red = await (await post(t, "/tts/tests", { repo: "Jarvis", sha: "head4", ok: false, detail: "names check failed" })).json();
+    expect(red.recorded).toBe(true);
+    expect(await viewer.query(api.jarvis.design.diff, { head: "Jarvis@head4" })).toMatchObject({ registryDiff: diff });
+  });
+
   it("is read by Tom alone", async () => {
     const t = convexTest({ schema, modules });
     const userId = await t.run((ctx) => ctx.db.insert("users", { name: "reader", email: "reader@example.test", role: "user" }));

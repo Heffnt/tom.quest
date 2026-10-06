@@ -54,12 +54,20 @@ export const diff = query({
     const at = head.indexOf("@");
     if (at <= 0) return null;
     const key = commitKey(head.slice(0, at), head.slice(at + 1));
+    // The newest tests row that carries a registry diff. A commit holds at
+    // most two tests rows (convex/ttsMerge.ts internalRecordTests: the box's
+    // red row may follow a green one), and that red row carries no diff, so
+    // the newest row alone would hide the diff of a head the box has failed.
+    // Two rows by construction, so take(2) is the whole key.
     const tests = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", key))
       .order("desc")
-      .first();
-    const registryDiff = registryDiffOf((tests?.data as { registryDiff?: unknown } | undefined)?.registryDiff);
+      .take(2);
+    const registryDiff =
+      tests
+        .map((row) => registryDiffOf((row.data as { registryDiff?: unknown } | undefined)?.registryDiff))
+        .find((diff) => diff !== null) ?? null;
     if (registryDiff === null) return null;
     const exact = await ctx.db
       .query("events")
