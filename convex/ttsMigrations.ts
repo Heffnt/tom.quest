@@ -1333,7 +1333,7 @@ export const RESTART_TODOS = [
 ] as const;
 
 export const ARCHIVE_WHOLE_MIGRATION = "archive-todos-whole";
-export const RESTORE_ARCHIVED_MIGRATION = "restore-archived-todos";
+const RESTORE_ARCHIVED_MIGRATION = "restore-archived-todos";
 export const DAY_LOG_COPY_MIGRATION = "day-log-copy";
 
 function isRestartTodo(row: Doc<"todos">): boolean {
@@ -1534,7 +1534,7 @@ export function factKindOf(item: Pick<DayLogItem, "type" | "metric">): FactKind 
 
 type FactKind = "meal" | "weight" | "training" | "did";
 
-export function factDataOf(item: DayLogItem): Record<string, unknown> {
+function factDataOf(item: DayLogItem): Record<string, unknown> {
   const data: Record<string, unknown> = {
     id: `day-log-item:${item._id}`,
     day: item.day,
