@@ -82,7 +82,8 @@ describe("for Tom", () => {
     expect(screen.getByText("waiting for the box")).toBeTruthy();
     expect(screen.getByText("37 characters")).toBeTruthy();
     expect(screen.getByText("40 characters")).toBeTruthy();
-    // A row from before lengths were kept shows none.
+    // A row from before lengths were kept shows none; convex/schema.ts
+    // (secretMailbox) says why those rows stay rather than being deleted.
     expect(screen.getAllByText(/characters$/)).toHaveLength(2);
   });
 
@@ -116,7 +117,7 @@ describe("for Tom", () => {
     await waitFor(() => expect(screen.getByText("sent GOOD, DUP")).toBeTruthy());
     expect(screen.getByText(/^line 2: name must be/)).toBeTruthy();
     expect(screen.getByText("line 3 (BLANKISH): BLANKISH: value is empty")).toBeTruthy();
-    expect(screen.getByText("line 4 (DUP): repeated on line 5, which is sent")).toBeTruthy();
+    expect(screen.getByText("line 4 (DUP): repeated on line 5, which wins")).toBeTruthy();
     expect(screen.getByRole("status").textContent).not.toMatch(/secret-one|secret-two/);
     expect(paste.value).toBe("bad-name=secret-one\nBLANKISH=secret-two");
   });

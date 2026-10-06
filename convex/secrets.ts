@@ -72,6 +72,8 @@ export const list = query({
       .map((row) => ({
         name: row.name,
         setAt: row.setAt,
+        // A row from before lengths were kept has none (schema.ts says why
+        // those rows stay).
         ...(row.valueLength !== undefined ? { length: row.valueLength } : {}),
         ...(row.takenAt !== undefined ? { takenAt: row.takenAt } : {}),
       }))
@@ -107,6 +109,8 @@ export const internalTaken = internalMutation({
     if (row.value === undefined) return { ok: true as const };
     await ctx.db.replace(row._id, {
       name: row.name,
+      // Kept when present; a row from before lengths were kept has none
+      // (schema.ts says why those rows stay).
       ...(row.valueLength !== undefined ? { valueLength: row.valueLength } : {}),
       setAt: row.setAt,
       takenAt: Date.now(),

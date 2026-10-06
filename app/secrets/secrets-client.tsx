@@ -130,6 +130,8 @@ export default function SecretsClient() {
                 <span className="text-xs text-text-muted">
                   {row.takenAt !== undefined ? `taken ${when(row.takenAt)}` : "waiting for the box"}
                 </span>
+                {/* A row from before lengths were kept has none; convex/schema.ts
+                    (secretMailbox) says why those rows stay. */}
                 {row.length !== undefined && (
                   <span className="text-xs text-text-muted">
                     {row.length} {row.length === 1 ? "character" : "characters"}

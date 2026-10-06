@@ -14,8 +14,8 @@
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]{0,127}$/;
 
 type PastedSecret = { line: number; name: string; value: string };
-// `superseded`: the line's name is sent from a later line, so there is
-// nothing on this one to fix.
+// `superseded`: a later line with the same name wins, so there is nothing on
+// this one to fix.
 export type RefusedLine = { line: number; name?: string; reason: string; superseded?: true };
 type ParsedPaste = { secrets: PastedSecret[]; refused: RefusedLine[] };
 
@@ -47,23 +47,23 @@ export function parsePaste(text: string): ParsedPaste {
     ) {
       value = value.slice(1, -1);
     }
-    if (value.trim() === "") {
-      refused.push({ line, name, reason: "value is empty" });
-      return;
-    }
     found.push({ line, name, value });
   });
-  // A name given twice: the later line is sent, as the box's reader would let
-  // the later line win, and the earlier one is listed back as refused.
+  // A name given twice: the later line wins, as in the box's reader, and the
+  // earlier one is listed back as refused. This runs before the empty-value
+  // check, so a later empty line refuses the name outright rather than
+  // letting an earlier value through.
   const lastLine = new Map(found.map((s) => [s.name, s.line]));
   const secrets: PastedSecret[] = [];
   for (const s of found) {
-    if (lastLine.get(s.name) === s.line) secrets.push(s);
-    else
+    if (lastLine.get(s.name) === s.line) {
+      if (s.value.trim() === "") refused.push({ line: s.line, name: s.name, reason: "value is empty" });
+      else secrets.push(s);
+    } else
       refused.push({
         line: s.line,
         name: s.name,
-        reason: `repeated on line ${lastLine.get(s.name)}, which is sent`,
+        reason: `repeated on line ${lastLine.get(s.name)}, which wins`,
         superseded: true,
       });
   }

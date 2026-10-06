@@ -104,7 +104,16 @@ describe("parsePaste", () => {
       { line: 2, name: "B", value: "2" },
       { line: 3, name: "A", value: "new" },
     ]);
-    expect(result.refused).toEqual([{ line: 1, name: "A", reason: "repeated on line 3, which is sent", superseded: true }]);
+    expect(result.refused).toEqual([{ line: 1, name: "A", reason: "repeated on line 3, which wins", superseded: true }]);
+  });
+
+  it("lets a later empty line win over an earlier value, sending nothing for that name", () => {
+    const result = parsePaste("A=old\nA=");
+    expect(result.secrets).toEqual([]);
+    expect(result.refused).toEqual([
+      { line: 1, name: "A", reason: "repeated on line 2, which wins", superseded: true },
+      { line: 2, name: "A", reason: "value is empty" },
+    ]);
   });
 
   it("reads nothing from an empty paste", () => {
