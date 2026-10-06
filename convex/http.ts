@@ -1542,6 +1542,13 @@ http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 // EITHER KEY: CI holds the narrow evals key and posts this fact, while the box
 // holds the worker key and posts its own local runs. The worker key is
 // strictly the more privileged of the two, so accepting it widens nothing.
+//
+// One row per commit, except that a red row posted with the box's key over a
+// green one for a Jarvis or WikiTom commit is recorded and becomes the row the
+// gate reads (convex/ttsMerge.ts internalRecordTests). The answer says which:
+// { ok: true, recorded, existing, green, rule }, where `recorded` is true when
+// this post wrote a row, `existing` when an earlier row stands instead,
+// `green` is the verdict the gate now reads, and `rule` is the sentence.
 /** `{ name: seconds }` when every value is a finite number, else null. The
  *  schema's `v.record(v.string(), v.number())` refuses anything else, and a
  *  refused mutation is a missing tests row. */
@@ -1608,10 +1615,20 @@ const ttsTests = httpAction(async (ctx, request) => {
     // registryDiffOf), which tom.quest/design draws. Dropped like the timing
     // when malformed, for the same reason.
     ...(registryDiff === null ? {} : { registryDiff }),
+    // WHO POSTED IT: the box's key may add a red row over a green one for a
+    // Jarvis or WikiTom commit (convex/ttsMerge.ts internalRecordTests); the
+    // evals key, GitHub Actions', never may.
+    fromBox: presentsJarvisKey(request),
   });
   //  rather than : the answer's own ok says the POST landed, and
   // the row's ok says whether the tests were green.
-  return jsonResponse(200, { ok: true, existing: result.existing, green: result.ok });
+  return jsonResponse(200, {
+    ok: true,
+    recorded: result.recorded,
+    existing: result.existing,
+    green: result.ok,
+    rule: result.rule,
+  });
 });
 
 http.route({ path: "/tts/tests", method: "POST", handler: ttsTests });

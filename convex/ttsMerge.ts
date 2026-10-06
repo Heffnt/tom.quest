@@ -7,6 +7,7 @@ import { resolveId } from "./jarvis/tables";
 import { JOB_FAILED, JOB_RECOVERED } from "./jarvis/jobs";
 import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../shared/redact.mjs";
+import { GATED_REPOS } from "../shared/session-constants.mjs";
 import { copyDtsRow } from "./jarvis/events";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -419,9 +420,11 @@ const GATE_STATUS_JOB = "gate-status";
 /** How many times one action posts before it stops re-reading. Two actions for
  *  one sha can run at once (the tests row and the audit row landing together);
  *  each re-reads the gate after its post and posts again if the answer moved,
- *  so whichever posts last ends on the current answer. The rows are write-once
- *  (an UNAVAILABLE audit is replaced once), so the answer moves at most twice. */
-const GATE_STATUS_POSTS_MAX = 3;
+ *  so whichever posts last ends on the current answer. A commit holds at most
+ *  four gate rows (a tests row and the box's red row over it, an UNAVAILABLE
+ *  audit and the verdict that replaces it), so the answer moves at most three
+ *  times while one action runs, and four posts always reach the last answer. */
+const GATE_STATUS_POSTS_MAX = 4;
 
 /** The row kind behind each check name, which is what a status names. */
 const ROW_OF_CHECK: Record<string, string> = {
@@ -688,6 +691,23 @@ export function slowConditions(timing: TestsTiming): {
  *  ONCE per commit: a rerun of the same sha keeps the first answer, so a red
  *  run cannot be turned green by pressing re-run until it flakes through.
  *
+ *  ONE EXCEPTION, which can only shut the gate: a RED row posted with the
+ *  box's worker key for a Jarvis or WikiTom commit whose newest row is GREEN
+ *  is recorded, and the gate (`rowFor`, newest first) then reads it. The box's
+ *  pull-request-checks job posts that row when its names check finds a
+ *  refused word in text Tom reads on a head whose tests already passed
+ *  (Jarvis pull request 274); dropping it would leave the gate open on a head
+ *  the box has failed. A green row is never recorded over an earlier row, so
+ *  nothing reopens a shut gate, and a red row over a red one changes nothing
+ *  the gate reads, so it is not written either: a commit holds at most two
+ *  tests rows, green then red. tom.quest's rows are its GitHub Actions run's
+ *  and keep plain write-once: the box posts none for it.
+ *
+ *  Why the exception cannot be the general rule: write-once is what stops a
+ *  red run from being re-run green, and that rule still holds in full here.
+ *  Why it is scoped to the box's key: the box is the only poster of Jarvis and
+ *  WikiTom rows (`EVALS_KEY` is GitHub Actions', for tom.quest).
+ *
  *  THE TIMING IS READ EVERY TIME, including on a rerun the row already answers.
  *  Write-once is a rule about the VERDICT on one commit, which must not move;
  *  how long today's run took is a fact about today's run, and the nightly full
@@ -724,8 +744,12 @@ export const internalRecordTests = internalMutation({
         rows: v.record(v.string(), v.any()),
       }),
     ),
+    /** True when POST /tts/tests was authorized by the box's worker key
+     *  rather than the GitHub Actions evals key. Read only by the exception
+     *  above; not stored on the row. */
+    fromBox: v.optional(v.boolean()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, { fromBox, ...args }): Promise<RecordTestsResult> => {
     const key = commitKey(args.repo, args.sha);
     const existing = await rowFor(ctx, TESTS_RUN, key);
     for (const condition of slowConditions(args)) {
@@ -742,14 +766,41 @@ export const internalRecordTests = internalMutation({
         });
       }
     }
-    if (existing) {
-      return { existing: true, ok: (existing.data as { ok?: unknown } | undefined)?.ok === true };
+    const existingGreen = existing !== null && (existing.data as { ok?: unknown } | undefined)?.ok === true;
+    const redOverGreen =
+      existing !== null && existingGreen && !args.ok && fromBox === true && BOX_RED_ROW_REPOS.includes(args.repo);
+    if (existing !== null && !redOverGreen) {
+      return {
+        recorded: false,
+        existing: true,
+        ok: existingGreen,
+        rule: `existing: ${args.repo}@${args.sha.slice(0, 7)} already has a ${existingGreen ? "green" : "red"} ${TESTS_RUN} row, which stands; a later row is recorded only when it is red, posted by the box, for a ${BOX_RED_ROW_REPOS.join(" or ")} commit whose newest row is green`,
+      };
     }
     await logEvent(ctx, TESTS_RUN, undefined, { ...args }, key);
     await scheduleGateStatus(ctx, args.repo, args.sha);
-    return { existing: false, ok: args.ok };
+    return {
+      recorded: true,
+      existing: false,
+      ok: args.ok,
+      rule: redOverGreen
+        ? `recorded: a red ${TESTS_RUN} row from the box over the green one for ${args.repo}@${args.sha.slice(0, 7)}; the gate reads it as the newest, and no later row replaces it`
+        : `recorded: the first ${TESTS_RUN} row for ${args.repo}@${args.sha.slice(0, 7)}`,
+    };
   },
 });
+
+/** The repositories whose tests rows the box posts (its pull-request-checks
+ *  job), and so the ones where a red row from the box may follow a green one:
+ *  every gated repository but tom.quest, whose rows are its GitHub Actions
+ *  run's. */
+const BOX_RED_ROW_REPOS: readonly string[] = GATED_REPOS.filter((repo) => repo !== "tom.quest");
+
+/** What POST /tts/tests answers. `recorded` and `existing` are opposites
+ *  kept both because the box reads `existing` (Jarvis
+ *  worker/jobs/pull-request-checks.mjs); `ok` is the verdict of the row the
+ *  gate now reads; `rule` says in one sentence which rule decided. */
+type RecordTestsResult = { recorded: boolean; existing: boolean; ok: boolean; rule: string };
 
 /**
  * The audit step's verdict and bounded, redacted answer, recorded once per

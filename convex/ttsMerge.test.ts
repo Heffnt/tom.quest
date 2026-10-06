@@ -603,6 +603,114 @@ describe("POST /tts/tests — the first check's own door", () => {
   });
 });
 
+describe("POST /tts/tests — the box's red row after a green one", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const JARVIS = "Jarvis";
+  /** The tests rows of `repo@SHA`, oldest first. */
+  const rowsOf = (t: TestConvex<typeof schema>, repo: string) =>
+    t.run(async (ctx) =>
+      ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", commitKey(repo, SHA)))
+        .collect(),
+    );
+  const gateOf = async (t: TestConvex<typeof schema>, repo: string) =>
+    await (await get(t, `/tts/merge-gate?repo=${repo}&sha=${SHA}`)).json();
+  /** Both gate rows green for `repo@SHA`, through the doors the box and CI use. */
+  async function openGate(t: TestConvex<typeof schema>, repo: string) {
+    const first = await (await post(t, "/tts/tests", { repo, sha: SHA, ok: true })).json();
+    expect(first).toMatchObject({ recorded: true, existing: false, green: true });
+    expect(first.rule).toMatch(/^recorded: the first tests-run row/);
+    await t.mutation(internal.ttsMerge.internalRecordAudit, {
+      repo,
+      sha: SHA,
+      verdict: "APPROVED",
+      text: "The change is sound.\nVERDICT: APPROVED",
+    });
+    expect((await gateOf(t, repo)).allowed).toBe(true);
+  }
+
+  it("records a red row from the box over a green one for a Jarvis commit, and the gate shuts", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await openGate(t, JARVIS);
+    const red = await (
+      await post(t, "/tts/tests", { repo: JARVIS, sha: SHA, ok: false, detail: "guardrails — names check failed" })
+    ).json();
+    expect(red).toMatchObject({ ok: true, recorded: true, existing: false, green: false });
+    expect(red.rule).toMatch(/^recorded: a red tests-run row from the box over the green one/);
+    const gate = await gateOf(t, JARVIS);
+    expect(gate.allowed).toBe(false);
+    expect(gate.missing).toEqual(["tests"]);
+    expect(gate.testsRun).toEqual({ ok: false, detail: "guardrails — names check failed" });
+  });
+
+  it("does the same for a WikiTom commit", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await openGate(t, "WikiTom");
+    expect((await (await post(t, "/tts/tests", { repo: "WikiTom", sha: SHA, ok: false })).json()).recorded).toBe(true);
+    expect((await gateOf(t, "WikiTom")).allowed).toBe(false);
+  });
+
+  it("does not reopen the gate on a later green row, and keeps two rows", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await openGate(t, JARVIS);
+    await post(t, "/tts/tests", { repo: JARVIS, sha: SHA, ok: false });
+    const green = await (await post(t, "/tts/tests", { repo: JARVIS, sha: SHA, ok: true })).json();
+    expect(green).toMatchObject({ recorded: false, existing: true, green: false });
+    expect(green.rule).toMatch(/^existing: .* already has a red tests-run row, which stands/);
+    // A second red adds nothing the gate reads, so it is not written either.
+    expect((await (await post(t, "/tts/tests", { repo: JARVIS, sha: SHA, ok: false })).json()).recorded).toBe(false);
+    expect((await gateOf(t, JARVIS)).allowed).toBe(false);
+    expect((await rowsOf(t, JARVIS)).map((row) => (row.data as { ok: boolean }).ok)).toEqual([true, false]);
+  });
+
+  it("does not record a second green row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/tests", { repo: JARVIS, sha: SHA, ok: true, detail: "first" });
+    const again = await (await post(t, "/tts/tests", { repo: JARVIS, sha: SHA, ok: true, detail: "second" })).json();
+    expect(again).toMatchObject({ recorded: false, existing: true, green: true });
+    expect((await rowsOf(t, JARVIS)).map((row) => (row.data as { detail: string }).detail)).toEqual(["first"]);
+  });
+
+  it("keeps a tom.quest commit write-once, whichever key posts the red row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.stubEnv("EVALS_KEY", EVALS_KEY);
+    const t = convex();
+    const evals = (payload: unknown) =>
+      t.fetch("/tts/tests", {
+        method: "POST",
+        headers: { "X-Evals-Key": EVALS_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    await (await evals({ repo: REPO, sha: SHA, ok: true })).json();
+    for (const red of [
+      await (await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: false })).json(),
+      await (await evals({ repo: REPO, sha: SHA, ok: false })).json(),
+    ]) {
+      expect(red).toMatchObject({ recorded: false, existing: true, green: true });
+    }
+    expect((await rowsOf(t, REPO)).length).toBe(1);
+  });
+
+  it("does not take the red row over a green one from the GitHub Actions key", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.stubEnv("EVALS_KEY", EVALS_KEY);
+    const t = convex();
+    await post(t, "/tts/tests", { repo: JARVIS, sha: SHA, ok: true });
+    const red = await t.fetch("/tts/tests", {
+      method: "POST",
+      headers: { "X-Evals-Key": EVALS_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: JARVIS, sha: SHA, ok: false }),
+    });
+    expect(await red.json()).toMatchObject({ recorded: false, existing: true, green: true });
+  });
+});
+
 describe("the timing warning — Tom's 2026-09-22 ruling", () => {
   afterEach(() => vi.unstubAllEnvs());
 
@@ -1374,6 +1482,24 @@ describe("the gate posted as the tts-gate commit status", () => {
     await recordAudit(t2, "APPROVED");
     await settle(t2);
     expect(calls.map((c) => c.body.state)).toEqual(["pending", "success"]);
+  });
+
+  it("the box's red row over a green one turns a Jarvis head's open status to failure", async () => {
+    const calls = statusesApi();
+    const t = convex();
+    const jarvis = { repo: "Jarvis", sha: SHA };
+    await t.mutation(internal.ttsMerge.internalRecordTests, { ...jarvis, ok: true, fromBox: true });
+    await t.mutation(internal.ttsMerge.internalRecordAudit, {
+      ...jarvis,
+      verdict: "APPROVED",
+      text: "The change is sound.\nVERDICT: APPROVED",
+    });
+    await settle(t);
+    expect(calls.at(-1)?.body.state).toBe("success");
+    await t.mutation(internal.ttsMerge.internalRecordTests, { ...jarvis, ok: false, fromBox: true });
+    await settle(t);
+    expect(calls.at(-1)?.url).toBe(`https://api.github.com/repos/Heffnt/Jarvis/statuses/${SHA}`);
+    expect(calls.at(-1)?.body).toMatchObject({ state: "failure", context: "tts-gate" });
   });
 
   it("an UNAVAILABLE audit is no audit: pending, not failure", async () => {

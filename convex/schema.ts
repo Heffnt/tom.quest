@@ -1312,7 +1312,9 @@ export default defineSchema({
     // under the same `<repo>@<sha>`:
     //   "tests-run"   — the Guardrails tests job's own result, recorded once
     //                   per commit so a red run cannot be re-run until it
-    //                   flakes green;
+    //                   flakes green; the one later row is the box's red row
+    //                   over a green one for a Jarvis or WikiTom commit, and
+    //                   every reader takes the newest;
     //   "audit-verdict"
     //                 — the audit's `VERDICT:` word for that commit, recorded
     //                   once for the same reason;
