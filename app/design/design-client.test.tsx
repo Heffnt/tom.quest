@@ -2,11 +2,12 @@
 // from the page query's answer; a box or a hash opens a part's panel; the
 // panel's sections in order, an empty one left out; ?head= draws the
 // registry diff.
+// "This is right" calls design.confirm.
 
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import { USE_STATES } from "@/shared/parts-drawing.mjs";
 import type { RegistryRow } from "@/convex/jarvis/design";
@@ -34,6 +35,7 @@ const PART: PartAnswer = {
   state: { state: "in use", partial: false, row: { id: "u1", kind: "use", at: NOW - 60_000, text: "read the thread", agentId: null }, inUseDays: 30, workingAfterDays: 7 },
   rulings: [],
   measures: { windowDays: 30, lastUse: { at: NOW - 60_000, what: "read the thread", by: "tom" } },
+  explanation: null,
   cuts: [],
 } as PartAnswer;
 
@@ -146,6 +148,18 @@ describe("the design page", () => {
     expect(aside.textContent).toContain("governed by outcomes (agent-set)");
   });
 
+  it("sends 'this is right' through design.confirm", async () => {
+    answers["jarvis/design:part"] = {
+      ...PART,
+      explanation: { id: "x1", at: NOW, title: "What /thread is", html: "<!doctype html><p>x</p>", agentId: null, session: "s1", confirmedAt: null },
+    };
+    window.history.replaceState(null, "", "/design#thread-page");
+    render(<DesignClient />);
+    await act(async () => {
+      fireEvent.click(screen.getByText("this is right"));
+    });
+    expect(calls).toEqual([{ name: "jarvis/design:confirm", args: { part: "thread-page", explanationId: "x1" } }]);
+  });
 
   it("says there is no registry, and draws nothing, before the box posts one", () => {
     answers["jarvis/design:page"] = { registry: null };

@@ -5,10 +5,12 @@
 // (jarvis/design.part) is read only while it is open. Each section is left out
 // when it has nothing to show.
 
-import { useQuery } from "convex/react";
+import { useState } from "react";
+import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import Info from "@/app/jarvis/components/info";
+import GroundUpView from "@/app/jarvis/components/ground-up-view";
 import { displayDay, displayForm } from "@/shared/clock.mjs";
 
 export type PartAnswer = NonNullable<FunctionReturnType<typeof api.jarvis.design.part>>;
@@ -44,11 +46,16 @@ function PartLinks({ ids, names, onSelect }: { ids: string[]; names: Record<stri
 function PartPanelBody({
   answer,
   onSelect,
+  onConfirm,
 }: {
   answer: PartAnswer;
   onSelect: (id: string) => void;
+  onConfirm: (explanationId: string) => Promise<unknown>;
 }) {
   const { row, names, serves, state, rulings, registry, cuts } = answer;
+  const { explanation } = answer;
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
   const ruled = rulings.some((r) => r.standing);
   const relations = (["starts", "reads", "writes", "refuses"] as const).filter((field) => row[field].length > 0);
 
@@ -230,12 +237,49 @@ function PartPanelBody({
         </Section>
       )}
 
+      {explanation !== null && (
+        <Section title="its explanation">
+          <p>
+            <button type="button" className={LINK} onClick={() => setReading(true)}>
+              {explanation.title}
+            </button>{" "}
+            <span className="font-mono text-[10px] text-text-faint">
+              {displayDay(explanation.at)}
+              {explanation.agentId !== null && (
+                <>
+                  {" · "}
+                  <a className={LINK} href={`/agents?agent=${encodeURIComponent(explanation.agentId)}`}>
+                    the agent
+                  </a>
+                </>
+              )}
+            </span>
+          </p>
+          {explanation.confirmedAt !== null ? (
+            <p className="mt-1 text-success">confirmed {displayDay(explanation.confirmedAt)}</p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmError(null);
+                onConfirm(explanation.id).catch((err: unknown) => setConfirmError(err instanceof Error ? err.message : String(err)));
+              }}
+              className="mt-1 rounded border border-border px-2 py-1 text-[12px] text-text-muted hover:border-text-faint hover:text-text"
+            >
+              this is right
+            </button>
+          )}
+          {confirmError !== null && <p className="mt-1 text-[11px] text-error">{confirmError}</p>}
+          {reading && <GroundUpView title={explanation.title} content={explanation.html} onClose={() => setReading(false)} />}
+        </Section>
+      )}
     </>
   );
 }
 
 export default function PartPanel({ id, onClose, onSelect }: { id: string; onClose: () => void; onSelect: (id: string) => void }) {
   const answer = useQuery(api.jarvis.design.part, { id });
+  const confirm = useMutation(api.jarvis.design.confirm);
   return (
     <aside className="fixed inset-0 z-40 flex flex-col bg-surface shadow-2xl sm:left-auto sm:w-[36rem] sm:border-l sm:border-border">
       <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2">
@@ -257,6 +301,7 @@ export default function PartPanel({ id, onClose, onSelect }: { id: string; onClo
           <PartPanelBody
             answer={answer}
             onSelect={onSelect}
+            onConfirm={(explanationId) => confirm({ part: id, explanationId })}
           />
         )}
       </div>

@@ -1,4 +1,4 @@
-// design.ts — tom.quest/design's reads.
+// design.ts — tom.quest/design's reads and Tom's writes on it.
 //
 // THE PAGE DRAWS THE REGISTRY THE BOX DEPLOYED. The registry is Jarvis
 // worker/parts.json, one row per part; the box's deploy job posts it as one
@@ -14,9 +14,12 @@
 //          read under one byte budget.
 //          Its measures: the last clean run, and failures, agent cost and
 //          last use over 30 days.
+//          The newest explanation of it.
 //   diff   what a Jarvis head does to the registry: the `registryDiff` the
 //          box posts on the head's tests row, and the base registry it
 //          applies to.
+//   confirm  "this is right" on an explanation: one `explanation-confirmed`
+//          row, a type only Tom's mutation writes.
 //
 // A STORED REGISTRY ROW IS A CHECKED ONE: POST /jarvis/event, the one route
 // that writes the type, runs shared/jarvis-events.mjs validateEvent on it,
@@ -25,7 +28,7 @@
 // THE GATE IS requireTom, label "Design".
 
 import { v } from "convex/values";
-import { query } from "../_generated/server";
+import { mutation, query } from "../_generated/server";
 import type { QueryCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
 import { requireTom } from "../authRoles";
@@ -36,10 +39,15 @@ import { registryDiffOf } from "../../shared/jarvis-events.mjs";
 import { removedStillRun, servesOnlyOutcomes } from "../../shared/parts-drawing.mjs";
 import { getWithin, MIB, ReadBudget, readWithin } from "../readBudget";
 import type { ReadCut } from "../readBudget";
+import { insertEvent } from "./record";
 import { IN_USE_DAYS, readPartStates, WORKING_AFTER_DAYS } from "./partStates";
 
 const SURFACE = "Design";
 const REGISTRY = "registry";
+const EXPLANATION = "explanation";
+/** Tom's "this is right": a Tom-only type, so the worker-key routes cannot
+ *  write one (shared/jarvis-events.mjs TOM_ONLY_KINDS). */
+const CONFIRMED = "explanation-confirmed";
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** A part's state whose reads were cut by the byte budget. */
 const PARTIAL = "partial";
@@ -61,6 +69,7 @@ const ALLOT = {
   stateRow: { what: "the row behind the state", bytes: MIB },
   serves: { what: "model-of-tom files", bytes: 2 * MIB },
   rulings: { what: "rulings in the part's scope", bytes: MIB },
+  explanation: { what: "explanation rows", bytes: MIB },
   use: { what: "use rows", bytes: MIB },
   clean: { what: "clean-run rows", bytes: MIB },
   failed: { what: "failed-run rows", bytes: 2 * MIB },
@@ -347,6 +356,27 @@ async function readPart(ctx: QueryCtx, id: string, now: number, budget: ReadBudg
   });
   rulings.sort((a, b) => Number(b.standing) - Number(a.standing) || b.at - a.at);
 
+  const explanations = budget.allot(ALLOT.explanation.what, ALLOT.explanation.bytes);
+  const [explained] = await readWithin(explanations, newestExplanationRows(ctx, id), 1);
+  let explanation = null;
+  if (explained !== undefined) {
+    const confirmed = await getWithin(explanations, () =>
+      ctx.db
+        .query("events")
+        .withIndex("by_kind_data_id", (q) => q.eq("kind", CONFIRMED).eq("data.id", `confirm:${explained._id}`))
+        .first(),
+    );
+    const d = explained.data as { title: string; html: string };
+    explanation = {
+      id: explained._id,
+      at: explained.at,
+      title: d.title,
+      html: d.html,
+      agentId: explained.provenance.agentId ?? null,
+      session: explained.provenance.session ?? null,
+      confirmedAt: confirmed?.at ?? null,
+    };
+  }
 
   const serves = await servesOf(ctx, row.serves, budget);
   const measures = await measuresOf(ctx, row, now, budget);
@@ -359,6 +389,7 @@ async function readPart(ctx: QueryCtx, id: string, now: number, budget: ReadBudg
     state,
     rulings,
     measures,
+    explanation,
     cuts,
   };
 }
@@ -407,6 +438,44 @@ export const diff = query({
       base: base === null ? null : registryOf(base),
       baseIsExact: exact !== null,
     };
+  },
+});
+
+// ── Tom's writes ────────────────────────────────────────────────────────────
+
+/** A part's explanations, newest first: the first is the one the panel shows
+ *  and the one "this is right" may confirm. */
+function newestExplanationRows(ctx: QueryCtx, part: string) {
+  return ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", EXPLANATION).eq("subject", part))
+    .order("desc");
+}
+
+/** "This is right" on the newest explanation of a part: one row of his,
+ *  of a type only this mutation writes, so the panel's "confirmed" rests on
+ *  his login and a row a worker posted cannot stand for it or block it. It
+ *  says he understood the explanation, not that the part has no issue, so it
+ *  is not a use row and sets no state. A second press writes nothing. It names
+ *  the explanation it confirms and is refused unless that is the part's
+ *  newest: a panel open since a newer explanation arrived confirms nothing. */
+export const confirm = mutation({
+  args: { part: v.string(), explanationId: v.string() },
+  handler: async (ctx, { part, explanationId }) => {
+    await requireTom(ctx, SURFACE);
+    const newest = await newestExplanationRows(ctx, part).first();
+    if (newest === null) throw new Error(`no explanation of ${part} in the record`);
+    if (newest._id !== explanationId) {
+      throw new Error(`explanation ${explanationId} is not the newest explanation of ${part}; reload the panel and read ${newest._id}`);
+    }
+    const id = `confirm:${explanationId}`;
+    const earlier = await ctx.db
+      .query("events")
+      .withIndex("by_kind_data_id", (q) => q.eq("kind", CONFIRMED).eq("data.id", id))
+      .first();
+    if (earlier !== null) return { duplicate: true };
+    await insertEvent(ctx, { kind: CONFIRMED, subject: part, provenance: { user: "tom" }, data: { part, explanationId, id } });
+    return { duplicate: false };
   },
 });
 

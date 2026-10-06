@@ -169,6 +169,12 @@ export const EVENT_KINDS = [
   //     provenance.agentId or provenance.session the agent that wrote it.
   "registry",
   "explanation",
+  //   explanation-confirmed: Tom pressed "this is right" on a part's newest
+  //     explanation (convex/jarvis/design.ts confirm). Subject the part id;
+  //     data { part, explanationId, id: "confirm:<explanationId>" }. Tom-only:
+  //     the worker-key routes refuse it, so a confirmation in the record is
+  //     his.
+  "explanation-confirmed",
   // Working properly, read from use (Tom's answer of 2026-10-04, 22:59
   // Eastern: "the primary thing is that I am interacting with it and I don't
   // report any issues or I explicitly report no issues."). A part is one id of
@@ -216,7 +222,7 @@ export const EVENT_KINDS = [
  *  subscription (an endpoint receives every notification's text); Convex's
  *  own markGone still writes it. */
 /** @type {const} */
-export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message", "needs-tom-answered"];
+export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message", "needs-tom-answered", "explanation-confirmed"];
 
 /** Events only POST /jarvis/event writes, which checks each one's shape with
  *  validateEvent. POST /tts/event copies a row into the record unchecked
@@ -281,7 +287,7 @@ export const MAX_FUTURE_SKEW_MS = 5 * 60_000;
  * a build row's todo, a needs-you opening's key (the thread digest lists an
  * opening by its key).
  */
-export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened", "silence-alarm", "ruling"];
+export const SUBJECT_REQUIRED = ["decision", "digest-line", "eval-run", "thread-reply", "work-run", "part-disabled", "registry", "explanation", "explanation-confirmed", "todo-state", "handoff", "use", "presence", "thread-digest", "thread-needs-you", "needs-tom-answered", "needs-you-opened", "silence-alarm", "ruling"];
 
 /** A todo-state's `data.state` and `data.from`: where a todo stands in a build. */
 /** @type {const} */
@@ -578,6 +584,14 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
   if (kind === "explanation") {
     const problem = explanationProblem(subject, data, prov);
     if (problem !== null) return { ok: false, error: problem };
+  }
+  if (kind === "explanation-confirmed") {
+    if (!isPlainObject(data) || data.part !== subject || !nonEmptyString(data.explanationId)) {
+      return { ok: false, error: "an explanation-confirmed event names data.part as its subject and data.explanationId" };
+    }
+    if (data.id !== `confirm:${data.explanationId}`) {
+      return { ok: false, error: "an explanation-confirmed event names data.id as confirm:<explanationId>" };
+    }
   }
   if (kind === "ruling") {
     if (!isPlainObject(data)) return { ok: false, error: "a ruling event names data as an object" };

@@ -153,6 +153,7 @@ describe("validateEvent", () => {
 
   it("keeps thread events in their route-only lists", () => {
     expect(TOM_ONLY_KINDS).toContain("thread-message");
+    expect(TOM_ONLY_KINDS).toContain("explanation-confirmed");
     expect(RECORD_ONLY_KINDS).toContain("thread-digest");
     expect(SUBJECT_REQUIRED).toContain("thread-reply");
     expect(RECORD_ONLY_KINDS).toContain("silence-alarm");
@@ -633,5 +634,16 @@ describe("isRulingScope", () => {
     for (const scope of ["", "All", "part:", "part:Delegate", "part:a--b", "class:small change", "repo:jarvis", "repo:", "todo:abc", "delegate", 3, null]) {
       expect(isRulingScope(scope)).toBe(false);
     }
+  });
+});
+
+describe("an explanation-confirmed event", () => {
+  const confirmed = (data = {}, extra = {}) => ({ kind: "explanation-confirmed", subject: "idle", provenance: { user: "tom" }, data: { part: "idle", explanationId: "x1", id: "confirm:x1", ...data }, ...extra });
+  it("names the part as its subject, the explanation, and the key a second press is matched on", () => {
+    expect(validateEvent(confirmed()).ok).toBe(true);
+    expect(validateEvent(confirmed({ part: "other" })).error).toContain("data.part as its subject");
+    expect(validateEvent(confirmed({ explanationId: "" })).error).toContain("data.explanationId");
+    expect(validateEvent(confirmed({ id: "confirm:x2" })).error).toContain("confirm:<explanationId>");
+    expect(validateEvent(confirmed({}, { subject: undefined })).error).toContain("names its subject");
   });
 });
