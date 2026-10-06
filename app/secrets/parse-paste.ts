@@ -11,13 +11,13 @@
 // when one could be read, its name; never its text, which may hold a secret.
 
 // The same rule convex/secrets.ts enforces: an env-file variable name.
-export const SECRET_NAME = /^[A-Z_][A-Z0-9_]{0,127}$/;
+const SECRET_NAME = /^[A-Z_][A-Z0-9_]{0,127}$/;
 
-export type PastedSecret = { line: number; name: string; value: string };
+type PastedSecret = { line: number; name: string; value: string };
 // `superseded`: the line's name is sent from a later line, so there is
 // nothing on this one to fix.
 export type RefusedLine = { line: number; name?: string; reason: string; superseded?: true };
-export type ParsedPaste = { secrets: PastedSecret[]; refused: RefusedLine[] };
+type ParsedPaste = { secrets: PastedSecret[]; refused: RefusedLine[] };
 
 export function parsePaste(text: string): ParsedPaste {
   const found: PastedSecret[] = [];
