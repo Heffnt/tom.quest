@@ -28,7 +28,8 @@ describe("tests-affected", () => {
       .toEqual({ base: "abc", summaryPath: "/s.json", forced: "full" });
     expect(optionsOf([], { TESTS_BASE: "abc", TESTS_SUMMARY: "/s.json", TESTS_MODE: "full" }))
       .toEqual({ base: "abc", summaryPath: "/s.json", forced: "full" });
-    expect(optionsOf(["--base", ""], { TESTS_BASE: "abc" })).toEqual({ base: "abc", summaryPath: null, forced: null });
+    // An argument given empty is the push event's "no base", not a fall-through.
+    expect(optionsOf(["--base", ""], { TESTS_BASE: "abc" })).toEqual({ base: null, summaryPath: null, forced: null });
     expect(optionsOf([], { TESTS_BASE: " ", TESTS_MODE: "" })).toEqual({ base: null, summaryPath: null, forced: null });
     expect(optionsOf([], {})).toEqual({ base: null, summaryPath: null, forced: null });
   });

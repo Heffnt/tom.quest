@@ -772,10 +772,7 @@ describe("the timing warning — Tom's 2026-09-22 ruling", () => {
     expect(failures).toHaveLength(1);
     expect(failures[0].subject).toBe(memoryWarnKey("e2e"));
     expect((failures[0].data as { error: string }).error).toContain("e2e step peaked at 1812 MB");
-    const row = await t.run(async (ctx) => {
-      const rows = await ctx.db.query("ttsEvents").collect();
-      return rows.find((entry) => entry.kind === "tests-run");
-    });
+    const row = (await testsRows(t)).find((entry) => (entry.data as { sha?: string }).sha === SHA);
     expect((row?.data as { memory?: unknown })?.memory).toEqual(over.memory);
     // A malformed memory field is dropped, never the row.
     const dropped = await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}c`, ok: true, memory: { e2e: { peak: "x" } } });
