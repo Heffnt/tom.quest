@@ -9,17 +9,21 @@
 // something. A kind with no rows yet is an empty series, never an error, so
 // the page works before the dump session writes its first fact.
 //
-// THE FIELDS OF A FACT, as this reads them (one place, so a renamed field is
-// one edit here):
-//   weight    data.value with data.unit "lb" or "kg" (data.lb or data.kg
-//             alone also read); drawn in pounds.
-//   meal      the line is row.text, else data.text, data.what or
-//             data.summary; data.proteinG or data.protein in grams;
-//             data.calories or data.kcal.
-//   training  the line is row.text, else data.text, data.what or
-//             data.summary; data.bodyParts (strings), data.activity,
-//             data.durationMin, data.distanceMi.
-//   did       his sentence: row.text, else data.text.
+// THE FIELDS OF A FACT are shared/jarvis-events.mjs's (factProblem): every
+// fact names data.day, the New York day it belongs to, which may be earlier
+// than `at`, when he said it; data.summary, a few words; and data.quote, his
+// own words, when given. This reads them in one place, so a renamed field is
+// one edit here:
+//   weight    metric "weight" (a "waist" row is not drawn), value, unit "lb"
+//             (a "kg" unit is converted); drawn in pounds.
+//   meal      summary, proteinG, calories.
+//   training  summary, activity, bodyParts, durationMin, distanceMi. A row
+//             with a metric is a timed or loaded test, not a session, and is
+//             not counted in the weekly bars.
+//   did       summary and quote.
+// His sentences on a day are the day log's entries and his thread messages,
+// then each fact's quote (a did row's summary when it has none; the other
+// kinds' summaries are not his words) that no sentence drawn that day holds.
 //
 // THE DAY LOG, until it is folded into events: the dayLogEntries and
 // dayLogItems tables hold every fact he gave before the events kinds existed.
@@ -123,6 +127,20 @@ function lineOf(row: Row): string | undefined {
   return str(row.text) ?? str(data.text) ?? str(data.what) ?? str(data.summary);
 }
 
+function factLine(row: Row): string | undefined {
+  const data = dataOf(row);
+  return str(data.summary) ?? str(row.text) ?? str(data.text);
+}
+
+/** How many days after a fact's day he may say it: the day log took a week back. */
+export const FACT_LATE_DAYS = 8;
+
+/** The day a fact belongs to: data.day, else the New York day he said it. */
+export function factDay(row: Row): string {
+  const day = dataOf(row).day;
+  return typeof day === "string" && isDayKey(day) ? day : newYorkDay(row.at);
+}
+
 export function isDayKey(value: string): boolean {
   return DAY_KEY.test(value) && new Date(Date.parse(value)).toISOString().slice(0, 10) === value;
 }
@@ -151,6 +169,7 @@ export function rangeOf(args: { from?: string; to?: string }, now: number): { fr
 
 export function weightOf(row: Row): Weight | null {
   const data = dataOf(row);
+  if (data.metric !== undefined && data.metric !== "weight") return null;
   const value = num(data.value);
   const unit = str(data.unit)?.toLowerCase();
   let lb: number | undefined;
@@ -159,7 +178,7 @@ export function weightOf(row: Row): Weight | null {
   else if (num(data.lb) !== undefined) lb = num(data.lb);
   else if (num(data.kg) !== undefined) lb = num(data.kg)! * KG_TO_LB;
   if (lb === undefined || lb <= 0) return null;
-  return { id: row._id, at: row.at, day: newYorkDay(row.at), lb };
+  return { id: row._id, at: row.at, day: factDay(row), lb };
 }
 
 export function mealOf(row: Row): Meal {
@@ -169,15 +188,16 @@ export function mealOf(row: Row): Meal {
   return {
     id: row._id,
     at: row.at,
-    day: newYorkDay(row.at),
-    text: lineOf(row) ?? "meal",
+    day: factDay(row),
+    text: factLine(row) ?? "meal",
     ...(proteinG === undefined ? {} : { proteinG }),
     ...(calories === undefined ? {} : { calories }),
   };
 }
 
-export function trainingOf(row: Row): Training {
+export function trainingOf(row: Row): Training | null {
   const data = dataOf(row);
+  if (data.metric !== undefined) return null;
   const bodyParts = Array.isArray(data.bodyParts) ? data.bodyParts.filter((part): part is string => typeof part === "string" && part !== "") : [];
   const activity = str(data.activity);
   const durationMin = num(data.durationMin);
@@ -185,8 +205,8 @@ export function trainingOf(row: Row): Training {
   return {
     id: row._id,
     at: row.at,
-    day: newYorkDay(row.at),
-    text: lineOf(row) ?? activity ?? "training",
+    day: factDay(row),
+    text: factLine(row) ?? activity ?? "training",
     bodyParts,
     ...(activity === undefined ? {} : { activity }),
     ...(durationMin === undefined ? {} : { durationMin }),
@@ -194,9 +214,17 @@ export function trainingOf(row: Row): Training {
   };
 }
 
+/** A thread message of his. */
 export function toldOf(row: Row): Told | null {
   const text = str(row.text) ?? str(dataOf(row).text);
   return text === undefined ? null : { id: row._id, at: row.at, day: newYorkDay(row.at), text };
+}
+
+/** A fact's own words: its quote; a did row with none, its summary, the only thing it holds. */
+export function factToldOf(row: Row): Told | null {
+  const data = dataOf(row);
+  const text = str(data.quote) ?? (row.kind === FACT_KINDS.did ? factLine(row) : undefined);
+  return text === undefined ? null : { id: row._id, at: row.at, day: factDay(row), text };
 }
 
 function repoSlug(repo: unknown): string | null {
@@ -337,15 +365,16 @@ export function withDayLog<T extends { day: string }>(fromEvents: T[], fromDayLo
   return [...fromEvents, ...fromDayLog.filter((row) => !covered.has(row.day))];
 }
 
-/** One sentence said twice on a day (a thread message the day log also kept) is drawn once. */
-export function uniqueTold(told: Told[]): Told[] {
-  const seen = new Set<string>();
-  return told.filter((row) => {
-    const key = `${row.day}\n${row.text.trim()}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+/**
+ * His sentences of each day: every whole sentence (a day-log entry, a thread
+ * message) once, then each fact's words that none of them already holds,
+ * since a fact's quote is a piece of the entry it came from.
+ */
+export function toldByDay(sentences: Told[], factWords: Told[]): Told[] {
+  const kept: Told[] = [];
+  const has = (row: Told) => kept.some((k) => k.day === row.day && k.text.includes(row.text.trim()));
+  for (const row of [...sentences, ...factWords]) if (!has(row)) kept.push(row);
+  return kept;
 }
 
 export function inRange<T extends { day: string }>(rows: T[], from: string, to: string): T[] {

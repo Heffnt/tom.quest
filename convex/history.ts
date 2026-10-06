@@ -15,9 +15,11 @@ import { query, type QueryCtx } from "./_generated/server";
 import { requireTomOrAgent } from "./authRoles";
 import { MIB, ReadBudget, readWithin } from "./readBudget";
 import { readCutLine } from "./ttsCompose";
+import { addDays } from "../shared/clock.mjs";
 import {
   ACTION_KINDS,
   FACT_KINDS,
+  FACT_LATE_DAYS,
   MESSAGE_KIND,
   actionOf,
   boxChangeActions,
@@ -27,13 +29,14 @@ import {
   dayLogTraining,
   dayLogWeight,
   daysBetween,
+  factToldOf,
   inRange,
   mealOf,
   rangeInstants,
   rangeOf,
   toldOf,
+  toldByDay,
   trainingOf,
-  uniqueTold,
   weightOf,
   withDayLog,
   type HistoryPage,
@@ -71,14 +74,17 @@ export const page = query({
     await requireTomOrAgent(ctx, SURFACE);
     const { from, to } = rangeOf(args, Date.now());
     const range = rangeInstants(from, to);
+    // A fact is read by when he said it, which may be up to FACT_LATE_DAYS
+    // after the day it belongs to, and kept by its day.
+    const factRange = rangeInstants(from, addDays(to, FACT_LATE_DAYS));
     const budget = ReadBudget.of(BUDGET);
-    const events = (kind: string, what: string, read: { bytes: number; rows: number }) =>
-      readWithin(budget.allot(what, read.bytes), kindInRange(ctx, kind, range), read.rows);
+    const events = (kind: string, what: string, read: { bytes: number; rows: number }, within: Range = range) =>
+      readWithin(budget.allot(what, read.bytes), kindInRange(ctx, kind, within), read.rows);
 
-    const weightRows = await events(FACT_KINDS.weight, "weights", READS.fact);
-    const mealRows = await events(FACT_KINDS.meal, "meals", READS.fact);
-    const trainingRows = await events(FACT_KINDS.training, "training sessions", READS.fact);
-    const didRows = await events(FACT_KINDS.did, "his sentences", READS.told);
+    const weightRows = await events(FACT_KINDS.weight, "weights", READS.fact, factRange);
+    const mealRows = await events(FACT_KINDS.meal, "meals", READS.fact, factRange);
+    const trainingRows = await events(FACT_KINDS.training, "training sessions", READS.fact, factRange);
+    const didRows = await events(FACT_KINDS.did, "his other facts", READS.told, factRange);
     const messageRows = await events(MESSAGE_KIND, "his thread messages", READS.told);
 
     const dayLogItems = async (type: Doc<"dayLogItems">["type"], what: string) => readWithin(
@@ -120,10 +126,10 @@ export const page = query({
       }
     }
 
-    const told = uniqueTold(byTime(withDayLog(
-      [...didRows, ...messageRows].flatMap((row) => toldOf(row) ?? []),
-      oldEntries.map(dayLogTold),
-    )));
+    const told = toldByDay(
+      byTime([...oldEntries.map(dayLogTold), ...messageRows.flatMap((row) => toldOf(row) ?? [])]),
+      byTime([...didRows, ...mealRows, ...weightRows, ...trainingRows].flatMap((row) => factToldOf(row) ?? [])),
+    );
 
     return {
       from,
@@ -134,8 +140,8 @@ export const page = query({
         oldMeasurements.flatMap((item) => dayLogWeight(item) ?? []),
       ), from, to)),
       meals: byTime(inRange(withDayLog(mealRows.map(mealOf), oldFood.map(dayLogMeal)), from, to)),
-      trainings: byTime(inRange(withDayLog(trainingRows.map(trainingOf), oldWorkouts.map(dayLogTraining)), from, to)),
-      told: inRange(told, from, to),
+      trainings: byTime(inRange(withDayLog(trainingRows.flatMap((row) => trainingOf(row) ?? []), oldWorkouts.map(dayLogTraining)), from, to)),
+      told: byTime(inRange(told, from, to)),
       actions: byTime(inRange([...actionRows.map(actionOf), ...boxChangeActions(boxChanges, deploys)], from, to)),
       cuts: budget.cuts().map(readCutLine),
     };
