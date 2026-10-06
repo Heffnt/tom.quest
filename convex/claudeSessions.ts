@@ -42,7 +42,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
 import { assembleContext, CONTEXT_END, joinContext, withoutPastedContext, type ContextSubject } from "./ttsContext";
-import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
+import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, SESSION_LOGIN, USAGE_LIMIT_REPORT } from "./ttsShared";
 import {
   DAEMON_STALE_MS,
   DEFAULT_SESSION_MODEL,
@@ -89,6 +89,37 @@ export const getSession = query({
   handler: async (ctx, { id }) => {
     await requireTomId(ctx);
     return await ctx.db.get(id);
+  },
+});
+
+// The sessions page's list (design section 5.1). The persistent sessions are
+// read by kind, so one that has lived for months never falls out of the
+// newest-100 window the rest are read through.
+export const sessionsPage = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTomId(ctx);
+    const persistent = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
+      .take(20);
+    const recent = await ctx.db.query("claudeSessions").order("desc").take(100);
+    return {
+      persistent,
+      others: recent.filter((session) => session.kind !== "persistent"),
+    };
+  },
+});
+
+// The sessions page's login selector: which of the two Claude logins runs this
+// session's next reply. A patch and nothing else; the session host reads the
+// field when it starts a reply.
+export const setSessionLogin = mutation({
+  args: { sessionId: v.id("claudeSessions"), login: SESSION_LOGIN },
+  handler: async (ctx, { sessionId, login }) => {
+    await requireTomId(ctx);
+    await getSessionOrThrow(ctx, sessionId);
+    await ctx.db.patch(sessionId, { login });
   },
 });
 
@@ -378,6 +409,7 @@ const SESSION_KIND = v.union(
   v.literal("adhoc"),
   v.literal("block"),
   v.literal("therapy"),
+  v.literal("persistent"),
 );
 
 /**
