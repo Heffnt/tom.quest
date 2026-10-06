@@ -1,10 +1,16 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   changedFiles,
   decideMode,
   FULL,
   GRAPH_EXTENSIONS,
+  groupResidentBytes,
   RELATED,
+  runMeasured,
+  skippedOf,
   slowestOf,
   WIDE_PATHS,
 } from "./tests-affected.mjs";
@@ -128,5 +134,42 @@ describe("tests-affected", () => {
       { file: "convex/tts.test.ts", seconds: 4 },
     ]);
     expect(slowestOf({}, 2)).toEqual([]);
+  });
+
+  it("counts the skipped and todo tests of a vitest report, and nothing for a report it cannot read", () => {
+    expect(skippedOf({ numPendingTests: 3, numTodoTests: 2 })).toBe(5);
+    expect(skippedOf({ numPendingTests: 0 })).toBe(0);
+    expect(skippedOf({})).toBeNull();
+  });
+
+  it("sums the resident memory of one process group from a /proc tree", () => {
+    const proc = mkdtempSync(path.join(tmpdir(), "tests-affected-proc-"));
+    try {
+      // Fields after the command: state, ppid, pgrp, session, 17 more, then rss
+      // (field 24). The command holds a space and a parenthesis on purpose.
+      const stat = (pid, pgrp, rssPages) =>
+        `${pid} (node (vitest) w) S 1 ${pgrp} ${pgrp} ${Array(17).fill(0).join(" ")} ${rssPages} 0 0\n`;
+      const write = (pid, text) => {
+        mkdirSync(path.join(proc, String(pid)));
+        writeFileSync(path.join(proc, String(pid), "stat"), text);
+      };
+      write(100, stat(100, 100, 10));
+      write(101, stat(101, 100, 20));
+      write(200, stat(200, 200, 1_000)); // another group: not counted
+      mkdirSync(path.join(proc, "self")); // not a process number: skipped
+      mkdirSync(path.join(proc, "102")); // exited before its stat was read
+      expect(groupResidentBytes(100, { proc, pageBytes: 4096 })).toBe(30 * 4096);
+      expect(groupResidentBytes(999, { proc })).toBe(0);
+    } finally {
+      rmSync(proc, { recursive: true, force: true });
+    }
+    expect(groupResidentBytes(1, { proc: path.join(tmpdir(), "no-such-proc-dir") })).toBeNull();
+  });
+
+  it.runIf(process.platform === "linux")("measures a real command's exit and its group's peak memory", async () => {
+    const ok = await runMeasured("sh", ["-c", "sleep 0.6"]);
+    expect(ok.ok).toBe(true);
+    expect(ok.peakBytes).toBeGreaterThan(0);
+    expect((await runMeasured("sh", ["-c", "exit 3"])).ok).toBe(false);
   });
 });

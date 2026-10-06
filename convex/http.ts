@@ -1552,6 +1552,11 @@ http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 /** `{ name: seconds }` when every value is a finite number, else null. The
  *  schema's `v.record(v.string(), v.number())` refuses anything else, and a
  *  refused mutation is a missing tests row. */
+/** A whole number of zero or more: what a count of tests or of MiB is. */
+function isCount(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 function numberRecord(value: unknown): Record<string, number> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const out: Record<string, number> = {};
@@ -1611,6 +1616,11 @@ const ttsTests = httpAction(async (ctx, request) => {
     ...(typeof b.files === "number" && Number.isFinite(b.files) ? { files: b.files } : {}),
     ...(durations === null ? {} : { durations }),
     ...(slowest === null ? {} : { slowest }),
+    // WHAT THE RUN SKIPPED AND THE MOST MEMORY IT HELD, in MiB. Dropped like
+    // the timing when not a count: a malformed number must not cost the gate
+    // its tests row.
+    ...(isCount(b.skipped) ? { skipped: b.skipped as number } : {}),
+    ...(isCount(b.peakMemoryMb) ? { peakMemoryMb: b.peakMemoryMb as number } : {}),
     // WHAT A JARVIS HEAD DOES TO THE REGISTRY of parts (shared/jarvis-events.mjs
     // registryDiffOf), which tom.quest/design draws. Dropped like the timing
     // when malformed, for the same reason.

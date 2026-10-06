@@ -572,6 +572,8 @@ describe("POST /tts/tests — the first check's own door", () => {
       files: 2,
       durations: { "static-boundaries": 31, "secret-scan": 11, tests: 142, e2e: 97, suite: 11.4 },
       slowest: [{ file: "convex/http.test.ts", seconds: 6.2 }],
+      skipped: 3,
+      peakMemoryMb: 2_150,
     });
     const row = (await testsRows(t))[0];
     expect(row.data).toMatchObject({
@@ -579,6 +581,8 @@ describe("POST /tts/tests — the first check's own door", () => {
       files: 2,
       durations: { tests: 142, suite: 11.4 },
       slowest: [{ file: "convex/http.test.ts", seconds: 6.2 }],
+      skipped: 3,
+      peakMemoryMb: 2_150,
     });
   });
 
@@ -594,12 +598,16 @@ describe("POST /tts/tests — the first check's own door", () => {
       files: "two",
       durations: { tests: "fast" },
       slowest: [{ file: "convex/http.test.ts" }],
+      skipped: -1,
+      peakMemoryMb: "a lot",
     });
     expect(response.status).toBe(200);
     const row = (await testsRows(t))[0];
     expect(row.data).toMatchObject({ ok: true });
     expect((row.data as Record<string, unknown>).durations).toBeUndefined();
     expect((row.data as Record<string, unknown>).files).toBeUndefined();
+    expect((row.data as Record<string, unknown>).skipped).toBeUndefined();
+    expect((row.data as Record<string, unknown>).peakMemoryMb).toBeUndefined();
   });
 });
 

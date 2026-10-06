@@ -730,6 +730,14 @@ export const internalRecordTests = internalMutation({
      *  vitest run inside the tests job. */
     durations: v.optional(v.record(v.string(), v.number())),
     slowest: v.optional(v.array(v.object({ file: v.string(), seconds: v.number() }))),
+    /** How many tests the run did not run (skipped and todo), and the most
+     *  resident memory the run's processes held together at any sample, in
+     *  MiB. With `durations`, the three facts that tell a red run under load
+     *  from a defect (docs: the tests page of the Jarvis redesign, section 8).
+     *  Posted by tom.quest's scripts/tests-report.mjs and by Jarvis's
+     *  pull-request-checks job. */
+    skipped: v.optional(v.number()),
+    peakMemoryMb: v.optional(v.number()),
     /** What a Jarvis head does to the registry of parts against its merge
      *  base with main: the ids added, removed and changed, and the head's row
      *  for each added or changed id (shared/jarvis-events.mjs registryDiffOf;
