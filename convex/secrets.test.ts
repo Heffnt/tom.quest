@@ -66,6 +66,8 @@ describe("secrets.set and secrets.list", () => {
     expect(listed).toHaveLength(1);
     expect(listed[0].name).toBe("HF_TOKEN");
     expect(typeof listed[0].setAt).toBe("number");
+    // The length of the value as stored, without the dropped trailing newline.
+    expect(listed[0].length).toBe(VALUE.length);
     expect(JSON.stringify(listed)).not.toContain(VALUE);
     // The pasted trailing newline is gone: it would split the env-file line.
     expect((await rows(t))[0].value).toBe(VALUE);
@@ -167,8 +169,9 @@ describe("the daemon's doors", () => {
     expect(after.name).toBe("HF_TOKEN");
     expect(after.setAt).toBe(Date.parse("2026-09-24T12:00:00Z"));
     expect(after.takenAt).toBe(Date.parse("2026-09-24T12:00:30Z"));
+    expect(after.valueLength).toBe(VALUE.length);
     expect(await tom.query(api.secrets.list, {})).toEqual([
-      { name: "HF_TOKEN", setAt: after.setAt, takenAt: after.takenAt },
+      { name: "HF_TOKEN", setAt: after.setAt, length: VALUE.length, takenAt: after.takenAt },
     ]);
     const again = (await (await pending(t)).json()) as { secrets: unknown[] };
     expect(again.secrets).toEqual([]);

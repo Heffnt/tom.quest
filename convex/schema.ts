@@ -2286,6 +2286,9 @@ export default defineSchema({
   secretMailbox: defineTable({
     name: v.string(),
     value: v.optional(v.string()),
+    // The value's length in characters, kept after the value is deleted so
+    // tom.quest/secrets can show what was delivered without showing it.
+    valueLength: v.optional(v.number()),
     setAt: v.number(),
     takenAt: v.optional(v.number()),
   }).index("by_name", ["name"]),
