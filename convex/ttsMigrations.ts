@@ -32,7 +32,8 @@
 //     which is what keeps a re-run (the verification step) runnable.
 
 import { v } from "convex/values";
-import { internalMutation } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
+import { FACT_BODY_METRICS, validateEvent } from "../shared/jarvis-events.mjs";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
@@ -1301,5 +1302,300 @@ export const internalScrubWorkerKeyRows = internalMutation({
       if (chunksRead >= SCRUB_CHUNKS_PER_STEP) break;
     }
     return await next({ agentIndex, phase: "chunks", cursor: null, afterSeq });
+  },
+});
+
+// ── The redesign's restart of the todos and the day facts (2026-10-06) ──────
+// Design section 7: the todos the old system holds are archived whole (they
+// still encode intent, and archived rows stay readable and searchable), and
+// the table restarts with the seven todos Tom listed on October 6. Design
+// sections 6 and 12.2: his day's facts are rows of the events table, kinds
+// meal, weight, training and did; the day log's typed items are copied there
+// once, and the day log's tables stay until the removal item.
+//
+// Order on prod: dry-run each walk, read its counts, then run it for real.
+// The archive and the seven are independent: the archive walk never touches
+// a row the restart inserted (isRestartTodo), so either may run first.
+
+/** The provenance line on each of the seven restart todos; the archive walk
+ *  and the insert's idempotence both find them by it. */
+export const RESTART_PROVENANCE = "Tom's list in the Jarvis redesign session, 2026-10-06";
+
+/** His seven todos of 2026-10-06, text exactly as he gave it. */
+export const RESTART_TODOS = [
+  "buy desk",
+  "buy couch",
+  "return Spectrum hardware",
+  "oil change",
+  "put up hangboard",
+  "bring bulk trash to dump",
+  "email professors to ask them to be my advisor",
+] as const;
+
+export const ARCHIVE_WHOLE_MIGRATION = "archive-todos-whole";
+export const RESTORE_ARCHIVED_MIGRATION = "restore-archived-todos";
+export const DAY_LOG_COPY_MIGRATION = "day-log-copy";
+
+function isRestartTodo(row: Doc<"todos">): boolean {
+  return row.source === "manual" && row.provenance === RESTART_PROVENANCE;
+}
+
+// ── Archive the old todos whole ─────────────────────────────────────────────
+// Every row but the seven goes to status archived, its prior status and
+// archivedAt kept in beforeArchive so internalRestoreArchivedTodos can put
+// them back. A row already archived keeps its archivedAt and is marked too,
+// so "archived whole" names one set: every row the restart found. updatedAt
+// is not bumped (a migration never reorders his pile). Counts:
+// "to-archive" is the rows this walk marks (2,655 expected on prod,
+// 2026-10-06), split by the status each had; "already-archived-whole" is a
+// re-run's rows; "restart-skipped" the seven.
+export const internalArchiveTodosWhole = internalMutation({
+  args: MIGRATION_ARGS,
+  handler: async (ctx, args): Promise<MigrationReport> => {
+    const now = Date.now();
+    const page: Counts = {
+      scanned: 0,
+      "to-archive": 0,
+      "active-to-archived": 0,
+      "waiting-to-archived": 0,
+      "done-to-archived": 0,
+      "archived-kept": 0,
+      "already-archived-whole": 0,
+      "restart-skipped": 0,
+    };
+    return await walkTodos(
+      ctx,
+      args,
+      ARCHIVE_WHOLE_MIGRATION,
+      internal.ttsMigrations.internalArchiveTodosWhole,
+      page,
+      async (row, dryRun) => {
+        if (isRestartTodo(row)) {
+          page["restart-skipped"]++;
+          return;
+        }
+        if (row.beforeArchive !== undefined) {
+          page["already-archived-whole"]++;
+          return;
+        }
+        page["to-archive"]++;
+        page[row.status === "archived" ? "archived-kept" : `${row.status}-to-archived`]++;
+        if (dryRun) return;
+        await ctx.db.patch(row._id, {
+          status: "archived",
+          archivedAt: row.status === "archived" ? row.archivedAt : now,
+          beforeArchive: {
+            at: now,
+            status: row.status,
+            ...(row.archivedAt === undefined ? {} : { archivedAt: row.archivedAt }),
+          },
+        });
+      },
+    );
+  },
+});
+
+// ── Undo the archive ────────────────────────────────────────────────────────
+// For each row the archive marked: status and archivedAt back to what
+// beforeArchive holds, and the mark cleared. A row whose status is no longer
+// archived was changed since by someone's hand; it is counted and left as it
+// is, mark and all.
+export const internalRestoreArchivedTodos = internalMutation({
+  args: MIGRATION_ARGS,
+  handler: async (ctx, args): Promise<MigrationReport> => {
+    const page: Counts = {
+      scanned: 0,
+      restored: 0,
+      "restored-to-active": 0,
+      "restored-to-waiting": 0,
+      "restored-to-done": 0,
+      "restored-to-archived": 0,
+      "changed-since": 0,
+      "not-archived-whole": 0,
+    };
+    return await walkTodos(
+      ctx,
+      args,
+      RESTORE_ARCHIVED_MIGRATION,
+      internal.ttsMigrations.internalRestoreArchivedTodos,
+      page,
+      async (row, dryRun) => {
+        const before = row.beforeArchive;
+        if (before === undefined) {
+          page["not-archived-whole"]++;
+          return;
+        }
+        if (row.status !== "archived") {
+          page["changed-since"]++;
+          return;
+        }
+        page.restored++;
+        page[`restored-to-${before.status}`]++;
+        if (dryRun) return;
+        await ctx.db.patch(row._id, {
+          status: before.status,
+          archivedAt: before.archivedAt,
+          beforeArchive: undefined,
+        });
+      },
+    );
+  },
+});
+
+// ── The seven ───────────────────────────────────────────────────────────────
+// Inserted as Tom's own active tasks: actor tom, so the work queue never takes
+// one (it takes only actor agent); readiness prepared, so no preparer writes
+// a brief for one; tomTouchedAt set, so the planner may not rewrite one.
+// Idempotent on (source manual, provenance RESTART_PROVENANCE, statement).
+export const internalAddRestartTodos = internalMutation({
+  args: { dryRun: v.optional(v.boolean()) },
+  handler: async (ctx, { dryRun }) => {
+    const manual = await ctx.db
+      .query("todos")
+      .withIndex("by_source", (q) => q.eq("source", "manual"))
+      .take(1000);
+    const have = new Map(
+      manual.filter(isRestartTodo).map((row) => [row.statement, row._id] as const),
+    );
+    const now = Date.now();
+    const inserted: Id<"todos">[] = [];
+    const existing: Id<"todos">[] = [];
+    let toInsert = 0;
+    for (const statement of RESTART_TODOS) {
+      const id = have.get(statement);
+      if (id !== undefined) {
+        existing.push(id);
+        continue;
+      }
+      toInsert++;
+      if (dryRun) continue;
+      const newId = await ctx.db.insert("todos", {
+        statement,
+        readiness: "prepared",
+        status: "active",
+        timingClass: "whenever",
+        kind: "task",
+        actor: "tom",
+        source: "manual",
+        provenance: RESTART_PROVENANCE,
+        tomTouchedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await logEvent(ctx, "created", newId, { source: "manual", provenance: RESTART_PROVENANCE });
+      inserted.push(newId);
+    }
+    return { dryRun: dryRun ?? false, toInsert, inserted, existing };
+  },
+});
+
+/** The seven as stored, in the order he gave them: the read-back. */
+export const internalRestartTodos = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const manual = await ctx.db
+      .query("todos")
+      .withIndex("by_source", (q) => q.eq("source", "manual"))
+      .take(1000);
+    const byStatement = new Map(manual.filter(isRestartTodo).map((row) => [row.statement, row] as const));
+    return RESTART_TODOS.map((statement) => {
+      const row = byStatement.get(statement);
+      return row === undefined
+        ? { statement, id: null, status: null }
+        : { statement, id: row._id, status: row.status, actor: row.actor ?? null, readiness: row.readiness };
+    });
+  },
+});
+
+// ── The day log's items into the events table ───────────────────────────────
+// One events row per dayLogItems row, its kind by what the item was:
+//   food                              → meal
+//   measurement of weight or waist    → weight
+//   measurement of a performance test → training (hang, added pull-up
+//                                       weight, sprint, quarter-mile loop)
+//   workout                           → training
+//   work, feeling, symptom            → did
+// data.dayLogType keeps the item's own type, so the mapping can be read back
+// and redone. `at` is when he said it (the entry's createdAt); data.day is
+// the day the fact belongs to. data.id ("day-log-item:<id>") is the
+// idempotence key on events.by_kind_data_id. Every row is checked by the
+// same validator POST /jarvis/event uses; a row it refuses is counted under
+// "refused-<kind>" and not written.
+type DayLogItem = Doc<"dayLogItems">;
+
+export function factKindOf(item: Pick<DayLogItem, "type" | "metric">): FactKind {
+  if (item.type === "food") return "meal";
+  if (item.type === "workout") return "training";
+  if (item.type === "measurement") {
+    return item.metric !== undefined && Object.hasOwn(FACT_BODY_METRICS, item.metric) ? "weight" : "training";
+  }
+  return "did";
+}
+
+type FactKind = "meal" | "weight" | "training" | "did";
+
+export function factDataOf(item: DayLogItem): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    id: `day-log-item:${item._id}`,
+    day: item.day,
+    summary: item.summary,
+    quote: item.quote,
+    dayLogType: item.type,
+  };
+  for (const field of ["metric", "value", "unit", "partOfDay", "activity", "bodyParts", "distanceMi", "durationMin"] as const) {
+    if (item[field] !== undefined) data[field] = item[field];
+  }
+  return data;
+}
+
+export const internalCopyDayLogToEvents = internalMutation({
+  args: MIGRATION_ARGS,
+  handler: async (ctx, args): Promise<MigrationReport> => {
+    const dryRun = args.dryRun ?? false;
+    const pageSize = args.pageSize ?? PAGE_SIZE;
+    const page: Counts = { scanned: 0, "to-copy": 0, "already-copied": 0, refused: 0 };
+    const result = await ctx.db
+      .query("dayLogItems")
+      .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
+    const now = Date.now();
+    for (const item of result.page) {
+      page.scanned++;
+      const kind = factKindOf(item);
+      const data = factDataOf(item);
+      const prior = await ctx.db
+        .query("events")
+        .withIndex("by_kind_data_id", (q) => q.eq("kind", kind).eq("data.id", data.id))
+        .first();
+      if (prior !== null) {
+        page["already-copied"]++;
+        continue;
+      }
+      const entry = await ctx.db.get(item.entryId);
+      const checked = validateEvent(
+        { kind, at: entry?.createdAt ?? item.createdAt, provenance: { user: "tom" }, data },
+        { now },
+      );
+      const event = "event" in checked ? checked.event : undefined;
+      if (!checked.ok || event === undefined) {
+        page.refused++;
+        page[`refused-${kind}`] = (page[`refused-${kind}`] ?? 0) + 1;
+        continue;
+      }
+      page["to-copy"]++;
+      page[`to-copy-${kind}`] = (page[`to-copy-${kind}`] ?? 0) + 1;
+      if (!dryRun) await ctx.db.insert("events", event);
+    }
+    const totals = addCounts(args.totals ?? {}, page);
+    if (result.isDone) {
+      await logEvent(ctx, dryRun ? `${DAY_LOG_COPY_MIGRATION}-dry-run` : `${DAY_LOG_COPY_MIGRATION}-migrated`, undefined, totals);
+      return { done: true, dryRun, page, totals, continueCursor: null };
+    }
+    await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalCopyDayLogToEvents, {
+      cursor: result.continueCursor,
+      dryRun,
+      pageSize,
+      totals,
+    });
+    return { done: false, dryRun, page, totals, continueCursor: result.continueCursor };
   },
 });
