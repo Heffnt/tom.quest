@@ -136,12 +136,12 @@ function factLine(row: Row): string | undefined {
 export const FACT_LATE_DAYS = 8;
 
 /** The day a fact belongs to: data.day, else the New York day he said it. */
-export function factDay(row: Row): string {
+function factDay(row: Row): string {
   const day = dataOf(row).day;
   return typeof day === "string" && isDayKey(day) ? day : newYorkDay(row.at);
 }
 
-export function isDayKey(value: string): boolean {
+function isDayKey(value: string): boolean {
   return DAY_KEY.test(value) && new Date(Date.parse(value)).toISOString().slice(0, 10) === value;
 }
 

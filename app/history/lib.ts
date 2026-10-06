@@ -4,7 +4,7 @@ import { addDays, displayDayKey } from "@/shared/clock.mjs";
 import type { Meal, Training, Weight } from "@/convex/historyRows";
 
 /** The body parts in the order the day log names them; any other sorts after. */
-export const BODY_PART_ORDER = [
+const BODY_PART_ORDER = [
   "fingers", "forearms", "biceps", "back", "shoulders", "chest", "triceps",
   "core", "hips", "quads", "hamstrings", "calves", "ankles", "full-body",
 ] as const;
@@ -44,7 +44,7 @@ export function partsOf(training: Training): string[] {
   return [training.activity ?? "unspecified"];
 }
 
-export type TrainingWeek = { week: string; parts: Array<{ part: string; sessions: number }>; total: number };
+type TrainingWeek = { week: string; parts: Array<{ part: string; sessions: number }>; total: number };
 
 /** Every week the days touch, oldest first, with sessions per body part. */
 export function trainingWeeks(trainings: Training[], days: string[]): TrainingWeek[] {
@@ -74,7 +74,7 @@ export function partsPresent(weeks: TrainingWeek[]): string[] {
   return [...seen].sort((a, b) => partRank(a) - partRank(b) || a.localeCompare(b));
 }
 
-export type MealDay = { day: string; meals: Meal[]; proteinG: number | null; calories: number | null };
+type MealDay = { day: string; meals: Meal[]; proteinG: number | null; calories: number | null };
 
 /** Each day's meals, and the protein and calories he gave that day (null when he gave none). */
 export function mealDays(meals: Meal[], days: string[]): MealDay[] {
@@ -93,7 +93,7 @@ export function mealDays(meals: Meal[], days: string[]): MealDay[] {
   });
 }
 
-export type WeightDay = { day: string; lb: number; readings: number };
+type WeightDay = { day: string; lb: number; readings: number };
 
 /** One point per day he weighed in: that day's mean. A day with none has no point. */
 export function weightDays(weights: Weight[]): WeightDay[] {
@@ -128,7 +128,7 @@ export function labelDays(days: string[], count = 6): string[] {
   return [...new Set(Array.from({ length: count }, (_, i) => days[Math.round(i * step)]!))];
 }
 
-export type RangePreset = { label: string; days: number };
+type RangePreset = { label: string; days: number };
 
 export const RANGE_PRESETS: RangePreset[] = [
   { label: "7 days", days: 7 },
