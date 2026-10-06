@@ -14,3 +14,10 @@ test("/observe lands on the /agents window view", async ({ page }) => {
   await page.goto("/observe");
   await expect(page).toHaveURL(/\/agents\?view=window$/);
 });
+
+// /sessions redirected to /agents from 2026-09-21 until the sessions page took
+// the path back on 2026-10-06.
+test("/sessions is the sessions page, not a redirect to /agents", async ({ page }) => {
+  await page.goto("/sessions?session=abc");
+  await expect(page).toHaveURL(/\/sessions\?session=abc$/);
+});
