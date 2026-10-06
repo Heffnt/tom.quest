@@ -16,7 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:built": "PLAYWRIGHT_WEBSERVER_COMMAND=\"pnpm start\" playwright test --workers=1",
+    "test:e2e:built": "CI=1 PLAYWRIGHT_WEBSERVER_COMMAND=\"pnpm start\" playwright test --workers=1",
     "test:affected": "node scripts/tests-affected.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:pages": "vitest run app/components/page-routes.test.ts && playwright test e2e/page-visibility.spec.ts",
