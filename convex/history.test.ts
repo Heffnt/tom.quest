@@ -154,5 +154,17 @@ describe("history.page", () => {
     expect(box).toHaveLength(1);
     expect(box[0]!.text).toMatch(/etc/);
     expect(page.actions.some((a) => a.kind === "job-ok")).toBe(false);
+    expect(new Set(page.actions.map((a) => a.id)).size).toBe(page.actions.length);
+  });
+
+  it("gives two machine-change lines of one day their own ids", async () => {
+    const t = convexTest({ schema, modules });
+    for (const minute of [0, 30]) {
+      await event(t, { kind: "box-change", at: at("2026-10-05", 12, minute), data: { source: "setup", why: "setup", user: "root", commit: "f9fcaf4", at: at("2026-10-05", 12, minute) } });
+    }
+    const page = await (await as(t, "tom")).query(api.history.page, RANGE);
+    const ids = page.actions.map((a) => a.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
   });
 });

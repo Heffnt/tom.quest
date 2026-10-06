@@ -308,16 +308,18 @@ export function boxChangeActions(changes: Row[], deploys: Row[]): Action[] {
     const deployFacts = new Set(deployData.map((d) => `box:deploy:${d.to || d.at}`));
     const facts = boxChangeLines(boxRows, deployData).filter((fact) => !deployFacts.has(fact.id));
     const at = Math.min(...rows.changes.map((row) => row.at));
-    for (const fact of facts) {
+    // Two facts of one day can share an id (two setup runs at one commit),
+    // so the position makes each line's id its own.
+    facts.forEach((fact, index) => {
       out.push({
-        id: `${day}:${fact.id}`,
+        id: `${day}:${index}:${fact.id}`,
         at,
         day,
         kind: "box-change",
         text: firstLine(fact.text),
         href: fact.url.replace(/^https:\/\/tom\.quest/, "") || null,
       });
-    }
+    });
   }
   return out;
 }
