@@ -888,38 +888,38 @@ describe("the silence alarm", () => {
     const t = convexTest({ schema, modules });
     // The alarm's line goes to the Jarvis thread, with a web push.
     vi.setSystemTime(AT);
-    await ok(t, "box-watch");
-    await ok(t, "box-state");
+    await ok(t, "agents-sweep");
+    await ok(t, "tick:pull-requests");
     // The heartbeat is the job-ok row itself (convex/jarvis/jobs.ts lastOkAt).
     const beats = await t.run(async (ctx) => ctx.db.query("events").collect());
     expect(beats.map((beat) => [beat.kind, beat.provenance.job, beat.at]).sort()).toEqual([
-      ["job-ok", "box-state", AT],
-      ["job-ok", "box-watch", AT],
+      ["job-ok", "agents-sweep", AT],
+      ["job-ok", "tick:pull-requests", AT],
     ]);
 
     // Two intervals and a bit: quiet, not yet silent.
     vi.setSystemTime(AT + 2 * 2 * 60_000 + 30_000);
     expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: [] });
 
-    // Past three of box-watch's two-minute intervals; box-state's ten are not.
+    // Past three of the sweep's two-minute intervals; the landing observer's five are not.
     vi.setSystemTime(AT + SILENCE_INTERVALS * 2 * 60_000 + 1_000);
-    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["box-watch"], recovered: [] });
+    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["agents-sweep"], recovered: [] });
     // Said once, however many passes find it still silent.
-    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["box-watch"], recovered: [] });
+    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["agents-sweep"], recovered: [] });
     const failed = await t.run(async (ctx) => ctx.db.query("events").collect());
-    expect(failed.filter((row) => row.kind === "job-failed").map((row) => row.subject)).toEqual(["box-watch:silent"]);
+    expect(failed.filter((row) => row.kind === "job-failed").map((row) => row.subject)).toEqual(["agents-sweep:silent"]);
     const lines = failed.filter((row) => row.kind === "silence-alarm");
-    expect(lines.map((row) => row.subject)).toEqual(["box-watch:silent"]);
+    expect(lines.map((row) => row.subject)).toEqual(["agents-sweep:silent"]);
     expect(lines[0].text).toContain("has not run clean for 6 minutes");
     const jobs = await scheduled(t);
     expect(jobs).toHaveLength(1);
     expect(jobs[0].name).toContain("sendToAll");
     expect(jobs[0].args[0]).toMatchObject({ title: "Silence alarm", body: lines[0].text, url: "/thread" });
 
-    await ok(t, "box-watch");
-    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: ["box-watch"] });
+    await ok(t, "agents-sweep");
+    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: ["agents-sweep"] });
     const recovered = await t.run(async (ctx) => ctx.db.query("events").collect());
-    expect(recovered.filter((row) => row.kind === "job-recovered").map((row) => row.subject)).toEqual(["box-watch:silent"]);
+    expect(recovered.filter((row) => row.kind === "job-recovered").map((row) => row.subject)).toEqual(["agents-sweep:silent"]);
     expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);
   });
 

@@ -194,15 +194,14 @@ async function recover(ctx: MutationCtx, job: string, key: string, since: number
 
 // ── The silence alarm ────────────────────────────────────────────────────────
 // The intervals are the schedule's (Jarvis worker/jobs/schedule.json):
-// box-watch every 2 minutes, box-state every 10, the sweep every 2; a tick
-// task's is its cadence in tick.ts TASKS.
+// the sweep every 2 minutes; a tick task's is its cadence in tick.ts TASKS.
+// box-watch and box-state are not watched: Jarvis removed box-watch on
+// October 6, 2026, and the nightly comparison of the box replaces it.
 
 /** The watched jobs: the name each reports under (the job-ok row's
  *  provenance.job, which lastOkAt reads), its interval, and, where that name
  *  is not plain words, the name the alarm's line prints. */
 const SILENCE_WATCH: readonly { job: string; everyMs: number; feeds: string; says?: string }[] = [
-  { job: "box-watch", everyMs: 2 * 60_000, feeds: "changes to the box" },
-  { job: "box-state", everyMs: 10 * 60_000, feeds: "the box's state comparison" },
   { job: "agents-sweep", everyMs: 2 * 60_000, feeds: "the agents' transcripts" },
   // The box's record-tick (Jarvis worker/jobs/record-tick.mjs), which starts
   // the record's timed tasks (tick.ts).
