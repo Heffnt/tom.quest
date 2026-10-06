@@ -3079,6 +3079,60 @@ const sessionsSecrets = httpAction(async (ctx, request) => {
 
 http.route({ path: "/sessions/secrets", method: "GET", handler: sessionsSecrets });
 
+// ── Sessions the box did not start, and the subagents sessions dispatch ─────
+// convex/sessionRegistration.ts holds what each writes. The SessionStart,
+// SubagentStart and SubagentStop hooks (Jarvis scripts/agent-hook.mjs) post
+// the first two; the session host reads the third.
+async function sessionsBody(request: Request): Promise<Record<string, unknown> | Response> {
+  try {
+    const body = await request.json();
+    return body !== null && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : jsonResponse(400, { error: "a JSON object is required" });
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+}
+
+const agentsSessionRegister = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const b = await sessionsBody(request);
+  if (b instanceof Response) return b;
+  try {
+    const result = await ctx.runMutation(internal.sessionRegistration.internalRegisterSession, b as never);
+    return jsonResponse(200, result);
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/agents/session-register", method: "POST", handler: agentsSessionRegister });
+
+const agentsSubagent = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const b = await sessionsBody(request);
+  if (b instanceof Response) return b;
+  try {
+    const result = await ctx.runMutation(internal.sessionRegistration.internalSubagentEvent, b as never);
+    return jsonResponse(200, result);
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/agents/subagent", method: "POST", handler: agentsSubagent });
+
+const sessionsRunningSubagents = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const subagents = await ctx.runQuery(internal.sessionRegistration.internalRunningSubagents, {});
+  return jsonResponse(200, { subagents });
+});
+
+http.route({ path: "/sessions/subagents/running", method: "GET", handler: sessionsRunningSubagents });
+
 const sessionsSecretsTaken = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
