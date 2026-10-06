@@ -68,6 +68,11 @@ export function bodyOf(env) {
     ...(env.RUN_URL ? { url: env.RUN_URL } : {}),
     ...(summary === null ? {} : { mode: summary.mode, files: summary.files }),
     ...(summary === null || !Array.isArray(summary.slowest) ? {} : { slowest: summary.slowest }),
+    // What the suite did not run and the most memory it held at once
+    // (scripts/tests-affected.mjs skippedOf and runMeasured). Absent from a
+    // summary whose run died before its report, and then absent here.
+    ...(summary !== null && Number.isFinite(summary.skipped) ? { skipped: summary.skipped } : {}),
+    ...(summary !== null && Number.isFinite(summary.peakMemoryMb) ? { peakMemoryMb: summary.peakMemoryMb } : {}),
     durations,
   };
 }

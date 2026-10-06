@@ -17,6 +17,14 @@ const green = {
 };
 
 describe("tests-report", () => {
+  it("carries the skipped count and the peak memory the tests job measured", () => {
+    const summary = { mode: "full", why: "main", files: 0, seconds: 70, ok: true, slowest: [], skipped: 4, peakMemoryMb: 2_150 };
+    expect(bodyOf({ ...green, SUMMARY: JSON.stringify(summary) })).toMatchObject({ skipped: 4, peakMemoryMb: 2_150 });
+    const without = bodyOf(green);
+    expect(without).not.toHaveProperty("skipped");
+    expect(without).not.toHaveProperty("peakMemoryMb");
+  });
+
   it("records every job's seconds, the mode and the file count on one body", () => {
     const body = bodyOf(green);
     expect(body).toMatchObject({

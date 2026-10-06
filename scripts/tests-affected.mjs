@@ -16,8 +16,8 @@
 //
 // Environment: none. Arguments: --base <sha>, --summary <path>, --mode <mode>.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -175,12 +175,95 @@ export function slowestOf(report, limit = 5) {
     .slice(0, limit);
 }
 
+/** The tests vitest did not run, from its json report: the skipped ones
+ *  (`it.skip`, a `skipIf` that held, a describe skipped whole) and the todo
+ *  ones. A green run that skipped a third of the suite is a narrower fact than
+ *  one that skipped none, so the row carries the count. Null when the report
+ *  has neither field, which is a run that died before writing it. */
+export function skippedOf(report) {
+  const pending = report?.numPendingTests;
+  const todo = report?.numTodoTests;
+  if (typeof pending !== "number" && typeof todo !== "number") return null;
+  return (typeof pending === "number" ? pending : 0) + (typeof todo === "number" ? todo : 0);
+}
+
+/** How long one memory sample waits for the next, in milliseconds. A worker
+ *  that rose and fell between two samples is missed; a quarter second is
+ *  short against a test file's run and costs one read of /proc. */
+const MEMORY_SAMPLE_MS = 250;
+
+/**
+ * The resident memory, in bytes, of every process in process group `group`
+ * at this moment: the sum of field 24 (rss, in pages) of /proc/<pid>/stat over
+ * the processes whose field 5 (pgrp) is `group`. Null where /proc cannot be
+ * read (macOS), so a laptop run reports no number rather than zero.
+ *
+ * THE WHOLE GROUP, NOT ONE PROCESS. vitest runs each test file in a worker
+ * process of its own, so the memory the suite takes is the sum over its
+ * workers; the largest single process (what GNU time's %M reports) can stay
+ * under a gigabyte while four of them together exhaust the machine.
+ *
+ * The command (field 2) is in parentheses and may hold spaces, so the fields
+ * after it are counted from its closing parenthesis.
+ */
+export function groupResidentBytes(group, { proc = "/proc", pageBytes = 4096 } = {}) {
+  let names;
+  try {
+    names = readdirSync(proc);
+  } catch {
+    return null;
+  }
+  let total = 0;
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    let stat;
+    try {
+      stat = readFileSync(path.join(proc, name, "stat"), "utf8");
+    } catch {
+      continue; // a process that exited between the listing and the read
+    }
+    const after = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    // after[0] is field 3 (state), so field 5 is after[2] and field 24 after[21].
+    if (Number(after[2]) !== group) continue;
+    const pages = Number(after[21]);
+    if (Number.isFinite(pages)) total += pages * pageBytes;
+  }
+  return total;
+}
+
+/**
+ * Run `command` with `args` in a process group of its own, output inherited,
+ * and answer `{ ok, peakBytes }`: whether it exited 0, and the most resident
+ * memory its group held at any sample (null where /proc cannot be read).
+ */
+export function runMeasured(command, args) {
+  return new Promise((resolve) => {
+    // detached: the child leads a new process group, which every worker it
+    // forks joins, and that group is what is summed.
+    const child = spawn(command, args, { stdio: "inherit", detached: true });
+    let peakBytes = null;
+    const sample = () => {
+      const bytes = groupResidentBytes(child.pid);
+      if (bytes !== null) peakBytes = Math.max(peakBytes ?? 0, bytes);
+    };
+    const timer = setInterval(sample, MEMORY_SAMPLE_MS);
+    child.on("error", () => {
+      clearInterval(timer);
+      resolve({ ok: false, peakBytes });
+    });
+    child.on("exit", (code) => {
+      clearInterval(timer);
+      resolve({ ok: code === 0, peakBytes });
+    });
+  });
+}
+
 function argOf(argv, name) {
   const at = argv.indexOf(name);
   return at === -1 || at + 1 >= argv.length ? null : argv[at + 1];
 }
 
-function main(argv) {
+async function main(argv) {
   // `--base ""` is what a push event hands this, since a push has no merge
   // base to name. Normalised to null HERE, before the diff is asked for, so
   // `git diff ...HEAD` is never run with an empty left side.
@@ -208,17 +291,15 @@ function main(argv) {
 
   process.stderr.write(`tests: ${decision.mode} — ${decision.why}\n`);
   const started = Date.now();
-  let ok = true;
-  try {
-    execFileSync("npx", args, { stdio: "inherit" });
-  } catch {
-    ok = false;
-  }
+  const { ok, peakBytes } = await runMeasured("npx", args);
   const seconds = Math.round((Date.now() - started) / 100) / 10;
 
   let slowest = [];
+  let skipped = null;
   try {
-    slowest = slowestOf(JSON.parse(readFileSync(reportPath, "utf8")));
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    slowest = slowestOf(report);
+    skipped = skippedOf(report);
   } catch {
     // A run that died before writing its report still has a mode, a file count
     // and a duration, and those are the facts the row is for.
@@ -232,10 +313,17 @@ function main(argv) {
     seconds,
     ok,
     slowest,
+    ...(skipped === null ? {} : { skipped }),
+    ...(peakBytes === null ? {} : { peakMemoryMb: Math.round(peakBytes / 1024 ** 2) }),
   };
   if (summaryPath !== null) writeFileSync(summaryPath, `${JSON.stringify(summary)}\n`);
   process.stderr.write(`tests: ${seconds}s, ${ok ? "green" : "red"}\n`);
   process.exit(ok ? 0 : 1);
 }
 
-if (process.argv[1] && process.argv[1].endsWith("tests-affected.mjs")) main(process.argv.slice(2));
+if (process.argv[1] && process.argv[1].endsWith("tests-affected.mjs")) {
+  main(process.argv.slice(2)).catch((error) => {
+    process.stderr.write(`tests-affected: ${error?.message ?? error}\n`);
+    process.exit(1);
+  });
+}
