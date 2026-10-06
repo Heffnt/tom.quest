@@ -1535,9 +1535,10 @@ http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 // read, and where a passed merge is recorded.
 
 // POST /tts/tests — the Guardrails run's own result, posted by the `report` job
-// once the other four have answered (scripts/tests-report.mjs). Body:
+// once the other four have answered (scripts/tests-report.mjs), or by the
+// box's checks job. Body:
 // { repo, sha, ok, detail?, url?, mode?, files?, durations?, slowest?,
-// registryDiff? }.
+// memory?, registryDiff? }.
 //
 // EITHER KEY: CI holds the narrow evals key and posts this fact, while the box
 // holds the worker key and posts its own local runs. The worker key is
@@ -1563,6 +1564,20 @@ function numberRecord(value: unknown): Record<string, number> | null {
   for (const [name, seconds] of Object.entries(value as Record<string, unknown>)) {
     if (typeof seconds !== "number" || !Number.isFinite(seconds)) return null;
     out[name] = seconds;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+/** `{ step: { peak, budget } }` when every entry is two finite numbers, else
+ *  null, for the reason numberRecord gives. */
+function memoryRecord(value: unknown): Record<string, { peak: number; budget: number }> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const out: Record<string, { peak: number; budget: number }> = {};
+  for (const [step, entry] of Object.entries(value as Record<string, unknown>)) {
+    const row = (entry ?? {}) as Record<string, unknown>;
+    if (typeof row.peak !== "number" || !Number.isFinite(row.peak)) return null;
+    if (typeof row.budget !== "number" || !Number.isFinite(row.budget)) return null;
+    out[step] = { peak: row.peak, budget: row.budget };
   }
   return Object.keys(out).length === 0 ? null : out;
 }
@@ -1600,6 +1615,7 @@ const ttsTests = httpAction(async (ctx, request) => {
   if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
   const durations = numberRecord(b.durations);
   const slowest = slowestFiles(b.slowest);
+  const memory = memoryRecord(b.memory);
   const registryDiff = registryDiffOf(b.registryDiff);
   const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
     repo: (b.repo as string).trim(),
@@ -1621,6 +1637,10 @@ const ttsTests = httpAction(async (ctx, request) => {
     // its tests row.
     ...(isCount(b.skipped) ? { skipped: b.skipped as number } : {}),
     ...(isCount(b.peakMemoryMb) ? { peakMemoryMb: b.peakMemoryMb as number } : {}),
+    // EACH STEP'S PEAK MEMORY beside its budget, from the box's run; the
+    // record's memory warning (convex/ttsMerge.ts slowConditions) reads it.
+    // Dropped like the timing when malformed.
+    ...(memory === null ? {} : { memory }),
     // WHAT A JARVIS HEAD DOES TO THE REGISTRY of parts (shared/jarvis-events.mjs
     // registryDiffOf), which tom.quest/design draws. Dropped like the timing
     // when malformed, for the same reason.

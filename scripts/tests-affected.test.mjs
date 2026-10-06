@@ -8,6 +8,7 @@ import {
   FULL,
   GRAPH_EXTENSIONS,
   groupResidentBytes,
+  optionsOf,
   RELATED,
   runMeasured,
   skippedOf,
@@ -18,6 +19,20 @@ import {
 const changed = (...paths) => paths.map((path) => ({ path, deleted: false }));
 
 describe("tests-affected", () => {
+  // The box's checks job sets the three in the environment and runs the
+  // package.json script, where no argument crosses pnpm; the workflow passes
+  // arguments. An argument wins over the variable, and an empty value of
+  // either is null, never an empty left side for git diff.
+  it("reads --base, --summary and --mode from the arguments, else from the environment", () => {
+    expect(optionsOf(["--base", "abc", "--summary", "/s.json", "--mode", "full"], { TESTS_BASE: "env" }))
+      .toEqual({ base: "abc", summaryPath: "/s.json", forced: "full" });
+    expect(optionsOf([], { TESTS_BASE: "abc", TESTS_SUMMARY: "/s.json", TESTS_MODE: "full" }))
+      .toEqual({ base: "abc", summaryPath: "/s.json", forced: "full" });
+    expect(optionsOf(["--base", ""], { TESTS_BASE: "abc" })).toEqual({ base: "abc", summaryPath: null, forced: null });
+    expect(optionsOf([], { TESTS_BASE: " ", TESTS_MODE: "" })).toEqual({ base: null, summaryPath: null, forced: null });
+    expect(optionsOf([], {})).toEqual({ base: null, summaryPath: null, forced: null });
+  });
+
   it("runs only the related files when every change is one the graph follows", () => {
     const decision = decideMode(changed("convex/ttsMerge.ts", "app/jarvis/page.tsx"), { base: "abc" });
     expect(decision.mode).toBe(RELATED);
