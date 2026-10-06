@@ -177,7 +177,7 @@ class ForgeRouteTest(unittest.TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(body["job_id"], "33")
         self.assertFalse(body["ready"])
-        self.assertEqual(body["base_url"], f"http://gpu-node-7:{forge.SERVE_PORT}/v1")
+        self.assertEqual(body["base_url"], f"http://gpu-node-7{forge.NODE_DOMAIN}:{forge.SERVE_PORT}/v1")
         argv = run.call_args.args[0]
         self.assertEqual(argv[0], "sbatch")
         self.assertFalse(run.call_args.kwargs.get("shell", False))
