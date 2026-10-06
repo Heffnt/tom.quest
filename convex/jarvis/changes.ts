@@ -34,8 +34,8 @@ import type { Doc } from "../_generated/dataModel";
 import { redactSecrets } from "../../shared/redact.mjs";
 import { jarvisAuth, jsonResponse } from "./auth";
 
-export const CHANGE_STATES = ["checking", "blocked", "landed", "rejected"] as const;
-export type ChangeState = (typeof CHANGE_STATES)[number];
+const CHANGE_STATES = ["checking", "blocked", "landed", "rejected"] as const;
+type ChangeState = (typeof CHANGE_STATES)[number];
 
 const TITLE_MAX = 300;
 const DESCRIPTION_MAX = 4_000;
