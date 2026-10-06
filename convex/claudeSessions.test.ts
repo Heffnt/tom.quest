@@ -2202,3 +2202,41 @@ describe("fable availability and usage limits on the daemon heartbeat", () => {
     expect((await stored())?.usageLimit).toEqual(limit);
   });
 });
+
+// The sessions page's reads and its login selector (design section 5.1).
+describe("the sessions page's record", () => {
+  it("lists persistent sessions apart from the rest, the rest by last activity", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const older = await createBasicSession(tom);
+    const newer = await createBasicSession(tom);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(older, { statusChangedAt: 9_000_000_000_000 });
+      await ctx.db.patch(newer, { kind: "persistent", title: "dump" });
+    });
+    const page = await tom.query(api.claudeSessions.sessionsPage, {});
+    expect(page.persistent.map((s) => s._id)).toEqual([newer]);
+    expect(page.others.map((s) => s._id)).toEqual([older]);
+  });
+
+  it("writes the login the selector chose, and the poll carries it to the session host", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await tom.mutation(api.claudeSessions.setSessionLogin, { sessionId, login: "gmail" });
+    const poll = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test-1",
+      daemonStartedAt: 1000,
+      activeAccount: "wpi",
+    });
+    expect((poll.sessions[0] as { login?: string }).login).toBe("gmail");
+  });
+
+  it("answers null for a link that names no session, rather than throwing", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    expect(await tom.query(api.claudeSessions.sessionByLink, { id: "not-an-id" })).toBeNull();
+    expect((await tom.query(api.claudeSessions.sessionByLink, { id: sessionId }))?._id).toBe(sessionId);
+  });
+});
