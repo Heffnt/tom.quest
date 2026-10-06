@@ -190,7 +190,7 @@ export function skippedOf(report) {
 /** How long one memory sample waits for the next, in milliseconds. A worker
  *  that rose and fell between two samples is missed; a quarter second is
  *  short against a test file's run and costs one read of /proc. */
-export const MEMORY_SAMPLE_MS = 250;
+const MEMORY_SAMPLE_MS = 250;
 
 /**
  * The resident memory, in bytes, of every process in process group `group`
