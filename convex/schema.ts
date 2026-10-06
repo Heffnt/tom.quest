@@ -1835,6 +1835,8 @@ export default defineSchema({
   })
     .index("by_status", ["status", "statusChangedAt"])
     .index("by_createdAt", ["createdAt"])
+    // The sessions page's list: the most recently active sessions first.
+    .index("by_statusChangedAt", ["statusChangedAt"])
     .index("by_kind_agenda_day", ["kind", "agendaDay"])
     // Per-todo session history: powers the "does a live session already
     // reference this todo" exclusion and the scheduler's backoff walk.
