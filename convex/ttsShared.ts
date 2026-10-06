@@ -788,7 +788,6 @@ export const SESSION_MODEL = v.union(
  * runs it under whichever login the box holds, as every session did before
  * the field existed. */
 export const SESSION_LOGINS = ["wpi", "gmail"] as const;
-export type SessionLogin = (typeof SESSION_LOGINS)[number];
 export const SESSION_LOGIN = v.union(...SESSION_LOGINS.map((l) => v.literal(l)));
 export function isSessionModel(name: unknown): name is SessionModel {
   return typeof name === "string" && Object.prototype.hasOwnProperty.call(SESSION_MODELS, name);
