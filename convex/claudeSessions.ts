@@ -92,26 +92,44 @@ export const getSession = query({
   },
 });
 
-// The sessions page's list (design section 5.1). The persistent sessions are
-// read by kind, so one that has lived for months is always there; the rest
-// are the 100 most recently active, by statusChangedAt.
-export const sessionsPage = query({
+// The sessions page's list (design section 5.1), in two reads. The persistent
+// sessions (design section 4.1: five of them, so the cap below is never
+// reached) come by kind, in the design's order and then by last activity; every
+// other session comes newest activity first, a page at a time, so the page can
+// reach every session the table holds.
+const PERSISTENT_ORDER = ["dump", "briefer", "builder", "observer", "todo"];
+
+function persistentRank(title: string): number {
+  const rank = PERSISTENT_ORDER.indexOf(title.trim().toLowerCase());
+  return rank === -1 ? PERSISTENT_ORDER.length : rank;
+}
+
+export const persistentSessions = query({
   args: {},
   handler: async (ctx) => {
     await requireTomId(ctx);
-    const persistent = await ctx.db
+    const rows = await ctx.db
       .query("claudeSessions")
       .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
-      .take(20);
-    const recent = await ctx.db
+      .take(50);
+    return rows.sort(
+      (a, b) =>
+        persistentRank(a.title) - persistentRank(b.title) ||
+        b.statusChangedAt - a.statusChangedAt,
+    );
+  },
+});
+
+export const recentSessions = query({
+  args: { paginationOpts: paginationOptsValidator },
+  handler: async (ctx, { paginationOpts }) => {
+    await requireTomId(ctx);
+    return await ctx.db
       .query("claudeSessions")
       .withIndex("by_statusChangedAt")
       .order("desc")
-      .take(100);
-    return {
-      persistent,
-      others: recent.filter((session) => session.kind !== "persistent"),
-    };
+      .filter((q) => q.neq(q.field("kind"), "persistent"))
+      .paginate(paginationOpts);
   },
 });
 
