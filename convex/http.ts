@@ -1568,19 +1568,36 @@ function numberRecord(value: unknown): Record<string, number> | null {
   return Object.keys(out).length === 0 ? null : out;
 }
 
-/** `{ step: { peak, resident?, budget } }` when every entry's numbers are
- *  finite, else null, for the reason numberRecord gives. */
-function memoryRecord(value: unknown): Record<string, { peak: number; resident?: number; budget: number }> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+/** `{ memory }` with `{ step: { peak, resident?, budget } }` when every entry
+ *  is a positive budget and non-negative finite measurements, `{ memory: null }`
+ *  when the field is absent, else `{ error }` naming the entry and what is
+ *  wrong with it. REFUSED, NOT DROPPED, unlike a malformed duration: the
+ *  memory field is written only by the box's own checks job from a scope it
+ *  measured, so a budget of zero or a negative byte count is a broken
+ *  measurement, and a row recorded without it would hide that. */
+function memoryRecord(value: unknown): { memory: Record<string, { peak: number; resident?: number; budget: number }> | null; error?: string } {
+  if (value === undefined) return { memory: null };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { memory: null, error: "memory must be an object of { peak, resident?, budget } per step" };
   const out: Record<string, { peak: number; resident?: number; budget: number }> = {};
   for (const [step, entry] of Object.entries(value as Record<string, unknown>)) {
     const row = (entry ?? {}) as Record<string, unknown>;
-    if (typeof row.peak !== "number" || !Number.isFinite(row.peak)) return null;
-    if (typeof row.budget !== "number" || !Number.isFinite(row.budget)) return null;
-    if (row.resident !== undefined && (typeof row.resident !== "number" || !Number.isFinite(row.resident))) return null;
-    out[step] = { peak: row.peak, ...(typeof row.resident === "number" ? { resident: row.resident } : {}), budget: row.budget };
+    const bytes = (name: string, required: boolean): number | undefined | string => {
+      const number = row[name];
+      if (number === undefined && !required) return undefined;
+      if (typeof number !== "number" || !Number.isFinite(number)) return `${name} must be a finite number of bytes`;
+      if (number < 0) return `${name} must not be negative`;
+      return number;
+    };
+    const peak = bytes("peak", true);
+    const resident = bytes("resident", false);
+    const budget = bytes("budget", true);
+    for (const problem of [peak, resident, budget]) {
+      if (typeof problem === "string") return { memory: null, error: `memory entry ${JSON.stringify(step)}: ${problem}` };
+    }
+    if ((budget as number) <= 0) return { memory: null, error: `memory entry ${JSON.stringify(step)}: budget must be positive` };
+    out[step] = { peak: peak as number, ...(resident === undefined ? {} : { resident: resident as number }), budget: budget as number };
   }
-  return Object.keys(out).length === 0 ? null : out;
+  return { memory: Object.keys(out).length === 0 ? null : out };
 }
 
 /** The slowest files, kept to five: the warning names them and a row is a
@@ -1616,7 +1633,8 @@ const ttsTests = httpAction(async (ctx, request) => {
   if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
   const durations = numberRecord(b.durations);
   const slowest = slowestFiles(b.slowest);
-  const memory = memoryRecord(b.memory);
+  const { memory, error: memoryError } = memoryRecord(b.memory);
+  if (memoryError !== undefined) return jsonResponse(400, { error: memoryError });
   const registryDiff = registryDiffOf(b.registryDiff);
   const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
     repo: (b.repo as string).trim(),
@@ -1640,7 +1658,7 @@ const ttsTests = httpAction(async (ctx, request) => {
     ...(isCount(b.peakMemoryMb) ? { peakMemoryMb: b.peakMemoryMb as number } : {}),
     // EACH STEP'S PEAK MEMORY beside its budget, from the box's run; the
     // record's memory warning (convex/ttsMerge.ts slowConditions) reads it.
-    // Dropped like the timing when malformed.
+    // A malformed one was refused above (memoryRecord).
     ...(memory === null ? {} : { memory }),
     // WHAT A JARVIS HEAD DOES TO THE REGISTRY of parts (shared/jarvis-events.mjs
     // registryDiffOf), which tom.quest/design draws. Dropped like the timing

@@ -707,9 +707,10 @@ export function slowConditions(timing: TestsTiming): {
         slowestClause(timing.slowest),
     });
   }
+  // Every entry has a positive budget and non-negative measurements: the
+  // route refuses any other (convex/http.ts memoryRecord).
   for (const [step, { peak, resident, budget }] of Object.entries(timing.memory ?? {})) {
     const held = typeof resident === "number" ? resident : peak;
-    if (!(budget > 0) || !(held >= 0)) continue;
     rows.push({
       key: memoryWarnKey(step),
       crossed: held > MEMORY_WARN_FRACTION * budget,

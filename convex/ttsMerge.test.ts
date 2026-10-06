@@ -754,7 +754,6 @@ describe("the timing warning — Tom's 2026-09-22 ruling", () => {
         // The peak counts files read; the resident number is what is held.
         build: { peak: 2_400_000_000, resident: 1_000_000_000, budget: 2_500_000_000 },
         e2e: { peak: 2_000_000_000, resident: 1_700_000_000, budget: 2_000_000_000 },
-        broken: { peak: 5, budget: 0 },
       },
     });
     expect(rows.map((row) => [row.key, row.crossed])).toEqual([
@@ -778,20 +777,25 @@ describe("the timing warning — Tom's 2026-09-22 ruling", () => {
     expect((failures[0].data as { error: string }).error).toContain("e2e step held 1812 MB");
     const row = (await testsRows(t)).find((entry) => (entry.data as { sha?: string }).sha === SHA);
     expect((row?.data as { memory?: unknown })?.memory).toEqual(over.memory);
-    // A malformed memory field is dropped, never the row.
-    const dropped = await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}c`, ok: true, memory: { e2e: { peak: "x" } } });
-    expect(dropped.status).toBe(200);
-    const droppedResident = await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}e`, ok: true, memory: { e2e: { peak: 1, resident: "x", budget: 2 } } });
-    expect(droppedResident.status).toBe(200);
-    const kept = await t.run(async (ctx) => {
-      const rows = [];
-      for (const sha of [`${SHA.slice(0, 39)}c`, `${SHA.slice(0, 39)}e`]) {
-        rows.push(...(await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", commitKey(REPO, sha))).collect()));
-      }
-      return rows;
-    });
-    expect(kept).toHaveLength(2);
-    expect(kept.every((entry) => (entry.data as { memory?: unknown }).memory === undefined)).toBe(true);
+    // A malformed memory entry is refused with its reason, and no row is
+    // recorded: the field comes only from the box's own measurement, and a
+    // row recorded without it would hide a broken one.
+    const refused = [
+      [{ e2e: { peak: "x" } }, 'memory entry "e2e": peak must be a finite number of bytes'],
+      [{ e2e: { peak: 1, resident: "x", budget: 2 } }, 'memory entry "e2e": resident must be a finite number of bytes'],
+      [{ build: { peak: 5, budget: 0 } }, 'memory entry "build": budget must be positive'],
+      [{ build: { peak: 5, resident: -1, budget: 10 } }, 'memory entry "build": resident must not be negative'],
+      [{ suite: { peak: -5, budget: 10 } }, 'memory entry "suite": peak must not be negative'],
+      [[1], "memory must be an object of { peak, resident?, budget } per step"],
+    ] as const;
+    for (const [memory, error] of refused) {
+      const answer = await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}c`, ok: true, memory });
+      expect(answer.status).toBe(400);
+      expect(await answer.json()).toEqual({ error });
+    }
+    const recorded = await t.run(async (ctx) =>
+      ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", commitKey(REPO, `${SHA.slice(0, 39)}c`))).collect());
+    expect(recorded).toHaveLength(0);
     const under = { memory: { e2e: { peak: 900_000_000, budget: 2_000_000_000 } } };
     await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}d`, ok: true, ...under });
     const oks = await jobRows(t, "job-ok");
