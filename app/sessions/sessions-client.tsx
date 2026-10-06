@@ -22,23 +22,23 @@ import SideColumn from "./components/side-column";
 import SessionList from "./components/session-list";
 import BackgroundColumn from "./components/background-column";
 import ContextPanel from "./components/context-panel";
-import LoginSelect, { asLogin } from "./components/login-select";
+import LoginSelect from "./components/login-select";
 import { LEFT_WIDTH, RIGHT_WIDTH, useSessionsLayout } from "./store";
 
-// The id shapes /agents accepts: a malformed id handed to a query throws
-// during render, so anything else reads as absent.
-const SESSION_ID_SHAPE = /^[a-z0-9]{20,40}$/;
+// The agent id grammar convex/agents.ts enforces: agents.get throws on any
+// other string, so anything else reads as absent. The session id needs no
+// shape test: sessionByLink answers null for a string that is not one.
 const RUN_ID_SHAPE =
   /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
 
 function readLink(sp: URLSearchParams): {
-  sessionId?: Id<"claudeSessions">;
+  sessionId?: string;
   agentId?: string;
 } {
   const session = sp.get("session");
   const agent = sp.get("agent");
   return {
-    sessionId: session && SESSION_ID_SHAPE.test(session) ? (session as Id<"claudeSessions">) : undefined,
+    sessionId: session === null || session === "" ? undefined : session,
     agentId: agent && RUN_ID_SHAPE.test(agent) ? agent : undefined,
   };
 }
@@ -68,7 +68,7 @@ export default function SessionsClient() {
   const list = useQuery(api.claudeSessions.sessionsPage, isTom ? {} : "skip");
   const health = useQuery(api.claudeSessions.getDaemonHealth, isTom ? {} : "skip");
   const session = useQuery(
-    api.claudeSessions.getSession,
+    api.claudeSessions.sessionByLink,
     isTom && sessionId !== undefined ? { id: sessionId } : "skip",
   );
   const layout = useSessionsLayout();
@@ -92,7 +92,7 @@ export default function SessionsClient() {
   // health: undefined = loading; null = the session host has never reported.
   const daemonStale =
     health !== undefined && (health === null || now - health.lastSeenAt > DAEMON_STALE_MS);
-  const boxLogin = asLogin(health?.activeAccount);
+  const boxLogin = health?.activeAccount;
 
   const center =
     agentId !== undefined ? (
@@ -117,10 +117,10 @@ export default function SessionsClient() {
           fullWidth
         />
       </div>
-    ) : sessionId !== undefined ? (
+    ) : session !== undefined && session !== null ? (
       <Agent
-        key={sessionId}
-        sessionId={sessionId}
+        key={session._id}
+        sessionId={session._id}
         depth={0}
         now={now}
         daemonStale={daemonStale}
@@ -131,15 +131,15 @@ export default function SessionsClient() {
         renderTop={renderContext}
         fullWidth
         controlsInComposer
-        extraControls={
-          session !== undefined && session !== null ? (
-            <LoginSelect session={session} boxLogin={boxLogin} />
-          ) : null
-        }
+        extraControls={<LoginSelect session={session} boxLogin={boxLogin} />}
       />
     ) : (
       <div className="flex-1 flex items-center justify-center text-sm text-text-faint">
-        no session open
+        {sessionId !== undefined && session === undefined
+          ? "loading session…"
+          : sessionId !== undefined
+            ? "this record does not hold that session"
+            : "no session open"}
       </div>
     );
 
@@ -159,7 +159,7 @@ export default function SessionsClient() {
           <SessionList
             persistent={list?.persistent}
             others={list?.others}
-            selectedId={sessionId}
+            selectedId={session?._id}
             now={now}
             boxLogin={boxLogin}
             onOpen={openSession}

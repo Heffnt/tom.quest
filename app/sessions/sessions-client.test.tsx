@@ -94,7 +94,7 @@ beforeEach(() => {
       ],
     },
     "claudeSessions:getDaemonHealth": { lastSeenAt: Date.now(), daemonStartedAt: 0, version: "x", activeAccount: "wpi" },
-    "claudeSessions:getSession": session({ _id: SESSION_ID, title: "newest reply", runId: RUN_ID }),
+    "claudeSessions:sessionByLink": session({ _id: SESSION_ID, title: "newest reply", runId: RUN_ID }),
     "agents:children": {
       items: [
         { runId: CHILD_RUN, kind: "subagent", status: "running", startedAt: 5_000, depth: 1, model: "claude-sonnet" },
@@ -215,5 +215,15 @@ describe("the context row", () => {
     expect(within(details).getByText("Bash, Read")).toBeTruthy();
     const text = details.textContent ?? "";
     expect(text.indexOf("first result")).toBeLessThan(text.indexOf("second result"));
+  });
+});
+
+describe("a link to a session the record does not hold", () => {
+  it("says so instead of throwing", () => {
+    convex.results["claudeSessions:sessionByLink"] = null;
+    search = new URLSearchParams("session=not-an-id");
+    render(<SessionsClient />);
+    expect(screen.getByText("this record does not hold that session")).toBeTruthy();
+    expect(screen.queryByTestId("transcript")).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 // The icon of each persistent session (design section 4.1), by the session's
-// name. A persistent session with another name gets the plain dot.
+// name. The five names are the whole set; any other title draws no icon.
 
 const PATHS: Record<string, React.ReactNode> = {
   // dump: a tray things are dropped into
@@ -41,7 +41,8 @@ const PATHS: Record<string, React.ReactNode> = {
 
 export default function PersistentIcon({ name }: { name: string }) {
   const key = name.trim().toLowerCase();
-  const path = PATHS[key] ?? <circle cx="10" cy="10" r="3" />;
+  const path = PATHS[key];
+  if (path === undefined) return null;
   return (
     <svg
       viewBox="0 0 20 20"
@@ -53,7 +54,7 @@ export default function PersistentIcon({ name }: { name: string }) {
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
-      data-icon={PATHS[key] === undefined ? "other" : key}
+      data-icon={key}
       className="shrink-0"
     >
       {path}

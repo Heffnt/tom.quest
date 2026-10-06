@@ -11,16 +11,13 @@ import Info from "@/app/jarvis/components/info";
 import { SESSION_LOGINS, type SessionLogin } from "@/convex/ttsShared";
 import type { Session } from "@/app/agents/lib";
 
-export function asLogin(value: unknown): SessionLogin | undefined {
-  return (SESSION_LOGINS as readonly unknown[]).includes(value) ? (value as SessionLogin) : undefined;
-}
-
 export default function LoginSelect({
   session,
   boxLogin,
 }: {
   session: Session;
-  boxLogin?: SessionLogin;
+  /** The session host's activeAccount: "wpi" or "gmail". */
+  boxLogin?: string;
 }) {
   const setSessionLogin = useMutation(api.claudeSessions.setSessionLogin);
   const [error, setError] = useState<string | null>(null);
@@ -40,10 +37,9 @@ export default function LoginSelect({
       <select
         aria-label="session login"
         value={value}
-        onChange={(e) => {
-          const next = asLogin(e.target.value);
-          if (next !== undefined) void change(next);
-        }}
+        // The options are SESSION_LOGINS and a disabled placeholder, so a
+        // change is always one of the two logins.
+        onChange={(e) => void change(e.target.value as SessionLogin)}
         className="shrink-0 bg-surface-alt border border-border rounded px-1.5 py-0.5 text-xs text-text focus:outline-none focus:border-accent hover:border-accent/60"
       >
         {value === "" && (
