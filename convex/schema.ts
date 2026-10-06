@@ -2208,6 +2208,36 @@ export default defineSchema({
     usedAt: v.optional(v.number()),
   }).index("by_match", ["sha256", "recipient", "channel"]),
 
+  // One row per branch headed for main of one of the box's own repositories
+  // (convex/jarvis/changes.ts): what replaces a pull request. The box's
+  // receiving hook opens it on a push of the branch (state checking); the
+  // box's gate job writes the checks' outcome on it (blocked, rejected) or the
+  // landing (landed). Keyed by repo and branch: a later push of the same
+  // branch moves the row to the new head, and a landed row stays as history.
+  changes: defineTable({
+    repo: v.string(),
+    branch: v.string(),
+    head: v.string(),
+    // main's commit when the head was checked.
+    base: v.optional(v.string()),
+    author: v.string(),
+    // The head commit message's first line, and the rest of it.
+    title: v.string(),
+    description: v.optional(v.string()),
+    // The pusher's "Complex: yes" trailer.
+    complex: v.boolean(),
+    // Whether the gate requires the audit for this head, and why.
+    auditRequired: v.optional(v.boolean()),
+    auditWhy: v.optional(v.string()),
+    state: v.union(v.literal("checking"), v.literal("blocked"), v.literal("landed"), v.literal("rejected")),
+    // Why blocked or rejected, in words; never content of the change.
+    reason: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    landedAt: v.optional(v.number()),
+  })
+    .index("by_repo_and_branch", ["repo", "branch"])
+    .index("by_updatedAt", ["updatedAt"]),
   dayLogEntries: defineTable({
     text: v.string(),
     createdAt: v.number(),

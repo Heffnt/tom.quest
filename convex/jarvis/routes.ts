@@ -21,6 +21,9 @@
 // posting its reply cannot mint the entry twice on its next run. Answers
 // { ok: true, id }.
 //
+// POST /jarvis/change and GET /jarvis/changes: the changes table, one row per
+// branch headed for main of the box's own repositories (changes.ts).
+//
 // POST /jarvis/standing-ruling and POST /jarvis/standing-ruling/new-information:
 // a standing ruling of Tom's and the new information that ends one
 // (rulings.ts holds both bodies).
@@ -44,6 +47,7 @@ import { getOpenTodos, postTodo, postTodoDone } from "./todos";
 import { channelRoute, digestRoute, needsYouRoute } from "./digest";
 import { tickRoute } from "./tick";
 import { pushRoute } from "../push";
+import { getChanges, postChange } from "./changes";
 import { DELEGATE_ONLY_KINDS, RECORD_ONLY_KINDS, STANDING_RULING_ONLY_KINDS, TOM_ONLY_KINDS } from "../../shared/jarvis-events.mjs";
 
 export const postEvent = httpAction(async (ctx, request) => {
@@ -141,4 +145,6 @@ export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/digest/channel", method: "GET", handler: channelRoute });
   http.route({ path: "/jarvis/tick", method: "POST", handler: tickRoute });
   http.route({ path: "/jarvis/push", method: "POST", handler: pushRoute });
+  http.route({ path: "/jarvis/change", method: "POST", handler: postChange }); // changes.ts
+  http.route({ path: "/jarvis/changes", method: "GET", handler: getChanges });
 }
