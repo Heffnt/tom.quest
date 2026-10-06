@@ -194,17 +194,32 @@ async function recover(ctx: MutationCtx, job: string, key: string, since: number
 
 // ── The silence alarm ────────────────────────────────────────────────────────
 // The intervals are the schedule's (Jarvis worker/jobs/schedule.json):
-// box-watch every 2 minutes, box-state every 10, the sweep every 2.
+// box-watch every 2 minutes, box-state every 10, the sweep every 2; a tick
+// task's is its cadence in tick.ts TASKS.
 
-/** The watched jobs: the name each reports under, and its interval. */
-const SILENCE_WATCH = [
+/** The watched jobs: the name each reports under (the job-ok row's
+ *  provenance.job, which lastOkAt reads), its interval, and, where that name
+ *  is not plain words, the name the alarm's line prints. */
+const SILENCE_WATCH: readonly { job: string; everyMs: number; feeds: string; says?: string }[] = [
   { job: "box-watch", everyMs: 2 * 60_000, feeds: "changes to the box" },
   { job: "box-state", everyMs: 10 * 60_000, feeds: "the box's state comparison" },
   { job: "agents-sweep", everyMs: 2 * 60_000, feeds: "the agents' transcripts" },
   // The box's record-tick (Jarvis worker/jobs/record-tick.mjs), which starts
   // the record's timed tasks (tick.ts).
   { job: "record-tick", everyMs: 60_000, feeds: "the record's timed work (calendar, pull requests, repeats)" },
-] as const;
+  // The landing observer: tick.ts's pull-requests task, which mirrors the
+  // open pull requests and lands each approved one whose gate turned green
+  // (observeMerge.refreshOpenPulls). Its job-ok rows carry provenance.job
+  // `tick:pull-requests` (tick.ts jobOf), so that is the name it is read
+  // under; record-tick can run clean every minute while this task fails or
+  // never finishes, so record-tick's watch does not cover it.
+  {
+    job: "tick:pull-requests",
+    everyMs: 5 * 60_000,
+    feeds: "the open pull requests and their landings",
+    says: "pull-requests task (the landing observer)",
+  },
+];
 
 /** The New York hour by which today's digest should be on the thread: an
  *  hour after it is due at 5, so one failed 05:00 run is retried once by the
@@ -254,7 +269,7 @@ export async function checkSilence(ctx: MutationCtx): Promise<{ silent: string[]
   const now = Date.now();
   const silent: string[] = [];
   const recovered: string[] = [];
-  for (const { job, everyMs, feeds } of SILENCE_WATCH) {
+  for (const { job, everyMs, feeds, says } of SILENCE_WATCH) {
     const okAt = await lastOkAt(ctx, job);
     if (okAt === null) continue;
     const key = `${job}:silent`;
@@ -263,7 +278,7 @@ export async function checkSilence(ctx: MutationCtx): Promise<{ silent: string[]
     if (quiet > SILENCE_INTERVALS * everyMs) {
       silent.push(job);
       if (standing !== null) continue;
-      const error = `The ${job} job has not run clean for ${minutesWord(quiet)} (it runs every ${minutesWord(everyMs)}), so ${feeds} after that are not reaching the record.`;
+      const error = `The ${says ?? `${job} job`} has not run clean for ${minutesWord(quiet)} (it runs every ${minutesWord(everyMs)}), so ${feeds} after that are not reaching the record.`;
       await raise(ctx, job, key, error, now);
       continue;
     }

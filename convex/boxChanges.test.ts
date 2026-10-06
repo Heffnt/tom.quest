@@ -922,4 +922,35 @@ describe("the silence alarm", () => {
     expect(recovered.filter((row) => row.kind === "job-recovered").map((row) => row.subject)).toEqual(["box-watch:silent"]);
     expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);
   });
+
+  // The landing observer is the record's pull-requests tick task; its job-ok
+  // is written by tick.ts complete, under provenance.job `tick:pull-requests`.
+  const landingObserverRanClean = async (t: ReturnType<typeof convexTest>, at: number) => {
+    vi.setSystemTime(at);
+    const leaseId = await t.run(async (ctx) =>
+      ctx.db.insert("events", { kind: "tick-started", at, provenance: { job: "tick:pull-requests" }, subject: "tick:pull-requests", data: {} }));
+    await t.mutation(internal.jarvis.tick.complete, { name: "pull-requests", leaseId });
+  };
+
+  it("raises the line when the landing observer's newest clean run is sixteen minutes old", async () => {
+    const t = convexTest({ schema, modules });
+    await landingObserverRanClean(t, AT);
+    vi.setSystemTime(AT + 16 * 60_000);
+    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: ["tick:pull-requests"], recovered: [] });
+    const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
+    const lines = rows.filter((row) => row.kind === "silence-alarm");
+    expect(lines.map((row) => row.subject)).toEqual(["tick:pull-requests:silent"]);
+    expect(lines[0].text).toBe(
+      "The pull-requests task (the landing observer) has not run clean for 16 minutes (it runs every 5 minutes), so the open pull requests and their landings after that are not reaching the record.",
+    );
+  });
+
+  it("stays quiet when the landing observer's newest clean run is four minutes old", async () => {
+    const t = convexTest({ schema, modules });
+    await landingObserverRanClean(t, AT);
+    vi.setSystemTime(AT + 4 * 60_000);
+    expect(await t.mutation(internal.ttsJobs.internalCheckSilence, {})).toEqual({ silent: [], recovered: [] });
+    const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
+    expect(rows.filter((row) => row.kind === "silence-alarm" || row.kind === "job-failed")).toEqual([]);
+  });
 });
