@@ -914,6 +914,59 @@ export const internalCreateSession = internalMutation({
   handler: async (ctx, args) => await createSessionFrom(ctx, args),
 });
 
+// The persistent sessions' setup pen (design section 4.1), run from the
+// Jarvis Box with the Convex CLI (Jarvis scripts/persistent-sessions.mjs).
+// One row per name, kind "persistent", titled by the name: an idle session on
+// no repository with NO opener, so its transcript starts with the first
+// message Tom (or the clock) sends, and its prompt is the Jarvis type file the
+// session host passes on every reply. Safe to rerun: a name that already has
+// a persistent row is left as it is, except that a given `login` is written
+// onto it (the sessions page's selector writes the same field).
+export const internalEnsurePersistentSessions = internalMutation({
+  args: {
+    names: v.array(v.string()),
+    login: v.optional(SESSION_LOGIN),
+  },
+  handler: async (ctx, { names, login }) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
+      .collect(); // bounded: five rows by design
+    const out: { name: string; id: Id<"claudeSessions">; created: boolean; status: string; login: string | null }[] = [];
+    for (const raw of names) {
+      const name = raw.trim();
+      if (!/^[a-z][a-z-]*$/.test(name)) throw new Error(`a persistent session's name is lower-case words, got: ${JSON.stringify(raw)}`);
+      const row = existing.find((session) => session.title === name);
+      if (row) {
+        if (login !== undefined && row.login !== login) await ctx.db.patch(row._id, { login });
+        out.push({ name, id: row._id, created: false, status: row.status, login: login ?? row.login ?? null });
+        continue;
+      }
+      const id = await ctx.db.insert("claudeSessions", {
+        title: name,
+        kind: "persistent",
+        repos: [],
+        repo: NO_REPO,
+        mode: "interactive",
+        // Opus, not the default session model: every session Tom talks
+        // with runs on Opus at least (his rule of October 6), and the host
+        // passes the explicit Opus id for this kind (Jarvis
+        // worker/session-host/persistent.mjs).
+        model: "opus",
+        ...(login !== undefined ? { login } : {}),
+        status: "idle",
+        statusChangedAt: now,
+        nextSeq: 0,
+        createdAt: now,
+      });
+      await logEvent(ctx, "session-created", undefined, { sessionId: id, title: name, kind: "persistent", mode: "interactive", repos: [] });
+      out.push({ name, id, created: true, status: "idle", login: login ?? null });
+    }
+    return out;
+  },
+});
+
 // The Friday job's pen (POST /tts/session; the lifeos update, phase 8). Kind
 // "weekly" and nothing else, and two facts the row must carry that no other
 // session has: the day the job ran for, and the todo ids the agenda's forks
