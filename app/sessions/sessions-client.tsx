@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useQuery } from "convex/react";
+import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/app/lib/auth";
@@ -65,7 +65,10 @@ export default function SessionsClient() {
   const search = useSearchParams().toString();
   const { sessionId, agentId } = useMemo(() => readLink(new URLSearchParams(search)), [search]);
 
-  const list = useQuery(api.claudeSessions.sessionsPage, isTom ? {} : "skip");
+  const persistent = useQuery(api.claudeSessions.persistentSessions, isTom ? {} : "skip");
+  const recent = usePaginatedQuery(api.claudeSessions.recentSessions, isTom ? {} : "skip", {
+    initialNumItems: 100,
+  });
   const health = useQuery(api.claudeSessions.getDaemonHealth, isTom ? {} : "skip");
   const session = useQuery(
     api.claudeSessions.sessionByLink,
@@ -157,8 +160,9 @@ export default function SessionsClient() {
           onResize={layout.setLeftWidth}
         >
           <SessionList
-            persistent={list?.persistent}
-            others={list?.others}
+            persistent={persistent}
+            others={recent.status === "LoadingFirstPage" ? undefined : recent.results}
+            onLoadOlder={recent.status === "CanLoadMore" ? () => recent.loadMore(100) : undefined}
             selectedId={session?._id}
             now={now}
             boxLogin={boxLogin}

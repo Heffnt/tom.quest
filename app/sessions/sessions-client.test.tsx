@@ -10,6 +10,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 const convex = vi.hoisted(() => ({
   results: {} as Record<string, unknown>,
   mutations: [] as string[],
+  canLoadMore: false,
+  loadMore: [] as number[],
 }));
 
 vi.mock("convex/react", async () => {
@@ -19,6 +21,14 @@ vi.mock("convex/react", async () => {
       if (args === "skip") return undefined;
       return convex.results[name(ref as never)];
     },
+    usePaginatedQuery: (ref: unknown, args: unknown) =>
+      args === "skip"
+        ? { results: [], status: "LoadingFirstPage", loadMore: () => {} }
+        : {
+            results: convex.results[name(ref as never)] ?? [],
+            status: convex.canLoadMore ? "CanLoadMore" : "Exhausted",
+            loadMore: (n: number) => convex.loadMore.push(n),
+          },
     useMutation: (ref: unknown) => async (args: unknown) => {
       convex.mutations.push(`${name(ref as never)}:${JSON.stringify(args)}`);
     },
@@ -82,17 +92,17 @@ function session(over: Record<string, unknown>) {
 
 beforeEach(() => {
   convex.mutations = [];
+  convex.canLoadMore = false;
+  convex.loadMore = [];
   convex.results = {
-    "claudeSessions:sessionsPage": {
-      persistent: [
-        session({ _id: "k17pppppppppppppppppppp1", title: "dump", kind: "persistent", login: "gmail" }),
-        session({ _id: "k17pppppppppppppppppppp2", title: "todo", kind: "persistent" }),
-      ],
-      others: [
-        session({ _id: "k17ooooooooooooooooooo01", title: "older reply", statusChangedAt: 2_000 }),
-        session({ _id: SESSION_ID, title: "newest reply", statusChangedAt: 9_000, runId: RUN_ID }),
-      ],
-    },
+    "claudeSessions:persistentSessions": [
+      session({ _id: "k17pppppppppppppppppppp1", title: "dump", kind: "persistent", login: "gmail" }),
+      session({ _id: "k17pppppppppppppppppppp2", title: "todo", kind: "persistent" }),
+    ],
+    "claudeSessions:recentSessions": [
+      session({ _id: SESSION_ID, title: "newest reply", statusChangedAt: 9_000, runId: RUN_ID }),
+      session({ _id: "k17ooooooooooooooooooo01", title: "older reply", statusChangedAt: 2_000 }),
+    ],
     "claudeSessions:getDaemonHealth": { lastSeenAt: Date.now(), daemonStartedAt: 0, version: "x", activeAccount: "wpi" },
     "claudeSessions:sessionByLink": session({ _id: SESSION_ID, title: "newest reply", runId: RUN_ID }),
     "agents:children": {
@@ -112,7 +122,14 @@ afterEach(() => {
 });
 
 describe("the sessions page", () => {
-  it("draws the persistent sessions with their icons above every other session, newest activity first", () => {
+  it("reads older sessions a hundred at a time while the record holds more", () => {
+    convex.canLoadMore = true;
+    render(<SessionsClient />);
+    fireEvent.click(screen.getByRole("button", { name: "Older sessions" }));
+    expect(convex.loadMore).toEqual([100]);
+  });
+
+  it("draws the persistent sessions with their icons above every other session, in the record's order", () => {
     render(<SessionsClient />);
     const persistent = screen.getByRole("region", { name: "Persistent" });
     const other = screen.getByRole("region", { name: "Other" });
@@ -180,7 +197,8 @@ describe("the sessions page", () => {
   });
 
   it("draws an empty Persistent group when no row is persistent", () => {
-    convex.results["claudeSessions:sessionsPage"] = { persistent: [], others: [] };
+    convex.results["claudeSessions:persistentSessions"] = [];
+    convex.results["claudeSessions:recentSessions"] = [];
     render(<SessionsClient />);
     const persistent = screen.getByRole("region", { name: "Persistent" });
     expect(within(persistent).getByText("none")).toBeTruthy();

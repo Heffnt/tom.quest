@@ -1,8 +1,9 @@
 "use client";
 
 // The sessions page's left column: the persistent sessions, each with its
-// icon, above every other session, newest activity first; and the button that
-// opens a new one.
+// icon, above every other session, newest activity first and a hundred at a
+// time; and the button that opens a new one. Both orders are the record's
+// (claudeSessions.persistentSessions, recentSessions).
 
 import { useState } from "react";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -67,9 +68,13 @@ export default function SessionList({
   now,
   boxLogin,
   onOpen,
+  onLoadOlder,
 }: {
   persistent: Session[] | undefined;
+  /** Newest activity first, as recentSessions pages them. */
   others: Session[] | undefined;
+  /** Present while older sessions remain to be read. */
+  onLoadOlder?: () => void;
   selectedId?: Id<"claudeSessions">;
   now: number;
   /** The login the box holds, which runs a session whose row names none. */
@@ -77,10 +82,6 @@ export default function SessionList({
   onOpen: (id: Id<"claudeSessions">) => void;
 }) {
   const [creating, setCreating] = useState(false);
-  const recent =
-    others === undefined
-      ? undefined
-      : [...others].sort((a, b) => b.statusChangedAt - a.statusChangedAt);
 
   const group = (title: string, rows: Session[] | undefined, icon: boolean) => (
     <section aria-label={title} className="py-1">
@@ -121,7 +122,18 @@ export default function SessionList({
         </button>
       </div>
       {group("Persistent", persistent, true)}
-      {group("Other", recent, false)}
+      {group("Other", others, false)}
+      {onLoadOlder !== undefined && (
+        <div className="px-3 py-2">
+          <button
+            type="button"
+            onClick={onLoadOlder}
+            className="w-full rounded px-3 py-1 text-xs border border-border text-text-muted hover:bg-surface-alt hover:text-text"
+          >
+            Older sessions
+          </button>
+        </div>
+      )}
       {creating && (
         <div
           role="dialog"
