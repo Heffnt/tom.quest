@@ -636,10 +636,15 @@ export const SUITE_SLOW_KEY = "guardrails:suite-slow";
 // box and work on optimizing them for this environment so that we dont run
 // into memory issues"). The box's checks job runs each step of a check inside
 // a systemd scope with a memory budget, so a step over its budget is killed by
-// itself; the row carries each step's peak bytes beside that budget. A peak
-// past MEMORY_WARN_FRACTION of its budget is the signal to raise the budget
-// before a kill, one keyed row per step, recovered when the step's next run
-// is back under it. Like the two durations, it fails nothing.
+// itself; the row carries each step's peak bytes beside that budget. The
+// peak is the scope's memory.peak, which counts the files the step read as
+// well (the kernel charges cached pages to the scope and reclaims them at the
+// budget, killing nothing), so the box also reports `resident`, the most
+// memory the step's processes held at once, the number a kill is about. The
+// warning reads resident where the row has it, else the peak: past
+// MEMORY_WARN_FRACTION of the budget is the signal to raise the budget before
+// a kill, one keyed row per step, recovered when the step's next run is back
+// under it. Like the two durations, it fails nothing.
 export const MEMORY_WARN_FRACTION = 0.8;
 /** The key a step's memory warning is filed under: `guardrails:memory-<step>`. */
 export const memoryWarnKey = (step: string) => `guardrails:memory-${step}`;
@@ -648,9 +653,9 @@ type TestsTiming = {
   durations?: Record<string, number>;
   mode?: string;
   slowest?: { file: string; seconds: number }[];
-  /** Each step's peak bytes beside its budget, as the box's checks job read
-   *  them from the step's scope. */
-  memory?: Record<string, { peak: number; budget: number }>;
+  /** Each step's peak bytes (and, where sampled, resident bytes) beside its
+   *  budget, as the box's checks job read them from the step's scope. */
+  memory?: Record<string, { peak: number; resident?: number; budget: number }>;
 };
 
 const megabytes = (bytes: number) => Math.round(bytes / 1024 / 1024);
@@ -702,14 +707,15 @@ export function slowConditions(timing: TestsTiming): {
         slowestClause(timing.slowest),
     });
   }
-  for (const [step, { peak, budget }] of Object.entries(timing.memory ?? {})) {
-    if (!(budget > 0) || !(peak >= 0)) continue;
+  for (const [step, { peak, resident, budget }] of Object.entries(timing.memory ?? {})) {
+    const held = typeof resident === "number" ? resident : peak;
+    if (!(budget > 0) || !(held >= 0)) continue;
     rows.push({
       key: memoryWarnKey(step),
-      crossed: peak > MEMORY_WARN_FRACTION * budget,
+      crossed: held > MEMORY_WARN_FRACTION * budget,
       error:
-        `the ${step} step peaked at ${megabytes(peak)} MB, over ${Math.round(MEMORY_WARN_FRACTION * 100)} percent ` +
-        `of its ${megabytes(budget)} MB budget; raise the budget before the step is killed at it`,
+        `the ${step} step held ${megabytes(held)} MB${typeof resident === "number" ? "" : " (its peak, files read included)"}, ` +
+        `over ${Math.round(MEMORY_WARN_FRACTION * 100)} percent of its ${megabytes(budget)} MB budget; raise the budget before the step is killed at it`,
     });
   }
   return rows;
@@ -766,9 +772,10 @@ export const internalRecordTests = internalMutation({
      *  pull-request-checks job. */
     skipped: v.optional(v.number()),
     peakMemoryMb: v.optional(v.number()),
-    /** Bytes per step of the box's run: the step's peak beside the budget its
-     *  scope was given (Jarvis worker/jobs/pull-request-checks.mjs). */
-    memory: v.optional(v.record(v.string(), v.object({ peak: v.number(), budget: v.number() }))),
+    /** Bytes per step of the box's run: the step's peak, its resident maximum
+     *  where sampled, and the budget its scope was given (Jarvis
+     *  worker/jobs/pull-request-checks.mjs). */
+    memory: v.optional(v.record(v.string(), v.object({ peak: v.number(), resident: v.optional(v.number()), budget: v.number() }))),
     /** What a Jarvis head does to the registry of parts against its merge
      *  base with main: the ids added, removed and changed, and the head's row
      *  for each added or changed id (shared/jarvis-events.mjs registryDiffOf;

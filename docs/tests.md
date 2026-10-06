@@ -137,10 +137,14 @@ run — so a suite that has been slow for a week is one row, not one per push, a
 a run back under the threshold writes the recovery that re-arms it.
 
 Memory is the third condition, from the box's own run (below): the row's
-`memory` field holds each step's peak bytes beside the budget its scope was
-given, and a peak past 80 percent of the budget is one `job-failed` row keyed
-`guardrails:memory-<step>`, recovered when the step's next run is back under
-it. It is the signal to raise a budget before a step is killed at it.
+`memory` field holds, per step, the scope's `memory.peak` (which counts the
+files the step read as well, since the kernel charges cached pages to the
+scope and reclaims them at the budget without killing anything), the resident
+maximum (the most memory the step's processes held at once, the number a
+kill is about), and the budget the scope was given. A resident number past 80
+percent of the budget is one `job-failed` row keyed `guardrails:memory-<step>`,
+recovered when the step's next run is back under it. It is the signal to raise
+a budget before a step is killed at it.
 
 ## The same checks on the box
 

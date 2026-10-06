@@ -1568,16 +1568,17 @@ function numberRecord(value: unknown): Record<string, number> | null {
   return Object.keys(out).length === 0 ? null : out;
 }
 
-/** `{ step: { peak, budget } }` when every entry is two finite numbers, else
- *  null, for the reason numberRecord gives. */
-function memoryRecord(value: unknown): Record<string, { peak: number; budget: number }> | null {
+/** `{ step: { peak, resident?, budget } }` when every entry's numbers are
+ *  finite, else null, for the reason numberRecord gives. */
+function memoryRecord(value: unknown): Record<string, { peak: number; resident?: number; budget: number }> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const out: Record<string, { peak: number; budget: number }> = {};
+  const out: Record<string, { peak: number; resident?: number; budget: number }> = {};
   for (const [step, entry] of Object.entries(value as Record<string, unknown>)) {
     const row = (entry ?? {}) as Record<string, unknown>;
     if (typeof row.peak !== "number" || !Number.isFinite(row.peak)) return null;
     if (typeof row.budget !== "number" || !Number.isFinite(row.budget)) return null;
-    out[step] = { peak: row.peak, budget: row.budget };
+    if (row.resident !== undefined && (typeof row.resident !== "number" || !Number.isFinite(row.resident))) return null;
+    out[step] = { peak: row.peak, ...(typeof row.resident === "number" ? { resident: row.resident } : {}), budget: row.budget };
   }
   return Object.keys(out).length === 0 ? null : out;
 }
