@@ -8,7 +8,9 @@ import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import Info from "@/app/jarvis/components/info";
-import { SESSION_LOGINS, type SessionLogin } from "@/convex/ttsShared";
+import { SESSION_LOGINS } from "@/convex/ttsShared";
+
+type SessionLogin = (typeof SESSION_LOGINS)[number];
 import type { Session } from "@/app/agents/lib";
 
 export default function LoginSelect({
