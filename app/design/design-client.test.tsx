@@ -33,6 +33,7 @@ const PART: PartAnswer = {
   ],
   state: { state: "in use", partial: false, row: { id: "u1", kind: "use", at: NOW - 60_000, text: "read the thread", agentId: null }, inUseDays: 30, workingAfterDays: 7 },
   rulings: [],
+  measures: { windowDays: 30, lastUse: { at: NOW - 60_000, what: "read the thread", by: "tom" } },
   cuts: [],
 } as PartAnswer;
 
@@ -139,7 +140,7 @@ describe("the design page", () => {
     const { container } = render(<DesignClient />);
     const aside = container.querySelector("aside")!;
     const sections = [...aside.querySelectorAll("h3")].map((h) => h.textContent);
-    expect(sections).toEqual(["the row", "its sentences", "its state"]);
+    expect(sections).toEqual(["the row", "its sentences", "its state", "its measures (30 days, agent-set)"]);
     expect(aside.textContent).toContain("“the fixture sentence”");
     expect(aside.textContent).toContain("writing.md#Pages#a page (not in the record)");
     expect(aside.textContent).toContain("governed by outcomes (agent-set)");

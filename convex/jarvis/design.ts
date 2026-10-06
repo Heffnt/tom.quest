@@ -12,6 +12,8 @@
 //          (read from the model-of-tom files the record holds), its state and
 //          the row behind it, and Tom's sentences in scope part:<id>, every
 //          read under one byte budget.
+//          Its measures: the last clean run, and failures, agent cost and
+//          last use over 30 days.
 //   diff   what a Jarvis head does to the registry: the `registryDiff` the
 //          box posts on the head's tests row, and the base registry it
 //          applies to.
@@ -38,8 +40,12 @@ import { IN_USE_DAYS, readPartStates, WORKING_AFTER_DAYS } from "./partStates";
 
 const SURFACE = "Design";
 const REGISTRY = "registry";
+const DAY_MS = 24 * 60 * 60 * 1000;
 /** A part's state whose reads were cut by the byte budget. */
 const PARTIAL = "partial";
+
+/** The window every measure counts over, agent-set. */
+const WINDOW_DAYS = 30;
 /**
  * THE PANEL'S READS SHARE ONE BYTE BUDGET (convex/readBudget.ts), the size of
  * the digest's gather (convex/ttsDigest.ts GATHER_BYTES): a row count does
@@ -55,8 +61,16 @@ const ALLOT = {
   stateRow: { what: "the row behind the state", bytes: MIB },
   serves: { what: "model-of-tom files", bytes: 2 * MIB },
   rulings: { what: "rulings in the part's scope", bytes: MIB },
+  use: { what: "use rows", bytes: MIB },
+  clean: { what: "clean-run rows", bytes: MIB },
+  failed: { what: "failed-run rows", bytes: 2 * MIB },
+  recovered: { what: "recovery rows", bytes: MIB },
+  runs: { what: "agent runs", bytes: 4 * MIB },
 } as const;
 const ALL = Number.POSITIVE_INFINITY;
+
+/** Whether the read named `what` was stopped with rows possibly left. */
+const wasCut = (budget: ReadBudget, what: string) => budget.cuts().some((cut) => cut.what === what);
 
 /** One registry row, in the fields this module and the page read. */
 export type RegistryRow = {
@@ -202,6 +216,93 @@ async function servesOf(ctx: QueryCtx, serves: Record<string, unknown>[], budget
   return out;
 }
 
+// ── One part's measures ─────────────────────────────────────────────────────
+
+async function measuresOf(ctx: QueryCtx, row: RegistryRow, now: number, budget: ReadBudget) {
+  const since = now - WINDOW_DAYS * DAY_MS;
+  // The newest use inside the window: a use older than it is no use in it.
+  const [lastUse] = await readWithin(
+    budget.allot(ALLOT.use.what, ALLOT.use.bytes),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_subject_at", (q) => q.eq("kind", "use").eq("subject", row.id).gte("at", since))
+      .order("desc"),
+    1,
+  );
+  const use =
+    lastUse === undefined
+      ? null
+      : { at: lastUse.at, what: String((lastUse.data as { what?: unknown }).what ?? ""), by: String((lastUse.data as { by?: unknown }).by ?? "") };
+  const job = row.schedule;
+  if (job === null || job === "") return { windowDays: WINDOW_DAYS, lastUse: use };
+
+  // A clean run is not counted: the job-ok hook keeps one row per job and
+  // deletes the older ones (convex/jarvis/jobs.ts), and the record keeps no
+  // other row per box-job run. What is measured is when it last ran clean,
+  // whenever that was; the panel shows it outside the 30-day measures.
+  const [clean] = await readWithin(
+    budget.allot(ALLOT.clean.what, ALLOT.clean.bytes),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_job_at", (q) => q.eq("kind", "job-ok").eq("provenance.job", job))
+      .order("desc"),
+    1,
+  );
+  const failed = await readWithin(
+    budget.allot(ALLOT.failed.what, ALLOT.failed.bytes),
+    ctx.db
+      .query("events")
+      .withIndex("by_kind_job_at", (q) => q.eq("kind", "job-failed").eq("provenance.job", job).gte("at", since))
+      .order("desc"),
+    ALL,
+  );
+  // A condition is open while no job-recovered row with its subject is newer
+  // than its newest failure. Each condition's recovery is looked up; one the
+  // budget left unread may be open, so it makes the measure partial.
+  const newestBySubject = new Map<string, number>();
+  for (const f of failed) {
+    if (f.subject !== undefined && !newestBySubject.has(f.subject)) newestBySubject.set(f.subject, f.at);
+  }
+  const recoveries = budget.allot(ALLOT.recovered.what, ALLOT.recovered.bytes);
+  const open: { subject: string; at: number }[] = [];
+  let unchecked = 0;
+  for (const [subject, at] of newestBySubject) {
+    const recovered = await getWithin(recoveries, () =>
+      ctx.db
+        .query("events")
+        .withIndex("by_kind_subject_at", (q) => q.eq("kind", "job-recovered").eq("subject", subject).gt("at", at))
+        .first(),
+    );
+    if (recovered === undefined) unchecked += 1;
+    else if (recovered === null) open.push({ subject, at });
+  }
+
+  // Agent cost: the runs the job's launcher started in the window (origin
+  // "cron:<job>", Jarvis worker/jobs/tts-lib.mjs), on the index by origin and
+  // start time, so other jobs' runs are not read.
+  const mine = await readWithin(
+    budget.allot(ALLOT.runs.what, ALLOT.runs.bytes),
+    ctx.db
+      .query("runs")
+      .withIndex("by_origin_started", (q) => q.eq("origin", `cron:${job}`).gte("startedAt", since))
+      .order("desc"),
+    ALL,
+  );
+  const priced = mine.filter((run) => typeof run.outcome?.costUsd === "number");
+  return {
+    windowDays: WINDOW_DAYS,
+    lastUse: use,
+    lastCleanRun: clean === undefined ? null : clean.at,
+    failures: { count: failed.length, partial: wasCut(budget, ALLOT.failed.what) || unchecked > 0, open },
+    cost: {
+      usd: priced.reduce((sum, run) => sum + (run.outcome?.costUsd ?? 0), 0),
+      runs: priced.length,
+      unpriced: mine.length - priced.length,
+      partial: wasCut(budget, ALLOT.runs.what),
+    },
+  };
+}
+
 // ── One part ────────────────────────────────────────────────────────────────
 
 /** One part's panel under `budget`; the query below passes PANEL_BYTES. */
@@ -248,6 +349,7 @@ async function readPart(ctx: QueryCtx, id: string, now: number, budget: ReadBudg
 
 
   const serves = await servesOf(ctx, row.serves, budget);
+  const measures = await measuresOf(ctx, row, now, budget);
   const cuts: ReadCut[] = budget.cuts().filter((cut) => cut.by === "bytes");
   return {
     registry: { subject: registry.subject, sha: registry.sha, at: registry.at },
@@ -256,6 +358,7 @@ async function readPart(ctx: QueryCtx, id: string, now: number, budget: ReadBudg
     serves,
     state,
     rulings,
+    measures,
     cuts,
   };
 }

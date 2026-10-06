@@ -2094,7 +2094,10 @@ export default defineSchema({
     // and on depth before it can range on time, so the same read there is a
     // loop over hosts times depths — and depth has no bound, so the loop's
     // bound would be a guess.
-    .index("by_started", ["startedAt"]),
+    .index("by_started", ["startedAt"])
+    // One job's runs in a window (convex/jarvis/design.ts, a part's agent
+    // cost): the launcher writes origin "cron:<job>".
+    .index("by_origin_started", ["origin", "startedAt"]),
 
   // Tom presses one control and a box job serves it: Convex holds no S3 reader
   // credential and no second request signer, so opening an old run is a

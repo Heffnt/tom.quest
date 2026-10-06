@@ -173,6 +173,46 @@ function PartPanelBody({
         </p>
       </Section>
 
+      {"lastCleanRun" in answer.measures && answer.measures.lastCleanRun !== undefined && (
+        <Section title="its last clean run">
+          <p className="font-mono text-[11px]">{answer.measures.lastCleanRun === null ? "none" : displayForm(answer.measures.lastCleanRun)}</p>
+        </Section>
+      )}
+
+      <Section title={`its measures (${answer.measures.windowDays} days, agent-set)`}>
+        <table className="w-full font-mono text-[11px]">
+          <tbody>
+            {"failures" in answer.measures && answer.measures.failures !== undefined && (
+              <tr>
+                <td className="pr-2 align-top text-text-faint">failures</td>
+                <td>
+                  {answer.measures.failures.count}
+                  {answer.measures.failures.partial && " partial"}
+                  {answer.measures.failures.open.map((c) => (
+                    <div key={c.subject}>
+                      open: {c.subject} since {displayForm(c.at)}
+                    </div>
+                  ))}
+                </td>
+              </tr>
+            )}
+            {"cost" in answer.measures && answer.measures.cost !== undefined && (
+              <tr>
+                <td className="pr-2 text-text-faint">agent cost</td>
+                <td>
+                  ${answer.measures.cost.usd.toFixed(2)} over {answer.measures.cost.runs} runs
+                  {answer.measures.cost.unpriced > 0 && `, ${answer.measures.cost.unpriced} unpriced`}
+                  {answer.measures.cost.partial && " partial"}
+                </td>
+              </tr>
+            )}
+            <tr>
+              <td className="pr-2 text-text-faint">last use</td>
+              <td>{answer.measures.lastUse === null ? "none" : `${displayForm(answer.measures.lastUse.at)} · ${answer.measures.lastUse.what} · ${answer.measures.lastUse.by}`}</td>
+            </tr>
+          </tbody>
+        </table>
+      </Section>
 
       {rulings.length > 0 && (
         <Section title="your sentences">
