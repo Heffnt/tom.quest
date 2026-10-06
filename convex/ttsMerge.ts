@@ -59,7 +59,7 @@ export const AUDIT_VERDICT = "audit-verdict";
 export const NIGHTLY_RUN = "nightly-run";
 /** The one repository whose main the nightly job pushes, and so the one a
  *  nightly-run row opens the gate for. */
-export const NIGHTLY_REPO = "WikiTom";
+const NIGHTLY_REPO = "WikiTom";
 /** The check's name when a nightly-run row opened the gate. */
 export const NIGHTLY_CHECK = "nightly";
 /** One merge, reported for objection. Its key keeps the `<repo>:<sha>`
