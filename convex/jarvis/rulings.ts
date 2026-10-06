@@ -140,14 +140,14 @@ type StandingRuling = {
   scope: string;
   sentence: string;
   question: string;
-  provenance: { threadMessageId?: string; session?: string };
+  provenance: { threadMessageId?: string; session?: string; page?: string };
 };
 
 type RulingData = {
   sentence: string;
   scope: string;
   question: string;
-  provenance: { threadMessageId?: string; session?: string };
+  provenance: { threadMessageId?: string; session?: string; page?: string };
   standing: boolean;
   supersededBy?: string;
 };
@@ -192,8 +192,70 @@ export async function standingRulings(
   return { rulings, complete: budget.cuts().length === 0 };
 }
 
+/** Where a standing ruling was said: a thread message of his, a session, or
+ *  his sentence typed on a part's panel of tom.quest/design. Only the
+ *  Tom-gated mutation jarvis/design.rule writes the last, so it rests on his
+ *  login; the worker-key route builds only the first two. */
+type RulingProvenance = { threadMessageId: string } | { session: string } | { page: "design" };
+
 /** Write one standing ruling, after checking the sentence against the thread
- *  message it cites. */
+ *  message it cites. The one code path for POST /jarvis/standing-ruling and
+ *  the design page. */
+export async function writeStandingRuling(
+  ctx: MutationCtx,
+  args: { sentence: string; scope: string; question: string; provenance: RulingProvenance },
+): Promise<{ id: Id<"events">; duplicate: boolean }> {
+  // His words exactly as posted: not trimmed or normalised, so what is
+  // checked against the thread message, hashed and stored are the same
+  // bytes, and a space the message does not hold is refused.
+  const sentence = args.sentence;
+  if (sentence.trim() === "") throw new Error("sentence (non-empty string) required");
+  if ("threadMessageId" in args.provenance) {
+    const id = ctx.db.normalizeId("events", args.provenance.threadMessageId);
+    const message = id === null ? null : await ctx.db.get(id);
+    if (message === null || message.kind !== "thread-message") {
+      throw new Error(`no thread message ${args.provenance.threadMessageId} in the record`);
+    }
+    if (!(message.text ?? "").includes(sentence)) {
+      throw new Error("the sentence does not occur verbatim in the thread message it cites");
+    }
+  }
+  // A RETRY IS NOT A SECOND RULING. A worker that lost the answer to a
+  // write posts it again; a second row would stay standing after the first
+  // is superseded. The key is where he said it, the scope, the sentence's
+  // bytes and the question it answered (as stored), so the retry finds the
+  // first row (standing or not)
+  // on events.by_kind_data_id and is answered with its id. The parts are
+  // JSON-encoded as one array before hashing: a session id and a scope may
+  // each hold a colon, and joined by one they could spell another ruling's
+  // key ("a" with "part:all" and "a:part" with "all"). One sentence that
+  // answers two questions is two rulings, so the question is in the key.
+  const question = args.question.trim();
+  // A sentence typed on the design page carries its write time in the key:
+  // Convex runs a client's mutation once, so the page needs no retry key,
+  // and his sentence typed again after a later one replaced it must stand
+  // again rather than answer the superseded row.
+  const source = "threadMessageId" in args.provenance
+    ? ["thread", args.provenance.threadMessageId]
+    : "session" in args.provenance
+      ? ["session", args.provenance.session]
+      : ["page", args.provenance.page, String(Date.now())];
+  const key = `ruling:${await sha256Hex(JSON.stringify([...source, args.scope, sentence, question]))}`;
+  const earlier = await ctx.db
+    .query("events")
+    .withIndex("by_kind_data_id", (q) => q.eq("kind", RULING).eq("data.id", key))
+    .first();
+  if (earlier !== null) return { id: earlier._id, duplicate: true };
+  const id = await insertEvent(ctx, {
+    kind: RULING,
+    subject: args.scope,
+    provenance: "session" in args.provenance ? { session: args.provenance.session } : "page" in args.provenance ? { user: "tom" } : {},
+    data: { id: key, sentence, scope: args.scope, question, provenance: args.provenance, standing: true },
+    text: sentence,
+  });
+  return { id, duplicate: false };
+}
+
 export const recordStanding = internalMutation({
   args: {
     sentence: v.string(),
@@ -201,51 +263,7 @@ export const recordStanding = internalMutation({
     question: v.string(),
     provenance: v.union(v.object({ threadMessageId: v.string() }), v.object({ session: v.string() })),
   },
-  handler: async (ctx, args): Promise<{ id: Id<"events">; duplicate: boolean }> => {
-    // His words exactly as posted: not trimmed or normalised, so what is
-    // checked against the thread message, hashed and stored are the same
-    // bytes, and a space the message does not hold is refused.
-    const sentence = args.sentence;
-    if (sentence.trim() === "") throw new Error("sentence (non-empty string) required");
-    if ("threadMessageId" in args.provenance) {
-      const id = ctx.db.normalizeId("events", args.provenance.threadMessageId);
-      const message = id === null ? null : await ctx.db.get(id);
-      if (message === null || message.kind !== "thread-message") {
-        throw new Error(`no thread message ${args.provenance.threadMessageId} in the record`);
-      }
-      if (!(message.text ?? "").includes(sentence)) {
-        throw new Error("the sentence does not occur verbatim in the thread message it cites");
-      }
-    }
-    // A RETRY IS NOT A SECOND RULING. A worker that lost the answer to a
-    // write posts it again; a second row would stay standing after the first
-    // is superseded. The key is where he said it, the scope, the sentence's
-    // bytes and the question it answered (as stored), so the retry finds the
-    // first row (standing or not)
-    // on events.by_kind_data_id and is answered with its id. The parts are
-    // JSON-encoded as one array before hashing: a session id and a scope may
-    // each hold a colon, and joined by one they could spell another ruling's
-    // key ("a" with "part:all" and "a:part" with "all"). One sentence that
-    // answers two questions is two rulings, so the question is in the key.
-    const question = args.question.trim();
-    const source = "threadMessageId" in args.provenance
-      ? ["thread", args.provenance.threadMessageId]
-      : ["session", args.provenance.session];
-    const key = `ruling:${await sha256Hex(JSON.stringify([...source, args.scope, sentence, question]))}`;
-    const earlier = await ctx.db
-      .query("events")
-      .withIndex("by_kind_data_id", (q) => q.eq("kind", RULING).eq("data.id", key))
-      .first();
-    if (earlier !== null) return { id: earlier._id, duplicate: true };
-    const id = await insertEvent(ctx, {
-      kind: RULING,
-      subject: args.scope,
-      provenance: "session" in args.provenance ? { session: args.provenance.session } : {},
-      data: { id: key, sentence, scope: args.scope, question, provenance: args.provenance, standing: true },
-      text: sentence,
-    });
-    return { id, duplicate: false };
-  },
+  handler: async (ctx, args): Promise<{ id: Id<"events">; duplicate: boolean }> => await writeStandingRuling(ctx, args),
 });
 
 /** The digest's sentence for a ruling that no longer stands. */
@@ -265,7 +283,7 @@ function supersededStatement(ruling: Doc<"events">, type: NewInformationType, by
 
 /** Record new information against one standing ruling: it stops standing,
  *  names the row that ended it, and goes on the next digest. */
-async function supersede(
+export async function supersede(
   ctx: MutationCtx,
   { rulingId, type, id }: { rulingId: string; type: NewInformationType; id: string },
 ): Promise<{ rulingId: string; supersededBy: string; duplicate?: true }> {

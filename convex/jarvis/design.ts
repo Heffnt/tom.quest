@@ -20,6 +20,9 @@
 //          applies to.
 //   confirm  "this is right" on an explanation: one `explanation-confirmed`
 //          row, a type only Tom's mutation writes.
+//   rule     his sentence on a part: one standing ruling in scope part:<id>,
+//          through the same function as POST /jarvis/standing-ruling, which
+//          supersedes the ruling that stood in that scope before it.
 //
 // A STORED REGISTRY ROW IS A CHECKED ONE: POST /jarvis/event, the one route
 // that writes the type, runs shared/jarvis-events.mjs validateEvent on it,
@@ -41,6 +44,7 @@ import { getWithin, MIB, ReadBudget, readWithin } from "../readBudget";
 import type { ReadCut } from "../readBudget";
 import { insertEvent } from "./record";
 import { IN_USE_DAYS, readPartStates, WORKING_AFTER_DAYS } from "./partStates";
+import { supersede, writeStandingRuling } from "./rulings";
 
 const SURFACE = "Design";
 const REGISTRY = "registry";
@@ -77,6 +81,8 @@ const ALLOT = {
   runs: { what: "agent runs", bytes: 4 * MIB },
 } as const;
 const ALL = Number.POSITIVE_INFINITY;
+/** What "your sentence" reads of its scope's standing rulings to end them. */
+const STANDING_BYTES = 4 * MIB;
 
 /** Whether the read named `what` was stopped with rows possibly left. */
 const wasCut = (budget: ReadBudget, what: string) => budget.cuts().some((cut) => cut.what === what);
@@ -479,3 +485,38 @@ export const confirm = mutation({
   },
 });
 
+/** His sentence on a part: a standing ruling in scope part:<id>, which
+ *  supersedes every ruling that stood in that scope. Every standing row of
+ *  the scope is read, not a first page: a part: ruling may also be written
+ *  by POST /jarvis/standing-ruling, which supersedes nothing, so more than
+ *  one can stand in a scope and the newest sentence ends them all. */
+export const rule = mutation({
+  args: { part: v.string(), sentence: v.string() },
+  handler: async (ctx, { part, sentence }) => {
+    await requireTom(ctx, SURFACE);
+    if (sentence.trim() === "") throw new Error("a sentence is required");
+    const newest = await newestRegistry(ctx);
+    const row = newest === null ? undefined : registryOf(newest).parts.find((p) => p.id === part);
+    if (row === undefined) throw new Error(`no part ${part} in the deployed registry`);
+    const scope = `part:${part}`;
+    const read = ReadBudget.of(STANDING_BYTES);
+    const standing = await readWithin(
+      read,
+      ctx.db
+        .query("events")
+        .withIndex("by_kind_subject_standing_at", (q) => q.eq("kind", "ruling").eq("subject", scope).eq("data.standing", true)),
+      ALL,
+    );
+    // Every standing row is ended or none is: a write that left some standing
+    // would contradict the sentence it records.
+    if (read.cuts().length > 0) throw new Error(`the standing rulings of ${scope} are more than one write can read; nothing was written`);
+    const { id } = await writeStandingRuling(ctx, {
+      sentence,
+      scope,
+      question: `what working well means for ${row.name}`,
+      provenance: { page: "design" },
+    });
+    for (const old of standing) await supersede(ctx, { rulingId: old._id, type: "sentence", id });
+    return { id };
+  },
+});

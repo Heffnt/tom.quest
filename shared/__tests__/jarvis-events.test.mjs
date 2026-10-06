@@ -611,6 +611,12 @@ describe("a ruling event", () => {
     expect(validateEvent(ruling({ provenance: { session: "" } })).error).toContain("data.provenance");
   });
 
+  it("takes a sentence typed on the design page, and no other page", () => {
+    expect(validateEvent(ruling({ provenance: { page: "design" } })).ok).toBe(true);
+    expect(validateEvent(ruling({ provenance: { page: "thread" } })).error).toContain("data.provenance");
+    expect(validateEvent(ruling({ provenance: { page: "design", session: "a" } })).error).toContain("data.provenance");
+  });
+
   it("names the key a retry is matched on", () => {
     expect(validateEvent(ruling({ id: undefined })).error).toContain("data.id");
     expect(validateEvent(ruling({ id: "thread:k17abc" })).error).toContain("data.id");

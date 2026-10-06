@@ -47,12 +47,16 @@ function PartPanelBody({
   answer,
   onSelect,
   onConfirm,
+  onRule,
 }: {
   answer: PartAnswer;
   onSelect: (id: string) => void;
   onConfirm: (explanationId: string) => Promise<unknown>;
+  onRule: (sentence: string) => Promise<unknown>;
 }) {
   const { row, names, serves, state, rulings, registry, cuts } = answer;
+  const [sentence, setSentence] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const { explanation } = answer;
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
@@ -221,8 +225,8 @@ function PartPanelBody({
         </table>
       </Section>
 
-      {rulings.length > 0 && (
-        <Section title="your sentences">
+      <Section title="your sentences">
+        {rulings.length > 0 && (
           <ul className="mb-2 space-y-1">
             {rulings.map((r) => (
               <li key={r.id} className={r.standing ? "text-text" : "text-text-faint"}>
@@ -234,8 +238,32 @@ function PartPanelBody({
               </li>
             ))}
           </ul>
-        </Section>
-      )}
+        )}
+        <form
+          className="flex gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const text = sentence.trim();
+            if (text === "") return;
+            setError(null);
+            onRule(text).then(
+              () => setSentence(""),
+              (err: unknown) => setError(err instanceof Error ? err.message : String(err)),
+            );
+          }}
+        >
+          <input
+            value={sentence}
+            onChange={(e) => setSentence(e.target.value)}
+            placeholder={`What working well means for ${row.name}`}
+            className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-[12px] text-text placeholder:text-text-faint"
+          />
+          <button type="submit" className="rounded border border-border px-2 py-1 text-[12px] text-text-muted hover:border-text-faint hover:text-text">
+            Send
+          </button>
+        </form>
+        {error !== null && <p className="mt-1 text-[11px] text-error">{error}</p>}
+            </Section>
 
       {explanation !== null && (
         <Section title="its explanation">
@@ -280,6 +308,7 @@ function PartPanelBody({
 export default function PartPanel({ id, onClose, onSelect }: { id: string; onClose: () => void; onSelect: (id: string) => void }) {
   const answer = useQuery(api.jarvis.design.part, { id });
   const confirm = useMutation(api.jarvis.design.confirm);
+  const rule = useMutation(api.jarvis.design.rule);
   return (
     <aside className="fixed inset-0 z-40 flex flex-col bg-surface shadow-2xl sm:left-auto sm:w-[36rem] sm:border-l sm:border-border">
       <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2">
@@ -302,6 +331,7 @@ export default function PartPanel({ id, onClose, onSelect }: { id: string; onClo
             answer={answer}
             onSelect={onSelect}
             onConfirm={(explanationId) => confirm({ part: id, explanationId })}
+            onRule={(sentence) => rule({ part: id, sentence })}
           />
         )}
       </div>

@@ -3,6 +3,8 @@
 // panel's sections in order, an empty one left out; ?head= draws the
 // registry diff.
 // "This is right" calls design.confirm.
+// The sentence field calls design.rule, and a panel opened for another part
+// starts with an empty field.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -142,7 +144,7 @@ describe("the design page", () => {
     const { container } = render(<DesignClient />);
     const aside = container.querySelector("aside")!;
     const sections = [...aside.querySelectorAll("h3")].map((h) => h.textContent);
-    expect(sections).toEqual(["the row", "its sentences", "its state", "its measures (30 days, agent-set)"]);
+    expect(sections).toEqual(["the row", "its sentences", "its state", "its measures (30 days, agent-set)", "your sentences"]);
     expect(aside.textContent).toContain("“the fixture sentence”");
     expect(aside.textContent).toContain("writing.md#Pages#a page (not in the record)");
     expect(aside.textContent).toContain("governed by outcomes (agent-set)");
@@ -159,6 +161,27 @@ describe("the design page", () => {
       fireEvent.click(screen.getByText("this is right"));
     });
     expect(calls).toEqual([{ name: "jarvis/design:confirm", args: { part: "thread-page", explanationId: "x1" } }]);
+  });
+
+  it("sends his sentence through design.rule", async () => {
+    window.history.replaceState(null, "", "/design#thread-page");
+    render(<DesignClient />);
+    fireEvent.change(screen.getByPlaceholderText("What working well means for /thread"), { target: { value: "it shows every row" } });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Send"));
+    });
+    expect(calls).toEqual([{ name: "jarvis/design:rule", args: { part: "thread-page", sentence: "it shows every row" } }]);
+  });
+
+  it("starts the sentence field empty when a related part's panel opens, so his text cannot go to another part", () => {
+    window.history.replaceState(null, "", "/design#thread-page");
+    render(<DesignClient />);
+    const field = screen.getByPlaceholderText("What working well means for /thread") as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "meant for /thread" } });
+    // /thread reads the record; its link opens the record's panel.
+    fireEvent.click(screen.getAllByText(PART.names.record)[0]);
+    expect(useDesignStore.getState().selected).toBe("record");
+    expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("");
   });
 
   it("says there is no registry, and draws nothing, before the box posts one", () => {

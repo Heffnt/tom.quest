@@ -204,11 +204,12 @@ export const EVENT_KINDS = [
   // /jarvis/standing-ruling): his sentence verbatim, the scope it holds in,
   // the question it answered and where he said it. Subject is the scope, so
   // an asker reads the rulings in its scope on events.by_kind_subject_at.
-  // Data { id, sentence, scope, question, provenance: { threadMessageId } or
-  // { session }, standing: true }; id is "ruling:" and the sha-256 of the
-  // JSON array [source type, source id, scope, sentence, question], the key
-  // a retry is matched on (convex/jarvis/rulings.ts recordStanding looks it
-  // up before it inserts). A ruling holds until new information is recorded against
+  // Data { id, sentence, scope, question, provenance: { threadMessageId },
+  // { session } or { page: "design" }, standing: true }; id is "ruling:" and
+  // the sha-256 of the JSON array [source type, source id, scope, sentence,
+  // question], the key a retry is matched on (convex/jarvis/rulings.ts
+  // writeStandingRuling looks it up before it inserts; a sentence typed on
+  // the design page adds its write time, so it is never a retry). A ruling holds until new information is recorded against
   // it; then the record sets standing false, supersededBy to the id of the
   // row that carried the new information, supersededAt to the instant and
   // supersededLine to the digest's sentence for it.
@@ -604,8 +605,12 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
     if (subject !== data.scope) return { ok: false, error: "a ruling event names data.scope as its subject" };
     const from = data.provenance;
     const named = isPlainObject(from) ? Object.keys(from) : [];
-    if (named.length !== 1 || !["session", "threadMessageId"].includes(named[0]) || !nonEmptyString(from[named[0]])) {
-      return { ok: false, error: "a ruling event names data.provenance as { session } or { threadMessageId }, one non-empty string" };
+    // { page: "design" } is his sentence typed on a part's panel of
+    // tom.quest/design: only the Tom-gated mutation jarvis/design.rule writes
+    // it, and the worker-key routes never build it.
+    const fromPage = named.length === 1 && named[0] === "page" && from.page === "design";
+    if (!fromPage && (named.length !== 1 || !["session", "threadMessageId"].includes(named[0]) || !nonEmptyString(from[named[0]]))) {
+      return { ok: false, error: 'a ruling event names data.provenance as { session } or { threadMessageId }, one non-empty string, or { page: "design" }' };
     }
     if (typeof data.id !== "string" || !/^ruling:[0-9a-f]{64}$/.test(data.id)) {
       return { ok: false, error: "a ruling event names data.id as ruling:<sha-256 of its source, scope and sentence>" };
