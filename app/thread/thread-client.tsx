@@ -268,7 +268,7 @@ function DigestRow({ digest, replying, onReply }: { digest: DigestEntry; replyin
               {reply.reply?.kind ?? ""}
             </span>
             <p className={`break-words pl-3.5 text-sm leading-5 ${needsTom ? "text-text" : reply.reply ? "text-text-muted" : "text-text-faint"}`}>
-              {reply.reply?.text ?? "not processed yet"}
+              {reply.reply === null ? "not processed yet" : reply.reply.text}
             </p>
           </div>
         );

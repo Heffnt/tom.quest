@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { Id } from "./_generated/dataModel";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { AGENT_CHANGE_KINDS, agentChange } from "./thread";
+import { AGENT_CHANGE_KINDS, CUT, agentChange, decisionState, landingReturn, openCounts, openNeedsYou, openQuestion, replyOf } from "./thread";
+import { ReadBudget } from "./readBudget";
 import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -634,81 +635,22 @@ describe("thread.open", () => {
     }
   });
 
-  it("reads each opening's lookups under the page budget, leaves out the items past it and says the cut", async () => {
-    const t = convexTest({ schema, modules });
-    const viewer = await tom(t);
-    const now = Date.now();
-    const keys = ["k1", "k2", "k3"];
-    const todos: Id<"todos">[] = [];
-    for (const key of keys) {
-      const todo = await activeTodo(t, key);
-      await t.run(async (ctx) => ctx.db.patch(todo, { statement: "s".repeat(900_000) }));
-      todos.push(todo);
-    }
-    const digest = await digestOn(t, "2026-10-04", now - 2_000, keys.map((key, i) => ({ n: i + 1, key, text: key, todoId: todos[i] })));
-    for (const [i, key] of keys.entries()) {
-      await insertEventRow(t, { kind: "needs-you-opened", at: now - 1_000 + i, subject: key,
-        data: { key, todoId: todos[i], n: i + 1, digestId: digest }, text: key });
-    }
-    const open = await viewer.query(api.thread.open, {});
-    expect(open.needsYou.map((item) => item.key)).toEqual(["k1"]);
-    expect(open.cuts).toEqual(["Needs-you answers, todos and digests: 3 read, stopped at the byte budget, 2 left unread."]);
-  });
-
-  it("shows a live session's question until he answers it here, in the session, or the session ends", async () => {
+  it("takes his turns after the pause row's server time, not its writer's at, by status", async () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);
     const sessionId = await liveSession(t);
-    const pause = (at: number) => insertEventRow(t, { kind: "pause", at, subject: sessionId,
-      data: { reason: "awaiting you, present", sessionId, question: "Ship it?" }, text: "Ship it?" });
-    const first = await pause(Date.now() - 10_000);
-    expect((await viewer.query(api.thread.open, {})).questions).toEqual([{
-      id: first, at: expect.any(Number), sessionId, title: "the synthetic session", question: "Ship it?",
-      href: `/agents?session=${sessionId}`,
-    }]);
-    await insertEventRow(t, { kind: "thread-message", subject: first, text: "yes" });
-    expect((await viewer.query(api.thread.open, {})).questions).toEqual([]);
-
-    await pause(Date.now() - 5_000);
-    expect((await viewer.query(api.thread.open, {})).questions).toHaveLength(1);
-    // An agent's turn and a stop are no answer of his.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("claudeInbound", { sessionId, kind: "user-turn", text: "go on", author: "agent", status: "pending", createdAt: Date.now() });
-      await ctx.db.insert("claudeInbound", { sessionId, kind: "stop", status: "pending", createdAt: Date.now() });
-    });
-    expect((await viewer.query(api.thread.open, {})).questions).toHaveLength(1);
-    await t.run(async (ctx) => ctx.db.insert("claudeInbound", {
-      sessionId, kind: "user-turn", text: "yes", author: "tom", status: "pending", createdAt: Date.now(),
-    }));
-    expect((await viewer.query(api.thread.open, {})).questions).toEqual([]);
-
-    await pause(Date.now() + 1_000);
-    expect((await viewer.query(api.thread.open, {})).questions).toHaveLength(1);
-    await t.run(async (ctx) => ctx.db.patch(sessionId, { status: "ended" }));
-    expect((await viewer.query(api.thread.open, {})).questions).toEqual([]);
-  });
-
-  it("reads a session's turns only after its pause, by status, so a long history before it neither answers nor exceeds the read", async () => {
-    const t = convexTest({ schema, modules });
-    const viewer = await tom(t);
-    const sessionId = await liveSession(t);
-    await t.run(async (ctx) => {
-      for (let i = 0; i < 300; i += 1) {
-        await ctx.db.insert("claudeInbound", { sessionId, kind: "user-turn", text: "earlier", author: "tom", status: "done", createdAt: Date.now() });
+    const turns = (n: number) => t.run(async (ctx) => {
+      for (let i = 0; i < n; i += 1) {
+        await ctx.db.insert("claudeInbound", { sessionId, kind: "user-turn", text: "yes", author: "tom", status: "done", createdAt: Date.now() });
       }
     });
-    vi.useFakeTimers({ now: Date.now() + 1_000 });
-    try {
-      await insertEventRow(t, { kind: "pause", at: Date.now() - 500, subject: sessionId,
-        data: { reason: "awaiting you, present", sessionId, question: "Ship it?" }, text: "Ship it?" });
-      expect((await viewer.query(api.thread.open, {})).questions).toHaveLength(1);
-      await t.run(async (ctx) => ctx.db.insert("claudeInbound", {
-        sessionId, kind: "user-turn", text: "yes", author: "tom", status: "done", createdAt: Date.now(),
-      }));
-      expect((await viewer.query(api.thread.open, {})).questions).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
+    await turns(300);
+    // Written late: its `at` is before the 300 turns, its row after them.
+    await insertEventRow(t, { kind: "pause", at: Date.now() - 600_000, subject: sessionId,
+      data: { reason: "awaiting you, present", sessionId, question: "Ship it?" }, text: "Ship it?" });
+    expect((await viewer.query(api.thread.open, {})).questions).toHaveLength(1);
+    await turns(1);
+    expect((await viewer.query(api.thread.open, {})).questions).toEqual([]);
   });
 
   it("shows a live session's question behind 250 newer pauses of other sessions", async () => {
@@ -730,7 +672,7 @@ describe("thread.open", () => {
     const t = convexTest({ schema, modules });
     const viewer = await tom(t);
     await liveSession(t);
-    expect((await viewer.query(api.thread.open, {})).counts).toEqual({ liveSessions: 1 });
+    expect((await viewer.query(api.thread.open, {})).counts).toEqual({ liveSessions: 1, partial: [] });
     const parts = ["digest", "thread", "box", "p0", "p1", "p2", "p3", "p4", "p5"];
     await insertEventRow(t, { kind: "registry", subject: "Jarvis@abc", data: { repo: "Jarvis", sha: "abc", parts: parts.map((id) => ({ id })), count: parts.length } });
     const check = (part: string, name: string, result: string, at: number) => insertEventRow(t, {
@@ -750,7 +692,7 @@ describe("thread.open", () => {
           data: { part, check: "size", measure: 1, target: 2, result: "green", pass: "tick" } });
       }
     });
-    expect((await viewer.query(api.thread.open, {})).counts).toEqual({ openLoopRuns: 1, liveSessions: 1 });
+    expect((await viewer.query(api.thread.open, {})).counts).toEqual({ openLoopRuns: 1, liveSessions: 1, partial: [] });
   });
 
   it("lists every unanswered suggestion whatever its age, and none answered", async () => {
@@ -888,19 +830,30 @@ describe("thread.changes, the return of a landing", () => {
   });
 });
 
-describe("thread.changes, under one read budget", () => {
-  it("reads each landing's tests and audit under it and says the cut past it", async () => {
+describe("a cut lookup, at each reader", () => {
+  it("is never read as a value: no reply, no return, no item, no question, a partial count", async () => {
     const t = convexTest({ schema, modules });
-    const viewer = await tom(t);
-    for (let i = 0; i < 6; i += 1) {
-      const sha = String(i).repeat(40);
-      await insertEventRow(t, { kind: "merge", at: Date.now() - i, subject: `tom.quest:${sha}`, data: { repo: "tom.quest", sha, subject: `m${i}` } });
-      await t.run(async (ctx) => ctx.db.insert("dtsEvents", { at: Date.now(), kind: "tests-run", key: `tom.quest@${sha}`,
-        data: { ok: true, log: "l".repeat(900_000) } }));
-    }
-    const found = await viewer.query(api.thread.changes, {});
-    expect(found.entries).toHaveLength(6);
-    expect(found.cuts).toEqual(["Landings' tests and audits: 5 read, stopped at the byte budget, 3 left unread."]);
+    const sessionId = await liveSession(t);
+    const message = await insertEventRow(t, { kind: "thread-message", text: "hi" });
+    const todo = await activeTodo(t);
+    const digestId = await digestOn(t, "2026-10-04", Date.now() - 2_000, [{ n: 1, key: "k1", text: "k1", todoId: todo }]);
+    await insertEventRow(t, { kind: "needs-you-opened", subject: "k1", data: { key: "k1", todoId: todo, n: 1, digestId }, text: "k1" });
+    const decision = await insertEventRow(t, { kind: "decision", subject: "0pen0001", data: { ...DECISION_DATA, askId: "0pen0001" } });
+    await insertEventRow(t, { kind: "pause", subject: sessionId, data: { reason: "awaiting you, present", sessionId, question: "Ship it?" }, text: "Ship it?" });
+    await t.run(async (ctx) => {
+      const spent = () => ReadBudget.of(0);
+      const session = (await ctx.db.get(sessionId))!;
+      expect(await replyOf(ctx, message, spent())).toBe(CUT);
+      expect(await landingReturn(ctx, "tom.quest", "a".repeat(40), spent())).toEqual({ diff: null, parts: [], checksAlone: null });
+      expect(await decisionState(ctx, (await ctx.db.get(decision))!, spent())).toBe(CUT);
+      expect(await openQuestion(ctx, session, spent())).toEqual([]);
+      expect(await openCounts(ctx, { live: [session], cut: true }, spent()))
+        .toEqual({ openLoopRuns: 0, liveSessions: 1, partial: ["openLoopRuns", "liveSessions"] });
+      // The opening row is read; its lookups are cut, so it is left out and the cut is said.
+      const one = ReadBudget.of(1);
+      expect(await openNeedsYou(ctx, one)).toEqual([]);
+      expect(one.cuts().map((one) => one.what)).toContain("needs-you answers, todos and digests");
+    });
   });
 });
 

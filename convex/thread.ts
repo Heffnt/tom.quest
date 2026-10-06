@@ -18,6 +18,7 @@ import { requireTom } from "./authRoles";
 import { sendMessageFrom } from "./claudeSessions";
 import { DAY_LOG_ENTRY_MAX } from "./dayLog";
 import { DISAGREEMENT_SETTLED, decisionOf, settleDecision, settlements } from "./jarvis/intent";
+import type { Value } from "convex/values";
 import { MIB, ReadBudget, getWithin, readWithin } from "./readBudget";
 import { readCutLine } from "./ttsCompose";
 import {
@@ -396,14 +397,32 @@ export const internalAnswerDigestReply = internalMutation({
   },
 });
 
-type Reply = { at: number; text: string | undefined; kind: (typeof THREAD_REPLY_KINDS)[number] | null } | null;
+/** A lookup the budget stopped: what it stands for is unknown, so a reader
+ *  draws without it, counts as partial, and takes a yes or no as unknown. */
+export const CUT = { cut: true } as const;
+type Cut = typeof CUT;
+const isCut = (value: unknown): value is Cut => value === CUT;
 
-/** The bytes of everything /thread's messages query reads: one ReadBudget
- *  (convex/readBudget.ts) that every read below, the settlements too, takes
- *  its allotment from. The allotments sum past it, so they share it: a read
- *  starts no row once the page's bytes are spent, and the page reads at most
- *  this plus one document (1 MiB), under Convex's 16 MiB limit, and says
- *  each read it stopped as a cut. */
+async function lookup<T extends Record<string, Value>>(budget: ReadBudget, read: () => Promise<T | null>): Promise<T | null | Cut> {
+  const found = await getWithin(budget, read);
+  return found === undefined ? CUT : found;
+}
+
+type Reply = { at: number; text: string | undefined; kind: (typeof THREAD_REPLY_KINDS)[number] | null } | null | Cut;
+
+/** The box's reply to one of his messages, under `budget`. */
+export async function replyOf(ctx: QueryCtx, message: Id<"events">, budget: ReadBudget): Promise<Reply> {
+  const reply = await lookup(budget, () => ctx.db
+    .query("events")
+    .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-reply").eq("subject", message))
+    .order("desc")
+    .first());
+  if (reply === null || isCut(reply)) return reply;
+  return { at: reply.at, text: reply.text, kind: typeof reply.data?.kind === "string" ? reply.data.kind as (typeof THREAD_REPLY_KINDS)[number] : null };
+}
+
+/** The budget every read of thread.messages shares, settlements included:
+ *  at most this plus one document, under Convex's 16 MiB; a stop is a cut. */
 const PAGE_READ_BYTES = 10 * MIB;
 
 /** Each read's allotment and rows, newest first, run one after another. */
@@ -459,13 +478,7 @@ export const messages = query({
     const replyBudget = budget.allot(PAGE_READS.replies.what, PAGE_READS.replies.bytes);
     const said = new Map<string, { id: Id<"events">; at: number; text: string; reply: Reply }>();
     for (const row of messageRows) {
-      const reply = await getWithin(replyBudget, () => ctx.db
-        .query("events")
-        .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-reply").eq("subject", row._id))
-        .order("desc")
-        .first());
-      said.set(row._id, { id: row._id, at: row.at, text: row.text ?? "", reply: reply == null ? null
-        : { at: reply.at, text: reply.text, kind: typeof reply.data?.kind === "string" ? reply.data.kind as (typeof THREAD_REPLY_KINDS)[number] : null } });
+      said.set(row._id, { id: row._id, at: row.at, text: row.text ?? "", reply: await replyOf(ctx, row._id, replyBudget) });
     }
     const digestIds = new Set<string>(digestRows.map((digest) => digest._id));
     const messages = messageRows
@@ -554,6 +567,25 @@ async function headRow(ctx: QueryCtx, kind: string, repo: string, sha: string) {
  *  allotments, run one after another: at most this plus one document. */
 const CHANGES_READ_BYTES = 8 * MIB;
 
+/** A landing's return from its head's tests-run and audit rows; with either
+ *  lookup cut, none: no diff, no parts, checksAlone unknown. */
+export async function landingReturn(ctx: QueryCtx, repo: string, sha: string, budget: ReadBudget) {
+  const tests = await lookup(budget, () => headRow(ctx, TESTS_RUN, repo, sha));
+  const audit = await lookup(budget, () => headRow(ctx, AUDIT_VERDICT, repo, sha));
+  if (isCut(tests) || isCut(audit)) return { diff: null, parts: [], checksAlone: null };
+  // A removed part has no registry row, so its id names it.
+  const registryDiff = registryDiffOf((tests?.data as { registryDiff?: unknown } | undefined)?.registryDiff);
+  const diff = registryDiff === null ? null
+    : { added: registryDiff.added, changed: registryDiff.changed, removed: registryDiff.removed };
+  const named = (id: string) => str((registryDiff?.rows[id] as { name?: unknown } | undefined)?.name) ?? id;
+  const parts = diff === null ? [] : [
+    ...diff.added.map((id: string) => ({ id, name: named(id), fate: "added" as const })),
+    ...diff.changed.map((id: string) => ({ id, name: named(id), fate: "changed" as const })),
+    ...diff.removed.map((id: string) => ({ id, name: id, fate: "removed" as const })),
+  ];
+  return { diff, parts, checksAlone: (audit?.data as { model?: unknown } | undefined)?.model === "none" };
+}
+
 export const changes = query({
   args: {},
   handler: async (ctx) => {
@@ -575,51 +607,21 @@ export const changes = query({
           if (changeRow === null) return [];
           const { line, href } = agentChange(changeRow);
           if (changeRow.kind !== "merge") return [{ id: row._id, at: row.at, kind: changeRow.kind, line, href }];
-          // The return of one landing: its claim, what it touched, and
-          // whether it passed on the checks alone.
           const { repo, sha, pull, claim, explanation } = changeRow.data;
-          // Past the budget the landing is drawn without its return, and the cut says so.
-          const tests = await getWithin(lookups, () => headRow(ctx, TESTS_RUN, repo, sha));
-          const audit = await getWithin(lookups, () => headRow(ctx, AUDIT_VERDICT, repo, sha));
-          // What the landing did to Jarvis's registry of parts: the diff its
-          // head's tests-run row carries (Jarvis pull-request-checks), checked
-          // by the reader the design page uses. An added or changed part is
-          // named by its row; a removed one has no row, so its id names it.
-          const registryDiff = registryDiffOf((tests?.data as { registryDiff?: unknown } | undefined)?.registryDiff);
-          const diff = registryDiff === null ? null
-            : { added: registryDiff.added, changed: registryDiff.changed, removed: registryDiff.removed };
-          const named = (id: string) => str((registryDiff?.rows[id] as { name?: unknown } | undefined)?.name) ?? id;
-          const parts = diff === null ? [] : [
-            ...diff.added.map((id: string) => ({ id, name: named(id), fate: "added" as const })),
-            ...diff.changed.map((id: string) => ({ id, name: named(id), fate: "changed" as const })),
-            ...diff.removed.map((id: string) => ({ id, name: id, fate: "removed" as const })),
-          ];
           return [{ id: row._id, at: row.at, kind: changeRow.kind, line, href, repo, sha,
             pull: isPull(pull) ? { number: pull.number, title: pull.title } : null,
-            claim: str(claim), diff, parts,
-            checksAlone: (audit?.data as { model?: unknown } | undefined)?.model === "none",
-            explanation: str(explanation) }];
+            claim: str(claim), ...await landingReturn(ctx, repo, sha, lookups), explanation: str(explanation) }];
     })());
     return { entries: changes.flat().sort((a, b) => a.at - b.at), cuts: budget.cuts().map(readCutLine) };
   },
 });
 
 // ── The open items ─────────────────────────────────────────────────────────
-// What waits on him, at the top of the page: the needs-you items with the
-// number a digest gave each, each live session's open question, each
-// decision he has not settled and each suggestion he has not answered, and
-// the counts.
-//
-// EVERY READ HERE RETURNS ONLY THE ROWS THE STATE NEEDS, whatever their age:
-// none takes the newest N of a kind that keeps growing, since an old open
-// item would fall past N. An opening, a decision and a suggestion each carry
-// data.closedAt once they stop waiting on him, and the reads go through the
-// index on it (events by_kind_closed_at), so they return the rows still
-// open and those closed since the last sweep (internalCloseOpenItems, run
-// after each day's digest). A session's question is its newest pause, read
-// per live session; a part's loop run is its newest check, read per part.
-// Every read, each lookup too, is under the one budget, one after another;
-// a read past it is left out and said as a cut.
+// What waits on him. No read takes the newest N of a growing kind: openings,
+// decisions and suggestions are read through the index of rows not yet
+// closed (data.closedAt, set by internalCloseOpenItems after each digest);
+// a question is each live session's newest pause, a loop run each part's
+// newest check. Every read and lookup is under one budget; a stop is a cut.
 
 /** The bytes of the open items' reads; each read is one of its allotments. */
 const OPEN_READ_BYTES = 6 * MIB;
@@ -657,63 +659,54 @@ async function closeRow(ctx: MutationCtx, row: Doc<"events">): Promise<void> {
   await ctx.db.patch(row._id, { data: { ...((row.data ?? {}) as Record<string, unknown>), closedAt: Date.now() } });
 }
 
-/** An opening still waiting on him, with its todo's statement; null when it
- *  was answered, its todo is done or archived (he may finish it on its own
- *  page), or its job's failure recovered after it opened; undefined when a
- *  lookup would pass `budget`. */
-async function openingState(ctx: QueryCtx, row: Doc<"events">, budget: ReadBudget): Promise<{ statement?: string } | null | undefined> {
+/** An opening still waiting, with its todo's statement; null when answered,
+ *  its todo done or archived, or its job recovered; CUT when unknown. */
+async function openingState(ctx: QueryCtx, row: Doc<"events">, budget: ReadBudget): Promise<{ statement?: string } | null | Cut> {
   const key = row.subject;
   if (key === undefined) return null;
-  const answered = await getWithin(budget, () => ctx.db
+  const answered = await lookup(budget, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", NEEDS_TOM_ANSWERED).eq("subject", key))
     .first());
-  if (answered !== null) return answered === undefined ? undefined : null;
+  if (answered !== null) return isCut(answered) ? CUT : null;
   const data = (row.data ?? {}) as { todoId?: unknown; job?: unknown };
   const todoId = str(data.todoId);
   if (todoId !== null) {
-    const todo = await getWithin(budget, async () => {
+    const todo = await lookup(budget, async () => {
       const plain = ctx.db.normalizeId("todos", todoId) ?? await resolveId(ctx, "todos", todoId);
       return plain === null ? null : await ctx.db.get(plain);
     });
-    if (todo === undefined) return undefined;
+    if (isCut(todo)) return CUT;
     if (todo !== null && (todo.status === "done" || todo.status === "archived")) return null;
     return todo === null ? {} : { statement: todo.statement };
   }
   if (str(data.job) !== null) {
-    const recovered = await getWithin(budget, () => ctx.db
+    const recovered = await lookup(budget, () => ctx.db
       .query("events")
       .withIndex("by_kind_subject_at", (q) => q.eq("kind", "job-recovered").eq("subject", key).gt("at", row.at))
       .first());
-    if (recovered !== null) return recovered === undefined ? undefined : null;
+    if (recovered !== null) return isCut(recovered) ? CUT : null;
   }
   return {};
 }
 
-/** A decision still waiting on him: one the delegate took (not refused, not
- *  unanswered, not one he took himself) that he has not settled; undefined
- *  when its settlement's lookup would pass `budget`. */
-async function decisionState(ctx: QueryCtx, row: Doc<"events">, budget: ReadBudget) {
+/** A delegate's decision he has not settled; CUT when unknown. */
+export async function decisionState(ctx: QueryCtx, row: Doc<"events">, budget: ReadBudget) {
   const decision = decisionOf(row, new Map());
   if (decision === null || decision.refused || decision.decision === null || decision.decidedByTom) return null;
-  const settled = await getWithin(budget, () => ctx.db
+  const settled = await lookup(budget, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", DISAGREEMENT_SETTLED).eq("subject", `decision:${decision.askId}`))
     .first());
-  if (settled === undefined) return undefined;
+  if (isCut(settled)) return CUT;
   return settled === null ? { ...decision, decision: decision.decision } : null;
 }
 
-/** Every needs-you item still open, numbered by the digest that listed it.
- *  The number and digest are on the opening (data.n, data.digestId): the
- *  sweep after each digest writes them for the items it listed, and
- *  openNeedsYou for an item posted under the day's digest. An
- *  opening no digest numbered is not listed: one is numbered as it opens,
- *  under the current TTS day's digest, so it goes without a number only
- *  while the day's digest is missing, which the silence alarm reports, and
- *  the next digest lists it. Every item listed is answered by number under
- *  its digest. */
-async function openNeedsYou(ctx: QueryCtx, budget: ReadBudget) {
+/** Every needs-you item still open, with the number and digest on its
+ *  opening (data.n, data.digestId, from the sweep or jarvis/outbox
+ *  openNeedsYou). One with no number waits only on a missing digest, which
+ *  the silence alarm reports, so it is not listed. */
+export async function openNeedsYou(ctx: QueryCtx, budget: ReadBudget) {
   const rows = await readWithin(budget.allot("needs-you openings", 1.5 * MIB), unclosed(ctx, NEEDS_YOU_OPENED), Number.POSITIVE_INFINITY);
   const lookups = budget.allot("needs-you answers, todos and digests", 1.5 * MIB);
   const open = [];
@@ -722,8 +715,8 @@ async function openNeedsYou(ctx: QueryCtx, budget: ReadBudget) {
     const digestId = typeof data.digestId === "string" ? ctx.db.normalizeId("events", data.digestId) : null;
     if (typeof data.n !== "number" || digestId === null || row.subject === undefined) return [];
     const state = await openingState(ctx, row, lookups);
-    const digest = state == null ? null : await getWithin(lookups, () => ctx.db.get(digestId));
-    if (state == null || digest == null) return [];
+    const digest = state === null || isCut(state) ? null : await lookup(lookups, () => ctx.db.get(digestId));
+    if (state === null || isCut(state) || digest === null || isCut(digest)) return [];
     const todoId = str(data.todoId);
     const job = str(data.job);
     return [{
@@ -746,77 +739,79 @@ async function liveSessions(ctx: QueryCtx, budget: ReadBudget) {
   for (const status of LIVE_STATUSES) {
     live.push(...await readWithin(sessions, ctx.db.query("claudeSessions").withIndex("by_status", (q) => q.eq("status", status)), Number.POSITIVE_INFINITY));
   }
-  return live;
+  return { live, cut: !sessions.open };
 }
 
-/** The turns of one session read per status after its pause; a turn past
- *  them leaves the question shown, never hidden. */
-const TURNS_AFTER_PAUSE = 50;
 const INBOUND_STATUSES: Doc<"claudeInbound">["status"][] = ["pending", "delivered", "done", "interrupted", "failed"];
 
-/** Each live session's open question: its newest pause, read by the
- *  session's id, when that pause is a question only he can answer and he
- *  has not answered it here or in the session. The sessions run one after
- *  another, under the open items' budget. */
-async function openQuestions(ctx: QueryCtx, live: Doc<"claudeSessions">[], budget: ReadBudget) {
+/** Each live session's newest pause, when it is a question only he can
+ *  answer and he has not answered it here or in the session. */
+async function openQuestions(ctx: QueryCtx, { live }: { live: Doc<"claudeSessions">[] }, budget: ReadBudget) {
   const turns = budget.allot("session questions and turns", MIB / 2);
   const questions = [];
   for (const session of live) questions.push(...await openQuestion(ctx, session, turns));
   return questions.sort((a, b) => a.at - b.at);
 }
 
-async function openQuestion(ctx: QueryCtx, session: Doc<"claudeSessions">, turns: ReadBudget) {
+/** One live session's open question; none when a lookup was cut, since
+ *  whether it is answered is then unknown (the cut line says so). */
+export async function openQuestion(ctx: QueryCtx, session: Doc<"claudeSessions">, turns: ReadBudget) {
   const sessionId = session._id as string;
-  const row = await getWithin(turns, () => ctx.db
+  const row = await lookup(turns, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", PAUSE).eq("subject", sessionId))
     .order("desc")
     .first());
-  if (row == null) return [];
+  if (row === null || isCut(row)) return [];
   const data = row.data as { reason: string; question?: unknown };
   if (data.reason !== AWAITING_YOU) return [];
-  const answered = await getWithin(turns, () => ctx.db
+  const answered = await lookup(turns, () => ctx.db
     .query("events")
     .withIndex("by_kind_subject_at", (q) => q.eq("kind", "thread-message").eq("subject", row._id))
     .first());
   if (answered !== null) return [];
   // Only a turn Tom wrote answers it: an agent's turn, an interrupt or a
-  // stop is no answer of his. Each status is an index range from the pause.
+  // stop is no answer of his. Each status is an index range from the pause
+  // row's creation, both server times: the pause's `at` is its writer's.
   for (const status of INBOUND_STATUSES) {
     const after = await readWithin(turns, ctx.db
       .query("claudeInbound")
-      .withIndex("by_session_status", (q) => q.eq("sessionId", session._id).eq("status", status).gt("_creationTime", row.at)),
-    TURNS_AFTER_PAUSE);
+      .withIndex("by_session_status", (q) => q.eq("sessionId", session._id).eq("status", status).gt("_creationTime", row._creationTime)),
+    Number.POSITIVE_INFINITY);
     if (after.some((turn) => turn.kind === "user-turn" && turn.author === "tom")) return [];
+    if (!turns.open) return [];
   }
   return [{ id: row._id, at: row.at, sessionId, title: session.title,
     question: row.text ?? str(data.question) ?? "", href: `/agents?session=${sessionId}` }];
 }
 
-/** The counts at the top. A count whose rows do not exist yet is absent, not
- *  zero: the open loop runs need quality-check rows. A part's loop run is
- *  open while its newest check row, of any check, failed; each part of the
- *  newest deployed registry (convex/jarvis/design.ts) is read by its id,
- *  the check's subject. */
-async function openCounts(ctx: QueryCtx, live: Doc<"claudeSessions">[], budget: ReadBudget) {
+/** The counts. Open loop runs, absent until a quality check exists: the
+ *  parts of the newest registry whose newest check failed. `partial` names
+ *  each count built from a cut read: the true count is at least it. */
+export async function openCounts(ctx: QueryCtx, live: { live: Doc<"claudeSessions">[]; cut: boolean }, budget: ReadBudget) {
   const checks = budget.allot("the registry and each part's newest check", MIB);
-  const anyCheck = await getWithin(checks, () => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", QUALITY_CHECK)).first());
-  const registry = anyCheck == null ? null
-    : await getWithin(checks, () => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "registry")).order("desc").first());
-  const parts = ((registry?.data as { parts?: Array<{ id?: unknown }> } | undefined)?.parts ?? [])
+  const partial: Array<"openLoopRuns" | "liveSessions"> = live.cut ? ["liveSessions"] : [];
+  const anyCheck = await lookup(checks, () => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", QUALITY_CHECK)).first());
+  const registry = anyCheck === null || isCut(anyCheck) ? anyCheck
+    : await lookup(checks, () => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "registry")).order("desc").first());
+  let cut = isCut(registry);
+  const parts = ((isCut(registry) ? undefined : registry?.data as { parts?: Array<{ id?: unknown }> } | undefined)?.parts ?? [])
     .flatMap((part) => (typeof part.id === "string" ? [part.id] : []));
   let failed = 0;
   for (const part of parts) {
-    const newest = await getWithin(checks, () => ctx.db
+    const newest = await lookup(checks, () => ctx.db
       .query("events")
       .withIndex("by_kind_subject_at", (q) => q.eq("kind", QUALITY_CHECK).eq("subject", part))
       .order("desc")
       .first());
-    if ((newest?.data as { result?: unknown } | undefined)?.result === "failed") failed += 1;
+    if (isCut(newest)) cut = true;
+    else if ((newest?.data as { result?: unknown } | undefined)?.result === "failed") failed += 1;
   }
+  if (cut) partial.unshift("openLoopRuns");
   return {
-    ...(anyCheck == null ? {} : { openLoopRuns: failed }),
-    liveSessions: live.length,
+    ...(anyCheck === null ? {} : { openLoopRuns: failed }),
+    liveSessions: live.live.length,
+    partial,
   };
 }
 
@@ -833,16 +828,14 @@ async function openSuggestions(ctx: QueryCtx, budget: ReadBudget) {
     });
 }
 
-/** Every decision the delegate took that he has not settled, whatever its
- *  age: the stream reads 60 days, and a decision older than that keeps its
- *  accept and object here. */
+/** Every decision of the delegate's he has not settled, whatever its age. */
 async function openDecisions(ctx: QueryCtx, budget: ReadBudget) {
   const rows = await readWithin(budget.allot("decisions", MIB / 2), unclosed(ctx, "decision"), Number.POSITIVE_INFINITY);
   const settlementsRead = budget.allot("decisions' settlements", MIB / 4);
   const open = [];
   for (const row of rows) {
     const decision = await decisionState(ctx, row, settlementsRead);
-    if (decision == null) continue;
+    if (decision === null || isCut(decision)) continue;
     const { askId, question, reason, wouldChange } = decision;
     open.push({ id: row._id, at: row.at, askId, question, decision: decision.decision, reason, wouldChange });
   }
@@ -868,17 +861,9 @@ export const open = query({
 /** The bytes one sweep reads, its allotments sharing it. */
 const SWEEP_READ_BYTES = 10 * MIB;
 
-/**
- * Close every opening, decision and suggestion that no longer waits on him,
- * so the open items' index returns only rows still open: an opening
- * answered, its todo done or archived, its job recovered, or never numbered
- * past the three days a digest may list it in; a decision settled, refused,
- * unanswered or his own; a suggestion answered. Scheduled after each day's
- * digest. A kind whose read or lookups stop at the budget hands the next
- * run, scheduled at once, the last row it decided, as (at, row id), and that
- * run resumes right after it; a kind that ended is not read again in the
- * chain.
- */
+/** Close each opening, decision and suggestion that stopped waiting on him,
+ *  after each digest. A kind cut by the budget hands the next run its last
+ *  row decided, (at, row id), and that run resumes right after it. */
 const SWEEP_KINDS = { openings: cursorArg, decisions: cursorArg, suggestions: cursorArg };
 
 export const internalCloseOpenItems = internalMutation({
@@ -898,10 +883,10 @@ export const internalCloseOpenItems = internalMutation({
       for (const item of digestItems(digest.data)) if (!listed.has(item.key)) listed.set(item.key, { n: item.n, digestId: digest._id });
     }
     const next: Partial<Record<keyof typeof SWEEP_KINDS, Cursor>> = {};
-    // `shut` is undefined when a row's lookups would pass the budget: the
+    // `shut` is CUT when a row's lookups were cut: the
     // kind's run ends at the row before it.
     const sweep = async (name: keyof typeof SWEEP_KINDS, kind: string, bytes: number,
-      shut: (row: Doc<"events">, lookups: ReadBudget) => Promise<boolean | undefined>) => {
+      shut: (row: Doc<"events">, lookups: ReadBudget) => Promise<boolean | Cut>) => {
       const cursor = from === undefined ? "start" : from[name];
       if (cursor === undefined) return;
       const rows = await readWithin(budget.allot(name, bytes), unclosedAfter(ctx, kind, cursor), Number.POSITIVE_INFINITY);
@@ -909,7 +894,7 @@ export const internalCloseOpenItems = internalMutation({
       let reached: Cursor = cursor;
       for (const row of rows) {
         const done = await shut(row, lookups);
-        if (done === undefined) break;
+        if (isCut(done)) break;
         if (done) {
           await closeRow(ctx, row);
           closed += 1;
@@ -925,11 +910,11 @@ export const internalCloseOpenItems = internalMutation({
       const numbered = typeof data.n === "number" || number !== undefined;
       if (!numbered && row.at < now - NEEDS_YOU_WINDOW_MS) return true;
       const state = await openingState(ctx, row, lookups);
-      return state === undefined ? undefined : state === null;
+      return isCut(state) ? CUT : state === null;
     });
     await sweep("decisions", "decision", MIB * 3 / 4, async (row, lookups) => {
       const state = await decisionState(ctx, row, lookups);
-      return state === undefined ? undefined : state === null;
+      return isCut(state) ? CUT : state === null;
     });
     await sweep("suggestions", SUGGESTION, MIB * 3 / 4, async (row) => (row.data as { answer?: unknown }).answer !== undefined);
     if (Object.keys(next).length > 0) await ctx.scheduler.runAfter(0, internal.thread.internalCloseOpenItems, { from: next });
