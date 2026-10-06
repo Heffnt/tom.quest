@@ -1651,11 +1651,10 @@ export const internalPoll = internalMutation({
           sdkSessionId: s.sdkSessionId,
           // A session addressed by its transcript (registerSession): the
           // host runs its reply in this directory, on this transcript, under
-          // this login (absent: the box's active login).
+          // the login above.
           cwd: s.cwd,
           transcriptPath: s.transcriptPath,
           client: s.client,
-          login: s.login,
           nextSeq: s.nextSeq,
           // The reopen protocol: reopenedAt tells the adopt path this session
           // re-entered the live scan by a reopen (no restart happened, no turn
