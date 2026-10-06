@@ -1,6 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
+import { DOCUMENTS_READ_MAX } from "./history";
 import schema from "./schema";
 import { newYorkInstant } from "../shared/clock.mjs";
 
@@ -103,6 +104,43 @@ describe("history.page", () => {
     const page = await (await as(t, "tom")).query(api.history.page, RANGE);
     expect(page.told.map((row) => row.text)).toEqual(["weighed 182 and had oatmeal"]);
     expect(page.meals.map((row) => row.text)).toEqual(["oatmeal"]);
+  });
+
+  it("reads at most half of Convex's 32,000 documents in one call, every cap together", () => {
+    expect(DOCUMENTS_READ_MAX).toBeLessThan(16_000);
+  });
+
+  it("draws no fact row without the fields the record's write door requires", async () => {
+    const t = convexTest({ schema, modules });
+    await event(t, { kind: "weight", at: at("2026-10-02", 7), data: { day: "2026-10-02", summary: "weighed in", value: 181 } });
+    await event(t, { kind: "weight", at: at("2026-10-02", 8), data: { summary: "weighed in", metric: "weight", value: 181, unit: "lb" } });
+    await event(t, { kind: "weight", at: at("2026-10-02", 9), data: { day: "2026-10-02", summary: "weighed in", lb: 181 } });
+    await event(t, { kind: "meal", at: at("2026-10-02", 12), data: { day: "2026-10-02", what: "pasta", protein: 30, kcal: 600 } });
+    await event(t, { kind: "training", at: at("2026-10-02", 18), text: "ran", data: { day: "2026-10-02", activity: "run" } });
+    const page = await (await as(t, "tom")).query(api.history.page, RANGE);
+    expect(page).toMatchObject({ weights: [], meals: [], trainings: [] });
+  });
+
+  it("leaves out the day log's rows on a day whose events hold any row of the kind, a waist or a hang test included", async () => {
+    const t = convexTest({ schema, modules });
+    await dayLog(t, "2026-10-02", "weighed 181, ran 3 miles", [
+      { type: "measurement", metric: "weight", value: 181, unit: "lb", partOfDay: "morning" },
+      { type: "workout", activity: "run", distanceMi: 3 },
+    ]);
+    await event(t, { kind: "weight", at: at("2026-10-02", 9), data: { day: "2026-10-02", summary: "waist", metric: "waist", value: 33, unit: "in" } });
+    await event(t, { kind: "training", at: at("2026-10-02", 9), data: { day: "2026-10-02", summary: "20 mm hang", metric: "hang_20mm", value: 12, unit: "s" } });
+    const page = await (await as(t, "tom")).query(api.history.page, RANGE);
+    expect(page.weights).toEqual([]);
+    expect(page.trainings).toEqual([]);
+  });
+
+  it("draws an issue Tom reported as his sentence, and an agent's issue as Jarvis's", async () => {
+    const t = convexTest({ schema, modules });
+    await event(t, { kind: "issue", at: at("2026-10-04", 10), subject: "history-page", text: "the weight chart is empty", data: { part: "history-page", by: "tom" } });
+    await event(t, { kind: "issue", at: at("2026-10-04", 11), subject: "poll-gmail", text: "the Gmail token was refused", data: { part: "poll-gmail", by: "job" } });
+    const page = await (await as(t, "tom")).query(api.history.page, RANGE);
+    expect(page.told.map((row) => row.text)).toEqual(["the weight chart is empty"]);
+    expect(page.actions.map((row) => [row.kind, row.text])).toEqual([["issue", "the Gmail token was refused"]]);
   });
 
   it("reads the day log for the days the events table has none of that kind, and his entries as his sentences", async () => {

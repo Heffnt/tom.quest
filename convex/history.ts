@@ -9,6 +9,13 @@
 // after another as ReadBudget requires. His facts are read first, so a heavy
 // day of machine changes can only cut what Jarvis did, never his facts. A read
 // that stopped early is returned as a line in `cuts`, which the page shows.
+//
+// AND BOUNDED BY DOCUMENTS: Convex also refuses a transaction that reads more
+// than 32,000 documents, and a byte budget does not bound that (a small row
+// is a few hundred bytes). Each read's row cap is chosen so that all of them
+// together, with the one row each read takes past its cap to learn whether it
+// was cut, stay under half of that: DOCUMENTS_READ_MAX below, which the tests
+// hold under 16,000.
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { query, type QueryCtx } from "./_generated/server";
@@ -31,6 +38,7 @@ import {
   daysBetween,
   factToldOf,
   inRange,
+  isHisIssue,
   mealOf,
   rangeInstants,
   rangeOf,
@@ -46,18 +54,32 @@ export const SURFACE = "History";
 
 const BUDGET = 12 * MIB;
 
-/** Each read's allotment and row cap. */
+/** Each read's allotment and row cap. A year of his facts is about three
+ *  meals, a weight and a session a day, so 1,500 rows of a kind covers it. */
 const READS = {
-  fact: { bytes: MIB, rows: 3000 },
-  told: { bytes: MIB, rows: 2000 },
-  dayLog: { bytes: MIB / 2, rows: 3000 },
-  action: { bytes: MIB / 4, rows: 500 },
+  fact: { bytes: MIB, rows: 1500 },
+  told: { bytes: MIB, rows: 1000 },
+  dayLog: { bytes: MIB / 2, rows: 800 },
+  action: { bytes: MIB / 4, rows: 150 },
   // The heavy kinds: an eval-run row carries every item it ran, and the box
   // posts up to hundreds of box-change rows a day.
-  heavyAction: { bytes: MIB, rows: 3000 },
+  heavyAction: { bytes: MIB, rows: 800 },
 } as const;
 
 const HEAVY_ACTIONS = new Set<string>(["box-change", "eval-run", "work-run", "deploy"]);
+
+/** The reads `page` makes, each with its row cap: three fact kinds, did and
+ *  his thread messages, four day-log reads, and one per action kind. */
+const READ_CAPS: number[] = [
+  READS.fact.rows, READS.fact.rows, READS.fact.rows,
+  READS.told.rows, READS.told.rows,
+  READS.dayLog.rows, READS.dayLog.rows, READS.dayLog.rows, READS.dayLog.rows,
+  ...ACTION_KINDS.map((kind) => (HEAVY_ACTIONS.has(kind) ? READS.heavyAction.rows : READS.action.rows)),
+];
+
+/** The most documents `page` reads: every cap, plus the one row each read
+ *  takes past its cap (convex/readBudget.ts readWithin). */
+export const DOCUMENTS_READ_MAX = READ_CAPS.reduce((sum, rows) => sum + rows + 1, 0);
 
 type Range = { start: number; end: number };
 
@@ -102,6 +124,7 @@ export const page = query({
     );
 
     const actionRows: Doc<"events">[] = [];
+    const hisIssues: Doc<"events">[] = [];
     let boxChanges: Doc<"events">[] = [];
     let deploys: Doc<"events">[] = [];
     for (const kind of ACTION_KINDS) {
@@ -122,12 +145,12 @@ export const page = query({
       if (kind === "box-change") boxChanges = rows;
       else {
         if (kind === "deploy") deploys = rows;
-        actionRows.push(...rows);
+        for (const row of rows) (isHisIssue(row) ? hisIssues : actionRows).push(row);
       }
     }
 
     const told = toldByDay(
-      byTime([...oldEntries.map(dayLogTold), ...messageRows.flatMap((row) => toldOf(row) ?? [])]),
+      byTime([...oldEntries.map(dayLogTold), ...[...messageRows, ...hisIssues].flatMap((row) => toldOf(row) ?? [])]),
       byTime([...didRows, ...mealRows, ...weightRows, ...trainingRows].flatMap((row) => factToldOf(row) ?? [])),
     );
 
@@ -138,9 +161,14 @@ export const page = query({
       weights: byTime(inRange(withDayLog(
         weightRows.flatMap((row) => weightOf(row) ?? []),
         oldMeasurements.flatMap((item) => dayLogWeight(item) ?? []),
+        weightRows,
       ), from, to)),
-      meals: byTime(inRange(withDayLog(mealRows.map(mealOf), oldFood.map(dayLogMeal)), from, to)),
-      trainings: byTime(inRange(withDayLog(trainingRows.flatMap((row) => trainingOf(row) ?? []), oldWorkouts.map(dayLogTraining)), from, to)),
+      meals: byTime(inRange(withDayLog(mealRows.flatMap((row) => mealOf(row) ?? []), oldFood.map(dayLogMeal), mealRows), from, to)),
+      trainings: byTime(inRange(withDayLog(
+        trainingRows.flatMap((row) => trainingOf(row) ?? []),
+        oldWorkouts.map(dayLogTraining),
+        trainingRows,
+      ), from, to)),
       told: byTime(inRange(told, from, to)),
       actions: byTime(inRange([...actionRows.map(actionOf), ...boxChangeActions(boxChanges, deploys)], from, to)),
       cuts: budget.cuts().map(readCutLine),
