@@ -679,6 +679,35 @@ describe("claude sessions", () => {
     expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
   });
 
+  // The daemon clones WikiTom without its session archive (Jarvis
+  // worker/agents/left-out.mjs); the prompt says so, and how to bring it
+  // back, only where WikiTom is checked out.
+  it("tells a session with WikiTom that sessions/ is left out and how to bring it back", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const opener = async (repos: string[]) => {
+      const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+        title: "left out",
+        kind: "adhoc",
+        repos,
+        initialPrompt: "the mission",
+      });
+      const [inbound] = await t.run(async (ctx) =>
+        ctx.db
+          .query("claudeInbound")
+          .filter((q) => q.eq(q.field("sessionId"), sessionId))
+          .collect(),
+      );
+      return inbound.text;
+    };
+    for (const repos of [["WikiTom"], ["tom.quest", "WikiTom"]]) {
+      const text = await opener(repos);
+      expect(text).toContain("WikiTom's checkout leaves out its session archive, `sessions/`");
+      expect(text).toContain("`git sparse-checkout disable`");
+    }
+    expect(await opener(["tom.quest"])).not.toContain("sparse-checkout");
+  });
+
   it("createSession with a todoId marks the live unapplied session ruling applied", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
