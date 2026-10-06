@@ -26,7 +26,10 @@
 //
 // WIDENING THIS LATER IS ADDING ONE NAME TO THIS ARRAY. Narrowing is removing
 // one. Nothing else moves.
-export const AGENT_READABLE_SURFACES = ["TTS", "Turing"] as const;
+// "History" (2026-10-06): the /history page, so the box's browser can look
+// at the page it built; the page writes nothing, and the rows it shows are
+// ones a box agent already reads through GET /jarvis/events.
+export const AGENT_READABLE_SURFACES = ["TTS", "Turing", "History"] as const;
 
 export type AgentReadableSurface = (typeof AGENT_READABLE_SURFACES)[number];
 
