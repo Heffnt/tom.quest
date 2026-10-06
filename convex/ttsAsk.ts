@@ -451,6 +451,30 @@ export async function recordedDecision(ctx: QueryCtx, askId: string): Promise<Do
     .first();
 }
 
+/** How many of Tom's newest claudeInbound rows tomLastTurnAt reads to find
+ *  his newest user turn: his rows are user turns, interrupts and stops, so
+ *  twenty reach a turn unless the last twenty were all interrupts or stops. */
+const TOM_LAST_TURN_SCAN = 20;
+
+/**
+ * The creation time of Tom's newest turn in any session, of any kind, a
+ * therapy session included, or null when none is in the newest
+ * TOM_LAST_TURN_SCAN of his rows. Only the time leaves: a turn's text never
+ * does. The delegate reads it to tell whether he is in a session (Jarvis
+ * worker/jobs/delegate.mjs tomReach); the therapy exclusion stays where turn
+ * text is read (convex/ttsNightly.ts, the learning step), because presence is
+ * not content.
+ */
+async function tomLastTurnAt(ctx: QueryCtx): Promise<number | null> {
+  const rows = await ctx.db
+    .query("claudeInbound")
+    .withIndex("by_author", (q) => q.eq("author", "tom"))
+    .order("desc")
+    .take(TOM_LAST_TURN_SCAN);
+  const turn = rows.find((row) => row.kind === "user-turn");
+  return turn === undefined ? null : turn.createdAt;
+}
+
 export const internalAskContext = internalQuery({
   args: {
     sessionId: v.optional(v.string()),
@@ -493,6 +517,7 @@ export const internalAskContext = internalQuery({
       // False when the read of rulings stopped at its byte budget: the list
       // can then leave a standing ruling out.
       standingRulingsComplete: standing.complete,
+      tomLastTurnAt: await tomLastTurnAt(ctx),
     };
   },
 });
