@@ -1318,6 +1318,12 @@ export default defineSchema({
     //                   once for the same reason;
     //   "merge"       — `<repo>:<sha>` (its own older spelling), so a retried
     //                   report of one merge is one event.
+    // and a fourth opens it for WikiTom alone, under the same `<repo>@<sha>`:
+    //   "nightly-run" — `WikiTom@<sha>`, posted by the box's nightly job
+    //                   through POST /tts/event before it pushes that commit
+    //                   straight to WikiTom's main (data { repo, sha, head,
+    //                   job }); the night's summary row of the same kind
+    //                   carries no key.
     // One is written by the deploy job in Heffnt/Jarvis through POST /tts/event
     // (data { repo, from, to, commits, setupNeeded }):
     //   "deploy"      — `<repo>:<sha>`, the spelling "merge" uses, naming the

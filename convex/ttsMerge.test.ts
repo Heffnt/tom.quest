@@ -9,6 +9,7 @@ import {
   AUDIT_TEXT_MAX_BYTES,
   AUDIT_VERDICT,
   MERGE,
+  NIGHTLY_RUN,
   SUITE_SLOW_KEY,
   SUITE_SLOW_SECONDS,
   TESTS_JOB_SLOW_KEY,
@@ -524,6 +525,82 @@ describe("GET /tts/merge-gate — what the box asks before it merges", () => {
     expect(
       (await t.fetch(`/tts/merge-gate?repo=${REPO}&sha=${SHA}`, { method: "GET" })).status,
     ).toBe(401);
+  });
+});
+
+describe("the nightly's row — WikiTom's main takes the nightly job's pushes", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** The row as the nightly posts it (Jarvis worker/jobs/nightly.mjs
+   *  syncRemote), through the same door. */
+  const nightlyRow = (t: TestConvex<typeof schema>, repo: string, sha = SHA) =>
+    post(t, "/tts/event", {
+      kind: NIGHTLY_RUN,
+      key: commitKey(repo, sha),
+      data: { repo, sha, head: sha, job: "nightly" },
+    });
+  const gate = async (t: TestConvex<typeof schema>, repo: string, sha = SHA) =>
+    await (await get(t, `/tts/merge-gate?repo=${repo}&sha=${sha}`)).json();
+
+  it("opens for a WikiTom commit a nightly-run row names, and stays shut for one it does not", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    const shut = await gate(t, "WikiTom");
+    expect(shut.allowed).toBe(false);
+    expect(shut.missing).toEqual(["tests", "audit"]);
+
+    expect((await nightlyRow(t, "WikiTom")).status).toBe(200);
+    const open = await gate(t, "WikiTom");
+    expect(open).toMatchObject({ repo: "WikiTom", sha: SHA, allowed: true, missing: [] });
+    expect(open.checks).toEqual([
+      {
+        name: "nightly",
+        passed: true,
+        why: "the nightly job named a1b2c3d in a nightly-run row before pushing it to main",
+      },
+    ]);
+    // Another WikiTom commit is not named by that row.
+    const other = "b".repeat(40);
+    expect((await gate(t, "WikiTom", other)).allowed).toBe(false);
+    // A read is a read: no merge row appeared.
+    expect(await mergeRows(t)).toHaveLength(0);
+  });
+
+  it("opens nothing for Jarvis: a Jarvis commit with only a nightly-run row stays shut, the nightly row is WikiTom's", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    expect((await nightlyRow(t, "Jarvis")).status).toBe(200);
+    const jarvis = await gate(t, "Jarvis");
+    expect(jarvis.allowed).toBe(false);
+    expect(jarvis.missing).toEqual(["tests", "audit"]);
+    expect(jarvis.checks.map((check: { name: string }) => check.name)).toEqual(["tests", "audit"]);
+    // And a WikiTom row at the same commit hash opens nothing for Jarvis.
+    await nightlyRow(t, "WikiTom");
+    expect((await gate(t, "Jarvis")).allowed).toBe(false);
+  });
+
+  it("is not opened by the night's summary row, which shares the kind and carries no key", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    expect((await post(t, "/tts/event", { kind: NIGHTLY_RUN, data: { day: "2026-10-05", repo: "WikiTom", sha: SHA } })).status).toBe(200);
+    expect((await gate(t, "WikiTom")).allowed).toBe(false);
+  });
+
+  it("lets the merge row be written for the nightly's commit, its reason the nightly's check", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await nightlyRow(t, "WikiTom");
+    const recorded = await t.mutation(internal.ttsMerge.internalRecordMerge, {
+      repo: "WikiTom",
+      sha: SHA,
+      subject: "snapshot: 2026-10-06",
+      mainCheck: "pushed straight to main",
+    });
+    expect(recorded.recorded).toBe(true);
+    const [row] = await mergeRows(t);
+    expect((row.data as { reason: string }).reason).toBe(
+      "the nightly job named a1b2c3d in a nightly-run row before pushing it to main; pushed straight to main",
+    );
   });
 });
 

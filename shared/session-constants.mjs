@@ -63,17 +63,10 @@ export const SESSION_REPOS = /** @type {const} */ ({
  * (convex/gateLandings.ts). Each name is a SESSION_REPOS key; ComplexMultiTrigger
  * is outside the gate. WikiTom's pull requests pass the gate (the box's
  * pull-request-checks job writes their rows), and its main also takes the
- * nightly job's direct pushes, which convex/gateLandings.ts does not report.
+ * nightly job's direct pushes, each named first in a nightly-run row, which
+ * opens the gate for that WikiTom commit (convex/ttsMerge.ts NIGHTLY_RUN).
  */
 export const GATED_REPOS = /** @type {const} */ (["tom.quest", "Jarvis", "WikiTom"]);
-
-/**
- * The repositories under the gate whose main takes direct pushes by design: the
- * box's nightly job pushes WikiTom's snapshot and vocabulary commits straight to
- * main. A commit there that belongs to no pull request is not a landing past
- * the gate, so convex/gateLandings.ts files no report for it.
- */
-export const MAIN_TAKES_PUSHES = /** @type {const} */ (["WikiTom"]);
 
 /**
  * The label on the last line of every turn Tom typed, as the model receives

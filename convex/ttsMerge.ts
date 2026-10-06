@@ -32,6 +32,22 @@ import { copyDtsRow } from "./jarvis/events";
 // The wall evals are not a third row: they run in Jarvis's own test suite
 // (worker/jobs/evals-wall.test.mjs), so they gate through its tests-run row.
 //
+// ONE OTHER ROW OPENS IT, FOR ONE REPOSITORY. The box's nightly job (Jarvis
+// worker/jobs/nightly.mjs syncRemote, which the weekly job's pushes share)
+// pushes WikiTom's main straight, by design: its snapshot and vocabulary
+// commits are no change anybody reviews. Before each push it posts one row
+// per commit it is about to push:
+//
+//   "nightly-run"   — keyed `WikiTom@<sha>` (POST /tts/event).
+//                     data { repo, sha, head, job }
+//
+// and the gate answers open for a WikiTom commit such a row names. So the
+// box's receiving hook asks every push to main the same question, and the
+// nightly's exception is a fact in the record rather than a rule about a
+// path. The night's summary row shares the kind and carries no key, so the
+// keyed lookup never reads it; a nightly-run row keyed to any other
+// repository opens nothing.
+//
 // FAIL-CLOSED, and deliberately unlike the Bash classifier, which fails open:
 // a missing row is a check that did not pass. Guessing wrong here costs a
 // merge nobody looked at; guessing wrong the other way costs a branch that
@@ -39,6 +55,13 @@ import { copyDtsRow } from "./jarvis/events";
 
 export const TESTS_RUN = "tests-run";
 export const AUDIT_VERDICT = "audit-verdict";
+/** The nightly job's row naming a commit it is about to push to main. */
+export const NIGHTLY_RUN = "nightly-run";
+/** The one repository whose main the nightly job pushes, and so the one a
+ *  nightly-run row opens the gate for. */
+export const NIGHTLY_REPO = "WikiTom";
+/** The check's name when a nightly-run row opened the gate. */
+export const NIGHTLY_CHECK = "nightly";
 /** One merge, reported for objection. Its key keeps the `<repo>:<sha>`
  *  spelling it was written with. */
 export const MERGE = "merge";
@@ -367,7 +390,17 @@ export async function mergeGateFor(
             why: `the audit answered ${verdict ?? "nothing readable"} at ${short}${byWhom}, not ${AUDIT_APPROVED}${auditDetail}`,
           };
 
-  const checks = [testsCheck, auditCheck];
+  // A WikiTom commit the nightly job named before pushing it: that row is the
+  // one check, and it passed (see the head of this file).
+  const nightly = repo === NIGHTLY_REPO ? await rowFor(ctx, NIGHTLY_RUN, key) : null;
+  const checks: MergeCheck[] =
+    nightly === null
+      ? [testsCheck, auditCheck]
+      : [{
+          name: NIGHTLY_CHECK,
+          passed: true,
+          why: `the nightly job named ${short} in a ${NIGHTLY_RUN} row before pushing it to main`,
+        }];
   return {
     repo,
     sha,
@@ -450,10 +483,10 @@ async function gateStatusFor(
   const short = sha.slice(0, 7);
   const cap = (text: string) => text.slice(0, GATE_STATUS_DESCRIPTION_MAX);
   if (gate.allowed) {
-    return {
-      state: "success",
-      description: cap(`open at ${short}: ${TESTS_RUN} green, ${AUDIT_VERDICT} ${AUDIT_APPROVED}`),
-    };
+    const opened = gate.checks.some((check) => check.name === NIGHTLY_CHECK)
+      ? NIGHTLY_RUN
+      : `${TESTS_RUN} green, ${AUDIT_VERDICT} ${AUDIT_APPROVED}`;
+    return { state: "success", description: cap(`open at ${short}: ${opened}`) };
   }
   const refused: string[] = [];
   const waiting: string[] = [];
