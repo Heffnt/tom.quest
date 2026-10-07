@@ -490,6 +490,11 @@ export const REPEATS_BY_DATA_ID = [
   // the answer to its post was lost; data.id names the run and is the same on
   // every post of it. A row without data.id is recorded each time it is posted.
   "work-run",
+  // Tom's day facts, written by `jarvis write <kind>` (Jarvis
+  // worker/cli/write.mjs), which gives each fact a fresh data.id
+  // "<kind>:<random>" and names it when the answer to its post was lost, so
+  // the resend is the same row and two meals alike in every word stay two.
+  ...FACT_KINDS,
 ];
 
 /** The kinds whose data may carry `durationMs`, the job's runtime when it
