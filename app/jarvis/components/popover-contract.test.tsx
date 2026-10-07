@@ -262,10 +262,8 @@ const ROW = {
   createdAt: NOW,
 };
 
-// An old run: an index row with a stored version and no rows, which is the
-// one posture that draws the store control. It carries no sessionId, so the
-// same fixture session above does not make it live — a live run's outcome
-// block, and the line inside it, render for nothing.
+// An old run: an index row with a stored version and no rows. It carries no
+// sessionId, so the fixture session above does not make it live.
 const RUN = {
   _id: "runs|old",
   _creationTime: 0,
@@ -317,7 +315,6 @@ function load() {
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
     [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
     [getFunctionName(api.agents.get)]: RUN,
-    [getFunctionName(api.agents.materializeStatus)]: null,
     [getFunctionName(api.tts.listTodos)]: [TODO],
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
     [getFunctionName(api.ttsCode.listCodeBriefs)]: [BRIEF],
@@ -476,19 +473,6 @@ const CASES: { file: string; render: () => void }[] = [
           daemonStale
           daemonLastSeenAt={NOW}
           onBack={noop}
-          onOpenRun={noop}
-          onOpenSession={noop}
-        />,
-      );
-      // The same component at the other posture, because the control that
-      // opens an old run from the store appears in neither of the live
-      // session's states: it needs a run that is not live, whose rows are
-      // outside the window, and whose file has a stored version.
-      render(
-        <Agent
-          runId={RUN.runId}
-          depth={0}
-          now={NOW}
           onOpenRun={noop}
           onOpenSession={noop}
         />,

@@ -63,6 +63,7 @@ import type * as ttsEvals from "../ttsEvals.js";
 import type * as ttsJobs from "../ttsJobs.js";
 import type * as ttsMerge from "../ttsMerge.js";
 import type * as ttsMigrations from "../ttsMigrations.js";
+import type * as ttsMigrationsMaterialize from "../ttsMigrationsMaterialize.js";
 import type * as ttsNightly from "../ttsNightly.js";
 import type * as ttsRulings from "../ttsRulings.js";
 import type * as ttsSearch from "../ttsSearch.js";
@@ -138,6 +139,7 @@ declare const fullApi: ApiFromModules<{
   ttsJobs: typeof ttsJobs;
   ttsMerge: typeof ttsMerge;
   ttsMigrations: typeof ttsMigrations;
+  ttsMigrationsMaterialize: typeof ttsMigrationsMaterialize;
   ttsNightly: typeof ttsNightly;
   ttsRulings: typeof ttsRulings;
   ttsSearch: typeof ttsSearch;

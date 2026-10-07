@@ -34,15 +34,9 @@ const FILE = v.object({
   committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()),
   storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()),
   // The whole file's length, written only by a reader that saw the whole file:
-  // the backlog importer (which keeps no rows) and the materialize job. This
+  // the backlog importer (which keeps no rows). This
   // validator is strict, so without the field here every such ingest is refused.
   totalLines: v.optional(v.number()),
-});
-// The run's answer to "where did these rows come from, and what is missing".
-const ROWS_SOURCE = v.object({
-  from: v.literal("store"), at: v.number(), parserVersion: v.string(), storeKey: v.string(),
-  rowsFromLine: v.number(), rowsToLine: v.number(), slices: v.number(), droppedLines: v.number(),
-  partial: v.array(v.string()),
 });
 const ATTACHMENT = v.object({ file: v.string(), bytes: v.number(), sha256: v.string() });
 const CONTEXT = v.object({
@@ -115,28 +109,9 @@ function evictionEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(String(process.env.AGENTS_EVICTION_ENABLED ?? ""));
 }
 
-// One click must not become an hour of mutations: a request ingests at most one
-// slice, and a run stops after five of them and says so.
-const MAX_SLICES = 5;
 const EVICT_AGENTS_PER_TICK = 20;
 const EVICT_ROWS_PER_STEP = 200;
 const EVICT_MAX_STEPS = 200;
-const MAX_REASON_LENGTH = 200;
-
-// Both vocabularies are closed. The box answers with a fixed phrase so a
-// transcript, a path or a bucket error can never be reflected into the record.
-const MATERIALIZE_REASONS = new Set([
-  "object missing from store", "object hash mismatch", "store unreachable",
-  "no store key", "file too large", "parse produced no rows", "agent is gone",
-]);
-const MATERIALIZE_PARTIAL = new Set([
-  "sidecar-missing", "no-envelope", "pre-parser-fields",
-  "unknown-line-types", "row-cap-reached", "incomplete-tail",
-  // The store keeps an agent's newest file version and retains older ones
-  // away; a request for a version no longer held is served from the newest
-  // one, and the answer says so rather than passing it off as the one asked for.
-  "served-newer-version",
-]);
 
 function nonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -634,7 +609,7 @@ export const internalIngest = internalMutation({
     // `rowsUntil` is present IF AND ONLY IF this run's rows are in the record.
     // That invariant is what bounds the eviction scan and what makes eviction
     // idempotent, so it is maintained here, in the one place every writer of
-    // rows passes through: the live sweep, a cut-over session, a materialize.
+    // rows passes through: the live sweep, a cut-over session.
     // An index-only backlog row (rows: [], no prior window) gets no field at
     // all, and a no-op ingest writes nothing.
     if (landed && (inserted > 0 || existing?.rowsUntil !== undefined)) {
@@ -933,62 +908,6 @@ export const contextRows = query({
 });
 export const entry = query({ args: { agentId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTom(ctx, "Agents"); assertAgentId(args.agentId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.agentId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
 
-// ── Opening an old run from the store ────────────────────────────────────────
-// Convex holds no S3 reader credential and no second request signer, so a run
-// whose rows are not in the record opens by asking the box for them. Tom (or a
-// job) queues a request here; `worker/agents/materialize.mjs` serves it and
-// ingests the rows through the existing /agents/ingest door. There is no second
-// ingest path.
-
-async function newestRequest(ctx: QueryCtx | MutationCtx, runId: string) {
-  return await ctx.db
-    .query("runMaterializeRequests")
-    .withIndex("by_run_requestedAt", (q) => q.eq("runId", runId))
-    .order("desc")
-    .first();
-}
-
-/**
- * The one place a request is queued, shared by Tom's mutation and the worker
- * route so the refusals and the idempotence cannot drift apart. Idempotent
- * while a request is pending: a second press returns the first request rather
- * than queueing work the box would do twice.
- */
-async function enqueueMaterialize(ctx: MutationCtx, runId: string, requestedBy: "tom" | "worker") {
-  if (!validAgentId(runId)) return { ok: false as const, reason: "invalid agentId" };
-  const run = await agentAt(ctx, runId);
-  if (!run) return { ok: false as const, reason: "agent not found" };
-  if (!run.file.storeKey) return { ok: false as const, reason: "agent has no store key" };
-  const newest = await newestRequest(ctx, runId);
-  if (newest && newest.status === "pending") {
-    return { ok: true as const, requestId: newest._id, slice: newest.slice, queued: false };
-  }
-  const requestId = await ctx.db.insert("runMaterializeRequests", {
-    runId, requestedBy, requestedAt: Date.now(), status: "pending" as const, slice: 1,
-  });
-  return { ok: true as const, requestId, slice: 1, queued: true };
-}
-
-export const requestMaterialize = mutation({
-  args: { agentId: v.string() },
-  handler: async (ctx, args) => {
-    await requireTom(ctx, "Agents");
-    const queued = await enqueueMaterialize(ctx, args.agentId, "tom");
-    // Fixed phrases: the page renders the refusal and nothing here echoes a payload.
-    if (!queued.ok) throw new Error(queued.reason);
-    return await ctx.db.get(queued.requestId);
-  },
-});
-
-export const materializeStatus = query({
-  args: { agentId: v.string() },
-  handler: async (ctx, args) => {
-    await requireTom(ctx, "Agents");
-    assertAgentId(args.agentId);
-    return await newestRequest(ctx, args.agentId);
-  },
-});
-
 // Reading a run is what keeps it in the record — but only a run that HAS rows,
 // so looking at an index-only backlog run never makes it evictable, and reading
 // the same run six times in an afternoon is one write, not six.
@@ -1003,136 +922,6 @@ export const markOpened = mutation({
     if (next <= run.rowsUntil + DAY_MS) return { ok: true as const, moved: false };
     await ctx.db.patch(run._id, { rowsUntil: next });
     return { ok: true as const, moved: true };
-  },
-});
-
-// The worker-key twin of requestMaterialize (phase 7's evals will need an old
-// run's rows). It answers rather than throws, because an HTTP route turns the
-// answer into a status code.
-export const internalRequestMaterialize = internalMutation({
-  args: { runId: v.string(), requestedBy: v.union(v.literal("tom"), v.literal("worker")) },
-  handler: async (ctx, args) => {
-    const queued = await enqueueMaterialize(ctx, args.runId, args.requestedBy);
-    if (!queued.ok) return queued;
-    return { ok: true as const, requestId: queued.requestId, slice: queued.slice, queued: queued.queued };
-  },
-});
-
-export const internalNextMaterialize = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    const request = await ctx.db
-      .query("runMaterializeRequests")
-      .withIndex("by_status_requestedAt", (q) => q.eq("status", "pending"))
-      .order("asc")
-      .first();
-    if (!request) return { request: null };
-    const run = await agentAt(ctx, request.runId);
-    // A request whose run vanished, or whose run never had a store key, is
-    // still answerable: it comes back with `storeKey: null` so the job writes
-    // `failed` and the queue drains. Skipping it would park it at the head of
-    // the queue forever — the queue is drained by answers, not by attempts.
-    const cli = run?.cli;
-    const prefix = run ? `${cli}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
-    const file = run
-      ? {
-          path: run.file.path, sourceHash: run.file.sourceHash, storedHash: run.file.storedHash,
-          bytes: run.file.bytes, storedBytes: run.file.storedBytes,
-          committedLine: run.file.committedLine, committedPrefixSha256: run.file.committedPrefixSha256,
-          storeKey: run.file.storeKey ?? null, sidecarStoredHash: run.file.sidecarStoredHash ?? null,
-          totalLines: run.file.totalLines ?? null, incompleteTail: run.file.incompleteTail ?? false,
-        }
-      : {
-          path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0,
-          committedLine: 0, committedPrefixSha256: "", storeKey: null,
-          sidecarStoredHash: null, totalLines: null, incompleteTail: false,
-        };
-    const hasRows = Boolean(
-      await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", request.runId)).first(),
-    );
-    return {
-      request: {
-        requestId: request._id, agentId: request.runId, slice: request.slice,
-        requestedBy: request.requestedBy, requestedAt: request.requestedAt,
-        cli: cli ?? request.runId.split(":")[0],
-        host: run?.host ?? request.runId.split(":")[1],
-        threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
-        depth: run?.depth ?? 0,
-        parentAgentId: run?.parentRunId ?? null,
-        file,
-        hasRows,
-        // Where the parse resumes: a backlog run has no rows and starts at 0, a
-        // continuation starts at the lines already in the record.
-        fromLine: hasRows ? file.committedLine : 0,
-      },
-    };
-  },
-});
-
-export const internalAnswerMaterialize = internalMutation({
-  args: {
-    requestId: v.id("runMaterializeRequests"),
-    status: v.union(v.literal("served"), v.literal("failed")),
-    reason: v.optional(v.string()),
-    rowsIngested: v.optional(v.number()),
-    fromLine: v.optional(v.number()),
-    toLine: v.optional(v.number()),
-    totalLines: v.optional(v.number()),
-    rowsSource: v.optional(ROWS_SOURCE),
-  },
-  handler: async (ctx, args) => {
-    if (args.reason !== undefined && args.reason.length > MAX_REASON_LENGTH) return { ok: false as const, reason: "reason too long" };
-    if (args.reason !== undefined && !MATERIALIZE_REASONS.has(args.reason)) return { ok: false as const, reason: "reason outside the closed vocabulary" };
-    if (args.rowsSource && !args.rowsSource.partial.every((value) => MATERIALIZE_PARTIAL.has(value))) return { ok: false as const, reason: "partial outside the closed vocabulary" };
-    for (const count of [args.rowsIngested, args.fromLine, args.toLine, args.totalLines]) {
-      if (count !== undefined && !nonNegativeInteger(count)) return { ok: false as const, reason: "invalid line counts" };
-    }
-    const request = await ctx.db.get(args.requestId);
-    if (!request) return { ok: false as const, reason: "request not found" };
-    // A second answer to the same request changes nothing: a retried POST must
-    // not queue a second continuation.
-    if (request.status !== "pending") return { ok: true as const, alreadyAnswered: true, continuation: false };
-
-    await ctx.db.patch(request._id, {
-      status: args.status, servedAt: Date.now(),
-      ...(args.reason === undefined ? {} : { reason: args.reason }),
-      ...(args.rowsIngested === undefined ? {} : { rowsIngested: args.rowsIngested }),
-      ...(args.fromLine === undefined ? {} : { fromLine: args.fromLine }),
-      ...(args.toLine === undefined ? {} : { toLine: args.toLine }),
-    });
-    if (args.status !== "served") return { ok: true as const, alreadyAnswered: false, continuation: false };
-
-    const run = await agentAt(ctx, request.runId);
-    const totalLines = args.totalLines ?? run?.file.totalLines;
-    const linesRemain = args.toLine !== undefined && totalLines !== undefined && args.toLine < totalLines;
-    // After the last slice the run keeps `committedLine < totalLines` and the
-    // page must say why, so the cap names itself even if the job did not.
-    let rowsSource = args.rowsSource;
-    if (rowsSource && linesRemain && request.slice >= MAX_SLICES && !rowsSource.partial.includes("row-cap-reached")) {
-      rowsSource = { ...rowsSource, partial: [...rowsSource.partial, "row-cap-reached"] };
-    }
-    if (run) {
-      const patch: Record<string, unknown> = {};
-      if (rowsSource) patch.rowsSource = rowsSource;
-      if (args.totalLines !== undefined) patch.file = { ...run.file, totalLines: args.totalLines };
-      if (Object.keys(patch).length > 0) await ctx.db.patch(run._id, patch);
-    }
-
-    // A reader who opened a run wants the run: the continuation is queued here
-    // rather than asked of Tom again. Never a second pending request for one
-    // run, however this route is retried.
-    let continuation = false;
-    if (linesRemain && request.slice < MAX_SLICES) {
-      const newest = await newestRequest(ctx, request.runId);
-      if (!newest || newest.status !== "pending") {
-        await ctx.db.insert("runMaterializeRequests", {
-          runId: request.runId, requestedBy: request.requestedBy, requestedAt: Date.now(),
-          status: "pending" as const, slice: request.slice + 1,
-        });
-        continuation = true;
-      }
-    }
-    return { ok: true as const, alreadyAnswered: false, continuation };
   },
 });
 
@@ -1219,10 +1008,10 @@ export const internalEvictTick = internalMutation({
     pendingRunId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    // OFF by default. Turning it on is the caller's action, after the S3
-    // backend is live on that deployment and a materialize has round-tripped
-    // there: evicting rows whose store objects sit in a local directory on a
-    // machine that may be reinstalled is deleting what nothing can restore.
+    // OFF by default, and to stay off: the materialize job that rebuilt an
+    // evicted run's rows from the store was removed on 2026-10-07 (design
+    // section 13.2), so an evicted run would show its header and no
+    // transcript on the sessions page, with nothing to bring its rows back.
     if (!evictionEnabled()) {
       await event(ctx, "agents-evicted", {
         at: Date.now(), runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0,
@@ -1246,7 +1035,7 @@ export const internalEvictTick = internalMutation({
       const run = await agentAt(ctx, runId);
       // Clearing `rowsUntil` takes the run out of the scan index — that, and
       // not a cursor, is what makes the tick idempotent. The runs row, its
-      // labels, its file, outcome, context, rowsSource and edges all stay.
+      // labels, its file, outcome, context and edges all stay.
       if (run) await ctx.db.patch(run._id, { rowsEvictedAt: now, rowsUntil: undefined });
       runsEvicted += 1;
     };

@@ -219,41 +219,7 @@ export default function Agent({
     (pageStatus === "Exhausted" || pageStatus === "CanLoadMore");
   const hasRows = rows.length > 0;
 
-  // ── OPENING AN OLD RUN FROM THE STORE ──────────────────────────────────
-  // Convex holds the run index and a bounded window of rows; the store holds
-  // every version (§23.4). So a run outside the window has a header, an
-  // outcome and no transcript, and the way back is to ask for it: the press
-  // queues a request, worker/agents/materialize.mjs reads the stored version,
-  // parses it with the CURRENT parser and ingests the rows through the same
-  // /agents/ingest door the sweep uses. Nothing here fetches anything — the
-  // rows arrive on the subscription this page already holds, and this line
-  // goes away when they do.
-  const requestMaterialize = useMutation(api.agents.requestMaterialize);
   const markOpened = useMutation(api.agents.markOpened);
-  const [storeError, setStoreError] = useState<string | null>(null);
-  // Subscribed only while there is something for it to say: this run is the
-  // page, its rows are missing, and there is a stored version to fetch them
-  // from. When the rows land the query is skipped again with the line.
-  const materializeStatus = useQuery(
-    api.agents.materializeStatus,
-    depth === 0 &&
-      resolvedRunId !== undefined &&
-      rowsEmpty &&
-      run?.file.storeKey !== undefined
-      ? { agentId: resolvedRunId }
-      : "skip",
-  );
-  const openFromStore = useCallback(() => {
-    if (resolvedRunId === undefined) return;
-    setStoreError(null);
-    void requestMaterialize({ agentId: resolvedRunId }).catch((e: unknown) => {
-      // The mutation's refusals are fixed phrases ("agent has no store key"),
-      // so this is bounded text, not a payload echoed back.
-      setStoreError(
-        e instanceof Error ? previewLine(e.message, 80) : "the request was refused",
-      );
-    });
-  }, [requestMaterialize, resolvedRunId]);
 
   // READING AN AGENT IS WHAT KEEPS IT. agents.markOpened moves the row window
   // forward 30 days, clamped so six reads in an afternoon are one write, and
@@ -279,9 +245,6 @@ export default function Agent({
         session={session ?? null}
         live={live}
         rowsEmpty={rowsEmpty}
-        request={materializeStatus}
-        storeError={storeError}
-        onOpenFromStore={openFromStore}
         onOpenRun={onOpenRun}
         onOpenSession={onOpenSession}
       />
@@ -291,9 +254,6 @@ export default function Agent({
       session,
       live,
       rowsEmpty,
-      materializeStatus,
-      storeError,
-      openFromStore,
       onOpenRun,
       onOpenSession,
     ],
@@ -657,9 +617,6 @@ function Lead({
   session,
   live,
   rowsEmpty,
-  request,
-  storeError,
-  onOpenFromStore,
   onOpenRun,
   onOpenSession,
 }: {
@@ -667,11 +624,6 @@ function Lead({
   session: Doc<"claudeSessions"> | null;
   live: boolean;
   rowsEmpty: boolean;
-  /** The newest materialize request for this agent: agents.materializeStatus. */
-  request?: Doc<"runMaterializeRequests"> | null;
-  /** A refusal from the press itself, as opposed to one from the box. */
-  storeError?: string | null;
-  onOpenFromStore?: () => void;
   onOpenRun: (runId: string) => void;
   onOpenSession: (sessionId: Id<"claudeSessions">) => void;
 }) {
@@ -691,45 +643,8 @@ function Lead({
       : `${session.outcome}${session.outcomeSummary ? ` — ${session.outcomeSummary}` : ""}`
     : outcome?.endedReason;
 
-  // The run itself did not open whole (§7): a fact independent of whether an
-  // auditor later found a path it did not walk, so it must stand even when
-  // the outcome block above has nothing else to say.
-  const rowsSource = run?.rowsSource;
-  const rowsSourceLine =
-    rowsSource === undefined
-      ? undefined
-      : [
-          "rows from the store",
-          `parser ${rowsSource.parserVersion}`,
-          // `file.totalLines` is written only by a reader that saw the WHOLE
-          // file (schema.ts note above `file`); a total nobody measured must
-          // not be printed as though it were known.
-          `lines ${rowsSource.rowsFromLine}–${rowsSource.rowsToLine}${
-            run?.file.totalLines === undefined
-              ? ""
-              : ` of ${run.file.totalLines}`
-          }`,
-          `${rowsSource.slices} slices`,
-          // Zero dropped lines is not a fact worth a reader's attention.
-          rowsSource.droppedLines === 0
-            ? undefined
-            : `${rowsSource.droppedLines} dropped`,
-          // Verbatim, not prose: `partial` is a closed vocabulary the record
-          // writes and the tests assert on (MATERIALIZE_PARTIAL) — the page's
-          // job is to say the run did not open whole, not to explain each way.
-          rowsSource.partial.length === 0
-            ? undefined
-            : `partial: ${rowsSource.partial.join(", ")}`,
-        ]
-          .filter((part): part is string => part !== undefined)
-          .join(" · ");
-
   const nothing =
-    live ||
-    (summary === undefined &&
-      facts.length === 0 &&
-      !rowsEmpty &&
-      rowsSourceLine === undefined);
+    live || (summary === undefined && facts.length === 0 && !rowsEmpty);
   if (nothing) return null;
 
   const continues = run?.continuesRunId ?? undefined;
@@ -787,55 +702,12 @@ function Lead({
       </div>
       {rowsEmpty && run !== null && (
         // The 30-day row window has passed this agent by, or it was never
-        // ingested at all (§23.4). The store keeps the newest version of this
-        // agent's file and serves an older request from it, so the line
-        // carries the one control that brings the rows back.
-        <div className="font-mono text-[10px] text-text-faint break-words flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <span>
-            rows not in the record · {run.file.path.split(/[\\/]/).pop() || "no file"} ·
-            version {run.file.storedHash.slice(0, 12)}
-          </span>
-          {request?.status === "pending" ? (
-            // One true sentence and no spinner: nothing is streaming here.
-            // The box takes the oldest request on its next minute.
-            <span>opening from the store · slice {request.slice}</span>
-          ) : (
-            run.file.storeKey !== undefined &&
-            onOpenFromStore !== undefined && (
-              <>
-                {request?.status === "failed" && (
-                  // A fixed phrase from the job's closed vocabulary, so a
-                  // transient store failure is one more press, not a dead end.
-                  <span className="text-error">
-                    could not open · {request.reason ?? "no reason given"}
-                  </span>
-                )}
-                {storeError !== null && storeError !== undefined && (
-                  <span className="text-error">could not open · {storeError}</span>
-                )}
-                <button
-                  type="button"
-                  onClick={onOpenFromStore}
-                  className="text-accent underline underline-offset-2 hover:text-text"
-                >
-                  open this agent from the store
-                </button>
-                <Info call="agents.requestMaterialize({ agentId })">
-                  Queues this agent for the box. It reads the stored version of
-                  the file back, parses it with the current parser and writes
-                  the rows into the record — within a minute, and the rows
-                  appear here on their own. Nothing on the host is touched.
-                </Info>
-              </>
-            )
-          )}
-        </div>
-      )}
-      {rowsSourceLine !== undefined && (
-        // It is a fact, not a control: no popover, no click target, no link —
-        // the run did not open whole, and that is all this line says.
+        // ingested at all (§23.4). Nothing brings the rows back into the
+        // record: the job that rebuilt them from the store was removed on
+        // 2026-10-07 (design section 13.2), so the line says only that.
         <div className="font-mono text-[10px] text-text-faint break-words">
-          {rowsSourceLine}
+          rows not in the record · {run.file.path.split(/[\\/]/).pop() || "no file"} ·
+          version {run.file.storedHash.slice(0, 12)}
         </div>
       )}
     </div>

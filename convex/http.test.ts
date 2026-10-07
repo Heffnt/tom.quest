@@ -652,84 +652,6 @@ describe("phase 3 agent routes", () => {
   });
 });
 
-// ── The materialize queue's three doors ─────────────────────────────────────
-// The box asks for the oldest pending request, serves it, and ANSWERS — a
-// request it cannot serve is written failed with a phrase from the closed
-// vocabulary, so one unreachable object never parks the queue.
-describe("/agents/materialize*: the queue the box drains", () => {
-  afterEach(() => vi.unstubAllEnvs());
-  const KEY = { "Content-Type": "application/json", "X-Sessions-Key": "right" };
-  const stored = { ...body, run: { ...body.run, file: { ...body.run.file, storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } } };
-
-  it("keeps all three doors behind the session worker key", async () => {
-    const t = convexTest(schema, modules);
-    expect((await t.fetch("/agents/materialize-request")).status).toBe(503);
-    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    expect((await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
-    expect((await t.fetch("/agents/materialize", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
-    expect((await t.fetch("/agents/materialize-answer", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
-  });
-
-  it("queues, hands over and answers one request", async () => {
-    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest(schema, modules);
-    expect(await (await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
-    expect(await t.mutation(internal.agents.internalIngest, stored as never)).toMatchObject({ ok: true });
-
-    const queued = await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) });
-    expect(queued.status).toBe(200);
-    expect(await queued.json()).toMatchObject({ ok: true, slice: 1, queued: true });
-    // Idempotent while it is pending.
-    expect(await (await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) })).json()).toMatchObject({ queued: false });
-
-    const handed = await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } });
-    expect(handed.status).toBe(200);
-    const { request } = await handed.json();
-    expect(request).toMatchObject({ agentId: "claude:laptop:http-run", cli: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
-
-    const answer = await t.fetch("/agents/materialize-answer", {
-      method: "POST", headers: KEY,
-      body: JSON.stringify({
-        requestId: request.requestId, status: "served", rowsIngested: 0, fromLine: 0, toLine: 4000, totalLines: 4000,
-        rowsSource: { from: "store", at: 1, parserVersion: "runs-parser-1", storeKey: request.file.storeKey, rowsFromLine: 0, rowsToLine: 4000, slices: 1, droppedLines: 0, partial: ["no-envelope"] },
-      }),
-    });
-    expect(answer.status).toBe(200);
-    expect(await answer.json()).toMatchObject({ ok: true, continuation: false });
-    expect(await (await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
-  });
-
-  it("refuses an agent with no store key and never reflects a payload", async () => {
-    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest(schema, modules);
-    expect(await t.mutation(internal.agents.internalIngest, body as never)).toMatchObject({ ok: true });
-    const refused = await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) });
-    expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: "agent has no store key" });
-    expect((await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "nope" }) })).status).toBe(400);
-  });
-
-  it("narrows every answer field before the record sees it", async () => {
-    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest(schema, modules);
-    expect(await t.mutation(internal.agents.internalIngest, stored as never)).toMatchObject({ ok: true });
-    await t.fetch("/agents/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ agentId: "claude:laptop:http-run" }) });
-    const { request } = await (await t.fetch("/agents/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json();
-    const answer = (payload: Record<string, unknown>) => t.fetch("/agents/materialize-answer", { method: "POST", headers: KEY, body: JSON.stringify({ requestId: request.requestId, status: "failed", ...payload }) });
-
-    expect((await answer({ reason: "a".repeat(201) })).status).toBe(400);
-    expect((await answer({ status: "maybe" })).status).toBe(400);
-    expect((await answer({ toLine: -1 })).status).toBe(400);
-    expect((await answer({ rowsSource: { from: "elsewhere" } })).status).toBe(400);
-    expect((await answer({ rowsSource: { from: "store", at: 1, parserVersion: "runs-parser-1", storeKey: "k", rowsFromLine: 0, rowsToLine: 1, slices: 1, droppedLines: 0, partial: [7] } })).status).toBe(400);
-    // Well-formed but outside the closed vocabulary: a refusal, not a record.
-    const outside = await answer({ reason: "the bucket said no" });
-    expect(outside.status).toBe(409);
-    expect(await outside.json()).toEqual({ error: "reason outside the closed vocabulary" });
-    expect((await answer({ reason: "store unreachable" })).status).toBe(200);
-  });
-});
-
 // ── The agent spelling only ─────────────────────────────────────────────────
 // Every door the box posts to reads the agent spelling, refuses a body that
 // still carries a run-spelled key with a 400 naming both keys, and hands the
@@ -818,6 +740,15 @@ describe("the agent doors read the agent spelling only", () => {
     expect((await t.fetch("/tts/run-trace?token=3f2504e0-4f89-41d3-9a0c-0305e82c3301", { headers: { "X-TTS-Key": "s3cret" } })).status).toBe(404);
   });
 
+  it("the materialize doors answer nothing (removed with the job, 2026-10-07)", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest(schema, modules);
+    for (const path of ["materialize", "materialize-answer"]) {
+      expect((await post(t, `/agents/${path}`, {})).status, path).toBe(404);
+    }
+    expect((await t.fetch("/agents/materialize-request", { headers: KEY })).status).toBe(404);
+  });
+
   it("/agents/ingest stores agents, edges and file versions in the stored spelling", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest(schema, modules);
@@ -871,35 +802,6 @@ describe("the agent doors read the agent spelling only", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, stamped: true });
     expect((await stored(t, "claudeMessages"))[0]).toMatchObject({ overflow: { sha256: HELLO_SHA256, byteLength: 11, chunkCount: 1 } });
-  });
-
-  it("/agents/materialize queues a request under agentId and refuses runId", async () => {
-    const t = await withRoot([], STORED_FILE);
-    await refusedAs(await post(t, "/agents/materialize", { runId: ROOT }), "runId", "agentId");
-    expect(await stored(t, "runMaterializeRequests")).toEqual([]);
-    expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
-    expect(await stored(t, "runMaterializeRequests")).toEqual([expect.objectContaining({ runId: ROOT, requestedBy: "worker", status: "pending" })]);
-  });
-
-  it("/agents/materialize-answer takes \"agent is gone\" and refuses \"run is gone\"", async () => {
-    const t = await withRoot([], STORED_FILE);
-    expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
-    const { request } = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
-    const old = await post(t, "/agents/materialize-answer", { requestId: request.requestId, status: "failed", reason: "run is gone" });
-    expect(old.status).toBe(409);
-    expect(await old.json()).toEqual({ error: "reason outside the closed vocabulary" });
-    const response = await post(t, "/agents/materialize-answer", { requestId: request.requestId, status: "failed", reason: "agent is gone" });
-    expect(response.status).toBe(200);
-    expect(await stored(t, "runMaterializeRequests")).toEqual([expect.objectContaining({ status: "failed", reason: "agent is gone" })]);
-  });
-
-  it("/agents/materialize-request answers agentId and parentAgentId only", async () => {
-    const t = await withRoot([], STORED_FILE);
-    expect((await post(t, "/agents/materialize", { agentId: ROOT })).status).toBe(200);
-    const { request } = await (await t.fetch("/agents/materialize-request", { headers: KEY })).json();
-    expect(request).toMatchObject({ agentId: ROOT, parentAgentId: null });
-    expect(request).not.toHaveProperty("runId");
-    expect(request).not.toHaveProperty("parentRunId");
   });
 
   it("/agents/manifest resumes under afterAgentId and refuses afterRunId", async () => {
