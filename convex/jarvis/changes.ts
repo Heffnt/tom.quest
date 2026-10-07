@@ -22,7 +22,7 @@
 //     changes nothing. It carries `pushedAt`, when the box received the push
 //     (its receiving hook's stamp, which the gate job sends again from its
 //     queue): two posts for one branch can arrive out of order, and a post
-//     for another head pushed before the row's own is refused, so the row
+//     for another head not pushed after the row's own is refused, so the row
 //     never moves back to an older head; and a blocked or rejected row is
 //     reopened for its own head only by a later push of it, so a duplicate
 //     post never erases the gate job's outcome.
@@ -98,9 +98,11 @@ export const write = internalMutation({
       }
       if (
         newest !== null && newest.head !== args.head
-        && newest.pushedAt !== undefined && args.pushedAt !== undefined && args.pushedAt < newest.pushedAt
+        // Not later is refused, equal included: two heads with one stamp
+        // cannot be ordered, and the row keeps the head it holds.
+        && newest.pushedAt !== undefined && args.pushedAt !== undefined && args.pushedAt <= newest.pushedAt
       ) {
-        return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} was pushed before the row's ${newest.head.slice(0, 7)}` };
+        return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} was not pushed after the row's ${newest.head.slice(0, 7)}` };
       }
       // A blocked or rejected row holds the gate job's finished outcome for
       // its head. Only a later push of that head (a later stamp) reopens it; a

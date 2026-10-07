@@ -82,7 +82,11 @@ describe("POST /jarvis/change", () => {
     const newer = open(B);
     await post(t, newer);
     const late = await post(t, older);
-    expect(late.body).toMatchObject({ applied: false, why: `${A.slice(0, 7)} was pushed before the row's ${B.slice(0, 7)}` });
+    expect(late.body).toMatchObject({ applied: false, why: `${A.slice(0, 7)} was not pushed after the row's ${B.slice(0, 7)}` });
+    // Another head with the very same stamp cannot be ordered: refused too.
+    const same = await post(t, { ...open(A), pushedAt: newer.pushedAt });
+    expect(same.body).toMatchObject({ applied: false });
+    expect((await rows(t))[0]).toMatchObject({ head: B });
     expect((await rows(t))[0]).toMatchObject({ head: B, state: "checking", pushedAt: newer.pushedAt });
     // The gate job's re-post of the same head with its queue's stamp keeps the row.
     expect((await post(t, { ...newer, pushedAt: newer.pushedAt - 1 })).body.applied).toBe(true);
