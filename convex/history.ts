@@ -1,7 +1,6 @@
 // history.ts — the /history page's one read: his diet and exercise, what he
 // told Jarvis, and what Jarvis did, over a range of days. It reads the events
-// table by kind (and, until the day log is folded into events, the day log's
-// two tables) and writes nothing. The rows become what the page draws in
+// table by kind and writes nothing. The rows become what the page draws in
 // convex/historyRows.ts.
 //
 // THE READS ARE BOUNDED BY BYTES (convex/readBudget.ts): one budget of
@@ -31,10 +30,6 @@ import {
   actionOf,
   boxChangeActions,
   byTime,
-  dayLogMeal,
-  dayLogTold,
-  dayLogTraining,
-  dayLogWeight,
   daysBetween,
   factToldOf,
   inRange,
@@ -46,7 +41,6 @@ import {
   toldByDay,
   trainingOf,
   weightOf,
-  withDayLog,
   type HistoryPage,
 } from "./historyRows";
 
@@ -59,7 +53,6 @@ const BUDGET = 12 * MIB;
 const READS = {
   fact: { bytes: MIB, rows: 1500 },
   told: { bytes: MIB, rows: 1000 },
-  dayLog: { bytes: MIB / 2, rows: 800 },
   action: { bytes: MIB / 4, rows: 150 },
   // The heavy kinds: an eval-run row carries every item it ran, and the box
   // posts up to hundreds of box-change rows a day.
@@ -69,11 +62,10 @@ const READS = {
 const HEAVY_ACTIONS = new Set<string>(["box-change", "eval-run", "work-run", "deploy"]);
 
 /** The reads `page` makes, each with its row cap: three fact kinds, did and
- *  his thread messages, four day-log reads, and one per action kind. */
+ *  his thread messages, and one per action kind. */
 const READ_CAPS: number[] = [
   READS.fact.rows, READS.fact.rows, READS.fact.rows,
   READS.told.rows, READS.told.rows,
-  READS.dayLog.rows, READS.dayLog.rows, READS.dayLog.rows, READS.dayLog.rows,
   ...ACTION_KINDS.map((kind) => (HEAVY_ACTIONS.has(kind) ? READS.heavyAction.rows : READS.action.rows)),
 ];
 
@@ -109,20 +101,6 @@ export const page = query({
     const didRows = await events(FACT_KINDS.did, "his other facts", READS.told, factRange);
     const messageRows = await events(MESSAGE_KIND, "his thread messages", READS.told);
 
-    const dayLogItems = async (type: Doc<"dayLogItems">["type"], what: string) => readWithin(
-      budget.allot(what, READS.dayLog.bytes),
-      ctx.db.query("dayLogItems").withIndex("by_type_day", (q) => q.eq("type", type).gte("day", from).lte("day", to)),
-      READS.dayLog.rows,
-    );
-    const oldMeasurements = await dayLogItems("measurement", "day-log measurements");
-    const oldWorkouts = await dayLogItems("workout", "day-log workouts");
-    const oldFood = await dayLogItems("food", "day-log meals");
-    const oldEntries = await readWithin(
-      budget.allot("day-log entries", READS.dayLog.bytes),
-      ctx.db.query("dayLogEntries").withIndex("by_day", (q) => q.gte("day", from).lte("day", to)),
-      READS.dayLog.rows,
-    );
-
     const actionRows: Doc<"events">[] = [];
     const hisIssues: Doc<"events">[] = [];
     let boxChanges: Doc<"events">[] = [];
@@ -150,7 +128,7 @@ export const page = query({
     }
 
     const told = toldByDay(
-      byTime([...oldEntries.map(dayLogTold), ...[...messageRows, ...hisIssues].flatMap((row) => toldOf(row) ?? [])]),
+      byTime([...messageRows, ...hisIssues].flatMap((row) => toldOf(row) ?? [])),
       byTime([...didRows, ...mealRows, ...weightRows, ...trainingRows].flatMap((row) => factToldOf(row) ?? [])),
     );
 
@@ -158,17 +136,9 @@ export const page = query({
       from,
       to,
       days: daysBetween(from, to),
-      weights: byTime(inRange(withDayLog(
-        weightRows.flatMap((row) => weightOf(row) ?? []),
-        oldMeasurements.flatMap((item) => dayLogWeight(item) ?? []),
-        weightRows,
-      ), from, to)),
-      meals: byTime(inRange(withDayLog(mealRows.flatMap((row) => mealOf(row) ?? []), oldFood.map(dayLogMeal), mealRows), from, to)),
-      trainings: byTime(inRange(withDayLog(
-        trainingRows.flatMap((row) => trainingOf(row) ?? []),
-        oldWorkouts.map(dayLogTraining),
-        trainingRows,
-      ), from, to)),
+      weights: byTime(inRange(weightRows.flatMap((row) => weightOf(row) ?? []), from, to)),
+      meals: byTime(inRange(mealRows.flatMap((row) => mealOf(row) ?? []), from, to)),
+      trainings: byTime(inRange(trainingRows.flatMap((row) => trainingOf(row) ?? []), from, to)),
       told: byTime(inRange(told, from, to)),
       actions: byTime(inRange([...actionRows.map(actionOf), ...boxChangeActions(boxChanges, deploys)], from, to)),
       cuts: budget.cuts().map(readCutLine),

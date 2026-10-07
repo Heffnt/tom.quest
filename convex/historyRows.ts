@@ -25,17 +25,11 @@
 //             with a metric is a timed or loaded test, not a session, and is
 //             not counted in the weekly bars.
 //   did       summary and quote.
-// His sentences on a day are the day log's entries, his thread messages and
-// the issues he reported (an issue row with data.by "tom", whose text is his
+// His sentences on a day are his thread messages and the issues he reported (an issue row with data.by "tom", whose text is his
 // sentence), then each fact's quote (a did row's summary when it has none; the other
 // kinds' summaries are not his words) that no sentence drawn that day holds.
-//
-// THE DAY LOG, until it is folded into events: the dayLogEntries and
-// dayLogItems tables hold every fact he gave before the events kinds existed.
-// They are read alongside, as the same series, and only for a day on which
-// the events table holds any row of that kind (a waist or a hang test
-// included, since the copy of a day brings all its items), so a day copied
-// into events is drawn once.
+// The facts he gave the day log before these kinds existed were copied in as
+// rows of these kinds (convex/ttsMigrations.ts, October 6, 2026).
 import type { Doc } from "./_generated/dataModel";
 import { addDays, newYorkDay, newYorkInstant } from "../shared/clock.mjs";
 import { SESSION_REPOS } from "../shared/session-constants.mjs";
@@ -330,56 +324,9 @@ export function boxChangeActions(changes: Row[], deploys: Row[]): Action[] {
   return out;
 }
 
-// ── The day log, until it is folded into events ─────────────────────────────
-
-type DayLogItem = Pick<Doc<"dayLogItems">, "_id" | "day" | "type" | "summary" | "metric" | "value" | "unit" | "activity" | "bodyParts" | "distanceMi" | "durationMin" | "createdAt">;
-type DayLogEntry = Pick<Doc<"dayLogEntries">, "_id" | "day" | "text" | "createdAt">;
-
-/** A day-log item has a day and no time; it is drawn at noon of that day. */
-function itemAt(item: DayLogItem): number {
-  return newYorkInstant(item.day, 12);
-}
-
-export function dayLogWeight(item: DayLogItem): Weight | null {
-  if (item.metric !== "weight" || item.value === undefined) return null;
-  // The day log's weight is in pounds (convex/dayLogVocabulary.ts).
-  return { id: item._id, at: itemAt(item), day: item.day, lb: item.value };
-}
-
-export function dayLogMeal(item: DayLogItem): Meal {
-  return { id: item._id, at: itemAt(item), day: item.day, text: item.summary };
-}
-
-export function dayLogTraining(item: DayLogItem): Training {
-  return {
-    id: item._id,
-    at: itemAt(item),
-    day: item.day,
-    text: item.summary,
-    bodyParts: item.bodyParts ?? [],
-    ...(item.activity === undefined ? {} : { activity: item.activity }),
-    ...(item.durationMin === undefined ? {} : { durationMin: item.durationMin }),
-    ...(item.distanceMi === undefined ? {} : { distanceMi: item.distanceMi }),
-  };
-}
-
-export function dayLogTold(entry: DayLogEntry): Told {
-  return { id: entry._id, at: entry.createdAt, day: entry.day, text: entry.text };
-}
-
 /**
- * The events rows drawn, then the day log's rows for the days on which the
- * events table holds no row of the kind at all: `covered` is every day of the
- * kind's rows, read before any is left out of a chart.
- */
-export function withDayLog<T extends { day: string }>(fromEvents: T[], fromDayLog: T[], covered: Row[]): T[] {
-  const days = new Set(covered.flatMap((row) => factDay(row) ?? []));
-  return [...fromEvents, ...fromDayLog.filter((row) => !days.has(row.day))];
-}
-
-/**
- * His sentences of each day: every whole sentence (a day-log entry, a thread
- * message) once, then each fact's words that none of them already holds,
+ * His sentences of each day: every whole sentence (a thread message, an
+ * issue he reported) once, then each fact's words that none of them already holds,
  * since a fact's quote is a piece of the entry it came from.
  */
 export function toldByDay(sentences: Told[], factWords: Told[]): Told[] {
