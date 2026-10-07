@@ -530,6 +530,32 @@ describe("the composer", () => {
   });
 });
 
+describe("a persistent session's header", () => {
+  it("offers no rename and only its own family's models", () => {
+    convex.sessions = {
+      s1: {
+        _id: "s1",
+        _creationTime: 0,
+        title: "todo",
+        kind: "persistent",
+        model: "opus",
+        status: "idle",
+        statusChangedAt: NOW,
+        createdAt: NOW - 600_000,
+      },
+    };
+    const { container } = render(
+      <Agent sessionId={SESSION_ID} depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />,
+    );
+    fireEvent.click(screen.getByText("todo"));
+    // The title stays a heading: no rename box opens in the header.
+    expect(container.querySelector("header input")).toBeNull();
+    const options = within(screen.getByLabelText("session model")).getAllByRole("option").map((o) => o.textContent);
+    expect(options).toContain("opus");
+    expect(options.some((o) => o?.startsWith("gpt-"))).toBe(false);
+  });
+});
+
 describe("the edges of the recursion", () => {
   it("stops at the nesting cap and offers the run as a page instead", () => {
     convex.runs = { "run-deep": runDoc({ runId: "run-deep", depth: 9 }) };

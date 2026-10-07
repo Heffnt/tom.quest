@@ -10,7 +10,7 @@
 // opening it never moves the page (the ratified rule that interactions must
 // not shift layout).
 
-import { SESSION_MODEL_NAMES, type SessionModel } from "../lib";
+import { SESSION_MODEL_NAMES, modelFamily, type SessionModel } from "../lib";
 
 export default function ModelSelect({
   value,
@@ -18,6 +18,7 @@ export default function ModelSelect({
   disabled,
   compact,
   ariaLabel,
+  family,
 }: {
   value: SessionModel;
   onChange: (model: SessionModel) => void;
@@ -25,6 +26,8 @@ export default function ModelSelect({
   /** Chip-sized, for the session header; otherwise form-sized. */
   compact?: boolean;
   ariaLabel: string;
+  /** Offer only this family's models: a persistent session keeps its family. */
+  family?: ReturnType<typeof modelFamily>;
 }) {
   return (
     <select
@@ -36,7 +39,7 @@ export default function ModelSelect({
         compact ? "shrink-0 px-1.5 py-0.5 text-xs" : "px-3 py-2 text-sm"
       }`}
     >
-      {SESSION_MODEL_NAMES.map((m) => (
+      {SESSION_MODEL_NAMES.filter((m) => family === undefined || modelFamily(m) === family).map((m) => (
         <option key={m} value={m}>
           {m}
         </option>

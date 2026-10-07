@@ -443,7 +443,6 @@ const SESSION_KIND = v.union(
   v.literal("adhoc"),
   v.literal("block"),
   v.literal("therapy"),
-  v.literal("persistent"),
 );
 
 /**
@@ -825,6 +824,8 @@ export const internalTranscriptPage = internalQuery({
 // two doors can never resolve repos or seed the row differently.
 const CREATE_SESSION_ARGS = {
   title: v.string(),
+  // Every kind but "persistent": the five persistent sessions are made by
+  // their setup pen alone (internalEnsurePersistentSessions), one row per name.
   kind: SESSION_KIND,
   // The live argument: the repos this session checks out. `repo` is the
   // pre-ruling single-string form, still accepted so an older client (or a
@@ -865,9 +866,6 @@ async function createSessionFrom(
     agendaSubjects?: string[];
   },
 ): Promise<Id<"claudeSessions">> {
-  // The five persistent sessions are made by their setup pen alone
-  // (internalEnsurePersistentSessions), one row per name.
-  if (kind === "persistent") throw new Error("a persistent session is made by its setup pen, not opened here");
   if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
   // A todo-scoped session with no repos named falls back to the word guess
   // over the todo rather than silently landing on an empty scratch workspace.
@@ -1167,7 +1165,8 @@ export const internalReopenSession = internalMutation({
 });
 
 // Retitling is pure labelling — the title is Tom's handle on a session in the
-// list, and nothing downstream keys off it.
+// list, and nothing downstream keys off it — except for a persistent
+// session, whose title is its name (below).
 export const renameSession = mutation({
   args: { sessionId: v.id("claudeSessions"), title: v.string() },
   handler: async (ctx, { sessionId, title }) => {
@@ -1281,6 +1280,9 @@ async function forkSessionAsFrom(
   // A persistent session keeps one model family: a fork is a second row, a
   // second transcript, under the same name. A model change within the
   // family (setSessionModel) is the way to change its model.
+  // REMOVAL CHECK: the session header offers a persistent session only its
+  // own family's models, but this body is also internalForkSessionAs, which
+  // a box agent reaches through the Convex CLI with no page in front of it.
   if (session.kind === "persistent") throw new Error(`"${session.title}" is a persistent session; change its model within its family instead of forking it`);
   if (text.trim() === "") throw new Error("Message is empty");
   const now = Date.now();

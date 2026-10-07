@@ -2329,7 +2329,8 @@ describe("a persistent session's name", () => {
     const [todo] = (await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {})).filter((r) => r.name === "todo");
     await expect(tom.mutation(api.claudeSessions.renameSession, { sessionId: todo.id, title: "chores" })).rejects.toThrow(/name is fixed/);
     await expect(tom.mutation(api.claudeSessions.forkSessionAs, { sessionId: todo.id, model: "gpt-5.6-sol", text: "go on" })).rejects.toThrow(/persistent session/);
-    await expect(tom.mutation(api.claudeSessions.createSession, { title: "todo", kind: "persistent", model: "opus", initialPrompt: "hi" })).rejects.toThrow(/setup pen/);
+    // @ts-expect-error the create form's kinds leave persistent out
+    await expect(tom.mutation(api.claudeSessions.createSession, { title: "todo", kind: "persistent", model: "opus", initialPrompt: "hi" })).rejects.toThrow();
     const rows = await t.run(async (ctx) => await ctx.db.query("claudeSessions").collect());
     expect(rows.filter((r) => r.title === "todo")).toHaveLength(1);
   });

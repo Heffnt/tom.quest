@@ -415,6 +415,11 @@ export default function Agent({
   }
 
   const model = session ? sessionModel(session) : undefined;
+  // A persistent session (dump, briefer, builder, observer, todo) keeps its
+  // name, which the box picks its prompt by, and its model family, since a
+  // change across families would be a second session of the name: the record
+  // refuses both, so the header offers neither.
+  const persistent = session?.kind === "persistent";
 
   const commitRename = (value: string) => {
     setTitleDraft(null);
@@ -460,6 +465,7 @@ export default function Agent({
           value={model}
           disabled={!live}
           onChange={changeModel}
+          family={persistent ? modelFamily(model) : undefined}
         />
         <Info call="claudeSessions.setSessionModel({ sessionId, model })">
           Which model answers the next turn. Inside one family the running
@@ -518,19 +524,19 @@ export default function Agent({
         ) : (
           <h1
             onClick={
-              session
+              session && !persistent
                 ? () => {
                     cancelRename.current = false;
                     setTitleDraft(session.title);
                   }
                 : undefined
             }
-            className={`text-sm sm:text-base text-text truncate min-w-0 flex-1 ${session ? "cursor-text" : ""}`}
+            className={`text-sm sm:text-base text-text truncate min-w-0 flex-1 ${session && !persistent ? "cursor-text" : ""}`}
           >
             {title}
           </h1>
         )}
-        {session && (
+        {session && !persistent && (
           // Nothing renames a run row, so this control exists for a session and
           // for nothing else.
           <Info call="claudeSessions.renameSession({ sessionId, title })">
