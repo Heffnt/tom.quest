@@ -91,6 +91,20 @@ describe("POST /jarvis/change", () => {
     expect((await post(t, { repo: "Jarvis", branch: "feature", head: A, state: "landed" })).body.applied).toBe(false);
   });
 
+  it("keeps a blocked row's outcome against a duplicate post, and reopens it for a later push of the same head", async () => {
+    const t = setup();
+    const first = open(A);
+    await post(t, first);
+    await post(t, { repo: "Jarvis", branch: "feature", head: A, state: "blocked", reason: "tests failed: one test" });
+    const duplicate = await post(t, { ...first });
+    expect(duplicate.body).toMatchObject({ applied: false, why: `${A.slice(0, 7)} was already checked: blocked` });
+    expect((await rows(t))[0]).toMatchObject({ head: A, state: "blocked", reason: "tests failed: one test" });
+    // A later push of the same head (a later stamp) runs its checks again.
+    expect((await post(t, open(A))).body.applied).toBe(true);
+    expect((await rows(t))[0]).toMatchObject({ head: A, state: "checking" });
+    expect((await rows(t))[0].reason).toBeUndefined();
+  });
+
   it("refuses an outcome for a head the row no longer holds", async () => {
     const t = setup();
     await post(t, open(A));

@@ -23,7 +23,9 @@
 //     (its receiving hook's stamp, which the gate job sends again from its
 //     queue): two posts for one branch can arrive out of order, and a post
 //     for another head pushed before the row's own is refused, so the row
-//     never moves back to an older head.
+//     never moves back to an older head; and a blocked or rejected row is
+//     reopened for its own head only by a later push of it, so a duplicate
+//     post never erases the gate job's outcome.
 //   - any other state applies only to the row at that same head that has not
 //     landed: a job finishing an older head after a newer push must not
 //     overwrite the newer head's state. Answers { ok, applied, id?, why? }.
@@ -99,6 +101,15 @@ export const write = internalMutation({
         && newest.pushedAt !== undefined && args.pushedAt !== undefined && args.pushedAt < newest.pushedAt
       ) {
         return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} was pushed before the row's ${newest.head.slice(0, 7)}` };
+      }
+      // A blocked or rejected row holds the gate job's finished outcome for
+      // its head. Only a later push of that head (a later stamp) reopens it; a
+      // duplicate or delayed post of the same push changes nothing.
+      if (
+        newest !== null && newest.head === args.head && (newest.state === "blocked" || newest.state === "rejected")
+        && !(args.pushedAt !== undefined && newest.pushedAt !== undefined && args.pushedAt > newest.pushedAt)
+      ) {
+        return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} was already checked: ${newest.state}` };
       }
       const pushedAt = newest !== null && newest.head === args.head && newest.pushedAt !== undefined
         ? Math.max(newest.pushedAt, args.pushedAt ?? 0)
