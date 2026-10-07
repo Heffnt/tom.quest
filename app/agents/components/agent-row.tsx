@@ -301,6 +301,7 @@ export default function AgentRow({
   result,
   toolNames,
   source,
+  fullWidth = false,
 }: {
   row: TranscriptMessage;
   /** The tool-result this call consumed, when both are in the loaded window. */
@@ -310,6 +311,8 @@ export default function AgentRow({
    *  row then shows no name rather than a guessed one. */
   toolNames?: ReadonlyMap<string, string>;
   source: RowSource;
+  /** Tom's row spans the width like a reply, with no indent. */
+  fullWidth?: boolean;
 }) {
   const [level, setLevel] = useState<0 | 1 | 2>(0);
   const { kind, content } = row;
@@ -326,7 +329,9 @@ export default function AgentRow({
   if (kind === "user") {
     const text = contentToText(content);
     return (
-      <div className="border-l-2 border-accent bg-surface-alt/40 rounded-r px-3 py-2 ml-6 sm:ml-16">
+      <div
+        className={`border-l-2 border-accent bg-surface-alt/40 rounded-r px-3 py-2 ${fullWidth ? "" : "ml-6 sm:ml-16"}`}
+      >
         <ModelOfTomHead text={text} />
         <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text">
           {text}

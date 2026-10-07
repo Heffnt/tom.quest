@@ -9,11 +9,17 @@ const nextConfig: NextConfig = {
     // "dts" -> "tts" rename (2026-08-29): links in already-sent Slack
     // digests point at the old path — query params are preserved by default.
     // "sessions" -> "runs" rename (2026-09-21), then "runs" -> "agents"
-    // (2026-09-25): the page lists every agent, not only sessions, and links
-    // in the record and in Slack still name /sessions and /runs. `:path*`
-    // matches zero segments too, so each rule also sends its bare path to
-    // /agents. The page reads ?run= as it reads ?agent=, so an old
-    // /runs?run=<id> link opens the same agent.
+    // (2026-09-25): links in the record and in Slack still name /runs.
+    // `:path*` matches zero segments too, so the rule also sends the bare
+    // path to /agents. The page reads ?run= as it reads ?agent=, so an old
+    // /runs?run=<id> link opens the same agent. /sessions is the sessions page
+    // again (design section 5.1, 2026-10-06); it reads ?session=<id> as
+    // /agents does, so an old /sessions?session=<id> link opens that session.
+    // The /sessions redirect this replaced was permanent (308), but Vercel
+    // served it with `cache-control: public, max-age=0, must-revalidate`
+    // (curl -I https://www.tom.quest/sessions, 2026-10-06 23:35 Eastern), so a
+    // browser that followed it holds a redirect that is stale at once and asks
+    // the server again on the next visit, which now serves the page.
     // "tts" -> "jarvis" (2026-09-26, TTS dissolved into Jarvis): every
     // ?item=, ?tab= and ?intent= link already sent to Slack names /tts. The
     // observation page became the /agents window view the same night; its
@@ -22,7 +28,6 @@ const nextConfig: NextConfig = {
       { source: "/" + "dts", destination: "/jarvis", permanent: true },
       { source: "/tts", destination: "/jarvis", permanent: true },
       { source: "/observe", destination: "/agents?view=window", permanent: true },
-      { source: "/sessions/:path*", destination: "/agents/:path*", permanent: true },
       { source: "/runs/:path*", destination: "/agents/:path*", permanent: true },
       // "vocabulary" -> "intent" (2026-09-26): the vocabulary is one view of
       // the intent page; the fragment names that view.

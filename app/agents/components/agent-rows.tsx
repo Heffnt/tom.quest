@@ -248,6 +248,7 @@ const AgentRows = memo(function AgentRows({
   lead,
   tail,
   renderChildRun,
+  fullWidth = false,
 }: {
   /** Ascending, oldest first, from useAgentRows. */
   rows: TranscriptMessage[];
@@ -272,6 +273,8 @@ const AgentRows = memo(function AgentRows({
     row: TranscriptMessage,
     childRunId: string,
   ) => React.ReactNode;
+  /** Tom's rows span the width like the replies. */
+  fullWidth?: boolean;
 }) {
   const nested = depth > 0;
   const streamBuf = useQuery(
@@ -530,6 +533,7 @@ const AgentRows = memo(function AgentRows({
                 result={pairing.forCall.get(message._id)}
                 toolNames={toolNames}
                 source={source}
+                fullWidth={fullWidth}
               />
             )}
             {boxAfter(message)}
