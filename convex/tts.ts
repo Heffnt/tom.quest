@@ -13,7 +13,6 @@ import {
   nyCalendarDayKey,
   nyOffsetHours,
 } from "./ttsShared";
-import { redactSecrets } from "../shared/redact.mjs";
 import { ZONE } from "../shared/clock.mjs";
 import { eitherId, resolveId } from "./jarvis/tables";
 
@@ -51,10 +50,10 @@ export async function logEvent(
   // schema comment lists, and on no other.
   key?: string,
 ) {
-  // A failure row (convex/ttsShared.ts isFailureKind) is a line in the
-  // digest's broken section, which reads its window; nothing posts here.
+  // A failure row (convex/ttsShared.ts isFailureKind) records the condition;
+  // nothing posts here.
   // The row names its todo by the plain id, whichever form it was handed (a
-  // session or a Slack thread may hold the old one); an id naming no row
+  // session or a stored reference may hold the old one); an id naming no row
   // names no todo (convex/jarvis/tables.ts resolveId).
   const id = await ctx.db.insert("dtsEvents", {
     at: Date.now(),
@@ -344,47 +343,6 @@ export async function applyDateOutcome(
   await logEvent(ctx, "date-outcome", todo._id, { outcome, newDueAt, note });
 }
 
-// The 5 a.m. rollover's OWN door (ruling 14, the lifeos update) — deliberately
-// NOT applyDateOutcome above, because the rollover is not Tom resolving a date.
-// It records that a date passed unanswered and changes NOTHING else:
-//   - the date stays, so the item is still listed overdue with its own date;
-//   - dateKind stays exactly as it was. Going through applyDateOutcome with
-//     newDueAt = todo.dueAt would stamp "self-imposed" on any row that had no
-//     dateKind (line 663 above), quietly rewriting an unlabelled external
-//     deadline as one Tom set himself;
-//   - updatedAt is NOT bumped. This is an annotation by a cron, not a content
-//     edit, and the needs-me predicate resurfaces an already-ruled gate when
-//     ruledAt < updatedAt (the same reasoning as internalBulkUpdate's).
-// The outcome row itself is written in the one shape every reader knows. The
-// row also gets the rollover's mark (rolledOverDueAt, the date it settled),
-// which keeps it out of the next morning's rollover read.
-export async function recordMissedKeepingDate(
-  ctx: MutationCtx,
-  todo: Doc<"todos">,
-  note?: string,
-) {
-  if (todo.dueAt === undefined) throw new Error("Todo has no date to resolve");
-  const now = Date.now();
-  await ctx.db.patch(todo._id, {
-    dateOutcomes: [
-      ...(todo.dateOutcomes ?? []),
-      { dueAt: todo.dueAt, outcome: "missed" as const, recordedAt: now, note },
-    ],
-    rolledOverDueAt: todo.dueAt,
-  });
-  // `rollover: true` marks the row as the system's, not Tom's: a date outcome
-  // without it is a touch of his. Written here, not through logEvent: the
-  // row is in hand and its id is the plain one, and logEvent would read the
-  // whole todo again to resolve that id, a read the rollover's byte budget
-  // (convex/ttsDigest.ts rollMissed) does not count.
-  await ctx.db.insert("dtsEvents", {
-    at: now,
-    kind: "date-outcome",
-    todoId: todo._id,
-    data: { outcome: "missed", newDueAt: todo.dueAt, note, rollover: true },
-  });
-}
-
 export const recordDateOutcome = mutation({
   args: {
     id: eitherId.todos,
@@ -423,17 +381,10 @@ export const internalCapture = internalMutation({
     threadMessageId: v.optional(v.string()),
     dueAt: v.optional(v.number()),
     dateKind: v.optional(v.union(v.literal("external"), v.literal("self-imposed"))),
-    // The Slack coordinates of the message this came from, when it came from
-    // one. Machine fields, kept out of `provenance` (which is Tom's to read).
-    slackChannel: v.optional(v.string()),
-    slackTs: v.optional(v.string()),
-    // A poller's triage judged it to need Tom today, and why. Recorded on the
-    // row for the morning message and the hourly line; nothing opens a thread.
-    needsTomToday: v.optional(v.object({ why: v.string() })),
   },
   handler: async (
     ctx,
-    { statement, source, provenance, threadMessageId, dueAt, dateKind, slackChannel, slackTs, needsTomToday },
+    { statement, source, provenance, threadMessageId, dueAt, dateKind },
   ) => {
     const now = Date.now();
     const stored = threadMessageId === undefined
@@ -442,19 +393,9 @@ export const internalCapture = internalMutation({
           .query("todos")
           .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
           .first()) ?? null;
-    // IDEMPOTENT ON THE THREAD MESSAGE, the same way slackTs is below: a box
-    // job that acted but crashed before posting its reply must not mint the
-    // todo twice on its next run.
+    // Idempotent on the thread message: a box job that acted but crashed
+    // before posting its reply must not mint the todo twice on its next run.
     if (stored) return stored._id;
-    // IDEMPOTENT ON THE LEGACY SLACK MESSAGE TS. Keep the lookup with the
-    // stored coordinates so old rows and retried callers remain compatible.
-    if (slackTs !== undefined) {
-      const existing = await ctx.db
-        .query("todos")
-        .withIndex("by_slackTs", (q) => q.eq("slackTs", slackTs))
-        .first();
-      if (existing) return existing._id;
-    }
     // A dated capture names its dateKind: dueAt is the time, dateKind says
     // who imposed it, and both ride the row. Without dueAt the row stays
     // whenever, exactly as a plain capture did.
@@ -471,11 +412,6 @@ export const internalCapture = internalMutation({
       threadMessageId,
       source,
       provenance,
-      slackChannel,
-      slackTs,
-      // The reason is a model's words about a mail and reaches Slack, so it
-      // passes the one redaction choke point here, where it is stored.
-      ...(needsTomToday !== undefined ? { needsTomToday: { why: redactSecrets(needsTomToday.why) } } : {}),
       createdAt: now,
       updatedAt: now,
     });

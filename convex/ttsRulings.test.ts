@@ -725,7 +725,7 @@ describe("a ruling from Tom's words", () => {
     // through this door leaves the page's return condition unset.
     expect(ruling.sentence).toBeUndefined();
     expect(todo.unarchiveCondition).toBeUndefined();
-    // The digest reads events: the ruling event carries the provenance.
+    // The ruling event carries the provenance.
     const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     const event = events.find((e) => e.kind === "ruling");
     expect(event?.data?.provenance?.from).toBe("tom-words");

@@ -81,5 +81,5 @@ export const internalSearchEvals = internalQuery({
 // kept for convex/ttsSimplify.ts; that stream cuts it
 export const EVALS_RUN = "evals-run";
 
-// kept for convex/ttsDigest.ts and ttsWeekly.ts; that stream cuts it
+// kept for convex/ttsWeekly.ts; that stream cuts it
 export const PRELUDE_DELIVERY = "prelude-delivery";

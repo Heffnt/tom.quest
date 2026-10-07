@@ -1,6 +1,6 @@
 # The runner pages
 
-A runner is a chain of short step agents on the Jarvis Box that watches one experiment. Each step starts from the runner's handoff document, checks in, rewrites the document and ends; the next step is due one step length later. Until this change a runner reached Tom only through its check-ins in Slack and its questions in #tts-needs-you. This change puts runners on the TTS page, in the morning message and in the hourly update.
+A runner is a chain of short step agents on the Jarvis Box that watches one experiment. Each step starts from the runner's handoff document, checks in, rewrites the document and ends; the next step is due one step length later. A runner's session records its check-ins and sends its own notification for a question.
 
 ## The everything tab
 
@@ -16,18 +16,4 @@ The arrow at the start of a row expands it in place, showing three things:
 
 Runners that have ended sit under a fold headed "ended runners" with their count.
 
-The page's only action is Tom's: "New runner" opens a dialog with a title, the type, the host, the repo, the step length in minutes, the ceiling and the objective, and creates the runner through the createRunner mutation that already existed. The ceiling is the most one launch of the runner may ask for on the cluster, and this form is the only place it is set when a runner is created; a runner a session opens holds the default: a number of GPUs, a number of minutes and an amount of memory, by default 2 GPUs, 240 minutes and 128000 MB. Tom raises it later by replying in the runner's thread with a message that starts with the word "ceiling", such as "ceiling 16 GPUs, 24 hours"; a session he is in asks him to reply that way rather than setting it itself. No ruling reaches above 16 GPUs, 1440 minutes (the day-long limit of the cluster's default partition) and 1536000 MB (its largest machine). Nothing on the page ends a runner, answers a question or edits a document. A runner still ends only through its own step's decision, and a question is still answered in its #tts-needs-you thread.
-
-## The morning message
-
-The morning message in #tts-today now carries a runners section after the objection list and before the calendar. The objection list stays second. The section opens with a line counting the live runners and how many wait on Tom, then gives one line per live runner, with the ones waiting on him first. Each line says what the runner is doing, whether a question of its is open, and the first line of its last check-in, and links to the everything tab. For example: "TRAIN25 campaign is waiting on your answer; its last check-in reads: 14 of 20 jobs are running and 212 of 400 results are done." A runner that has never checked in is said to have not checked in yet, with no number. On a morning with no live runner the section is absent.
-
-The morning message is normally written by a Fable agent from a facts block, and a verifier refuses any line whose links and numbers are not in a fact the line cites. Each live runner is now one fact in that block. So a runner line in a Fable-written message is checked like every other line, and a line naming a runner without citing its fact is refused.
-
-The first line of the morning message is unchanged. It still says nothing about a runner waiting on Tom.
-
-## The hourly update
-
-When the hourly update in #tts-hourly posts, it now names the live runners after what ran. With one runner it names the runner and links it to the everything tab: "The runner TRAIN25 campaign is waiting on your answer, and 1 item was captured." With several it counts them and how many wait on Tom.
-
-A live runner never makes an hour post on its own. An hour whose only fact is a live runner still posts nothing and still records its window as quiet. This is a decision taken, and Tom can object to it. A runner's steps run every few minutes for as long as it lives, so counting a live runner as activity would make every hour post and would end the rule that a quiet hour is silent. The runner still reaches Tom through its own check-ins, and through this line in any hour that has something else to say.
+The page's only action is Tom's: "New runner" opens a dialog with a title, the type, the host, the repo, the step length in minutes, the ceiling and the objective, and creates the runner through the createRunner mutation that already existed. The ceiling is the most one launch of the runner may ask for on the cluster, and this form is the only place it is set when a runner is created; a runner a session opens holds the default: a number of GPUs, a number of minutes and an amount of memory, by default 2 GPUs, 240 minutes and 128000 MB. Tom raises it later by replying in the runner's thread with a message that starts with the word "ceiling", such as "ceiling 16 GPUs, 24 hours"; a session he is in asks him to reply that way rather than setting it itself. No ruling reaches above 16 GPUs, 1440 minutes (the day-long limit of the cluster's default partition) and 1536000 MB (its largest machine). Nothing on the page ends a runner, answers a question or edits a document. A runner still ends only through its own step's decision, and a question triggers that session's own notification.

@@ -13,8 +13,8 @@
 //         (convex/ttsMerge.ts internalRecordMerge), once;
 //   a pull request that landed with the gate shut for its head
 //       — no merge row, and a report of its own (convex/ttsMerge.ts
-//         LANDING_JOB, one job-failed row per commit), which the digest shows
-//         once among what is broken and which is cleared when the gate opens;
+//         LANDING_JOB, one job-failed row per commit), cleared when the gate
+//         opens;
 //   a commit that belongs to no pull request
 //       — a report of its own whatever rows its commit has, keyed on the
 //         commit (noPullRequestKey), which the gate opening never clears;
@@ -51,7 +51,7 @@
 // accounted for is written only after every commit that arrived was filed, so
 // the next refresh reads the same commits again. Filing one twice writes
 // nothing twice: a merge row is written once per head, and a report already
-// standing is a repeat the digest does not show again.
+// standing is a repeat.
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";

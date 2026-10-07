@@ -74,19 +74,17 @@ async function createRunSession(
   return { sessionId, runId };
 }
 
-// A session's failure is not a message of its own (one output channel,
-// 2026-09-26): it is a line in the digest's broken section, read from the
-// session's own row (convex/ttsDigest.ts gatherTodayFacts) — a session-ended
-// row whose status is "failed", or a session-outcome row whose outcome is
-// "errored". These read those rows, and check on every call that no Slack
-// send was scheduled (convex-test keeps a scheduled row after it runs, so the
-// check holds whether or not a job has fired yet).
+// A session failure is represented by its own row: a session-ended row whose
+// status is "failed", or a session-outcome row whose outcome is "errored".
+// These read those rows and ensure no retired delivery job was scheduled
+// (convex-test keeps a scheduled row after it runs, so the check holds whether
+// or not a job has fired yet).
 async function sessionFailureRows(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) => {
-    const slack = (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+    const scheduled = (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
       job.name.includes("ttsSync"),
     );
-    expect(slack).toEqual([]);
+    expect(scheduled).toEqual([]);
     return (await ctx.db.query("dtsEvents").collect())
       .filter(
         (row) =>
@@ -927,11 +925,6 @@ describe("claude sessions", () => {
     expect(authorOf("the pen reopens")).toBe("agent");
   });
 
-  // A turn Tom wrote outside the browser (a threaded Slack reply the events
-  // route matched to TOM_SLACK_USER_ID) reaches the same internal pen with
-  // author "tom" — that argument is the whole mechanism, and the pen's own
-  // default of "agent" is asserted where the pen is tested.
-
   // The outcome pen POST /tts/session-outcome reaches exactly this mutation
   // (the route is thin: auth + body shape). Route-level auth is out of this
   // harness's scope; the semantics it depends on are here.
@@ -1433,7 +1426,7 @@ describe("stale autonomous requests", () => {
   });
 });
 
-// ── A session's failure rows (todo tts-session-needs-you-notify) ─────────────
+// ── A session's failure rows ────────────────────────────────────────────────
 // Every row below is EDGE-triggered: "one line, not one per poll", and the
 // daemon flushes several times a second while a session is live. Each test
 // therefore repeats the daemon's behavior (a replayed flush, a re-record) and
@@ -1453,15 +1446,14 @@ describe("session failure rows", () => {
       outcome: "completed",
       summary: "brief written into the item",
     });
-    // A COMPLETED outcome is not a failure: it is a fact for the digest's
-    // overnight run, and nothing Tom does anything about.
+    // A completed outcome is not a failure.
     expect(await sessionFailureRows(t)).toHaveLength(0);
 
     // The agent corrects the verdict to errored: the ROW takes the new word —
     // the surface always shows the agent's latest — and the failure is
-    // written once, since the digest reads the event, not the row.
+    // written once, since record readers use the event rather than the row.
     // witness: only the first record was an edge, so a completed → errored
-    // correction left the digest without a real failure.
+    // correction would otherwise have no failure event.
     await t.mutation(internal.claudeSessions.internalRecordOutcome, {
       id: sessionId,
       outcome: "errored",
@@ -1509,8 +1501,7 @@ describe("session failure rows", () => {
     });
     const rows = await sessionFailureRows(t);
     expect(rows).toHaveLength(1);
-    // The row the digest's broken line is built from: which session, and the
-    // reason it gave (redacted when the digest reads it).
+    // The failure row names the session and its reason.
     expect(rows[0]).toMatchObject({
       kind: "session-ended",
       sessionId: failed,
@@ -1781,9 +1772,8 @@ describe("Tom-facing mutations have CLI pens with identical effect", () => {
     );
     expect(turns).toHaveLength(1);
     expect(turns[0].status).toBe("pending");
-    // The pen's turn is agent-authored unless the caller vouches for Tom
-    // (ttsSlack.sessionReply, after the route verified his Slack user id);
-    // the opener is code-built and always "agent".
+    // The pen's turn is agent-authored unless the caller vouches for Tom; the
+    // opener is code-built and always "agent".
     expect(turns[0].author).toBe("agent");
     await t.mutation(internal.claudeSessions.internalSendMessage, {
       sessionId,

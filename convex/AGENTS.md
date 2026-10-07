@@ -11,9 +11,9 @@
 
 ## crons
 
-- `convex/crons.ts` holds the thread digest, run hourly so its 05:00 New York run appends (Tom, 2026-10-05: the digest on a Convex cron at 05:00), and the silence alarm, which must run when the box does not. Every other timed task is a row of `TICK_TASKS` in `convex/jarvis/tick.ts`, started by the box's record-tick job.
+- `convex/crons.ts` holds the silence alarm, which must run when the box does not. Every other timed task is a row of `TICK_TASKS` in `convex/jarvis/tick.ts`, started by the box's `record-tick` job.
 - A timed task of the record is an entry in `TICK_TASKS` (`convex/jarvis/tick.ts`), started by the box's `record-tick` job through `POST /jarvis/tick` when its cadence comes round; its last run is its own `job-ok`/`job-failed` row under `tick:<name>`. `internal.serverHealth.pollTuring` is one: it writes the `serverHealth` row `useServer().status` reads.
-- The day's digest is appended to the Jarvis thread by the record's cron (`appendThreadDigest`, `convex/jarvis/digest.ts`), and a producer's decision or failure line goes into it through `listForDigest` (`convex/jarvis/outbox.ts`), never to a channel of its own. The silence alarm writes `silence-alarm` rows to the thread with a web push, not to Slack.
+- The silence alarm writes `silence-alarm` rows and schedules a web push to `/sessions`.
 
 ## sessions
 
@@ -50,7 +50,7 @@
 - Dropping a table from `convex/schema.ts` deletes nothing: `convex deploy` validates only declared tables and the rows persist undeclared. Purging data takes the dashboard or the CLI with credentials.
 - The model-of-tom publication table fails closed until the nightly post has written its singleton; there is no backfill door any more.
 - A read whose rows grow with a table carries a cap, named beside the read: a `.take(n)`, a `.paginate()`, or a byte budget. An index range is a cap only when it returns a bounded number of rows by construction, one row per key or a key whose rows cannot accumulate; one key whose rows keep accumulating, such as `by_readiness` on "prepared", is not a cap. `.collect()` is not written on a read whose rows grow.
-- Why: the digest's `gatherTodayFacts` read every prepared todo on the `by_readiness` index with `.collect()` (1,588 rows, 8.9 MB) beside other uncapped reads, passed Convex's 16 MiB limit on what one function may read on 2026-09-29, and the digest failed on every run from that day until its reads were capped.
+- Why: an uncapped read can exceed Convex's 16 MiB function limit as a table grows, so every growing read must state its bound.
 
 <!-- convex-ai-start -->
 

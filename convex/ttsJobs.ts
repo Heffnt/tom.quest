@@ -12,7 +12,7 @@ import { internalMutation } from "./_generated/server";
 import { recordEvent } from "./jarvis/events";
 import { checkSilence, JOB_FAILED, JOB_OK } from "./jarvis/jobs";
 
-export { JOB_FAILED, JOB_RECOVERED, SILENCE_INTERVALS } from "./jarvis/jobs";
+export { JOB_FAILED, JOB_RECOVERED, SILENCE_ALARM, SILENCE_INTERVALS } from "./jarvis/jobs";
 
 export const internalReportJobFailed = internalMutation({
   args: { job: v.string(), error: v.string(), key: v.optional(v.string()), durationMs: v.optional(v.number()) },

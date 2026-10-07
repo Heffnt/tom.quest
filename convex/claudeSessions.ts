@@ -66,11 +66,6 @@ async function getSessionOrThrow(
   return session;
 }
 
-// ── A session that failed ────────────────────────────────────────────────────
-// Not a message of its own (one output channel, 2026-09-26): a session that
-// errored or failed is a line in the digest's broken section, read from its
-// session-outcome / session-ended row (convex/ttsDigest.ts).
-
 // ── Tom-facing queries ───────────────────────────────────────────────────────
 
 export const getSession = query({
@@ -636,8 +631,8 @@ export async function insertSession(
   // opened on), so it carries no todo's rulings and its facts name the area
   // (ttsContext areaSubjectLine); the Jarvis session-start hook routes the
   // same subject when the session host hands it TTS_SESSION_KIND=therapy.
-  // The opener's output reaches Tom (the outcome, the digest, the
-  // transcript), so its prompt carries the write pages.
+  // The opener's output reaches Tom in the outcome and transcript, so its
+  // prompt carries the write pages.
   //
   // Publication fails closed: with no posted base, assembleContext throws and
   // this mutation publishes neither the session nor its opener.
@@ -695,9 +690,8 @@ export async function insertSession(
     status: "pending",
     createdAt: now,
   });
-  // Session lifecycle in the events table. dtsEvents is what the hourly Slack
-  // update reads for "what happened since last time", and until this line only
-  // plan repairs crossed over from the session world — so a night of fleet
+  // Session lifecycle in the events table. Until this line only plan repairs
+  // crossed over from the session world — so a night of fleet
   // work left no trace there at all. One home for the creation event, now that
   // there is one home for the creation.
   await logEvent(ctx, "session-created", todoId, {
@@ -1301,8 +1295,7 @@ export const internalForkSessionAs = internalMutation({
 // Who typed a turn (schema: claudeInbound.author). The browser door is behind
 // requireTomId, so it writes "tom". The internal door is the CLI pen and every
 // code path that relays a turn; it writes "agent" unless the caller can vouch
-// for Tom — the one such caller is ttsSlack.sessionReply, which has a reply the
-// events route verified came from TOM_SLACK_USER_ID and passes "tom". Only a
+// for Tom. Only a
 // "tom" turn can become a ruling in his words (ruling 15,
 // ttsRulings.internalRecordRulingFromTomWords).
 // TURN_AUTHOR and TurnAuthor are declared with the reopen door above, which
@@ -1918,16 +1911,13 @@ export const internalIngest = internalMutation({
       }
     }
 
-    // NOTE (review finding): there was a permission-REQUEST insert loop here,
-    // with a Slack "waiting on a permission decision" message on the insert
-    // edge. It was unreachable: the daemon's unified auto gate allows or denies
+    // NOTE (review finding): there was a permission-request insert loop here.
+    // It was unreachable: the daemon's unified auto gate allows or denies
     // every tool call itself and has never had a producer for such a request,
     // so the loop could only ever run for a payload no code emits. Removed
     // rather than left as a promise the system does not keep. A session that
-    // fails or errors is a line in the digest's broken section (its
-    // session-ended / session-outcome row); a genuine "this session needs Tom"
-    // signal is a needs-you (POST /tts/needs-tom), wired to a reachable edge
-    // (a turn that ends with a question), which is new work.
+    // fails or errors records its session-outcome row; a genuine question for
+    // Tom is new work for the session's own notification path.
     // The ack loop that stood here went with the permission table (the lifeos
     // update, phase 7).
 
@@ -1986,19 +1976,18 @@ export const internalRecordOutcome = internalMutation({
     }
     // A CORRECTION TO ERRORED is a failure the record has not said yet: the
     // first errored word of a session is written as its own event even after
-    // a completed one, so the digest (which reads events, one line per
-    // session) sees it. Later rewordings of the same verdict write nothing.
+    // a completed one, so the event history sees it. Later rewordings of the
+    // same verdict write nothing.
     const turnedErrored = outcome === "errored" && session.outcome !== undefined && session.outcome !== "errored";
     await ctx.db.patch(normalized, {
       outcome,
       outcomeSummary: summary.trim(),
     });
     // EDGE: only the first record notifies. A re-record still lands in the
-    // row — the surface always shows the agent's latest word — but Slack is
-    // told once, so an agent that revises its wording three times does not
-    // ping Tom three times.
+    // row — the surface always shows the agent's latest word — but only the
+    // first record creates an outcome event.
     if (firstRecord || turnedErrored) {
-      // Same edge, same reason, into the events table the digest reads.
+      // Same edge, same reason, into the events table.
       await logEvent(ctx, "session-outcome", session.todoId, {
         sessionId: normalized,
         title: session.title,

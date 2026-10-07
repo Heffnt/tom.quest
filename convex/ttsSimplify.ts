@@ -25,7 +25,6 @@ import { internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
-import { DIGEST_SENT } from "./ttsDigest";
 import { EVALS_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, TESTS_RUN, checkRowPassed } from "./ttsMerge";
 import { DAY_MS } from "./ttsShared";
@@ -43,19 +42,12 @@ export const SIMPLIFY_PROPOSAL = "simplify-proposal";
 /** The proposal became a todo after its objection window closed. Same key as
  *  the proposal, so "was this admitted" is a point lookup. */
 export const SIMPLIFY_ADMITTED = "simplify-admitted";
-/** The weekly run's own summary row. */
-const SIMPLIFY_RUN = "simplify-run";
-
 // ── Event kinds the removal loop owns ────────────────────────────────────────
 // worker/jobs/removal-loop.mjs, the daily job that turns one structural smell
-// into one pull request. The digest's objection list carries it, but its
-// objection window is THIS file's, read the same way, so the two cannot
-// disagree about what "a day and a digest" means.
+// into one pull request. Its objection window is defined here.
 
-/** One loop pull request, keyed `loop:<number>` — the askId of its line on
- *  the digest's objection list, so "revert <n>" resolves by one lookup. A rewrite
- *  after his reply is a NEW row on the same key with a higher `round`, and the
- *  window restarts from it. */
+/** One loop pull request, keyed `loop:<number>`. A rewrite after an objection
+ *  is a new row on the same key with a higher `round`, and the window restarts. */
 export const REMOVAL_LOOP_PR = "removal-loop-pr";
 // The loop's own tick row, "removal-loop-run", is the job's alone: nothing
 // here reads it, so it is spelled in worker/jobs/removal-loop.mjs and not here.
@@ -94,7 +86,7 @@ const GATE_HEAD_SCAN = 2_000;
  *  window-lengths: a proposal Tom let stand or objected to is not re-made the
  *  next Saturday, or the fortnight after. */
 const PROPOSAL_COOLDOWN_WEEKS = 8;
-/** The floor between a proposal being posted and a digest being allowed to close its window. */
+/** The floor between a proposal being posted and unattended admission. */
 export const OBJECTION_FLOOR_MS = 24 * 60 * 60 * 1000;
 
 /** Proposal rows read per pass. The cooldown holds at most a handful of
@@ -507,19 +499,9 @@ async function keyedRow(ctx: QueryCtx, kind: string, key: string) {
 // ── The objection window ─────────────────────────────────────────────────────
 
 /**
- * The proposals whose window has closed: Tom has seen them in a morning
- * message, had a day to answer, and did not.
+ * The proposals whose 24-hour objection window has closed.
  *
- * THE 24-HOUR FLOOR. The pass posts at 04:30 and the digest goes at 05:00, so
- * without a floor the digest thirty minutes later would close the window on a
- * proposal he had had half an hour to see. With the floor, Friday's digest
- * prints it and Saturday's closes it: one morning to read it, one full day to
- * answer.
- *
- * The floor is on the CLOCK and the close is on a DIGEST — both, not either.
- * A morning the digest failed therefore closes nothing silently; the next one
- * does, and the proposal waits rather than expiring into a todo on a day
- * nothing was sent.
+ * THE 24-HOUR FLOOR gives Tom one full day to object.
  *
  * Three things are never open, for three different reasons:
  *   dryRun        — for ever. A dry run's proposal was never posted to him,
@@ -552,17 +534,7 @@ export const internalOpenProposals = internalQuery({
         keyedRow(ctx, DELEGATE_OBJECTION, askId),
       ]);
       if (admitted !== null || objected !== null) continue;
-      // The window's second half is a bounded range read on the record's
-      // by_kind_at from the floor forward (convex/jarvis/digest.ts writes the
-      // rows) — one row is enough, because the question is whether ANY digest
-      // went out after it.
-      const sent = await ctx.db
-        .query("events")
-        .withIndex("by_kind_at", (q) =>
-          q.eq("kind", DIGEST_SENT).gt("at", row.at + OBJECTION_FLOOR_MS),
-        )
-        .take(1);
-      if (sent.length === 0) continue;
+      if (now <= row.at + OBJECTION_FLOOR_MS) continue;
       open.push({
         askId,
         proposalId: str(data.id),
@@ -607,8 +579,7 @@ type OpenRemoval = {
   /** His newest reply AFTER this round was posted, or null. A reply to an
    *  earlier round was already answered by the rewrite that made this one. */
   objection: { at: number; text: string | null; revert: boolean } | null;
-  /** No objection to this round, a day has passed since it was posted, and a
-   *  digest went out after that. The loop merges only on this. */
+  /** No objection to this round and a day has passed since it was posted. */
   windowClosed: boolean;
 };
 
@@ -616,8 +587,8 @@ type OpenRemoval = {
  * Every loop pull request posted in the last month, as of its newest round.
  *
  * A NEAR-COPY OF internalOpenProposals above, on purpose: the same
- * OBJECTION_FLOOR_MS, the same one-row DIGEST_SENT range read, the same
- * DELEGATE_OBJECTION point lookup. It differs in two ways, each for a reason.
+ * OBJECTION_FLOOR_MS and the same DELEGATE_OBJECTION point lookup. It differs
+ * in two ways, each for a reason.
  * It RETURNS the objected ones instead of dropping them, because a reply to a
  * loop pull request is not the end of it — the loop rewrites the branch from
  * his words, and it needs the words. And an objection counts only when it is
@@ -653,13 +624,7 @@ export const internalOpenRemovals = internalQuery({
             })()
           : null;
       let windowClosed = false;
-      if (objection === null) {
-        const sent = await ctx.db
-          .query("events")
-          .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT).gt("at", row.at + OBJECTION_FLOOR_MS))
-          .take(1);
-        windowClosed = sent.length > 0 && now > row.at + OBJECTION_FLOOR_MS;
-      }
+      if (objection === null) windowClosed = now > row.at + OBJECTION_FLOOR_MS;
       out.push({
         askId,
         pr: num(data.pr),

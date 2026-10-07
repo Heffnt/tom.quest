@@ -86,44 +86,7 @@ describe("POST /jarvis/event", () => {
   });
 
 
-  it("refuses a needs-tom-answered event through both worker-key routes", async () => {
-    const t = convexTest({ schema, modules });
-    vi.stubEnv("JARVIS_KEY", "k");
-    vi.stubEnv("TTS_WORKER_KEY", "k");
-    const jarvisBody = {
-      kind: "needs-tom-answered", subject: "synthetic-ask", data: { answer: "done", via: "thread" },
-    };
-    const jarvis = await post(t, "/jarvis/event", jarvisBody, { "X-Jarvis-Key": "k" });
-    expect(jarvis.status).toBe(403);
-    expect(await jarvis.json()).toEqual({ error: "needs-tom-answered is Tom-only" });
-    const legacy = await post(t, "/tts/event", {
-      kind: "needs-tom-answered", key: "synthetic-ask", data: { answer: "done", via: "thread" },
-    }, { "X-TTS-Key": "k" });
-    expect(legacy.status).toBe(403);
-    expect(await legacy.json()).toEqual({ error: "needs-tom-answered is Tom-only" });
-    expect(await rows(t, "events")).toEqual([]);
-    expect(await rows(t, "dtsEvents")).toEqual([]);
-  });
-
-  it("refuses record-only thread events through both worker-key routes", async () => {
-    const t = convexTest({ schema, modules });
-    vi.stubEnv("JARVIS_KEY", "k");
-    vi.stubEnv("TTS_WORKER_KEY", "k");
-    for (const kind of ["thread-digest", "thread-needs-you"]) {
-      for (const path of ["/jarvis/event", "/tts/event"]) {
-        const body = path === "/jarvis/event"
-          ? { kind, subject: "synthetic-subject", data: {} }
-          : { kind, key: "synthetic-subject", data: {} };
-        const res = await post(t, path, body, { "X-Jarvis-Key": "k" });
-        expect(res.status).toBe(403);
-        expect(await res.json()).toEqual({ error: `${kind} is written only by the record` });
-      }
-    }
-    expect(await rows(t, "events")).toEqual([]);
-    expect(await rows(t, "dtsEvents")).toEqual([]);
-  });
-
-  it("runs the job hooks: one digest failure per standing condition, a repeat marked, re-armed by the clean run, all in events, no Slack post", async () => {
+  it("records one failure per standing condition, marks repeats, and re-arms after a clean run", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("JARVIS_KEY", "k");
     vi.useFakeTimers();
@@ -135,8 +98,7 @@ describe("POST /jarvis/event", () => {
     // Every accepted post is a row of the record; the repeat names the report it repeats.
     const failures = (await rows(t, "events")).filter((row) => row.kind === "job-failed").sort((a, b) => a.at - b.at);
     expect(failures.map((row) => (row.data as { standingSince?: number }).standingSince)).toEqual([undefined, 1_700_000_000_000]);
-    // The digest's broken section reads the first report and not the repeat;
-    // nothing posts to Slack on either.
+    // Readers see the opening report and not any repeat of the same condition.
     const standing = await t.run(async (ctx) => {
       const { failuresInWindow } = await import("./jarvis/jobs");
       return await failuresInWindow(ctx, 1_700_000_000_000, 1_700_000_100_000);
@@ -164,7 +126,7 @@ describe("POST /jarvis/event", () => {
 
   // witness: the window read took the first 4,000 job-failed rows and then
   // dropped the repeats, so a few jobs failing all day filled the read and a
-  // new failure after them never reached the digest.
+  // new failure after them never reached the bounded reader.
   it("finds a new failure behind more repeats than the read limit", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
@@ -273,13 +235,9 @@ describe("the /jarvis/ prefix", () => {
     expect((await post(t, "/tts/event", { kind: "deploy", data: {} }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "k" })).status).toBe(200);
     expect((await post(t, "/jarvis/job-ok", { job: "box-state", key: "box-state:read" }, { "X-Jarvis-Key": "wrong" })).status).toBe(401);
-    // A digest line's key is its askId, the record row's subject: without one
-    // the legacy pen refuses it as POST /jarvis/event refuses it.
+    // An eval run's key is its subject, so the legacy pen refuses a blank one.
     const before = (await rows(t, "events")).length;
-    expect((await post(t, "/tts/event", { kind: "digest-line", data: { section: "decisions" } }, { "X-TTS-Key": "k" })).status).toBe(400);
-    for (const kind of ["digest-line", "eval-run"]) {
-      expect((await post(t, "/tts/event", { kind, key: " \t ", data: {} }, { "X-TTS-Key": "k" })).status).toBe(400);
-    }
+    expect((await post(t, "/tts/event", { kind: "eval-run", key: " \t ", data: {} }, { "X-TTS-Key": "k" })).status).toBe(400);
     expect((await post(t, "/jarvis/event", { kind: "decision", data: { question: "q" } }, { "X-Jarvis-Key": "k" })).status).toBe(400);
     expect((await rows(t, "events")).length).toBe(before);
   });

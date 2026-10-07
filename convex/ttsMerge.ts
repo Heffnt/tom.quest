@@ -229,7 +229,7 @@ export function compactCount(n: unknown): string {
  * coverage were indistinguishable on the record from an audit that read every
  * line. The audit now reads the whole diff in chunks; this is the part that
  * makes what it read legible afterwards, in the gate's own answer and therefore
- * in the digest's merge line, which joins these `why` strings.
+ * in the recorded merge reason, which joins these `why` strings.
  *
  * AN AUDIT THAT REJECTED AFTER 3 OF 12 CHUNKS IS AS INTERESTING AS ONE THAT
  * APPROVED AFTER 12, so the clause rides the detail both arms carry, not the
@@ -377,7 +377,7 @@ export async function mergeGateFor(
   // A fallback audit is a WEAKER audit and says so wherever it is read: the
   // point of the check is a family that did not write the code, and at Codex's
   // weekly cap it was Opus that answered. The note rides the `why`, so the
-  // gate's answer and the digest's merge line (which joins these whys)
+  // gate's answer and the recorded merge reason (which joins these whys)
   // both carry it and Tom can object to a same-family audit.
   const byWhom = auditFallbackNote(auditData);
   const auditCheck: MergeCheck =
@@ -440,8 +440,8 @@ export const internalMergeGate = internalQuery({
 // read and to land pull requests (convex/observeMerge.ts). Creating a status
 // takes push access (classic scope repo or repo:status; fine-grained "Commit
 // statuses: write"). A refusal is one keyed job-failed row per repository, so
-// the digest's broken section says it once and hears the recovery; a status
-// that never arrives also leaves the ruleset closed, which fails the right
+// the record says it once and hears the recovery; a status that never arrives
+// also leaves the ruleset closed, which fails the right
 // way.
 
 /** The status context the rulesets require (Phase 1, P1). */
@@ -538,7 +538,7 @@ async function scheduleGateStatus(ctx: MutationCtx, repo: string, sha: string) {
 // repository under the gate. One that landed with the gate shut for its head,
 // or that belongs to no pull request, gets no merge row: it is reported as a
 // job-failed row of its own, one per commit, under LANDING_JOB and
-// landingKey, which the digest shows once among what is broken. The report is
+// landingKey. The report is
 // cleared (job-ok, which writes the recovery) when the gate opens for that
 // commit, which happens when a row arrives late.
 
@@ -642,8 +642,7 @@ export const internalPostGateStatus = internalAction({
 //
 // SO NOTHING HERE FAILS ANYTHING. The thresholds are read after the row is
 // recorded, on a fact that has already happened, and the only thing they can do
-// is write one "job-failed" row — the channel the morning digest and the hourly
-// update already read (convex/ttsJobs.ts). A time check that could fail a build
+// is write one "job-failed" row. A time check that could fail a build
 // would be a third condition on the merge gate, which §23.8 refuses, and it
 // would trade quality for speed in exactly the direction the ruling forbids.
 //
@@ -1188,8 +1187,7 @@ export const internalRecordMerge = internalMutation({
       subject: args.subject,
       mainCheck: args.mainCheck,
       // Why it merged, in the gate's own words (who audited, and on which
-      // model when Codex was capped; the evals it merged past): the digest's
-      // objection line for this merge prints it.
+      // model when Codex was capped; the evals it merged past).
       reason: [...gate.checks.map((check) => check.why), args.mainCheck].filter(Boolean).join("; "),
     };
     // Convex fixes Date.now() for the mutation, so logEvent records this same at.
@@ -1200,9 +1198,8 @@ export const internalRecordMerge = internalMutation({
       data,
       key,
     );
-    // The digest's objection list reads this merge row itself, under its key,
-    // so "revert <n>" in the digest's thread objects to THIS merge
-    // (convex/ttsAsk.ts internalRecordDelegateObjection resolves a merge row).
+    // The merge row is keyed by its mergeKey, so an objection resolves this
+    // merge (convex/ttsAsk.ts internalRecordDelegateObjection).
     // The Jarvis thread reads agent changes from the events table: this merge
     // and the row above are one fact, so the copy rides in this transaction.
     await copyDtsRow(ctx, { kind: MERGE, at, key, data });

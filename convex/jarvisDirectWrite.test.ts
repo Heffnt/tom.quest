@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { slackThreadKey } from "./ttsShared";
 import { insertCopied } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -97,18 +96,10 @@ describe("the direct write: each writer writes the plain row and no old row", ()
     await plainOnly(t);
   });
 
-  it("internalRollMissed (recordMissedKeepingDate)", async () => {
-    const { t, tom } = await setup();
-    const id = await tom.mutation(api.tts.createTodo, { statement: "pay rent", dueAt: Date.UTC(2026, 0, 5, 17) });
-    expect(await t.mutation(internal.ttsDigest.internalRollMissed, { day: "2026-09-27" })).toEqual([id]);
-    expect(await plainOf(t, "todos", id)).toMatchObject({ dateOutcomes: [expect.objectContaining({ outcome: "missed" })] });
-    await plainOnly(t);
-  });
-
   it("internalCapture and internalPrepareTodo", async () => {
     const t = convexTest({ schema, modules });
-    const id = (await t.mutation(internal.tts.internalCapture, { statement: "buy tape", source: "slack-capture" })) as unknown as Id<"todos">;
-    expect(await plainOf(t, "todos", id)).toMatchObject({ statement: "buy tape", source: "slack-capture" });
+    const id = (await t.mutation(internal.tts.internalCapture, { statement: "buy tape", source: "capture" })) as unknown as Id<"todos">;
+    expect(await plainOf(t, "todos", id)).toMatchObject({ statement: "buy tape", source: "capture" });
     await t.mutation(internal.tts.internalPrepareTodo, {
       id,
       brief: "Tape for finger protection.",
@@ -128,60 +119,6 @@ describe("the direct write: each writer writes the plain row and no old row", ()
     await tom.mutation(api.ttsRulings.recordRuling, { todoId: id, verdict: "revise", sentence: "shorter" });
     expect(await plainOf(t, "todos", id)).toMatchObject({ readiness: "unprepared" });
     await plainOnly(t);
-  });
-
-  it("internalRecordSlackSent (recordSlackSent)", async () => {
-    const { t, id } = await setup();
-    await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
-      channel: "C-dump",
-      ts: "9000.1",
-      subject: { kind: "todo", id },
-      text: "captured",
-    });
-    expect(await plainOf(t, "todos", id)).toMatchObject({ slackReplyTs: "9000.1", slackRepliedAt: expect.any(Number) });
-    await plainOnly(t);
-  });
-
-  it("a Slack send and a thread reply store the plain todo id, given a thread that names the old one", async () => {
-    const { t } = await setup();
-    // A todo from before step C: its old row and its plain copy.
-    const { old: legacy, plain: id } = await t.run(async (ctx) =>
-      await insertCopied(ctx, "todos", { statement: "the old todo", readiness: "unprepared", status: "active", timingClass: "whenever", source: "test", createdAt: 1, updatedAt: 1 }),
-    );
-    // A needs-you post supplies the old id: the row stores the plain one.
-    await t.mutation(internal.ttsSlack.internalRecordSlackSent, { channel: "C-today", ts: "9100.1", subject: { kind: "todo", id: legacy }, text: "needs you" });
-    // A thread opened before step C, whose row names the old id.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: Date.now() - 1_000,
-        kind: "slack-sent",
-        key: slackThreadKey("C-dump", "9000.1"),
-        todoId: legacy,
-        data: { channel: "C-dump", ts: "9000.1", subject: { kind: "todo", id: legacy }, text: "captured" },
-      });
-    });
-    await t.mutation(internal.ttsSlack.internalSlackThreadReply, { eventId: "Ev1", channel: "C-dump", threadTs: "9000.1", ts: "9000.2", text: "the landlord called back", user: "UTOM" });
-    await t.run(async (ctx) => {
-      const rows = (await ctx.db.query("dtsEvents").collect()).filter((e) => ["slack-sent", "slack-event", "tom-note"].includes(e.kind));
-      const fresh = rows.filter((e) => !(e.kind === "slack-sent" && e.key === slackThreadKey("C-dump", "9000.1")));
-      expect(fresh.map((e) => e.kind).sort()).toEqual(["slack-event", "slack-sent", "tom-note"]);
-      for (const e of fresh) {
-        expect(e.todoId).toBe(id);
-        expect((e.data as { subject: { id: string } }).subject.id).toBe(id);
-      }
-    });
-  });
-
-  it("a failed Slack send given the old id stores the plain one, in its todoId and its subject", async () => {
-    const { t } = await setup();
-    // A todo from before step C: its old row and its plain copy.
-    const { old: legacy, plain: id } = await t.run(async (ctx) =>
-      await insertCopied(ctx, "todos", { statement: "the old todo", readiness: "unprepared", status: "active", timingClass: "whenever", source: "test", createdAt: 1, updatedAt: 1 }),
-    );
-    await t.mutation(internal.ttsSlack.internalRecordSlackFailed, { channel: "C-today", subject: { kind: "todo", id: legacy }, error: "rate limited" });
-    const [row] = await t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === "slack-send-failed"));
-    expect(row.todoId).toBe(id);
-    expect((row.data as { subject: { id: string } }).subject.id).toBe(id);
   });
 
   it("leftToRemap after a run of writes counts what the way back carries, and copyBack brings it to zero", async () => {

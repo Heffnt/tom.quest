@@ -9,9 +9,6 @@ export { ageText } from "../jarvis/lib";
 
 export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
-type StreamBuf = Doc<"claudeStreamBuf">;
-type InboundRow = Doc<"claudeInbound">;
-type DaemonHealth = Doc<"claudeDaemonHealth">;
 
 /**
  * A finalized row AS THE PAGE READS IT. claudeSessions.getMessages and

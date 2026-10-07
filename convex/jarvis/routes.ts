@@ -38,7 +38,6 @@ import { register as registerContext } from "./context";
 import { postNewInformation, postRuling, postStandingRuling } from "./rulings";
 import { getBuildState } from "./build";
 import { getOpenTodos, postTodo, postTodoDone } from "./todos";
-import { channelRoute, digestRoute, needsYouRoute } from "./digest";
 import { tickRoute } from "./tick";
 import { pushRoute } from "../push";
 import { getChanges, postChange } from "./changes";
@@ -106,9 +105,6 @@ export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
   http.route({ path: "/jarvis/standing-ruling", method: "POST", handler: postStandingRuling });
   http.route({ path: "/jarvis/standing-ruling/new-information", method: "POST", handler: postNewInformation });
-  http.route({ path: "/jarvis/digest", method: "POST", handler: digestRoute });
-  http.route({ path: "/jarvis/digest/needs-you", method: "GET", handler: needsYouRoute });
-  http.route({ path: "/jarvis/digest/channel", method: "GET", handler: channelRoute });
   http.route({ path: "/jarvis/tick", method: "POST", handler: tickRoute });
   http.route({ path: "/jarvis/push", method: "POST", handler: pushRoute });
   http.route({ path: "/jarvis/change", method: "POST", handler: postChange }); // changes.ts

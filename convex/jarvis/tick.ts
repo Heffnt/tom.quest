@@ -6,9 +6,9 @@
 // record-tick job (Jarvis worker/jobs/record-tick.mjs, every minute) POSTs
 // /jarvis/tick, which starts each task whose cadence has come round. A task's
 // last outcome is its own job-ok or job-failed row (provenance.job and
-// subject `tick:<name>`), so each task's last refresh is a read of the record;
-// a failing task is a failure line in the digest like any box
-// job's, and a failing task is retried at its cadence, not every minute.
+// subject `tick:<name>`), so each task's last refresh is a read of the record,
+// a failing task is a failure event like any box job's, and a failing task is
+// retried at its cadence, not every minute.
 //
 // The tasks, and what each keeps alive:
 //   turing-health   /turing's reachability light (the debug panel reads the

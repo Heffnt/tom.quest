@@ -19,16 +19,9 @@
 // provenance.agentId is data.agentId when the box matched an agent, so an
 // agent's changes are one indexed read (events.by_agent_at). This module is
 // the record's side of it:
-//   - onBoxChange, the kind's hook (convex/jarvis/events.ts AFTER_RECORD):
-//     refuses a row whose data is not the shape or whose provenance and data
-//     disagree, drops a second copy of one change, and lists the two digest
-//     lines a change can earn (convex/jarvis/outbox.ts listForDigest): an
-//     objection-list line when it changes who or what can act on the box, and
-//     a broken-section line when the journal lost entries the reader had not
-//     read;
+//   - assertBoxChange, the write-time shape check;
 //   - forAgent, the /agents chat's read of one agent's changes;
-//   - boxChangesInWindow, the digest's read of a window's changes;
-//   - boxChangeLines, the digest's "Box changes" facts: one line per agent
+//   - boxChangeLines, the history page's facts: one line per agent
 //     that ran root commands, one per deploy and per setup run, and one per
 //     other kind of change.
 //
@@ -39,18 +32,17 @@
 
 import { v } from "convex/values";
 import { query } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../shared/redact.mjs";
-import type { BoxChangeFact } from "./ttsCompose";
-import { listForDigest } from "./jarvis/outbox";
-import { MIB, ReadBudget, readWithin } from "./readBudget";
 
 export const BOX_CHANGE = "box-change";
 /** The deploy job's own row (Jarvis worker/jobs/deploy.mjs): data
  *  { repo, from, to, commits, setupNeeded }, keyed `<repo>:<sha>`. */
 export const DEPLOY = "deploy";
+/** Where the history page links a summarized box change. */
+const AGENTS_WINDOW_URL = "/agents?view=window";
+
+type BoxChangeFact = { id: string; text: string; url: string };
 
 const BOX_SOURCES = ["sudo", "systemd", "user", "ssh", "state", "deploy", "setup"] as const;
 const BOX_WHYS = ["ran-as-root", "unit", "login", "state", "deploy", "setup"] as const;
@@ -123,18 +115,104 @@ function redactedBoxChange(change: BoxChange): BoxChange {
   };
 }
 
-// ── Who or what can act ──────────────────────────────────────────────────────
+function oneLine(text: string, limit: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= limit ? flat : `${flat.slice(0, limit - 1).trimEnd()}…`;
+}
 
-/** The state items whose change is a change to who or what can act on the
- *  box (Jarvis box-change.mjs WHO_CAN_ACT, the same names): the plan's list,
- *  sudoers, ssh keys, users, the hook and the logging. */
-const WHO_CAN_ACT_ITEMS = new Set(["sudoers", "authorized-keys", "users", "groups", "hooks", "logging"]);
-// A stop of one of these silences the record the reader depends on.
-const LOGGING_UNITS = new Set(["systemd-journald.service", "rsyslog.service", "auditd.service", "systemd-journald.socket"]);
-// A root command running one of these changes who can log in or use sudo.
-const ACCOUNT_PROGRAMS = new Set(["visudo", "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod", "gpasswd", "passwd", "chpasswd", "adduser", "deluser", "addgroup", "delgroup"]);
-// A root command touching one of these files changes who or what can act.
-const WHO_CAN_ACT_PATHS = /sudoers|authorized_keys|\.claude-accounts|settings\.json|journald|rsyslog|\/etc\/passwd|\/etc\/group|\/etc\/shadow/;
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
+function shortCommand(command: string): string {
+  return oneLine(command.replace(/^\S*\//, ""), 60);
+}
+
+function listed(items: string[], shown = 3): string {
+  const head = items.slice(0, shown).join("; ");
+  return items.length > shown ? `${head}; and ${items.length - shown} more` : head;
+}
+
+/** Summaries the history page uses to fold a day's box changes without
+ * exposing commands or state values unredacted. */
+export function boxChangeLines(
+  changes: BoxChange[],
+  deploys: Array<{ at: number; repo?: string; to?: string; commits?: unknown }> = [],
+): BoxChangeFact[] {
+  const facts: BoxChangeFact[] = [];
+  const shown = changes.map(redactedBoxChange);
+  const byAgent = new Map<string, BoxChange[]>();
+  for (const change of shown) {
+    if (change.source !== "sudo") continue;
+    const key = change.agentId ?? "";
+    byAgent.set(key, [...(byAgent.get(key) ?? []), change]);
+  }
+  const rootLine = (runs: BoxChange[]) => {
+    const total = runs.reduce((sum, run) => sum + (run.count ?? 1), 0);
+    const changed = runs.filter((run) => run.count === undefined);
+    const tail = changed.length === 0
+      ? "all of them reads"
+      : `${changed.length} changed the machine: ${listed(changed.map((run) => shortCommand(run.command ?? "")))}`;
+    return `ran ${total} root ${plural(total, "command", "commands")}, ${tail}`;
+  };
+  for (const [agentId, runs] of byAgent) {
+    if (agentId === "") continue;
+    facts.push({ id: `box:agent:${agentId}`, text: `An agent ${rootLine(runs)}.`, url: `/agents?agent=${encodeURIComponent(agentId)}` });
+  }
+  const unmatched = byAgent.get("");
+  if (unmatched !== undefined) {
+    facts.push({ id: "box:unmatched", text: `Root commands no agent was matched to: ${rootLine(unmatched)}.`, url: AGENTS_WINDOW_URL });
+  }
+  const deployed = new Set<string>();
+  for (const deploy of deploys) {
+    const sha = typeof deploy.to === "string" ? deploy.to : "";
+    if (sha !== "") deployed.add(sha);
+    const commits = Array.isArray(deploy.commits) ? deploy.commits.length : 0;
+    facts.push({
+      id: `box:deploy:${sha}@${deploy.at}`,
+      text: `The box deployed ${deploy.repo ?? "Jarvis"} ${sha.slice(0, 7)}${commits > 0 ? `, ${commits} ${plural(commits, "commit", "commits")}` : ""}.`,
+      url: AGENTS_WINDOW_URL,
+    });
+  }
+  for (const change of shown) {
+    if (change.source === "deploy") {
+      const commit = change.commit ?? "";
+      if (![...deployed].some((sha) => commit !== "" && sha.startsWith(commit))) {
+        facts.push({ id: `box:deploy:${commit}@${change.at}`, text: `The box deployed ${commit.slice(0, 7)}.`, url: AGENTS_WINDOW_URL });
+      }
+    }
+    if (change.source === "setup") {
+      const folded = change.change?.what === "setup" && change.change.after ? `, ${change.change.after.replace(/^folded: /, "")}` : "";
+      facts.push({ id: `box:setup:${change.commit ?? ""}@${change.at}`, text: `Setup ran as root${change.commit ? ` at ${change.commit.slice(0, 7)}` : ""}${folded}.`, url: AGENTS_WINDOW_URL });
+    }
+  }
+  const byItem = new Map<string, BoxChange[]>();
+  for (const change of shown) {
+    if (change.source !== "state" && change.source !== "user") continue;
+    const what = change.source === "user" ? "users" : change.change?.what ?? "state";
+    byItem.set(what, [...(byItem.get(what) ?? []), change]);
+  }
+  for (const [what, items] of byItem) {
+    const last = items[items.length - 1];
+    const now = last.change?.after ? `: ${oneLine(last.change.after, 100)}` : "";
+    facts.push({ id: `box:state:${what}`, text: `The ${ITEM_WORDS[what] ?? what} changed${items.length > 1 ? ` ${items.length} times` : ""}${now}.`, url: AGENTS_WINDOW_URL });
+  }
+  const units = shown.filter((change) => change.source === "systemd");
+  if (units.length > 0) {
+    const words = units.map((unit) => `${unit.change?.what ?? "a unit"} ${unit.change?.after ?? ""}`.trim());
+    facts.push({ id: "box:units", text: `Units changed outside a root command: ${listed(words, 4)}.`, url: AGENTS_WINDOW_URL });
+  }
+  const logins = new Map<string, number>();
+  for (const change of shown) {
+    if (change.source === "ssh") logins.set(change.user, (logins.get(change.user) ?? 0) + (change.count ?? 1));
+  }
+  if (logins.size > 0) {
+    const total = [...logins.values()].reduce((sum, n) => sum + n, 0);
+    const who = [...logins.entries()].sort((left, right) => right[1] - left[1]).map(([user, n]) => `${user} ${n}`).join(", ");
+    facts.push({ id: "box:logins", text: `${total} ssh ${plural(total, "login", "logins")} reached the box: ${who}.`, url: AGENTS_WINDOW_URL });
+  }
+  return facts;
+}
 
 const ITEM_WORDS: Record<string, string> = {
   sudoers: "sudo rules",
@@ -151,57 +229,16 @@ const ITEM_WORDS: Record<string, string> = {
   "journal-gap": "journal",
 };
 
-function programOf(command: string): string {
-  const words = command.trim().split(/\s+/);
-  let i = 0;
-  if ((words[0] ?? "").split("/").pop() === "env") {
-    i = 1;
-    while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || words[i].startsWith("-"))) i += 1;
-  }
-  return (words[i] ?? "").split("/").pop() ?? "";
-}
-
 /**
- * The words of an objection-list line when this change is to who or what can
- * act on the box — sudo rules, ssh keys, accounts, the Claude hooks, the
- * logging (plan-root T1) — or null when it is not.
- */
-export function whoCanActLine(change: BoxChange): string | null {
-  const what = change.change?.what ?? "";
-  if (change.source === "state" && WHO_CAN_ACT_ITEMS.has(what)) {
-    return `The box's ${ITEM_WORDS[what] ?? what} changed${change.change?.after ? `: now ${oneLine(change.change.after, 160)}` : ""}${change.change?.before ? `; gone: ${oneLine(change.change.before, 120)}` : ""}`;
-  }
-  if (change.source === "user") return `An account changed on the box: ${oneLine(change.change?.after ?? "", 200)}`;
-  if (change.source === "systemd" && LOGGING_UNITS.has(what)) return `The box's logging unit ${what} had a ${change.change?.after ?? "change"}`;
-  if (change.source === "sudo" && change.count === undefined && change.command !== undefined) {
-    if (ACCOUNT_PROGRAMS.has(programOf(change.command)) || WHO_CAN_ACT_PATHS.test(change.command)) {
-      return `${change.user} ran as root: ${oneLine(change.command, 200)}`;
-    }
-  }
-  return null;
-}
-
-/** Two bodies of one change, compared key by key whatever order each was
- *  written in. */
-/**
- * THE KIND'S HOOK, run inside the record mutation after the row lands
- * (convex/jarvis/events.ts AFTER_RECORD). A throw rolls the row back and the
- * route answers 400 naming the fault, which the box logs and drops.
- *
  * ONE ROW PER CHANGE. The box's outbox is at-least-once: a post whose answer
  * was lost to the network is sent again on the next run, and for as long as a
  * box still posts through the legacy pen and another through POST
  * /jarvis/event, both carry the same outbox. A second row with the same
  * `data.id` (the reader's identity for the change) is that resend, not a
  * second change, so recordEvent (convex/jarvis/events.ts) does not record it
- * and it earns no digest line. The time and the body are no identity: two sudo runs of one command
+ * and it earns no additional record row. The time and the body are no identity: two sudo runs of one command
  * in one millisecond are two changes. A change posted without an id is
  * always recorded, a resend of it included.
- *
- * Then the digest lines one recorded change earns (convex/jarvis/outbox.ts):
- * one on the objection list when it changes who or what can act, and a
- * broken line when the journal lost entries the reader had not read
- * (plan-root T3). Neither holds a secret: the text is redacted first.
  */
 /** The subject a box change with a reader id is filed under. */
 export function boxChangeSubject(id: string): string {
@@ -220,36 +257,6 @@ export function assertBoxChange(event: { at?: number; provenance?: { agentId?: s
     throw new Error("a box change's provenance.agentId is its data.agentId, and it has none when data.agentId is absent");
   }
   if (event.at !== change.at) throw new Error("a box change's at is data.at, when it happened on the box");
-}
-
-export async function onBoxChange(
-  ctx: MutationCtx,
-  row: Doc<"events">,
-): Promise<{ duplicate: boolean }> {
-  // The shape was checked before the insert (assertBoxChange, recordEvent).
-  const change = row.data as BoxChange;
-  // A resend (the same data.id) never reaches this hook: recordEvent answers
-  // it with the earlier row (shared/jarvis-events.mjs REPEATS_BY_DATA_ID),
-  // and files a change with an id under boxChangeSubject(id).
-  const shown = redactedBoxChange(change);
-  if (shown.change?.what === "journal-gap") {
-    await listForDigest(ctx, {
-      section: "broken",
-      job: "box-watch:journal-gap",
-      statement: `The box's journal lost entries the box-change reader had not read${shown.change.before ? `, from ${shown.change.before}` : ""}${shown.change.after ? ` to ${shown.change.after}` : ""}, so changes to the machine in that span are not in the record.`,
-      url: AGENTS_WINDOW_URL,
-    });
-    return { duplicate: false };
-  }
-  const decision = whoCanActLine(shown);
-  if (decision === null) return { duplicate: false };
-  await listForDigest(ctx, {
-    section: "decisions",
-    askId: `box-change:${row._id}`,
-    decision,
-    reason: "it changes who or what can act on the Jarvis Box",
-  });
-  return { duplicate: false };
 }
 
 /**
@@ -305,201 +312,3 @@ export const forAgent = query({
     return rows.map((row) => ({ ...redactedBoxChange(row.data as BoxChange), id: row._id }));
   },
 });
-
-/**
- * The box changes RECORDED in the window, in the order they happened, as the
- * digest reads them (boxChangeLines takes these). Unredacted: boxChangeLines
- * redacts every line it writes.
- *
- * BY RECORDED TIME, AFTER THE HISTORY COPY. A live change can arrive after the
- * digest whose event-time window held it; `_creationTime` puts it in the next
- * digest instead. The one-time history copy created old rows after its event-
- * time cut, and marked them no differently from live rows. The measured last
- * copy creation time below excludes all of them. Consecutive digest windows
- * then partition every live row exactly once, however late it arrives or
- * whenever it occurred.
- */
-/** The `before` boundary used by the production history copy. */
-export const BOX_CHANGE_HISTORY_CUT = Date.UTC(2026, 8, 26, 8, 38, 58);
-/** The latest `_creationTime` among the eight rows inserted by the one-time
- * production history copy. Measured read-only on 2026-09-27 by matching the
- * copied events to their pre-cut dtsEvents source rows. The copy wrote no
- * marker, so its exact inclusive upper bound is the durable partition. */
-export const BOX_CHANGE_HISTORY_COPIED_THROUGH = 1_790_412_428_617.723;
-/** A day holds tens; the cap keeps a long outage's window inside the read limit. */
-export const BOX_CHANGE_SCAN = 2000;
-/** The bytes one read of the window takes when the caller gives no budget. */
-const BOX_CHANGE_BYTES = 0.5 * MIB;
-
-/** The window's box changes, oldest first, stopping at BOX_CHANGE_SCAN rows
- *  or when `budget` is spent; a stop is recorded on the budget, which the
- *  digest says in its cut run. */
-export async function boxChangesInWindow(
-  ctx: QueryCtx,
-  from: number,
-  to: number,
-  budget: ReadBudget = ReadBudget.of(BOX_CHANGE_BYTES).allot("box changes", BOX_CHANGE_BYTES),
-): Promise<BoxChange[]> {
-  if (to <= BOX_CHANGE_HISTORY_COPIED_THROUGH) return [];
-  const rows = await readWithin(
-    budget,
-    ctx.db
-      .query("events")
-      .withIndex("by_kind", (q) => {
-        const kind = q.eq("kind", BOX_CHANGE);
-        return from <= BOX_CHANGE_HISTORY_COPIED_THROUGH
-          ? kind.gt("_creationTime", BOX_CHANGE_HISTORY_COPIED_THROUGH).lt("_creationTime", to)
-          : kind.gte("_creationTime", from).lt("_creationTime", to);
-      })
-      .order("asc"),
-    BOX_CHANGE_SCAN,
-  );
-  return rows
-    .map((row) => row.data as BoxChange)
-    .sort((a, b) => a.at - b.at);
-}
-
-// ── The digest ───────────────────────────────────────────────────────────────
-
-/** Where a box change is read in time: the /agents page's window view. */
-export const AGENTS_WINDOW_URL = "https://tom.quest/agents?view=window";
-
-function agentUrl(agentId: string): string {
-  return `https://tom.quest/agents?agent=${encodeURIComponent(agentId)}`;
-}
-
-function oneLine(text: string, limit: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length <= limit ? flat : `${flat.slice(0, limit - 1).trimEnd()}…`;
-}
-
-function plural(n: number, one: string, many: string): string {
-  return n === 1 ? one : many;
-}
-
-/** A command as a line names it: the program by its name, not its path. */
-function shortCommand(command: string): string {
-  return oneLine(command.replace(/^\S*\//, ""), 60);
-}
-
-function listed(items: string[], shown = 3): string {
-  const head = items.slice(0, shown).join("; ");
-  return items.length > shown ? `${head}; and ${items.length - shown} more` : head;
-}
-
-/** A deploy row of the deploy job's own, as the lines read it. */
-type DeployRow = { at: number; repo?: string; to?: string; commits?: unknown };
-
-/**
- * THE DIGEST'S BOX CHANGES, deterministic, one fact per line:
- *   - one per agent that ran root commands: "ran N root commands, M changed
- *     the machine: …" (N counts the read-only ones folded into a count; M is
- *     the commands the box did not count as reads);
- *   - one for root commands no agent was matched to, in the same words;
- *   - one per deploy (the deploy job's row, or the box's marker when no row
- *     names the same commit) and one per setup run;
- *   - one per kind of state change, one for unit changes, one for logins, and
- *     one per journal gap.
- * Every command text is redacted before it is a line.
- */
-export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []): BoxChangeFact[] {
-  const facts: BoxChangeFact[] = [];
-  const shown = changes.map(redactedBoxChange);
-
-  const byAgent = new Map<string, BoxChange[]>();
-  for (const change of shown) {
-    if (change.source !== "sudo") continue;
-    const key = change.agentId ?? "";
-    byAgent.set(key, [...(byAgent.get(key) ?? []), change]);
-  }
-  const rootLine = (runs: BoxChange[]) => {
-    const total = runs.reduce((sum, run) => sum + (run.count ?? 1), 0);
-    const changed = runs.filter((run) => run.count === undefined);
-    const tail = changed.length === 0
-      ? "all of them reads"
-      : `${changed.length} changed the machine: ${listed(changed.map((run) => shortCommand(run.command ?? "")))}`;
-    return `ran ${total} root ${plural(total, "command", "commands")}, ${tail}`;
-  };
-  for (const [agentId, runs] of byAgent) {
-    if (agentId === "") continue;
-    facts.push({ id: `box:agent:${agentId}`, text: `An agent ${rootLine(runs)}.`, url: agentUrl(agentId) });
-  }
-  const unmatched = byAgent.get("");
-  if (unmatched !== undefined) {
-    facts.push({ id: "box:unmatched", text: `Root commands no agent was matched to: ${rootLine(unmatched)}.`, url: AGENTS_WINDOW_URL });
-  }
-
-  const deployed = new Set<string>();
-  for (const deploy of deploys) {
-    const sha = typeof deploy.to === "string" ? deploy.to : "";
-    if (sha !== "") deployed.add(sha);
-    const commits = Array.isArray(deploy.commits) ? deploy.commits.length : 0;
-    facts.push({
-      // A line's id is its row's time as well as its commit: the box can
-      // deploy or run setup at one commit twice, and two lines with one id
-      // are one key to the digest's facts and to the history page.
-      id: `box:deploy:${sha}@${deploy.at}`,
-      text: `The box deployed ${deploy.repo ?? "Jarvis"} ${sha.slice(0, 7)}${commits > 0 ? `, ${commits} ${plural(commits, "commit", "commits")}` : ""}.`,
-      url: AGENTS_WINDOW_URL,
-    });
-  }
-  for (const change of shown) {
-    if (change.source === "deploy") {
-      const commit = change.commit ?? "";
-      if ([...deployed].some((sha) => commit !== "" && sha.startsWith(commit))) continue;
-      facts.push({ id: `box:deploy:${commit}@${change.at}`, text: `The box deployed ${commit.slice(0, 7)}.`, url: AGENTS_WINDOW_URL });
-    }
-    if (change.source === "setup") {
-      const folded = change.change?.what === "setup" && change.change.after ? `, ${change.change.after.replace(/^folded: /, "")}` : "";
-      facts.push({
-        id: `box:setup:${change.commit ?? ""}@${change.at}`,
-        text: `Setup ran as root${change.commit ? ` at ${change.commit.slice(0, 7)}` : ""}${folded}.`,
-        url: AGENTS_WINDOW_URL,
-      });
-    }
-  }
-
-  const byItem = new Map<string, BoxChange[]>();
-  for (const change of shown) {
-    if (change.source !== "state" && change.source !== "user") continue;
-    const what = change.source === "user" ? "users" : change.change?.what ?? "state";
-    byItem.set(what, [...(byItem.get(what) ?? []), change]);
-  }
-  for (const [what, items] of byItem) {
-    if (what === "journal-gap") {
-      for (const gap of items) {
-        facts.push({
-          id: `box:journal-gap:${gap.at}`,
-          text: `The journal lost entries the reader had not read${gap.change?.before ? `, from ${gap.change.before}` : ""}${gap.change?.after ? ` to ${gap.change.after}` : ""}; the record has a gap there.`,
-          url: AGENTS_WINDOW_URL,
-        });
-      }
-      continue;
-    }
-    const last = items[items.length - 1];
-    const now = last.change?.after ? `: ${oneLine(last.change.after, 100)}` : "";
-    facts.push({
-      id: `box:state:${what}`,
-      text: `The ${ITEM_WORDS[what] ?? what} changed${items.length > 1 ? ` ${items.length} times` : ""}${now}.`,
-      url: AGENTS_WINDOW_URL,
-    });
-  }
-
-  const units = shown.filter((change) => change.source === "systemd");
-  if (units.length > 0) {
-    const words = units.map((unit) => `${unit.change?.what ?? "a unit"} ${unit.change?.after ?? ""}`.trim());
-    facts.push({ id: "box:units", text: `Units changed outside a root command: ${listed(words, 4)}.`, url: AGENTS_WINDOW_URL });
-  }
-
-  const logins = new Map<string, number>();
-  for (const change of shown) {
-    if (change.source !== "ssh") continue;
-    logins.set(change.user, (logins.get(change.user) ?? 0) + (change.count ?? 1));
-  }
-  if (logins.size > 0) {
-    const total = [...logins.values()].reduce((sum, n) => sum + n, 0);
-    const who = [...logins.entries()].sort((left, right) => right[1] - left[1]).map(([user, n]) => `${user} ${n}`).join(", ");
-    facts.push({ id: "box:logins", text: `${total} ssh ${plural(total, "login", "logins")} reached the box: ${who}.`, url: AGENTS_WINDOW_URL });
-  }
-  return facts;
-}

@@ -26,8 +26,6 @@ import {
   removalNotesOf,
   slowConditions,
 } from "./ttsMerge";
-import { gatherTodayFacts } from "./ttsDigest";
-import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -107,21 +105,6 @@ const mergeRows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
     ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", MERGE)).collect(),
   );
-
-/** Every Slack send a mutation scheduled. A merge posts none: its line is on
- *  the digest's objection list, read from its MERGE row. */
-const slackScheduled = (t: TestConvex<typeof schema>) =>
-  t.run(async (ctx) =>
-    (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("ttsSync")),
-  );
-
-/** The digest's objection list over the last day (convex/ttsDigest.ts
- *  gatherTodayFacts), which is where a merge reaches Tom. */
-const digestObjections = (t: TestConvex<typeof schema>) =>
-  t.run(async (ctx) => {
-    const now = Date.now() + 1;
-    return (await gatherTodayFacts(ctx, { day: nyCalendarDayKey(now), now, since: now - DAY_MS })).objections;
-  });
 
 const testsRows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
@@ -389,7 +372,7 @@ describe("a merge the gate allows", () => {
     });
   });
 
-  it("puts ONE line on the digest's objection list from the merge row, answers the two checks, and posts nothing", async () => {
+  it("records the merge row after the two checks pass", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
     await gated(t);
@@ -407,18 +390,6 @@ describe("a merge the gate allows", () => {
     expect(rows[0].key).toBe(`${REPO}:${SHA}`);
     expect(rows[0].data).toMatchObject({ repo: REPO, sha: SHA, subject: "the delegate and the objection list" });
 
-    // The digest reads that row into ONE objection line whose ask id is the
-    // merge's own key, so "revert <n>" in the digest's thread objects to THIS
-    // merge.
-    const objections = await digestObjections(t);
-    expect(objections).toHaveLength(1);
-    expect(objections[0]).toMatchObject({
-      askId: `${REPO}:${SHA}`,
-      decision: `merged ${REPO}@${SHA.slice(0, 7)}: the delegate and the objection list`,
-      merged: true,
-      refused: false,
-    });
-    expect(await slackScheduled(t)).toEqual([]);
   });
 
   // witness: PR #196 was recorded at c4e73b5 on 2026-09-19 from a merge
@@ -1140,7 +1111,7 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect((await auditData(t)).text).toContain("fine");
   });
 
-  it("says WHO audited when Codex was capped, in the gate, on the audit row and on the merge row the digest reads", async () => {
+  it("says WHO audited when Codex was capped, in the gate and record rows", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
     await greenTests(t);
@@ -1165,15 +1136,13 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(merged.status).toBe(200);
     const answered = (await merged.json()).gate.checks.find((c: { name: string }) => c.name === "audit");
     expect(answered.why).toContain("(audit by claude-opus-5, Codex at its cap)");
-    // The MERGE row, which the digest's objection line is built from, carries
-    // the merge and the gate's own reasons, so WHO audited reaches Tom in the
-    // digest: its line is `merged <repo>@<sha7>: <subject>`, because <reason>.
+    // The merge row carries the merge and the gate's own reasons, including
+    // who audited when Codex was at its cap.
     const rows = await mergeRows(t);
     expect(rows).toHaveLength(1);
     expect(Object.keys(rows[0].data as Record<string, unknown>).sort()).toEqual(["mainCheck", "reason", "repo", "sha", "subject"]);
     expect(rows[0].data).toMatchObject({ repo: REPO, sha: SHA, subject: "the delegate and the objection list" });
     expect(String((rows[0].data as { reason?: unknown }).reason)).toContain("(audit by claude-opus-5, Codex at its cap)");
-    expect(await slackScheduled(t)).toEqual([]);
   });
 
   // worker/jobs/audit.mjs's third rung: Codex at its cap and Claude at its

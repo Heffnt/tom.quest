@@ -44,9 +44,8 @@
 // "measure" (id: a quality-check row whose subject is the ruling's scope, a
 // measure that crossed his target). A ruling scoped "all" takes a diagnosis
 // or measure row of any subject. The ruling's data gets standing false and
-// supersededBy the id, supersededAt the instant and supersededLine the
-// digest's sentence for it; the next digest lists it, or a later one when it
-// does not fit. Answers { ok: true, rulingId, supersededBy }; the same post
+// supersededBy the id, supersededAt the instant and a display line for it.
+// Answers { ok: true, rulingId, supersededBy }; the same post
 // again answers the same with duplicate: true.
 //
 // The asker's read is standingRulings below, served on GET
@@ -260,7 +259,7 @@ export const recordStanding = internalMutation({
   },
 });
 
-/** The digest's sentence for a ruling that no longer stands. */
+/** The sentence for a ruling that no longer stands. */
 function supersededStatement(ruling: Doc<"events">, type: NewInformationType, by: Doc<"events">): string {
   const d = rulingData(ruling);
   const because =
@@ -269,14 +268,12 @@ function supersededStatement(ruling: Doc<"events">, type: NewInformationType, by
       : type === "diagnosis"
         ? `a diagnosis named a defect in this scope (${by._id})`
         : `a measure you set a target on crossed it (${by._id})`;
-  // The reason comes before his old sentence: a digest line is cut at a
-  // clause boundary (convex/ttsCompose.ts statement), and the reason is what
-  // the line exists to say.
+  // The reason comes before his old sentence, so the change is clear first.
   return `Your ruling of ${nyCalendarDayKey(ruling.at)} in scope ${d.scope} no longer stands, because ${because}; it said "${d.sentence}".`;
 }
 
-/** Record new information against one standing ruling: it stops standing,
- *  names the row that ended it, and goes on the next digest. */
+/** Record new information against one standing ruling: it stops standing and
+ *  names the row that ended it. */
 async function supersede(
   ctx: MutationCtx,
   { rulingId, type, id }: { rulingId: string; type: NewInformationType; id: string },
@@ -302,10 +299,7 @@ async function supersede(
   } else if (d.scope !== "all" && by.subject !== d.scope) {
     throw new Error(`a ${type} row in scope ${d.scope} names it as its subject`);
   }
-  // The row itself carries what the digest prints and when it was ended:
-  // the digest reads superseded rulings on their own index
-  // (events.by_kind_standing_superseded_at, convex/ttsDigest.ts), so no
-  // other row has to be written, and none can be crowded out.
+  // The row itself carries when it was ended; no other row is needed.
   await ctx.db.patch(ruling._id, {
     data: {
       ...d,

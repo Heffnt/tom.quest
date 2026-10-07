@@ -27,7 +27,7 @@ job and is not counted in any row.
 
 | Test or check | What it verifies | Where it runs | Wall time | Verifier |
 |---|---|---|---|---|
-| vitest, `convex/` — 50 files, 1,183 tests | Convex queries, mutations, HTTP doors, the merge gate, the digest, the hourly update, against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
+| vitest, `convex/` — 50 files, 1,183 tests | Convex queries, mutations, HTTP doors and the merge gate against `convex-test` | CI `tests`; local `pnpm test` | 46.4 s of CPU inside the suite | checks |
 | vitest, `app/` — 74 files, 1,076 tests | React components, route registries, client libraries, the API route handlers under `app/api/` | CI `tests`; local | 18.5 s of CPU | checks |
 | vitest, `scripts/` — 8 files, 69 tests | The guardrail scripts' own logic, the affected-tests decision, the tests report | CI `tests`; local | 1.2 s of CPU | checks |
 | vitest, `shared/__tests__/` — 11 files, 434 tests | The modules Convex, the site and the box share: the skills catalog and router, the graph, redaction, the session constants, and that each imports only its siblings | CI `tests`; local | 0.3 s of CPU | checks |
@@ -125,9 +125,9 @@ one `job-failed` event when either is crossed:
 | 300 s | the `tests` job's own wall time | one `job-failed` row keyed `guardrails:tests-slow` |
 | 600 s | the whole vitest suite's wall time, on a full run | one `job-failed` row keyed `guardrails:suite-slow` |
 
-That is the channel the morning digest and the hourly update already read, so a
-slow suite is in front of Tom within the hour. The row names the five slowest
-files, because a number with no names is a number nobody can act on.
+The record and diagnostic surfaces read that event, so a slow suite remains
+visible to Tom. The row names the five slowest files, because a number with no
+names is a number nobody can act on.
 
 Nothing here fails a build. A threshold that could fail a build would be a
 fourth condition on the merge gate, and it would trade quality for speed in the

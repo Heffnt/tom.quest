@@ -26,7 +26,7 @@ export const NARROW_LIST = /** @type {const} */ ([
   {
     id: "message-in-his-name",
     decision: "send a message to another human being in Tom's name — mail, chat, a form, a comment on someone else's work",
-    command: "send a message to another human in Tom's name (mail, a Slack post outside the system's own channels, a form submission, a comment on someone else's issue or pull request)",
+    command: "send a message to another human in Tom's name (mail, a form submission, a comment on someone else's issue or pull request)",
   },
   {
     id: "irreversible-deletion",

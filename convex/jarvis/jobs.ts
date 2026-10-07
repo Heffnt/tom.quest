@@ -9,14 +9,14 @@
 // through POST /jarvis/event (Jarvis tts-lib postEvent); the hooks below run
 // on each, inside the same mutation.
 //
-// ONE LINE IN THE DIGEST'S BROKEN SECTION PER CONDITION, NOT ONE PER TICK.
+// ONE EVENT PER CONDITION, NOT ONE PER TICK.
 // The first failure ever reported was a dead Canvas access token, dead until
 // Tom mints a new one, which is days. So a `job-failed` names the CONDITION
 // it is about in `subject` (`poll-canvas:canvas-auth`, not the run), and a
 // condition already reported and not since recovered gets no second line:
 // every accepted post is one job-failed row (the job said it again), and a row
 // posted while its condition stands carries `data.standingSince`, the time of
-// the report it repeats, so a reader of reports (the digest) reads the rows
+// the report it repeats, so a reader of reports reads the rows
 // without it. The standing check, the recovery and the rows are all `events`
 // (night/w4, 2026-09-26; before, a second home in dtsEvents): a condition is
 // standing when a job-failed under its subject is newer than its newest
@@ -27,8 +27,8 @@
 // its silence is the thing to hear: checkSilence reads each watched job's
 // newest `job-ok` on events.by_kind_job_at, and a job whose last clean run is
 // older than three of its intervals is a job-failed row under `<job>:silent`
-// (a line in the digest's broken section) and one silence-alarm line on the
-// Jarvis thread in the alarm's own words, with one web push; the first clean run after it writes the recovery,
+// and one silence-alarm event in the alarm's own words,
+// with one web push; the first clean run after it writes the recovery,
 // which re-arms the alarm. A job with no job-ok row yet is not watched: the
 // alarm is armed by the job's first clean run, so it cannot fire before the
 // job is deployed.
@@ -36,20 +36,19 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { nyLocalHour, ttsDayKey } from "../ttsShared";
-import { SILENCE_ALARM, THREAD_DIGEST } from "./outbox";
 import { insertEvent } from "./record";
 import { ReadBudget, readWithin } from "../readBudget";
 
-/** The kind the digest reads as a job failure. */
+/** The kind that records a job failure. */
 export const JOB_FAILED = "job-failed";
 /** The kind that closes one, written when the job next runs clean. */
 export const JOB_RECOVERED = "job-recovered";
 /** The kind a clean run writes: the heartbeat the silence alarm reads. */
 export const JOB_OK = "job-ok";
 
-/** Where a failure is read in time: the /agents page's window view. */
-const AGENTS_WINDOW_URL = "https://tom.quest/agents?view=window";
+/** The alarm's row is kept for the record and the phone opens sessions. */
+export const SILENCE_ALARM = "silence-alarm";
+const SESSIONS_URL = "/sessions";
 
 /**
  * The report standing under this condition: the first job-failed under the
@@ -81,13 +80,14 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
 /**
  * The job-failed hook: once per standing condition. A post under a condition
  * already standing is marked with the time of the report it repeats, which is
- * what keeps it off the digest. Returns whether this call was the first report.
+ * what keeps it from opening another condition. Returns whether this call was
+ * the first report.
  */
 export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise<{ reported: boolean; since?: number }> {
   const data = (row.data ?? {}) as Record<string, unknown>;
   // Every writer names the job (Jarvis tts-lib reportJobFailed, POST
-  // /tts/job-failed, the tick tasks, the silence alarm), and the digest's
-  // line says which job failed, so a report without one is refused.
+  // /tts/job-failed, the tick tasks, the silence alarm), so a report without
+  // one is refused.
   const job = row.provenance.job;
   if (job === undefined) throw new Error("a job-failed names its job in provenance.job");
   // THE CONDITION DEFAULTS TO THE JOB. A report with no key (Jarvis tts-lib
@@ -102,16 +102,15 @@ export async function onJobFailed(ctx: MutationCtx, row: Doc<"events">): Promise
     await ctx.db.patch(row._id, { data: { ...data, standingSince: standing.at } });
     return { reported: false, since: standing.at };
   }
-  // No line of its own (one output channel): the digest's broken section
-  // reads the report (failuresInWindow), once per condition.
+  // No additional event is needed: failuresInWindow reads the report once per
+  // condition.
   return { reported: true };
 }
 
 /**
  * The window's reported failures and recoveries, oldest first: every
  * job-failed that opened a condition (not a repeat of a standing one) and
- * every job-recovered that closed one. The digest's read of failures; the
- * Slack stream switches it to this.
+ * every job-recovered that closed one.
  *
  * THE REPEATS ARE LEFT OUT BY THE INDEX, before the limit: by_kind_standing_at
  * reads only the rows with no data.standingSince, so a job failing every two
@@ -122,8 +121,8 @@ export async function failuresInWindow(
   ctx: QueryCtx,
   from: number,
   to: number,
-  // The digest passes its allotment (convex/readBudget.ts); the weekly reads
-  // by rows alone.
+  // A bounded reader passes its allotment (convex/readBudget.ts); the weekly
+  // reader reads by rows alone.
   budget: ReadBudget = ReadBudget.of(Number.POSITIVE_INFINITY),
 ): Promise<{ failed: Doc<"events">[]; recovered: Doc<"events">[] }> {
   const failed = await readWithin(
@@ -220,13 +219,8 @@ const SILENCE_WATCH: readonly { job: string; everyMs: number; feeds: string; say
   },
 ];
 
-/** The New York hour by which today's digest should be on the thread: an
- *  hour after it is due at 5, so one failed 05:00 run is retried once by the
- *  hourly cron (convex/crons.ts) before it is an alarm. */
-const DIGEST_LATE_NY_HOUR = 6;
-
-/** A condition the alarm raises: the row, one silence-alarm line on the
- *  Jarvis thread and one web push, once until it recovers. The row directly,
+/** A condition the alarm raises: the row and one phone notification, once
+ *  until it recovers. The row directly,
  *  not recordEvent: the line is the alarm's own, and the job-failed hook's
  *  would be a second. The push carries the line: it is made of job names and
  *  durations, none of them private. */
@@ -237,10 +231,10 @@ async function raise(ctx: MutationCtx, job: string, key: string, error: string, 
     at: now,
     provenance: { job },
     subject: key,
-    data: { job, href: AGENTS_WINDOW_URL },
+    data: { job, href: SESSIONS_URL },
     text: error,
   });
-  await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, { title: "Silence alarm", body: error, url: "/thread" });
+  await ctx.scheduler.runAfter(0, internal.pushSend.sendToAll, { title: "Silence alarm", body: error, url: SESSIONS_URL });
 }
 
 /** How many intervals of silence make a job silent: the plan's three, so one
@@ -248,7 +242,7 @@ async function raise(ctx: MutationCtx, job: string, key: string, error: string, 
 export const SILENCE_INTERVALS = 3;
 
 /** When this job last said it ran clean, or null before its first job-ok. */
-export async function lastOkAt(ctx: MutationCtx, job: string): Promise<number | null> {
+async function lastOkAt(ctx: MutationCtx, job: string): Promise<number | null> {
   const row = await ctx.db
     .query("events")
     .withIndex("by_kind_job_at", (q) => q.eq("kind", JOB_OK).eq("provenance.job", job))
@@ -284,26 +278,6 @@ export async function checkSilence(ctx: MutationCtx): Promise<{ silent: string[]
     if (standing !== null) {
       await recover(ctx, job, key, standing.at, now);
       recovered.push(job);
-    }
-  }
-  // THE MORNING DIGEST IS CHECKED HERE. The record's digest cron appends
-  // today's thread-digest from 5 a.m. New York (convex/jarvis/digest.ts
-  // appendThreadDigest); past 6 a.m. with no thread-digest for today, one
-  // line, once, closed when the digest is appended.
-  if (nyLocalHour(now) >= DIGEST_LATE_NY_HOUR) {
-    const day = ttsDayKey(now);
-    const key = `digest:${day}`;
-    const standing = await standingFailure(ctx, key);
-    const onThread = (await ctx.db
-      .query("events")
-      .withIndex("by_kind_subject_at", (q) => q.eq("kind", THREAD_DIGEST).eq("subject", day))
-      .first()) !== null;
-    if (!onThread && standing === null) {
-      silent.push("digest");
-      await raise(ctx, "digest", key, `Today's digest (${day}) is not on the thread: the record's digest cron has not appended it.`, now);
-    } else if (onThread && standing !== null) {
-      await recover(ctx, "digest", key, standing.at, now);
-      recovered.push("digest");
     }
   }
   return { silent, recovered };

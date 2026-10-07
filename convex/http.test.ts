@@ -1,19 +1,14 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createHmac } from "node:crypto";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
-import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 /** What worker/agents/ingest.mjs stamps on every row; every claudeMessages row has one. */
 const ROW_PROVENANCE = { fileVersion: "f".repeat(64), file: "/agent.jsonl", lineStart: 1, lineEnd: 1, block: 0, parserVersion: "runs-parser-2", sourceKind: "fixture" };
-
-const ELSEWHERE = "C0ELSEWHERE";
-const TTS_TODAY = "C0TTS";
 
 async function events(t: ReturnType<typeof convexTest>, kind: string) {
   return await t.run(async (ctx) =>
@@ -21,25 +16,7 @@ async function events(t: ReturnType<typeof convexTest>, kind: string) {
   );
 }
 
-async function aTodo(t: ReturnType<typeof convexTest>) {
-  return await t.run(async (ctx) =>
-    insertTodo(ctx, {
-      statement: "Reply to Sarah Chen about the lab meeting time",
-      readiness: "unprepared",
-      status: "active",
-      timingClass: "whenever",
-      source: "email",
-      provenance: "gmail:message:18f0a1 https://mail.google.com/mail/u/0/#all/18f0a1",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }),
-  );
-}
-
-// ── POST /tts/capture keeps a poller's needs-Tom-today judgement ─────────────
-// Tom, 2026-09-21: workers do not reach him directly. The judgement and its
-// reason ride the capture onto the todo, and no thread is opened.
-describe("POST /tts/capture: needing Tom today", () => {
+describe("POST /tts/capture", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -52,21 +29,6 @@ describe("POST /tts/capture: needing Tom today", () => {
     });
     return (await res.json()) as { id: string };
   }
-
-  it("stores the judgement and its reason on the todo, and opens no thread", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest(schema, modules);
-    const urgent = await capture(t, { statement: "Pay the invoice", needsTomToday: true, why: " it is due tomorrow " });
-    const plain = await capture(t, { statement: "Read the newsletter" });
-    const rows = await t.run(async (ctx) => ({
-      urgent: await ctx.db.get(urgent.id as never),
-      plain: await ctx.db.get(plain.id as never),
-      threads: await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", "needs-tom")).collect(),
-    }));
-    expect((rows.urgent as { needsTomToday?: unknown }).needsTomToday).toEqual({ why: "it is due tomorrow" });
-    expect(rows.plain).not.toHaveProperty("needsTomToday");
-    expect(rows.threads).toEqual([]);
-  });
 
   it("stores dueAt and dateKind on a dated todo, and dedupes on threadMessageId", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
@@ -147,46 +109,6 @@ describe("the day log's routes", () => {
       });
       expect(res.status, path).toBe(404);
     }
-  });
-});
-
-// ── POST /tts/needs-tom opens a reply under the day's digest ─────────────────
-// One output channel (Tom, 2026-09-26): a needs-you is no room of its own but
-// a reply in the digest's thread, posted by the box's digest job from the
-// needs-you-opened row this route writes (convex/jarvis/digest.ts). With no
-// channel of its own there is no unset variable to drop it on.
-describe("POST /tts/needs-tom: a reply under the digest", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  const KEY = "gmail:message:18f0a1";
-
-  async function open(t: ReturnType<typeof convexTest>, todoId: string) {
-    return await t.fetch("/tts/needs-tom", {
-      method: "POST",
-      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
-      body: JSON.stringify({ todoId, reason: "Sarah needs a reply", key: KEY }),
-    });
-  }
-
-  it("records one needs-you-opened row with its text, once per producer key, and nothing for Slack yet", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    vi.stubEnv("SLACK_TTS_CHANNEL_ID", TTS_TODAY);
-    const t = convexTest(schema, modules);
-    const id = await aTodo(t);
-    for (let i = 0; i < 3; i += 1) {
-      const res = await open(t, id);
-      expect(res.status).toBe(200);
-    }
-    const opened = await t.run(async (ctx) =>
-      (await ctx.db.query("events").collect()).filter((row) => row.kind === "needs-you-opened"),
-    );
-    expect(opened).toHaveLength(1);
-    expect(opened[0]).toMatchObject({ subject: KEY, data: { key: KEY, todoId: id } });
-    expect(opened[0].text).toContain("Only you can settle this: sarah needs a reply.");
-    expect(await events(t, "slack-draft-request")).toHaveLength(0);
-    expect(await events(t, "job-failed")).toHaveLength(0);
   });
 });
 
@@ -852,159 +774,5 @@ describe("the agent doors read the agent spelling only", () => {
       expect(typeof row.agents).toBe("number");
       expect(row).not.toHaveProperty("runs");
     }
-  });
-});
-
-// ── The reaction door: an emoji on the morning becomes a label ────────────────
-// The cheapest act Tom can perform — the other three label doors each cost him
-// a sentence — so the gate has to be exact about whose emoji it is and which
-// room it landed in. Everything it turns away answers 200: anything else makes
-// Slack retry an event we have already decided we do not want.
-describe("POST /slack/events: a reaction on the morning digest", () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  const SECRET = "slack-signing-secret";
-  const TOM = "U0TOM";
-  const OTHER = "U0SOMEONEELSE";
-  const DIGEST_TS = "1757000000.001200";
-  const REACTED_AT = "1757000100.000200";
-  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543"; // gitleaks:allow
-  const RUN_ID = "claude:box:write-slack-run";
-
-  function reactionEnv() {
-    vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
-    vi.stubEnv("TOM_SLACK_USER_ID", TOM);
-    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", TTS_TODAY);
-  }
-
-  function signed(value: unknown) {
-    const raw = JSON.stringify(value);
-    const timestamp = String(Math.floor(Date.now() / 1000));
-    const mac = createHmac("sha256", SECRET).update(`v0:${timestamp}:${raw}`).digest("hex");
-    return {
-      headers: {
-        "Content-Type": "application/json",
-        "X-Slack-Request-Timestamp": timestamp,
-        "X-Slack-Signature": `v0=${mac}`,
-      },
-      body: raw,
-    };
-  }
-
-  async function react(
-    t: ReturnType<typeof convexTest>,
-    {
-      type = "reaction_added",
-      user = TOM,
-      channel = TTS_TODAY,
-      ts = DIGEST_TS,
-      reaction = "+1",
-    }: Partial<{ type: string; user: string; channel: string; ts: string; reaction: string }> = {},
-  ) {
-    const res = await t.fetch("/slack/events", {
-      method: "POST",
-      ...signed({
-        type: "event_callback",
-        event_id: `Ev${ts}${reaction}${type}`,
-        event: {
-          type,
-          user,
-          reaction,
-          item: { type: "message", channel, ts },
-          event_ts: REACTED_AT,
-        },
-      }),
-    });
-    expect(res.status).toBe(200);
-    return (await res.json()) as Record<string, unknown>;
-  }
-
-  /** A morning the model wrote: its (legacy, dtsEvents) digest-sent row
-   *  carries the Slack ts Tom reacts to and the token of the run that wrote
-   *  it, and that run exists. The box's own digest has no run to label. */
-  async function aMorning(t: ReturnType<typeof convexTest>) {
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: 1_757_000_000_000,
-        kind: "digest-sent",
-        data: { day: "2026-09-11", slackTs: DIGEST_TS, writtenBy: "fable", runToken: TOKEN },
-      });
-      await ctx.db.insert("runs", {
-        runId: RUN_ID, rootRunId: RUN_ID, depth: 0, linkKnown: true, origin: "cron:write-slack",
-        host: "box", cli: "claude", environment: "worker", parserVersion: "runs-parser-1", kind: "job", status: "ended",
-        startedAt: 1_756_999_000_000, lastLineAt: 1_757_000_000_000, attachments: [],
-        model: "claude-fable", regToken: TOKEN,
-        outcome: {
-          finalTextSeq: 4, turns: 1, toolCalls: 0,
-          totals: {
-            inputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30, cacheWrite5mTokens: 30,
-            cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 40,
-            thinkingTokens: 5, totalTokens: 100,
-          },
-        },
-        file: {
-          path: "/var/log/run.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64),
-          bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64),
-        },
-        ingestedAt: 1_757_000_000_000,
-      });
-      const rows = [
-        { seq: 0, kind: "context" as const, text: "the prelude" },
-        { seq: 4, kind: "assistant-text" as const, text: "the morning" },
-      ];
-      for (const row of rows) {
-        await ctx.db.insert("claudeMessages", {
-          runId: RUN_ID, seq: row.seq, turn: 0, kind: row.kind,
-          content: { text: row.text }, provenance: ROW_PROVENANCE, createdAt: 1_757_000_000_000 + row.seq,
-        });
-      }
-    });
-  }
-
-  const labels = (t: ReturnType<typeof convexTest>) =>
-    t.run(async (ctx) => await ctx.db.query("runLabels").collect());
-
-  it("writes one label for Tom's emoji on the morning message", async () => {
-    reactionEnv();
-    const t = convexTest(schema, modules);
-    await aMorning(t);
-    expect(await react(t)).toMatchObject({ ok: true, wrote: true, runId: RUN_ID });
-    expect(await labels(t)).toMatchObject([{
-      runId: RUN_ID, source: "digest-reaction", actor: "tom", polarity: "good", judgment: true,
-      ref: `reaction:${TTS_TODAY}:${DIGEST_TS}:+1`,
-      // A Slack ts is seconds with a fraction, never a millisecond number.
-      at: 1_757_000_100_000,
-    }]);
-  });
-
-  it("ignores an emoji from anyone but Tom, and one in another room", async () => {
-    reactionEnv();
-    const t = convexTest(schema, modules);
-    await aMorning(t);
-    expect(await react(t, { user: OTHER })).toMatchObject({ ignored: true });
-    expect(await react(t, { channel: ELSEWHERE })).toMatchObject({ ignored: true });
-    expect(await labels(t)).toEqual([]);
-  });
-
-  it("admits nothing while TOM_SLACK_USER_ID or the room's id is unset", async () => {
-    vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
-    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", TTS_TODAY);
-    const t = convexTest(schema, modules);
-    await aMorning(t);
-    expect(await react(t)).toMatchObject({ ignored: true });
-    vi.stubEnv("TOM_SLACK_USER_ID", TOM);
-    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "");
-    expect(await react(t)).toMatchObject({ ignored: true });
-    expect(await labels(t)).toEqual([]);
-  });
-
-  it("deletes the label when the emoji is taken back", async () => {
-    reactionEnv();
-    const t = convexTest(schema, modules);
-    await aMorning(t);
-    await react(t);
-    expect(await labels(t)).toHaveLength(1);
-    expect(await react(t, { type: "reaction_removed" })).toMatchObject({ removed: true });
-    expect(await labels(t)).toEqual([]);
   });
 });

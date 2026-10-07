@@ -1,5 +1,5 @@
 // The one rule for how a reply names a model-of-Tom line, pinned where both
-// its readers (convex/ttsSlack.ts and worker/jobs/nightly.mjs) import it.
+// its reader (worker/jobs/nightly.mjs) imports it.
 import { describe, expect, it } from "vitest";
 
 import {

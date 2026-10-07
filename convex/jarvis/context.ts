@@ -100,7 +100,7 @@ const READERS: Record<string, Reader> = {
     });
     return jsonResponse(200, context);
   },
-  // The learning step's input: the window's turns, Slack replies, rulings,
+  // The learning step's input: the window's turns, rulings,
   // and the objections not yet acted on. `since` omitted means where the
   // last learning run stopped (convex/ttsNightly.ts).
   learning: async (ctx, params) => {

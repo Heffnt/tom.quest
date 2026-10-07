@@ -196,7 +196,7 @@ function keyAuth(
 // The Jarvis Box's narrow, key-authed path into TTS, mirroring the /pool
 // pattern: TTS_WORKER_KEY lives only in the Convex env and shares nothing with
 // the other keys. The worker may capture items, post the day's prepared
-// queue+digest, and read state to prepare from — never rule, archive, or
+// queue, and read state to prepare from — never rule, archive, or
 // delete (those are Tom-gated mutations). The one ruling door on this key,
 // POST /tts/ruling, writes only what Tom himself typed: it takes the id of a
 // turn he authored and his sentence verbatim, and refuses anything else.
@@ -344,13 +344,10 @@ http.route({ path: "/tts/search/todos", method: "GET", handler: ttsSearchTodos }
 
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
 // item. Body: { statement, source?, provenance?, threadMessageId?, dueAt?,
-// dateKind?, needsTomToday?, why? }. `threadMessageId` makes the capture
+// dateKind? }. `threadMessageId` makes the capture
 // idempotent on the Jarvis-thread message it came from; `dueAt` (epoch ms)
 // with `dateKind` ("external" | "self-imposed") gives the todo a dated
-// timing class. `needsTomToday: true` is a poller's triage judging the item
-// to need Tom today, and `why` its few words; both are stored on the todo,
-// and the morning message and the hourly line say them. No worker opens a
-// needs-you thread (Tom, 2026-09-21).
+// timing class.
 const ttsCapture = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -390,116 +387,25 @@ const ttsCapture = httpAction(async (ctx, request) => {
         ? b.source
         : threadMessageId !== undefined
           ? "thread"
-          : "slack-capture",
+          : "capture",
     provenance: typeof b.provenance === "string" ? b.provenance : undefined,
     threadMessageId,
     dueAt,
     dateKind,
-    // The Slack coordinates, when the caller is a Slack producer. They are
-    // what the threaded reply is addressed to and what the push route dedupes
-    // on; a caller that has none simply omits them.
-    slackChannel: typeof b.slackChannel === "string" ? b.slackChannel : undefined,
-    slackTs: typeof b.slackTs === "string" ? b.slackTs : undefined,
-    needsTomToday:
-      b.needsTomToday === true
-        ? { why: typeof b.why === "string" ? b.why.trim() : "" }
-        : undefined,
   });
   return jsonResponse(200, { ok: true, id });
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 
-// POST /tts/needs-tom — one needs-you thread for a todo only Tom can settle.
-// NO CODE IN THIS REPOSITORY CALLS IT since Tom ruled on 2026-09-21 that
-// workers do not reach him directly: the mail pollers stopped. It stays
-// because the agent rules still list it as a pen a session with Tom's context
-// may use, and removing a pen is a change to those rules, made there first,
-// not a side effect of this one.
-// Body: { todoId, reason, key }. The job stops composing message text: it
-// sends FACTS, and convex/ttsSlack.ts composes the thread from the todo's own
-// statement and entry action plus `reason`, then opens it through the one
-// Slack door with the todo as its subject, so his reply in it is already
-// routed back to the row. `key` is the producer's own id for the thing that
-// needs him (`gmail:message:<id>`), and it is what makes the thread open
-// exactly once.
-//
-// `reason` is `verdict.why` from the Gmail triage — the field the prompt
-// already asks for and the job used to print to its log file and drop. It is
-// the one thing the old "Needs you today — <sender>: <subject>" never said.
-//
-// `text` is REFUSED rather than ignored: both sides ship in one commit, and a
-// silent ignore would post a message with no reason for as long as an old
-// worker copy survives on the box.
-const ttsNeedsTom = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.todoId !== "string" || b.todoId.length === 0) {
-    return jsonResponse(400, { error: "todoId (non-empty string) required" });
-  }
-  if (b.text !== undefined) {
-    return jsonResponse(400, { error: "text is no longer accepted; send reason" });
-  }
-  if (typeof b.reason !== "string" || b.reason.trim().length === 0) {
-    return jsonResponse(400, { error: "reason (non-empty string) required" });
-  }
-  if (typeof b.key !== "string" || b.key.trim().length === 0) {
-    return jsonResponse(400, { error: "key (non-empty string) required" });
-  }
-  // A QUESTION WITH LETTERED OPTIONS (Jarvis `jarvis decide --trade-off`):
-  // the record stores both on the item and composes the lines Tom reads from
-  // them, so a reply of his naming a letter is later read against the options
-  // he was shown (convex/ttsAsk.ts tomAnswer), not against a caller's copy.
-  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
-  if ((b.question === undefined) !== (b.options === undefined)) {
-    return jsonResponse(400, { error: "question and options go together" });
-  }
-  if (b.question !== undefined && (!nonempty(b.question) || (b.question as string).trim().length > 400)) {
-    return jsonResponse(400, { error: "question, when given, is 1-400 characters" });
-  }
-  if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length >= 2 && b.options.length <= 5 && b.options.every(nonempty))) {
-    return jsonResponse(400, { error: "options, when given, are 2-5 non-empty strings" });
-  }
-  // A REPLY UNDER THE DAY'S DIGEST in the one output channel, posted by the
-  // box's digest job (convex/jarvis/digest.ts); no channel of its own.
-  try {
-    const result = await ctx.runMutation(internal.ttsSlack.internalOpenNeedsTomThread, {
-      todoId: b.todoId,
-      reason: b.reason,
-      key: b.key,
-      ...(b.question === undefined
-        ? {}
-        : { question: (b.question as string).trim(), options: (b.options as string[]).map((option) => option.trim()) }),
-      // The reply invitation is printed only when a reply would reach TTS.
-      canReply: Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID),
-    });
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
-
 // POST /tts/job-failed — a box job reporting its own failure in plain words
 // (the lifeos update, phase 6). Body: { job, error, key?, durationMs? }.
 //
-// This is the channel convex/ttsDigest.ts already reads: every "-failed" event
-// kind becomes a line in the morning digest's job-failures section. Until now nothing on the Jarvis Box could write one — a cron job's
-// only voice was /var/log/tts, which Tom does not read. An expired Canvas
-// token is the first thing that speaks through here.
+// Until now a cron job's only voice was /var/log/tts, which Tom does not read.
+// An expired Canvas token is the first thing that speaks through here.
 //
 // A REPORT, NOT A TODO. The row records what broke and what to do about it;
-// deciding whether it is worth Tom's morning is the digest's job.
+// it does not decide whether to notify Tom.
 //
 // `key` names the CONDITION rather than the run — `poll-canvas:canvas-auth`.
 // A condition already reported and not since recovered is not reported again
@@ -637,240 +543,6 @@ http.route({
   handler: ttsCalendarEvent,
 });
 
-
-// ── POST /slack/events — Slack output-channel replies and reactions ───────
-// This receives Slack's push for Tom's threaded replies and reactions in the
-// output channel. Tom ruled on 2026-10-02: "retire slack fully. i dont want to
-// use it at all anymore for jarvis." The Jarvis thread replaced #dump capture;
-// phase 2 of that retirement removes the rest of this route.
-// This route was one of the two #dump readers; the other, the box's poll-dump
-// job posting to POST /tts/capture, is deleted by Heffnt/Jarvis#231, which lands
-// before this change, so after both #dump is no longer read.
-//
-// This route is unlike every other one in this file: it is the only PUBLIC one
-// (Slack cannot present X-TTS-Key), so its authentication IS the signature
-// check below. Three requirements Slack imposes, each load-bearing:
-//
-//  1. The one-time url_verification handshake — echo `challenge` or the
-//     subscription cannot be enabled at all.
-//  2. Signature verification. HMAC-SHA256 over the literal string
-//     `v0:<X-Slack-Request-Timestamp>:<raw body>`, keyed by SLACK_SIGNING_SECRET,
-//     compared to X-Slack-Signature. The RAW body is what is signed, so it is
-//     read as text once and parsed after — re-serializing the parsed object
-//     would change the bytes and every request would fail.
-//  3. 200 within 3 seconds or Slack retries. Accepted events are handled
-//     inline.
-//
-// Replay window: 5 minutes, standard for this scheme. It bounds how long a
-// signed request stays useful to an attacker who has the bytes but not the
-// secret; without it a signed request is valid forever.
-const SLACK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
-// Log-once guard for an unset TOM_SLACK_USER_ID (per isolate — Convex may run
-// the route in more than one, so "once" is once per warm runtime).
-let warnedNoTomSlackUserId = false;
-/** The configured names of the output channel, under either variable read by
- * outputChannel(). Read per request so a value set after the isolate warmed up
- * counts. */
-function slackReplyChannels(): Set<string> {
-  return new Set(
-    [
-      process.env.SLACK_TTS_CHANNEL_ID,
-      process.env.SLACK_TTS_TODAY_CHANNEL_ID,
-    ].filter((id): id is string => typeof id === "string" && id !== ""),
-  );
-}
-
-// Constant-time hex compare of our computed signature against the presented
-// one. Reuses timingSafeEqual above for the same reason it exists there.
-async function slackSignatureValid(
-  secret: string,
-  timestamp: string,
-  rawBody: string,
-  presented: string,
-): Promise<boolean> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const mac = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(`v0:${timestamp}:${rawBody}`),
-  );
-  const expected =
-    "v0=" +
-    Array.from(new Uint8Array(mac))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-  return timingSafeEqual(expected, presented);
-}
-
-const slackEvents = httpAction(async (ctx, request) => {
-  const secret = process.env.SLACK_SIGNING_SECRET;
-  if (!secret) {
-    // Fail LOUD-but-safe: refuse rather than accept unverified writes. 503
-    // matches the unconfigured-key posture of keyAuth above, and Slack shows
-    // the failure in the app's event-delivery panel.
-    return jsonResponse(503, { error: "SLACK_SIGNING_SECRET not configured" });
-  }
-  // The raw bytes are what Slack signed — read once, verify, then parse.
-  const rawBody = await request.text();
-  const timestamp = request.headers.get("X-Slack-Request-Timestamp") ?? "";
-  const signature = request.headers.get("X-Slack-Signature") ?? "";
-  const age = Math.abs(Date.now() - Number(timestamp) * 1000);
-  if (!Number.isFinite(age) || age > SLACK_REPLAY_WINDOW_MS) {
-    return jsonResponse(401, { error: "stale or missing timestamp" });
-  }
-  if (!(await slackSignatureValid(secret, timestamp, rawBody, signature))) {
-    return jsonResponse(401, { error: "bad signature" });
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = (JSON.parse(rawBody) ?? {}) as Record<string, unknown>;
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-
-  // (1) The handshake. Echoed as PLAIN TEXT, which is what Slack's verifier
-  // accepts most reliably.
-  if (body.type === "url_verification") {
-    return new Response(String(body.challenge ?? ""), {
-      status: 200,
-      headers: { "Content-Type": "text/plain" },
-    });
-  }
-
-  if (body.type !== "event_callback") return jsonResponse(200, { ok: true });
-  const event = (body.event ?? {}) as Record<string, unknown>;
-
-  // ── An emoji on the morning digest (the evals layer, phase 7) ─────────────
-  // The fourth door judgment enters by (convex/agentLabels.ts): Tom taps a
-  // thumb on the morning message and that becomes a label on the run that
-  // WROTE it. It is the cheapest act he can perform, which is the point — the
-  // other three doors all cost him a sentence.
-  //
-  // The gate is Tom, then the room, and then the mutation. Everything it turns
-  // away is acknowledged with a 200, because anything but a 200 makes Slack
-  // retry an event we have already decided we do not want.
-  //
-  //  1. TOM HIMSELF. An emoji from anyone else in the workspace is somebody
-  //     agreeing with the morning, not a judgment on a run, and an unset
-  //     TOM_SLACK_USER_ID admits NOTHING — the same posture the threaded-reply
-  //     branch below takes, logged once per isolate rather than per event.
-  //  2. #tts-today, read as its id is set like every other channel here. The
-  //     morning message is the only thing that room carries, so the room is
-  //     what makes "a reaction" mean "a reaction to the digest"; an unset id
-  //     admits nothing.
-  //  3. WHICH digest, and whether a run wrote it at all, is the mutation's
-  //     question and is not asked twice — it resolves the digest-sent row from
-  //     the ts, and a morning the plain template wrote has no run to label.
-  if (event.type === "reaction_added" || event.type === "reaction_removed") {
-    const tomSlackUserId = process.env.TOM_SLACK_USER_ID;
-    if (!tomSlackUserId) {
-      if (!warnedNoTomSlackUserId) {
-        warnedNoTomSlackUserId = true;
-        console.warn(
-          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies and digest reactions are ignored",
-        );
-      }
-      return jsonResponse(200, { ok: true, ignored: true });
-    }
-    if (event.user !== tomSlackUserId) return jsonResponse(200, { ok: true, ignored: true });
-    const item = (event.item ?? {}) as Record<string, unknown>;
-    const itemChannel = typeof item.channel === "string" ? item.channel : "";
-    const todayChannel = process.env.SLACK_TTS_TODAY_CHANNEL_ID;
-    if (!todayChannel || itemChannel !== todayChannel) {
-      return jsonResponse(200, { ok: true, ignored: true });
-    }
-    const itemTs = typeof item.ts === "string" ? item.ts : "";
-    const reaction = typeof event.reaction === "string" ? event.reaction : "";
-    if (itemTs === "" || reaction === "") return jsonResponse(200, { ok: true, ignored: true });
-    // A SLACK TS IS NOT A MILLISECOND NUMBER. It is seconds with a fractional
-    // part — "1757000000.001200" — and reading it as a number would date every
-    // label to 1970. The label's `at` is when he tapped, which is `event_ts`;
-    // a missing one falls back to the arrival clock rather than to zero.
-    const eventTs = typeof event.event_ts === "string" ? Number(event.event_ts) : NaN;
-    const at = Number.isFinite(eventTs) ? Math.round(eventTs * 1000) : Date.now();
-    const result = await ctx.runMutation(internal.agentLabels.internalLabelFromReaction, {
-      channel: itemChannel,
-      ts: itemTs,
-      emoji: reaction,
-      at,
-      removed: event.type === "reaction_removed",
-    });
-    return jsonResponse(200, { ok: true, ...result });
-  }
-
-  // bot_id skips our own posts, subtype skips joins/edits/thread-broadcasts,
-  // and empty text has nothing to route.
-  const text = typeof event.text === "string" ? event.text : "";
-  const ts = typeof event.ts === "string" ? event.ts : "";
-  const channel = typeof event.channel === "string" ? event.channel : "";
-  const threadTs =
-    typeof event.thread_ts === "string" ? event.thread_ts : undefined;
-  if (
-    event.type !== "message" ||
-    event.bot_id !== undefined ||
-    event.subtype !== undefined ||
-    text.trim() === "" ||
-    ts === "" ||
-    channel === ""
-  ) {
-    // Acknowledged and ignored: anything but a 200 makes Slack retry an event
-    // we have already decided we do not want.
-    return jsonResponse(200, { ok: true, ignored: true });
-  }
-
-  // ── A threaded reply (the lifeos update, phase 2) ────────────────────────
-  // A reply in a thread is Tom answering something TTS posted in the output
-  // channel. Accepted from ONE Slack user id — TOM_SLACK_USER_ID — because a
-  // reply becomes a session's next turn or a time note on a todo, which are
-  // Tom's pens; anyone else's reply is
-  // acknowledged and ignored. Unset means no threaded reply is acted on, and
-  // the log says so once per isolate rather than on every event.
-  //
-  // Only the output channel is accepted. An unknown thread becomes a todo and
-  // gets a capture line posted into it, so another channel must admit nothing.
-  if (threadTs !== undefined && threadTs !== ts) {
-    if (!slackReplyChannels().has(channel)) {
-      return jsonResponse(200, { ok: true, ignored: true });
-    }
-    const tomSlackUserId = process.env.TOM_SLACK_USER_ID;
-    if (!tomSlackUserId) {
-      if (!warnedNoTomSlackUserId) {
-        warnedNoTomSlackUserId = true;
-        console.warn(
-          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies and digest reactions are ignored",
-        );
-      }
-      return jsonResponse(200, { ok: true, ignored: true });
-    }
-    if (event.user !== tomSlackUserId) {
-      return jsonResponse(200, { ok: true, ignored: true });
-    }
-    // Slack's event_id is the dedupe key (delivery is at-least-once); an
-    // envelope without one falls back to the message's own coordinates.
-    const eventId =
-      typeof body.event_id === "string" && body.event_id !== ""
-        ? body.event_id
-        : `${channel}:${ts}`;
-    const result = await ctx.runMutation(
-      internal.ttsSlack.internalSlackThreadReply,
-      { eventId, channel, threadTs, ts, text, user: tomSlackUserId },
-    );
-    return jsonResponse(200, { ok: true, ...result });
-  }
-
-  // A top-level Slack message is not captured by this route; acknowledge it so
-  // Slack does not retry.
-  return jsonResponse(200, { ok: true, ignored: true });
-});
-
-http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 
 // ── The door check's mark, at both doors that receive one ────────────────────
 // The planner's two writing passes read what they wrote against the writing
@@ -1111,7 +783,7 @@ http.route({ path: "/tts/ruling", method: "POST", handler: postRuling });
 
 // POST /tts/ask records a completed delegate call. It intentionally never
 // calls a model: Fable runs on the box where the caller already is, while this
-// route is the durable record, digest input, and immediate Slack notification.
+// route is the durable record and immediate phone notification.
 // It is also the one door a `decision` event comes through (convex/ttsAsk.ts
 // internalRecordAsk): the generic event routes refuse the kind.
 const ttsAsk = httpAction(async (ctx, request) => {
@@ -1152,23 +824,15 @@ const ttsAsk = httpAction(async (ctx, request) => {
   if (b.wouldChange !== undefined && b.wouldChange !== null && typeof b.wouldChange !== "string") {
     return jsonResponse(400, { error: "wouldChange, when given, is a string or null" });
   }
-  // How long the question waited for Tom, and who decided (convex/ttsAsk.ts
-  // ASK_ARGS). A decision by Tom is his reply: it names the needs-you item he
-  // answered, and the mutation checks that reply before writing anything.
+  // How long the question waited for Tom before the delegate decided.
   if (b.waitedMs !== undefined && (typeof b.waitedMs !== "number" || !Number.isFinite(b.waitedMs) || b.waitedMs < 0)) {
     return jsonResponse(400, { error: "waitedMs, when given, is a nonnegative finite number of milliseconds" });
   }
   if (b.waitNote !== undefined && (typeof b.waitNote !== "string" || b.waitNote.trim().length > 400)) {
     return jsonResponse(400, { error: "waitNote, when given, is a string of at most 400 characters" });
   }
-  if (b.decidedBy !== undefined && b.decidedBy !== "delegate" && b.decidedBy !== "tom") {
-    return jsonResponse(400, { error: 'decidedBy, when given, is "delegate" or "tom"' });
-  }
-  if (b.decidedBy === "tom") {
-    if (!nonempty(b.needsTomId)) return jsonResponse(400, { error: "a decision by Tom names needsTomId, the needs-you item his reply answered" });
-    if (b.decision === null || b.refused !== false) return jsonResponse(400, { error: "a decision by Tom is his answer: decision set, refused false" });
-  } else if (b.needsTomId !== undefined) {
-    return jsonResponse(400, { error: 'needsTomId goes only with decidedBy "tom"' });
+  if (b.decidedBy !== undefined && b.decidedBy !== "delegate") {
+    return jsonResponse(400, { error: 'decidedBy, when given, is "delegate"' });
   }
   try {
     const result = await ctx.runMutation(internal.ttsAsk.internalRecordAsk, {
@@ -1183,8 +847,7 @@ const ttsAsk = httpAction(async (ctx, request) => {
       nearMissed: b.nearMissed,
       waitedMs: b.waitedMs as number | undefined,
       waitNote: typeof b.waitNote === "string" ? b.waitNote.trim() : undefined,
-      decidedBy: b.decidedBy as "delegate" | "tom" | undefined,
-      needsTomId: b.needsTomId as string | undefined,
+      decidedBy: b.decidedBy as "delegate" | undefined,
     });
     const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
       sessionId: hasSession ? b.sessionId as string : undefined,
@@ -1499,7 +1162,7 @@ http.route({ path: "/tts/merge-gate", method: "GET", handler: ttsMergeGate });
 
 // POST /tts/merge records a merge that has already happened. It is not a
 // delegate decision: a mechanically gated merge is reported in the objection
-// list on the digest, keyed by repo+sha so a retry stays one
+// record, keyed by repo+sha so a retry stays one
 // event. The gate runs again inside the mutation, so a merge that reached the
 // default branch some other way cannot be laundered into a reported one; the
 // answer is then 409 naming which checks are missing.
@@ -1759,7 +1422,7 @@ http.route({ path: "/tts/repo-rules", method: "POST", handler: ttsRepoRules });
 
 // GET /tts/learning-input?until=<epoch ms>[&since=<epoch ms>] — what the
 // learning step reads: the turns Tom typed with the agent's replies around
-// them, his Slack replies, his rulings, in the window; and the objections
+// them, his rulings, in the window; and the objections
 // not yet acted on with the changes they can name. `since` omitted means
 // "where the last learning run stopped" (convex/ttsNightly.ts).
 const ttsLearningInput = httpAction(async (ctx, request) => {
@@ -1948,7 +1611,7 @@ const ttsRepoProposalApplied = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/repo-proposal-applied", method: "POST", handler: ttsRepoProposalApplied });
 
 // POST /tts/repo-proposal-dropped — body { id, reply? }. Tom replied on the
-// proposal's digest line. The nightly job posts this where it would revert a
+// proposal. The nightly job posts this where it would revert a
 // model-of-Tom line: the row's status becomes "dropped", and the next night's
 // repo-learning step writes `dropped:` on the evidence entry, which is what
 // stops the same rule being proposed again.
@@ -1980,7 +1643,7 @@ http.route({ path: "/tts/repo-proposal-dropped", method: "POST", handler: ttsRep
 // POST /tts/event — one dtsEvents row from the worker. Body: { kind, data? }.
 // The job records a failed step ("nightly-failure"), its learning run
 // ("learning-run") and its summary ("nightly-run") this way, which is what
-// the digest reads for "job failures" and "what the nightly job wrote". Before
+// other record readers use for job failures and nightly output. Before
 // each push of WikiTom's main it also posts a "nightly-run" row keyed
 // `WikiTom@<sha>` for each commit it is about to push, which opens the merge
 // gate for that commit (convex/ttsMerge.ts NIGHTLY_RUN). The mutation refuses

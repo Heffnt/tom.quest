@@ -58,7 +58,6 @@ export const ACTION_KINDS = [
   "session-outcome",
   "thread-reply",
   "decision",
-  "digest-line",
   "eval-result",
   "eval-run",
   "finding",
@@ -265,9 +264,6 @@ export function actionOf(row: Row): Action {
     const text = str(data.decision) ? `Decided: ${str(data.decision)}` : lineOf(row) ?? "A decision";
     return { ...base, text: firstLine(text), href: agentHref(row) };
   }
-  if (row.kind === "digest-line") {
-    return { ...base, text: firstLine(str(data.decision) ?? lineOf(row) ?? "A line for the digest"), href: null };
-  }
   if (row.kind === "session-outcome") {
     const text = str(data.summary) ?? lineOf(row) ?? `A work-queue agent ${str(data.outcome) ?? "finished"}`;
     return { ...base, text: firstLine(text), href: agentHref(row) };
@@ -284,8 +280,7 @@ export function actionOf(row: Row): Action {
 }
 
 /**
- * The box's machine changes of one day as the digest words them
- * (convex/boxChanges.ts boxChangeLines): one line per agent's root commands,
+ * The box's machine changes of one day: one line per agent's root commands,
  * per deploy, per kind of state change, per login; never one per row, which
  * is up to hundreds a day.
  */

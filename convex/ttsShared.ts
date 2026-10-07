@@ -6,13 +6,13 @@
 // THE THREE DAY QUESTIONS (they have different answers before 5 a.m. — mixing
 // them up was this module's original sin, caught in review):
 //   ttsDayKey(now)      "which TTS day is it right now?"   2 a.m. → yesterday.
-//   ttsPrepDay(now)     "which day is a prep run building?" the day of the NEXT
-//                       digest — at 4:30 a.m. that's the day STARTING at 5.
+//   ttsPrepDay(now)     "which day is a prep run building?" the day starting
+//                       at the next 5 a.m. boundary.
 //   nyCalendarDayKey(t) "what calendar date is this instant, on a NY clock?"
 //                       used for due-date arithmetic, where '2 a.m. belongs to
 //                       yesterday' would be wrong.
 
-import { v, type Infer } from "convex/values";
+import { v } from "convex/values";
 import {
   DAY_START_HOUR,
   addDays,
@@ -77,23 +77,17 @@ export function mergeKey(repo: string, sha: string): string {
  * A FAILURE IS A SHAPE AND NOT A KIND: a job failure is an event kind ending
  * in "-failed" or in "-failure" — the nightly and the weekly write the second
  * spelling ("nightly-failure", "weekly-failure"), and reading only the first
- * left their failures out of both the failures lane and the digest. Two
- * exclusions, both load-bearing:
- *   "slack-send-failed"  the Slack door's own. Posting it to Slack is a loop:
- *                        a refused post would write a row that schedules
- *                        another post.
+ * left their failures out of the failures lane. One exclusion is load-bearing:
  *   "learning-revert-failed"  not a job failure at all — it is an objection
  *                        the nightly job could not apply, and it belongs to
  *                        the model-of-Tom line it is about.
  *
- * Spelled here, not in convex/ttsDigest.ts where the broken section applies it,
- * because the observation page asks the same question of the same events and a
- * second list of the exceptions is a second answer waiting to drift.
+ * The observation page asks the same question of the same events, so the
+ * exception stays here rather than being duplicated at its readers.
  */
 export function isFailureKind(kind: string): boolean {
   return (
     (kind.endsWith("-failed") || kind.endsWith("-failure")) &&
-    kind !== "slack-send-failed" &&
     kind !== "learning-revert-failed"
   );
 }
@@ -238,7 +232,7 @@ export const DAY_MS = 86_400_000;
 export const CONDITION_WINDOW_MS = 14 * DAY_MS;
 
 // The scheduling anchors: the guard hours the record's own clock reads.
-export const TTS_DIGEST_NY_HOUR = DAY_START_HOUR; // the digest sends at 5 — the day boundary
+const TTS_DAY_START_NY_HOUR = DAY_START_HOUR;
 
 /** UTC offset of America/New_York in hours (-4 in EDT, -5 in EST). */
 export const nyOffsetHours = newYorkOffsetHours;
@@ -254,42 +248,27 @@ export const nyCalendarDayKey = newYorkDay;
 /**
  * The TTS day key (YYYY-MM-DD) for an instant: the NY calendar date, with the
  * day rolling over at 5 a.m. local rather than midnight — so 2 a.m. Tuesday
- * still belongs to Monday's day. Used by getToday and the digest send.
+ * still belongs to Monday's day.
  */
 export const ttsDayKey = sharedTtsDayKey;
 
 /**
- * The day a PREP run is building: the day of the next 5 a.m. digest. During
+ * The day a PREP run is building: the day at the next 5 a.m. boundary. During
  * the pre-dawn prep window (midnight–5 a.m.) this is the day about to start —
  * NOT ttsDayKey(now), which still says yesterday. From 5 a.m. onward it equals
  * ttsDayKey(now) (a midday --force re-prep rebuilds today's queue).
  * Implemented as "the TTS day five hours from now".
  */
 export function ttsPrepDay(utcMs: number): string {
-  return ttsDayKey(utcMs + TTS_DIGEST_NY_HOUR * HOUR_MS);
+  return ttsDayKey(utcMs + TTS_DAY_START_NY_HOUR * HOUR_MS);
 }
 
-/**
- * UTC bounds [start, end) of the NY day named by a YYYY-MM-DD key, running from
- * `hourNy` local on that date to `hourNy` local the next. DST-correct at both
- * edges: a spring-forward day is 23 hours long, a fall-back day 25.
- */
-function nyDayBoundsUtc(
-  day: string,
-  hourNy: number,
-): { start: number; end: number } {
+/** UTC bounds for one New York calendar day, including DST transitions. */
+function nyDayBoundsUtc(day: string): { start: number; end: number } {
   return {
-    start: newYorkInstant(day, hourNy),
-    end: newYorkInstant(addDays(day, 1), hourNy),
+    start: newYorkInstant(day, 0),
+    end: newYorkInstant(addDays(day, 1), 0),
   };
-}
-
-/**
- * UTC bounds [start, end) of a TTS day: 5 a.m. NY on the key's date to 5 a.m.
- * NY the next day.
- */
-export function ttsDayBoundsUtc(day: string): { start: number; end: number } {
-  return nyDayBoundsUtc(day, TTS_DIGEST_NY_HOUR);
 }
 
 /**
@@ -301,7 +280,7 @@ export function nyCalendarDayBoundsUtc(day: string): {
   start: number;
   end: number;
 } {
-  return nyDayBoundsUtc(day, 0);
+  return nyDayBoundsUtc(day);
 }
 
 /**
@@ -456,8 +435,7 @@ export function rulingAnswers(ruling: { ruledAt: number }, todo: { updatedAt: nu
 
 /**
  * READY FOR TOM (ruling 18): prepared, active, wakeAt absent or passed, every
- * need done. The one computation behind the digest's "ready for him" section
- * and the work queue. A
+ * need done. The one computation behind the work queue. A
  * raw capture (unprepared) is never ready, whatever else is true of it.
  */
 export function isReadyForTom(
@@ -681,98 +659,9 @@ export function isLive(status: string): boolean {
   return (LIVE_STATUSES as readonly string[]).includes(status);
 }
 
-/** Deep link to a todo's former TTS address. Existing and newly posted digest
- * links pass through the compatibility redirects to /sessions. */
-export function ttsItemLink(todoId: string): string {
-  return `https://tom.quest/tts?item=${todoId}`;
-}
-
-// composeCaptured remains in convex/ttsCompose.ts for the output-channel case
-// where a reply in an unknown thread becomes a todo. internalCapture itself no
-// longer schedules a Slack reply.
-
-/** Deep link to one session on the /agents page — the one spelling every
- * Slack message about a session carries. */
-export function ttsSessionLink(sessionId: string): string {
-  return `https://www.tom.quest/agents?session=${sessionId}`;
-}
-
-// ── Slack subjects (the lifeos update, phase 2) ──────────────────────────────
-// Every outbound Slack message names WHAT it is about, and the record of the
-// send (a dtsEvents row of kind "slack-sent", written by the one door in
-// convex/ttsSync.ts) carries that subject — so a threaded reply from Tom is
-// routed by what he answered (convex/ttsSlack.ts): a session gets its next
-// turn, a todo or a digest day gets a fact or a time note, a learning line
-// gets an objection. One closed union; a message with no subject cannot be
-// sent.
-export const SLACK_SUBJECT = v.union(
-  // `today` supersedes the old deterministic `digest` name. Keep digest for
-  // already-posted threads: a Slack reply can arrive days after a deploy.
-  v.object({ kind: v.literal("today"), day: v.string() }),
-  v.object({ kind: v.literal("digest"), day: v.string() }),
-  // Either id: a thread posted before step C of the core tables' move names
-  // its todo's old id, one posted since the plain one.
-  v.object({ kind: v.literal("todo"), id: v.union(v.id("dtsTodos"), v.id("todos")) }),
-  v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
-  v.object({ kind: v.literal("learning"), id: v.string() }),
-  // A JOB'S OWN LINE: the silence alarm (convex/jarvis/jobs.ts), a producer's
-  // needs-you reply under the digest, a message sent as Tom. It names its
-  // producer rather than a fabricated todo: a todo subject stamps
-  // slackReplyTs with the first recorded reply thread for that todo, and a
-  // job's line must not claim it. A reply in its thread is a fact.
-  v.object({ kind: v.literal("job"), id: v.string() }),
-);
-export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
-
-/** The lookup key of a Slack THREAD: the channel and the thread root's ts —
- * a message's own ts when it is a root, its thread_ts when it is a reply.
- * Tom's reply events carry (channel, thread_ts); this is what they match. */
-export function slackThreadKey(channel: string, threadRootTs: string): string {
-  return `${channel}:${threadRootTs}`;
-}
-
-// ── The one output channel (Tom, 2026-09-26: "#dump in, one out") ─────────────
-// Everything the record still says to Tom on Slack goes to one channel: the
-// digest, the needs-you replies in its thread, and the silence alarm. It is
-// #tts-today until the morning rename to #jarvis, which keeps the id, so its
-// variable keeps its name tonight. The single-purpose #tts- rooms that came
-// before it are sections of the digest now.
-//
-// Here rather than in convex/ttsSync.ts, which owns the Slack door, because
-// that file is "use node" and the plain-runtime record areas ask it too.
-
-/** The kind of the marker row every needs-you writes when it opens, keyed on
- *  the producer's own id for the thing that needs Tom. */
-export const NEEDS_TOM = "needs-tom";
-
 /** A finished agent's outcome on a todo. A session's is a dtsEvents row on
  *  its todo (convex/claudeSessions.ts); the box's work queue posts its own to
  *  POST /jarvis/event, into the record's events table, with the todo's id in
- *  either form as the subject (convex/jarvis/events.ts keeps the plain id).
- *  The digest and the weekly read both. */
+ *  either form as the subject (convex/jarvis/events.ts keeps the plain id). */
 export const SESSION_OUTCOME = "session-outcome";
-
-/** THE ONE CONFIG CHECK. A message says "reply here" only when a reply would
- *  actually reach TTS: POST /slack/events answers 503 without
- *  SLACK_SIGNING_SECRET, and ignores every message without TOM_SLACK_USER_ID.
- *  Today the morning message prints "missed: reply done, or a new date" six
- *  times a day into a route that answers 503 — the only call to action in the
- *  whole system, and it is dead. A message that asks for something it cannot
- *  receive teaches him to ignore the ones that can. */
-export function replyRouteLive(): boolean {
-  return Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID);
-}
-
-/** The output channel, or null when neither variable is set (logged, and
- *  nothing is posted: ruling digest-env-missing-is-quiet; the box reports the
- *  digest it could not post as its own failure). SLACK_TTS_CHANNEL_ID is the
- *  room's older variable, read when the newer one is unset. */
-export function outputChannel(): string | null {
-  for (const name of ["SLACK_TTS_TODAY_CHANNEL_ID", "SLACK_TTS_CHANNEL_ID"]) {
-    const id = process.env[name];
-    if (typeof id === "string" && id !== "") return id;
-  }
-  console.error("slack: SLACK_TTS_TODAY_CHANNEL_ID not configured — nothing posted to the output channel");
-  return null;
-}
 

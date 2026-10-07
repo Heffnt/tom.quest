@@ -901,8 +901,8 @@ export const entry = query({ args: { agentId: v.string(), seq: v.number() }, han
 
 /**
  * Everything Tom did about this run, oldest first — a ruling on the row it
- * wrote, an objection on the digest's objection list, a reply he typed at it,
- * an emoji on the morning it wrote. The run page draws one strip from this
+ * wrote, an objection to a recorded decision, a reply he typed at it, an emoji
+ * on the event. The run page draws one strip from this
  * under the outcome, and DRAWS NO BAND AT ALL when the answer is empty: an
  * empty strip on every run is clutter that displays nothing, which is why the
  * strip was deferred until there were rows to put in it.
