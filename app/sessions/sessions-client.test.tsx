@@ -12,6 +12,7 @@ const convex = vi.hoisted(() => ({
   mutations: [] as string[],
   canLoadMore: false,
   loadMore: [] as number[],
+  seen: [] as string[],
 }));
 
 vi.mock("convex/react", async () => {
@@ -19,7 +20,10 @@ vi.mock("convex/react", async () => {
   return {
     useQuery: (ref: unknown, args: unknown) => {
       if (args === "skip") return undefined;
-      return convex.results[name(ref as never)];
+      const fn = name(ref as never);
+      convex.seen.push(`${fn}:${JSON.stringify(args)}`);
+      const cursor = (args as { cursor?: string }).cursor;
+      return convex.results[cursor === undefined ? fn : `${fn}@${cursor}`];
     },
     usePaginatedQuery: (ref: unknown, args: unknown) =>
       args === "skip"
@@ -94,6 +98,7 @@ beforeEach(() => {
   convex.mutations = [];
   convex.canLoadMore = false;
   convex.loadMore = [];
+  convex.seen = [];
   convex.results = {
     "claudeSessions:persistentSessions": [
       session({ _id: "k17pppppppppppppppppppp1", title: "dump", kind: "persistent", login: "gmail" }),
@@ -183,6 +188,26 @@ describe("the sessions page", () => {
     expect(screen.getByText(`transcript ${CHILD_RUN}`)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(replace).toHaveBeenLastCalledWith(`/sessions?session=${SESSION_ID}`, { scroll: false });
+  });
+
+  it("reads the session's background agents a hundred at a time while the record holds more", () => {
+    convex.results["agents:children"] = {
+      items: [{ runId: CHILD_RUN, kind: "subagent", status: "ended", startedAt: 5_000, depth: 1 }],
+      nextCursor: "page-2",
+    };
+    convex.results["agents:children@page-2"] = {
+      items: [{ runId: `${RUN_ID}/agent-0000000000000002`, kind: "codex-child", status: "running", startedAt: 6_000, depth: 1 }],
+      nextCursor: null,
+    };
+    search = new URLSearchParams(`session=${SESSION_ID}`);
+    render(<SessionsClient />);
+    const background = screen.getByRole("complementary", { name: "Background" });
+    fireEvent.click(within(background).getByRole("button", { name: "More agents" }));
+    expect(convex.seen).toContain(
+      `agents:children:${JSON.stringify({ agentId: RUN_ID, limit: 100, cursor: "page-2" })}`,
+    );
+    expect(within(background).getByText("codex-child", { selector: "span.font-mono.text-xs" })).toBeTruthy();
+    expect(within(background).queryByRole("button", { name: "More agents" })).toBeNull();
   });
 
   it("collapses and reopens both side columns", () => {

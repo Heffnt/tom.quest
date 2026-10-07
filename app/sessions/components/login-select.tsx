@@ -1,8 +1,10 @@
 "use client";
 
-// Which of the two Claude logins runs this session's next reply. The select
-// shows the row's login, or the login the box holds when the row names none,
-// which is the login such a session runs under.
+// The session row's login field: which of the two Claude logins Tom chose for
+// this session. The select shows the row's login, or the login the box holds
+// when the row names none. The session host does not act on the field yet
+// (the shared transcripts directory and login selector item makes it do so);
+// until then every reply runs under the login the box holds.
 
 import { useState } from "react";
 import { useMutation } from "convex/react";
@@ -56,9 +58,9 @@ export default function LoginSelect({
         ))}
       </select>
       <Info call="claudeSessions.setSessionLogin({ sessionId, login })">
-        Which Claude login runs this session&rsquo;s next reply. Writes the
-        session row&rsquo;s login field and nothing else; a row that names no
-        login runs under the login the box holds.
+        Writes the session row&rsquo;s login field and nothing else. The
+        session host does not read the field yet, so every reply still runs
+        under the login the box holds.
       </Info>
       {error !== null && <span className="text-error">{error}</span>}
     </span>
