@@ -765,7 +765,7 @@ async function needsYouReply(
 
 /** Apply one answer to one numbered needs-you item. Shared by Slack and the
  * Jarvis thread so both surfaces preserve the same done/date/note behavior. */
-export async function answerNeedsYou(
+async function answerNeedsYou(
   ctx: MutationCtx,
   item: { n: number; subject: SlackSubject; answeredKey: string },
   reply: { text: string; said: string; numbered: boolean },
@@ -959,7 +959,7 @@ async function namedObjection(
  * (convex/thread.ts), whose `at` is { channel: "thread", ts: Tom's message's
  * event id, threadTs: the digest's }.
  */
-export async function recordLineObjection(
+async function recordLineObjection(
   ctx: MutationCtx,
   text: string,
   printed: unknown,

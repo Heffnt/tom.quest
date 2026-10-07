@@ -104,16 +104,12 @@ export function isFailureKind(kind: string): boolean {
  * externalId names the change rather than a code todo. A pull request the
  * record has mirrored is `pr-<number>`; a merged commit whose pull request the
  * mirror never saw is `sha-<sha>`. Spelled here because convex/ttsRulings.ts
- * (which applies such a ruling at write time), convex/observe.ts (which writes
- * one) and convex/observeMerge.ts (which reads one) all need the same spelling,
- * and this module is the one all three already import.
+ * (which applies such a ruling at write time) and convex/observeMerge.ts
+ * (which reads one) both need the same spelling, and this module is the one
+ * both already import.
  */
 export function pullRequestChange(number: number): string {
   return `pr-${number}`;
-}
-
-export function commitChange(sha: string): string {
-  return `sha-${sha}`;
 }
 
 /** True for an externalId that names a change (above) rather than a code todo.

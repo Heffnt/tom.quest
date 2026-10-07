@@ -187,7 +187,7 @@ describe("history.page", () => {
     expect(lines).toContainEqual(["2026-10-05", "merge", "Landed in Jarvis (#220): scripts: the laptop mirrors sessions", "https://github.com/Heffnt/Jarvis/pull/220"]);
     expect(lines).toContainEqual(["2026-10-05", "deploy", "Deployed Jarvis bbb: scripts: the laptop mirrors sessions (#220)", "https://github.com/Heffnt/Jarvis/compare/aaa...bbb"]);
     expect(lines).toContainEqual(["2026-10-05", "job-failed", "poll-gmail failed: Google refused the refresh token", null]);
-    expect(lines).toContainEqual(["2026-10-05", "work-run", "work-run e2e-origin: check passed", "/agents?agent=codex%3Abox%3A1"]);
+    expect(lines).toContainEqual(["2026-10-05", "work-run", "work-run e2e-origin: check passed", "/sessions?agent=codex%3Abox%3A1"]);
     expect(lines).toContainEqual(["2026-10-06", "landed", "Landed in tom.quest: history: the page draws his facts", "https://github.com/Heffnt/tom.quest/commit/fff0000"]);
     expect(page.actions.filter((a) => a.kind === "job-failed")).toHaveLength(1);
     const box = page.actions.filter((a) => a.kind === "box-change");

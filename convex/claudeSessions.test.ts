@@ -140,11 +140,11 @@ describe("claude sessions", () => {
     );
   });
 
-  // witness: remove the requireTomId call from listSessions in
+  // witness: remove the requireTomId call from getDaemonHealth in
   // convex/claudeSessions.ts and this test goes red.
   it("gates every Tom-facing function on the tom role", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.query(api.claudeSessions.listSessions, {})).rejects.toThrow();
+    await expect(t.query(api.claudeSessions.getDaemonHealth, {})).rejects.toThrow();
     const userId = await t.run(async (ctx) =>
       ctx.db.insert("users", { name: "u", email: "u@tom.quest", role: "user" }),
     );

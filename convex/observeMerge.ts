@@ -1,8 +1,9 @@
 // APPROVING A CHANGE, AND WHAT HAPPENS AFTERWARDS.
 //
-// Tom presses Approve on the observation page; convex/observe.ts approveChange
-// records that as an ordinary ruling of his, through the same function every
-// other ruling goes through (convex/ttsRulings.ts insertRuling). This file is
+// An approval is an ordinary approve ruling of Tom's on the change, written
+// through the same function every other ruling goes through
+// (convex/ttsRulings.ts insertRuling); the Approve control of the /agents
+// window view that wrote one went with that view on 2026-10-07. This file is
 // what the ruling then sets in motion.
 //
 // TWO THINGS LIVE HERE. The first is the mirror of the changes that are
@@ -15,9 +16,8 @@
 //
 // NOTHING POLLS IN A LOOP. One scheduled action runs every five minutes
 // (convex/crons.ts): it refreshes the mirror and then tries the approved
-// changes whose gate has turned green. Pressing Approve schedules the landing
-// once as well, so a change that is already green lands at the press rather
-// than within five minutes. There is no retry timer and no second queue.
+// changes whose gate has turned green. There is no retry timer and no second
+// queue.
 //
 // THE GATE IS NOT RE-IMPLEMENTED. mergeGateFor decides, exactly as it decides
 // for the box, and internalRecordMerge runs it again before it writes — so a
@@ -42,17 +42,12 @@ import {
 } from "./_generated/server";
 import { mergeGateFor, mergedOnMain } from "./ttsMerge";
 import { accountForMain } from "./gateLandings";
-import {
-  SESSION_REPOS,
-  commitChange,
-  mergeKey,
-  pullRequestChange,
-} from "./ttsShared";
+import { SESSION_REPOS, pullRequestChange } from "./ttsShared";
 
-/** The repositories whose open pull requests the observation page lists and
- *  its Approve control can land. One name, because tom.quest is the one Tom
+/** The repositories whose open pull requests the record mirrors and its
+ *  landing can land. One name, because tom.quest is the one Tom
  *  asked for; widening it is adding a name to this array. */
-export const APPROVABLE_REPOS = ["tom.quest"] as const satisfies readonly (keyof typeof SESSION_REPOS)[];
+const APPROVABLE_REPOS = ["tom.quest"] as const satisfies readonly (keyof typeof SESSION_REPOS)[];
 
 /** One of those names. Typed, so the GitHub slug below is always a string and
  *  there is no unknown-repository branch to carry. */
@@ -104,7 +99,7 @@ function githubHeaders(token: string): Record<string, string> {
 /** The newest ruling on a change's subject, or null. NEWEST WINS, the rule
  *  every ruling reader already uses: a later `revise` on the same subject
  *  withdraws an approval without anything here knowing a word for it. */
-export async function newestRuling(
+async function newestRuling(
   ctx: QueryCtx | MutationCtx,
   repo: string,
   externalId: string,
@@ -125,82 +120,6 @@ export async function newestRuling(
         right.ruledAt - left.ruledAt || right._creationTime - left._creationTime,
     )[0] ?? null
   );
-}
-
-/**
- * The change a commit belongs to, as a ruling subject: its pull request when
- * the mirror has seen one with this head sha, the commit itself otherwise. A
- * change approved while it waited is `pr-<n>`, and the merge it becomes is
- * found under that same subject here, which is how a landed change shows the
- * ruling that landed it.
- */
-export async function changeOfCommit(
-  ctx: QueryCtx | MutationCtx,
-  repo: string,
-  sha: string,
-) {
-  const pull = await ctx.db
-    .query("pullRequests")
-    .withIndex("by_repo_sha", (q) => q.eq("repo", repo).eq("headSha", sha))
-    .first();
-  if (pull !== null)
-    return { externalId: pullRequestChange(pull.number), pull };
-  return { externalId: commitChange(sha), pull: null };
-}
-
-/** The subject and words of the change Approve names, or a refusal. A pull
- *  request must be one the mirror holds; a commit must be one the record holds
- *  a merge row for. `open` is whether pressing should also try to land it. */
-export async function resolveChange(
-  ctx: QueryCtx | MutationCtx,
-  repo: string,
-  target: { number?: number; sha?: string },
-): Promise<{ externalId: string; title: string; open: boolean }> {
-  if ((target.number === undefined) === (target.sha === undefined)) {
-    throw new Error(
-      "a change is named by its pull request number or by its merged commit, not both",
-    );
-  }
-  if (target.number !== undefined) {
-    const number = target.number;
-    const pull = await ctx.db
-      .query("pullRequests")
-      .withIndex("by_repo_number", (q) =>
-        q.eq("repo", repo).eq("number", number),
-      )
-      .first();
-    if (pull === null)
-      throw new Error(
-        `${repo} has no pull request #${number} the record knows`,
-      );
-    return {
-      externalId: pullRequestChange(number),
-      title: pull.title,
-      open: pull.closedAt === undefined,
-    };
-  }
-  const sha = target.sha!;
-  const merge = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) =>
-      q.eq("kind", "merge").eq("key", mergeKey(repo, sha)),
-    )
-    .first();
-  if (merge === null)
-    throw new Error(
-      `${repo}@${sha.slice(0, 7)} is not a merge the record holds`,
-    );
-  const subject = (merge.data as { subject?: unknown } | undefined)?.subject;
-  const { externalId, pull } = await changeOfCommit(ctx, repo, sha);
-  return {
-    externalId,
-    title:
-      pull?.title ??
-      (typeof subject === "string" ? subject : `${repo}@${sha.slice(0, 7)}`),
-    // A merged commit is never landed again: Approve on it records the ruling
-    // only.
-    open: false,
-  };
 }
 
 /** Rewrite one repository's mirror to what GitHub currently lists open. A row

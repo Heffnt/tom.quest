@@ -841,27 +841,6 @@ describe("the digest's Box changes", () => {
   });
 });
 
-describe("the /agents window view's box lane", () => {
-  it("returns box changes from events, whole but redacted, and the deploy rows' commits from dtsEvents", async () => {
-    const t = convexTest({ schema, modules });
-    vi.setSystemTime(AT + 30_000);
-    await recordEvent(t, eventOf(change({ agentId: AGENT, command: `/usr/bin/env TOKEN=${TOKEN} true` })));
-    await postEvent(t, { kind: "deploy", key: "Jarvis:888b43a0", data: { repo: "Jarvis", from: "1cdb2c2", to: "888b43a", commits: ["x"], setupNeeded: false } });
-    const tom = await withTom(t);
-    const win = { from: AT - 60_000, to: AT + 60_000, paginationOpts: { numItems: 50, cursor: null } };
-    const record = await tom.query(api.observe.recordInWindow, win);
-    const box = record.page.find((event) => event.kind === "box-change");
-    expect(box?.data).toMatchObject({ source: "sudo", user: "jarvis", at: AT });
-    expect(box?.agentId).toBe(AGENT);
-    expect(JSON.stringify(box?.data)).not.toContain(TOKEN);
-    // The deploy's home is still dtsEvents; its copy in events is not read twice.
-    expect(record.page.find((event) => event.kind === "deploy")).toBeUndefined();
-    const old = await tom.query(api.observe.eventsInWindow, win);
-    expect(old.page.find((event) => event.kind === "box-change")).toBeUndefined();
-    expect(old.page.find((event) => event.kind === "deploy")?.data).toEqual({ repo: "Jarvis", from: "1cdb2c2", to: "888b43a" });
-  });
-});
-
 describe("the silence alarm", () => {
   const ok = (t: ReturnType<typeof convexTest>, job: string) =>
     t.fetch("/tts/job-ok", {

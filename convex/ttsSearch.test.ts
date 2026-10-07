@@ -118,7 +118,7 @@ describe("TTS search queries", () => {
         id: ids.wanted,
         repos: ["tom.quest"],
         date: 30,
-        url: `https://tom.quest/agents?session=${ids.wanted}`,
+        url: `https://tom.quest/sessions?session=${ids.wanted}`,
       }),
     ]);
   });

@@ -1,11 +1,12 @@
-// The Approve control and what it sets in motion: the ruling it writes, that a
-// second press writes nothing, the mirror of open pull requests, and that the
-// landing merges only an approved change whose gate is green and keeps the
-// approval when GitHub refuses the credential.
+// The record's landing: the mirror of open pull requests, and that the landing
+// merges only an approved change whose gate is green and keeps the approval
+// when GitHub refuses the credential. An approval is an approve ruling on the
+// pull request, written here through the ruling pen; the Approve control of
+// the /agents window view that wrote it went with that view (2026-10-07).
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import { AUDIT_VERDICT, MERGE, TESTS_RUN, commitKey } from "./ttsMerge";
 
@@ -23,13 +24,6 @@ const PULL = {
   draft: false,
   updatedAt: 1_000,
 };
-
-async function withTom(t: TestConvex<typeof schema>) {
-  const tomId = await t.run(async (ctx) =>
-    ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
-  );
-  return t.withIdentity({ subject: tomId });
-}
 
 async function seedFact(t: TestConvex<typeof schema>, kind: string, data: Record<string, unknown>) {
   await t.run(async (ctx) => {
@@ -49,6 +43,19 @@ async function green(t: TestConvex<typeof schema>) {
 
 const mirror = (t: TestConvex<typeof schema>, pulls = [PULL]) =>
   t.mutation(internal.observeMerge.internalReplaceOpenPulls, { repo: REPO, pulls });
+
+/** Tom's approve ruling on the pull request. */
+const approve = (t: TestConvex<typeof schema>) =>
+  t.mutation(internal.ttsRulings.internalRecordRuling, {
+    repo: REPO,
+    externalId: `pr-${PULL.number}`,
+    verdict: "approve",
+    sentence: `Approve ${PULL.title}`,
+  });
+
+/** The mirror's rows of pull requests GitHub still lists as open. */
+const openPulls = (t: TestConvex<typeof schema>) =>
+  t.run(async (ctx) => (await ctx.db.query("pullRequests").collect()).filter((row) => row.closedAt === undefined));
 
 /** GitHub as the landing asks it: the pull request read answers the base
  *  branch, the merge PUT answers `mergeStatus`, and the mergedOnMain reads
@@ -75,72 +82,6 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("approveChange", () => {
-  it("records one approve ruling on the pull request, applied, and a second press writes nothing", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await mirror(t);
-
-    const first = await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
-    expect(first).toEqual({ written: true, ruled: "approve" });
-    const second = await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
-    expect(second).toEqual({ written: false, ruled: "approve" });
-
-    const rulings = await t.run((ctx) => ctx.db.query("rulings").collect());
-    expect(rulings).toHaveLength(1);
-    expect(rulings[0]).toMatchObject({
-      subjectType: "code",
-      repo: REPO,
-      externalId: "pr-212",
-      verdict: "approve",
-      sentence: `Approve ${PULL.title}`,
-    });
-    // Applied at write time, so the auto-session scheduler never reads it as
-    // a worker mission.
-    expect(rulings[0].appliedAt).toBeGreaterThan(0);
-  });
-
-  it("answers with the word already ruled when Tom ruled otherwise first", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await mirror(t);
-    await t.mutation(internal.ttsRulings.internalRecordRuling, {
-      repo: REPO,
-      externalId: "pr-212",
-      verdict: "revise",
-      sentence: "split it in two",
-    });
-    const answer = await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
-    expect(answer).toEqual({ written: false, ruled: "revise" });
-  });
-
-  it("is Tom's alone", async () => {
-    const t = convexTest({ schema, modules });
-    await mirror(t);
-    await expect(t.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number })).rejects.toThrow();
-  });
-
-  it("on a merged commit records the ruling only and schedules nothing", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.run((ctx) =>
-      ctx.db.insert("dtsEvents", {
-        at: 1,
-        kind: MERGE,
-        key: `${REPO}:${SHA}`,
-        data: { repo: REPO, sha: SHA, subject: "tts: the page has no capture bar" },
-      }),
-    );
-    await tom.mutation(api.observe.approveChange, { repo: REPO, sha: SHA });
-    const [ruling] = await t.run((ctx) => ctx.db.query("rulings").collect());
-    expect(ruling).toMatchObject({ externalId: `sha-${SHA}`, sentence: "Approve tts: the page has no capture bar" });
-    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(scheduled.filter((job) => job.name.includes("landApproved"))).toHaveLength(0);
-    const [row] = await tom.query(api.observe.gateRows, { commits: [{ repo: REPO, sha: SHA }] });
-    expect(row.ruled).toBe("approve");
-  });
-});
-
 describe("the mirror", () => {
   it("reports the missing GitHub credential as a failure by name", async () => {
     const t = convexTest({ schema, modules });
@@ -153,18 +94,16 @@ describe("the mirror", () => {
 
   it("marks a pull request GitHub stopped listing as closed, so it leaves the waiting list", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     await mirror(t);
-    expect(await tom.query(api.observe.changesWaiting, {})).toHaveLength(1);
+    expect(await openPulls(t)).toHaveLength(1);
     await mirror(t, []);
-    expect(await tom.query(api.observe.changesWaiting, {})).toHaveLength(0);
+    expect(await openPulls(t)).toHaveLength(0);
     const rows = await t.run((ctx) => ctx.db.query("pullRequests").collect());
     expect(rows[0].closedAt).toBeGreaterThan(0);
   });
 
   it("does not mirror a pull request aimed at a branch other than main", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     vi.stubGlobal(
       "fetch",
       // The refresh also reads main of each repository under the gate
@@ -184,33 +123,31 @@ describe("the mirror", () => {
       ),
     );
     expect(await t.action(internal.observeMerge.refreshOpenPulls, {})).toEqual({ open: 0, failures: [] });
-    expect(await tom.query(api.observe.changesWaiting, {})).toHaveLength(0);
+    expect(await openPulls(t)).toHaveLength(0);
   });
 });
 
 describe("landing", () => {
   it("merges nothing while the gate is not green, and the approval stands", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     const gh = github(200);
     vi.stubGlobal("fetch", gh.fake);
     await mirror(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     const answer = await t.action(internal.observeMerge.landApproved, {});
     expect(answer).toEqual({ landed: 0, tried: 0 });
     expect(gh.puts).toHaveLength(0);
-    const [row] = await tom.query(api.observe.changesWaiting, {});
-    expect(row).toMatchObject({ ruled: "approve", allowed: false, lastAttempt: null });
+    const [row] = await openPulls(t);
+    expect(row.lastAttempt).toBeUndefined();
   });
 
   it("merges an approved green change with a merge commit and records the merge", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     const gh = github(200);
     vi.stubGlobal("fetch", gh.fake);
     await mirror(t);
     await green(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     const answer = await t.action(internal.observeMerge.landApproved, {});
     expect(answer).toEqual({ landed: 1, tried: 1 });
     expect(gh.puts[0].url).toContain("/repos/Heffnt/tom.quest/pulls/212/merge");
@@ -219,15 +156,11 @@ describe("landing", () => {
       ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", MERGE)).collect(),
     );
     expect(merges).toHaveLength(1);
-    expect(await tom.query(api.observe.changesWaiting, {})).toHaveLength(0);
-    // The landed change shows the ruling that landed it.
-    const [row] = await tom.query(api.observe.gateRows, { commits: [{ repo: REPO, sha: SHA }] });
-    expect(row.ruled).toBe("approve");
+    expect(await openPulls(t)).toHaveLength(0);
   });
 
   it("records nothing where GitHub took the merge but does not show the head on main", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     const puts: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -245,21 +178,20 @@ describe("landing", () => {
     );
     await mirror(t);
     await green(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 1 });
     expect(puts).toHaveLength(1);
     const merges = await t.run((ctx) =>
       ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", MERGE)).collect(),
     );
     expect(merges).toHaveLength(0);
-    const [row] = await tom.query(api.observe.changesWaiting, {});
+    const [row] = await openPulls(t);
     expect(row.lastAttempt).toMatchObject({ ok: false });
     expect(row.lastAttempt?.why).toContain("does not show it on main");
   });
 
   it("merges nothing where Tom revises it while the landing is talking to GitHub", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     const puts: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -287,33 +219,32 @@ describe("landing", () => {
     );
     await mirror(t);
     await green(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 1 });
     expect(puts).toHaveLength(0);
-    const [row] = await tom.query(api.observe.changesWaiting, {});
+    const [row] = await openPulls(t);
     expect(row.lastAttempt?.why).toContain("no longer approved");
   });
 
   it("merges nothing where a revise shares the approve's millisecond", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     const gh = github(200);
     vi.stubGlobal("fetch", gh.fake);
     await mirror(t);
     await green(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     // Tom's revise, written in the same millisecond the approve carries: the
     // later row wins on _creationTime, which is the only thing telling them
     // apart.
     await t.run(async (ctx) => {
-      const approve = await ctx.db.query("rulings").first();
+      const approval = await ctx.db.query("rulings").first();
       await ctx.db.insert("rulings", {
         subjectType: "code",
         repo: REPO,
         externalId: "pr-212",
         verdict: "revise",
         sentence: "not yet",
-        ruledAt: approve!.ruledAt,
+        ruledAt: approval!.ruledAt,
       });
     });
     expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 0 });
@@ -322,26 +253,24 @@ describe("landing", () => {
 
   it("merges nothing that GitHub has retargeted since the mirror saw it", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     const gh = github(200, "", "some-other-branch");
     vi.stubGlobal("fetch", gh.fake);
     await mirror(t);
     await green(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 1 });
     expect(gh.puts).toHaveLength(0);
-    const [row] = await tom.query(api.observe.changesWaiting, {});
+    const [row] = await openPulls(t);
     expect(row.lastAttempt?.why).toContain("aimed at some-other-branch");
   });
 
   it("merges nothing aimed at a branch other than main, however green and approved", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     const gh = github(200);
     vi.stubGlobal("fetch", gh.fake);
     await mirror(t, [{ ...PULL, baseBranch: "some-other-branch" }]);
     await green(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 0 });
     expect(gh.puts).toHaveLength(0);
   });
@@ -358,14 +287,13 @@ describe("landing", () => {
 
   it("keeps the approval and GitHub's sentence when the credential may not write", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
     vi.stubGlobal("fetch", github(403, "Resource not accessible by personal access token").fake);
     await mirror(t);
     await green(t);
-    await tom.mutation(api.observe.approveChange, { repo: REPO, number: PULL.number });
+    await approve(t);
     expect(await t.action(internal.observeMerge.landApproved, {})).toEqual({ landed: 0, tried: 1 });
-    const [row] = await tom.query(api.observe.changesWaiting, {});
-    expect(row.ruled).toBe("approve");
+    const [row] = await openPulls(t);
+    expect(await t.run((ctx) => ctx.db.query("rulings").collect())).toMatchObject([{ verdict: "approve" }]);
     expect(row.lastAttempt).toMatchObject({ ok: false });
     expect(row.lastAttempt?.why).toContain("GitHub answered 403: Resource not accessible by personal access token");
   });

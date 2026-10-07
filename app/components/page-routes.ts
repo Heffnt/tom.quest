@@ -19,15 +19,13 @@ export type PageVisibility = "public" | "authenticated" | "admin" | "tom";
 export type PageRole = "guest" | "user" | "admin" | "tom" | "agent";
 
 export const PAGES: Page[] = [
-  { slug: "thread", title: "Jarvis thread", blurb: "One standing conversation with Jarvis: what you dump and what it did", priority: 11, visibility: "tom" },
   { slug: "turing", title: "Turing", blurb: "SLURM cluster + GPU monitor",  priority: 10, visibility: "admin", agentReadable: true },
   { slug: "canvas", title: "Canvas", blurb: "Chat-driven HTML canvas",      priority: 8,  visibility: "authenticated" },
   { slug: "transformer", title: "Transformer", blurb: "Drill into a live transformer, layer by layer", priority: 7, visibility: "public" },
   { slug: "thmm",   title: "THMM",   blurb: "Tiny CPU simulator + datapath", priority: 6, visibility: "public" },
   { slug: "clouds", title: "Clouds", blurb: "Interactive LiDAR viewer",     priority: 6, visibility: "public" },
   { slug: "perfume", title: "Perfume", blurb: "Three Feifs perfumer's bench", priority: 6, visibility: "public" },
-  { slug: "sessions", title: "Sessions", blurb: "Every session: its transcript, its background agents, and the composer", priority: 10, visibility: "tom" },
-  { slug: "agents", title: "Agents", blurb: "Every agent, and everything that ran, by window", priority: 9, visibility: "tom" },
+  { slug: "sessions", title: "Sessions", blurb: "Every session: its transcript, its background agents, and the composer", priority: 11, visibility: "tom" },
   { slug: "jarvis", title: "Jarvis", blurb: "Todos, calendar and what waits on a ruling", priority: 9, visibility: "tom", agentReadable: true },
   { slug: "intent", title: "Intent", blurb: "His intent as an agent reads it, what each line rests on, the vocabulary, and what stands until he objects", priority: 8, visibility: "tom" },
   { slug: "history", title: "History", blurb: "Diet, training, what you told Jarvis and what Jarvis did, by day", priority: 9, visibility: "tom", agentReadable: true },

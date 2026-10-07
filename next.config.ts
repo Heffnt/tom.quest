@@ -28,24 +28,32 @@ const nextConfig: NextConfig = {
     // "sessions" -> "runs" rename (2026-09-21), then "runs" -> "agents"
     // (2026-09-25): links in the record and in Slack still name /runs.
     // `:path*` matches zero segments too, so the rule also sends the bare
-    // path to /agents. The page reads ?run= as it reads ?agent=, so an old
-    // /runs?run=<id> link opens the same agent. /sessions is the sessions page
-    // again (design section 5.1, 2026-10-06); it reads ?session=<id> as
-    // /agents does, so an old /sessions?session=<id> link opens that session.
+    // path. /sessions is the sessions page again (design section 5.1,
+    // 2026-10-06). The /agents page and its window view, and the /thread
+    // page, were removed on 2026-10-07 (design section 13.2); every link the
+    // record, the digest and the phone notifications already hold to /agents,
+    // /runs, /observe or /thread lands on /sessions, which reads ?session=<id>
+    // and ?agent=<id> as /agents did (query strings pass through), and an old
+    // ?run=<id> as ?agent=. Not permanent: a 308 is cached by the browser.
     // The /sessions redirect this replaced was permanent (308), but Vercel
     // served it with `cache-control: public, max-age=0, must-revalidate`
     // (curl -I https://www.tom.quest/sessions, 2026-10-06 23:35 Eastern), so a
     // browser that followed it holds a redirect that is stale at once and asks
     // the server again on the next visit, which now serves the page.
     // "tts" -> "jarvis" (2026-09-26, TTS dissolved into Jarvis): every
-    // ?item=, ?tab= and ?intent= link already sent to Slack names /tts. The
-    // observation page became the /agents window view the same night; its
-    // links (the digest's box and failure lines) land on that view.
+    // ?item=, ?tab= and ?intent= link already sent to Slack names /tts.
     return [
       { source: "/" + "dts", destination: "/jarvis", permanent: true },
       { source: "/tts", destination: "/jarvis", permanent: true },
-      { source: "/observe", destination: "/agents?view=window", permanent: true },
-      { source: "/runs/:path*", destination: "/agents/:path*", permanent: true },
+      ...["/agents", "/runs/:path*", "/observe", "/thread", "/mock/dump"].flatMap((source) => [
+        {
+          source,
+          has: [{ type: "query" as const, key: "run", value: "(?<run>.+)" }],
+          destination: "/sessions?agent=:run",
+          permanent: false,
+        },
+        { source, destination: "/sessions", permanent: false },
+      ]),
       // "vocabulary" -> "intent" (2026-09-26): the vocabulary is one view of
       // the intent page; the fragment names that view.
       { source: "/vocabulary", destination: "/intent#vocabulary", permanent: true },

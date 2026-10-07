@@ -5,7 +5,7 @@
 // and the agents its run started on the right. A background agent pressed on
 // the right replaces the center with its transcript until Close.
 //
-// THE URL IS THE PAGE'S STATE, as on /agents: ?session=<id> is the open
+// THE URL IS THE PAGE'S STATE: ?session=<id> is the open
 // session and &agent=<runId> the background agent open in its place, so a
 // link and Back move one thing.
 

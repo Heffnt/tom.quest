@@ -25,7 +25,6 @@ import {
   runDurationText,
   errorTextOf,
   modelOfTomHeadOf,
-  orderSessions,
   persistedOutputOf,
   placeBoxChanges,
   runsSudoCommand,
@@ -427,53 +426,6 @@ describe("costText", () => {
     expect(costText(undefined)).toBe("");
     expect(costText(0)).toBe("$0.00");
     expect(costText(undefined)).not.toBe(costText(0));
-  });
-});
-
-describe("orderSessions", () => {
-  const row = (status: string, statusChangedAt: number, createdAt: number) =>
-    ({ status, statusChangedAt, createdAt }) as {
-      status: "running" | "starting" | "requested" | "idle" | "ended" | "failed";
-      statusChangedAt: number;
-      createdAt: number;
-    };
-
-  it("puts the triage bands in order: running, spinning up, idle, over", () => {
-    // The two terminal rows share a createdAt so the band test reads bands
-    // only; their newest-first order is the test below.
-    const ordered = orderSessions([
-      row("ended", 1, 1),
-      row("idle", 2, 2),
-      row("requested", 3, 3),
-      row("running", 4, 4),
-      row("starting", 5, 5),
-      row("failed", 6, 1),
-    ]);
-    expect(ordered.map((s) => s.status)).toEqual([
-      "running",
-      "requested",
-      "starting",
-      "idle",
-      "ended",
-      "failed",
-    ]);
-  });
-
-  it("reads the terminal band newest first", () => {
-    const ordered = orderSessions([
-      row("ended", 10, 100),
-      row("failed", 10, 300),
-      row("ended", 10, 200),
-    ]);
-    expect(ordered.map((s) => s.createdAt)).toEqual([300, 200, 100]);
-  });
-
-  it("keeps the caller's own order inside a live band, and its array untouched", () => {
-    const input = [row("running", 1, 300), row("running", 2, 100), row("idle", 3, 200)];
-    const ordered = orderSessions(input);
-    expect(ordered.map((s) => s.createdAt)).toEqual([300, 100, 200]);
-    expect(input.map((s) => s.status)).toEqual(["running", "running", "idle"]);
-    expect(ordered).not.toBe(input);
   });
 });
 
