@@ -83,7 +83,9 @@ export const internalRegisterSession = internalMutation({
  * One event of a subagent's life: its start (the row is written, state
  * running), its report (state reported) or its end with no report, and a
  * resume by the session host. Idempotent: a start for a row that exists
- * changes nothing, and an end of an ended row changes nothing.
+ * changes nothing, and an end of an ended row changes nothing. A brief sent
+ * with any event fills a row whose brief is still empty: the hook reads it
+ * from the subagent's own transcript, which may not hold it yet at the start.
  */
 export const internalSubagentEvent = internalMutation({
   args: {
@@ -104,7 +106,10 @@ export const internalSubagentEvent = internalMutation({
       .withIndex("by_agent_id", (q) => q.eq("agentId", args.agentId))
       .first();
     if (args.event === "start") {
-      if (row !== null) return { id: row._id, changed: false };
+      if (row !== null) {
+        if (args.brief && row.brief === "") await ctx.db.patch(row._id, { brief: cut(args.brief, BRIEF_MAX) });
+        return { id: row._id, changed: false };
+      }
       if (!args.parentSessionId || !args.transcriptPath) throw new Error("a subagent's start needs parentSessionId and transcriptPath");
       const id = await ctx.db.insert("subagentRuns", {
         agentId: args.agentId,
@@ -119,6 +124,7 @@ export const internalSubagentEvent = internalMutation({
       return { id, changed: true };
     }
     if (row === null) return { id: null, changed: false };
+    if (args.brief && row.brief === "") await ctx.db.patch(row._id, { brief: cut(args.brief, BRIEF_MAX) });
     if (args.event === "resumed") {
       await ctx.db.patch(row._id, {
         resumedAt: now,

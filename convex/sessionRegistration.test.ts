@@ -108,10 +108,19 @@ describe("a subagent's row", () => {
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "resumed", agentId: "a123", resumedSessionId: "s-2", resumedTranscriptPath: "/p/s-2.jsonl" });
     running = await t.query(internal.sessionRegistration.internalRunningSubagents, {});
     expect(running[0]).toMatchObject({ resumeCount: 1, resumedSessionId: "s-2" });
-    await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "reported", agentId: "a123" });
+    await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "reported", agentId: "a123", brief: "a later brief" });
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "ended-without-report", agentId: "a123" });
     expect(await t.query(internal.sessionRegistration.internalRunningSubagents, {})).toEqual([]);
     const row = await t.run((ctx) => ctx.db.query("subagentRuns").first());
     expect(row?.state).toBe("reported");
+    // The brief the start gave stays.
+    expect(row?.brief).toBe("Read the session host and report its lock.");
+  });
+
+  it("takes its brief from a later event when the start had none", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "start", agentId: "b1", parentSessionId: "p", transcriptPath: "/t", brief: "" });
+    await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "reported", agentId: "b1", brief: "Write the lock test." });
+    expect((await t.run((ctx) => ctx.db.query("subagentRuns").first()))?.brief).toBe("Write the lock test.");
   });
 });
