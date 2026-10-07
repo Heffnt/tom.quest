@@ -25,7 +25,7 @@ export type BuildInfo = {
   deployEnv: string | null;
 };
 
-export type ErrorDiagnosis = {
+type ErrorDiagnosis = {
   kind: "unknown-function" | "convex-function" | "page";
   /** One line naming what failed. */
   headline: string;
@@ -76,7 +76,7 @@ export function readRecordHost(): string | null {
   }
 }
 
-export function formatBuild(build: BuildInfo): string {
+function formatBuild(build: BuildInfo): string {
   const parts = [
     build.sha ?? "commit unknown",
     build.branch ? `on ${build.branch}` : "branch unknown",
