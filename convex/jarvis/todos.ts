@@ -106,7 +106,11 @@ export const open = internalQuery({
   handler: async (ctx) => {
     // Read in the order answered, on the due-date index, so the cap drops
     // only the latest-due and the newest undated rows, never an overdue one:
-    // dated rows soonest due first, then undated rows oldest first.
+    // dated rows soonest due first, then undated rows oldest first. "Oldest"
+    // is the row's _creationTime, the order the index holds rows of one key
+    // in, so the rows the cap keeps are the ones the sort puts first (a row
+    // copied in from the old table carries an earlier createdAt than its
+    // _creationTime, so createdAt would not match the index).
     const dated: Doc<"todos">[] = [];
     const undated: Doc<"todos">[] = [];
     let truncated = false;
@@ -126,7 +130,7 @@ export const open = internalQuery({
     }
     // Two statuses read apart are merged into the one order.
     dated.sort((a, b) => (a.dueAt as number) - (b.dueAt as number));
-    undated.sort((a, b) => a.createdAt - b.createdAt);
+    undated.sort((a, b) => a._creationTime - b._creationTime);
     return { todos: [...dated, ...undated].map(openRow), truncated };
   },
 });
