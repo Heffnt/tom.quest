@@ -5,8 +5,6 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { displayDay, newYorkDay, newYorkParts } from "@/shared/clock.mjs";
 
 export type Todo = Doc<"todos">;
-export type MirrorRow = Doc<"dtsCodeTodoMirror">;
-export type CodeBrief = Doc<"dtsCodeBriefs">;
 // A ruling the page shows: on a todo or a code entry. listRulings hands its
 // todo's plain id (convex/jarvis/tables.ts withPlainTodoIds), the id a Todo
 // row carries.
@@ -57,7 +55,7 @@ export function rulingSubjectKey(r: {
   return codeSubjectKey(r.repo!, r.externalId!);
 }
 
-export function codeSubjectKey(repo: string, externalId: string): string {
+function codeSubjectKey(repo: string, externalId: string): string {
   return `code ${repo} ${externalId}`;
 }
 
@@ -108,7 +106,6 @@ export function liveRulingsByKey(
 //   touches the todo again (re-prep bumps updatedAt to at least ruledAt).
 // code: open + briefed, where the live ruling is missing or NOT NEWER than
 //   the brief — a re-brief after a revise ruling returns the item for a fresh
-//   ruling (mirror of convex/ttsRulings.ts briefAwaitsRuling).
 // pending: live rulings not yet applied (the "ruled, applying" section).
 //
 // BOTH COMPARISONS ARE `<=` ON PURPOSE — DO NOT TIGHTEN EITHER TO `<`.
@@ -122,14 +119,11 @@ export function liveRulingsByKey(
 
 export type NeedsMe = {
   lifeRows: Todo[];
-  codeRows: { row: MirrorRow; brief: CodeBrief }[];
   pending: Ruling[];
 };
 
 export function selectNeedsMe(
   todos: Todo[],
-  mirror: MirrorRow[],
-  briefs: CodeBrief[],
   rulings: readonly ListedRuling[],
   now: number = Date.now(),
 ): NeedsMe {
@@ -144,24 +138,9 @@ export function selectNeedsMe(
     return ruling === undefined || !rulingAnswers(ruling, t);
   });
 
-  const briefByKey = new Map(
-    briefs.map((b) => [codeSubjectKey(b.repo, b.externalId), b]),
-  );
-  const codeRows: NeedsMe["codeRows"] = [];
-  for (const row of mirror) {
-    if (row.status !== "open") continue;
-    const key = codeSubjectKey(row.repo, row.externalId);
-    const brief = briefByKey.get(key);
-    if (!brief) continue;
-    const ruling = live.get(key);
-    if (ruling === undefined || ruling.ruledAt <= brief.preparedAt) {
-      codeRows.push({ row, brief });
-    }
-  }
-
   const pending = [...live.values()].filter((r) => r.appliedAt === undefined);
 
-  return { lifeRows, codeRows, pending };
+  return { lifeRows, pending };
 }
 
 /** e.message for Errors, String(e) otherwise — the error line under a control. */

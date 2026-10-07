@@ -2,8 +2,7 @@ import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
 
 // THE BOX STARTS MOST TIMED WORK (Tom, 2026-09-26). The record's timed work —
-// the Turing health light, the pull-request mirror and its merges, and the
-// code-todo mirror — is a task the box's record-tick job starts through POST /jarvis/tick
+// the Turing health light, the pull-request mirror and its landings — is a task the box's record-tick job starts through POST /jarvis/tick
 // (convex/jarvis/tick.ts). What runs here is the record's own clock: the
 // thread digest (Tom's ruling of 2026-10-05, the digest on a Convex cron at
 // 05:00) and what must run when the box does not.

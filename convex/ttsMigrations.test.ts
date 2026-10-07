@@ -19,7 +19,6 @@ import {
   closedUpstreamStatement,
   duplicateArchiveReason,
   READINESS_MIGRATION,
-  RECOMMENDATION_MIGRATION,
   RETIRED_FIELD_CLEARED,
   RETIRED_STATUS_ENDED_REASON,
   TIMING_MIGRATION,
@@ -33,9 +32,7 @@ import {
   CONDITION_WINDOW_MS,
   DAY_MS,
   READINESS_VALUES,
-  RECOMMENDATION_VALUES,
   RETIRED_READINESS_VALUES,
-  RETIRED_RECOMMENDATION_MAP,
   buildDoneSet,
   isReady,
 } from "./ttsShared";
@@ -51,8 +48,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // The record prod holds while a migration runs, which is NOT the record the
 // validator declares once the narrow lands: a retired readiness spelling, a
 // condition-bound timing class, a latest-safe instant, a wake condition in
-// words, a v1 batch's members and its plan, a brief's
-// importance and retired recommendation spelling, and a session left in
+// words, a v1 batch's members and its plan, and a session left in
 // "awaiting-permission" all stop inserting
 // under convex/schema.ts the day the declarations go. The fixtures here are
 // exactly those rows, so they go in under a copy of the schema with the
@@ -63,7 +59,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // (convex/ttsMigrations.ts), which is what keeps a verification re-run
 // possible on a deployment whose validator has moved on.
 
-/** The retired importance object, on dtsTodos and dtsCodeBriefs alike. */
+/** The retired importance object on todo rows. */
 const RETIRED_IMPORTANCE = v.optional(
   v.object({
     level: v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
@@ -96,7 +92,6 @@ const {
   dtsTodos: schemaTodos,
   todos: schemaPlainTodos,
   claudeSessions: schemaSessions,
-  dtsCodeBriefs: schemaBriefs,
   ...otherTables
 } = schema.tables;
 
@@ -164,23 +159,6 @@ const wideSchema = defineSchema({
     ),
     schemaSessions,
   ),
-  dtsCodeBriefs: carryIndexes(
-    defineTable(
-      v.object({
-        ...schemaBriefs.validator.fields,
-        recommendation: v.union(
-          ...[
-            ...RECOMMENDATION_VALUES,
-            ...(Object.keys(
-              RETIRED_RECOMMENDATION_MAP,
-            ) as (keyof typeof RETIRED_RECOMMENDATION_MAP)[]),
-          ].map((r) => v.literal(r)),
-        ),
-        importance: RETIRED_IMPORTANCE,
-      }),
-    ),
-    schemaBriefs,
-  ),
 });
 
 // Rows come back as the HARNESS holds them, not as the narrowed validator
@@ -188,8 +166,6 @@ const wideSchema = defineSchema({
 // dropped, and these fixtures and assertions are about exactly those fields.
 type WideModel = DataModelFromSchemaDefinition<typeof wideSchema>;
 type WideTodo = DocumentByName<WideModel, "todos">;
-type WideBrief = DocumentByName<WideModel, "dtsCodeBriefs">;
-type WideSession = DocumentByName<WideModel, "claudeSessions">;
 
 const NOW = Date.UTC(2026, 8, 5, 12);
 
@@ -661,83 +637,6 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   });
 });
 
-describe("recommendation migration (code briefs → the four verdict words)", () => {
-  async function seedBriefs(t: ReturnType<typeof convexTest>) {
-    const spellings = [
-      "approve",
-      "stale-replan",
-      "needs-session",
-      "propose-archive",
-      "revise",
-    ] as const;
-    await t.run(async (ctx) => {
-      for (const [i, recommendation] of spellings.entries()) {
-        await ctx.db.insert("dtsCodeBriefs", {
-          repo: "ComplexMultiTrigger",
-          externalId: `cmt-00${i}`,
-          sourceHash: `h${i}`,
-          brief: "a brief",
-          recommendation,
-          execClass: "box",
-          preparedAt: NOW,
-        });
-      }
-    });
-  }
-  const allBriefs = async (
-    t: ReturnType<typeof convexTest>,
-  ): Promise<WideBrief[]> =>
-    (await t.run(async (ctx) =>
-      ctx.db.query("dtsCodeBriefs").collect(),
-    )) as unknown as WideBrief[];
-  const expectedCounts = {
-    scanned: 5,
-    "stale-replan-to-revise": 1,
-    "needs-session-to-session": 1,
-    "propose-archive-to-archive": 1,
-    "already-verdict-word": 2,
-  };
-
-  // witness: map "stale-replan" to "session" in ttsShared — the counts name
-  // each spelling's destination, so the one-to-one map cannot drift.
-  it("maps each retired spelling to its verdict word", async () => {
-    const t = convexTest({ schema: wideSchema, modules });
-    await seedBriefs(t);
-    const report = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {});
-    expect(report.totals).toEqual(expectedCounts);
-    const by = Object.fromEntries((await allBriefs(t)).map((b) => [b.externalId, b]));
-    expect(by["cmt-000"].recommendation).toBe("approve");
-    expect(by["cmt-001"].recommendation).toBe("revise");
-    expect(by["cmt-002"].recommendation).toBe("session");
-    expect(by["cmt-003"].recommendation).toBe("archive");
-    expect(by["cmt-004"].recommendation).toBe("revise");
-    // preparedAt untouched: a re-spelled brief is not a re-brief, so it does
-    // not return an item Tom already ruled on to his pile.
-    for (const b of await allBriefs(t)) expect(b.preparedAt).toBe(NOW);
-    expect(await eventsOfKind(t, `${RECOMMENDATION_MIGRATION}-migrated`)).toHaveLength(1);
-  });
-
-  it("a dry run reports the same counts and writes no brief row; a second run maps nothing", async () => {
-    const t = convexTest({ schema: wideSchema, modules });
-    await seedBriefs(t);
-    const dry = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {
-      dryRun: true,
-    });
-    expect(dry.totals).toEqual(expectedCounts);
-    expect((await allBriefs(t)).map((b) => b.recommendation).sort()).toEqual(
-      ["approve", "needs-session", "propose-archive", "revise", "stale-replan"].sort(),
-    );
-    await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {});
-    const again = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {});
-    expect(again.totals).toEqual({
-      scanned: 5,
-      "stale-replan-to-revise": 0,
-      "needs-session-to-session": 0,
-      "propose-archive-to-archive": 0,
-      "already-verdict-word": 5,
-    });
-  });
-});
 
 describe("the harness schema", () => {
   // witness: drop carryIndexes() and rebuild a table from its validator alone
@@ -749,7 +648,6 @@ describe("the harness schema", () => {
     for (const name of [
       "dtsTodos",
       "claudeSessions",
-      "dtsCodeBriefs",
     ] as const) {
       const wide = wideSchema.tables[name] as unknown as Indexed;
       const real = schema.tables[name] as unknown as Indexed;
@@ -843,40 +741,19 @@ describe("clearing walk (retired fields and the retired session status)", () => 
         ),
         live: await session("still running", "running"),
       };
-      const brief = (externalId: string, extra: Record<string, unknown>) =>
-        ctx.db.insert("dtsCodeBriefs", {
-          repo: "ComplexMultiTrigger",
-          externalId,
-          sourceHash: `h-${externalId}`,
-          brief: "a brief",
-          recommendation: "approve",
-          execClass: "box" as const,
-          preparedAt: NOW,
-          ...extra,
-        });
-      const briefs = {
-        retired: await brief("cmt-100", {
-          recommendation: "stale-replan",
-          importance: RETIRED_IMPORTANCE_VALUE,
-        }),
-        clean: await brief("cmt-101", {}),
-      };
-      return { sessions, briefs };
+      return { sessions };
     });
   }
 
   const expectedTotals = {
     "dtsTodos-scanned": 6,
     "claudeSessions-scanned": 3,
-    "dtsCodeBriefs-scanned": 2,
     "latestSafeAt-cleared": 2,
     "wakeCondition-cleared": 1,
     "importance-cleared": 2,
     "members-cleared": 1,
     "plan-cleared": 2,
     "awaiting-permission-ended": 2,
-    "brief-importance-cleared": 1,
-    "recommendation-normalized": 1,
   };
   const nothingLeft = {
     ...expectedTotals,
@@ -886,11 +763,9 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     "members-cleared": 0,
     "plan-cleared": 0,
     "awaiting-permission-ended": 0,
-    "brief-importance-cleared": 0,
-    "recommendation-normalized": 0,
   };
 
-  /** One call, walking all three tables: a pageSize past the biggest table
+  /** One call, walking both tables: a pageSize past the biggest table
    * finishes each in one page, and the chain runs to the end. */
   async function clearAll(
     t: ReturnType<typeof convexTest>,
@@ -920,7 +795,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     await t.run(async (ctx) => ({
       todos: await ctx.db.query("todos").collect(),
       sessions: await ctx.db.query("claudeSessions").collect(),
-      briefs: await ctx.db.query("dtsCodeBriefs").collect(),
     }));
 
   // witness: clear a field without logging its value first — the deploy would
@@ -956,15 +830,9 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     // statusChangedAt is untouched: these rows are historical and must not
     // sort to the top of the sessions list as if they had just ended.
     for (const s of rows.sessions) expect(s.statusChangedAt).toBe(NOW);
-    const briefs = Object.fromEntries(rows.briefs.map((b) => [b.externalId, b]));
-    expect(briefs["cmt-100"].recommendation).toBe("revise");
-    expect(briefs["cmt-100"].importance).toBeUndefined();
-    expect(briefs["cmt-101"].recommendation).toBe("approve");
-    expect(briefs["cmt-100"].preparedAt).toBe(NOW);
-
     // One event per value, carrying the value itself.
     const cleared = await eventsOfKind(t, RETIRED_FIELD_CLEARED);
-    expect(cleared).toHaveLength(12);
+    expect(cleared).toHaveLength(10);
     const byField = (field: string) =>
       cleared
         .map((e) => e.data as { field: string; value: unknown })
@@ -975,14 +843,12 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     expect(byField("importance")).toEqual([
       RETIRED_IMPORTANCE_VALUE,
       RETIRED_IMPORTANCE_VALUE,
-      RETIRED_IMPORTANCE_VALUE,
     ]);
     // The WHOLE members array and the WHOLE plan — every step with its actor,
     // its status, its completion instant and its evidence. The graph holds
     // what they MEANT; this is what they SAID.
     expect(byField("members")).toEqual([V1_MEMBERS]);
     expect(byField("plan")).toEqual([V1_PLAN, V1_PLAN]);
-    expect(byField("recommendation")).toEqual(["stale-replan"]);
     // A todo's clearing is on its own history (the indexed column), and every
     // row names the table and the row it came out of.
     const todoEvents = cleared.filter((e) => e.todoId !== undefined);
@@ -1020,7 +886,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     expect(
       rows.sessions.filter((s) => s.status === "awaiting-permission"),
     ).toHaveLength(2);
-    expect(rows.briefs[0].recommendation).toBe("stale-replan");
     expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(0);
   });
 
@@ -1034,11 +899,11 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     expect(await clearAll(t)).toEqual(nothingLeft);
     // And it wrote no second record of a value: every value left the rows
     // once, on the first run.
-    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(12);
+    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(10);
   });
 
   // witness: drop the cursor from the continuation and a resumed run starts
-  // the table again; drop the table hand-off and two of the three tables are
+  // the table again; drop the table hand-off and one of the two tables is
   // never walked while the call reports done.
   it("resumes within a table by cursor, and hands off table by table", async () => {
     // Fake timers throughout: each call below schedules its own continuation,
@@ -1084,14 +949,6 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     expect(second.totals["latestSafeAt-cleared"]).toBe(2);
     expect(second.totals["members-cleared"]).toBe(1);
     expect(second.totals["plan-cleared"]).toBe(2);
-    // And one table on its own, for the run that only has to finish one.
-    const briefsOnly = await t.mutation(
-      internal.ttsMigrations.internalClearRetiredFields,
-      { pageSize: 100, dryRun: true, table: "dtsCodeBriefs" },
-    );
-    expect(briefsOnly.done).toBe(true);
-    expect(briefsOnly.totals["recommendation-normalized"]).toBe(1);
-    expect(briefsOnly.totals["dtsTodos-scanned"]).toBe(0);
   }
 });
 
@@ -1337,26 +1194,6 @@ describe("closed-upstream goals (ruling 70: CMT's registry retired)", () => {
     }
   });
 
-  // witness: leave the code subject on the kept goal — the mirror's
-  // goal-closing sweep would still close it from a registry entry.
-  it("a converted goal is no longer closed by the code-todo mirror", async () => {
-    const t = convexTest({ schema, modules });
-    const ids = await seed(t);
-    await t.mutation(internal.ttsMigrations.internalConvertClosedUpstreamGoals, {});
-    await t.mutation(internal.tts.internalReplaceMirror, {
-      repo: "ComplexMultiTrigger",
-      rows: [
-        {
-          externalId: "o-standardize-ruling",
-          tier: "R",
-          status: "closed",
-          statement: "o-standardize ruling",
-          url: "https://github.com/Heffnt/ComplexMultiTrigger/blob/master/vqc/todos.yaml",
-        },
-      ],
-    });
-    expect((await byId(t)).get(ids.twoCopiesOld)!.status).toBe("active");
-  });
 
   it("a dry run reports the same counts and changes and writes nothing but the dry-run event", async () => {
     const t = convexTest({ schema, modules });

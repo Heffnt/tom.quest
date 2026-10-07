@@ -72,11 +72,8 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  need him today, which no worker may raise with him directly (Tom,
  *  2026-09-21), so this message says it. The objection list stays second.
  *
- *  The
- *  settled run (his own settlements on /intent) is printed right after the
- *  objection list, and the superseded run (his standing rulings that new
- *  information ended) right after it; neither is named here: nothing in
- *  them waits on him.
+ *  The superseded run (his standing rulings that new information ended)
+ *  follows the objection list. Nothing in it waits on him.
  */
 export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnight", "broken", "spend", "box"] as const;
 
@@ -85,7 +82,6 @@ export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnig
 export const SECTION_CAPS = {
   today: 12,
   objections: 12,
-  settled: 6,
   overnight: 6,
   broken: 4,
   box: 8,
@@ -464,10 +460,6 @@ export type ObjectionFact = {
    *  kinds (convex/ttsDigest.ts MERGE) and the lead must not credit a merge to
    *  the delegate, so the two are counted separately. */
   merged?: boolean;
-  /** TRUE FOR A MESSAGE SENT IN HIS NAME on his own sign-off
-   *  (convex/ttsSignoff.ts): he decided it by pressing "sign and send", so
-   *  the lead credits it to neither the delegate nor the gates. */
-  sentAsTom?: boolean;
   /** TRUE FOR A DECISION TOM TOOK HIMSELF: his reply on /thread to a
    *  question `jarvis decide` held for him (convex/ttsAsk.ts, decidedBy
    *  "tom"). The lead counts it apart from the delegate's decisions. */
@@ -532,9 +524,6 @@ export type TodayFacts = {
    *  rather than delegate decisions. Absent means "count the printed ones",
    *  which is right whenever nothing was held back. */
   objectionMerges?: number;
-  /** How many of the WHOLE objection list are messages sent in his name on
-   *  his sign-off. Absent means "count the printed ones". */
-  objectionSent?: number;
   /** How many of the WHOLE objection list Tom decided himself on /thread.
    *  Absent means "count the printed ones". */
   objectionTom?: number;
@@ -544,10 +533,6 @@ export type TodayFacts = {
   /** What sessions did overnight, one row per todo, the tail last. */
   overnightByTodo: TodoOutcome[];
   broken: BrokenFact[];
-  /** His settlements on /intent since the last digest (convex/jarvis/intent.ts
-   *  settle writes each as a `disagreement-settled` event whose text is the
-   *  line), oldest first. Absent or empty: he settled nothing. */
-  settled?: SettledFact[];
   /** His standing rulings that new information ended and no digest has
    *  printed yet (convex/ttsDigest.ts reads them off the ruling rows), in the
    *  order they were ended. Absent or empty: none is waiting. */
@@ -584,9 +569,6 @@ export type SpendFact = {
   url: string;
 };
 
-/** One settlement of a disagreement: the event's id and the line settle wrote. */
-type SettledFact = { id: string; text: string };
-
 /** Where a superseded ruling sits in the order the digest reads them: when it
  *  was ended (`at`, its data.supersededAt) and, among rulings ended in the
  *  same millisecond, its row's _creationTime (`after`). A digest records the
@@ -596,10 +578,6 @@ export type SupersededCursor = { at: number; after: number };
 /** One superseded ruling: its row id, the line supersede wrote, its position. */
 export type SupersededFact = { id: string; text: string; cursor: SupersededCursor };
 
-/** The /intent page, where every settlement was made and can be read. */
-const INTENT_URL = "https://tom.quest/intent";
-/** The settled run's lead. */
-export const SETTLED_LEAD = "What you settled on the intent page since the last digest.";
 /** The superseded run's lead. */
 const SUPERSEDED_LEAD = "Rulings of yours that no longer stand, each with the new information that ended it.";
 
@@ -859,12 +837,6 @@ function objectionMergeCount(f: TodayFacts): number {
   return f.objectionMerges ?? f.objections.filter((o) => o.merged === true).length;
 }
 
-/** How many of the objection list are messages sent on his sign-off, counted
- *  the same way as the merges. */
-function objectionSentCount(f: TodayFacts): number {
-  return f.objectionSent ?? f.objections.filter((o) => o.sentAsTom === true).length;
-}
-
 /** How many of the objection list Tom decided himself, counted the same way. */
 function objectionTomCount(f: TodayFacts): number {
   return f.objectionTom ?? f.objections.filter((o) => o.decidedByTom === true).length;
@@ -878,34 +850,20 @@ function objectionTomCount(f: TodayFacts): number {
  * morning of merges credited to the delegate is a false statement about who
  * acted, which is the one thing this list exists to let him object to.
  */
-export function objectionsLead(all: number, merges: number, sent = 0, tom = 0): string {
+export function objectionsLead(all: number, merges: number, tom = 0): string {
   // THE FOURTH KIND: a question Tom decided himself, replying on /thread to
   // one `jarvis decide` held for him. It is his, so it is named first, apart
   // from the delegate's, and silence lets only the others stand.
   if (tom > 0) {
-    const decidedForYou = Math.max(0, all - merges - sent - tom);
+    const decidedForYou = Math.max(0, all - merges - tom);
     const parts = [`you decided ${countWord(tom)} ${plural(tom, "question", "questions")} on /thread`];
     if (decidedForYou > 0) parts.push(`${countWord(decidedForYou)} ${plural(decidedForYou, "thing was", "things were")} decided in your name`);
     if (merges > 0) parts.push(`${countWord(merges)} ${plural(merges, "merge", "merges")} landed on ${plural(merges, "its", "their")} own`);
-    if (sent > 0) parts.push(`${countWord(sent)} ${plural(sent, "message", "messages")} went out on your sign-off`);
     const joined = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
     return `${capitalise(joined)}${decidedForYou + merges > 0 ? "; silence means the others stand" : ""}.`;
   }
-  const decided = Math.max(0, all - merges - sent);
+  const decided = Math.max(0, all - merges);
   const stand = "silence means they stand";
-  // THE THIRD KIND: a message that went out in his name on his own sign-off.
-  // He decided it, so it is neither the delegate's nor the gates', and there
-  // is nothing left for silence to let stand once it has been sent.
-  if (sent > 0) {
-    const went = `${countWord(sent)} ${plural(sent, "message", "messages")} went out on your sign-off`;
-    const others: string[] = [];
-    if (decided > 0) others.push(`${countWord(decided)} ${plural(decided, "thing was", "things were")} decided in your name`);
-    if (merges > 0) {
-      others.push(`${countWord(merges)} ${plural(merges, "merge", "merges")} landed on ${plural(merges, "its", "their")} own`);
-    }
-    if (others.length === 0) return `${capitalise(went)}.`;
-    return `${capitalise(others.join(", "))} and ${went}; ${stand}.`;
-  }
   if (merges === 0) {
     return `${capitalise(countWord(all))} ${plural(all, "thing was", "things were")} decided in your name while you were asleep; ${stand}.`;
   }
@@ -989,7 +947,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     pushRun(
       lines,
       "objections",
-      objectionsLead(all, objectionMergeCount(f), objectionSentCount(f), objectionTomCount(f)),
+      objectionsLead(all, objectionMergeCount(f), objectionTomCount(f)),
       f.objections.map((objection, index) => objectionLine(objection, index + 1)),
       SECTION_CAPS.objections,
       beyond > 0
@@ -1000,20 +958,6 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
         : undefined,
     );
     note(lines, "objections", o.canReply, 'reply "revert 2", or "2: what to do instead".');
-  }
-
-  // 2b. What he settled on /intent since the last digest: the answer to the
-  //     objection list's decisions and the failing eval items, one line
-  //     each, as settle wrote it (convex/jarvis/intent.ts). Not numbered and
-  //     not ranked: nothing here waits on him.
-  if ((f.settled ?? []).length > 0) {
-    pushRun(
-      lines,
-      "settled",
-      SETTLED_LEAD,
-      (f.settled ?? []).map((row) => ({ text: row.text, url: INTENT_URL })),
-      SECTION_CAPS.settled,
-    );
   }
 
   // 2c. His standing rulings that new information ended: an asker in that
@@ -1196,26 +1140,6 @@ export function composeNeedsYou(f: NeedsYouFacts, o: { canReply: boolean }): Mes
   };
 }
 
-/** A message an agent proposes to send in Tom's name (convex/ttsSignoff.ts):
- *  who it is for and where it goes, NEVER its text. He reads the text where he
- *  signs it, on /tts beside the two controls, so Slack holds no copy of a
- *  message in his name that he has not signed. */
-type ProposalAskFacts = { recipient: string; channel: string };
-
-/** No note line: a reply in this thread is a note on the record, never a
- *  sign-off, which only his press on /tts writes. */
-export function composeProposalAsk(f: ProposalAskFacts): Message {
-  const slack = /^slack:(.+)$/.exec(f.channel);
-  const what = slack === null ? "a calendar invitation" : "a Slack message";
-  const where = slack === null ? "" : ` in ${slack[1]}`;
-  const hold = "Nothing goes out until you sign it on /tts.";
-  const first = `An agent proposes ${what} in your name to ${f.recipient}${where}. ${hold}`;
-  return {
-    firstLine: first.length <= FIRST_LINE_CHARS ? first : `An agent proposes ${what} in your name. ${hold}`,
-    lines: [{ role: "item", text: "Open it to read the text, then sign or decline it.", url: TAB_EVERYTHING }],
-  };
-}
-
 /** The reply when an unknown output-channel thread becomes a capture. It says
  *  what happens next instead of echoing his own words back.
  *
@@ -1327,7 +1251,6 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
     const line = objectionLine(objection, index + 1);
     facts.push(fact(`ask:${objection.askId}`, line.text, [line.url], [index + 1]));
   });
-  for (const row of f.settled ?? []) facts.push(fact(`settled:${row.id}`, row.text, [INTENT_URL]));
   for (const row of f.superseded ?? []) facts.push(fact(`superseded:${row.id}`, row.text, [TAB_EVERYTHING]));
   if (f.needsYou.length > 0) {
     facts.push(fact("needs-you-today:count", needsYouTodayLead(f.needsYou.length), [], [f.needsYou.length]));

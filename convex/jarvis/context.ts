@@ -34,29 +34,23 @@ type Reader = (ctx: ActionCtx, params: URLSearchParams) => Promise<Response>;
 
 /**
  * The planner's payload: all life todos (their graph fields, `needs` among
- * them, included), the code-todo mirror, the code briefs, Tom's recent
- * rulings, the writing standard, the vocabulary, the session repo names and
+ * them, included), Tom's recent rulings, the writing standard, the session
+ * repo names and
  * the server's clock. The writing standard rides along because the planner
  * is Node ESM on a box that never loads TypeScript and cannot read a WikiTom
  * checkout; Jarvis worker/jobs/plan-graphs.mjs treats a missing
  * `writingStandard` as fatal, so the field name and type do not change.
  */
 async function plannerContext(ctx: ActionCtx) {
-  const [todos, mirror, briefs, recentRulings, writingStandard, vocabulary] = await Promise.all([
+  const [todos, recentRulings, writingStandard] = await Promise.all([
     ctx.runQuery(internal.tts.internalListTodos, {}),
-    ctx.runQuery(internal.tts.internalListMirror, {}),
-    ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
     ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
     ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
-    ctx.runQuery(internal.vocabulary.internalClosedVocabulary, {}),
   ]);
   return {
     todos,
-    mirror,
-    briefs,
     recentRulings,
     writingStandard,
-    vocabulary,
     // Served for the same reason as writingStandard: the box cannot import
     // SESSION_REPOS, and serving the one home's value stops a hand-written
     // copy of the repo list appearing in worker/.

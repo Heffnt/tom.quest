@@ -10,7 +10,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
-import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers, tracksCodeTodos } from "./ttsShared";
+import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers } from "./ttsShared";
 import { eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
 import { listForDigest } from "./jarvis/outbox";
 
@@ -149,19 +149,6 @@ export async function insertRuling(
     }
     if (isCode && (repo === undefined || externalId === undefined)) {
       throw new Error("A code ruling requires both repo and externalId");
-    }
-    // A repo taken off the code-todo list keeps its mirror rows and briefs as
-    // records, so an open, briefed row of it still exists — and a ruling on
-    // it would be recorded here and stay pending, with nothing to act on it. ComplexMultiTrigger is the case: Tom's ruling of 2026-09-22
-    // (CMT adoption ruling 70) moved its todos into TTS, where they are ruled
-    // as todos. One check for every pen: the page's buttons, the session CLI
-    // pen and the ruling from Tom's words all arrive here. A ruling on a
-    // CHANGE (a pull request or commit, isChangeSubject below) is not about a
-    // code todo, so it passes in any repository.
-    if (isCode && !isChangeSubject(externalId!) && !tracksCodeTodos(repo!)) {
-      throw new Error(
-        `refused: ${repo} is off the code-todo list (ttsShared CODE_TODO_REPOS) — its mirror rows are records, and its todos are ruled in TTS`,
-      );
     }
     // One optional written note on EVERY verdict (ratified 2026-08-29): the
     // four verdicts are uniform, each taking an optional note. Its MEANING is
@@ -483,36 +470,14 @@ async function resolveSubject(
   }
   const repo = subjectId.slice(0, cut);
   const externalId = subjectId.slice(cut + 1);
-  const mirrored = await ctx.db
-    .query("dtsCodeTodoMirror")
-    .withIndex("by_repo_external", (q) => q.eq("repo", repo))
-    .collect();
-  if (mirrored.length === 0) {
-    throw new Error(`Unknown repo: ${repo} (no code todos are mirrored from it)`);
-  }
-  const entry = mirrored.find((r) => r.externalId === externalId);
-  if (!entry || entry.status !== "open") {
-    throw new Error(`Unknown code todo: ${subjectId} (not open in the mirror)`);
-  }
-  const brief = await ctx.db
-    .query("dtsCodeBriefs")
-    .withIndex("by_repo_external", (q) =>
-      q.eq("repo", repo).eq("externalId", externalId),
-    )
-    .unique();
-  if (!brief) {
-    throw new Error(
-      `refused: ${subjectId} has no brief yet, so Tom has not been shown it`,
-    );
-  }
   return { repo, externalId };
 }
 
 // What a session's turns are ABOUT (check 5): the subject its opening prompt
 // named, as recorded on the claudeSessions row — its todo; or, for a block
 // session, the todos of its
-// category (the "code" block works the mirror, so its subjects are code
-// todos). An adhoc session names nothing, so none of its turns can rule. A
+// category (the "code" block names its code subjects). An adhoc session names
+// nothing, so none of its turns can rule. A
 // Slack reply reaches this door as a turn of the same session
 // (ttsSlack.sessionReply), so it is bound the same way. The refusal is its
 // own reason, distinct from "unknown subject": the subject exists, Tom was
@@ -815,36 +780,6 @@ export const internalMarkRulingApplied = internalMutation({
   },
 });
 
-// Digest input: how many briefed code todos await a ruling. A brief awaits
-// when its live ruling is missing OR NOT NEWER than the brief — a re-brief
-// after a revise ruling puts the item back on Tom's plate (the fresh plan
-// needs a fresh ruling). The client-side needs-me selector (app/jarvis/lib.ts)
-// mirrors this predicate.
-//
-// THE TIE IS DELIBERATE — DO NOT TIGHTEN `<=` BACK TO `<`. ruledAt (set at
-// :236) and preparedAt (set in ttsCode.ts internalStoreBriefs) are both
-// whole-millisecond Date.now() values written by two different mutations, so
-// a ruling and a re-brief CAN carry the same number. A strict `<` reads that
-// tie as "the ruling answers the brief" and silently drops a genuinely
-// re-briefed item off Tom's pile with nothing to put it back; `<=` reads it
-// as "still awaiting", whose worst case is one extra look at an item Tom just
-// ruled. Same reasoning as liveRulings above, which breaks its own
-// same-millisecond tie on _creationTime rather than pretending ties cannot
-// happen.
-export function briefAwaitsRuling(
-  brief: { repo: string; externalId: string; preparedAt: number },
-  live: Map<string, Doc<"rulings">>,
-): boolean {
-  const ruling = live.get(
-    subjectKey({
-      subjectType: "code",
-      repo: brief.repo,
-      externalId: brief.externalId,
-    }),
-  );
-  return ruling === undefined || ruling.ruledAt <= brief.preparedAt;
-}
-
 // Planner context (GET /tts/planner-context): what Tom ruled lately, newest
 // first — a signal, not a work feed (that is internalPendingRulings).
 export const internalRecentRulings = internalQuery({
@@ -943,15 +878,6 @@ async function workedUnder(ctx: QueryCtx, todoId: Id<"todos">, rulingId: Id<"rul
   }
   return false;
 }
-
-export const internalAwaitingRulingCount = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    const briefs = await ctx.db.query("dtsCodeBriefs").collect();
-    const live = liveRulings(await ctx.db.query("rulings").collect());
-    return briefs.filter((b) => briefAwaitsRuling(b, live)).length;
-  },
-});
 
 // The one-time copy of dtsCodeRulings into this table (run at deploy,
 // `npx convex run ttsRulings:internalMigrateCodeRulings`) is gone with the

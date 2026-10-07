@@ -373,44 +373,6 @@ export function isPrepared(readiness: StoredReadiness): boolean {
   return normalizeReadiness(readiness) === "prepared";
 }
 
-// ── Code-brief recommendation: the four verdict words (the lifeos update) ───
-// A code brief's `recommendation` is the worker's read of what Tom will most
-// likely rule, so it is spelled in the words he rules in — the four verdicts
-// (convex/ttsRulings.ts VERDICT).
-//
-// NARROWED (the lifeos update, phase 7): RECOMMENDATION below — the validator
-// the schema, the brief pen and the route all use — holds exactly these four.
-// The three retired spellings mapped one to one, were rewritten by
-// ttsMigrations.internalMigrateRecommendations, and were verified on prod with
-// every count zero on a second run, so no stored brief carries them and no
-// writer may store them. normalizeRecommendation still ACCEPTS them on read
-// for one more release — a page bundle built before this narrow can hold a
-// brief in memory in the old spelling — and then the retired map goes too.
-export const RECOMMENDATION_VALUES = ["approve", "revise", "session", "archive"] as const;
-type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
-/** Read-only for one more release; the validator refuses all three. */
-export const RETIRED_RECOMMENDATION_MAP = {
-  "stale-replan": "revise",
-  "needs-session": "session",
-  "propose-archive": "archive",
-} as const satisfies Record<string, Recommendation>;
-/** What a reader may still be handed: the four words, plus the three retired
- * spellings for one more release. */
-export type StoredRecommendation =
-  | Recommendation
-  | keyof typeof RETIRED_RECOMMENDATION_MAP;
-/** The stored form: the four verdict words. convex/schema.ts and the brief pen
- * use this. */
-export const RECOMMENDATION = v.union(
-  ...RECOMMENDATION_VALUES.map((r) => v.literal(r)),
-);
-/** One reading for every spelling a reader can still meet. */
-export function normalizeRecommendation(r: StoredRecommendation): Recommendation {
-  return r in RETIRED_RECOMMENDATION_MAP
-    ? RETIRED_RECOMMENDATION_MAP[r as keyof typeof RETIRED_RECOMMENDATION_MAP]
-    : (r as Recommendation);
-}
-
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
 // THE ONE HOME for the graph rules — convex/ and app/ both import from here,
 // so the server's frontier and the page's frontier cannot drift. Structural
@@ -761,42 +723,6 @@ export function isSessionRepo(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);
 }
 
-/** The path, inside a repo, of the code-todo registry a repo governs itself by. */
-export const CODE_TODO_PATH = "vqc/todos.yaml";
-
-/**
- * The repos that keep their own code todos in CODE_TODO_PATH, each with the
- * DEFAULT branch that copy is read from and the repo's own GUARD — the one
- * command that says the file is still well-formed. THE list, with three
- * readers that must agree (VQC C1: one home):
- *   - the mirror cron (convex/ttsSync.ts refreshMirror) fetches each repo's
- *     file from that branch into dtsCodeTodoMirror;
- *   - the prospecting prompt (convex/claudeSessions.ts) tells a prospector in
- *     one of these checkouts to READ that file before capturing, so it cannot
- *     hand Tom a finding the repo already tracks;
- *   - the code mission prompt (convex/claudeSessions.ts) tells a worker that
- *     closed an entry to RUN the guard before its pull request.
- * They drifted once: only ComplexMultiTrigger was named in the prompt, while
- * the cron mirrored tom.quest too, so tom.quest prospectors were blind to
- * tom.quest's own registry.
- *
- * ComplexMultiTrigger is OFF this list since Tom's ruling of 2026-09-22,
- * ratified as CMT adoption ruling 70 on 2026-09-24: "i dont think vqc should
- * have its own todos since tts covers that." CMT's todos live in TTS; its
- * vqc/todos.yaml is deleted after they are homed. The mirror rows it left in
- * dtsCodeTodoMirror stay in the table as records (the evals read past code
- * rulings' inputs off them), and every live reader of the mirror reads only
- * the repos on this list (tts.ts liveMirrorRows), so a frozen row can never
- * read as open work.
- */
-export const CODE_TODO_REPOS = {
-  "tom.quest": { branch: "main", guard: "pnpm vitest run vqc/todos.test.ts" },
-} as const;
-
-/** Whether a repo tracks its own code todos in CODE_TODO_PATH. */
-export function tracksCodeTodos(repo: string): boolean {
-  return Object.prototype.hasOwnProperty.call(CODE_TODO_REPOS, repo);
-}
 
 /**
  * The ONE normalizer for a session's repo list. Everything a caller might hand
@@ -961,13 +887,6 @@ export function ttsTabLink(tab: TtsTab): string {
   return `https://tom.quest/tts?tab=${tab}`;
 }
 
-/**
- * The counts `tts search vocabulary` prints after `terms=` in its header: the
- * render's other sections, in the order printed. The terms themselves are
- * counted from the row, so they are not one of these. convex/schema.ts's
- * ttsVocabulary row and the POST /tts/vocabulary door both use this.
- */
-export const VOCABULARY_COUNT_NAMES = ["entities", "jobs", "search", "skills", "repos", "channels"] as const;
 export const VOCABULARY_COUNTS = v.object({
   entities: v.number(),
   jobs: v.number(),

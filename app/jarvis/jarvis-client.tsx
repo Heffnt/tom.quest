@@ -102,19 +102,11 @@ export default function JarvisClient() {
   // its awaiting section renders (app/jarvis/lib.ts selectNeedsMe) so the count
   // and the rows cannot drift. Same subscriptions the tab holds — Convex
   // dedupes.
-  const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
-  const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
-  const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
+ const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
 
-  const awaitingCount = useMemo(() => {
-    const { lifeRows, codeRows } = selectNeedsMe(
-      todos ?? [],
-      mirror ?? [],
-      codeBriefs ?? [],
-      rulings ?? [],
-    );
-    return lifeRows.length + codeRows.length;
-  }, [todos, mirror, codeBriefs, rulings]);
+ const awaitingCount = useMemo(() => {
+    return selectNeedsMe(todos ?? [], rulings ?? []).lifeRows.length;
+  }, [todos, rulings]);
 
   return (
     <TomGate label="TTS">

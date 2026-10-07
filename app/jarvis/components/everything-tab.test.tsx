@@ -8,9 +8,9 @@
 //   - "waiting" is gone as a status chip, so a row still carrying the stored
 //     status has to read as ACTIVE here or it would match no chip at all and
 //     vanish from the page.
-// The four filters that stay (search, status, kind, category) and the sort are
-// pinned here too, because removing two predicates from a chain of five is
-// exactly where the remaining three get dropped by accident.
+// The three filters that stay (search, status, category) and the sort are
+// pinned here too, because removing predicates is exactly where the remaining
+// ones get dropped by accident.
 //
 // And the three sections that open the tab since batches went (Tom,
 // 2026-09-24): the todos awaiting his ruling and the rulings still applying.
@@ -59,27 +59,12 @@ const todo = (over: Record<string, unknown>) => ({
   ...over,
 });
 
-const MIRROR = {
-  _id: "m1",
-  _creationTime: 1,
-  repo: "tom.quest",
-  externalId: "todo-14",
-  statement: "fence the session repo list",
-  tier: "now",
-  status: "open",
-  url: "https://example.invalid/todo-14",
-  syncedAt: NOW,
-};
-
 function load(
   todos: unknown[],
-  mirror: unknown[] = [],
   rulings: unknown[] = [],
 ) {
   convex.data = {
     [getFunctionName(api.tts.listTodos)]: todos,
-    [getFunctionName(api.tts.listMirror)]: mirror,
-    [getFunctionName(api.ttsCode.listCodeBriefs)]: [],
     [getFunctionName(api.ttsRulings.listRulings)]: rulings,
   };
 }
@@ -195,15 +180,6 @@ describe("the filters that stay", () => {
     expect(body()).toContain("already finished");
   });
 
-  it("filters by kind", () => {
-    load([todo({ statement: "renew the visa" })], [MIRROR]);
-    show();
-    expect(body()).toContain("fence the session repo list");
-    fireEvent.click(chip("code")!);
-    expect(body()).not.toContain("fence the session repo list");
-    expect(body()).toContain("renew the visa");
-  });
-
   it("filters by category", () => {
     load([
       todo({ _id: "a", statement: "renew the visa", category: "admin" }),
@@ -288,28 +264,19 @@ describe("the sections above the list", () => {
   it("names the subject of a ruling still applying", () => {
     load(
       [todo({ _id: "t-ruled", statement: "renew the visa" })],
-      [MIRROR],
       [
         ruling({ subjectType: "life", todoId: "t-ruled" }),
-        ruling({
-          _id: "r2",
-          subjectType: "code",
-          repo: MIRROR.repo,
-          externalId: MIRROR.externalId,
-          verdict: "approve",
-        }),
       ],
     );
     show();
     const applying = section("ruled, applying");
     expect(applying).toContain("renew the visa");
-    expect(applying).toContain("fence the session repo list");
   });
 
   // witness: drop the subject filter in app/jarvis/lib.ts liveRulingsByKey — a
   // ruling on a batch shows here with a blank subject.
   it("leaves out a ruling on a batch", () => {
-    load([], [], [ruling({ subjectType: "batch", batchId: "b1" })]);
+    load([], [ruling({ subjectType: "batch", batchId: "b1" })]);
     show();
     expect(section("ruled, applying")).toBe("ruled, applying 0");
   });

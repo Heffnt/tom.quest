@@ -952,37 +952,6 @@ describe("internalComposeToday", () => {
     expect(objectionAskIds).toEqual(["tom.quest:a1b2c3d4e5f6"]);
   });
 
-  // A MESSAGE SENT IN HIS NAME on his own sign-off (convex/ttsSignoff.ts) is
-  // listed with the decisions taken in his name, and the lead credits it to
-  // him rather than to the delegate or the gates.
-  it("lists a message sent in his name on his sign-off, credited to neither the delegate nor the gates", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: FIVE_AM - 1800_000,
-        kind: "sent-as-tom",
-        data: {
-          recipient: "Sarah Chen",
-          channel: "slack:C0SARAH01",
-          sha256: "ab".repeat(32),
-          signedAt: FIVE_AM - 1800_000,
-        },
-      });
-    });
-    const { text, objectionAskIds } = await composeToday(t, {
-      day: DAY_KEY,
-      now: FIVE_AM,
-      canReply: true,
-    });
-    expect(text).toContain("One message went out on your sign-off.");
-    expect(text).toMatch(/1\. Sent as you to Sarah Chen on Slack C0SARAH01, signed at \d{1,2}:\d\d [ap]m\./);
-    expect(text).not.toContain("decided in your name");
-    expect(objectionAskIds).toEqual([""]);
-  });
-
   // THE WEEKLY SIMPLIFICATION PASS's proposals are lines on this list. Unlike
   // a merge its number DOES name an askId — the proposal's key — so "revert 1"
   // in the digest's thread resolves the proposal's own row.

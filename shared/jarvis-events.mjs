@@ -148,14 +148,10 @@ export const EVENT_KINDS = [
   // box, and provenance.agentId names the agent that ran it when the reader
   // matched one, so the /agents chat draws it on events.by_agent_at.
   "box-change",
-  // Intent (convex/jarvis/intent.ts, the /intent page): the delegate's
-  // decision (`jarvis decide`: question, options, decision, reason, restedOn,
-  // wouldChange, refused, refusedBecause, caller, askId, model; subject is
-  // the askId), and Tom's settlement of one disagreement on the page — a
-  // decision he accepts or objects to, or a failing eval item he rules on
-  // (data: subject, verdict, sentence, rulingId when a ruling was written).
+  // A delegate decision (`jarvis decide`: question, options, decision, reason,
+  // restedOn, wouldChange, refused, refusedBecause, caller, askId, model;
+  // subject is the askId).
   "decision",
-  "disagreement-settled",
   // The digest and needs-you (convex/jarvis/digest.ts): the box posted the
   // day's digest to the output channel; a thing only Tom can settle was
   // opened, and the box posted it as a reply under the newest digest.
@@ -329,7 +325,7 @@ export const EVENT_KINDS = [
  *  subscription (an endpoint receives every notification's text); Convex's
  *  own markGone still writes it. */
 /** @type {const} */
-export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thread-message", "needs-tom-answered"];
+export const TOM_ONLY_KINDS = ["push-subscription", "thread-message", "needs-tom-answered"];
 
 /** Events only POST /jarvis/event writes, which checks each one's shape with
  *  validateEvent. POST /tts/event copies a row into the record unchecked

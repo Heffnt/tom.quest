@@ -46,9 +46,7 @@ export const GRAPH_SUPERSEDED = "superseded by graph batch ";
 import {
   CONDITION_WINDOW_MS,
   normalizeReadiness,
-  normalizeRecommendation,
-  type StoredReadiness,
-  type StoredRecommendation,
+ type StoredReadiness,
 } from "./ttsShared";
 
 /** Rows per transaction. dtsTodos is a few hundred rows; this keeps one page
@@ -331,49 +329,6 @@ export const internalMigrateTiming = internalMutation({
   },
 });
 
-// ── 6. Code-brief recommendation → the four verdict words ───────────────────
-// stale-replan → revise, needs-session → session, propose-archive → archive;
-// approve stays. One transaction: one brief per open code todo, a small
-// table. Same dry run, counts, idempotence, and event.
-// RUN AND VERIFIED on prod; the validator has narrowed to the four words
-// since, so the retired spelling a stored brief could carry is read here
-// through a loose view of the row — which is what keeps a re-run possible.
-export const RECOMMENDATION_MIGRATION = "recommendation";
-
-export const internalMigrateRecommendations = internalMutation({
-  args: { dryRun: v.optional(v.boolean()) },
-  handler: async (ctx, { dryRun = false }): Promise<MigrationReport> => {
-    const all = await ctx.db.query("dtsCodeBriefs").collect();
-    const page: Counts = {
-      scanned: all.length,
-      "stale-replan-to-revise": 0,
-      "needs-session-to-session": 0,
-      "propose-archive-to-archive": 0,
-      "already-verdict-word": 0,
-    };
-    for (const brief of all) {
-      const stored = (brief as { recommendation: StoredRecommendation })
-        .recommendation;
-      const target = normalizeRecommendation(stored);
-      if (stored === target) {
-        page["already-verdict-word"]++;
-        continue;
-      }
-      page[`${stored}-to-${target}`]++;
-      if (!dryRun) await ctx.db.patch(brief._id, { recommendation: target });
-    }
-    await logEvent(
-      ctx,
-      dryRun
-        ? `${RECOMMENDATION_MIGRATION}-dry-run`
-        : `${RECOMMENDATION_MIGRATION}-migrated`,
-      undefined,
-      page,
-    );
-    return { done: true, dryRun, page, totals: page, continueCursor: null };
-  },
-});
-
 // ── 7. The clearing walk: every retired value out of every row ──────────────
 // THE DEPLOY GATE. `convex/schema.ts` calls `defineSchema` with
 // `schemaValidation` left at its default, which is TRUE: `convex deploy`
@@ -395,8 +350,6 @@ export const internalMigrateRecommendations = internalMutation({
 //                   members, plan (the v1 batch fields)      → unset
 //   (batches        path → unset, until the table went on 2026-09-26)
 //   claudeSessions  status "awaiting-permission"             → ended
-//   dtsCodeBriefs   importance → unset; a retired recommendation spelling →
-//                   its verdict word (ttsShared.normalizeRecommendation)
 //
 // NOTHING IS LOST. Every value goes into a `retired-field-cleared` dtsEvents
 // row before it leaves — the whole `path` object, `helps` edges and unlinked
@@ -425,7 +378,6 @@ export const CLEAR_PAGE_SIZE = 250;
 export const CLEAR_TABLES = [
   "dtsTodos",
   "claudeSessions",
-  "dtsCodeBriefs",
 ] as const;
 export type ClearTable = (typeof CLEAR_TABLES)[number];
 
@@ -451,8 +403,6 @@ const CLEAR_COUNT_KEYS = [
   ...CLEAR_TABLES.map((t) => `${t}-scanned`),
   ...RETIRED_TODO_FIELDS.map((f) => `${f}-cleared`),
   "awaiting-permission-ended",
-  "brief-importance-cleared",
-  "recommendation-normalized",
 ];
 
 /** What a session left in the retired status is ended with, when it carries no
@@ -567,35 +517,6 @@ export const internalClearRetiredFields = internalMutation({
         ({ isDone, continueCursor } = result);
         break;
       }
-      case "dtsCodeBriefs": {
-        const result = await ctx.db.query("dtsCodeBriefs").paginate(opts);
-        for (const row of result.page) {
-          page["dtsCodeBriefs-scanned"]++;
-          const importance = (row as unknown as RetiredFields).importance;
-          if (importance !== undefined) {
-            page["brief-importance-cleared"]++;
-            if (!dryRun) {
-              await record({ briefId: row._id }, "importance", importance);
-              await ctx.db.patch(row._id, {
-                importance: undefined,
-              } as Partial<Doc<"dtsCodeBriefs">>);
-            }
-          }
-          // The same one-to-one map section 6 applied, re-applied here: a
-          // brief written between that run and this one by a box job that had
-          // not been redeployed yet must not hold the narrow up.
-          const stored = (row as { recommendation: StoredRecommendation })
-            .recommendation;
-          const target = normalizeRecommendation(stored);
-          if (stored === target) continue;
-          page["recommendation-normalized"]++;
-          if (dryRun) continue;
-          await record({ briefId: row._id }, "recommendation", stored);
-          await ctx.db.patch(row._id, { recommendation: target });
-        }
-        ({ isDone, continueCursor } = result);
-        break;
-      }
     }
 
     const totals = addCounts(args.totals ?? {}, page);
@@ -649,18 +570,16 @@ export const internalClearRetiredFields = internalMutation({
 // 2026-09-06 each turned every CMT registry entry a v1 batch listed into a
 // GOAL row worded "ComplexMultiTrigger <id> closed upstream", with the entry
 // bound as the goal's code subject (codeRepo + codeExternalId) and the same
-// sentence as its condition. The only thing that ever marked one done was the
-// code-todo mirror (tts.internalReplaceMirror) reading the entry as closed in
-// vqc/todos.yaml. With CMT off the mirror and the file deleted, nothing could
-// close them. Tom agreed (2026-09-24) to convert each into a plain goal whose
+// sentence as its condition. The retired upstream registry was the only thing
+// that ever marked one done. Once it was removed, nothing could close them.
+// Tom agreed (2026-09-24) to convert each into a plain goal whose
 // condition is the entry's own completion test, and to archive the second copy
 // where two exist. So, per registry entry:
 //
 //   the first copy still active or waiting (oldest first) → statement and
 //       condition become the entry's completion test below, and the goal
-//       stands on that sentence alone; the code subject is cleared, because a
-//       code ruling on a CMT subject is refused once CMT leaves the mirror,
-//       and the goal is Tom's own todo from now on; its batchId and needs are
+//       stands on that sentence alone; the code subject is cleared, and the
+//       goal is Tom's own todo from now on; its batchId and needs are
 //       left exactly as they are (Tom's ruling of 2026-09-24 slates batches
 //       for removal, and that removal clears batchId; nothing here reads or
 //       moves one); readiness goes back to unprepared, because the prepared

@@ -1,9 +1,7 @@
 // The vocabulary rows, pinned to what the box's `tts-search` printed on
 // 2026-09-25. Each expected string below is the CLI's own output, copied, and
-// each input is that CLI's `--json` for the same word: a formatter that drifts
-// from the CLI fails here before the /vocabulary page shows Tom a row no agent
-// was shown. The definitions are the spec's (WikiTom tts/spec.md §12.1), not
-// his model-of-tom pages.
+// each input is that CLI's `--json` for the same word. The definitions are the
+// spec's (WikiTom tts/spec.md §12.1), not his model-of-tom pages.
 
 import { describe, expect, it } from "vitest";
 
@@ -19,7 +17,7 @@ import {
 const RULING = {
   term: "ruling",
   kind: "concept",
-  definition: "Tom's decision, carrying exactly one of four verdicts: **`approve`**, **`revise`**, **`session`**, **`archive`**. The same four words on a code brief (§5.3) and everywhere else. Written from Tom's own sentence, never typed by him as a word (§7).",
+  definition: "Tom's decision, carrying exactly one of four verdicts: **`approve`**, **`revise`**, **`session`**, **`archive`**. The same four words apply everywhere else. Written from Tom's own sentence, never typed by him as a word (§7).",
   specSection: "5.3",
   codeSymbol: "convex/schema.ts:dtsRulings",
   related: ["session"],
@@ -48,7 +46,7 @@ const TERMS = [TTS, RULING, TRANSCRIPT];
 describe("formatTermRow", () => {
   it("prints `tts-search define ruling` exactly", () => {
     expect(formatTermRow({ section: "12.1", term: RULING })).toBe(
-      "vocabulary/ruling 12.1 type=concept definition=\"Tom's decision, carrying exactly one of four verdicts: **`approve`**, **`revise`**, **`session`**, **`archive`**. The same four words on a code brief (§5.3) and everywhere else. Written from Tom's own sentence, never typed by him as a word (§7).\" spec=§5.3 code=convex/schema.ts:dtsRulings related=session",
+      "vocabulary/ruling 12.1 type=concept definition=\"Tom's decision, carrying exactly one of four verdicts: **`approve`**, **`revise`**, **`session`**, **`archive`**. The same four words apply everywhere else. Written from Tom's own sentence, never typed by him as a word (§7).\" spec=§5.3 code=convex/schema.ts:dtsRulings related=session",
     );
   });
 
@@ -75,7 +73,7 @@ describe("defineTerm and formatUnknownTerm", () => {
     expect(found).toBeNull();
     expect(formatUnknownTerm({ section: "12.1", term: "verdict", candidates })).toBe([
       "vocabulary/verdict unknown",
-      "  did you mean  vocabulary/ruling 12.1 type=concept definition=\"Tom's decision, carrying exactly one of four verdicts: **`approve`**, **`revise`**, **`session`**, **`archive`**. The same four words on a code brief (§5.3) and everywhere else. Written from Tom's own sentence, never typed by him as a word (§7).\" spec=§5.3 code=convex/schema.ts:dtsRulings related=session",
+      "  did you mean  vocabulary/ruling 12.1 type=concept definition=\"Tom's decision, carrying exactly one of four verdicts: **`approve`**, **`revise`**, **`session`**, **`archive`**. The same four words apply everywhere else. Written from Tom's own sentence, never typed by him as a word (§7).\" spec=§5.3 code=convex/schema.ts:dtsRulings related=session",
       "  did you mean  vocabulary/transcript 12.1 type=concept definition=\"an agent's recorded rows: every prompt, injected file, attachment, tool input and output, verdict, and child agent, expandable in full (§20.1, §23.2).\" spec=§20.1 code=convex/schema.ts:runFileVersions related=agent,child agent",
     ].join("\n"));
   });

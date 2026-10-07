@@ -26,7 +26,6 @@ import { BOX_CHANGE, boxChangeEvent, boxChangeFaults, type BoxChange } from "./b
 import { copyDtsRow, recordEvent } from "./jarvis/events";
 import { listForDigest } from "./jarvis/outbox";
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
-import { SEND_AS_TOM_FAILED, SEND_AS_TOM_UNKNOWN, SEND_PROPOSAL, SENT_AS_TOM } from "./ttsSignoff";
 
 // ── The learning input ───────────────────────────────────────────────────────
 // The learning step reads what Tom did: the turns he typed in sessions
@@ -464,17 +463,9 @@ export const internalConsumeLearningObjections = internalMutation({
 // rather than letting a worker write, say, "slack-sent" and confuse the
 // digest's own bookkeeping — the route refuses the kinds Convex writes itself.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
-// The sign-off's three kinds are Convex's own too (convex/ttsSignoff.ts): a
-// "sent-as-tom" row written by a worker would put a message in Tom's name on
-// /observe and in the morning message that no sign-off of his ever let out,
-// and a "send-proposal" row written here would skip the route's checks.
 export const RESERVED_EVENT_KINDS = new Set([
   "slack-sent",
   "slack-event",
-  SEND_PROPOSAL,
-  SENT_AS_TOM,
-  SEND_AS_TOM_FAILED,
-  SEND_AS_TOM_UNKNOWN,
 ]);
 
 /** A line the nightly job wrote about Tom is a decision taken in his name, so

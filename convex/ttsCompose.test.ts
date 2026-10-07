@@ -527,20 +527,10 @@ describe("objectionsLead", () => {
   });
 
   it("credits a question he decided on /thread to him, after the sentence about the rest", () => {
-    expect(objectionsLead(1, 0, 0, 1)).toBe("You decided one question on /thread.");
-    const lead = objectionsLead(4, 1, 0, 1);
+    expect(objectionsLead(1, 0, 1)).toBe("You decided one question on /thread.");
+    const lead = objectionsLead(4, 1, 1);
     expect(lead).toBe(
       "You decided one question on /thread, two things were decided in your name and one merge landed on its own; silence means the others stand.",
-    );
-    expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
-  });
-
-  it("credits a message sent on his sign-off to him, apart from both", () => {
-    expect(objectionsLead(1, 0, 1)).toBe("One message went out on your sign-off.");
-    expect(objectionsLead(2, 0, 2)).toBe("Two messages went out on your sign-off.");
-    const lead = objectionsLead(6, 2, 1);
-    expect(lead).toBe(
-      "Three things were decided in your name, two merges landed on their own and one message went out on your sign-off; silence means they stand.",
     );
     expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
   });
@@ -914,7 +904,7 @@ describe("the lines saying a digest read stopped", () => {
     "past-dated todos for the missed rollover", "past-dated todos settled", "rows looked up by id",
     "dated todos", "email captures", "surfaced marks of flagged emails",
     "objection-list events", "events of the night", "work outcomes", "job failures and recoveries",
-    "eval runs", "delegate decisions", "digest lines", "settlements", "prepared todos",
+    "eval runs", "delegate decisions", "digest lines", "prepared todos",
     "needs of prepared todos", "deploys", "box changes", "agent runs",
   ];
   const allCuts = every.map((what, n) => ({
@@ -947,7 +937,6 @@ describe("the lines saying a digest read stopped", () => {
     const facts = sept9({
       boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
       broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
-      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
       readCuts: allCuts,
     });
     expect(renderSlack(composeToday(facts, { canReply: false })).length).toBeGreaterThan(MESSAGE_MAX_CHARS);
@@ -969,10 +958,9 @@ describe("the lines saying a digest read stopped", () => {
 });
 
 describe("the superseded run", () => {
-  it("prints his rulings that no longer stand right after the settled run, one line each", () => {
+  it("prints his rulings that no longer stand, one line each", () => {
     const message = composeToday(
       sept9({
-        settled: [{ id: "s1", text: "Tom accepted the delegate's decision \"One.\" (86f2f341)." }],
         superseded: [
           {
             id: "r1",
@@ -984,12 +972,11 @@ describe("the superseded run", () => {
       { canReply: false },
     );
     const leads = message.lines.filter((line) => line.role === "lead").map((line) => line.section);
-    expect(leads.indexOf("superseded")).toBe(leads.indexOf("settled") + 1);
+    expect(leads).toContain("superseded");
     const items = message.lines.filter((line) => line.section === "superseded" && line.role === "item");
     expect(items).toHaveLength(1);
     expect(items[0].text).toContain("in scope repo:Jarvis no longer stands");
-    // No page lists ruling rows yet, so the line links to the /tts page and
-    // not to /intent.
+    // The line links to the /tts page.
     expect(items[0]).toMatchObject({ url: TAB_EVERYTHING });
     const facts = todayFactsBlock(sept9({ superseded: [{ id: "r1", text: "Your ruling no longer stands.", cursor: { at: 1, after: 1 } }] }), false);
     expect(JSON.stringify(facts)).toContain("superseded:r1");
@@ -1028,7 +1015,6 @@ describe("the superseded run", () => {
     }));
     const facts = sept9({
       superseded,
-      settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
       boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
       broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
     });

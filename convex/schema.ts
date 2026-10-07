@@ -6,7 +6,6 @@ import { v } from "convex/values";
 // Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
 import {
   READINESS,
-  RECOMMENDATION,
   SESSION_LOGIN,
   SESSION_MODEL,
   FABLE_AVAILABILITY,
@@ -55,7 +54,7 @@ export default defineSchema({
 
   // THE ONE RECORD (night/s3, 2026-09-26; the target shape of the 2026-09-26
   // program): every Jarvis row that is not a todo, a ruling, a calendar row, a
-  // repeat, a vocabulary entry, a sign-off or a transcript row is an event
+  // repeat, a vocabulary entry or a transcript row is an event
   // here. What happened (kind), when (at), who (provenance), about what
   // (subject), the facts (data) and the digest's line (text). The kinds are
   // the closed list in shared/jarvis-events.mjs; the writer is
@@ -440,8 +439,7 @@ export default defineSchema({
 
   // ── TTS (Delegated Todo System) ──────────────────────────────────────────────
   // Spec: WikiTom tts/spec.md (canonical). Life todos live HERE (system of
-  // record); code todos stay in each repo's vqc/todos.yaml and are only
-  // mirrored (dtsCodeTodoMirror). Single-user by design: every function in
+  // record). Single-user by design: every function in
   // convex/tts.ts is Tom-gated, so rows carry no userId.
   //
   // Vocabulary (spec §12.1) is stored literally:
@@ -538,7 +536,7 @@ export default defineSchema({
     // as its idempotence key — that migration is Tom's step and has not run.
     unarchiveCondition: v.optional(v.string()),
     // Category tag: lets one scheduled dtsBlocks row cover a set of todos
-    // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
+    // ("chores", …). Free string.
     category: v.optional(v.string()),
     // (Batches v1, ratified 2026-08-28, is gone from here: `members` — the one
     // field that made a dtsTodos row a batch — and `plan`, its ordered
@@ -577,8 +575,8 @@ export default defineSchema({
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
     // The registration token of the run that wrote the four prepared fields
-    // above. Same field name and same meaning as on batches and
-    // dtsCodeBriefs; see the note on batches.producedByRunToken.
+    // above. Same field name and same meaning as on batches; see the note on
+    // batches.producedByRunToken.
     producedByRunToken: v.optional(v.string()),
     // ── Schema v2 graph fields (ratified 2026-08-29) ─────────────────────────
     // ALL OPTIONAL, ALL ADDITIVE: prod is one deployment and nothing is ever
@@ -620,13 +618,8 @@ export default defineSchema({
     mustNotBreak: v.optional(v.string()),
     // The "more" layer, same as batches.groundUpExplanation.
     groundUpExplanation: v.optional(v.string()),
-    // A goal may bind a CODE subject: "that upstream code todo is closed".
-    // Addressed exactly as a ruling/batch-member code subject is — by
-    // (repo, externalId), never by mirror-row _id (mirror rows are deleted on
-    // upstream close). Set together or not at all. Only a repo still on the
-    // mirror (ttsShared CODE_TODO_REPOS) can close one: the ComplexMultiTrigger
-    // goals lose both fields in ttsMigrations.internalConvertClosedUpstreamGoals
-    // (ruling 70).
+    // Historic external-subject coordinates, retained on existing rows. They
+    // are never resolved through a live code mirror.
     codeRepo: v.optional(v.string()),
     codeExternalId: v.optional(v.string()),
     createdAt: v.number(),
@@ -758,7 +751,7 @@ export default defineSchema({
     // as its idempotence key — that migration is Tom's step and has not run.
     unarchiveCondition: v.optional(v.string()),
     // Category tag: lets one scheduled dtsBlocks row cover a set of todos
-    // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
+    // ("chores", …). Free string.
     category: v.optional(v.string()),
     // (Batches v1, ratified 2026-08-28, is gone from here: `members` — the one
     // field that made a dtsTodos row a batch — and `plan`, its ordered
@@ -798,8 +791,8 @@ export default defineSchema({
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
     // The registration token of the run that wrote the four prepared fields
-    // above. Same field name and same meaning as on batches and
-    // dtsCodeBriefs; see the note on batches.producedByRunToken.
+    // above. Same field name and same meaning as on batches; see the note on
+    // batches.producedByRunToken.
     producedByRunToken: v.optional(v.string()),
     // ── Schema v2 graph fields (ratified 2026-08-29) ─────────────────────────
     // ALL OPTIONAL, ALL ADDITIVE: prod is one deployment and nothing is ever
@@ -843,13 +836,8 @@ export default defineSchema({
     mustNotBreak: v.optional(v.string()),
     // The "more" layer, same as batches.groundUpExplanation.
     groundUpExplanation: v.optional(v.string()),
-    // A goal may bind a CODE subject: "that upstream code todo is closed".
-    // Addressed exactly as a ruling/batch-member code subject is — by
-    // (repo, externalId), never by mirror-row _id (mirror rows are deleted on
-    // upstream close). Set together or not at all. Only a repo still on the
-    // mirror (ttsShared CODE_TODO_REPOS) can close one: the ComplexMultiTrigger
-    // goals lose both fields in ttsMigrations.internalConvertClosedUpstreamGoals
-    // (ruling 70).
+    // Historic external-subject coordinates, retained on existing rows. They
+    // are never resolved through a live code mirror.
     codeRepo: v.optional(v.string()),
     codeExternalId: v.optional(v.string()),
     createdAt: v.number(),
@@ -1178,58 +1166,6 @@ export default defineSchema({
     .index("by_kind_session_at", ["kind", "data.sessionId", "at"])
     .index("by_kind_job_at", ["kind", "data.job", "at"]),
 
-  // Read-only mirror of code todos from each repo's vqc/todos.yaml (link by
-  // id, never copy — the repo stays the system of record; acting on one means
-  // working in that repo). Refreshed by cron from GitHub default branches.
-  dtsCodeTodoMirror: defineTable({
-    repo: v.string(), // "tom.quest"; "ComplexMultiTrigger" rows are records since ruling 70 (ttsShared CODE_TODO_REPOS)
-    externalId: v.string(),
-    tier: v.string(), // repo's own vocabulary, verbatim (R/C/H or readiness words)
-    status: v.string(), // "open" | "closed"
-    statement: v.string(),
-    url: v.string(), // deep link to the entry's repo file
-    syncedAt: v.number(),
-  })
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_status", ["status"]),
-
-  // Ground-up briefs the Jarvis Box prepares for open code todos, one live row
-  // per (repo, externalId) — upserted by internalStoreBriefs, so a re-brief
-  // replaces the old one. `sourceHash` fingerprints the upstream yaml entry:
-  // when the entry changes upstream, the hash mismatch marks the brief stale
-  // and the worker rewrites it. `recommendation` is the worker's read, never a
-  // verdict — Tom rules (dtsRulings); `execClass` says where an approved
-  // item can run; `evidence` carries the commits/files that justify a
-  // propose-archive.
-  dtsCodeBriefs: defineTable({
-    repo: v.string(),
-    externalId: v.string(),
-    sourceHash: v.string(),
-    brief: v.string(), // ground-up markdown
-    // The four verdict words (the lifeos update): approve | revise | session
-    // | archive — the worker's read spelled in the words Tom rules in.
-    // ttsShared is the one home; normalizeRecommendation there still reads the
-    // three retired spellings for one more release, but none may be stored.
-    recommendation: RECOMMENDATION,
-    // STAYS DECLARED past the phase-7 narrow: worker/jobs/plan-graphs.mjs
-    // classifies it on every brief and the brief line on the page prints it.
-    execClass: v.union(v.literal("box"), v.literal("needs-turing")),
-    evidence: v.optional(v.string()),
-    // The registration token of the run that wrote this brief. Same field name
-    // and same meaning as on dtsTodos and batches; see the note there.
-    producedByRunToken: v.optional(v.string()),
-    // THE DOOR CHECK'S MARK (phase 9): the complaints this brief failed on
-    // when the planner's brief pass read it back against the writing standard
-    // twice. Tom, 2026-09-12: a brief that fails both attempts is still
-    // posted, carrying the mark — /tts prints one faint line under the brief.
-    // ADDITIVE and optional, so every stored row stays legal as written.
-    // ABSENT MEANS CLEAN, not unknown: the pen writes this field on every
-    // upsert (convex/ttsCode.ts says why it differs from producedByRunToken
-    // there), so a re-brief that passed leaves no stale mark behind.
-    doorFaults: v.optional(v.array(v.string())),
-    preparedAt: v.number(),
-  }).index("by_repo_external", ["repo", "externalId"]),
-
   // The per-file model-of-tom source facts, MOVED HERE from ttsSkills above
   // with their shape untouched: one row per WikiTom file the nightly job posts
   // to POST /tts/model-of-tom. They are traceability metadata and a source-text
@@ -1355,78 +1291,8 @@ export default defineSchema({
     .index("by_repo_path", ["repo", "path"])
     .index("by_repo", ["repo"]),
 
-  // THE REST OF WHERE HIS INTENT IS WRITTEN. His intent lives in four kinds of
-  // place (the /intent page): his directions, the standing rules, his rulings,
-  // and the labels he puts on a run's output. Three of the four already have a
-  // home in the record — modelOfTomFiles above, dtsRulings, runLabels — and the
-  // files below are the ones that had none: the evidence behind each
-  // model-of-tom line, `vqc/steering.yaml`, and the two files whose dated notes
-  // quote his rulings (`tts/spec.md`, `vqc/adoption.md`).
-  //
-  // VERBATIM BODIES, PARSED AT READ TIME (convex/intentParse.ts). A curated
-  // table of his intent would be a second copy of what he edits, and the page
-  // exists to show drift rather than to add a place it can drift to. The
-  // nightly replaces every row of this table in one post, the way it replaces
-  // the model-of-tom files, so a file it stops sending leaves no stale row.
-  intentSources: defineTable({
-    repo: v.string(), // "WikiTom" or "tom.quest" — a SESSION_REPOS name
-    path: v.string(), // the path inside that repository
-    body: v.string(),
-    bytes: v.number(),
-    commit: v.string(),
-    syncedAt: v.number(), // the commit's time, not the post's
-  }).index("by_path", ["path"]),
-
-  // THE VOCABULARY AS THE GENERATOR LAST RENDERED IT, and the disagreements it
-  // refused to write over. Jarvis's `scripts/vocabulary.mjs` writes WikiTom
-  // `tts/vocabulary.json` only when the spec and the code say the same thing
-  // about every word; while they do not, it renders, reports and writes
-  // nothing — so the file the /vocabulary page would read does not exist, and
-  // the generator's own render is the only current statement of the vocabulary.
-  //
-  // The nightly's graph step posts that render here every night, written or
-  // not, which is what lets the page show the words as they are AND the
-  // disagreements that are holding the file back. `wrote` says which of those
-  // two nights it was.
-  ttsVocabulary: defineTable({
-    key: v.literal("current"),
-    version: v.string(), // the generator's own content hash of the render
-    commit: v.string(), // the WikiTom commit §12.1 was read at
-    committedAt: v.number(),
-    generatedAt: v.number(),
-    wrote: v.boolean(), // whether tts/vocabulary.json was written that night
-    // What `tts search vocabulary` prints beside the terms, posted from the
-    // Jarvis follow-up on (widen first: a row posted before it has none, and
-    // the page leaves out what the row does not carry). `section` is the spec
-    // section the vocabulary is fixed in, printed on every term's row;
-    // `counts` are the render's other sections; `tomQuestCommit` the tom.quest
-    // commit it was generated from.
-    section: v.optional(v.string()),
-    counts: v.optional(VOCABULARY_COUNTS),
-    tomQuestCommit: v.optional(v.string()),
-    terms: v.array(v.object({
-      term: v.string(),
-      kind: v.string(),
-      definition: v.string(),
-      specSection: v.optional(v.string()), // the §  the term is defined in
-      codeSymbol: v.optional(v.string()),
-      related: v.array(v.string()),
-      refusedFor: v.optional(v.string()), // the word this one is refused in favour of
-    })),
-    // One per thing the spec and the code do not both say. Each is Tom's to
-    // settle with one ruling, so the rows carry what each source says verbatim.
-    disagreements: v.array(v.object({
-      code: v.string(), // the generator's own class, e.g. "D5"
-      subject: v.string(),
-      fix: v.string(),
-      rows: v.array(v.object({ label: v.string(), where: v.string(), text: v.string() })),
-    })),
-  }).index("by_key", ["key"]),
-
-  // vocabulary: the plain-named home of ttsVocabulary's rows (the record's
-  // core tables, 2026-09-26). Its payload and source index match; legacyId and
-  // by_legacy preserve lookup by the old id. ttsVocabulary above empties once
-  // convex/jarvis/tables.ts has copied it.
+  // vocabulary: the record's retained vocabulary publication table. Its payload
+  // and source index match; legacyId and by_legacy preserve lookup by an old id.
   vocabulary: defineTable({
     key: v.literal("current"),
     version: v.string(), // the generator's own content hash of the render
@@ -1460,9 +1326,8 @@ export default defineSchema({
       fix: v.string(),
       rows: v.array(v.object({ label: v.string(), where: v.string(), text: v.string() })),
     })),
-    // The row's _id in ttsVocabulary before the rename (convex/jarvis/tables.ts
-    // copies it here), so an id cited in the evidence, a Slack thread or
-    // a box file still finds its row. Absent on rows written after it.
+    // A pre-rename id, so an id cited in the evidence, a Slack thread or a box
+    // file still finds its row. Absent on rows written after it.
     legacyId: v.optional(v.string()),
   }).index("by_key", ["key"])
     .index("by_legacy", ["legacyId"]),
@@ -2134,27 +1999,6 @@ export default defineSchema({
     setAt: v.number(),
     takenAt: v.optional(v.number()),
   }).index("by_name", ["name"]),
-
-  // TOM'S SIGN-OFF ON ONE MESSAGE IN HIS NAME (convex/ttsSignoff.ts). His
-  // ruling of 2026-09-25: agents "can also send messages in my name after i
-  // have reviewed the content and explicitily signed off." One row is one
-  // press of "sign and send" beside the verbatim text on /tts, and the ONLY
-  // writer is ttsSignoff.signAndSend, a requireTom mutation: no HTTP door, no
-  // worker key and no internal function inserts here. A send to a human other
-  // than Tom (a Slack message, a calendar event with guests) goes out only
-  // when a row matches it by sha256(text) + recipient + channel, and it takes
-  // the row with it: `usedAt` is stamped by the send, so one signature is one
-  // send. `text` is kept whole so the record shows what he signed, not only
-  // its hash.
-  signoffs: defineTable({
-    text: v.string(),
-    sha256: v.string(),
-    recipient: v.string(),
-    channel: v.string(),
-    signedAt: v.number(),
-    signedBy: v.literal("tom"),
-    usedAt: v.optional(v.number()),
-  }).index("by_match", ["sha256", "recipient", "channel"]),
 
   // One row per branch headed for main of one of the box's own repositories
   // (convex/jarvis/changes.ts): what replaces a pull request. The box's

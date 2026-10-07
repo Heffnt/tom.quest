@@ -251,15 +251,6 @@ async function tokenForRulingSubject(
   if (ruling.subjectType === "life" && ruling.todoId !== undefined) {
     return (await todoReader(ctx)(ruling.todoId))?.producedByRunToken;
   }
-  if (ruling.subjectType === "code" && ruling.repo !== undefined && ruling.externalId !== undefined) {
-    const brief = await ctx.db
-      .query("dtsCodeBriefs")
-      .withIndex("by_repo_external", (q) =>
-        q.eq("repo", ruling.repo as string).eq("externalId", ruling.externalId as string),
-      )
-      .first();
-    return brief?.producedByRunToken;
-  }
   // A stored ruling on a batch reaches no token: the schema narrow removes
   // that subject.
   return undefined;

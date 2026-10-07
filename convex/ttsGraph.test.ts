@@ -5,7 +5,6 @@ import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   MAX_NEEDS,
-  TTS_CLOSED_VOCABULARY,
   buildDoneSet,
   frontier,
   isPrepared,
@@ -339,7 +338,7 @@ describe("GET /tts/planner-context", () => {
   // witness: drop `writingStandard` from the payload — the planner (Node ESM on
   // a box that never loads TypeScript) cannot import it, so the one home would
   // silently become a second copy pasted into a worker prompt.
-  it("serves the todos, the writing standard, the vocabulary and no batches", async () => {
+  it("serves the todos and writing standard, without retired planner fields", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -352,12 +351,12 @@ describe("GET /tts/planner-context", () => {
     // skills line. The assembler's exact output is
     // pinned in convex/ttsContext.test.ts.
     expect(body.writingStandard).toBe("published map + operate\n\noperate layer reaches the planner\n\n── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n\n\nSkills: `tts-search skills` lists them; `tts-search skills <name>` prints one.");
-    expect(body.vocabulary).toBe(TTS_CLOSED_VOCABULARY);
     expect(body.todos.map((todo: Doc<"todos">) => todo.statement)).toEqual(["sign the lease"]);
     expect(Array.isArray(body.sessionRepos)).toBe(true);
     expect(typeof body.nyCalendarDay).toBe("string");
     expect(body).not.toHaveProperty("batches");
     expect(body).not.toHaveProperty("planRepairs");
+    expect(body).not.toHaveProperty("vocabulary");
   });
 
   it("fails closed with the stored-layer error when a requested layer is absent", async () => {

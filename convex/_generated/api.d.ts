@@ -24,8 +24,6 @@ import type * as gateLandings from "../gateLandings.js";
 import type * as history from "../history.js";
 import type * as historyRows from "../historyRows.js";
 import type * as http from "../http.js";
-import type * as intent from "../intent.js";
-import type * as intentParse from "../intentParse.js";
 import type * as jarvis_auth from "../jarvis/auth.js";
 import type * as jarvis_build from "../jarvis/build.js";
 import type * as jarvis_changes from "../jarvis/changes.js";
@@ -55,7 +53,6 @@ import type * as symbolScores from "../symbolScores.js";
 import type * as tts from "../tts.js";
 import type * as ttsAsk from "../ttsAsk.js";
 import type * as ttsCalendarWrite from "../ttsCalendarWrite.js";
-import type * as ttsCode from "../ttsCode.js";
 import type * as ttsCompose from "../ttsCompose.js";
 import type * as ttsContext from "../ttsContext.js";
 import type * as ttsDigest from "../ttsDigest.js";
@@ -68,14 +65,12 @@ import type * as ttsNightly from "../ttsNightly.js";
 import type * as ttsRulings from "../ttsRulings.js";
 import type * as ttsSearch from "../ttsSearch.js";
 import type * as ttsShared from "../ttsShared.js";
-import type * as ttsSignoff from "../ttsSignoff.js";
 import type * as ttsSimplify from "../ttsSimplify.js";
 import type * as ttsSkills from "../ttsSkills.js";
 import type * as ttsSlack from "../ttsSlack.js";
 import type * as ttsSync from "../ttsSync.js";
 import type * as userSettings from "../userSettings.js";
 import type * as users from "../users.js";
-import type * as vocabulary from "../vocabulary.js";
 
 import type {
   ApiFromModules,
@@ -100,8 +95,6 @@ declare const fullApi: ApiFromModules<{
   history: typeof history;
   historyRows: typeof historyRows;
   http: typeof http;
-  intent: typeof intent;
-  intentParse: typeof intentParse;
   "jarvis/auth": typeof jarvis_auth;
   "jarvis/build": typeof jarvis_build;
   "jarvis/changes": typeof jarvis_changes;
@@ -131,7 +124,6 @@ declare const fullApi: ApiFromModules<{
   tts: typeof tts;
   ttsAsk: typeof ttsAsk;
   ttsCalendarWrite: typeof ttsCalendarWrite;
-  ttsCode: typeof ttsCode;
   ttsCompose: typeof ttsCompose;
   ttsContext: typeof ttsContext;
   ttsDigest: typeof ttsDigest;
@@ -144,14 +136,12 @@ declare const fullApi: ApiFromModules<{
   ttsRulings: typeof ttsRulings;
   ttsSearch: typeof ttsSearch;
   ttsShared: typeof ttsShared;
-  ttsSignoff: typeof ttsSignoff;
   ttsSimplify: typeof ttsSimplify;
   ttsSkills: typeof ttsSkills;
   ttsSlack: typeof ttsSlack;
   ttsSync: typeof ttsSync;
   userSettings: typeof userSettings;
   users: typeof users;
-  vocabulary: typeof vocabulary;
 }>;
 
 /**

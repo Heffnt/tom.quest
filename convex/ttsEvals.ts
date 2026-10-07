@@ -42,9 +42,8 @@ export function passRateOf(data: Pick<EvalRunData, "passed" | "total"> | null | 
 /**
  * The newest eval-run event of one set, or null.
  *
- * THE /intent PAGE'S PASS-RATE READER: the page shows each set's (and each
- * rule's) latest pass rate by reading this and passRateOf, so a set's number
- * there is always its last recorded run.
+ * The record's latest pass-rate reader: a set's number is always its last
+ * recorded run.
  */
 export async function latestEvalRunFor(ctx: QueryCtx | MutationCtx, set: string) {
   return await ctx.db

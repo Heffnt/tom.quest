@@ -70,9 +70,7 @@ describe("TTS reads admit agent", () => {
     const { as: agent } = await withRole(t, "agent");
 
     await expect(agent.query(api.tts.listTodos, {})).resolves.toEqual([]);
-    await expect(agent.query(api.tts.listMirror, {})).resolves.toEqual([]);
     await expect(agent.query(api.tts.listRecentEvents, {})).resolves.toEqual([]);
-    await expect(agent.query(api.ttsCode.listCodeBriefs, {})).resolves.toEqual([]);
     await expect(agent.query(api.ttsRulings.listRulings, {})).resolves.toEqual([]);
   });
 
@@ -87,7 +85,6 @@ describe("TTS reads admit agent", () => {
     await expect(user.query(api.ttsRulings.listRulings, {})).rejects.toThrow(/restricted to Tom/);
     const { as: admin } = await withRole(t, "admin");
     await expect(admin.query(api.tts.listTodos, {})).rejects.toThrow(/restricted to Tom/);
-    await expect(admin.query(api.ttsCode.listCodeBriefs, {})).rejects.toThrow(/restricted to Tom/);
   });
 });
 
@@ -219,7 +216,6 @@ describe("users.setRoleByUsername", () => {
 describe("the read gate never guards a write", () => {
   const TTS_MODULES = [
     "tts.ts",
-    "ttsCode.ts",
     "ttsRulings.ts",
     "ttsSkills.ts",
   ];
