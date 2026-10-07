@@ -48,6 +48,19 @@ describe("error boundary diagnostics", () => {
     expect(screen.getByRole("button", { name: "retry" })).toBeTruthy();
   });
 
+  it("tells a production page that meets an unknown function to reload, not to merge", () => {
+    const d = diagnoseError(new Error(UNKNOWN_FUNCTION_MESSAGE), {
+      route: "/agents",
+      at: 0,
+      build: { sha: "a1b2c3d", branch: "main", deployEnv: "production" },
+      recordHost: "example-record-123.convex.cloud",
+    });
+    expect(d.kind).toBe("unknown-function");
+    expect(d.action).toContain("older build than the record");
+    expect(d.action).toContain("reloading the page");
+    expect(d.action).not.toContain("ahead of the record");
+  });
+
   it("reports a non-Convex error by its route and digest", () => {
     const err = Object.assign(new Error("boom"), { digest: "1234567" });
     const d = diagnoseError(err, {
