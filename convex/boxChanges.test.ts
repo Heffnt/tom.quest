@@ -796,12 +796,22 @@ describe("the digest's Box changes", () => {
         url: `https://tom.quest/agents?agent=${encodeURIComponent(AGENT)}`,
       },
       { id: "box:unmatched", text: "Root commands no agent was matched to: ran 1 root command, 1 changed the machine: tts-install-cron.", url: AGENTS_WINDOW_URL },
-      { id: "box:deploy:888b43a0e41c5d3b0f3c9f1e0a1b2c3d4e5f6a7b", text: "The box deployed Jarvis 888b43a, 2 commits.", url: AGENTS_WINDOW_URL },
-      { id: "box:setup:0123456789abcdef0123456789abcdef01234567", text: "Setup ran as root at 0123456, 1 daemon reloads, 2 unit changes.", url: AGENTS_WINDOW_URL },
+      { id: `box:deploy:888b43a0e41c5d3b0f3c9f1e0a1b2c3d4e5f6a7b@${AT}`, text: "The box deployed Jarvis 888b43a, 2 commits.", url: AGENTS_WINDOW_URL },
+      { id: `box:setup:0123456789abcdef0123456789abcdef01234567@${AT}`, text: "Setup ran as root at 0123456, 1 daemon reloads, 2 unit changes.", url: AGENTS_WINDOW_URL },
       { id: "box:state:packages", text: "The package list changed: jq 1.8.", url: AGENTS_WINDOW_URL },
       { id: "box:units", text: "Units changed outside a root command: tts-session-host.service stop.", url: AGENTS_WINDOW_URL },
       { id: "box:logins", text: "3 ssh logins reached the box: jarvis 2, root 1.", url: AGENTS_WINDOW_URL },
     ]);
+  });
+
+  it("gives two setup runs and two deploy markers at one commit their own ids", () => {
+    const twice = [AT, AT + 60_000].flatMap((at) => [
+      change({ source: "setup", why: "setup", command: undefined, commit: "0123456", at }),
+      change({ source: "deploy", why: "deploy", command: undefined, commit: "abcdef0", at }),
+    ]);
+    const ids = boxChangeLines(twice).map((line) => line.id);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
   });
 
   it("is the digest's last run, and a written line citing one of its facts passes the verifier", () => {

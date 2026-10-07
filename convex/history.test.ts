@@ -115,6 +115,8 @@ describe("history.page", () => {
     await event(t, { kind: "weight", at: at("2026-10-02", 7), data: { day: "2026-10-02", summary: "weighed in", value: 181 } });
     await event(t, { kind: "weight", at: at("2026-10-02", 8), data: { summary: "weighed in", metric: "weight", value: 181, unit: "lb" } });
     await event(t, { kind: "weight", at: at("2026-10-02", 9), data: { day: "2026-10-02", summary: "weighed in", lb: 181 } });
+    await event(t, { kind: "weight", at: at("2026-10-02", 10), data: { day: "2026-10-02", summary: "weighed in", metric: "weight", value: 82, unit: "kg" } });
+    await event(t, { kind: "weight", at: at("2026-10-02", 11), data: { day: "2026-10-02", metric: "weight", value: 181, unit: "lb" } });
     await event(t, { kind: "meal", at: at("2026-10-02", 12), data: { day: "2026-10-02", what: "pasta", protein: 30, kcal: 600 } });
     await event(t, { kind: "training", at: at("2026-10-02", 18), text: "ran", data: { day: "2026-10-02", activity: "run" } });
     const page = await (await as(t, "tom")).query(api.history.page, RANGE);

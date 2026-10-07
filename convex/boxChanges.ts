@@ -435,7 +435,10 @@ export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []):
     if (sha !== "") deployed.add(sha);
     const commits = Array.isArray(deploy.commits) ? deploy.commits.length : 0;
     facts.push({
-      id: `box:deploy:${sha || deploy.at}`,
+      // A line's id is its row's time as well as its commit: the box can
+      // deploy or run setup at one commit twice, and two lines with one id
+      // are one key to the digest's facts and to the history page.
+      id: `box:deploy:${sha}@${deploy.at}`,
       text: `The box deployed ${deploy.repo ?? "Jarvis"} ${sha.slice(0, 7)}${commits > 0 ? `, ${commits} ${plural(commits, "commit", "commits")}` : ""}.`,
       url: AGENTS_WINDOW_URL,
     });
@@ -444,12 +447,12 @@ export function boxChangeLines(changes: BoxChange[], deploys: DeployRow[] = []):
     if (change.source === "deploy") {
       const commit = change.commit ?? "";
       if ([...deployed].some((sha) => commit !== "" && sha.startsWith(commit))) continue;
-      facts.push({ id: `box:deploy:${commit || change.at}`, text: `The box deployed ${commit.slice(0, 7)}.`, url: AGENTS_WINDOW_URL });
+      facts.push({ id: `box:deploy:${commit}@${change.at}`, text: `The box deployed ${commit.slice(0, 7)}.`, url: AGENTS_WINDOW_URL });
     }
     if (change.source === "setup") {
       const folded = change.change?.what === "setup" && change.change.after ? `, ${change.change.after.replace(/^folded: /, "")}` : "";
       facts.push({
-        id: `box:setup:${change.commit ?? change.at}`,
+        id: `box:setup:${change.commit ?? ""}@${change.at}`,
         text: `Setup ran as root${change.commit ? ` at ${change.commit.slice(0, 7)}` : ""}${folded}.`,
         url: AGENTS_WINDOW_URL,
       });

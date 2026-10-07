@@ -17,8 +17,9 @@
 // when given. A row without a day or a summary cannot have come through that
 // door and is not drawn. They are read in one place, so a renamed field is
 // one edit here:
-//   weight    metric "weight" (a "waist" row is not drawn), value, in pounds
-//             (the validator's only unit for weight).
+//   weight    metric "weight" (a "waist" row is not drawn), value, unit "lb"
+//             (the validator's only unit for weight; a row in any other unit
+//             is not drawn).
 //   meal      summary, proteinG, calories.
 //   training  summary, activity, bodyParts, durationMin, distanceMi. A row
 //             with a metric is a timed or loaded test, not a session, and is
@@ -174,7 +175,7 @@ export function weightOf(row: Row): Weight | null {
   const data = dataOf(row);
   const day = factDay(row);
   const lb = num(data.value);
-  if (day === undefined || data.metric !== "weight" || lb === undefined) return null;
+  if (day === undefined || summaryOf(row) === undefined || data.metric !== "weight" || data.unit !== "lb" || lb === undefined) return null;
   return { id: row._id, at: row.at, day, lb };
 }
 
@@ -312,21 +313,19 @@ export function boxChangeActions(changes: Row[], deploys: Row[]): Action[] {
     // A deploy row is drawn on its own (actionOf); here it only keeps the
     // box's own deploy marker for the same commit from being drawn twice.
     const deployData = rows.deploys.map((row) => ({ at: row.at, repo: str(dataOf(row).repo), to: str(dataOf(row).to), commits: dataOf(row).commits }));
-    const deployFacts = new Set(deployData.map((d) => `box:deploy:${d.to || d.at}`));
+    const deployFacts = new Set(deployData.map((d) => `box:deploy:${d.to ?? ""}@${d.at}`));
     const facts = boxChangeLines(boxRows, deployData).filter((fact) => !deployFacts.has(fact.id));
     const at = Math.min(...rows.changes.map((row) => row.at));
-    // Two facts of one day can share an id (two setup runs at one commit),
-    // so the position makes each line's id its own.
-    facts.forEach((fact, index) => {
+    for (const fact of facts) {
       out.push({
-        id: `${day}:${index}:${fact.id}`,
+        id: `${day}:${fact.id}`,
         at,
         day,
         kind: "box-change",
         text: firstLine(fact.text),
         href: fact.url.replace(/^https:\/\/tom\.quest/, "") || null,
       });
-    });
+    }
   }
   return out;
 }
