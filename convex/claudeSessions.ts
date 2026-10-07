@@ -1065,6 +1065,10 @@ async function reopenSessionFrom(
     // against (internalIngest drops stale STATE).
     reopenedAt: now,
     reopenEpoch: (session.reopenEpoch ?? 0) + 1,
+    // A Desktop session reopened from the page is the host's to answer, as a
+    // message to a live one makes it (sendMessageFrom): the poll leaves out
+    // an idle session Desktop holds.
+    ...(session.client === "desktop" ? { client: "host" as const } : {}),
     // endedReason / outcome / outcomeSummary are deliberately LEFT IN PLACE:
     // they are the honest history of the PREVIOUS ending, not claims about
     // the session's present state, and the transcript that follows keeps
@@ -1246,6 +1250,9 @@ async function forkSessionAsFrom(
       )
       .collect();
     if (!pending.some((p) => p.kind === "stop")) {
+      // A Desktop session's stop is the host's to carry out, as any control
+      // is (sendControlFrom).
+      if (session.client === "desktop") await ctx.db.patch(sessionId, { client: "host" });
       await ctx.db.insert("claudeInbound", {
         sessionId,
         kind: "stop",
@@ -1298,6 +1305,10 @@ async function sendMessageFrom(
     throw new Error(`Session is ${session.status} — messages cannot be sent`);
   }
   if (text.trim() === "") throw new Error("Message is empty");
+  // A Desktop session's next reply is the host's: the host takes it on its
+  // next poll, waits while a Desktop process is busy on it, and ends one
+  // that is idle (Jarvis worker/session-host/session-lock.mjs).
+  if (session.client === "desktop") await ctx.db.patch(sessionId, { client: "host" });
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind: "user-turn",
@@ -1347,6 +1358,10 @@ async function sendControlFrom(
     )
     .collect();
   if (pending.some((p) => p.kind === kind)) return;
+  // A control for a Desktop session is the host's to carry out, as a message
+  // is (sendMessageFrom): the poll lists an idle session only once it is the
+  // host's, and a stop it never lists stays pending for good.
+  if (session.client === "desktop") await ctx.db.patch(sessionId, { client: "host" });
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind,
@@ -1589,10 +1604,24 @@ export const internalPoll = internalMutation({
 
     const sessions: unknown[] = [];
     for (const status of LIVE_STATUSES) {
-      const rows = await ctx.db
-        .query("claudeSessions")
-        .withIndex("by_status", (q) => q.eq("status", status))
-        .collect(); // bounded: live sessions are few by design
+      // An idle session a Desktop process holds (client "desktop") is not the
+      // host's: it is left out, and so never read. A message sent from the
+      // page sets client "host" (sendMessageFrom), which brings it in.
+      const rows = status === "idle"
+        ? [
+            ...(await ctx.db
+              .query("claudeSessions")
+              .withIndex("by_status_client", (q) => q.eq("status", "idle").eq("client", undefined))
+              .collect()),
+            ...(await ctx.db
+              .query("claudeSessions")
+              .withIndex("by_status_client", (q) => q.eq("status", "idle").eq("client", "host"))
+              .collect()),
+          ]
+        : await ctx.db
+            .query("claudeSessions")
+            .withIndex("by_status", (q) => q.eq("status", status))
+            .collect(); // bounded: live sessions are few by design
       for (const s of rows) {
         if (await expireStaleAutonomousRequest(ctx, s, now)) continue;
         const pendingInbound = await ctx.db
@@ -1631,6 +1660,12 @@ export const internalPoll = internalMutation({
           // to read it (forkSessionAs).
           forkedFrom: s.forkedFrom,
           sdkSessionId: s.sdkSessionId,
+          // A session addressed by its transcript (registerSession): the
+          // host runs its reply in this directory, on this transcript, under
+          // the login above.
+          cwd: s.cwd,
+          transcriptPath: s.transcriptPath,
+          client: s.client,
           nextSeq: s.nextSeq,
           // The reopen protocol: reopenedAt tells the adopt path this session
           // re-entered the live scan by a reopen (no restart happened, no turn

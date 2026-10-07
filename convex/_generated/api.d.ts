@@ -51,6 +51,7 @@ import type * as pushSend from "../pushSend.js";
 import type * as readBudget from "../readBudget.js";
 import type * as secrets from "../secrets.js";
 import type * as serverHealth from "../serverHealth.js";
+import type * as sessionRegistration from "../sessionRegistration.js";
 import type * as sessionRows from "../sessionRows.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as thread from "../thread.js";
@@ -132,6 +133,7 @@ declare const fullApi: ApiFromModules<{
   readBudget: typeof readBudget;
   secrets: typeof secrets;
   serverHealth: typeof serverHealth;
+  sessionRegistration: typeof sessionRegistration;
   sessionRows: typeof sessionRows;
   symbolScores: typeof symbolScores;
   thread: typeof thread;

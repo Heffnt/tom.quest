@@ -1619,6 +1619,17 @@ export default defineSchema({
     // for this session takes it as its own continuesRunId.
     continuesRunId: v.optional(v.string()),
     cwd: v.optional(v.string()), // daemon-reported working dir on the Jarvis Box
+    // ── A session the record addresses by its Claude session id ─────────────
+    // Written by the SessionStart hook (Jarvis scripts/agent-hook.mjs) for a
+    // session the box's session host did not start (Claude Desktop, or a
+    // `claude` typed into a shell), keyed by sdkSessionId: where its
+    // transcript is, and which client holds it. `client` "desktop": a Desktop
+    // process holds it and the host leaves it alone while it is idle;
+    // "host": a message was sent from the page, so the host runs the next
+    // reply on the transcript (sendMessageFrom sets it). Absent on every row
+    // the host created, which the host always holds.
+    transcriptPath: v.optional(v.string()),
+    client: v.optional(v.union(v.literal("desktop"), v.literal("host"))),
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
     // Daemon-owned idempotency floor: an ingest carrying seqs below this is a
     // network retry and is dropped. Monotonic per session.
@@ -1658,6 +1669,9 @@ export default defineSchema({
     })),
   })
     .index("by_status", ["status", "statusChangedAt"])
+    // The poll's read of the idle sessions the host holds: an idle Desktop
+    // session (client "desktop") is not read at all.
+    .index("by_status_client", ["status", "client"])
     .index("by_createdAt", ["createdAt"])
     // The sessions page's list: the most recently active sessions first.
     .index("by_statusChangedAt", ["statusChangedAt"])
@@ -1673,6 +1687,41 @@ export default defineSchema({
     .index("by_run_id", ["runId"])
     // The run-file ingest repairs the session link from the CLI's own id.
     .index("by_sdk_session_id", ["sdkSessionId"]),
+
+  // One row per subagent a session dispatched (Claude Code's Agent tool),
+  // written by the program that runs the dispatch, never by the agent: the
+  // SubagentStart hook (Jarvis scripts/agent-hook.mjs) at its start, the
+  // SubagentStop hook when it reports. A subagent still "running" whose
+  // parent's process is gone and whose transcript holds no report is resumed
+  // by the session host (Jarvis worker/session-host/subagents.mjs), which
+  // records the resume here. `agentId` is the CLI's subagent id;
+  // `parentSessionId` the parent session's Claude session id; `brief` the
+  // prompt it was given, cut to 4 KB.
+  subagentRuns: defineTable({
+    agentId: v.string(),
+    parentSessionId: v.string(),
+    transcriptPath: v.string(),
+    brief: v.string(),
+    state: v.union(
+      v.literal("running"),
+      v.literal("reported"),
+      v.literal("ended-without-report"),
+    ),
+    login: v.optional(v.string()),
+    cwd: v.optional(v.string()),
+    startedAt: v.number(),
+    endedAt: v.optional(v.number()),
+    // The host's resumes: when, how many, and the Claude session id the
+    // resumed run writes under (a resumed subagent runs as its own session,
+    // so its later lines are in that session's transcript).
+    resumedAt: v.optional(v.number()),
+    resumeCount: v.optional(v.number()),
+    resumedSessionId: v.optional(v.string()),
+    resumedTranscriptPath: v.optional(v.string()),
+  })
+    .index("by_agent_id", ["agentId"])
+    .index("by_state", ["state", "startedAt"])
+    .index("by_parent", ["parentSessionId", "startedAt"]),
 
   // A run's transcript — written once per row by the sweep's ingest
   // (agents.internalIngest), out of the run's agent file.
