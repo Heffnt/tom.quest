@@ -2237,6 +2237,7 @@ export default defineSchema({
     landedAt: v.optional(v.number()),
   })
     .index("by_repo_and_branch", ["repo", "branch"])
+    .index("by_repo_and_updatedAt", ["repo", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"]),
   dayLogEntries: defineTable({
     text: v.string(),

@@ -22,7 +22,8 @@
 //   - any other state applies only to the row at that same head that has not
 //     landed: a job finishing an older head after a newer push must not
 //     overwrite the newer head's state. Answers { ok, applied, id?, why? }.
-// GET /jarvis/changes?repo=&branch=&limit=: newest first.
+// GET /jarvis/changes?repo=&branch=&limit=: newest first; all repositories,
+// one repository, or one branch of one repository (a branch alone is refused).
 //
 // Text fields come from commit messages and check output, so each is redacted
 // (shared/redact.mjs) and capped before it is stored.
@@ -129,6 +130,8 @@ export const list = internalQuery({
   args: { repo: v.optional(v.string()), branch: v.optional(v.string()), limit: v.number() },
   handler: async (ctx, { repo, branch, limit }): Promise<Doc<"changes">[]> => {
     const take = Math.max(1, Math.min(LIST_MAX, Math.floor(limit)));
+    // A branch is named within a repository; the route refuses one alone.
+    if (branch !== undefined && repo === undefined) throw new Error("branch needs repo");
     if (repo !== undefined && branch !== undefined) {
       return await ctx.db
         .query("changes")
@@ -136,8 +139,14 @@ export const list = internalQuery({
         .order("desc")
         .take(take);
     }
-    const rows = await ctx.db.query("changes").withIndex("by_updatedAt").order("desc").take(repo === undefined ? take : LIST_MAX);
-    return (repo === undefined ? rows : rows.filter((row) => row.repo === repo)).slice(0, take);
+    if (repo !== undefined) {
+      return await ctx.db
+        .query("changes")
+        .withIndex("by_repo_and_updatedAt", (q) => q.eq("repo", repo))
+        .order("desc")
+        .take(take);
+    }
+    return await ctx.db.query("changes").withIndex("by_updatedAt").order("desc").take(take);
   },
 });
 
@@ -195,6 +204,7 @@ export const getChanges = httpAction(async (ctx, request) => {
   const url = new URL(request.url);
   const repo = url.searchParams.get("repo") || undefined;
   const branch = url.searchParams.get("branch") || undefined;
+  if (branch !== undefined && repo === undefined) return jsonResponse(400, { error: "branch needs repo" });
   const limit = Number(url.searchParams.get("limit") ?? 20);
   if (!Number.isFinite(limit) || limit < 1) return jsonResponse(400, { error: "limit must be a positive number" });
   const rows = await ctx.runQuery(internal.jarvis.changes.list, { repo, branch, limit });

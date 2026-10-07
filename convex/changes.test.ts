@@ -73,6 +73,18 @@ describe("POST /jarvis/change", () => {
     expect(row).toMatchObject({ head: B, state: "checking" });
   });
 
+  it("reads one repository's rows past newer rows of others, and refuses a branch without a repository", async () => {
+    const t = setup();
+    await post(t, open(A));
+    for (let i = 0; i < 105; i++) {
+      await post(t, { ...open(A), repo: "tom.quest", branch: `other-${i}` });
+    }
+    const jarvis = await rows(t, "repo=Jarvis&limit=5");
+    expect(jarvis.map((r: { repo: string; branch: string }) => [r.repo, r.branch])).toEqual([["Jarvis", "feature"]]);
+    const branchOnly = await t.fetch("/jarvis/changes?branch=feature", { headers: HEADERS });
+    expect(branchOnly.status).toBe(400);
+  });
+
   it("refuses a malformed body and a caller without the key", async () => {
     const t = setup();
     expect((await post(t, open("abc"))).status).toBe(400);
