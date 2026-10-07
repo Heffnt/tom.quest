@@ -12,7 +12,11 @@
 // prefix names the function type (Q query, M mutation, A action) and path;
 // the rest is the server's own text. "Could not find public function" is the
 // record refusing a function this build calls and the deployed record does
-// not have: a preview build ahead of the record.
+// not have. scripts/vercel-build.mjs decides which side is out of date: a
+// preview build deploys no functions, so it is ahead of the record; a
+// production build deploys its functions before it is served, so a
+// production page that meets this is behind (loaded before a newer record
+// deployment removed the function).
 
 import { displayForm } from "@/shared/clock.mjs";
 
@@ -51,7 +55,7 @@ const FUNCTION_TYPES: Record<string, string> = {
 
 const CONVEX_PREFIX = /^\[CONVEX ([QMA])\(([^)]*)\)\]\s*/;
 const REQUEST_ID = /^\[Request ID: ([^\]]+)\]\s*/;
-const UNKNOWN_FUNCTION = /Could not find (?:public )?function for '([^']+)'/;
+const UNKNOWN_FUNCTION = /Could not find public function for '([^']+)'/;
 const CALLED_BY_CLIENT = /\s*Called by client\s*$/;
 
 export function readBuildInfo(): BuildInfo {
@@ -97,8 +101,6 @@ export function diagnoseError(
   let requestId: string | null = null;
 
   const prefix = rest.match(CONVEX_PREFIX);
-  const functionName = prefix ? prefix[2] : null;
-  const call = prefix ? `${FUNCTION_TYPES[prefix[1]]} ${prefix[2]}` : null;
   if (prefix) rest = rest.slice(prefix[0].length);
   const request = rest.match(REQUEST_ID);
   if (request) {
@@ -130,18 +132,18 @@ export function diagnoseError(
     record: recordHost,
   };
 
-  if (unknown && call) {
-    return {
-      ...base,
-      kind: "unknown-function",
-      headline: `The record has no function ${functionName}`,
-      failed: call,
-      // scripts/vercel-build.mjs: a production build runs `npx convex
-      // deploy`, a preview build deploys no functions.
-      action: `This build calls ${functionName}, which the record at ${recordHost} does not have yet: the build is ahead of the record, so retrying fails until that function is deployed, which a merge of ${context.build.branch ?? "this build's branch"} to main does (a preview build deploys no functions).`,
-    };
-  }
-  if (call) {
+  if (prefix) {
+    const functionName = prefix[2];
+    const call = `${FUNCTION_TYPES[prefix[1]]} ${functionName}`;
+    if (unknown) {
+      return {
+        ...base,
+        kind: "unknown-function",
+        headline: `The record has no function ${functionName}`,
+        failed: call,
+        action: unknownFunctionAction(functionName, recordHost, context.build),
+      };
+    }
     return {
       ...base,
       kind: "convex-function",
@@ -159,6 +161,18 @@ export function diagnoseError(
       ? `Retry renders the page again; the server hides its message in production builds, and the digest above finds it in the Vercel log.`
       : `Retry renders the page again.`,
   };
+}
+
+function unknownFunctionAction(name: string, recordHost: string, build: BuildInfo): string {
+  const ahead = `the build is ahead of the record, and retrying fails until a merge of ${build.branch ?? "this build's branch"} to main deploys ${name}`;
+  const behind = `this page was loaded from an older build than the record, which no longer has ${name}; reloading the page loads the current build`;
+  if (build.deployEnv === "preview") {
+    return `This preview build calls ${name}, which the record at ${recordHost} does not have, and a preview build deploys no functions: ${ahead}.`;
+  }
+  if (build.deployEnv === "production") {
+    return `A production build deploys its functions before it is served, so ${behind}.`;
+  }
+  return `The record at ${recordHost} does not have ${name}. Either ${ahead}, or ${behind}.`;
 }
 
 /** The diagnosis as plain text, for the copy button. */
