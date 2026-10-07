@@ -63,6 +63,20 @@ describe("error boundary diagnostics", () => {
     expect(d.time).toBe("Tue Oct 6, 7:23 pm Eastern");
   });
 
+  it("renders a ConvexError whose data holds a bigint (a Convex Int64)", () => {
+    const err = Object.assign(
+      new Error("[CONVEX M(todos:archive)] [Request ID: abc] Server Error\n\n  Called by client"),
+      { data: { code: "stale", version: BigInt("9007199254740993") } },
+    );
+    const d = diagnoseError(err, {
+      route: "/jarvis",
+      at: 0,
+      build: { sha: null, branch: null, deployEnv: null },
+      recordHost: null,
+    });
+    expect(d.message).toContain('"version":"9007199254740993"');
+  });
+
   it("names a failing Convex mutation without calling it unknown", () => {
     const d = diagnoseError(
       new Error("[CONVEX M(todos:archive)] [Request ID: abc] Server Error\nUncaught Error: todo not found\n\n  Called by client"),
