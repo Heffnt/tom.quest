@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
@@ -546,97 +546,4 @@ describe("TTS annotations and the preparer", () => {
     expect(Object.keys(both[1].data as object)).not.toContain("doorFaults");
   });
 
-  // witness: delete the parseDoorFaults call from ttsPrepareTodo in
-  // convex/http.ts — a run's forty complaints, a credential pasted into one of
-  // them, and a 10 KB fault would all land verbatim on the page.
-  it("the prepare door bounds the mark: ten faults, 300 characters each, redacted", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const id = await tom.mutation(api.tts.createTodo, { statement: "renew the visa" });
-    const post = async (doorFaults: unknown) =>
-      await t.fetch("/tts/prepare-todo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-        body: JSON.stringify({ id, brief: "It expires. Renew it.", readiness: "prepared", doorFaults }),
-      });
-    const long = `brief: ${"x".repeat(500)}`;
-    // `gitleaks:allow` — a real-SHAPED personal access token is the test: the
-    // assertion below is that the door redacted it out of the stored fault.
-    const secret = "brief: the token ghp_0123456789abcdefghijklmnopqrstuvwxyz leaked into the complaint"; // gitleaks:allow
-    const many = [long, secret, ...Array.from({ length: 9 }, (_, i) => `fault ${i}`)];
-    expect((await post(many)).status).toBe(200);
-    const [event] = await preparedEvents(t);
-    const faults = (event.data as { doorFaults: string[] }).doorFaults;
-    expect(faults).toHaveLength(10); // eleven sent, ten stored
-    expect(faults[0]).toHaveLength(300);
-    expect(faults[1]).toContain("[redacted:github]");
-    expect(faults[1]).not.toContain("ghp_0123456789");
-
-    // A shape the worker got wrong is a 400 naming the field, never a
-    // silently dropped mark.
-    const notArray = await post("brief: brief-markup");
-    expect(notArray.status).toBe(400);
-    expect((await notArray.json()).error).toContain("doorFaults");
-    const notStrings = await post(["fine", 7]);
-    expect(notStrings.status).toBe(400);
-    expect((await notStrings.json()).error).toContain("doorFaults");
-    vi.unstubAllEnvs();
-  });
-
-  // witness: answer 200 {ok:true} from ttsPrepareTodo in convex/http.ts
-  // whatever internalPrepareTodo returns — a worker whose completion was
-  // refused would report as landed a todo that is still open.
-  it("the prepare door answers a refused completion 409 with the why", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const id = await tom.mutation(api.tts.createTodo, { statement: "draft the landlord questions" });
-    const post = (body: Record<string, unknown>) =>
-      t.fetch("/tts/prepare-todo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-        body: JSON.stringify({ id, ...body }),
-      });
-    const refused = await post({ status: "done", brief: "Eight questions." });
-    expect(refused.status).toBe(409);
-    expect((await refused.json()).error).toBe(
-      "not completed: a todo is completed by the pen only with its evidence recorded",
-    );
-    const row = await t.run((ctx) => ctx.db.get(id));
-    expect(row?.status).toBe("active");
-    // The write-up is not what was refused: it stands, and the refusal is on
-    // the record as its event.
-    expect(row?.brief).toBe("Eight questions.");
-    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
-    expect(events.some((e) => e.kind === "done-skipped")).toBe(true);
-    const closed = await post({ status: "done", evidence: "questions.md" });
-    expect(closed.status).toBe(200);
-    expect(await closed.json()).toEqual({ ok: true });
-    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("done");
-    vi.unstubAllEnvs();
-  });
-
-  // The prepare door reads agentToken only and stores it as the todo's
-  // producedByRunToken. A body still sending runToken is refused rather than
-  // having its token dropped without the caller learning it.
-  it("the prepare door stores agentToken and refuses runToken", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const token = "11111111-2222-4333-8444-555555555555";
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const id = await tom.mutation(api.tts.createTodo, { statement: "renew the visa" });
-    const prepare = (key: string) => t.fetch("/tts/prepare-todo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
-      body: JSON.stringify({ id, brief: "It expires. Renew it.", readiness: "prepared", [key]: token }),
-    });
-    const old = await prepare("runToken");
-    expect(old.status).toBe(400);
-    expect(await old.json()).toEqual({ error: "runToken is no longer read; send agentToken" });
-    expect((await t.run((ctx) => ctx.db.get(id)))?.producedByRunToken).toBeUndefined();
-    expect((await prepare("agentToken")).status).toBe(200);
-    expect((await t.run((ctx) => ctx.db.get(id)))?.producedByRunToken).toBe(token);
-    vi.unstubAllEnvs();
-  });
 });

@@ -49,8 +49,7 @@
 // does not fit. Answers { ok: true, rulingId, supersededBy }; the same post
 // again answers the same with duplicate: true.
 //
-// The asker's read is standingRulings below, served on GET
-// /jarvis/context?for=ask&scope=<scope> (convex/ttsAsk.ts).
+// The asker's read is standingRulings below, through ttsAsk.internalAskContext.
 
 import { v } from "convex/values";
 import { httpAction, internalMutation } from "../_generated/server";

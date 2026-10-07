@@ -3,8 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { MODEL_OF_TOM_HEADER } from "./ttsShared";
-import { writePageRows } from "../scripts/context-fixture.mjs";
 import { insertTodo } from "../test/core-tables";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -828,31 +826,6 @@ describe("the agent doors read the agent spelling only", () => {
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.runId).toBe("claude:box:spelling-session");
   });
 
-  it("/tts/simplify-input answers agents, each sample's agentId, and .agents alone on tools, hooks and cwds", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = await withRoot();
-    await t.run(async (ctx) => {
-      await ctx.db.insert("modelOfTomPublication", {
-        key: "current", commit: "testprelude", committedAt: 1, pushed: true, operate: "o", write: "w", know: "k",
-        headers: ([["operate"], ["write"], ["know"], ["operate", "write"], ["operate", "know"], ["write", "know"], ["operate", "write", "know"]] as const)
-          .map((names) => ({ layers: [...names], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude): ${names.join(",")}` })),
-      });
-      for (const row of writePageRows()) await ctx.db.insert("modelOfTomFiles", row);
-    });
-    const response = await t.fetch("/tts/simplify-input?until=10", { headers: { "X-TTS-Key": "s3cret" } });
-    expect(response.status).toBe(200);
-    const facts = await response.json();
-    expect(facts.agents).toMatchObject({ total: 2 });
-    expect(facts).not.toHaveProperty("runs");
-    // The root and the stub its child edge wrote.
-    expect(facts.sample.map((one: { agentId: string }) => one.agentId).sort()).toEqual([ROOT, CHILD]);
-    for (const one of facts.sample) expect(one).not.toHaveProperty("runId");
-    expect(facts.cwds.length).toBeGreaterThan(0);
-    for (const row of [...facts.tools, ...facts.hooks, ...facts.cwds]) {
-      expect(typeof row.agents).toBe("number");
-      expect(row).not.toHaveProperty("runs");
-    }
-  });
 });
 
 // ── The reaction door: an emoji on the morning becomes a label ────────────────

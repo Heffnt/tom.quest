@@ -1,14 +1,12 @@
-// The weekly simplification pass's server half (the unified agent ecosystem,
-// phase 8).
+// Simplification data helpers.
 //
-// ONE DETERMINISTIC GATHER, NO MODEL IN THE LOOP. The weekly job on the Jarvis
-// Box (worker/jobs/simplify.mjs) asks GET /tts/simplify-input for the four
-// weeks ending now, and everything below is a query on an index: how many runs
-// there were and of what kind, which skills were offered and which used, which tools and hooks and working
+// The former box simplification pass gathered the four weeks ending now. Everything
+// below is a query on an index: how many runs there were and of what kind, which
+// skills were offered and which used, which tools and hooks and working
 // directories appeared, a bag of words off the newest runs' own transcripts,
 // every gate check that ever failed, the evals' ablation deltas, and the
-// proposals this pass has already made. The job adds the files themselves from
-// the WikiTom checkout and makes the one model call.
+// proposals this pass has already made. The job added the files themselves from
+// the WikiTom checkout and made the one model call.
 //
 // DESCRIPTIVE, NEVER EVALUATIVE (the weekly gather's principle 3, and the same
 // reason): every fact here is a count, a list, or an age. Nothing is scored or
@@ -43,9 +41,6 @@ export const SIMPLIFY_PROPOSAL = "simplify-proposal";
 /** The proposal became a todo after its objection window closed. Same key as
  *  the proposal, so "was this admitted" is a point lookup. */
 export const SIMPLIFY_ADMITTED = "simplify-admitted";
-/** The weekly run's own summary row. */
-const SIMPLIFY_RUN = "simplify-run";
-
 // ── Event kinds the removal loop owns ────────────────────────────────────────
 // worker/jobs/removal-loop.mjs, the daily job that turns one structural smell
 // into one pull request. The digest's objection list carries it, but its

@@ -1144,16 +1144,9 @@ export default defineSchema({
     seenAt: v.number(),
   }).index("by_repo", ["repo"]),
 
-  // The repo layer, published the way the model-of-tom files are published.
-  //
-  // WHY A TABLE AND NOT A PATH: the assembler pre-expands the repo rules for
-  // the directories a todo's brief names (convex/ttsContext.ts rule 9), and it
-  // runs INSIDE CONVEX, which has no filesystem — it cannot read the checkout
-  // the box has. So the nightly job posts each repo's `AGENTS.md` bodies out of
-  // its own immutable commit (POST /tts/repo-rules, same worker key and the
-  // same replace-all-per-repo semantics as the model-of-tom post), and a
-  // session with no checkout at all — prepare, triage, the planner — still
-  // knows what rules exist and where they are.
+  // Published repository-rule rows retained for the observe and intent readers.
+  // The nightly writer and its HTTP route were retired; this schema change does
+  // not delete the existing production rows.
   repoRules: defineTable({
     repo: v.string(), // a SESSION_REPOS name
     path: v.string(), // "AGENTS.md" | "convex/AGENTS.md" | …, relative to the repo root

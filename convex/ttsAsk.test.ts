@@ -835,19 +835,16 @@ describe("stripNarrowListId", () => {
   });
 });
 
-describe("GET /jarvis/context?for=ask tomLastTurnAt", () => {
+describe("internalAskContext tomLastTurnAt", () => {
   const THERAPY_WORDS = "words said only in the therapy session";
   const ORDINARY_WORDS = "words said in an ordinary session";
 
   async function contextForAsk(t: TestConvex<typeof schema>): Promise<{ text: string; body: Record<string, unknown> }> {
-    const res = await t.fetch("/jarvis/context?for=ask&job=work-queue", { headers: { "X-Jarvis-Key": KEY } });
-    expect(res.status).toBe(200);
-    const text = await res.text();
-    return { text, body: JSON.parse(text) };
+    const body = await t.query(internal.ttsAsk.internalAskContext, { job: "work-queue" });
+    return { text: JSON.stringify(body), body };
   }
 
   it("is the time of his newest turn in any session, a therapy session included, and carries no turn's text", async () => {
-    vi.stubEnv("JARVIS_KEY", KEY);
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
       const session = (kind: "adhoc" | "therapy") =>
@@ -868,7 +865,6 @@ describe("GET /jarvis/context?for=ask tomLastTurnAt", () => {
   });
 
   it("is null when he has no turn on the record", async () => {
-    vi.stubEnv("JARVIS_KEY", KEY);
     const t = convexTest(schema, modules);
     expect((await contextForAsk(t)).body.tomLastTurnAt).toBe(null);
   });

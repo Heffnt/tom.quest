@@ -487,39 +487,3 @@ describe("insertSession's context", () => {
     expect(reads).toBeLessThan(SESSION_SCAN_MAX + 20);
   });
 });
-
-describe("the repo layer's publication", () => {
-  it("replaces one repo's rules and leaves the others alone", async () => {
-    const t = convexTest({ schema, modules });
-    await seed(t);
-    await t.mutation(internal.ttsContext.internalReplaceRepoRules, {
-      repo: "tom.quest",
-      commit: "b".repeat(40),
-      syncedAt: 2,
-      files: [{ path: "AGENTS.md", body: "# new root\n", bytes: 11 }],
-    });
-    const rows = await t.run(async (ctx) => await ctx.db.query("repoRules").collect());
-    expect(rows.map((row) => row.path)).toEqual(["AGENTS.md"]);
-    expect(rows[0].body).toBe("# new root\n");
-  });
-
-  it("refuses a repo nobody declared, an empty post, a duplicate path and a blank body", async () => {
-    const t = convexTest({ schema, modules });
-    const file = { path: "AGENTS.md", body: "# root\n", bytes: 7 };
-    await expect(t.mutation(internal.ttsContext.internalReplaceRepoRules, {
-      repo: "not-a-repo", commit: "b".repeat(40), syncedAt: 2, files: [file],
-    })).rejects.toThrow(/not a session repo/);
-    await expect(t.mutation(internal.ttsContext.internalReplaceRepoRules, {
-      repo: "tom.quest", commit: "b".repeat(40), syncedAt: 2, files: [],
-    })).rejects.toThrow(/no repo rules posted/);
-    await expect(t.mutation(internal.ttsContext.internalReplaceRepoRules, {
-      repo: "tom.quest", commit: "b".repeat(40), syncedAt: 2, files: [file, file],
-    })).rejects.toThrow(/posted twice/);
-    await expect(t.mutation(internal.ttsContext.internalReplaceRepoRules, {
-      repo: "tom.quest", commit: "b".repeat(40), syncedAt: 2, files: [{ path: "AGENTS.md", body: "  \n", bytes: 3 }],
-    })).rejects.toThrow(/must be non-empty/);
-    await expect(t.mutation(internal.ttsContext.internalReplaceRepoRules, {
-      repo: "tom.quest", commit: "b".repeat(40), syncedAt: 2, files: [{ path: "../AGENTS.md", body: "x", bytes: 1 }],
-    })).rejects.toThrow(/not a repo rules path/);
-  });
-});
