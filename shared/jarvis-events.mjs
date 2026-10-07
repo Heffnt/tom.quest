@@ -18,7 +18,6 @@
 // dtsEvents table (convex/jarvis/events.ts copyDtsRow) keep the kind they
 // had; the list governs what is POSTED, not what was.
 
-import { DAY_LOG_ENTRY_MAX } from "./day-log-entry.mjs";
 import { SESSION_REPOS } from "./session-constants.mjs";
 
 // ── Tom's day facts ─────────────────────────────────────────────────────────
@@ -34,9 +33,9 @@ import { SESSION_REPOS } from "./session-constants.mjs";
 //             timed or loaded test (a 20 mm hang, added pull-up weight, a
 //             40-yard sprint, a quarter-mile loop) is metric, value and unit.
 //   did       nothing beyond day and summary.
-// The metric names, units and ranges are the day log's
-// (convex/dayLogVocabulary.ts), held here so the box can check a row before
-// the network; the day log goes in the removal item and this list stays.
+// The metric names, units and ranges began as the day log's vocabulary,
+// removed with the day log on October 7, 2026; they are held here so the box
+// can check a row before the network.
 
 /** The four kinds, in one list so EVENT_KINDS and the check below share it. */
 export const FACT_KINDS = ["meal", "weight", "training", "did"];
@@ -315,9 +314,9 @@ export const EVENT_KINDS = [
   // Tom's day facts (design section 6 and 12.2, 2026-10-06): what he ate,
   // what he weighed, what he trained, and anything else he did, one row per
   // fact, written by the dump session from his words and read by the history
-  // page's charts and the morning briefing. The rows the day log
-  // (dayLogItems) held before are copied in once with their kind
-  // (convex/ttsMigrations.ts internalCopyDayLogToEvents). `at` is when he
+  // page's charts and the morning briefing. The twelve facts the day log held
+  // were copied in with their kind on October 6, 2026, before the day log was
+  // removed. `at` is when he
   // said it; the shape of data is FACT_FIELDS below, checked by
   // validateEvent.
   ...FACT_KINDS,
@@ -893,16 +892,19 @@ export function registryDiffOf(value) {
   return { base: base.trim(), added, removed, changed, rows };
 }
 
+/** The most characters a message Tom types to Jarvis on /thread may hold. */
+export const THREAD_MESSAGE_MAX = 4_000;
+
 /** The longest data.what a use row keeps: one line. */
 export const USE_WHAT_MAX = 200;
 
 /**
  * The most a use or issue row's text may hold, in UTF-8 bytes. Its text is
  * Tom's message on /thread when the box writes it for one (Jarvis
- * worker/jobs/thread-reply.mjs), and a message is at most DAY_LOG_ENTRY_MAX
+ * worker/jobs/thread-reply.mjs), and a message is at most THREAD_MESSAGE_MAX
  * characters of at most 4 bytes each, so every message he can send fits.
  */
-export const PART_ROW_TEXT_MAX_BYTES = 4 * DAY_LOG_ENTRY_MAX;
+export const PART_ROW_TEXT_MAX_BYTES = 4 * THREAD_MESSAGE_MAX;
 /** The most a use or issue row's data may hold, in UTF-8 bytes of its JSON: a part id, ids and one line. */
 export const PART_ROW_DATA_MAX_BYTES = 8 * 1024;
 

@@ -1,5 +1,4 @@
 import { v } from "convex/values";
-import { ConvexError } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -617,13 +616,6 @@ export const internalCapture = internalMutation({
     // job that acted but crashed before posting its reply must not mint the
     // todo twice on its next run.
     if (stored) return stored._id;
-    if (threadMessageId !== undefined) {
-      const dayLog = await ctx.db
-        .query("dayLogEntries")
-        .withIndex("by_threadMessageId", (q) => q.eq("threadMessageId", threadMessageId))
-        .first();
-      if (dayLog) throw new ConvexError("this thread message already became a day-log entry");
-    }
     // IDEMPOTENT ON THE LEGACY SLACK MESSAGE TS. Keep the lookup with the
     // stored coordinates so old rows and retried callers remain compatible.
     if (slackTs !== undefined) {
