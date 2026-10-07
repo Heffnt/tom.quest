@@ -298,14 +298,6 @@ export function ttsDayBoundsUtc(day: string): { start: number; end: number } {
   return nyDayBoundsUtc(day, TTS_DIGEST_NY_HOUR);
 }
 
-/**
- * The UTC instant of a NY wall-clock time on a YYYY-MM-DD calendar date —
- * minute precision. The repeating-todo generator uses this to place an
- * instance's dueAt at the rule's timeOfDay ("18:30") on the day it is
- * generating.
- */
-export const nyTimeUtcMs: (day: string, hour: number, minute?: number) => number = newYorkInstant;
-
 /** Plain lowercase weekday word ("monday"…"sunday") of a YYYY-MM-DD date. */
 export const WEEKDAY_WORDS = [
   "sunday",
@@ -325,10 +317,8 @@ export function weekdayWordOf(day: string): WeekdayWord {
 
 /**
  * UTC bounds [start, end) of a CALENDAR day in New York: local midnight to the
- * next local midnight. This is the window a /tts calendar COLUMN covers — the
- * day-scoped time note carries that column's YYYY-MM-DD label (schema:
- * dtsTimeNotes.day) and the server resolves it here, so browser-local ms and
- * `day + DAY_MS` arithmetic never enter the picture.
+ * next local midnight, so browser-local ms and `day + DAY_MS` arithmetic never
+ * enter the picture.
  */
 export function nyCalendarDayBoundsUtc(day: string): {
   start: number;
@@ -989,72 +979,13 @@ export function outputChannel(): string | null {
   return null;
 }
 
-// ── The calendar feeds, and the private ones (Tom, 2026-09-09) ───────────────
-// TTS_ICS_FEEDS is a JSON array of {name, url} on the Convex deployment; each
-// entry's `name` is what a mirrored row carries in ttsCalendarEvents.feed.
-//
-// An entry may also carry `"private": true`. A PRIVATE FEED STAYS IN THE
-// RECORD — scheduling still knows Tom is busy, and every planner still reads
-// those rows — but no composer that writes to Slack, and no prompt that lists
-// his calendar for a message to him, may name one. Tom's family calendar is
-// the feed this exists for, and the ruling is that the morning message says
-// NOTHING about it at all, not even "one private commitment".
-//
-// This lives here rather than in convex/ttsCalendarFetch.ts because that file
-// is "use node" and the fact gatherer (convex/ttsDigest.ts) is a plain-runtime
-// query that has to drop the rows.
-export type IcsFeedConfig = { name: string; url: string; private?: boolean };
-
-export function parseIcsFeedConfig(raw: string): IcsFeedConfig[] {
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("TTS_ICS_FEEDS must be a JSON array");
-  return parsed.map((entry, i) => {
-    const e = entry as Record<string, unknown>;
-    if (typeof e?.name !== "string" || typeof e?.url !== "string") {
-      throw new Error(`TTS_ICS_FEEDS[${i}] needs {name, url}`);
-    }
-    if (e.private !== undefined && typeof e.private !== "boolean") {
-      throw new Error(`TTS_ICS_FEEDS[${i}].private must be true or false when present`);
-    }
-    return { name: e.name, url: e.url, ...(e.private === true ? { private: true } : {}) };
-  });
-}
-
-/** The feed names Tom has marked private, read from the environment. An
- *  unreadable TTS_ICS_FEEDS answers "every feed is private": a misconfigured
- *  variable must not be the reason his family calendar reaches Slack.
- *
- *  SO DOES AN ABSENT OR EMPTY ONE. The mirrored rows outlive the variable —
- *  clearing TTS_ICS_FEEDS stops the fetch but leaves every ttsCalendarEvents
- *  row in place, so "no config" once meant "nothing is private" and the family
- *  feed printed. There is no state of this variable in which the answer is
- *  "name everything": either it says which feeds are private, or nothing is
- *  named. */
-export function privateFeedNames(raw: string | undefined): Set<string> | "all" {
-  if (raw === undefined || raw.trim() === "") return "all";
-  try {
-    return new Set(parseIcsFeedConfig(raw).filter((f) => f.private).map((f) => f.name));
-  } catch (err) {
-    console.error(
-      `TTS calendar: TTS_ICS_FEEDS is unreadable (${err instanceof Error ? err.message : String(err)}) — every feed is treated as private`,
-    );
-    return "all";
-  }
-}
-
-/** Whether a mirrored calendar row may be named in something Tom reads. */
-export function feedIsPrivate(feed: string | undefined, privateFeeds: Set<string> | "all"): boolean {
-  if (privateFeeds === "all") return true;
-  return feed !== undefined && privateFeeds.has(feed);
-}
-
 /** A tab of the /tts page that a Slack message may link, in the page's own
- * `?tab=` vocabulary (app/jarvis/jarvis-client.tsx): the calendar or everything. The
- * one spelling of a tab link, for every Slack message that sends Tom to the
- * page for the rest of a list. The retired spellings older posts carry
- * (batches, needs-me, by-individual) open the everything tab: the page reads
- * any name but calendar as everything. */
-export type TtsTab = "calendar" | "everything";
+ * `?tab=` vocabulary (app/jarvis/jarvis-client.tsx): everything, its one tab.
+ * The one spelling of a tab link, for every Slack message that sends Tom to
+ * the page for the rest of a list. The retired spellings older posts carry
+ * (calendar, batches, needs-me, by-individual) open the everything tab: the
+ * page reads any name as everything. */
+type TtsTab = "everything";
 export function ttsTabLink(tab: TtsTab): string {
   return `https://tom.quest/tts?tab=${tab}`;
 }

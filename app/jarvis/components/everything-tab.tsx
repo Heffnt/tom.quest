@@ -31,11 +31,6 @@ import CodeTodoRow from "./code-todo-row";
 import OptionsRow from "./options-row";
 import SignoffBlock from "./signoff-block";
 import SectionHeader from "./section-header";
-import TimeNoteField, {
-  groupTimeNotes,
-  NO_NOTES,
-  type TimeNote,
-} from "./time-note-field";
 import {
   countdownText,
   waitingReason,
@@ -116,14 +111,11 @@ function rowDueAt(r: Row): number {
 function LifeRow({
   todo,
   now,
-  notes,
   expanded,
   onToggle,
 }: {
   todo: Todo;
   now: number;
-  /** This todo's time notes (the tab holds the query). */
-  notes: readonly TimeNote[];
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -159,7 +151,6 @@ function LifeRow({
           {sessionError && (
             <div className="text-xs text-error">{sessionError}</div>
           )}
-          <TimeNoteField todoId={todo._id} notes={notes} />
           {todo.brief && (
             <div className="text-sm text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
               {todo.brief}
@@ -227,8 +218,6 @@ export default function EverythingTab({
   const mirror = useQuery(api.tts.listMirror, canRead ? {} : "skip");
   const codeBriefs = useQuery(api.ttsCode.listCodeBriefs, canRead ? {} : "skip");
   const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
-  // ONE time-note subscription for the whole tab; each row gets its own slice.
-  const timeNotes = useQuery(api.tts.listTimeNotes, canRead ? {} : "skip");
   const recordEvent = useMutation(api.tts.recordEvent);
 
   const now = Date.now();
@@ -261,12 +250,6 @@ export default function EverythingTab({
   const liveRulingByKey = useMemo(
     () => liveRulingsByKey(rulings ?? []),
     [rulings],
-  );
-
-  // ONE bucketing pass over the subscription; each row indexes into it.
-  const notesByContext = useMemo(
-    () => groupTimeNotes(timeNotes ?? []),
-    [timeNotes],
   );
 
   const rows: Row[] = useMemo(() => {
@@ -437,8 +420,8 @@ export default function EverythingTab({
     // as page breakage. The click-driven engage() below needs no such guard:
     // a click is a person, and Convex refuses it anyway.
     if (isTom && todos.some((t) => t._id === linkedId)) {
-      // The link arrives from a Slack item link (?item=) or a calendar
-      // queue-chip click-through — either way, a link landed on this item.
+      // The link arrives from a Slack item link (?item=): a link landed on
+      // this item.
       void recordEvent({
         kind: "engaged",
         todoId: linkedId,
@@ -484,7 +467,6 @@ export default function EverythingTab({
                 key={t._id}
                 todo={t}
                 now={coarseNow}
-                notes={notesByContext.get(t._id) ?? NO_NOTES}
                 expanded={expanded.has(awaitingKey(t._id))}
                 onToggle={() =>
                   flip(awaitingKey(t._id), () => {
@@ -611,7 +593,6 @@ export default function EverythingTab({
                 onToggle={() => toggle(r)}
                 intent={link && link.item === r.todo._id ? link.intent : null}
                 onIntentCleared={onLinkCleared}
-                timeNotes={notesByContext.get(r.todo._id) ?? NO_NOTES}
                 waiting={waitingReason(r.todo, waitingCtx)}
                 waitingOn={(r.todo.needs ?? [])
                   .filter((n) => !doneSet.has(n))

@@ -2,13 +2,11 @@
 
 // One life-todo row: click-to-expand summary line + detail panel.
 // Panel order: intent banner → session + options (verdicts, done/archive) →
-// time note → brief → "edit" disclosure (field editors, full fact grid, date
-// history). Actions sit at the top everywhere.
+// brief → "edit" disclosure (field editors, full fact grid, date history).
+// Actions sit at the top everywhere.
 //
 // Timing FACTS are displayed all over this row (countdown, dueAt, dateKind,
-// latest safe, wake, date history); timing INPUT is one time note — the row
-// has no date picker at all, and an agent reads the note (app/jarvis/components/
-// time-note-field.tsx).
+// latest safe, wake, date history); the row has no timing input.
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
@@ -31,7 +29,6 @@ import {
 } from "../explanations";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
-import TimeNoteField, { type TimeNote } from "./time-note-field";
 import {
   ageText,
   errMessage,
@@ -62,7 +59,7 @@ const chipCls =
  * `explanation` is the second register: one complete HTML document (see
  * ../explanations) shown fullscreen behind the popover's "more" control, for a
  * control whose MECHANISM has to be taught rather than named — status, the
- * verdicts, sessions, time notes, blocks, repeats. A control that writes one
+ * verdicts, sessions. A control that writes one
  * text field on one row (the editors below, the readiness dropdown, the intent
  * bar's confirm) has no mechanism behind it to teach: what it does is what the
  * plain half says, and the document that used to sit behind those three
@@ -208,7 +205,6 @@ export default function TodoRow({
   onToggle,
   intent,
   onIntentCleared,
-  timeNotes,
   waiting = null,
   waitingOn = [],
 }: {
@@ -219,8 +215,6 @@ export default function TodoRow({
   /** Deep-link intent aimed at THIS todo (?item=…&intent=…), else null. */
   intent: LinkIntent | null;
   onIntentCleared: () => void;
-  /** This todo's time notes, bucketed by the tab that holds the query. */
-  timeNotes: readonly TimeNote[];
   /** Why this todo waits, computed by the tab that holds every todo
    * (ttsShared.waitingReason: the done set and the need names live there).
    * null = waiting on nothing, or not an active todo. */
@@ -435,11 +429,6 @@ export default function TodoRow({
             />
           </div>
 
-          {/* 3 — time note: the row's only timing INPUT. Due dates, latest
-              safe, renegotiations and missed dates are all written by the
-              agent that reads this note. */}
-          <TimeNoteField todoId={todo._id} notes={timeNotes} />
-
           {/* Tom's own line on a goal, shown as he wrote it. */}
           {(todo.mustNotBreak ?? "").trim() !== "" && (
             <div className="space-y-0.5">
@@ -469,7 +458,7 @@ export default function TodoRow({
             </button>
           )}
 
-          {/* 4 — brief */}
+          {/* 3 — brief */}
           {todo.brief && (
             <div className="space-y-1">
               <div className="text-xs text-text-faint">brief</div>
@@ -486,7 +475,7 @@ export default function TodoRow({
             </div>
           )}
 
-          {/* 5 — edit disclosure */}
+          {/* 4 — edit disclosure */}
           <button
             onClick={() => setEditOpen((v) => !v)}
             className="text-xs text-text-faint hover:text-text-muted"
@@ -532,7 +521,7 @@ export default function TodoRow({
                 <FieldEditor
                   label="category"
                   caption="tts.updateTodo({category})"
-                  explains="A free-text tag. It is what lets one span of calendar time cover a set of todos at once. The single reserved value is “code”: a block session on “code” works from the code-todo mirror, and its opening prompt lists no todo carrying the tag."
+                  explains="A free-text tag that groups todos. The single reserved value is “code”: a block session on “code” works from the code-todo mirror, and its opening prompt lists no todo carrying the tag."
                   value={todo.category}
                   onSave={(v) =>
                     updateTodo({ id: todo._id, category: v.trim() || null })
@@ -581,7 +570,7 @@ export default function TodoRow({
                       Set waiting
                     </button>
                     <Caption
-                      explains="Parks it: it leaves your active list and stays parked until you set it active again. A wake TIME is set on a time note instead, and a row with one comes back on its own when that time passes."
+                      explains="Parks it: it leaves your active list and stays parked until you set it active again. A row with a wake time comes back on its own when that time passes."
                       explanation={STATUS_EXPLANATION}
                       explanationTitle="status — the four states a todo can be in"
                     >

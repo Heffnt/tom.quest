@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -9,14 +9,13 @@ import { insertCopied } from "../test/core-tables";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 // The direct write (convex/jarvis/tables.ts, step C): every writer of todos,
-// blocks and time notes writes the plain row, and nothing writes dtsTodos,
-// dtsBlocks or dtsTimeNotes. Each test drives one writer through its own door
+// writes the plain row, and nothing writes dtsTodos. Each test drives one writer through its own door
 // and reads the plain row back; `plainOnly` checks the old tables hold no row
 // (the fixtures are written through the doors, so none ever had one). A todo
 // from before step C, reached by its old id, is jarvisCoreIds.test.ts's.
 
 type T = ReturnType<typeof convexTest>;
-type Core = "todos" | "blocks" | "timeNotes";
+type Core = "todos";
 
 async function withTom(t: T) {
   const tomId = await t.run(async (ctx) => ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }));
@@ -33,8 +32,6 @@ const plainOf = (t: T, table: Core, id: string) =>
 async function plainOnly(t: T) {
   const old = await t.run(async (ctx) => [
     ...(await ctx.db.query("dtsTodos").collect()),
-    ...(await ctx.db.query("dtsBlocks").collect()),
-    ...(await ctx.db.query("dtsTimeNotes").collect()),
   ]);
   expect(old).toEqual([]);
 }
@@ -59,12 +56,10 @@ describe("the direct write: each writer writes the plain row and no old row", ()
   it("a todo: the door answers the plain id, and what stores a reference stores it", async () => {
     const { t, tom, id } = await setup();
     const rulingId = await tom.mutation(api.ttsRulings.recordRuling, { todoId: id, verdict: "revise", sentence: "shorter" });
-    const noteId = await tom.mutation(api.tts.createTimeNote, { text: "friday", todoId: id });
     await t.run(async (ctx) => {
       const row = (await ctx.db.get(id))!;
       expect(row).toMatchObject({ statement: "renew the lease", readiness: "unprepared" });
       expect((await ctx.db.get(rulingId))!.todoId).toBe(id);
-      expect((await ctx.db.get(noteId))!.todoId).toBe(id);
       const events = (await ctx.db.query("dtsEvents").collect()).filter((e) => e.todoId !== undefined);
       expect(new Set(events.map((e) => e.todoId))).toEqual(new Set([id]));
     });
@@ -117,115 +112,9 @@ describe("the direct write: each writer writes the plain row and no old row", ()
     await plainOnly(t);
   });
 
-  it("createBlock, updateBlock, deleteBlock (and the plain notes that named the block)", async () => {
-    const { t, tom, id } = await setup();
-    const blockId = await tom.mutation(api.tts.createBlock, { start: 1_000, end: 2_000, todoId: id });
-    const plainTodo = (await plainOf(t, "todos", id))!;
-    expect(await plainOf(t, "blocks", blockId)).toMatchObject({ start: 1_000, todoId: plainTodo._id });
-    await tom.mutation(api.tts.updateBlock, { id: blockId, start: 1_500, note: "moved" });
-    expect(await plainOf(t, "blocks", blockId)).toMatchObject({ start: 1_500, note: "moved" });
-    const noteId = await tom.mutation(api.tts.createTimeNote, { text: "longer", blockId });
-    const plainBlock = (await plainOf(t, "blocks", blockId))!;
-    expect(await plainOf(t, "timeNotes", noteId)).toMatchObject({ blockId: plainBlock._id });
-    await plainOnly(t);
-    await tom.mutation(api.tts.deleteBlock, { id: blockId });
-    expect(await plainOf(t, "blocks", blockId)).toBeNull();
-    expect(await plainOf(t, "timeNotes", noteId)).not.toHaveProperty("blockId");
-    await plainOnly(t);
-  });
-
-  it("a block and a time note: the door answers the plain id, and each stores plain ids", async () => {
-    const { t, tom, id } = await setup();
-    const plainTodo = (await plainOf(t, "todos", id))!;
-    const blockId = await tom.mutation(api.tts.createBlock, { start: 1_000, end: 2_000, todoId: id });
-    const noteId = await tom.mutation(api.tts.createTimeNote, { text: "longer", blockId });
-    await t.run(async (ctx) => {
-      const block = (await ctx.db.get(blockId))!;
-      const note = (await ctx.db.get(noteId))!;
-      expect(block).toMatchObject({ start: 1_000, todoId: plainTodo._id });
-      expect(note).toMatchObject({ blockId });
-    });
-    await tom.mutation(api.tts.deleteTimeNote, { id: noteId });
-    expect(await plainOf(t, "timeNotes", noteId)).toBeNull();
-    await plainOnly(t);
-  });
-
-  it("deleteBlock with more than a page of notes: the rest are cleared by scheduled pages", async () => {
-    const { t, tom, id } = await setup();
-    const blockId = await tom.mutation(api.tts.createBlock, { start: 1_000, end: 2_000, todoId: id });
-    for (let i = 0; i < 230; i++) await tom.mutation(api.tts.createTimeNote, { text: `note ${i}`, blockId });
-    const named = () =>
-      t.run(async (ctx) => (await ctx.db.query("timeNotes").collect()).filter((note) => note.blockId !== undefined).length);
-    expect(await named()).toBe(230);
-    vi.useFakeTimers();
-    try {
-      await tom.mutation(api.tts.deleteBlock, { id: blockId });
-      // One page in the deletion itself; the check counts the rest until the
-      // scheduled pages have run.
-      expect(await named()).toBe(130);
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
-    } finally {
-      vi.useRealTimers();
-    }
-    expect(await named()).toBe(0);
-    await plainOnly(t);
-  });
-
-  it("createTimeNote and deleteTimeNote", async () => {
-    const { t, tom, id } = await setup();
-    const noteId = await tom.mutation(api.tts.createTimeNote, { text: "push to Friday", todoId: id });
-    const plainTodo = (await plainOf(t, "todos", id))!;
-    expect(await plainOf(t, "timeNotes", noteId)).toMatchObject({ text: "push to Friday", todoId: plainTodo._id, status: "pending" });
-    await plainOnly(t);
-    await tom.mutation(api.tts.deleteTimeNote, { id: noteId });
-    expect(await plainOf(t, "timeNotes", noteId)).toBeNull();
-    await plainOnly(t);
-  });
-
-  it("internalCreateTimeNote and internalApplyTimeNote (its todo, block and note writes)", async () => {
-    const { t, id } = await setup();
-    const noteId = await t.mutation(internal.tts.internalCreateTimeNote, { text: "Friday, and a block", todoId: id });
-    const dueAt = Date.now() + 5 * DAY_MS;
-    await t.mutation(internal.tts.internalApplyTimeNote, {
-      id: noteId,
-      status: "applied",
-      result: "dated and blocked",
-      actions: [
-        { kind: "set-due", dueAt },
-        { kind: "set-date-kind", dateKind: "external" },
-        { kind: "create-block", start: dueAt - 7_200_000, end: dueAt - 3_600_000, todoId: id },
-      ],
-    });
-    expect(await plainOf(t, "todos", id)).toMatchObject({ dueAt, dateKind: "external", tomTouchedAt: expect.any(Number) });
-    expect(await plainOf(t, "timeNotes", noteId)).toMatchObject({ status: "applied", result: "dated and blocked" });
-    expect(await t.run((ctx) => ctx.db.query("blocks").collect())).toHaveLength(1);
-    await plainOnly(t);
-  });
-
-  it("internalApplyTimeNote set-due alone", async () => {
-    const { t, id } = await setup();
-    const noteId = await t.mutation(internal.tts.internalCreateTimeNote, { text: "Friday", todoId: id });
-    const dueAt = Date.now() + 5 * DAY_MS;
-    await t.mutation(internal.tts.internalApplyTimeNote, { id: noteId, status: "applied", result: "dated", actions: [{ kind: "set-due", dueAt }] });
-    expect(await plainOf(t, "todos", id)).toMatchObject({ dueAt, timingClass: "dated" });
-    await plainOnly(t);
-  });
-
-  it("internalApplyTimeNote set-waiting (its Tom touch)", async () => {
-    const { t, id } = await setup();
-    const noteId = await t.mutation(internal.tts.internalCreateTimeNote, { text: "wait a week", todoId: id });
-    const wakeAt = Date.now() + 7 * DAY_MS;
-    await t.run((ctx) => ctx.db.patch(id, { tomTouchedAt: 1 }));
-    await t.mutation(internal.tts.internalApplyTimeNote, { id: noteId, status: "applied", result: "asleep", actions: [{ kind: "set-waiting", wakeAt }] });
-    const plain = (await plainOf(t, "todos", id))!;
-    expect(plain).toMatchObject({ status: "waiting", wakeAt });
-    expect(plain.tomTouchedAt).toBeGreaterThan(1);
-    await plainOnly(t);
-  });
-
   it("internalCapture and internalPrepareTodo", async () => {
     const t = convexTest({ schema, modules });
-    const id = (await t.mutation(internal.tts.internalCapture, { statement: "buy tape", source: "slack-capture" })) as unknown as Id<"dtsTodos">;
+    const id = (await t.mutation(internal.tts.internalCapture, { statement: "buy tape", source: "slack-capture" })) as unknown as Id<"todos">;
     expect(await plainOf(t, "todos", id)).toMatchObject({ statement: "buy tape", source: "slack-capture" });
     await t.mutation(internal.tts.internalPrepareTodo, {
       id,
@@ -314,38 +203,22 @@ describe("the direct write: each writer writes the plain row and no old row", ()
     await plainOnly(t);
   });
 
-  it("internalGenerateRepeats", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await tom.mutation(api.ttsRepeats.createRepeat, { statement: "stretch", daysOfWeek: ["monday"], timeOfDay: "18:30" });
-    expect(await t.mutation(internal.ttsRepeats.internalGenerateRepeats, { day: "2026-09-07" })).toEqual({ day: "2026-09-07", created: 1 });
-    const [row] = await t.run((ctx) => ctx.db.query("todos").collect());
-    expect(await plainOf(t, "todos", row._id)).toMatchObject({ statement: "stretch", source: "repeating" });
-    await plainOnly(t);
-  });
-
   it("leftToRemap after a run of writes counts what the way back carries, and copyBack brings it to zero", async () => {
     const { t, tom, id } = await setup();
-    // A todo, a block and a note from before step C: old rows and their
-    // copies, stamped by a first copyBack (as the dual write stamped them).
+    // A todo from before step C: its old row and copy, stamped by a first
+    // copyBack (as the dual write stamped them).
     const before = await t.run(async (ctx) => {
       const todo = await insertCopied(ctx, "todos", { statement: "the old todo", readiness: "unprepared", status: "active", timingClass: "whenever", source: "test", createdAt: 1, updatedAt: 1 });
-      const block = await insertCopied(ctx, "blocks", { start: 5, end: 6, todoId: todo.plain, createdAt: 1 }, { start: 5, end: 6, todoId: todo.old, createdAt: 1 });
-      const note = await insertCopied(ctx, "timeNotes", { text: "n", todoId: todo.plain, status: "pending" as const, createdAt: 1 }, { text: "n", todoId: todo.old, status: "pending" as const, createdAt: 1 });
-      return { todo, block, note };
+      return { todo };
     });
     await t.action(internal.jarvis.tables.copyBack, {});
     const check = () => t.action(internal.jarvis.tables.leftToRemap, {});
     expect((await check()).zero).toBe(true);
     const oldTables = () =>
-      t.run(async (ctx) => [await ctx.db.query("dtsTodos").collect(), await ctx.db.query("dtsBlocks").collect(), await ctx.db.query("dtsTimeNotes").collect()]);
+      t.run(async (ctx) => await ctx.db.query("dtsTodos").collect());
     const frozen = await oldTables();
-    const other = await tom.mutation(api.tts.createTodo, { statement: "sign it", dueAt: Date.now() + 2 * DAY_MS });
+    await tom.mutation(api.tts.createTodo, { statement: "sign it", dueAt: Date.now() + 2 * DAY_MS });
     await tom.mutation(api.tts.updateTodo, { id: before.todo.old, statement: "the old todo, edited" });
-    const blockId = await tom.mutation(api.tts.createBlock, { start: 10, end: 20, todoId: other });
-    await tom.mutation(api.tts.updateBlock, { id: blockId, end: 30 });
-    await tom.mutation(api.tts.deleteBlock, { id: before.block.old });
-    await t.mutation(internal.tts.internalApplyTimeNote, { id: before.note.old, status: "needs-session", result: "ambiguous" });
     await tom.mutation(api.ttsRulings.recordRuling, { todoId: id, verdict: "archive" });
     // Nothing wrote an old row.
     expect(await oldTables()).toEqual(frozen);
@@ -353,9 +226,6 @@ describe("the direct write: each writer writes the plain row and no old row", ()
       // "sign it" is new (orphaned); the old todo and "renew the lease" were
       // edited (stale; the first copyBack gave "renew the lease" an old row).
       todos: { notCopied: 0, stale: 2, version: 0, orphaned: 1, needs: 0 },
-      // The new block is orphaned; the old one's plain row is deleted.
-      blocks: { notCopied: 1, stale: 0, version: 0, orphaned: 1, todoId: 0 },
-      timeNotes: { notCopied: 0, stale: 1, version: 0, orphaned: 0, todoId: 0, blockId: 0 },
     });
     await t.action(internal.jarvis.tables.copyBack, {});
     expect((await check()).zero).toBe(true);

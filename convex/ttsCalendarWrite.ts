@@ -179,9 +179,6 @@ async function createEvent(
     recurring: (args.recurrence?.length ?? 0) > 0,
     htmlLink: created.htmlLink,
   });
-  // The mirror learns about the event through the ICS feed; refresh now so
-  // it appears as soon as Google's feed serves it, not at the next hour.
-  await ctx.scheduler.runAfter(0, internal.ttsCalendarFetch.refreshFeeds, {});
   return { id: created.id, htmlLink: created.htmlLink };
 }
 

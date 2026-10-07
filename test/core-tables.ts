@@ -1,5 +1,5 @@
 // THE CORE TABLES' MOVE, AS A TEST READS IT (convex/jarvis/tables.ts). A
-// reader of todos, blocks or timeNotes hands out plain ids. `inOldTerms`
+// reader of todos hands out plain ids. `inOldTerms`
 // reads an answer in the old tables' terms: every plain id in it, alone or
 // inside a string (a link in a message), replaced by the old id its row
 // carries as legacyId. Since step C a door writes plain rows only, which
@@ -9,11 +9,11 @@
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 
-/** `value` with every plain todo, block or time-note id in it replaced by
+/** `value` with every plain todo id in it replaced by
  *  that row's old id, at any depth. Anything else is left as it is. */
 export async function inOldTerms<V>(ctx: QueryCtx, value: V): Promise<V> {
   const old = new Map<string, string>();
-  for (const table of ["todos", "blocks", "timeNotes"] as const) {
+  for (const table of ["todos"] as const) {
     for (const row of await ctx.db.query(table).collect()) {
       if (typeof row.legacyId === "string") old.set(row._id, row.legacyId);
     }
@@ -46,10 +46,10 @@ export async function patchTodo(ctx: MutationCtx, id: Id<"todos">, fields: Parti
   await ctx.db.patch(id, fields);
 }
 
-type Core = "todos" | "blocks" | "timeNotes";
-const OLD = { todos: "dtsTodos", blocks: "dtsBlocks", timeNotes: "dtsTimeNotes" } as const;
+type Core = "todos";
+const OLD = { todos: "dtsTodos" } as const;
 
-/** A row from before step C: the old row and its plain copy, which carries
+/** A todo from before step C: the old row and its plain copy, which carries
  *  the old id as legacyId (the copy's references are the caller's to give in
  *  the plain table's terms). Answers both ids. */
 export async function insertCopied<C extends Core>(

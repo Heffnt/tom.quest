@@ -9,7 +9,6 @@
 // app/perfume by a relative path.
 import type { Doc } from "../../convex/_generated/dataModel";
 import { briefForPrompt } from "../../shared/context-relevance.mjs";
-import { INBOUND_ROW_LABEL } from "../../shared/session-constants.mjs";
 import { ZONE, displayForm } from "../../shared/clock.mjs";
 
 // The FRAMING says what this session is and how wide it is; it is only true
@@ -30,74 +29,6 @@ function fact(label: string, value: string | undefined): string | null {
  */
 function briefFact(brief: string | undefined): string | null {
   return fact("brief", brief === undefined ? undefined : briefForPrompt(brief).text);
-}
-
-// How a session persists what Tom says (one home for the instruction; every
-// session prompt carries it). Two pens, both on the key a session's shell
-// already holds (X-TTS-Key):
-//
-//   POST /tts/ruling (ruling 15, 2026-09-05) — a ruling Tom STATED in plain
-//   language. The agent names the turn it read (the daemon prints
-//   "inbound row: <id>" under every turn Tom typed — worker/session-host/
-//   session.mjs deliveredTurnText), the verdict, the subject, and one whole
-//   sentence of his verbatim (the `quote`, provenance only); on revise it
-//   also writes the ruling's own `sentence`, the redirect — another whole
-//   sentence of the same turn, or the quote again, never the agent's own
-//   wording. The server, not the prompt, is what makes this Tom's pen: it
-//   refuses a turn Tom did not type, a quote or redirect that is not a whole
-//   sentence of that turn, a subject that does not exist or that this
-//   session is not about (the item or block on its row), and a
-//   second ruling from the same turn on the same subject
-//   (convex/ttsRulings.ts internalRecordRulingFromTomWords). Every
-//   ruling written this way is quoted in the digest, so a misreading is his
-//   to object to there — which is why ambiguity stays the agent's call.
-//
-//   POST /tts/capture — everything else he says that must not be lost,
-//   including a sentence whose verdict or subject is unclear: a fact for the
-//   pipeline to brief and Tom to confirm in the UI. (Before ruling 15 this was
-//   the only pen: the prompts once promised `npx convex run
-//   ttsRulings:internalRecordRuling`, which needs a deploy credential no
-//   session holds — ledger graduation session-has-no-ruling-pen, 2026-08-31.)
-const RULING_PEN = `When Tom states a ruling in plain language — approve, revise, session, or archive, on an item this prompt names — write it the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"${INBOUND_ROW_LABEL}\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|code>", "subjectId": "<the subject's id as this prompt gives it; a code subject is \\"<repo> <externalId>\\">", "quote": "<one whole sentence of that turn, copied exactly — never a fragment or a single word>", "sentence": "<on revise only: the one sentence of that same turn that redirects the preparing agent, copied exactly — it may be the quote itself, and it is never your own wording; omit the field on every other verdict>"}' (both variables are already set in this session's environment). The server writes the ruling only if that turn was typed by Tom, the quote — and on revise the sentence — is a whole sentence of it word for word, and the subject is one this session is about (the item or block named in this prompt; a ruling on anything else is refused), and applies it exactly as the matching button would; the quote is kept as provenance and never becomes the item's text; the morning digest quotes every ruling written this way, so a misreading is objected there. The message that opened this session is never a source: it carries no "${INBOUND_ROW_LABEL}" line and the server refuses it, so if Tom stated a ruling there, ask him to say it again in a later turn and write it from that turn. If his words leave the verdict or the subject unclear, do not guess: record them as a fact instead: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom said: <his words, verbatim, with the subject named>", "source": "session"}'. A ruling that lives only in chat is lost.`;
-
-// Opening prompt for a BLOCK session: committed time over a category of
-// todos, not a single item. Same contract; the session works the set with
-// Tom one item at a time and records his spoken rulings as they land.
-export function buildBlockSessionPrompt(
-  category: string,
-  todos: Doc<"todos">[],
-): string {
-  const lines: string[] = [
-    FRAMING,
-    "",
-    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time — open an item, take its first step with him, then move on. ${RULING_PEN}`,
-    "",
-  ];
-  if (category === "code") {
-    lines.push(
-      'The queue for "code" is the code-todo mirror and its prepared briefs (dtsCodeTodoMirror + dtsCodeBriefs) — work from those, not from a list in this prompt. The one list this prompt does carry is below it, added by the server when the session was recorded: the code todos Tom ruled "session" on, with what he wrote — those come first.',
-    );
-  } else if (todos.length === 0) {
-    lines.push(`No active todos carry the category "${category}" right now.`);
-  } else {
-    lines.push(`Active todos in "${category}" (${todos.length}):`);
-    for (const t of todos) {
-      const facts = [
-        fact("id (life subject)", t._id),
-        fact("timing", t.timingClass),
-        fact(
-          "due",
-          t.dueAt !== undefined ? `${displayForm(t.dueAt)} (${ZONE})` : undefined,
-        ),
-        fact("entry action", t.entryAction),
-        fact("work description", t.workDescription),
-      ].filter((f): f is string => f !== null);
-      lines.push(
-        `- "${t.statement}"${facts.length > 0 ? ` — ${facts.join("; ")}` : ""}`,
-      );
-    }
-  }
-  return lines.join("\n");
 }
 
 // The code todos a CODE BLOCK session is the conversation for: each carries a

@@ -241,7 +241,6 @@ describe("worker context routes", () => {
     const t = convexTest({ schema, modules });
     for (const [path, method] of [
       ["/tts/capture-context", "GET"],
-      ["/tts/time-notes", "POST"],
       ["/tts/planner-context", "GET"],
       ["/tts/weekly-input", "GET"],
     ] as const) {

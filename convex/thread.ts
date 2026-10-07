@@ -230,7 +230,6 @@ function digestItems(data: unknown): DigestItem[] {
 function answerText(n: number, subject: NeedsSubject, outcome: AnswerOutcome): string {
   switch (outcome.outcome) {
     case "done": return `Item ${n}: its todo is marked done.`;
-    case "time-note": return `Item ${n}: the date is a time note on its todo.`;
     case "tom-note":
       return subject.kind === "todo"
         ? `Item ${n}: your reply is a note on its todo.`

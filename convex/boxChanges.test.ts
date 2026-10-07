@@ -439,7 +439,7 @@ describe("the digest read budget", () => {
 
     let seeded = 0;
     await t.run(async (ctx) => {
-      const insert = async (table: "todos" | "blocks" | "dtsEvents" | "events" | "runs", doc: Record<string, unknown>) => {
+      const insert = async (table: "todos" | "dtsEvents" | "events" | "runs", doc: Record<string, unknown>) => {
         const id = await ctx.db.insert(table, doc as never);
         seeded += getDocumentSize((await ctx.db.get(id)) as Record<string, Value>);
         return id;
@@ -466,8 +466,10 @@ describe("the digest read budget", () => {
           createdAt: recordedAt - n, updatedAt: recordedAt - n,
         });
       }
+      // Twenty session outcomes, each naming a late todo the gather looks up
+      // by id: the lookups' allotment is spent before the last of them.
       for (let n = 0; n < 20; n += 1) {
-        await insert("blocks", { start: dayStart + n, end: dayStart + n + 60_000, todoId: late[n], createdAt: recordedAt });
+        await insert("events", { at: recordedAt - n, kind: "session-outcome", provenance: { job: "synthetic" }, subject: late[n], data: {} });
       }
       for (let n = 0; n < 80; n += 1) {
         await insert("dtsEvents", { at: recordedAt - n, kind: "synthetic-note", data: { pad } });
@@ -821,7 +823,6 @@ describe("the digest's Box changes", () => {
       today: [],
       lateCount: 0,
       readyBeyond: 0,
-      calendar: [],
       objections: [],
       needsYou: [],
       overnightByTodo: [],

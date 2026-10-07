@@ -13,8 +13,7 @@
 //
 // One display form for a time Tom reads: "Sun Oct 4, 9:58 pm" (displayForm),
 // "9:58 pm" when the day is already on the line (displayTime), "Sun Oct 4" for
-// a day (displayDay, displayDayKey). It never says EST or EDT; the pages state
-// the zone once, in the time-notes explanation (app/jarvis/explanations.ts).
+// a day (displayDay, displayDayKey). It never says EST or EDT.
 //
 // Plain ESM with no imports, as every module in shared/ is.
 

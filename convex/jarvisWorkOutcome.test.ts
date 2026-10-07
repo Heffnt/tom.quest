@@ -1,6 +1,5 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { resolveId } from "./jarvis/tables";
@@ -34,20 +33,17 @@ async function withTom(t: T) {
 
 const DAY = 86_400_000;
 
-/** A todo from before step C (its old row and its plain copy) and a block
- *  on it, with both ids of each. */
+/** A todo from before step C (its old row and its plain copy). */
 async function seed(t: T) {
   const tom = await withTom(t);
   const ids = await t.run(async (ctx) => {
     const todo = await insertCopied(ctx, "todos", { statement: "renew the lease", readiness: "unprepared", status: "active", timingClass: "dated", dueAt: Date.now() + 3 * DAY, source: "manual", createdAt: 1, updatedAt: 1 });
-    const span = { start: Date.now() + DAY, end: Date.now() + DAY + 3_600_000, createdAt: 1 };
-    const block = await insertCopied(ctx, "blocks", { ...span, todoId: todo.plain }, { ...span, todoId: todo.old });
-    return { todo, block };
+    return { todo };
   });
   return {
     tom,
-    old: { todo: ids.todo.old, block: ids.block.old },
-    plain: { todo: ids.todo.plain, block: ids.block.plain },
+    old: { todo: ids.todo.old },
+    plain: { todo: ids.todo.plain },
   };
 }
 
@@ -111,7 +107,7 @@ describe("a work-queue outcome on its todo", () => {
     expect((await post(t, outcome(plain.todo, Date.now()))).status).toBe(200);
     const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
     expect(rows.filter((r) => r.kind === "session-outcome").map((r) => r.subject)).toEqual([plain.todo, plain.todo]);
-    for (const subject of [undefined, "work-queue:x:1", old.block]) {
+    for (const subject of [undefined, "work-queue:x:1"]) {
       const res = await post(t, outcome(subject, Date.now()));
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe("a session-outcome event names its todo as its subject");

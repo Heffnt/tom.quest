@@ -3,7 +3,6 @@ import { register as registerJarvisRoutes } from "./jarvis/routes";
 import { serveContext } from "./jarvis/context";
 import { jarvisAuth, presentsJarvisKey } from "./jarvis/auth";
 import { postRuling } from "./jarvis/rulings";
-import type { FunctionArgs } from "convex/server";
 import { httpAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -16,11 +15,9 @@ import {
   DELEGATE_TIMEOUT_MS,
 } from "./ttsAsk";
 import {
-  DAY_MS,
   NARROW_LIST,
   SESSION_REPO_NAMES,
   isSessionModel,
-  nyCalendarDayBoundsUtc,
   ttsPrepDay,
   VOCABULARY_COUNT_NAMES,
 } from "./ttsShared";
@@ -180,12 +177,6 @@ function storedIngestBody(body: Record<string, unknown>): Record<string, unknown
   const out: Record<string, unknown> = { ...rest, run: storedAgentKeys(agent) };
   if (Array.isArray(body.children)) out.children = body.children.map(storedAgentKeys);
   return out;
-}
-
-/** Worker jobs need the original missing-layer sentence, not a framework
- * exception, so their nonzero exit names the deployment state to repair. */
-function modelOfTomErrorResponse(error: unknown): Response {
-  return jsonResponse(503, { error: error instanceof Error ? error.message : String(error) });
 }
 
 // The one key-auth gate for every agent-facing route (ledger graduation:
@@ -1134,8 +1125,8 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo });
 
-// GET /tts/state — the record as a box job or a session reads it: all todos,
-// the coming week of calendar events, and the server's clock. The server owns
+// GET /tts/state — the record as a box job or a session reads it: all todos
+// and the server's clock. The server owns
 // the day arithmetic (5 a.m. boundary + DST) so the worker never computes a
 // day key — two hand-rolled implementations of that math diverged on DST
 // Sundays before this was centralized (review finding). An explicit ?day=
@@ -1147,20 +1138,12 @@ const ttsState = httpAction(async (ctx, request) => {
   const day =
     new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
-  // The coming week of external-calendar mirror rows (ttsCalendarEvents):
-  // schedule knowledge, shown as context.
-  const dayStart = nyCalendarDayBoundsUtc(day).start;
-  const calendarEvents = await ctx.runQuery(
-    internal.ttsCalendar.internalListEventsInRange,
-    { start: dayStart, end: dayStart + 7 * DAY_MS },
-  );
   // nowContext carries the NY calendar date too — a different question from
   // prepDay (which rolls at 5 a.m.) and the one a preparer needs to resolve
   // "sept 3" or "Friday" in a statement. Same rule either way: the server owns
   // the clock, the worker repeats it back.
   return jsonResponse(200, {
     todos,
-    calendarEvents,
     // The one home reaching the one caller that cannot import it: the delegate
     // is worker/jobs/delegate.mjs and Node does not load .ts, so the narrow
     // list and the delegate's budgets ride this payload the way
@@ -1178,134 +1161,6 @@ const ttsState = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/state", method: "GET", handler: ttsState });
-
-// ── TTS time notes (ratified 2026-08-29) ─────────────────────────────────────
-// Same TTS_WORKER_KEY path. Tom writes one freeform sentence about time
-// against a todo, a block, or a calendar day; apply-time-notes.mjs reads the
-// pending queue here, asks Claude for concrete actions, and posts them back.
-// The SERVER decides what is legal (internalApplyTimeNote re-validates every
-// action against the same helpers the Tom-gated mutations use) — these routes
-// only carry the traffic.
-
-// POST /tts/time-notes — the pending queue, each note with the full context it
-// is about, plus the server's clock: the worker never computes New York time
-// itself (the /tts/state prepDay convention), it repeats back what it is told.
-const ttsTimeNotes = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let notes;
-  let writingStandard: string;
-  try {
-    [notes, writingStandard] = await Promise.all([
-      ctx.runQuery(internal.tts.internalPendingTimeNotes, {}),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, {}),
-    ]);
-  } catch (error) {
-    return modelOfTomErrorResponse(error);
-  }
-  return jsonResponse(200, { notes, writingStandard, ...nowContext(Date.now()) });
-});
-
-http.route({ path: "/tts/time-notes", method: "POST", handler: ttsTimeNotes });
-
-// POST /tts/apply-time-note — the worker's verdict on one note.
-// Body: { id, status: "applied"|"needs-session", result, actions? }.
-// A rejection here is the POINT of the endpoint: the note stays pending (the
-// mutation rolls back whole) and the job re-submits it as needs-session with
-// the reason, so a kept-dates violation surfaces to Tom instead of landing.
-// The actions array is passed to the mutation AS WRITTEN — the Convex union
-// validator is the single gate. No projection step: a sanitizer that silently
-// dropped a field the model DID send (a create-block category, say) would let a
-// half-understood action land as a different, legal one. Malformed in, 400 out,
-// needs-session on Tom's page. The one thing read here first is the retired
-// sleep vocabulary (retiredTimeNoteAction), which the validator would refuse
-// anyway — reading it names WHICH spelling it was.
-
-// One note is one sentence; ten actions is already far past what one sentence
-// asks for (Convex bounded-args guideline).
-const TIME_NOTE_ACTIONS_MAX = 10;
-
-// The mutation's OWN declared arg type — the only assertion here, and one that
-// cannot drift from the validator the way a hand-written projection could.
-type TimeNoteActions = FunctionArgs<
-  typeof internal.tts.internalApplyTimeNote
->["actions"];
-
-// The one exception to "no projection step": three spellings of a retired
-// sleep. A latest-safe instant and a wake CONDITION are gone (the lifeos
-// update, phase 7) — a sleep is a wake time, and what a row waits for belongs
-// in its statement. The union validator would refuse them anyway; this names
-// which one it was, so a job still emitting them is readable from the reply
-// rather than from a validator dump. Returns the reason, or null.
-function retiredTimeNoteAction(actions: unknown): string | null {
-  if (!Array.isArray(actions)) return null;
-  for (const action of actions) {
-    if (typeof action !== "object" || action === null) continue;
-    const a = action as Record<string, unknown>;
-    if (a.kind === "set-latest-safe" || a.kind === "clear-latest-safe") {
-      return `${a.kind} is retired — a sleep is a wake time (set-waiting with wakeAt)`;
-    }
-    if (a.kind === "set-waiting" && a.wakeCondition !== undefined) {
-      return "set-waiting.wakeCondition is retired — what a row waits for goes in its statement";
-    }
-  }
-  return null;
-}
-const ttsApplyTimeNote = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.id !== "string" || b.id.length === 0) {
-    return jsonResponse(400, { error: "id (non-empty string) required" });
-  }
-  if (b.status !== "applied" && b.status !== "needs-session") {
-    return jsonResponse(400, {
-      error: 'status must be "applied" or "needs-session"',
-    });
-  }
-  if (typeof b.result !== "string" || b.result.trim().length === 0) {
-    return jsonResponse(400, { error: "result (non-empty string) required" });
-  }
-  if (Array.isArray(b.actions) && b.actions.length > TIME_NOTE_ACTIONS_MAX) {
-    return jsonResponse(400, {
-      error: `at most ${TIME_NOTE_ACTIONS_MAX} actions per time note — got ${b.actions.length}`,
-    });
-  }
-  // The retired sleep vocabulary, named here rather than left to the union
-  // validator's error. Until worker/setup.sh had rolled out these were
-  // DECLARED and did nothing, so a box that had not caught up still landed its
-  // whole flush; setup.sh has since run at main 6825608, so a note still
-  // carrying one comes from code nobody runs and says so plainly.
-  const retired = retiredTimeNoteAction(b.actions);
-  if (retired) return jsonResponse(400, { error: retired });
-  try {
-    const outcome = await ctx.runMutation(internal.tts.internalApplyTimeNote, {
-      id: b.id,
-      status: b.status,
-      result: b.result,
-      actions: Array.isArray(b.actions)
-        ? (b.actions as TimeNoteActions)
-        : undefined,
-    });
-    return jsonResponse(200, outcome);
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({
-  path: "/tts/apply-time-note",
-  method: "POST",
-  handler: ttsApplyTimeNote,
-});
 
 // The box receives pending text and a bounded vocabulary, then submits a
 // proposal. The internal mutation remains the authority over every write.

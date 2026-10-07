@@ -284,8 +284,8 @@ describe("the fixed know skills", () => {
     }
   });
 
-  it("does not grant know-intent to time-notes", () => {
-    const { granted } = routeSkills({ subject: { kind: "none" }, caller: "time-notes", pages: PAGES });
+  it("does not grant know-intent to a caller that neither judges nor captures", () => {
+    const { granted } = routeSkills({ subject: { kind: "none" }, caller: "cli", pages: PAGES });
     expect(granted).not.toContain("know-intent");
   });
 
@@ -294,8 +294,8 @@ describe("the fixed know skills", () => {
     expect(granted).toContain("know-intent");
   });
 
-  it("grants know-week to time-notes and planner without a dated subject", () => {
-    expect([...WEEK_CALLERS]).toEqual(["time-notes", "planner"]);
+  it("grants know-week to the planner without a dated subject", () => {
+    expect([...WEEK_CALLERS]).toEqual(["planner"]);
     for (const caller of CONTEXT_CALLER_NAMES) {
       const { granted } = routeSkills({ subject: { kind: "none" }, caller, pages: PAGES });
       expect(granted.includes("know-week"), caller).toBe(WEEK_CALLERS.includes(caller));

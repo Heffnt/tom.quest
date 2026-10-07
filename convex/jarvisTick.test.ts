@@ -34,21 +34,10 @@ const outcomes = (t: ReturnType<typeof convexTest>) =>
     (await ctx.db.query("events").collect()).filter((row) => row.kind === "job-ok" || row.kind === "job-failed"),
   );
 
-// witness: runTask wrote job-ok whenever the action resolved, and the
-// calendar refresh catches a feed's failure and resolves, so a feed that had
-// stopped answering read as a clean run and never reached the digest.
+// witness: runTask wrote job-ok whenever the action resolved, and a task that
+// catches a source's failure resolves, so a source that had stopped answering
+// read as a clean run and never reached the digest.
 describe("a tick task's outcome", () => {
-  it("is job-failed when the calendar refresh returns a feed's failure", async () => {
-    const t = convexTest({ schema, modules });
-    vi.stubEnv("TTS_ICS_FEEDS", JSON.stringify([{ name: "work", url: "https://calendar.invalid/work.ics" }]));
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("gone", { status: 503 })));
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar", leaseId: await lease(t, "calendar") })).toEqual({ ok: false });
-    const rows = await outcomes(t);
-    expect(rows.map((row) => row.kind)).toEqual(["job-failed"]);
-    expect(rows[0].subject).toBe("tick:calendar");
-    expect(String((rows[0].data as { error?: unknown }).error)).toContain('calendar feed "work" failed: HTTP 503');
-  });
-
   it("is job-failed when the code mirror returns a repository's failure", async () => {
     const t = convexTest({ schema, modules });
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "t");
@@ -78,16 +67,12 @@ describe("a tick task's outcome", () => {
 
   it("is job-ok when the task returns no failure", async () => {
     const t = convexTest({ schema, modules });
-    vi.stubEnv("TTS_ICS_FEEDS", "");
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar", leaseId: await lease(t, "calendar") })).toEqual({ ok: true });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "evict", leaseId: await lease(t, "evict") })).toEqual({ ok: true });
     expect((await outcomes(t)).map((row) => row.kind)).toEqual(["job-ok"]);
   });
 });
 
-// witness: repeats ran every 30 minutes through the 4 a.m. hour, so rules the
-// calendar skipped wrote their skip twice, and it could start in the same
-// tick as the calendar refresh whose rows it reads.
-describe("the daily tasks: repeats and eviction", () => {
+describe("the tick's leases, and the daily eviction", () => {
   // 2026-09-28 is in EDT: New York is UTC-4.
   const nyAt = (hhmm: string, day = "2026-09-28") => Date.parse(`${day}T${hhmm}:00-04:00`);
   const clean = (t: ReturnType<typeof convexTest>, name: string, at: number) =>
@@ -110,17 +95,16 @@ describe("the daily tasks: repeats and eviction", () => {
 
   it("deletes completed tick leases while keeping success and failure outcomes", async () => {
     const t = convexTest({ schema, modules });
-    vi.stubEnv("TTS_ICS_FEEDS", "");
     const successLease = await t.run(async (ctx) =>
       ctx.db.insert("events", {
         kind: "tick-started",
         at: 1,
-        provenance: { job: "tick:calendar" },
-        subject: "tick:calendar",
-        data: { task: "calendar", timeoutMs: 1 },
+        provenance: { job: "tick:evict" },
+        subject: "tick:evict",
+        data: { task: "evict", timeoutMs: 1 },
       }),
     );
-    expect(await t.action(internal.jarvis.tick.runTask, { name: "calendar", leaseId: successLease })).toEqual({ ok: true });
+    expect(await t.action(internal.jarvis.tick.runTask, { name: "evict", leaseId: successLease })).toEqual({ ok: true });
 
     vi.stubEnv("GITHUB_MIRROR_TOKEN", "");
     const failureLease = await t.run(async (ctx) =>
@@ -136,7 +120,7 @@ describe("the daily tasks: repeats and eviction", () => {
 
     const rows = await t.run(async (ctx) => ctx.db.query("events").collect());
     expect(rows.filter((row) => row.kind === "tick-started")).toEqual([]);
-    expect(rows.filter((row) => row.kind === "job-ok" && row.subject === "tick:calendar")).toHaveLength(1);
+    expect(rows.filter((row) => row.kind === "job-ok" && row.subject === "tick:evict")).toHaveLength(1);
     expect(rows.filter((row) => row.kind === "job-failed" && row.subject === "tick:pull-requests")).toHaveLength(1);
   });
 
@@ -162,69 +146,18 @@ describe("the daily tasks: repeats and eviction", () => {
     }
   });
 
-  it("comes due once a day at 4:30 New York, never in the tick that starts the calendar, and not again after a clean run", async () => {
+  // witness: a daily task ran every 30 minutes through the 4 a.m. hour, and
+  // a box down through that hour skipped the day.
+  it("comes due once a day from its New York time, not again after a clean run, and at any hour after", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const t = convexTest({ schema, modules });
-      expect(await started(t, nyAt("04:15"))).not.toContain("repeats");
-      // The first tick at 4:30 starts the calendar refresh, so not repeats.
-      const first = await started(t, nyAt("04:30"));
-      expect(first).toContain("calendar");
-      expect(first).not.toContain("repeats");
-      await clean(t, "calendar", nyAt("04:30"));
-      expect(await started(t, nyAt("04:31"))).toContain("repeats");
-      await clean(t, "repeats", nyAt("04:31"));
-      expect(await started(t, nyAt("04:45"))).not.toContain("repeats");
-      expect(await started(t, nyAt("05:30"))).not.toContain("repeats");
-      // witness: a box down through the 4 a.m. hour skipped the day; the
-      // task is due at any hour after 4:30 until it has run clean that day.
-      await clean(t, "calendar", nyAt("07:00", "2026-09-29"));
-      expect(await started(t, nyAt("07:10", "2026-09-29"))).toContain("repeats");
-      await clean(t, "calendar", nyAt("04:30", "2026-09-30"));
-      expect(await started(t, nyAt("04:15", "2026-09-30"))).not.toContain("repeats");
-      expect(await started(t, nyAt("04:31", "2026-09-30"))).toContain("repeats");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // witness: repeats waited only for a calendar refresh started in the same
-  // tick, so one still running from an earlier tick let repeats read the
-  // calendar's rows before they landed and mint a todo it should skip.
-  it("does not start while a calendar refresh from an earlier tick is still in flight", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const t = convexTest({ schema, modules });
-      expect(await started(t, nyAt("04:30"))).toContain("calendar");
-      // The 4:30 refresh has not finished: its lease stands.
-      expect(await started(t, nyAt("04:31"))).not.toContain("repeats");
-      expect(await started(t, nyAt("04:35"))).not.toContain("repeats");
-      // Past the action limit the lease is dead; that tick restarts the
-      // calendar, so repeats still waits.
-      const retry = await started(t, nyAt("04:30") + 10 * 60_000 + 1);
-      expect(retry).toContain("calendar");
-      expect(retry).not.toContain("repeats");
-      await clean(t, "calendar", nyAt("04:41"));
-      expect(await started(t, nyAt("04:42"))).toContain("repeats");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("mints the day's instances when the task runs after the 4 a.m. hour", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const t = convexTest({ schema, modules });
-      await t.run(async (ctx) => {
-        await ctx.db.insert("ttsRepeats", {
-          statement: "water the plants", daysOfWeek: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
-          active: true, createdAt: 1, updatedAt: 1,
-        } as never);
-      });
-      vi.setSystemTime(nyAt("09:15"));
-      expect(await t.action(internal.jarvis.tick.runTask, { name: "repeats", leaseId: await lease(t, "repeats") })).toEqual({ ok: true });
-      const minted = await t.run(async (ctx) => ctx.db.query("todos").collect());
-      expect(minted.map((row) => row.statement)).toEqual(["water the plants"]);
+      expect(await started(t, nyAt("04:10"))).not.toContain("evict");
+      expect(await started(t, nyAt("04:15"))).toContain("evict");
+      await clean(t, "evict", nyAt("04:16"));
+      expect(await started(t, nyAt("04:45"))).not.toContain("evict");
+      expect(await started(t, nyAt("05:30"))).not.toContain("evict");
+      expect(await started(t, nyAt("07:10", "2026-09-29"))).toContain("evict");
     } finally {
       vi.useRealTimers();
     }

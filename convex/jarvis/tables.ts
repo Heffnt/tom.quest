@@ -12,7 +12,9 @@
 // TODOS, BLOCKS AND TIME NOTES moved the same way, in three steps: the copy
 // and the dual write (step A: every writer wrote the old row, then `follow`
 // copied it into the plain one), the readers (step B), and the writers (step
-// C). calendar, repeats and vocabulary stay declared and untouched.
+// C). Blocks and time notes, both tables of each, then went with the Jarvis
+// calendar (design section 13.2, 2026-10-07); todos is the one core table
+// left here.
 //
 // AN ID IN EITHER FORM. An id reaches the record from outside as the plain
 // row's, or as the old one's (an old link, a Slack thread, a box file, and a
@@ -69,9 +71,9 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 
 /** Each plain-named core table and the table its rows come from. */
-const CORE = { todos: "dtsTodos", blocks: "dtsBlocks", timeNotes: "dtsTimeNotes" } as const;
+const CORE = { todos: "dtsTodos" } as const;
 type Core = keyof typeof CORE;
-const CORE_TABLE = v.union(v.literal("todos"), v.literal("blocks"), v.literal("timeNotes"));
+const CORE_TABLE = v.literal("todos");
 
 /** A row of any of these tables, as the copy reads it. */
 type Row = Record<string, unknown> & { _id: string };
@@ -101,8 +103,6 @@ type Plain = keyof typeof OLD;
  *  Slack thread, a box file, a stored reference). resolveId reads it. */
 export const eitherId = {
   todos: v.union(v.id("todos"), v.id("dtsTodos")),
-  blocks: v.union(v.id("blocks"), v.id("dtsBlocks")),
-  timeNotes: v.union(v.id("timeNotes"), v.id("dtsTimeNotes")),
 } as const;
 
 /**
@@ -304,21 +304,20 @@ export const counts = internalAction({
   },
 });
 
-// ── todos, blocks and timeNotes: the check ────────────────────────────────
+// ── todos: the check ──────────────────────────────────────────────────────
 //
 // leftToRemap compares each old table with its plain one. Before step C it
 // was the copy's check, and while step C's writers wrote their old rows back
 // it stayed at zero. Since the old tables are frozen it reads as what the way
 // back would carry: `stale` counts the plain rows changed since, `orphaned`
 // the plain rows created since (no legacyId) and `notCopied` the old rows
-// whose plain row was deleted since (a block, a time note); `version` (an old
+// whose plain row was deleted since; `version` (an old
 // row whose stamp is not its fingerprint) counts a write to an old table,
 // which nothing makes any more, and each reference field counts the plain
 // rows still naming an old id, which no writer stores any more. copyBack
 // brings every count to 0.
 //
-// REFERENCES in the comparison point at the plain row: todos.needs at todos,
-// timeNotes.blockId at blocks, and a block's or time note's todoId at todos.
+// REFERENCES in the comparison point at the plain row: todos.needs at todos.
 // A reference whose row has no copy is "unresolved", one that names a
 // deleted row "dangling".
 
@@ -332,11 +331,6 @@ const PAGE = 100;
  *  `either`: the plain field takes a dtsTodos id as well until the switch. */
 const REFS: Record<Core, Array<{ field: string; to: Core; either?: true }>> = {
   todos: [{ field: "needs", to: "todos" }],
-  blocks: [{ field: "todoId", to: "todos", either: true }],
-  timeNotes: [
-    { field: "todoId", to: "todos", either: true },
-    { field: "blockId", to: "blocks" },
-  ],
 };
 
 /** A row's fields, less the system fields and legacyId. */
@@ -360,7 +354,7 @@ const same = (a: Record<string, unknown>, b: Record<string, unknown>) =>
 
 type Miss = { miss: "unresolved" | "dangling" };
 
-/** A reference moved across: forward, a dtsTodos/dtsBlocks id to its copy's
+/** A reference moved across: forward, a dtsTodos id to its copy's
  *  id; back, a plain id to its row's legacyId. An id already on the far side
  *  stays as it is. */
 async function moveRef(ctx: QueryCtx | MutationCtx, to: Core, id: string, direction: Direction): Promise<string | Miss> {
@@ -425,21 +419,6 @@ function versionOf(row: Row): string {
   return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
 }
 
-/** One page of the time notes naming a deleted block, taken off it (tts
- *  removeBlock); the rest go to clearBlockPage, which runs until none is
- *  left. Each patched note leaves the by_block range, so every page reads
- *  from its start. */
-export async function clearBlock(ctx: MutationCtx, blockId: Id<"blocks">) {
-  const notes = await ctx.db.query("timeNotes").withIndex("by_block", (q) => q.eq("blockId", blockId)).take(PAGE + 1);
-  for (const note of notes.slice(0, PAGE)) await ctx.db.patch(note._id, { blockId: undefined });
-  if (notes.length > PAGE) await ctx.scheduler.runAfter(0, internal.jarvis.tables.clearBlockPage, { blockId });
-}
-
-export const clearBlockPage = internalMutation({
-  args: { blockId: v.id("blocks") },
-  handler: async (ctx, { blockId }) => await clearBlock(ctx, blockId),
-});
-
 type Paged = { isDone: boolean; continueCursor: string };
 
 /** Every page of a paged function, from the start, and the sum of each
@@ -503,7 +482,7 @@ export const leftToRemap = internalAction({
   args: {},
   handler: async (ctx) => {
     const left: Record<string, Record<string, number>> = {};
-    for (const table of ["todos", "blocks", "timeNotes"] as const) {
+    for (const table of ["todos"] as const) {
       const counts: Record<string, number> = { notCopied: 0, stale: 0, version: 0, orphaned: 0 };
       for (const { field } of REFS[table]) counts[field] = 0;
       for (const side of ["old", "plain"] as const) {
@@ -529,9 +508,9 @@ export const leftToRemap = internalAction({
 // so that code can deploy again: a plain row with no old row gets one (and
 // its legacyId), an old row that differs is written over (a field the plain
 // row lost is cleared), both carry the same stamp, and an old row whose
-// plain row is gone (a block or time note deleted since) is deleted with it. References move back to old ids. Run todos (twice when the
-// first pass left a need unresolved: a need on a todo later in the table),
-// then blocks, then timeNotes; leftToRemap then reads zero.
+// plain row is gone is deleted with it. References move back to old ids.
+// Run todos (twice when the first pass left a need unresolved: a need on a
+// todo later in the table); leftToRemap then reads zero.
 
 /** One plain row copied into its old table. */
 async function copyBackRow(ctx: MutationCtx, table: Core, row: Row) {
@@ -587,18 +566,18 @@ export const copyBackPrunePage = internalMutation({
   },
 });
 
-/** copyBack over all three tables, in order, then the prune of each. */
+/** copyBack over todos, then the prune. */
 export const copyBack = internalAction({
   args: {},
   handler: async (ctx) => {
     const out: Record<string, Record<string, number>> = {};
-    for (const table of ["todos", "blocks", "timeNotes"] as const) {
+    for (const table of ["todos"] as const) {
       const pass = () =>
         drain((cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.copyBackPage, { table, cursor }));
       const first = await pass();
       out[table] = first.unresolved > 0 ? await pass() : first;
     }
-    for (const table of ["timeNotes", "blocks", "todos"] as const) {
+    for (const table of ["todos"] as const) {
       const pruned = await drain(
         (cursor): Promise<Paged> => ctx.runMutation(internal.jarvis.tables.copyBackPrunePage, { table, cursor }),
       );

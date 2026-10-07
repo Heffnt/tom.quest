@@ -752,9 +752,9 @@ describe("threaded replies from Tom", () => {
     expect(third).toMatchObject({ outcome: "session-turn", sessionId: newId });
   });
 
-  // witness: send "done" down the time-note path instead of applyStatusChange
-  // and the todo stays active — apply-time-notes has no completion action.
-  it("a todo thread takes a sentence as a fact, a bare date as a time note, and 'done' completes the todo", async () => {
+  // witness: send "done" down the fact path instead of applyStatusChange
+  // and the todo stays active.
+  it("a todo thread takes a sentence and a bare date as facts, and 'done' completes the todo", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
     // A legacy Slack-coordinated todo with no recorded reply yet is found by
@@ -782,11 +782,7 @@ describe("threaded replies from Tom", () => {
     });
 
     const dated = await postEvent(t, { channel: TTS, ts: "400.3", thread_ts: "400.1", text: "sept 12" });
-    expect(dated.outcome).toBe("time-note");
-    const timeNotes = await t.run(async (ctx) => ctx.db.query("timeNotes").collect());
-    expect(timeNotes.map((n) => [n.text, n.todoId, n.status])).toEqual([
-      ["sept 12", todoId, "pending"],
-    ]);
+    expect(dated).toMatchObject({ outcome: "tom-note", subject: { kind: "todo", id: todoId } });
 
     const done = await postEvent(t, { channel: TTS, ts: "400.4", thread_ts: "400.1", text: "Done." });
     expect(done).toMatchObject({ outcome: "done", todoId });
@@ -796,14 +792,11 @@ describe("threaded replies from Tom", () => {
     const changes = await events(t, "status-changed");
     expect(changes).toHaveLength(1);
     expect(changes[0].data).toMatchObject({ from: "active", to: "done", note: "Done." });
-    // No time note was written for "done": nothing would ever have acted on it.
-    expect(await t.run(async (ctx) => ctx.db.query("timeNotes").collect())).toHaveLength(1);
-
     // A second "done" on a completed todo has nothing to complete; the words
-    // are kept as a fact.
+    // are kept as a fact, beside the sentence and the bare date.
     const again = await postEvent(t, { channel: TTS, ts: "400.5", thread_ts: "400.1", text: "done" });
     expect(again.outcome).toBe("tom-note");
-    expect(await events(t, "tom-note")).toHaveLength(2);
+    expect(await events(t, "tom-note")).toHaveLength(3);
     expect(await events(t, "status-changed")).toHaveLength(1);
   });
 
@@ -826,7 +819,6 @@ describe("threaded replies from Tom", () => {
     // A bare date with no todo to land on is a fact too, with the day.
     const dated = await postEvent(t, { channel: TTS, ts: "500.3", thread_ts: "500.1", text: "tomorrow" });
     expect(dated).toMatchObject({ outcome: "tom-note", subject: { kind: "digest", day: "2026-09-05" } });
-    expect(await t.run(async (ctx) => ctx.db.query("timeNotes").collect())).toHaveLength(0);
     expect((await events(t, "tom-note"))[1].data).toMatchObject({ text: "tomorrow", day: "2026-09-05" });
 
     // Naming a todo by its link and saying "done" completes THAT todo, as a
@@ -1299,7 +1291,7 @@ describe("objecting to a delegate decision in the digest thread", () => {
 });
 
 describe("replyShape", () => {
-  it("tells 'done' from a bare date from anything longer", () => {
+  it("tells 'done' from facts, including bare dates", () => {
     for (const done of ["done", "Done.", "done!"]) {
       expect(replyShape(done), done).toBe("done");
     }
@@ -1323,7 +1315,7 @@ describe("replyShape", () => {
       "by sept 3",
       "friday at 10:30",
     ]) {
-      expect(replyShape(date), date).toBe("date");
+      expect(replyShape(date), date).toBe("fact");
     }
     for (const fact of [
       "done, but the receipt is still missing",

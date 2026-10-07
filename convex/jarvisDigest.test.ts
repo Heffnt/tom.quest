@@ -592,7 +592,7 @@ describe("needs-you, a numbered reply under the digest", () => {
     expect(await reply(t, "Ev2", "1 done", "1758882800.000100")).toEqual({ outcome: "done", todoId: first });
     // Now one is open: an unnumbered reply is its turn.
     const last = await reply(t, "Ev3", "Tuesday at 9", "1758882900.000100");
-    expect(last).toMatchObject({ outcome: "time-note" });
+    expect(last).toMatchObject({ outcome: "tom-note" });
     // A number that names nothing in the thread is a note on the day.
     expect(await reply(t, "Ev4", "7 done", "1758883000.000100")).toEqual({ outcome: "tom-note", subject: { kind: "today", day: DAY } });
   });

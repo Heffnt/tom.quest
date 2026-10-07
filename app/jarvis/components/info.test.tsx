@@ -46,7 +46,7 @@ describe("Info caption", () => {
   });
 
   it("offers no 'more' when no ground-up explanation was written", () => {
-    render(<Info call="tts.deleteTimeNote({ id })">Deletes the note.</Info>);
+    render(<Info call="tts.deleteTodo({ id })">Deletes the todo.</Info>);
     fireEvent.click(screen.getByRole("button", { name: "what this does" }));
     expect(screen.queryByText("more")).toBeNull();
   });

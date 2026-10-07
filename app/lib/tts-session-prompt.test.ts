@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Doc } from "../../convex/_generated/dataModel";
-import {
-  buildBlockSessionPrompt,
-  buildTodoSessionPrompt,
-} from "./tts-session-prompt";
+import { buildTodoSessionPrompt } from "./tts-session-prompt";
 
 const todo = {
   _id: "todo-1",
@@ -25,14 +22,6 @@ describe("interactive session prompts", () => {
     expect(prompt).not.toContain("what Tom needs to decide plus a recommendation");
     expect(prompt.indexOf("This is a tom-gate session:")).toBeLessThan(
       prompt.indexOf('The item ("review the deployment plan"):'));
-  });
-
-  it("puts every block todo after the fixed block-session direction", () => {
-    const prompt = buildBlockSessionPrompt("life", [todo]);
-
-    expect(prompt.indexOf('Active todos in "life"')).toBeGreaterThan(
-      prompt.indexOf("A ruling that lives only in chat is lost."),
-    );
   });
 
   it("puts a todo's standing ruling after the item facts", () => {
