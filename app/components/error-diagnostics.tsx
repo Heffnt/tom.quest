@@ -1,13 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import {
-  diagnoseError,
-  diagnosisText,
-  readBuildInfo,
-  readRecordHost,
-  type BuildInfo,
-} from "../lib/error-diagnosis";
+import { diagnoseError, diagnosisText, readBuildInfo, readRecordHost } from "../lib/error-diagnosis";
 
 function currentRoute(): string {
   if (typeof window === "undefined") return "unknown";
@@ -17,14 +11,9 @@ function currentRoute(): string {
 export default function ErrorDiagnostics({
   error,
   reset,
-  build,
-  recordHost,
 }: {
   error: Error & { digest?: string };
-  reset?: () => void;
-  /** Overrides for tests; the pages read both from the build's environment. */
-  build?: BuildInfo;
-  recordHost?: string | null;
+  reset: () => void;
 }) {
   const [at] = useState(() => Date.now());
   const [route] = useState(currentRoute);
@@ -32,8 +21,8 @@ export default function ErrorDiagnostics({
   const d = diagnoseError(error, {
     route,
     at,
-    build: build ?? readBuildInfo(),
-    recordHost: recordHost === undefined ? readRecordHost() : recordHost,
+    build: readBuildInfo(),
+    recordHost: readRecordHost(),
   });
 
   const rows: [string, string][] = [
@@ -79,15 +68,13 @@ export default function ErrorDiagnostics({
         {d.action}
       </p>
       <div className="flex gap-4">
-        {reset && (
-          <button
-            type="button"
-            onClick={reset}
-            className="rounded-lg border border-error px-8 py-4 font-mono text-lg text-error transition-colors hover:bg-error/10"
-          >
-            retry
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={reset}
+          className="rounded-lg border border-error px-8 py-4 font-mono text-lg text-error transition-colors hover:bg-error/10"
+        >
+          retry
+        </button>
         <button
           type="button"
           onClick={copy}

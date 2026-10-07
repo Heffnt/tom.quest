@@ -16,7 +16,7 @@
 
 import { displayForm } from "@/shared/clock.mjs";
 
-export type BuildInfo = {
+type BuildInfo = {
   /** Commit short sha, from VERCEL_GIT_COMMIT_SHA (or local git) at build time. */
   sha: string | null;
   /** Branch, from VERCEL_GIT_COMMIT_REF (or local git) at build time. */
@@ -47,10 +47,9 @@ const FUNCTION_TYPES: Record<string, string> = {
   Q: "query",
   M: "mutation",
   A: "action",
-  "?": "function",
 };
 
-const CONVEX_PREFIX = /^\[CONVEX ([QMA?])\(([^)]*)\)\]\s*/;
+const CONVEX_PREFIX = /^\[CONVEX ([QMA])\(([^)]*)\)\]\s*/;
 const REQUEST_ID = /^\[Request ID: ([^\]]+)\]\s*/;
 const UNKNOWN_FUNCTION = /Could not find (?:public )?function for '([^']+)'/;
 const CALLED_BY_CLIENT = /\s*Called by client\s*$/;
@@ -68,12 +67,17 @@ export function readBuildInfo(): BuildInfo {
 
 export function readRecordHost(): string | null {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL;
-  if (!url) return null;
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
+  // String slicing, not new URL(): this runs inside the error pages, which
+  // must not throw on a malformed value.
+  return url ? url.replace(/^[a-z]+:\/\//i, "").split("/")[0] : null;
+}
+
+// A ConvexError's data is any Convex value, and a Convex Int64 arrives as a
+// bigint, which JSON.stringify refuses; written as its digits instead.
+function dataText(data: unknown): string {
+  return typeof data === "string"
+    ? data
+    : JSON.stringify(data, (_key, value) => (typeof value === "bigint" ? value.toString() : value));
 }
 
 function formatBuild(build: BuildInfo): string {
@@ -90,16 +94,12 @@ export function diagnoseError(
   context: { route: string; at: number; build: BuildInfo; recordHost: string | null },
 ): ErrorDiagnosis {
   let rest = String(error?.message ?? error ?? "");
-  let functionType: string | null = null;
-  let functionName: string | null = null;
   let requestId: string | null = null;
 
   const prefix = rest.match(CONVEX_PREFIX);
-  if (prefix) {
-    functionType = FUNCTION_TYPES[prefix[1]] ?? "function";
-    functionName = prefix[2];
-    rest = rest.slice(prefix[0].length);
-  }
+  const functionName = prefix ? prefix[2] : null;
+  const call = prefix ? `${FUNCTION_TYPES[prefix[1]]} ${prefix[2]}` : null;
+  if (prefix) rest = rest.slice(prefix[0].length);
   const request = rest.match(REQUEST_ID);
   if (request) {
     requestId = request[1];
@@ -108,12 +108,11 @@ export function diagnoseError(
   rest = rest.replace(CALLED_BY_CLIENT, "").trim();
   // A ConvexError thrown by a function carries its payload in `data`.
   if (error?.data !== undefined && error.data !== null) {
-    const data = typeof error.data === "string" ? error.data : JSON.stringify(error.data);
+    const data = dataText(error.data);
     if (!rest.includes(data)) rest = rest ? `${rest}\n${data}` : data;
   }
 
   const unknown = rest.match(UNKNOWN_FUNCTION);
-  if (unknown && !functionName) functionName = unknown[1];
 
   const recordHost = context.recordHost ?? "record host unknown";
   const build = formatBuild(context.build);
@@ -131,19 +130,18 @@ export function diagnoseError(
     record: recordHost,
   };
 
-  if (unknown && functionName) {
+  if (unknown && call) {
     return {
       ...base,
       kind: "unknown-function",
       headline: `The record has no function ${functionName}`,
-      failed: `${functionType ?? "function"} ${functionName}`,
+      failed: call,
       // scripts/vercel-build.mjs: a production build runs `npx convex
       // deploy`, a preview build deploys no functions.
       action: `This build calls ${functionName}, which the record at ${recordHost} does not have yet: the build is ahead of the record, so retrying fails until that function is deployed, which a merge of ${context.build.branch ?? "this build's branch"} to main does (a preview build deploys no functions).`,
     };
   }
-  if (functionName) {
-    const call = `${functionType ?? "function"} ${functionName}`;
+  if (call) {
     return {
       ...base,
       kind: "convex-function",
