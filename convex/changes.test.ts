@@ -103,6 +103,12 @@ describe("POST /jarvis/change", () => {
     const duplicate = await post(t, { ...first });
     expect(duplicate.body).toMatchObject({ applied: false, why: `${A.slice(0, 7)} was already checked: blocked` });
     expect((await rows(t))[0]).toMatchObject({ head: A, state: "blocked", reason: "tests failed: one test" });
+    // A delayed or duplicate outcome for the same head changes nothing either.
+    for (const late of [{ state: "rejected", reason: "the audit refused it" }, { state: "landed" }, { state: "blocked", reason: "another reason" }]) {
+      const outcome = await post(t, { repo: "Jarvis", branch: "feature", head: A, ...late });
+      expect(outcome.body).toMatchObject({ applied: false, why: `${A.slice(0, 7)} was already checked: blocked` });
+      expect((await rows(t))[0]).toMatchObject({ head: A, state: "blocked", reason: "tests failed: one test" });
+    }
     // A later push of the same head (a later stamp) runs its checks again.
     expect((await post(t, open(A))).body.applied).toBe(true);
     expect((await rows(t))[0]).toMatchObject({ head: A, state: "checking" });

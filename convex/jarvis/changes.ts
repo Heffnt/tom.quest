@@ -149,6 +149,10 @@ export const write = internalMutation({
       return { applied: false, id: newest._id, why: `the row is at ${newest.head.slice(0, 7)}, not ${args.head.slice(0, 7)}` };
     }
     if (newest.state === "landed") return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} already landed` };
+    // A blocked or rejected row is the finished outcome for its head: a
+    // delayed or duplicate outcome of the same head changes nothing, and only
+    // a later push of the head (a later stamp, above) reopens it.
+    if (newest.state !== "checking") return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} was already checked: ${newest.state}` };
     await ctx.db.patch(newest._id, {
       state: args.state,
       reason: args.state === "landed" ? undefined : clean(args.reason, REASON_MAX),
