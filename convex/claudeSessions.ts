@@ -937,10 +937,15 @@ export const internalEnsurePersistentSessions = internalMutation({
       .collect(); // bounded: five rows by design
     const out: { name: string; id: Id<"claudeSessions">; created: boolean; status: string; login: string | null }[] = [];
     for (const name of PERSISTENT_ORDER) {
-      const row = existing.find((session) => session.title === name);
-      if (row) {
-        if (login !== undefined) await ctx.db.patch(row._id, { login });
-        out.push({ name, id: row._id, created: false, status: row.status, login: login ?? row.login ?? null });
+      // Every row of the name: a model change across families forks a new
+      // row that keeps the name (forkSessionAsFrom), so one name can have an
+      // ended row and the live one.
+      const rows = existing.filter((session) => session.title === name);
+      if (rows.length > 0) {
+        for (const row of rows) {
+          if (login !== undefined) await ctx.db.patch(row._id, { login });
+          out.push({ name, id: row._id, created: false, status: row.status, login: login ?? row.login ?? null });
+        }
         continue;
       }
       const id = await ctx.db.insert("claudeSessions", {
@@ -1166,7 +1171,10 @@ export const renameSession = mutation({
   args: { sessionId: v.id("claudeSessions"), title: v.string() },
   handler: async (ctx, { sessionId, title }) => {
     await requireTomId(ctx);
-    await getSessionOrThrow(ctx, sessionId);
+    const session = await getSessionOrThrow(ctx, sessionId);
+    // A persistent session's title is its name, and its name is what the
+    // session host picks its type file by and the setup pen finds it by.
+    if (session.kind === "persistent") throw new Error(`"${session.title}" is a persistent session; its name is fixed`);
     const trimmed = title.trim();
     if (trimmed === "") throw new Error("Title is empty");
     await ctx.db.patch(sessionId, { title: trimmed });
@@ -1277,7 +1285,9 @@ async function forkSessionAsFrom(
   const forkId = await insertSession(
     ctx,
     {
-      title: `${session.title} (as ${model})`,
+      // A persistent session keeps its name: the fork IS that session from
+      // here on (the host types it by the name; the old row ends).
+      title: session.kind === "persistent" ? session.title : `${session.title} (as ${model})`,
       kind: session.kind,
       repos: session.repos ?? (session.repo === NO_REPO ? [] : [session.repo]),
       todoId: session.todoId,

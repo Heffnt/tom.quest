@@ -2321,3 +2321,18 @@ describe("the persistent sessions' setup pen", () => {
     expect(listed).toEqual([...NAMES].sort().map((n) => [n, "persistent", "gmail"]));
   });
 });
+
+describe("a persistent session's name", () => {
+  it("cannot be renamed, and a fork across families keeps it, and the setup pen moves both rows' login", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const [todo] = (await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {})).filter((r) => r.name === "todo");
+    await expect(tom.mutation(api.claudeSessions.renameSession, { sessionId: todo.id, title: "chores" })).rejects.toThrow(/name is fixed/);
+    const forkId = await tom.mutation(api.claudeSessions.forkSessionAs, { sessionId: todo.id, model: "gpt-5.6-sol", text: "go on" });
+    const fork = await t.run(async (ctx) => await ctx.db.get(forkId));
+    expect([fork?.title, fork?.kind]).toEqual(["todo", "persistent"]);
+    const again = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { login: "gmail" });
+    expect(again.filter((r) => r.name === "todo").map((r) => [r.created, r.login])).toEqual([[false, "gmail"], [false, "gmail"]]);
+    expect(again.filter((r) => r.created)).toEqual([]);
+  });
+});
