@@ -27,9 +27,11 @@ const post = async (t: ReturnType<typeof convexTest>, body: unknown) => {
 };
 const rows = async (t: ReturnType<typeof convexTest>, query = "repo=Jarvis&branch=feature") =>
   (await (await t.fetch(`/jarvis/changes?${query}`, { headers: HEADERS })).json()).changes;
+// Each push is stamped later than the one before, as the box's hook stamps them.
+let clock = 1_000;
 const open = (head: string, extra: Record<string, unknown> = {}) => ({
   repo: "Jarvis", branch: "feature", head, state: "checking", author: "Jarvis <jarvis@box>",
-  title: "docs: a comment line", description: "Why it changes.", complex: false, ...extra,
+  title: "docs: a comment line", description: "Why it changes.", complex: false, pushedAt: (clock += 1_000), ...extra,
 });
 
 describe("POST /jarvis/change", () => {
@@ -63,6 +65,32 @@ describe("POST /jarvis/change", () => {
     expect(both.map((r: { head: string; state: string }) => [r.head, r.state])).toEqual([[A, "checking"], [B, "landed"]]);
   });
 
+  it("changes nothing for a head any row of the branch landed, not only the newest", async () => {
+    const t = setup();
+    await post(t, open(A));
+    await post(t, { repo: "Jarvis", branch: "feature", head: A, state: "landed" });
+    await post(t, open(B));
+    await post(t, { repo: "Jarvis", branch: "feature", head: B, state: "landed" });
+    const again = await post(t, open(A));
+    expect(again.body).toMatchObject({ applied: false, why: `${A.slice(0, 7)} already landed` });
+    expect((await rows(t)).map((r: { head: string; state: string }) => [r.head, r.state])).toEqual([[B, "landed"], [A, "landed"]]);
+  });
+
+  it("keeps the newer head when two pushes' posts arrive out of order", async () => {
+    const t = setup();
+    const older = open(A);
+    const newer = open(B);
+    await post(t, newer);
+    const late = await post(t, older);
+    expect(late.body).toMatchObject({ applied: false, why: `${A.slice(0, 7)} was pushed before the row's ${B.slice(0, 7)}` });
+    expect((await rows(t))[0]).toMatchObject({ head: B, state: "checking", pushedAt: newer.pushedAt });
+    // The gate job's re-post of the same head with its queue's stamp keeps the row.
+    expect((await post(t, { ...newer, pushedAt: newer.pushedAt - 1 })).body.applied).toBe(true);
+    expect((await rows(t))[0]).toMatchObject({ head: B, pushedAt: newer.pushedAt });
+    // An outcome for the older head does not apply.
+    expect((await post(t, { repo: "Jarvis", branch: "feature", head: A, state: "landed" })).body.applied).toBe(false);
+  });
+
   it("refuses an outcome for a head the row no longer holds", async () => {
     const t = setup();
     await post(t, open(A));
@@ -91,6 +119,8 @@ describe("POST /jarvis/change", () => {
     expect((await post(t, open(A, { state: "merged" }))).status).toBe(400);
     expect((await post(t, open(A, { branch: "main" }))).status).toBe(400);
     expect((await post(t, open(A, { title: "" }))).status).toBe(400);
+    expect((await post(t, open(A, { pushedAt: undefined }))).status).toBe(400);
+    expect((await post(t, open(A, { pushedAt: "soon" }))).status).toBe(400);
     const anon = await t.fetch("/jarvis/change", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(open(A)) });
     expect(anon.status).toBe(401);
   });

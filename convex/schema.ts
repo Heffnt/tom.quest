@@ -2226,6 +2226,10 @@ export default defineSchema({
     description: v.optional(v.string()),
     // The pusher's "Complex: yes" trailer.
     complex: v.boolean(),
+    // When the box received the push of this head (ms), stamped by its
+    // receiving hook: the order of two heads of one branch, which their
+    // arrival here may not keep.
+    pushedAt: v.optional(v.number()),
     // Whether the gate requires the audit for this head, and why.
     auditRequired: v.optional(v.boolean()),
     auditWhy: v.optional(v.string()),
@@ -2237,6 +2241,7 @@ export default defineSchema({
     landedAt: v.optional(v.number()),
   })
     .index("by_repo_and_branch", ["repo", "branch"])
+    .index("by_repo_and_branch_and_head", ["repo", "branch", "head"])
     .index("by_repo_and_updatedAt", ["repo", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"]),
   dayLogEntries: defineTable({

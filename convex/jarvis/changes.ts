@@ -12,13 +12,18 @@
 //     reason), rejected (the audit refused it, with its findings) or landed
 //     (main was fast-forwarded to the head).
 //
-// POST /jarvis/change { repo, branch, head, state, author?, title?,
-// description?, complex?, base?, auditRequired?, auditWhy?, reason? }:
+// POST /jarvis/change { repo, branch, head, state, pushedAt?, author?,
+// title?, description?, complex?, base?, auditRequired?, auditWhy?, reason? }
+// (pushedAt, author and title are required with state checking):
 //   - state checking opens the branch's change at `head`, or moves the open
 //     one there (a later push of the same branch re-runs its checks). A
 //     branch whose newest row is landed gets a new row, so a landed row stays
-//     as history. Re-posting checking for a head already landed changes
-//     nothing.
+//     as history. Checking for a head any row of the branch has landed
+//     changes nothing. It carries `pushedAt`, when the box received the push
+//     (its receiving hook's stamp, which the gate job sends again from its
+//     queue): two posts for one branch can arrive out of order, and a post
+//     for another head pushed before the row's own is refused, so the row
+//     never moves back to an older head.
 //   - any other state applies only to the row at that same head that has not
 //     landed: a job finishing an older head after a newer push must not
 //     overwrite the newer head's state. Answers { ok, applied, id?, why? }.
@@ -62,6 +67,7 @@ export const write = internalMutation({
     title: v.optional(v.string()),
     description: v.optional(v.string()),
     complex: v.optional(v.boolean()),
+    pushedAt: v.optional(v.number()),
     base: v.optional(v.string()),
     auditRequired: v.optional(v.boolean()),
     auditWhy: v.optional(v.string()),
@@ -80,10 +86,25 @@ export const write = internalMutation({
       ...(args.auditWhy !== undefined ? { auditWhy: clean(args.auditWhy, REASON_MAX) } : {}),
     };
     if (args.state === "checking") {
-      if (newest?.state === "landed" && newest.head === args.head) {
-        return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} already landed` };
+      const landedHere = await ctx.db
+        .query("changes")
+        .withIndex("by_repo_and_branch_and_head", (q) => q.eq("repo", args.repo).eq("branch", args.branch).eq("head", args.head))
+        .filter((q) => q.eq(q.field("state"), "landed"))
+        .first();
+      if (landedHere !== null) {
+        return { applied: false, id: landedHere._id, why: `${args.head.slice(0, 7)} already landed` };
       }
+      if (
+        newest !== null && newest.head !== args.head
+        && newest.pushedAt !== undefined && args.pushedAt !== undefined && args.pushedAt < newest.pushedAt
+      ) {
+        return { applied: false, id: newest._id, why: `${args.head.slice(0, 7)} was pushed before the row's ${newest.head.slice(0, 7)}` };
+      }
+      const pushedAt = newest !== null && newest.head === args.head && newest.pushedAt !== undefined
+        ? Math.max(newest.pushedAt, args.pushedAt ?? 0)
+        : args.pushedAt;
       const opened = {
+        ...(pushedAt !== undefined ? { pushedAt } : {}),
         head: args.head,
         author: clean(args.author, TITLE_MAX) ?? newest?.author ?? "unknown",
         title: clean(args.title, TITLE_MAX) ?? newest?.title ?? "(no message)",
@@ -178,8 +199,11 @@ export const postChange = httpAction(async (ctx, request) => {
   }
   const base = text(b.base);
   if (base !== undefined && !SHA.test(base)) return jsonResponse(400, { error: "base, when given, must be a full commit id" });
-  if (state === "checking" && (!text(b.author) || !text(b.title))) {
-    return jsonResponse(400, { error: "author and title are required when a change opens" });
+  if (b.pushedAt !== undefined && !(typeof b.pushedAt === "number" && Number.isFinite(b.pushedAt) && b.pushedAt > 0)) {
+    return jsonResponse(400, { error: "pushedAt, when given, must be a time in ms" });
+  }
+  if (state === "checking" && (!text(b.author) || !text(b.title) || b.pushedAt === undefined)) {
+    return jsonResponse(400, { error: "author, title and pushedAt are required when a change opens" });
   }
   const result = await ctx.runMutation(internal.jarvis.changes.write, {
     repo,
@@ -190,6 +214,7 @@ export const postChange = httpAction(async (ctx, request) => {
     ...(text(b.title) ? { title: text(b.title) } : {}),
     ...(text(b.description) ? { description: text(b.description) } : {}),
     ...(typeof b.complex === "boolean" ? { complex: b.complex } : {}),
+    ...(typeof b.pushedAt === "number" ? { pushedAt: b.pushedAt } : {}),
     ...(base ? { base } : {}),
     ...(typeof b.auditRequired === "boolean" ? { auditRequired: b.auditRequired } : {}),
     ...(text(b.auditWhy) ? { auditWhy: text(b.auditWhy) } : {}),
