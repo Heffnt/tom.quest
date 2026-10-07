@@ -4,7 +4,6 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 import { runDurationText } from "../app/agents/lib";
-import { barEnd, lasted, type RunMark } from "../app/agents/window/lib";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -962,72 +961,6 @@ describe("agents: eviction", () => {
   });
 });
 
-describe("agents.roots", () => {
-  async function root(t: ReturnType<typeof convexTest>, runId: string, host: "laptop" | "box", startedAt: number) {
-    expect(await t.mutation(internal.agents.internalIngest, ingest(run({ runId, rootRunId: runId, host, startedAt }), [], []) as never)).toMatchObject({ ok: true });
-  }
-
-  it("lists roots and never their children", async () => {
-    const t = convexTest(schema, modules);
-    const parent = "claude:laptop:root-run";
-    await t.mutation(internal.agents.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", parent, parent, 1)]) as never);
-    const viewer = await withTom(t);
-    expect((await viewer.query(api.agents.roots, {})).map((entry) => entry.runId)).toEqual([parent]);
-  });
-
-  it("merges both hosts newest first", async () => {
-    const t = convexTest(schema, modules);
-    await root(t, "claude:laptop:laptop-old", "laptop", 10);
-    await root(t, "claude:box:box-newer", "box", 20);
-    await root(t, "claude:laptop:laptop-new", "laptop", 30);
-    await root(t, "claude:box:box-oldest", "box", 5);
-    const viewer = await withTom(t);
-    expect((await viewer.query(api.agents.roots, {})).map((entry) => entry.runId)).toEqual([
-      "claude:laptop:laptop-new", "claude:box:box-newer", "claude:laptop:laptop-old", "claude:box:box-oldest",
-    ]);
-  });
-
-  it("breaks a same-millisecond tie on runId", async () => {
-    const t = convexTest(schema, modules);
-    await root(t, "claude:laptop:tie-bravo", "laptop", 7);
-    await root(t, "claude:box:tie-alpha", "box", 7);
-    await root(t, "claude:laptop:tie-later", "laptop", 8);
-    const viewer = await withTom(t);
-    expect((await viewer.query(api.agents.roots, {})).map((entry) => entry.runId)).toEqual([
-      "claude:laptop:tie-later", "claude:box:tie-alpha", "claude:laptop:tie-bravo",
-    ]);
-  });
-
-  it("narrows to one host", async () => {
-    const t = convexTest(schema, modules);
-    await root(t, "claude:laptop:laptop-one", "laptop", 10);
-    await root(t, "claude:box:box-run-one", "box", 20);
-    const viewer = await withTom(t);
-    expect((await viewer.query(api.agents.roots, { host: "box" })).map((entry) => entry.runId)).toEqual(["claude:box:box-run-one"]);
-    expect((await viewer.query(api.agents.roots, { host: "laptop" })).map((entry) => entry.runId)).toEqual(["claude:laptop:laptop-one"]);
-  });
-
-  it("caps the merged result and refuses a limit outside 1..500", async () => {
-    const t = convexTest(schema, modules);
-    await root(t, "claude:laptop:laptop-old", "laptop", 10);
-    await root(t, "claude:box:box-newest", "box", 30);
-    await root(t, "claude:laptop:laptop-mid", "laptop", 20);
-    const viewer = await withTom(t);
-    expect((await viewer.query(api.agents.roots, { limit: 2 })).map((entry) => entry.runId)).toEqual([
-      "claude:box:box-newest", "claude:laptop:laptop-mid",
-    ]);
-    await expect(viewer.query(api.agents.roots, { limit: 0 })).rejects.toThrow();
-    await expect(viewer.query(api.agents.roots, { limit: 501 })).rejects.toThrow();
-  });
-
-  it("denies the reader without Tom identity", async () => {
-    const t = convexTest(schema, modules);
-    await t.mutation(internal.agents.internalIngest, ingest() as never);
-    const stranger = t.withIdentity({ subject: "someone-else" });
-    await expect(stranger.query(api.agents.roots, {})).rejects.toThrow();
-  });
-});
-
 // ── runs.internalRunTrace: the audit's own run, by its token ─────────────────
 // What the trace checker reads to tell a claim from a fact: it said it opened a
 // path, and this is every Read, Grep and Glob call the run actually made.
@@ -1247,22 +1180,17 @@ describe("a run's end", () => {
     }
   });
 
-  it("shows the run's duration on the agents page and stops its timeline bar at the end", async () => {
+  it("shows the run's duration once its end is posted", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.agents.internalIngest, ingest(run({ status: "running", startedAt: 1_000, lastLineAt: 2_000 })) as never);
     const tom = await withTom(t);
-    // Before the end: a running run shows no duration and its bar runs to now.
-    const [rootBefore] = await tom.query(api.agents.roots, {});
-    expect(runDurationText(rootBefore)).toBe("");
+    // Before the end: a running run shows no duration.
+    const before = await tom.query(api.agents.get, { agentId: RUN_ID });
+    expect(runDurationText(before!)).toBe("");
     await t.mutation(internal.agents.internalRecordRunEnd, { runId: RUN_ID, endedAt: 125_000, endReason: "ended" });
-    // The root list's row reads "ran 2m 04s".
-    const [root] = await tom.query(api.agents.roots, {});
-    expect(runDurationText(root)).toBe("2m 04s");
-    // The window's bar ends at the posted end, not at now and not at the last line.
-    const window = await tom.query(api.observe.runsInWindow, { from: 0, to: 10_000, paginationOpts: { cursor: null, numItems: 10 } });
-    const mark = window.page.find((entry) => entry.runId === RUN_ID)!;
-    expect(barEnd(mark as RunMark, 10 * 60_000)).toBe(125_000);
-    expect(lasted(mark as RunMark, 10 * 60_000)).toBe("2m");
+    // The run reads "ran 2m 04s".
+    const ended = await tom.query(api.agents.get, { agentId: RUN_ID });
+    expect(runDurationText(ended!)).toBe("2m 04s");
   });
 
   it("refuses a run the record does not hold", async () => {

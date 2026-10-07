@@ -243,7 +243,7 @@ function repoSlug(repo: unknown): string | null {
 
 function agentHref(row: Row): string | null {
   const agentId = row.provenance?.agentId;
-  return agentId === undefined ? null : `/agents?agent=${encodeURIComponent(agentId)}`;
+  return agentId === undefined ? null : `/sessions?agent=${encodeURIComponent(agentId)}`;
 }
 
 /** One line for one row of what Jarvis did, and where it links. */

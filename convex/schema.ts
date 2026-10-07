@@ -1911,8 +1911,6 @@ export default defineSchema({
     .index("by_parent_and_started_at_and_run_id", ["parentRunId", "startedAt", "runId"])
     // A tree reader scans a root at every depth.
     .index("by_root_depth", ["rootRunId", "depth"])
-    // The list filters root runs by host and starts in source order.
-    .index("by_host_depth_started", ["host", "depth", "startedAt"])
     // Joins a run to the legacy session state row.
     .index("by_session", ["sessionId"])
     // agentLabels.agentForToken turns a row's producedByRunToken into the run that
@@ -1925,10 +1923,7 @@ export default defineSchema({
     .index("by_rows_until", ["rowsUntil"])
     // The weekly simplification pass's gather (convex/ttsSimplify.ts), which
     // needs a time range over EVERY run in the window regardless of host and
-    // depth. by_host_depth_started will not do it: it wants equality on host
-    // and on depth before it can range on time, so the same read there is a
-    // loop over hosts times depths — and depth has no bound, so the loop's
-    // bound would be a guess.
+    // depth.
     .index("by_started", ["startedAt"]),
 
   // Tom presses one control and a box job serves it: Convex holds no S3 reader

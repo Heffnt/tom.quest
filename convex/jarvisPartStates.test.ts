@@ -375,26 +375,6 @@ describe("the rows through the route and the thread", () => {
     expect(await viewer.query(api.jarvis.partStates.partStates, { parts })).toEqual([{ part: "deploy", state: "unverified", row: null, capped: false }]);
   });
 
-  it("Tom reports an issue and then no issues on a part from the thread; nobody else can", async () => {
-    const t = convexTest({ schema, modules });
-    const viewer = await tom(t);
-    await viewer.mutation(api.thread.reportOnPart, { part: "deploy", report: "issue", text: "the deploy did not run" });
-    const parts = [{ id: "deploy", schedule: "deploy", file: "worker/jobs/deploy.mjs" }];
-    expect((await viewer.query(api.jarvis.partStates.partStates, { parts }))[0]).toMatchObject({ part: "deploy", state: "issue", row: { kind: "issue", text: "the deploy did not run" } });
-    await viewer.mutation(api.thread.reportOnPart, { part: "deploy", report: "no-issues", text: "deploy works now" });
-    expect((await viewer.query(api.jarvis.partStates.partStates, { parts }))[0]).toMatchObject({ state: "working", row: { kind: "use" } });
-    const rows = await t.run((ctx) => ctx.db.query("events").withIndex("by_kind_at", (q) => q.eq("kind", "use")).collect());
-    expect(rows[0]).toMatchObject({ provenance: { user: "tom" }, data: { part: "deploy", by: "tom", state: "working", what: "deploy works now" } });
-
-    const userId = await t.run((ctx) => ctx.db.insert("users", { name: "reader", email: "reader@example.test", role: "user" }));
-    const reader = t.withIdentity({ subject: userId });
-    await expect(reader.mutation(api.thread.reportOnPart, { part: "deploy", report: "issue", text: "x" })).rejects.toThrow("Thread access is restricted to Tom");
-    await expect(reader.query(api.jarvis.partStates.partStates, { parts })).rejects.toThrow("Jarvis access is restricted to Tom");
-    await expect(viewer.mutation(api.thread.reportOnPart, { part: " ", report: "issue", text: "x" })).rejects.toThrow("subject, when given, is a non-empty string");
-    await expect(viewer.mutation(api.thread.reportOnPart, { part: "deploy", report: "issue", text: " " })).rejects.toThrow("an issue event names its text");
-    await expect(viewer.mutation(api.thread.reportOnPart, { part: "deploy", report: "no-issues", text: " " })).rejects.toThrow("a use event names data.what or its text");
-  });
-
   it("partStates maps job-ok rows by schedule and landing rows by file, per part the caller passes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);

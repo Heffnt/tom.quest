@@ -542,38 +542,6 @@ export function costText(costUsd?: number): string {
   return `$${costUsd.toFixed(2)}`;
 }
 
-// The list is a triage surface — needs-you outranks recency. Bands, top to
-// bottom: running, spinning up, idle, over. The retired "waiting on Tom" band
-// was the permission band; nothing has produced it since 2026-08-29, and an
-// idle session is exactly "waiting for Tom's next turn" — so the coded order
-// already is the ruling as it stands.
-const TRIAGE_BAND: Record<SessionStatus, number> = {
-  running: 1,
-  starting: 2,
-  requested: 2,
-  idle: 3,
-  ended: 4,
-  failed: 4,
-};
-
-/**
- * The list's triage order, as a pure sort. Within a band: the longest-waiting
- * permission sits at the very top, the terminal band reads newest-first, and
- * everything else keeps listSessions' own newest-first order (sort is stable).
- * A copy is sorted, never the caller's array.
- */
-export function orderSessions<
-  T extends { status: SessionStatus; statusChangedAt: number; createdAt: number },
->(sessions: T[]): T[] {
-  return [...sessions].sort((a, b) => {
-    const band = TRIAGE_BAND[a.status] - TRIAGE_BAND[b.status];
-    if (band !== 0) return band;
-    if (TRIAGE_BAND[a.status] === 0) return a.statusChangedAt - b.statusChangedAt;
-    if (TRIAGE_BAND[a.status] === 4) return b.createdAt - a.createdAt;
-    return 0;
-  });
-}
-
 /**
  * Compact rendering of a permission/tool input: for Bash show the command
  * itself; otherwise pretty-printed JSON.

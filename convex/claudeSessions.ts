@@ -74,16 +74,6 @@ async function getSessionOrThrow(
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
 
-export const listSessions = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTomId(ctx);
-    // Newest first; the session list is human-scale (take, not collect —
-    // ledger tts-collect-pagination discipline).
-    return await ctx.db.query("claudeSessions").order("desc").take(100);
-  },
-});
-
 export const getSession = query({
   args: { id: v.id("claudeSessions") },
   handler: async (ctx, { id }) => {
@@ -730,7 +720,7 @@ export async function insertSession(
 }
 
 /**
- * Every live session, for a CRON. listSessions and getDaemonHealth are
+ * Every live session, for a CRON. getSession and getDaemonHealth are
  * requireTomId-gated, so the hourly update — which has no identity — could not
  * read them; this file previously contained no internalQuery at all.
  *

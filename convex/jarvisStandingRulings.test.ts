@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import { MESSAGE_MAX_CHARS } from "./ttsCompose";
 
@@ -29,11 +29,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** One message of his on /thread, written through the page's own door. */
+/** One message of his on the former /thread page, as the record still holds
+ *  those rows (the page and its door were removed on 2026-10-07). */
 async function threadMessage(t: T, text: string): Promise<string> {
-  const id = await t.run(async (ctx) => ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }));
-  const { id: messageId } = await t.withIdentity({ subject: id }).mutation(api.thread.send, { text });
-  return messageId;
+  return await t.run(async (ctx) => ctx.db.insert("events", {
+    kind: "thread-message", at: Date.now(), provenance: { user: "tom" }, text, data: {},
+  }));
 }
 
 const HIS_MESSAGE =

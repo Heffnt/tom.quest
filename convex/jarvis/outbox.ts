@@ -17,7 +17,7 @@ export const NEEDS_YOU_OPENED = "needs-you-opened";
 export const NEEDS_YOU_POSTED = "needs-you-posted";
 export const DIGEST_LINE = "digest-line";
 export const THREAD_DIGEST = "thread-digest";
-export const THREAD_NEEDS_YOU = "thread-needs-you";
+const THREAD_NEEDS_YOU = "thread-needs-you";
 export const NEEDS_TOM_ANSWERED = "needs-tom-answered";
 /** A line of the silence alarm on the Jarvis thread (convex/jarvis/jobs.ts raise). */
 export const SILENCE_ALARM = "silence-alarm";

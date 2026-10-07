@@ -31,7 +31,7 @@ export function reserveSessionTab(): ReservedTab {
   const tab = window.open("", "_blank");
   return {
     goto: (sessionId) => {
-      const href = `/agents?session=${sessionId}`;
+      const href = `/sessions?session=${sessionId}`;
       // Popup blocked (or the tab was closed): fall back to this tab. Plain
       // location.assign keeps this helper hook-free, so click handlers can
       // call it without a router in scope.

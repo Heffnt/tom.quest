@@ -107,7 +107,7 @@ export function boxChangeFaults(data: unknown): string[] {
 }
 
 /** The change as it may leave the server: command and change text redacted. */
-export function redactedBoxChange(change: BoxChange): BoxChange {
+function redactedBoxChange(change: BoxChange): BoxChange {
   return {
     ...change,
     ...(change.command === undefined ? {} : { command: redactSecrets(change.command) }),

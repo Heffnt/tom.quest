@@ -88,7 +88,7 @@ import ForkDialog from "@/app/agents/components/fork-dialog";
 import ModelSelect from "@/app/agents/components/model-select";
 import OverflowExpand from "@/app/agents/components/overflow-expand";
 import Agent from "@/app/agents/components/agent";
-import AgentList from "@/app/agents/components/agent-list";
+import { NewSessionForm } from "@/app/agents/components/agent-list";
 import AgentRow from "@/app/agents/components/agent-row";
 import AgentRows from "@/app/agents/components/agent-rows";
 
@@ -432,12 +432,7 @@ const CASES: { file: string; render: () => void }[] = [
     file: "app/agents/components/agent-list.tsx",
     render: () =>
       void render(
-        <AgentList
-          sessions={[SESSION as never]}
-          now={NOW}
-          onOpenSession={noop}
-          onOpenRun={noop}
-        />,
+        <NewSessionForm onCreated={noop} />,
       ),
   },
   {

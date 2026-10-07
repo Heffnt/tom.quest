@@ -140,7 +140,7 @@ describe("surfaces outside the list refuse agent entirely", () => {
   it("refuses the Sessions surface, reads included", async () => {
     const t = convexTest(schema, modules);
     const { as: agent } = await withRole(t, "agent");
-    await expect(agent.query(api.claudeSessions.listSessions, {})).rejects.toThrow(
+    await expect(agent.query(api.claudeSessions.getDaemonHealth, {})).rejects.toThrow(
       /restricted to Tom/,
     );
   });

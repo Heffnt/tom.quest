@@ -41,7 +41,7 @@ export type EventInput = {
 };
 
 /** One row as the table stores it: what validateEvent answers. */
-export type EventRow = {
+type EventRow = {
   kind: string;
   at: number;
   provenance: { agentId?: string; job?: string; session?: string; user?: string };
