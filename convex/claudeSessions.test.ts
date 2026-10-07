@@ -2296,11 +2296,11 @@ describe("the sessions page's record", () => {
 describe("the persistent sessions' setup pen", () => {
   const NAMES = ["dump", "briefer", "builder", "observer", "todo"];
 
-  it("creates one idle row per name with no opener, and a rerun creates none", async () => {
+  it("creates the five idle rows with no opener, and a rerun creates none", async () => {
     const t = convexTest({ schema, modules });
-    const first = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { names: NAMES });
+    const first = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {});
     expect(first.map((r) => [r.name, r.created, r.status, r.login])).toEqual(NAMES.map((n) => [n, true, "idle", null]));
-    const again = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { names: NAMES });
+    const again = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {});
     expect(again.map((r) => r.created)).toEqual(NAMES.map(() => false));
     expect(again.map((r) => r.id)).toEqual(first.map((r) => r.id));
     const rows = await t.run(async (ctx) => await ctx.db.query("claudeSessions").collect());
@@ -2311,21 +2311,13 @@ describe("the persistent sessions' setup pen", () => {
     expect(inbound).toEqual([]);
   });
 
-  it("writes a given login onto new and existing rows, and the poll hands the host the kind, title and login", async () => {
+  it("writes a given login onto every row, new or existing, and the poll hands the host the kind, title and login", async () => {
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { names: ["todo"] });
-    const set = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { names: ["todo", "dump"], login: "gmail" });
-    expect(set.map((r) => [r.name, r.created, r.login])).toEqual([["todo", false, "gmail"], ["dump", true, "gmail"]]);
+    await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, {});
+    const set = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { login: "gmail" });
+    expect(set.map((r) => [r.name, r.created, r.login])).toEqual(NAMES.map((n) => [n, false, "gmail"]));
     const poll = await t.mutation(internal.claudeSessions.internalPoll, { version: "test", daemonStartedAt: 1, load: HEALTHY_LOAD });
     const listed = (poll.sessions as { title: string; kind: string; login?: string }[]).map((s) => [s.title, s.kind, s.login]).sort();
-    expect(listed).toEqual([["dump", "persistent", "gmail"], ["todo", "persistent", "gmail"]]);
-  });
-
-  it("makes one row for a name given twice", async () => {
-    const t = convexTest({ schema, modules });
-    const out = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { names: ["todo", "todo"] });
-    expect(out.map((r) => r.name)).toEqual(["todo"]);
-    const rows = await t.run(async (ctx) => await ctx.db.query("claudeSessions").collect());
-    expect(rows.map((r) => r.title)).toEqual(["todo"]);
+    expect(listed).toEqual([...NAMES].sort().map((n) => [n, "persistent", "gmail"]));
   });
 });

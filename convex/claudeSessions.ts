@@ -916,27 +916,27 @@ export const internalCreateSession = internalMutation({
 
 // The persistent sessions' setup pen (design section 4.1), run from the
 // Jarvis Box with the Convex CLI (Jarvis scripts/persistent-sessions.mjs).
-// One row per name, kind "persistent", titled by the name: an idle session on
-// no repository with NO opener, so its transcript starts with the first
-// message Tom (or the clock) sends, and its prompt is the Jarvis type file the
-// session host passes on every reply. Safe to rerun: a name that already has
-// a persistent row is left as it is, except that a given `login` is written
-// onto it (the sessions page's selector writes the same field).
+// One row per name in PERSISTENT_ORDER, kind "persistent", titled by the
+// name: an idle session on no repository with NO opener, so its transcript
+// starts with the first message Tom (or the clock) sends, and its prompt is
+// the Jarvis type file the session host appends on every reply.
+//
+// REMOVAL CHECK on reusing a row that exists: the pen is run again on
+// purpose, to move all five rows to the other login (Tom's ruling of October
+// 6: gmail until the wpi weekly reset, wpi after it), and a second run that
+// inserted would leave two sessions of one name, two transcripts, on the
+// page. So a name with a row keeps it, and a given `login` is written onto
+// it, which is the whole reason for that run.
 export const internalEnsurePersistentSessions = internalMutation({
-  args: {
-    names: v.array(v.string()),
-    login: v.optional(SESSION_LOGIN),
-  },
-  handler: async (ctx, { names, login }) => {
+  args: { login: v.optional(SESSION_LOGIN) },
+  handler: async (ctx, { login }) => {
     const now = Date.now();
     const existing = await ctx.db
       .query("claudeSessions")
       .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
       .collect(); // bounded: five rows by design
     const out: { name: string; id: Id<"claudeSessions">; created: boolean; status: string; login: string | null }[] = [];
-    // A name given twice is one row: the existing rows are read once, above,
-    // so a repeat in this list would insert a second one.
-    for (const name of new Set(names)) {
+    for (const name of PERSISTENT_ORDER) {
       const row = existing.find((session) => session.title === name);
       if (row) {
         if (login !== undefined) await ctx.db.patch(row._id, { login });
