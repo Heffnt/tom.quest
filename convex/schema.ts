@@ -636,6 +636,25 @@ export default defineSchema({
     // The dual write's stamp (convex/jarvis/tables.ts, `follow`): a fingerprint
     // of this row's other fields, which its plain copy carries too.
     legacyVersion: v.optional(v.string()),
+    // The plain table's fields added since step C, declared here too because
+    // the way back, copyBack (convex/jarvis/tables.ts), copies every field of
+    // a todo into this table: the reminder and the restart's prior state
+    // (todos.reminderAt and todos.beforeArchive, 2026-10-06), and the id of
+    // the box's write (todos.writeId). Nothing writes them here otherwise.
+    reminderAt: v.optional(v.number()),
+    beforeArchive: v.optional(
+      v.object({
+        at: v.number(),
+        status: v.union(
+          v.literal("active"),
+          v.literal("waiting"),
+          v.literal("archived"),
+          v.literal("done"),
+        ),
+        archivedAt: v.optional(v.number()),
+      }),
+    ),
+    writeId: v.optional(v.string()),
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
@@ -852,6 +871,11 @@ export default defineSchema({
     // means no reminder. Every other field above stays declared because the
     // 2,655 rows written before the restart carry them.
     reminderAt: v.optional(v.number()),
+    // The id of the write that made the row, when a box session wrote it
+    // (convex/jarvis/todos.ts create, from Jarvis `jarvis write todo`): the
+    // same on every post of one todo, so a resend after a lost answer finds
+    // the row it already wrote instead of making a second.
+    writeId: v.optional(v.string()),
     // The state a row was in before the restart archived the whole table
     // (convex/ttsMigrations.ts internalArchiveTodosWhole): when it was
     // archived, its status then, and the archivedAt it had then, if any.
@@ -903,7 +927,8 @@ export default defineSchema({
     // read on the hot path of a route that must answer within 3 seconds.
     .index("by_slackTs", ["slackTs"])
     .index("by_threadMessageId", ["threadMessageId"])
-    .index("by_legacy", ["legacyId"]),
+    .index("by_legacy", ["legacyId"])
+    .index("by_writeId", ["writeId"]),
 
   // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
   // Read-only mirror of Tom's external calendars, ingested from ICS feeds
