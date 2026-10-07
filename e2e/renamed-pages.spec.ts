@@ -17,7 +17,9 @@ test("an old /agents link lands on /sessions with its query", async ({ page }) =
 
 test("an old /runs?run= link opens that agent on /sessions", async ({ page }) => {
   await page.goto("/runs?run=claude%3Abox%3Aabcdefgh");
-  await expect(page).toHaveURL(/\/sessions\?agent=claude(%3A|:)box(%3A|:)abcdefgh/);
+  // The original query passes through beside the one the rule writes, so
+  // ?run= stays on the address and the page reads ?agent=.
+  await expect(page).toHaveURL(/\/sessions\?(.*&)?agent=claude(%3A|:)box(%3A|:)abcdefgh/);
 });
 
 test("/observe and /thread land on /sessions", async ({ page }) => {
