@@ -74,7 +74,22 @@ export const internalRegisterSession = internalMutation({
     // (statusChangedAt), so an old session reopened today is listed with
     // today's.
     const patch: Record<string, unknown> = { statusChangedAt: now };
-    if (existing.client !== undefined && existing.client !== args.client) patch.client = args.client;
+    if (existing.client !== undefined && existing.client !== args.client) {
+      // The page made this session the host's to deliver a message or a
+      // control to (claudeSessions.ts sendMessageFrom, sendControlFrom,
+      // reopenSessionFrom). A Desktop registration that lands while that is
+      // still pending, delayed or retried, leaves it with the host: the poll
+      // lists an idle session only while it is the host's, and the pending
+      // row would otherwise never be delivered. The next registration after
+      // the host has taken it gives the session back to Desktop.
+      const pending =
+        existing.client === "host" &&
+        (await ctx.db
+          .query("claudeInbound")
+          .withIndex("by_session_status", (q) => q.eq("sessionId", existing._id).eq("status", "pending"))
+          .first()) !== null;
+      if (!pending) patch.client = args.client;
+    }
     if (args.transcriptPath !== undefined && existing.transcriptPath !== args.transcriptPath) patch.transcriptPath = args.transcriptPath;
     // The directory and the transcript go together: the host resumes the
     // transcript from the directory whose project folder holds it.

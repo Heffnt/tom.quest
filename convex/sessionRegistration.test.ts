@@ -127,6 +127,25 @@ describe("a session registered by its Claude session id", () => {
     expect(new Set(subagents.map((s: any) => s.agentId)).size).toBe(230);
   });
 
+  it("stays the host's while a message the page sent is pending, whatever Desktop registers meanwhile", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const sdk = "eeeeeeee-0000-0000-0000-000000000005";
+    const { id } = await t.mutation(internal.sessionRegistration.internalRegisterSession, { sdkSessionId: sdk, client: "desktop", cwd: "/home/jarvis", transcriptPath: "/a/e.jsonl" });
+    await tom.mutation(api.claudeSessions.sendMessage, { sessionId: id, text: "from the page" });
+    // A delayed Desktop registration lands after the message.
+    await t.mutation(internal.sessionRegistration.internalRegisterSession, { sdkSessionId: sdk, client: "desktop" });
+    const listed = (await poll(t)).sessions.find((s: any) => s.id === id) as any;
+    expect(listed.client).toBe("host");
+    expect(listed.pendingInbound.map((r: any) => r.text)).toEqual(["from the page"]);
+    // Once nothing is pending, Desktop's registration takes it back.
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("claudeInbound").collect()) await ctx.db.patch(row._id, { status: "delivered" });
+    });
+    await t.mutation(internal.sessionRegistration.internalRegisterSession, { sdkSessionId: sdk, client: "desktop" });
+    expect((await t.run((ctx) => ctx.db.get(id)))!.client).toBe("desktop");
+  });
+
   it("leaves a row the host created held by the host", async () => {
     const t = convexTest(schema, modules);
     const id = await t.run((ctx) => ctx.db.insert("claudeSessions", {
