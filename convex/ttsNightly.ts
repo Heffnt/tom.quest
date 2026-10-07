@@ -614,7 +614,9 @@ export const internalConsumeLearningObjections = internalMutation({
 // ── The event pen ────────────────────────────────────────────────────────────
 // The job's kinds are its own ("nightly-failure", "learning-run",
 // "learning-change", "learning-reverted", "learning-revert-failed",
-// "nightly-run"); the pattern keeps the pen to lowercase kebab-case names
+// "nightly-run", both the night's summary and, keyed `WikiTom@<sha>`, each
+// commit it is about to push, which the merge gate reads: convex/ttsMerge.ts
+// NIGHTLY_RUN); the pattern keeps the pen to lowercase kebab-case names
 // rather than letting a worker write, say, "slack-sent" and confuse the
 // digest's own bookkeeping — the route refuses the kinds Convex writes itself.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;

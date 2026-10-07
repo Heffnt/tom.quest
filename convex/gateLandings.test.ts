@@ -1,8 +1,9 @@
 // Every commit that arrives on main of a repository under the merge gate is
 // filed by the record's own refresh (convex/gateLandings.ts): a merge row when
 // the gate was open for its head, a report of a landing past the gate when it
-// was shut or when the commit belongs to no pull request (except on WikiTom's
-// main, which takes the nightly job's direct pushes). These run the timed
+// was shut or when the commit belongs to no pull request (except a WikiTom
+// commit the nightly job named in a nightly-run row before pushing it, which
+// gets its merge row). These run the timed
 // task itself, observeMerge.refreshOpenPulls, against a GitHub played by
 // `fakeGitHub` below.
 
@@ -11,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { firstParentLine } from "./gateLandings";
-import { AUDIT_VERDICT, LANDING_JOB, MERGE, TESTS_RUN, commitKey, landingKey, mergeKey } from "./ttsMerge";
+import { AUDIT_VERDICT, LANDING_JOB, MERGE, NIGHTLY_RUN, TESTS_RUN, commitKey, landingKey, mergeKey } from "./ttsMerge";
 import { gatherTodayFacts } from "./ttsDigest";
 import { DAY_MS, nyCalendarDayKey } from "./ttsShared";
 
@@ -289,25 +290,61 @@ describe("what arrived on main", () => {
     expect((await mergeRows(t)).map((row) => row.key)).toEqual([mergeKey(REPO, head)]);
   });
 
-  it("writes the merge row of a WikiTom pull request, and files nothing for a nightly push straight to WikiTom's main", async () => {
+  it("writes the merge row of a WikiTom pull request, and of a nightly push straight to WikiTom's main that its nightly-run row names", async () => {
     const t = await started();
     const head = sha("a");
     const squash = sha("b");
     const nightly = sha("c");
     await seedGate(t, head, "APPROVED", "WikiTom");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: NIGHTLY_RUN,
+        key: commitKey("WikiTom", nightly),
+        data: { repo: "WikiTom", sha: nightly, head: nightly, job: "nightly" },
+      });
+    });
     arriveAt(WIKITOM_SLUG, commit(nightly, [BASE], "snapshot: the nightly copy"), commit(squash, [nightly]));
     gh.state.closed.set(WIKITOM_SLUG, [landed(57, head, squash)]);
     expect(await refresh(t)).toEqual({ open: 0, failures: [] });
     // The push was asked about, found to belong to no pull request, and is
-    // not reported.
+    // filed as the nightly's landing on its row, not reported.
     expect(gh.asked).toContain(`${WIKITOM_SLUG}/commits/${nightly}/pulls`);
     expect(await reports(t)).toHaveLength(0);
-    const [row] = await mergeRows(t);
-    expect(row.key).toBe(mergeKey("WikiTom", head));
-    expect(row.data).toMatchObject({ repo: "WikiTom", sha: head, subject: "pull request 57" });
+    const rows = await mergeRows(t);
+    expect(rows.map((row) => row.key)).toEqual([mergeKey("WikiTom", nightly), mergeKey("WikiTom", head)]);
+    expect(rows[0].data).toMatchObject({
+      repo: "WikiTom",
+      sha: nightly,
+      subject: "snapshot: the nightly copy",
+      mainCheck: "ccccccc was pushed straight to main by the nightly job, which named it in a nightly-run row first",
+    });
+    expect(rows[1].data).toMatchObject({ repo: "WikiTom", sha: head, subject: "pull request 57" });
     gh.asked.length = 0;
     await refresh(t);
     expect(gh.asked).toContain(compared(WIKITOM_SLUG, squash));
+    expect(await mergeRows(t)).toHaveLength(2);
+  });
+
+  it("reports a push straight to WikiTom's main that no nightly-run row names, and one whose row names Jarvis", async () => {
+    const t = await started();
+    const pushed = sha("e");
+    const misnamed = sha("f");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: NIGHTLY_RUN,
+        key: commitKey("Jarvis", misnamed),
+        data: { repo: "Jarvis", sha: misnamed, head: misnamed, job: "nightly" },
+      });
+    });
+    arriveAt(WIKITOM_SLUG, commit(pushed, [BASE], "an agent's push"), commit(misnamed, [pushed], "another push"));
+    expect(await refresh(t)).toEqual({ open: 0, failures: [] });
+    expect(await mergeRows(t)).toHaveLength(0);
+    expect((await reports(t)).map((row) => row.subject)).toEqual([
+      noPullRequest("WikiTom", pushed),
+      noPullRequest("WikiTom", misnamed),
+    ]);
   });
 
   it("reports a WikiTom pull request that landed with the gate shut", async () => {

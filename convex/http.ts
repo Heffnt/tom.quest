@@ -2605,8 +2605,11 @@ http.route({ path: "/tts/repo-proposal-dropped", method: "POST", handler: ttsRep
 // POST /tts/event — one dtsEvents row from the worker. Body: { kind, data? }.
 // The job records a failed step ("nightly-failure"), its learning run
 // ("learning-run") and its summary ("nightly-run") this way, which is what
-// the digest reads for "job failures" and "what the nightly job wrote". The
-// mutation refuses a kind Convex writes itself.
+// the digest reads for "job failures" and "what the nightly job wrote". Before
+// each push of WikiTom's main it also posts a "nightly-run" row keyed
+// `WikiTom@<sha>` for each commit it is about to push, which opens the merge
+// gate for that commit (convex/ttsMerge.ts NIGHTLY_RUN). The mutation refuses
+// a kind Convex writes itself.
 const ttsEvent = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;

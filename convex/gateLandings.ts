@@ -18,9 +18,10 @@
 //   a commit that belongs to no pull request
 //       — a report of its own whatever rows its commit has, keyed on the
 //         commit (noPullRequestKey), which the gate opening never clears;
-//         except on main of a repository in MAIN_TAKES_PUSHES (WikiTom, whose
-//         main takes the nightly job's pushes), where such a commit is filed
-//         as nothing.
+//         except a WikiTom commit the nightly job named in a nightly-run row
+//         before pushing it (convex/ttsMerge.ts NIGHTLY_RUN), which gets the
+//         merge row: the nightly pushes WikiTom's main straight by design,
+//         and its row is the record's fact that this push was the nightly's.
 //
 // WHICH COMMITS ARRIVED. The record keeps, per repository, the newest commit
 // on main it has accounted for (the table gateMainHeads). A refresh asks
@@ -56,8 +57,8 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { ActionCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
-import { GATED_REPOS, MAIN_TAKES_PUSHES, SESSION_REPOS } from "../shared/session-constants.mjs";
-import { LANDING_JOB, landingKey, mergeGateFor } from "./ttsMerge";
+import { GATED_REPOS, SESSION_REPOS } from "../shared/session-constants.mjs";
+import { LANDING_JOB, NIGHTLY_CHECK, NIGHTLY_RUN, landingKey, mergeGateFor } from "./ttsMerge";
 
 /** The branch the gate guards. */
 const MAIN = "main";
@@ -145,9 +146,10 @@ export const internalSetMainSeen = internalMutation({
 });
 
 /**
- * File one commit that arrived on main: a report when it belongs to no pull
- * request; for a pull request, a merge row when the gate is open for its head,
- * a report of a landing past the gate otherwise. Answers which it wrote.
+ * File one commit that arrived on main: when it belongs to no pull request, a
+ * merge row if the nightly job named it in a nightly-run row and a report
+ * otherwise; for a pull request, a merge row when the gate is open for its
+ * head, a report of a landing past the gate otherwise. Answers which it wrote.
  */
 export const internalAccountForCommit = internalMutation({
   args: {
@@ -161,8 +163,21 @@ export const internalAccountForCommit = internalMutation({
   handler: async (ctx, { repo, commit, subject, pull }): Promise<{ filed: "merge" | "report" }> => {
     const short = (sha: string) => sha.slice(0, 7);
     if (pull === undefined) {
-      // No pull request is no landing through the gate, whatever rows the
-      // commit itself has.
+      // The nightly's own push: the one commit of no pull request the record
+      // has a row for. The gate opens on that row alone (mergeGateFor), so its
+      // check is what says this was the nightly's.
+      const gate = await mergeGateFor(ctx, repo, commit);
+      if (gate.allowed && gate.checks.some((check) => check.name === NIGHTLY_CHECK)) {
+        await ctx.runMutation(internal.ttsMerge.internalRecordMerge, {
+          repo,
+          sha: commit,
+          subject,
+          mainCheck: `${short(commit)} was pushed straight to ${MAIN} by the nightly job, which named it in a ${NIGHTLY_RUN} row first`,
+        });
+        return { filed: "merge" };
+      }
+      // Any other commit of no pull request is no landing through the gate,
+      // whatever rows the commit itself has.
       await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
         job: LANDING_JOB,
         key: noPullRequestKey(repo, commit),
@@ -305,13 +320,6 @@ async function pullsOfLine(
   return { resolved };
 }
 
-/** The commits of `resolved` that are filed: all of them, except on main of a
- *  repository in MAIN_TAKES_PUSHES a commit of no pull request. */
-function toFile(repo: string, resolved: readonly Resolved[]): Resolved[] {
-  const takesPushes = (MAIN_TAKES_PUSHES as readonly string[]).includes(repo);
-  return resolved.filter((one) => one.pull !== null || !takesPushes);
-}
-
 /** File each commit (internalAccountForCommit), oldest first. */
 async function fileCommits(ctx: ActionCtx, repo: string, commits: readonly Resolved[]): Promise<void> {
   for (const { commit, pull } of commits) {
@@ -366,7 +374,7 @@ export async function accountForMain(ctx: ActionCtx, token: string): Promise<str
       fail(pulls.unread);
       continue;
     }
-    await fileCommits(ctx, repo, toFile(repo, pulls.resolved));
+    await fileCommits(ctx, repo, pulls.resolved);
     if (line.length > 0) {
       await ctx.runMutation(internal.gateLandings.internalSetMainSeen, { repo, sha: line[line.length - 1].sha });
     }
