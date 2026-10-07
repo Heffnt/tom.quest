@@ -934,12 +934,12 @@ export const internalEnsurePersistentSessions = internalMutation({
       .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
       .collect(); // bounded: five rows by design
     const out: { name: string; id: Id<"claudeSessions">; created: boolean; status: string; login: string | null }[] = [];
-    for (const raw of names) {
-      const name = raw.trim();
-      if (!/^[a-z][a-z-]*$/.test(name)) throw new Error(`a persistent session's name is lower-case words, got: ${JSON.stringify(raw)}`);
+    // A name given twice is one row: the existing rows are read once, above,
+    // so a repeat in this list would insert a second one.
+    for (const name of new Set(names)) {
       const row = existing.find((session) => session.title === name);
       if (row) {
-        if (login !== undefined && row.login !== login) await ctx.db.patch(row._id, { login });
+        if (login !== undefined) await ctx.db.patch(row._id, { login });
         out.push({ name, id: row._id, created: false, status: row.status, login: login ?? row.login ?? null });
         continue;
       }

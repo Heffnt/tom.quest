@@ -2321,8 +2321,11 @@ describe("the persistent sessions' setup pen", () => {
     expect(listed).toEqual([["dump", "persistent", "gmail"], ["todo", "persistent", "gmail"]]);
   });
 
-  it("refuses a name that is not lower-case words", async () => {
+  it("makes one row for a name given twice", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { names: ["Dump Session"] })).rejects.toThrow(/lower-case words/);
+    const out = await t.mutation(internal.claudeSessions.internalEnsurePersistentSessions, { names: ["todo", "todo"] });
+    expect(out.map((r) => r.name)).toEqual(["todo"]);
+    const rows = await t.run(async (ctx) => await ctx.db.query("claudeSessions").collect());
+    expect(rows.map((r) => r.title)).toEqual(["todo"]);
   });
 });
