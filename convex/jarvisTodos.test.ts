@@ -110,6 +110,22 @@ describe("POST /jarvis/todo/done and GET /jarvis/todos/open", () => {
     expect(statements).toHaveLength(600);
   });
 
+  it("orders undated todos by when the row was made, the order the cap keeps them in", async () => {
+    const t = harness();
+    await t.run(async (ctx) => {
+      // createdAt runs the other way, as on rows copied in from the old table.
+      for (let i = 0; i < 302; i++) {
+        await ctx.db.insert("todos", { statement: `undated ${i}`, readiness: "prepared", status: "active", timingClass: "whenever", source: "session", createdAt: 10_000 - i, updatedAt: 1 });
+      }
+    });
+    const open = await (await t.fetch("/jarvis/todos/open", { headers: KEY })).json();
+    expect(open.truncated).toBe(true);
+    const statements = open.todos.map((row: { statement: string }) => row.statement);
+    expect(statements).toHaveLength(300);
+    expect(statements[0]).toBe("undated 0");
+    expect(statements[299]).toBe("undated 299");
+  });
+
   it("refuses a done that names no todo", async () => {
     const t = harness();
     const missing = await post(t, "/jarvis/todo/done", { todo: "nope" });
