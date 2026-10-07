@@ -81,6 +81,23 @@ describe("a session registered by its Claude session id", () => {
     expect(listed.pendingInbound).toHaveLength(1);
   });
 
+  it("takes the directory a session was last opened in, and is polled once a stop makes it the host's", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const { id } = await t.mutation(internal.sessionRegistration.internalRegisterSession, {
+      sdkSessionId: "cccccccc-0000-0000-0000-000000000003", client: "desktop", cwd: "/home/jarvis", transcriptPath: "/a/-home-jarvis/c.jsonl",
+    });
+    await t.mutation(internal.sessionRegistration.internalRegisterSession, {
+      sdkSessionId: "cccccccc-0000-0000-0000-000000000003", client: "desktop", cwd: "/home/jarvis/tom.quest", transcriptPath: "/a/-home-jarvis-tom-quest/c.jsonl",
+    });
+    expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ cwd: "/home/jarvis/tom.quest", transcriptPath: "/a/-home-jarvis-tom-quest/c.jsonl" });
+    expect((await poll(t)).sessions.map((s: any) => s.id)).not.toContain(id);
+    await tom.mutation(api.claudeSessions.sendControl, { sessionId: id, kind: "stop" });
+    const listed = (await poll(t)).sessions.find((s: any) => s.id === id) as any;
+    expect(listed.client).toBe("host");
+    expect(listed.pendingInbound.map((r: any) => r.kind)).toEqual(["stop"]);
+  });
+
   it("leaves a row the host created held by the host", async () => {
     const t = convexTest(schema, modules);
     const id = await t.run((ctx) => ctx.db.insert("claudeSessions", {

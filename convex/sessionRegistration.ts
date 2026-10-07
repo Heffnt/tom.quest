@@ -76,7 +76,9 @@ export const internalRegisterSession = internalMutation({
     const patch: Record<string, unknown> = { statusChangedAt: now };
     if (existing.client !== undefined && existing.client !== args.client) patch.client = args.client;
     if (args.transcriptPath !== undefined && existing.transcriptPath !== args.transcriptPath) patch.transcriptPath = args.transcriptPath;
-    if (args.cwd !== undefined && existing.cwd === undefined) patch.cwd = args.cwd;
+    // The directory and the transcript go together: the host resumes the
+    // transcript from the directory whose project folder holds it.
+    if (args.cwd !== undefined && existing.cwd !== args.cwd) patch.cwd = args.cwd;
     if (title && existing.title === "") patch.title = title;
     if (args.login !== undefined && existing.login === undefined) patch.login = args.login;
     await ctx.db.patch(existing._id, patch);

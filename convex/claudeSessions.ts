@@ -1351,6 +1351,10 @@ async function sendControlFrom(
     )
     .collect();
   if (pending.some((p) => p.kind === kind)) return;
+  // A control for a Desktop session is the host's to carry out, as a message
+  // is (sendMessageFrom): the poll lists an idle session only once it is the
+  // host's, and a stop it never lists stays pending for good.
+  if (session.client === "desktop") await ctx.db.patch(sessionId, { client: "host" });
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind,
