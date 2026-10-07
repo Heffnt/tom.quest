@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DELEGATE_ONLY_KINDS,
   EVENT_KINDS,
+  FACT_KINDS,
   HANDOFF_TRANSITIONS,
   JARVIS_EVENT_ONLY_KINDS,
   JOB_KINDS_WITH_DURATION,
@@ -633,5 +634,45 @@ describe("isRulingScope", () => {
     for (const scope of ["", "All", "part:", "part:Delegate", "part:a--b", "class:small change", "repo:jarvis", "repo:", "todo:abc", "delegate", 3, null]) {
       expect(isRulingScope(scope)).toBe(false);
     }
+  });
+});
+
+describe("Tom's day facts", () => {
+  const at = Date.UTC(2026, 9, 6, 12);
+  const fact = (kind, data) => validateEvent({ kind, at, provenance: { user: "tom" }, data }, { now: at });
+
+  it("are four kinds of the closed list", () => {
+    expect(FACT_KINDS).toEqual(["meal", "weight", "training", "did"]);
+    for (const kind of FACT_KINDS) expect(EVENT_KINDS).toContain(kind);
+    // Only POST /jarvis/event writes them, through validateEvent; POST
+    // /tts/event, which copies a row into the record unchecked, refuses them.
+    for (const kind of FACT_KINDS) expect(JARVIS_EVENT_ONLY_KINDS).toContain(kind);
+  });
+
+  it("take the day, a summary, his words, and each kind's numbers", () => {
+    expect(fact("meal", { day: "2026-10-06", summary: "oats", quote: "ate oats", calories: 300, proteinG: 10 }).ok).toBe(true);
+    expect(fact("weight", { day: "2026-10-06", summary: "weight", metric: "weight", value: 180, unit: "lb", partOfDay: "morning" }).ok).toBe(true);
+    expect(fact("weight", { day: "2026-10-06", summary: "waist", metric: "waist", value: 32, unit: "in" }).ok).toBe(true);
+    expect(fact("training", { day: "2026-10-06", summary: "climbing", activity: "climb", bodyParts: ["fingers", "back"], durationMin: 90 }).ok).toBe(true);
+    expect(fact("training", { day: "2026-10-06", summary: "hang", metric: "hang_20mm", value: 10, unit: "s" }).ok).toBe(true);
+    expect(fact("did", { day: "2026-10-06", summary: "wrote the paper" }).ok).toBe(true);
+  });
+
+  it("refuse a row a chart could not read", () => {
+    const refused = [
+      fact("did", { summary: "no day" }),
+      fact("did", { day: "2026-13-01", summary: "bad day" }),
+      fact("did", { day: "2026-10-06", summary: "" }),
+      fact("meal", { day: "2026-10-06", summary: "oats", calories: -1 }),
+      fact("weight", { day: "2026-10-06", summary: "weight" }),
+      fact("weight", { day: "2026-10-06", summary: "weight", metric: "weight", value: 180, unit: "kg" }),
+      fact("weight", { day: "2026-10-06", summary: "weight", metric: "weight", value: 1000, unit: "lb" }),
+      fact("weight", { day: "2026-10-06", summary: "weight", metric: "hang_20mm", value: 10, unit: "s" }),
+      fact("training", { day: "2026-10-06", summary: "x", activity: "swim" }),
+      fact("training", { day: "2026-10-06", summary: "x", bodyParts: ["fingers", "fingers"] }),
+      fact("training", { day: "2026-10-06", summary: "x", metric: "weight", value: 180, unit: "lb" }),
+      fact("training", { day: "2026-10-06", summary: "x", distanceMi: "3" }),
+    ];
+    for (const result of refused) expect(result.ok).toBe(false);
   });
 });

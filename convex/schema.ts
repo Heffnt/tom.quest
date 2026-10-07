@@ -844,6 +844,32 @@ export default defineSchema({
     // The dual write's stamp: the version of the old row this copy was last
     // written from (convex/jarvis/tables.ts, `follow`); it must match it.
     legacyVersion: v.optional(v.string()),
+    // ── The todo as the redesign of 2026-10-06 defines it (design section
+    // 12.2): text, due, reminder, done. Three of the four were already here
+    // under their own names, and keep them: the text is `statement`, the due
+    // time is `dueAt`, done is status "done" with `doneAt`. The reminder is
+    // new: the time Tom asked to be notified of the todo, epoch ms; absent
+    // means no reminder. Every other field above stays declared because the
+    // 2,655 rows written before the restart carry them.
+    reminderAt: v.optional(v.number()),
+    // The state a row was in before the restart archived the whole table
+    // (convex/ttsMigrations.ts internalArchiveTodosWhole): when it was
+    // archived, its status then, and the archivedAt it had then, if any.
+    // Its presence is what makes the archive reversible
+    // (internalRestoreArchivedTodos puts status and archivedAt back and
+    // clears it) and what makes a re-run skip the row.
+    beforeArchive: v.optional(
+      v.object({
+        at: v.number(),
+        status: v.union(
+          v.literal("active"),
+          v.literal("waiting"),
+          v.literal("archived"),
+          v.literal("done"),
+        ),
+        archivedAt: v.optional(v.number()),
+      }),
+    ),
   })
     .index("by_status", ["status", "updatedAt"])
     .index("by_updatedAt", ["updatedAt"])
@@ -866,6 +892,11 @@ export default defineSchema({
     // never the whole key — a reader that skips the provenance match adopts
     // every other producer's rows under that name.
     .index("by_source", ["source"])
+    // The restart's seven (convex/ttsMigrations.ts internalAddRestartTodos):
+    // their insert finds the ones already there, and the read-back reads them,
+    // by source "manual" and their one provenance line, a range that holds
+    // the seven and nothing else however many manual todos accumulate.
+    .index("by_source_provenance", ["source", "provenance"])
     // The Slack Events push route's dedupe read: Slack's delivery is
     // at-least-once and its retries carry the same message ts, so a capture
     // looks itself up by ts before inserting. A scan would be a full-table

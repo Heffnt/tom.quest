@@ -21,6 +21,111 @@
 import { DAY_LOG_ENTRY_MAX } from "./day-log-entry.mjs";
 import { SESSION_REPOS } from "./session-constants.mjs";
 
+// ── Tom's day facts ─────────────────────────────────────────────────────────
+// The four kinds his day's facts take, and what each row's data holds. Every
+// fact names data.day, the New York calendar day it belongs to (YYYY-MM-DD,
+// which may be earlier than the day he said it), and data.summary, a few
+// words of what it was; data.quote, when given, is his own words. The numbers
+// a chart draws are optional fields of their own, never inside the summary:
+//   meal      calories, proteinG (grams of protein), each when he gave one.
+//   weight    metric "weight" (lb) or "waist" (in), value, unit, and
+//             partOfDay when he said when.
+//   training  activity, bodyParts, distanceMi, durationMin when given; a
+//             timed or loaded test (a 20 mm hang, added pull-up weight, a
+//             40-yard sprint, a quarter-mile loop) is metric, value and unit.
+//   did       nothing beyond day and summary.
+// The metric names, units and ranges are the day log's
+// (convex/dayLogVocabulary.ts), held here so the box can check a row before
+// the network; the day log goes in the removal item and this list stays.
+
+/** The four kinds, in one list so EVENT_KINDS and the check below share it. */
+export const FACT_KINDS = ["meal", "weight", "training", "did"];
+
+export const FACT_BODY_METRICS = {
+  weight: { unit: "lb", min: 60, max: 600 },
+  waist: { unit: "in", min: 20, max: 70 },
+};
+export const FACT_TRAINING_METRICS = {
+  pullup_added_weight: { unit: "lb", min: 0, max: 200 },
+  hang_20mm: { unit: "s", min: 1, max: 300 },
+  sprint_40yd: { unit: "s", min: 3, max: 20 },
+  loop_1_4mi: { unit: "s", min: 300, max: 2400 },
+};
+export const FACT_ACTIVITIES = ["run", "climb", "strength", "bike", "walk", "other"];
+export const FACT_BODY_PARTS = ["fingers", "forearms", "biceps", "back", "shoulders", "chest", "triceps", "core", "hips", "quads", "hamstrings", "calves", "ankles", "full-body"];
+export const FACT_PARTS_OF_DAY = ["morning", "afternoon", "evening", "unknown"];
+export const FACT_SUMMARY_MAX = 300;
+export const FACT_QUOTE_MAX = 2000;
+
+const FACT_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+function isFactDay(value) {
+  if (typeof value !== "string" || !FACT_DAY.test(value)) return false;
+  const parsed = Date.parse(value);
+  return !Number.isNaN(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+}
+
+function optionalNonNegative(data, field, kind) {
+  const value = data[field];
+  if (value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return `a ${kind} event names data.${field}, when given, as a non-negative number`;
+  }
+  return null;
+}
+
+function metricProblem(data, metrics, kind) {
+  const definition = Object.hasOwn(metrics, data.metric) ? metrics[data.metric] : undefined;
+  if (definition === undefined) {
+    return `a ${kind} event names data.metric as one of ${Object.keys(metrics).join(", ")}`;
+  }
+  if (typeof data.value !== "number" || !Number.isFinite(data.value) || data.value < definition.min || data.value > definition.max) {
+    return `a ${kind} event names data.value for ${data.metric} between ${definition.min} and ${definition.max}`;
+  }
+  if (data.unit !== definition.unit) return `a ${kind} event names data.unit for ${data.metric} as ${definition.unit}`;
+  return null;
+}
+
+/** Why a fact row's data is malformed, or null when it is well formed. */
+export function factProblem(kind, data) {
+  if (!isPlainObject(data)) return `a ${kind} event names data as an object`;
+  if (!isFactDay(data.day)) return `a ${kind} event names data.day as a YYYY-MM-DD day`;
+  if (!nonEmptyString(data.summary) || data.summary.length > FACT_SUMMARY_MAX) {
+    return `a ${kind} event names data.summary as a non-empty string of at most ${FACT_SUMMARY_MAX} characters`;
+  }
+  if (data.quote !== undefined && (!nonEmptyString(data.quote) || data.quote.length > FACT_QUOTE_MAX)) {
+    return `a ${kind} event names data.quote, when given, as a non-empty string of at most ${FACT_QUOTE_MAX} characters`;
+  }
+  if (kind === "meal") {
+    return optionalNonNegative(data, "calories", kind) ?? optionalNonNegative(data, "proteinG", kind);
+  }
+  if (kind === "weight") {
+    const problem = metricProblem(data, FACT_BODY_METRICS, kind);
+    if (problem !== null) return problem;
+    if (data.partOfDay !== undefined && !FACT_PARTS_OF_DAY.includes(data.partOfDay)) {
+      return `a weight event names data.partOfDay, when given, as one of ${FACT_PARTS_OF_DAY.join(", ")}`;
+    }
+    return null;
+  }
+  if (kind === "training") {
+    if (data.activity !== undefined && !FACT_ACTIVITIES.includes(data.activity)) {
+      return `a training event names data.activity, when given, as one of ${FACT_ACTIVITIES.join(", ")}`;
+    }
+    if (data.bodyParts !== undefined) {
+      const parts = data.bodyParts;
+      if (!Array.isArray(parts) || !parts.every((part) => FACT_BODY_PARTS.includes(part)) || new Set(parts).size !== parts.length) {
+        return `a training event names data.bodyParts, when given, as distinct values of ${FACT_BODY_PARTS.join(", ")}`;
+      }
+    }
+    if (data.metric !== undefined) {
+      const problem = metricProblem(data, FACT_TRAINING_METRICS, kind);
+      if (problem !== null) return problem;
+    }
+    return optionalNonNegative(data, "distanceMi", kind) ?? optionalNonNegative(data, "durationMin", kind);
+  }
+  return null;
+}
+
 /** @type {const} */
 export const EVENT_KINDS = [
   // Jobs on the box (convex/jarvis/jobs.ts): a clean run, a failure, and the
@@ -207,6 +312,15 @@ export const EVENT_KINDS = [
   // row that carried the new information, supersededAt to the instant and
   // supersededLine to the digest's sentence for it.
   "ruling",
+  // Tom's day facts (design section 6 and 12.2, 2026-10-06): what he ate,
+  // what he weighed, what he trained, and anything else he did, one row per
+  // fact, written by the dump session from his words and read by the history
+  // page's charts and the morning briefing. The rows the day log
+  // (dayLogItems) held before are copied in once with their kind
+  // (convex/ttsMigrations.ts internalCopyDayLogToEvents). `at` is when he
+  // said it; the shape of data is FACT_FIELDS below, checked by
+  // validateEvent.
+  ...FACT_KINDS,
 ];
 
 /** Events that record an act only Tom can take. They remain in EVENT_KINDS so
@@ -223,9 +337,11 @@ export const TOM_ONLY_KINDS = ["disagreement-settled", "push-subscription", "thr
  *  (convex/jarvis/events.ts copyDtsRow), so it refuses these: a registry row
  *  it stored could become the registry convex/jarvis/design.ts reads, and a
  *  use or issue row it stored, with no data.by or data over its cap, would
- *  reach the part-state read (convex/jarvis/partStates.ts) unchecked. */
+ *  reach the part-state read (convex/jarvis/partStates.ts) unchecked; a day
+ *  fact it stored, with no data.day or a value out of range, would reach the
+ *  history page's charts unchecked. */
 /** @type {const} */
-export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation", "use", "issue", "presence"];
+export const JARVIS_EVENT_ONLY_KINDS = ["registry", "explanation", "use", "issue", "presence", ...FACT_KINDS];
 
 /** Events only the delegate's own record writes: a decision row is written by
  *  POST /tts/ask's mutation (convex/ttsAsk.ts internalRecordAsk), in the same
@@ -620,6 +736,10 @@ export function validateEvent(body, { now = Date.now(), kinds = EVENT_KINDS } = 
     if ((data.check === null) !== (data.checkPassed === null)) {
       return { ok: false, error: "a work-run event names data.check and data.checkPassed as both null or both non-null" };
     }
+  }
+  if (FACT_KINDS.includes(kind)) {
+    const problem = factProblem(kind, data);
+    if (problem !== null) return { ok: false, error: problem };
   }
   if (kind === "todo-state" || kind === "handoff") {
     const error = kind === "todo-state" ? todoStateError(data, text) : handoffError(data, text);
