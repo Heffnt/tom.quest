@@ -35,12 +35,18 @@ describe("a session registered by its Claude session id", () => {
       title: "Plan the history page",
     });
     expect(again).toEqual({ id: first.id, created: false });
+    // An old session reopened is moved to now.
+    await t.run((ctx) => ctx.db.patch(first.id, { statusChangedAt: 1 }));
+    await t.mutation(internal.sessionRegistration.internalRegisterSession, { sdkSessionId: "11111111-2222-3333-4444-555555555555", client: "desktop" });
+    expect((await t.run((ctx) => ctx.db.get(first.id)))!.statusChangedAt).toBeGreaterThan(1);
     await t.mutation(internal.sessionRegistration.internalRegisterSession, {
       sdkSessionId: "11111111-2222-3333-4444-555555555555",
       client: "desktop",
       title: "a later title",
     });
     const row = await t.run((ctx) => ctx.db.get(first.id));
+    // Each registration is activity: the sessions page lists the row by it.
+    expect(row!.statusChangedAt).toBeGreaterThanOrEqual(row!.createdAt);
     expect(row).toMatchObject({
       sdkSessionId: "11111111-2222-3333-4444-555555555555",
       login: "gmail",

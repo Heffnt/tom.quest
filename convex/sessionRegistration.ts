@@ -27,7 +27,8 @@ const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0,
  * Write or update the row of a session by its Claude session id.
  *
  * A new row is an idle interactive session on no repository, held by the
- * client that started it. On an existing row: `client` changes only on a row
+ * client that started it. On an existing row: its activity time
+ * (statusChangedAt) is now; `client` changes only on a row
  * this registration made (a row the host created carries none, and the host
  * keeps holding it); the title is filled only while it is empty; the login
  * only while it is absent, because after that it is the sessions page's
@@ -68,13 +69,17 @@ export const internalRegisterSession = internalMutation({
       });
       return { id, created: true };
     }
-    const patch: Record<string, unknown> = {};
+    // A registration is the session being opened or answered in Desktop:
+    // activity, which the sessions page orders and cuts its list by
+    // (statusChangedAt), so an old session reopened today is listed with
+    // today's.
+    const patch: Record<string, unknown> = { statusChangedAt: now };
     if (existing.client !== undefined && existing.client !== args.client) patch.client = args.client;
     if (args.transcriptPath !== undefined && existing.transcriptPath !== args.transcriptPath) patch.transcriptPath = args.transcriptPath;
     if (args.cwd !== undefined && existing.cwd === undefined) patch.cwd = args.cwd;
     if (title && existing.title === "") patch.title = title;
     if (args.login !== undefined && existing.login === undefined) patch.login = args.login;
-    if (Object.keys(patch).length > 0) await ctx.db.patch(existing._id, patch);
+    await ctx.db.patch(existing._id, patch);
     return { id: existing._id, created: false };
   },
 });
