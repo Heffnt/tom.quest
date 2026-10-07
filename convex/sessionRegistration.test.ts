@@ -3,6 +3,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
+import { vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 
@@ -113,6 +114,19 @@ describe("a session registered by its Claude session id", () => {
     expect(listed.pendingInbound.map((r: any) => r.text)).toEqual(["pick this up"]);
   });
 
+  it("lists every running subagent to the host, past the first page", async () => {
+    const t = convexTest(schema, modules);
+    for (let i = 0; i < 230; i++) {
+      await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "start", agentId: `a${i}`, parentSessionId: "p", transcriptPath: `/t/${i}.jsonl` });
+    }
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const response = await t.fetch("/sessions/subagents/running", { headers: { "X-Sessions-Key": "right" } });
+    vi.unstubAllEnvs();
+    expect(response.status).toBe(200);
+    const { subagents } = await response.json();
+    expect(new Set(subagents.map((s: any) => s.agentId)).size).toBe(230);
+  });
+
   it("leaves a row the host created held by the host", async () => {
     const t = convexTest(schema, modules);
     const id = await t.run((ctx) => ctx.db.insert("claudeSessions", {
@@ -141,14 +155,14 @@ describe("a subagent's row", () => {
       cwd: "/home/jarvis",
     });
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "start", agentId: "a123", parentSessionId: "parent-1", transcriptPath: "/elsewhere" });
-    let running = await t.query(internal.sessionRegistration.internalRunningSubagents, {});
+    let running = (await t.query(internal.sessionRegistration.internalRunningSubagents, {})).page;
     expect(running).toMatchObject([{ agentId: "a123", parentSessionId: "parent-1", transcriptPath: "/p/parent-1/subagents/agent-a123.jsonl", resumeCount: 0 }]);
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "resumed", agentId: "a123", resumedSessionId: "s-2", resumedTranscriptPath: "/p/s-2.jsonl" });
-    running = await t.query(internal.sessionRegistration.internalRunningSubagents, {});
+    running = (await t.query(internal.sessionRegistration.internalRunningSubagents, {})).page;
     expect(running[0]).toMatchObject({ resumeCount: 1, resumedSessionId: "s-2" });
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "reported", agentId: "a123", brief: "a later brief" });
     await t.mutation(internal.sessionRegistration.internalSubagentEvent, { event: "ended-without-report", agentId: "a123" });
-    expect(await t.query(internal.sessionRegistration.internalRunningSubagents, {})).toEqual([]);
+    expect((await t.query(internal.sessionRegistration.internalRunningSubagents, {})).page).toEqual([]);
     const row = await t.run((ctx) => ctx.db.query("subagentRuns").first());
     expect(row?.state).toBe("reported");
     // The brief the start gave stays.

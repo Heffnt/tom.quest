@@ -3127,7 +3127,16 @@ http.route({ path: "/agents/subagent", method: "POST", handler: agentsSubagent }
 const sessionsRunningSubagents = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  const subagents = await ctx.runQuery(internal.sessionRegistration.internalRunningSubagents, {});
+  // Every page: a running subagent past the first hundred is still one the
+  // host must check.
+  const subagents: unknown[] = [];
+  let cursor: string | null = null;
+  for (;;) {
+    const result: { page: unknown[]; isDone: boolean; continueCursor: string } = await ctx.runQuery(internal.sessionRegistration.internalRunningSubagents, { cursor });
+    subagents.push(...result.page);
+    if (result.isDone) break;
+    cursor = result.continueCursor;
+  }
   return jsonResponse(200, { subagents });
 });
 

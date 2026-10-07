@@ -149,14 +149,17 @@ export const internalSubagentEvent = internalMutation({
   },
 });
 
-/** The subagents still running, oldest first, for the session host's check. */
+/** One page of the subagents still running, oldest first, for the session
+ * host's check; GET /sessions/subagents/running reads every page, so no
+ * running subagent is left out however many there are. */
 export const internalRunningSubagents = internalQuery({
-  args: {},
-  handler: async (ctx) =>
-    (await ctx.db
+  args: { cursor: v.optional(v.union(v.string(), v.null())), numItems: v.optional(v.number()) },
+  handler: async (ctx, { cursor, numItems }) => {
+    const result = await ctx.db
       .query("subagentRuns")
       .withIndex("by_state", (q) => q.eq("state", "running"))
-      .take(100)).map((row) => ({
+      .paginate({ cursor: cursor ?? null, numItems: numItems ?? 100 });
+    return { isDone: result.isDone, continueCursor: result.continueCursor, page: result.page.map((row) => ({
       agentId: row.agentId,
       parentSessionId: row.parentSessionId,
       transcriptPath: row.transcriptPath,
@@ -167,5 +170,6 @@ export const internalRunningSubagents = internalQuery({
       resumeCount: row.resumeCount ?? 0,
       resumedSessionId: row.resumedSessionId,
       resumedTranscriptPath: row.resumedTranscriptPath,
-    })),
+    })) };
+  },
 });
