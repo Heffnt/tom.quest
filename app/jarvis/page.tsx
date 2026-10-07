@@ -3,7 +3,7 @@ import JarvisClient from "./jarvis-client";
 
 export const metadata: Metadata = {
   title: "Jarvis | tom.Quest",
-  description: "Tom's todos, his calendar and what waits on his ruling.",
+  description: "Tom's todos and what waits on his ruling.",
 };
 
 export default function JarvisPage() {

@@ -10,7 +10,7 @@
 //
 // What this replaces: a hover-only tooltip showing nothing but the function
 // name. On a touch screen it could not be opened at all, and on a desktop it
-// answered the wrong question — `tts.deleteBlock({id})` tells a reader who
+// answered the wrong question — `tts.setStatus({status})` tells a reader who
 // already knows the codebase what they already knew, and tells everyone else
 // nothing. So the call is still here, in small mono, but it is the FOOTNOTE:
 // the body is one or two plain sentences about what pressing the neighbouring
@@ -37,15 +37,12 @@
 //     todo's own explanation — the same renderer, the same sandboxed iframe,
 //     reached here from the "more" control inside the popover.
 // MIGRATION COMPLETE (2026-08-31). Every caption in app/jarvis now passes both
-// registers, and the last two native `title=` captions — the repeats strip's
-// calendar-skip label and the calendar's per-day plus — were moved onto this
-// component in the same change. `explanation` stays optional because the type
+// registers. `explanation` stays optional because the type
 // cannot express "required at every current call site", but a new caption
 // without one is now an omission rather than acknowledged debt.
 //
-// ONE MECHANISM, ONE DOCUMENT. Ten captions share five documents: the four
-// repeats captions all open the repeats document, the six verdict and status
-// chips all open the verdicts document, and so on. A document per caption would
+// ONE MECHANISM, ONE DOCUMENT. The six verdict and status chips all open the
+// verdicts document, and so on. A document per caption would
 // teach a fragment each and none of them would be self-contained, which is the
 // one thing the writing standard forbids. What differs per caption is the
 // display text.

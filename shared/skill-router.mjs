@@ -43,7 +43,6 @@ export const CONTEXT_CALLERS = Object.freeze({
   opener: Object.freeze({ judges: true, captures: false }),
   planner: Object.freeze({ judges: true, captures: false }),
   "capture-context": Object.freeze({ judges: false, captures: true }),
-  "time-notes": Object.freeze({ judges: false, captures: false }),
   // GET /tts/planner-context.
   "planner-context": Object.freeze({ judges: true, captures: false }),
   "weekly-input": Object.freeze({ judges: true, captures: false }),
@@ -95,7 +94,7 @@ export const INTENT_CALLERS = Object.freeze(["opener", "planner", "prepare", "we
  * here. When it gets a row, its name goes in this array and nothing else
  * changes.
  */
-export const WEEK_CALLERS = Object.freeze(["time-notes", "planner"]);
+export const WEEK_CALLERS = Object.freeze(["planner"]);
 
 // ── Subjects ─────────────────────────────────────────────────────────────────
 

@@ -72,9 +72,7 @@ export const MESSAGE_MAX_CHARS = 3_900;
  *  need him today, which no worker may raise with him directly (Tom,
  *  2026-09-21), so this message says it. The objection list stays second.
  *
- *  The calendar run is printed between "needs-you-today" and "overnight" and is not
- *  named here: it is his day, not a ranked list, and it has no page of its own
- *  to send him to. `fit` reduces it in printed order like any other run. The
+ *  The
  *  settled run (his own settlements on /intent) is printed right after the
  *  objection list, and the superseded run (his standing rulings that new
  *  information ended) right after it; neither is named here: nothing in
@@ -87,7 +85,6 @@ export const SECTION_ORDER = ["today", "objections", "needs-you-today", "overnig
 export const SECTION_CAPS = {
   today: 12,
   objections: 12,
-  calendar: 12,
   settled: 6,
   overnight: 6,
   broken: 4,
@@ -430,7 +427,6 @@ export function claimKey(day: string, ask: SlackAsk, itemId: string): string {
 
 const ITEM_URL = "https://tom.quest/tts?item=";
 export const TAB_EVERYTHING = "https://tom.quest/tts?tab=everything";
-export const TAB_CALENDAR = "https://tom.quest/tts?tab=calendar";
 const SESSION_URL = "https://www.tom.quest/agents?session=";
 
 export function itemUrl(todoId: string): string {
@@ -508,13 +504,6 @@ export type BrokenFact = {
   count?: number;
 };
 
-export type CalendarSpan = {
-  title: string;
-  /** Already spelled: "16:00 to 17:00". Empty for an all-day entry. */
-  when: string;
-  allDay: boolean;
-};
-
 /** One captured item a poller's triage judged to need Tom today. `why` is the
  *  triage's own few words, empty when it gave none. Workers never raise these
  *  with him; the morning message and the hourly line say them. */
@@ -537,9 +526,6 @@ export type TodayFacts = {
   oldestLateBy?: string;
   /** Ready items not printed, and where the rest is read. */
   readyBeyond: number;
-  calendar: CalendarSpan[];
-  /** One sentence naming the shape of the day; absent for no calendar. */
-  calendarLead?: string;
   objections: ObjectionFact[];
   objectionsBeyond?: number;
   /** How many of the WHOLE objection list — printed and beyond — are merges
@@ -806,13 +792,6 @@ export function brokenLine(b: BrokenFact): string {
   return statement(`${stripStop(b.statement)}.${detail}${times}`);
 }
 
-/** The calendar's own line. All-day entries say so; the rest name their span. */
-export function calendarLine(span: CalendarSpan): string {
-  return statement(
-    span.allDay ? `${stripStop(span.title)} runs all day.` : `${stripStop(span.title)} runs ${span.when}.`,
-  );
-}
-
 function dollars(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
@@ -940,7 +919,7 @@ export function objectionsLead(all: number, merges: number, sent = 0, tom = 0): 
 // ── The seven kinds ──────────────────────────────────────────────────────────
 
 /**
- * The morning message. Runs today → objection list → the calendar →
+ * The morning message. Runs today → objection list →
  * done overnight → broken → spend, fits one Slack message, and shrinks the
  * sections furthest from him first.
  *
@@ -1068,19 +1047,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     f.needsYou.length,
   );
 
-  // 4. The calendar. Rows from a feed marked private in TTS_ICS_FEEDS never
-  //    reach this list — the gatherer drops them (Tom 2026-09-09, amendment 1).
-  if (f.calendar.length > 0) {
-    pushRun(
-      lines,
-      "calendar",
-      f.calendarLead ?? "Your day carries these commitments.",
-      f.calendar.map((span) => ({ text: calendarLine(span), url: TAB_CALENDAR })),
-      SECTION_CAPS.calendar,
-    );
-  }
-
-  // 5. What the box left behind overnight, one line per todo.
+  // 4. What the box left behind overnight, one line per todo.
   if (f.overnightByTodo.length > 0) {
     pushRun(
       lines,
@@ -1091,7 +1058,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 6. What broke.
+  // 5. What broke.
   if (f.broken.length > 0) {
     const failures = f.broken.reduce((sum, b) => sum + (b.count ?? 1), 0);
     pushRun(
@@ -1111,7 +1078,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     pushRun(lines, "spend", lead, items.map((text) => ({ text, url: spend.url })), items.length);
   }
 
-  // 7. What changed on the box (plan-root T1, guarantee G4): the last run,
+  // 6. What changed on the box (plan-root T1, guarantee G4): the last run,
   //    so the first `fit` reduces. No reply invitation: a change is objected
   //    to where it happened, and a change to who can act already has its own
   //    line on the objection list. A box-change read that stopped is said in
@@ -1126,7 +1093,7 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  // 8. The reads that stopped with rows left, last: every one, since each
+  // 7. The reads that stopped with rows left, last: every one, since each
   //    says which count above is a lower bound. A PROTECTED RUN (CUT_RUN):
   //    `fit` never reduces it, and the last resort drops its lines only
   //    after every other line, because otherwise the posted digest does not
@@ -1173,7 +1140,7 @@ export function todayFirstLine(f: TodayFacts): string {
   // when nothing else waits. It stays, and is said only when it is true.
   let nothingElse = "";
   if (f.lateCount === 0) {
-    head = "Nothing is dated today and nothing is late. The calendar is your whole day.";
+    head = "Nothing is dated today and nothing is late.";
   } else {
     const first = f.today[0];
     const oldest = f.oldestLateBy ? `, the oldest by ${f.oldestLateBy}` : "";
@@ -1368,10 +1335,6 @@ export function todayFactsBlock(f: TodayFacts, canReply: boolean): FactsBlock {
   for (const n of f.needsYou) {
     facts.push({ ...fact(`needs-you-today:${n.todoId}`, needsYouTodayLine(n), [itemUrl(n.todoId)]), required: true });
   }
-  if (f.calendarLead) facts.push(fact("calendar:lead", f.calendarLead, [TAB_CALENDAR]));
-  f.calendar.forEach((span, index) => {
-    facts.push(fact(`calendar:${index}`, calendarLine(span), [TAB_CALENDAR]));
-  });
   for (const o of f.overnightByTodo) {
     facts.push(
       fact(`overnight-todo:${o.todoId ?? "none"}`, todoOutcomeLine(o), [todoOutcomeUrl(o)], [o.finished]),

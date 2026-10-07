@@ -28,12 +28,10 @@ import {
   LIVE_STATUSES,
   SESSION_OUTCOME,
   buildDoneSet,
-  feedIsPrivate,
   isFailureKind,
   isReadyForTom,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
-  privateFeedNames,
   ttsSessionLink,
 } from "./ttsShared";
 import { displayTime } from "../shared/clock.mjs";
@@ -70,11 +68,10 @@ import { MAX_DOCUMENT_BYTES, MIB, ReadBudget, getWithin, readWithin, type ReadCu
 //      move, and one sentence for how many other todos are ready
 //   2. the objection list — what the delegate decided while he was asleep,
 //      numbered in printed order; silence means it stands
-//   3. the calendar — his day, WITH EVERY PRIVATE FEED'S ROWS DROPPED
-//   4. overnight — one line per TODO saying what the sessions on it came to,
+//   3. overnight — one line per TODO saying what the sessions on it came to,
 //      never one line per logged event (Tom, 2026-09-24: no batches)
-//   5. broken — the jobs that failed, and what that means for him
-//   6. spend — what the agents that started in the window cost, by model
+//   4. broken — the jobs that failed, and what that means for him
+//   5. spend — what the agents that started in the window cost, by model
 //      family and by who watched them
 //
 // What LEFT the morning message in this round (§4.3): the WikiTom commit list
@@ -253,21 +250,6 @@ function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** One sentence naming the shape of the day, from the spans that survived the
- *  private-feed filter. Never a list of times — the item lines are the list. */
-export function calendarLeadText(spans: { start: number; end: number; allDay: boolean }[]): string {
-  const timed = spans.filter((s) => !s.allDay).sort((a, b) => a.start - b.start);
-  const allDay = spans.length - timed.length;
-  if (timed.length === 0) {
-    return `Your day carries ${countWord(allDay)} ${
-      allDay === 1 ? "entry that runs" : "entries that run"
-    } all day and nothing timed.`;
-  }
-  const from = displayTime(timed[0].start);
-  const to = displayTime(Math.max(...timed.map((s) => s.end)));
-  return `Your day is committed from ${from} to ${to}.`;
-}
-
 // ── What one digest reads ───────────────────────────────────────────────────
 // Every read gathering the day's facts has a row cap and a byte allotment
 // (convex/readBudget.ts), and the allotments share one gather budget. The row
@@ -286,8 +268,6 @@ const OBJECTION_SCAN = 200;
 
 /** A day normally has tens of dated todos; the cap keeps a long backlog inside one digest read. */
 const DATED_SCAN = 500;
-/** A day normally has tens of calendar rows; the cap bounds each 31-day overlap scan. */
-const CALENDAR_SCAN = 500;
 /** A day normally has tens of prepared todos. */
 const READY_SCAN = 200;
 /** A todo is marked surfaced once per digest that showed it. */
@@ -306,9 +286,7 @@ export const ROLLOVER_BYTES = 1.5 * MIB;
  *  1.4 MB, and 1,588 todos 8.9 MB (5.6 KB each on average, an explanation up
  *  to 64 KB). */
 export const READ_BYTES = {
-  dated: 1.5 * MIB,
-  blocks: 0.25 * MIB,
-  calendarEvents: 0.25 * MIB,
+  dated: 2 * MIB,
   emailCaptures: 0.5 * MIB,
   objectionEvents: 0.5 * MIB,
   nightEvents: 1.5 * MIB,
@@ -478,47 +456,7 @@ export async function gatherTodayFacts(
       ? lateBy(oldest.dueAt as number, now)
       : undefined;
 
-  // 2. The calendar. Blocks and mirrored calendar events overlapping the day,
-  //    with EVERY ROW FROM A PRIVATE FEED DROPPED (Tom 2026-09-09): the family
-  //    calendar stays in the record, and nothing he reads names it.
-  const privateFeeds = privateFeedNames(process.env.TTS_ICS_FEEDS);
-  const blockRows = await readWithin(
-    budget.allot("calendar blocks", READ_BYTES.blocks),
-    ctx.db
-      .query("blocks")
-      .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd)),
-    CALENDAR_SCAN,
-  );
-  const spans: { start: number; end: number; title: string; allDay: boolean }[] = [];
-  for (const b of blockRows) {
-    if (b.end <= dayStart) continue;
-    spans.push({
-      start: b.start,
-      end: b.end,
-      title: (await todoOf(b.todoId))?.statement ?? b.category ?? b.note ?? "block",
-      allDay: false,
-    });
-  }
-  const calendarRows = await readWithin(
-    budget.allot("calendar events", READ_BYTES.calendarEvents),
-    ctx.db
-      .query("ttsCalendarEvents")
-      .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd)),
-    CALENDAR_SCAN,
-  );
-  for (const e of calendarRows) {
-    if (e.end <= dayStart) continue;
-    if (feedIsPrivate(e.feed, privateFeeds)) continue;
-    spans.push({ start: e.start, end: e.end, title: e.title, allDay: e.allDay });
-  }
-  spans.sort((a, b) => a.start - b.start);
-  const calendar = spans.map((s) => ({
-    title: s.title,
-    when: s.allDay ? "" : `${displayTime(s.start)} to ${displayTime(s.end)}`,
-    allDay: s.allDay,
-  }));
-
-  // 3. Email captures since the last morning message. A capture that is ready
+  // 2. Email captures since the last morning message. A capture that is ready
   //    is a thing to do today and reaches him through the ready count below; a
   //    capture that is not ready is a row, not a line (§4.3). Read only to
   //    keep them out of the ready list twice.
@@ -576,7 +514,7 @@ export async function gatherTodayFacts(
     .sort((a, b) => a.createdAt - b.createdAt)
     .map((t) => ({ todoId: t._id as string, statement: t.statement, why: t.needsTomToday?.why ?? "" }));
 
-  // 4. The night's events, oldest first: what the box left behind, what broke,
+  // 3. The night's events, oldest first: what the box left behind, what broke,
   //    and the delegate's decisions.
   //
   //    THE OBJECTION LIST'S KINDS ARE READ ON THEIR OWN INDEX (by_kind_at),
@@ -1128,7 +1066,7 @@ export async function gatherTodayFacts(
   });
   const supersededComplete = !budget.cuts().some((cut) => cut.what === SUPERSEDED_READ);
 
-  // 5. Ready for Tom (not already dated) — ruling 18's computation
+  // 4. Ready for Tom (not already dated) — ruling 18's computation
   //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
   //    so the scan is the prepared list itself. §4.3: the ready SECTION is
   //    gone; the count is the today section's last sentence.
@@ -1163,7 +1101,7 @@ export async function gatherTodayFacts(
   // not counted here either: the count says how many things are WAITING.
   for (const id of emailCaptureIds) if (!readyIds.has(id)) emailCaptureIds.delete(id);
 
-  // 6. The objection list, ordered by importance (delegate-design.md §2.3) and
+  // 5. The objection list, ordered by importance (delegate-design.md §2.3) and
   //    numbered in printed order. Nothing at all when the delegate has taken
   //    no decision — the rows may not exist yet: the delegate is built on
   //    branch uac/delegate and this reads by kind if present.
@@ -1198,7 +1136,7 @@ export async function gatherTodayFacts(
       ...(o.decidedByText === undefined ? {} : { decidedByText: o.decidedByText }),
     }));
 
-  // 7. What changed on the box (plan-root T1): the box changes since the
+  // 6. What changed on the box (plan-root T1): the box changes since the
   //    last digest, from the record's events table (convex/boxChanges.ts
   //    boxChangesInWindow), and the deploy job's own rows, each read on its
   //    own kind's index so a busy night of other events cannot crowd them out.
@@ -1223,7 +1161,7 @@ export async function gatherTodayFacts(
     }),
   );
 
-  // 8. What the window's agents cost: every agent that STARTED in the window,
+  // 7. What the window's agents cost: every agent that STARTED in the window,
   //    read on the time index. The price sits inside `outcome`, where no index
   //    reaches, so the rows are read and summed here, newest first and bounded:
   //    past the bound it is the oldest that go, and the text says the figures
@@ -1248,8 +1186,6 @@ export async function gatherTodayFacts(
     oldestLateBy,
     // Ready items not printed: a flagged one is printed in the needs-you run.
     readyBeyond: [...readyIds].filter((id) => !needsYou.some((n) => n.todoId === id)).length,
-    calendar,
-    calendarLead: spans.length === 0 ? undefined : calendarLeadText(spans),
     objections: objections.slice(0, OBJECTION_CAP),
     objectionsBeyond: Math.max(0, objections.length - OBJECTION_CAP),
     // Counted over the WHOLE list, printed and beyond, because the lead's

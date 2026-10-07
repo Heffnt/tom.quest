@@ -13,7 +13,6 @@ import {
   ROLLOVER_NOTE,
   agentModelFamily,
   agentWatcher,
-  calendarLeadText,
   gatherTodayFacts,
   isPassedWithoutOutcome,
   latenessText,
@@ -21,7 +20,7 @@ import {
   stripNarrowListId,
   rollMissed,
 } from "./ttsDigest";
-import { MESSAGE_MAX_CHARS, TAB_EVERYTHING } from "./ttsCompose";
+import { MESSAGE_MAX_CHARS } from "./ttsCompose";
 import { nyCalendarDayBoundsUtc, ttsItemLink, ttsSessionLink } from "./ttsShared";
 import { resolveId } from "./jarvis/tables";
 import { insertTodo, patchTodo } from "../test/core-tables";
@@ -408,20 +407,6 @@ describe("latenessText", () => {
     expect(latenessText(now - 10 * DAY, now)).toBe("Ten days late.");
     // Past the words, numerals: "six hundred and sixty-seven" is not scanned.
     expect(latenessText(now - 40 * DAY, now)).toBe("40 days late.");
-  });
-});
-
-describe("calendarLeadText", () => {
-  it("names the shape of the day in one sentence, never a list of times", () => {
-    expect(
-      calendarLeadText([
-        { start: Date.UTC(2026, 8, 5, 20), end: Date.UTC(2026, 8, 5, 21), allDay: false },
-        { start: Date.UTC(2026, 8, 6, 3), end: Date.UTC(2026, 8, 6, 3, 30), allDay: false },
-      ]),
-    ).toBe("Your day is committed from 4:00 pm to 11:30 pm.");
-    expect(calendarLeadText([{ start: 0, end: 0, allDay: true }])).toBe(
-      "Your day carries one entry that runs all day and nothing timed.",
-    );
   });
 });
 
@@ -828,78 +813,6 @@ describe("internalComposeToday", () => {
     for (const word of ["plan stored", "created", "retired", "session opened", "worker event"]) {
       expect(text.toLowerCase()).not.toContain(word);
     }
-  });
-
-  // THE FAMILY CALENDAR NEVER APPEARS IN ANYTHING SENT TO HIM (Tom
-  // 2026-09-09). The rows stay in the record — scheduling still knows he is
-  // busy — and no message, and no facts block, names one.
-  it("drops every row from a feed marked private, and keeps the rest", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsCalendarEvents", {
-        feed: "google",
-        uid: "u1",
-        title: "PT",
-        start: Date.UTC(2026, 8, 5, 20),
-        end: Date.UTC(2026, 8, 5, 21),
-        allDay: false,
-        syncedAt: FIVE_AM,
-      });
-      await ctx.db.insert("ttsCalendarEvents", {
-        feed: "family",
-        uid: "u2",
-        title: "Dinner with the family",
-        start: Date.UTC(2026, 8, 6, 0),
-        end: Date.UTC(2026, 8, 6, 1),
-        allDay: false,
-        syncedAt: FIVE_AM,
-      });
-    });
-    vi.stubEnv(
-      "TTS_ICS_FEEDS",
-      JSON.stringify([
-        { name: "google", url: "https://example.invalid/g.ics" },
-        { name: "family", url: "https://example.invalid/f.ics", private: true },
-      ]),
-    );
-    const { text, facts } = await composeToday(t, {
-      day: DAY_KEY,
-      now: FIVE_AM + 1,
-    });
-    expect(text).toContain("PT runs 4:00 pm to 5:00 pm.");
-    expect(text).not.toContain("Dinner with the family");
-    expect(text).not.toContain("private");
-    expect(JSON.stringify(facts)).not.toContain("Dinner with the family");
-    // The row is still there: the schedule knows he is busy.
-    const rows = await t.run(async (ctx) => ctx.db.query("ttsCalendarEvents").collect());
-    expect(rows).toHaveLength(2);
-  });
-
-  it("treats an unreadable TTS_ICS_FEEDS as every feed being private", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsCalendarEvents", {
-        feed: "google",
-        uid: "u1",
-        title: "PT",
-        start: Date.UTC(2026, 8, 5, 20),
-        end: Date.UTC(2026, 8, 5, 21),
-        allDay: false,
-        syncedAt: FIVE_AM,
-      });
-    });
-    vi.stubEnv("TTS_ICS_FEEDS", "{not json");
-    const { text } = await composeToday(t, {
-      day: DAY_KEY,
-      now: FIVE_AM + 1,
-    });
-    expect(text).not.toContain("PT runs");
   });
 
   // The delegate is built on branch uac/delegate. Its rows are read BY KIND if

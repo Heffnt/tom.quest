@@ -1601,3 +1601,58 @@ export const internalCopyDayLogToEvents = internalMutation({
     return { done: false, dryRun, page, totals, continueCursor: result.continueCursor };
   },
 });
+
+// ── The Jarvis calendar's tables emptied (design section 13.2, 2026-10-07) ────
+// The calendar mirror, its four feeds, blocks, repeats and time notes went
+// from the code and the schema in one change; their rows stay in the
+// deployment, undeclared, until this walk deletes them. It runs only after
+// the bucket's newest record export is newer than the last write to these
+// tables, so every row it deletes is in an off-box copy. The tables are read
+// by name, untyped, because the schema no longer declares them. A dry run
+// counts each table's rows and deletes nothing.
+
+const CALENDAR_PURGE_MIGRATION = "calendar-tables-purge";
+
+/** The eight tables, each under its old and its plain name. */
+const CALENDAR_TABLES = [
+  "ttsCalendarEvents",
+  "calendar",
+  "ttsRepeats",
+  "repeats",
+  "dtsBlocks",
+  "blocks",
+  "dtsTimeNotes",
+  "timeNotes",
+] as const;
+
+type Untyped = {
+  query(table: string): { take(n: number): Promise<{ _id: string }[]> };
+  delete(id: string): Promise<void>;
+};
+
+/** One call: up to `pageSize` rows of each table, counted and (unless a dry
+ *  run) deleted, in one transaction. A table holding more than that reports
+ *  `more`, and the same call again takes the next rows; a table already
+ *  empty counts 0. On 2026-10-06 the eight held about 230 rows in all, so one
+ *  call with the default page empties them:
+ *    npx convex run ttsMigrations:internalPurgeCalendarTables '{"dryRun":true}'
+ *    npx convex run ttsMigrations:internalPurgeCalendarTables '{}' */
+export const internalPurgeCalendarTables = internalMutation({
+  args: { dryRun: v.optional(v.boolean()), pageSize: v.optional(v.number()) },
+  handler: async (ctx, args): Promise<{ dryRun: boolean; counts: Counts; more: string[] }> => {
+    const dryRun = args.dryRun ?? false;
+    const pageSize = args.pageSize ?? 1000;
+    const db = ctx.db as unknown as Untyped;
+    const counts: Counts = {};
+    const more: string[] = [];
+    for (const table of CALENDAR_TABLES) {
+      const rows = await db.query(table).take(pageSize + 1);
+      const page = rows.slice(0, pageSize);
+      if (rows.length > pageSize) more.push(table);
+      counts[table] = page.length;
+      if (!dryRun) for (const row of page) await db.delete(row._id);
+    }
+    await logEvent(ctx, dryRun ? `${CALENDAR_PURGE_MIGRATION}-dry-run` : `${CALENDAR_PURGE_MIGRATION}-migrated`, undefined, { ...counts, more: more.length });
+    return { dryRun, counts, more };
+  },
+});

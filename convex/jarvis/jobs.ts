@@ -205,7 +205,7 @@ const SILENCE_WATCH: readonly { job: string; everyMs: number; feeds: string; say
   { job: "agents-sweep", everyMs: 2 * 60_000, feeds: "the agents' transcripts" },
   // The box's record-tick (Jarvis worker/jobs/record-tick.mjs), which starts
   // the record's timed tasks (tick.ts).
-  { job: "record-tick", everyMs: 60_000, feeds: "the record's timed work (calendar, pull requests, repeats)" },
+  { job: "record-tick", everyMs: 60_000, feeds: "the record's timed work (Turing health, pull requests, the code mirror)" },
   // The landing observer: tick.ts's pull-requests task, which mirrors the
   // open pull requests and lands each approved one whose gate turned green
   // (observeMerge.refreshOpenPulls). Its job-ok rows carry provenance.job

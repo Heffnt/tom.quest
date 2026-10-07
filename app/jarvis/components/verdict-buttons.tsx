@@ -74,7 +74,7 @@ export const VERDICT_EFFECT: Record<
     revise:
       "Records your sentence as the redirection. The ruling is recorded and stays pending: nothing on the Jarvis Box or in the record acts on it.",
     session:
-      "Says this needs a conversation rather than a ruling. No session opens from here: the ruling is applied the moment you open the code block session from the calendar — its opening prompt names this item and your note — and the item waits for you until then.",
+      "Says this needs a conversation rather than a ruling. No session opens from here, and the ruling stays pending: the code block session that applied it was opened from the calendar, which is removed.",
     archive:
       "Records your sentence, if any, with the ruling. The ruling is recorded and stays pending: nothing on the Jarvis Box or in the record acts on it.",
   },

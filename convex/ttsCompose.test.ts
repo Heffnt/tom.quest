@@ -4,7 +4,6 @@ import {
   LINE_CHARS,
   MESSAGE_MAX_CHARS,
   SECTION_ORDER,
-  TAB_CALENDAR,
   TAB_EVERYTHING,
   checkMessage,
   claimKey,
@@ -45,7 +44,6 @@ describe("the links the composer spells for itself", () => {
     expect(itemUrl("ph7fqh2j")).toBe(ttsItemLink("ph7fqh2j"));
     expect(sessionUrl("k97a")).toBe(ttsSessionLink("k97a"));
     expect(TAB_EVERYTHING).toBe(ttsTabLink("everything"));
-    expect(TAB_CALENDAR).toBe(ttsTabLink("calendar"));
   });
 });
 
@@ -275,12 +273,6 @@ function sept9(overrides: Partial<TodayFacts> = {}): TodayFacts {
     lateCount: 3,
     oldestLateBy: "ten days",
     readyBeyond: 667,
-    calendar: [
-      { title: "Quiz 3 for CS542", when: "", allDay: true },
-      { title: "PT", when: "16:00 to 17:00", allDay: false },
-      { title: "D&D", when: "19:30 to 23:00", allDay: false },
-    ],
-    calendarLead: "Your day is committed from 16:00 to 23:00.",
     objections: [],
     needsYou: [],
     overnightByTodo: [
@@ -326,7 +318,7 @@ describe("composeToday", () => {
     const leads = composeToday(sept9(), { canReply: false })
       .lines.filter((line) => line.role === "lead")
       .map((line) => line.section);
-    expect(leads).toEqual(["today", "calendar", "overnight"]);
+    expect(leads).toEqual(["today", "overnight"]);
     const withAll = composeToday(
       sept9({
         objections: [
@@ -347,7 +339,7 @@ describe("composeToday", () => {
       { canReply: false },
     );
     const order = withAll.lines.filter((l) => l.role === "lead").map((l) => l.section);
-    expect(order).toEqual(["today", "objections", "needs-you-today", "calendar", "overnight", "broken", "spend", "box"]);
+    expect(order).toEqual(["today", "objections", "needs-you-today", "overnight", "broken", "spend", "box"]);
     // The four ranked sections keep the design's order among themselves.
     expect(order.filter((s) => (SECTION_ORDER as readonly string[]).includes(s as string))).toEqual([
       ...SECTION_ORDER,
@@ -360,7 +352,7 @@ describe("composeToday", () => {
       { canReply: false },
     );
     expect(message.firstLine).toBe(
-      "Nothing is dated today and nothing is late. The calendar is your whole day.",
+      "Nothing is dated today and nothing is late.",
     );
     expect(message.lines.some((line) => line.role === "item")).toBe(true);
   });
@@ -407,11 +399,6 @@ describe("composeToday", () => {
         countdown: "Ten days late.",
       })),
       lateCount: 200,
-      calendar: Array.from({ length: 20 }, (_, i) => ({
-        title: `A commitment number ${i}, ${filler}`,
-        when: "16:00 to 17:00",
-        allDay: false,
-      })),
       overnightByTodo: Array.from({ length: 40 }, (_, i) => ({
         todoId: `t${i}`,
         statement: `Todo number ${i}`,
@@ -420,10 +407,11 @@ describe("composeToday", () => {
         running: false,
       })),
       broken: Array.from({ length: 6 }, (_, i) => ({
-        statement: `A job stopped ${i}.`,
-        detail: `Job ${i} failed`,
+        statement: `A job stopped ${i}, ${filler}.`,
+        detail: `Job ${i} failed, ${filler}`,
         url: sessionUrl(`k${i}`),
       })),
+      boxChanges: Array.from({ length: 8 }, (_, i) => ({ id: `box:line-${i}`, text: `A box change number ${i}, ${filler}`, url: "https://tom.quest/agents" })),
     });
     const { message, truncated } = composeTodayFitted(many, { canReply: false });
     const text = renderSlack(message);
@@ -635,7 +623,9 @@ describe("the needs-you-today run", () => {
   it("is never reduced when the message must be fitted, whatever else gives", () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ todoId: `n${i}`, statement: `Answer the registrar about form ${i} before the office closes`, why: "a person is waiting on a reply" }));
     const overnightByTodo = Array.from({ length: 40 }, (_, i) => ({ todoId: `t${i}`, statement: `The research critical path number ${i} with a long name that runs past half a line`, sessionId: `k${i}`, finished: 1, running: true }));
-    const { message, truncated } = fit(composeToday(sept9({ needsYou: many, overnightByTodo }), { canReply: false }));
+    const broken = Array.from({ length: 4 }, (_, i) => ({ statement: `The job number ${i} with a long name stopped before it finished its run`, detail: `Job ${i} failed on its last three attempts`, url: sessionUrl(`k${i}`) }));
+    const boxChanges = Array.from({ length: 8 }, (_, i) => ({ id: `box:line-${i}`, text: `A box change number ${i} that runs past half a line on a phone screen`, url: "https://tom.quest/agents" }));
+    const { message, truncated } = fit(composeToday(sept9({ needsYou: many, overnightByTodo, broken, boxChanges }), { canReply: false }));
     expect(truncated).toBe(true);
     const text = renderSlack(message);
     for (const n of many) expect(text).toContain(`form ${n.todoId.slice(1)} before`);
@@ -795,7 +785,6 @@ describe("the facts block", () => {
     expect(ids).toContain("todo:ph7fqh2j");
     expect(ids).toContain("ready:beyond");
     expect(ids).toContain("overnight-todo:ph7crit");
-    expect(ids).toContain("calendar:lead");
     const ready = block.facts.find((f) => f.id === "ready:beyond");
     expect(ready?.urls).toContain(TAB_EVERYTHING);
     expect(ready?.numbers).toContain("667");
@@ -839,10 +828,6 @@ describe("the facts block", () => {
     expect(text.toLowerCase()).not.toContain("batch");
   });
 
-  it("never offers a private calendar row — the gatherer dropped it before this", () => {
-    const block = todayFactsBlock(sept9({ calendar: [], calendarLead: undefined }), false);
-    expect(block.facts.some((f) => f.id.startsWith("calendar:"))).toBe(false);
-  });
 });
 
 
@@ -924,10 +909,10 @@ describe("the spend section", () => {
 // ── Where a read stopped ─────────────────────────────────────────────────────
 describe("the lines saying a digest read stopped", () => {
   // Every read the digest makes: the rollover's two and the gather's
-  // nineteen (convex/ttsDigest.ts READ_BYTES), each at its longest.
+  // seventeen (convex/ttsDigest.ts READ_BYTES), each at its longest.
   const every = [
     "past-dated todos for the missed rollover", "past-dated todos settled", "rows looked up by id",
-    "dated todos", "calendar blocks", "calendar events", "email captures", "surfaced marks of flagged emails",
+    "dated todos", "email captures", "surfaced marks of flagged emails",
     "objection-list events", "events of the night", "work outcomes", "job failures and recoveries",
     "eval runs", "delegate decisions", "digest lines", "settlements", "prepared todos",
     "needs of prepared todos", "deploys", "box changes", "agent runs",
@@ -962,7 +947,6 @@ describe("the lines saying a digest read stopped", () => {
     const facts = sept9({
       boxChanges: Array.from({ length: 12 }, (_, n) => ({ id: `box:line-${n}`, text: long("Box line", n), url: "https://tom.quest/agents" })),
       broken: Array.from({ length: 8 }, (_, n) => ({ statement: long("A job failed", n), count: 1 })),
-      calendar: Array.from({ length: 14 }, (_, n) => ({ title: long("Meeting", n), when: "09:00 to 10:00", allDay: false })),
       settled: Array.from({ length: 8 }, (_, n) => ({ id: `settled-${n}`, text: long("Settled", n) })),
       readCuts: allCuts,
     });

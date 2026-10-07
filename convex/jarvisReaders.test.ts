@@ -4,8 +4,8 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { insertCopied } from "../test/core-tables";
 
-// The readers of todos, blocks and timeNotes (convex/jarvis/tables.ts): each
-// reads the plain rows, which since step C every writer writes, and hands
+// The todo readers (convex/jarvis/tables.ts) read the plain rows, which since
+// step C every writer writes, and hand
 // out plain ids, whichever form a stored reference holds. The fixtures are
 // written through the doors, plus one todo from before step C: an old row
 // and its plain copy, with a ruling and an event that store its old id.
@@ -36,9 +36,8 @@ function fields(row: Row) {
 
 const byId = (a: Record<string, unknown>, b: Record<string, unknown>) => String(a._id).localeCompare(String(b._id));
 
-/** Three todos (one needing another), blocks on a todo and on a category, a
- *  time note on each context, one applied; every row through its door. And
- *  a todo from before step C, with a ruling and an event on its old id. */
+/** Three todos (one needing another), and a todo from before step C with a
+ *  ruling and an event on its old id. */
 async function seed(t: T) {
   const tom = await withTom(t);
   const now = Date.now();
@@ -62,12 +61,6 @@ async function seed(t: T) {
     await ctx.db.insert("dtsEvents", { at: 1, kind: "ruling", todoId: copied.old });
     return copied;
   });
-  const onTodo = await tom.mutation(api.tts.createBlock, { start: now - 3_600_000, end: now + 3_600_000, todoId: lease, note: "the hour" });
-  await tom.mutation(api.tts.createBlock, { start: now + DAY, end: now + DAY + 3_600_000, category: "home" });
-  await tom.mutation(api.tts.createTimeNote, { text: "friday", todoId: lease });
-  await tom.mutation(api.tts.createTimeNote, { text: "an hour later", blockId: onTodo });
-  const applied = await tom.mutation(api.tts.createTimeNote, { text: "today", day: "2026-09-27" });
-  await t.mutation(internal.tts.internalApplyTimeNote, { id: applied, status: "applied", result: "noted" });
   await tom.mutation(api.ttsRulings.recordRuling, { todoId: call, verdict: "approve", sentence: "go ahead" });
   return { tom, lease, call, forms, before };
 }
@@ -84,73 +77,6 @@ describe("the readers read the plain tables and hand out plain ids", () => {
       const rows = (await ctx.db.query("todos").collect()).map((row) => fields(row as Row));
       expect(listed.map((row) => fields(row as Row)).sort(byId)).toEqual(rows.sort(byId));
     });
-  });
-
-  it("listBlocks, whole and in a window", async () => {
-    const t = convexTest({ schema, modules });
-    const { tom } = await seed(t);
-    const now = Date.now();
-    for (const args of [{}, { start: now, end: now + 2 * 3_600_000 }] as { start?: number; end?: number }[]) {
-      const listed = await tom.query(api.tts.listBlocks, args);
-      await t.run(async (ctx) => {
-        const moved = listed.map((row) => fields(row as Row));
-        const all = (await ctx.db.query("blocks").collect()).map((row) => fields(row as Row));
-        const { start, end } = args;
-        const before =
-          start === undefined || end === undefined
-            ? all
-            : all.filter((b) => (b.start as number) < end && (b.end as number) > start);
-        expect(moved.length).toBeGreaterThan(0);
-        expect(moved.sort(byId)).toEqual(before.sort(byId));
-      });
-    }
-  });
-
-  it("listTimeNotes", async () => {
-    const t = convexTest({ schema, modules });
-    const { tom } = await seed(t);
-    const listed = await tom.query(api.tts.listTimeNotes, {});
-    expect(listed).toHaveLength(3);
-    await t.run(async (ctx) => {
-      const rows = (await ctx.db.query("timeNotes").collect()).map((row) => fields(row as Row));
-      expect(listed.map((row) => fields(row as Row)).sort(byId)).toEqual(rows.sort(byId));
-    });
-  });
-
-  it("internalPendingTimeNotes: each note's context in plain ids, the same facts", async () => {
-    const t = convexTest({ schema, modules });
-    const { lease } = await seed(t);
-    const pending = await t.query(internal.tts.internalPendingTimeNotes, {});
-    expect(pending.map((n) => n.text).sort()).toEqual(["an hour later", "friday"]);
-    await t.run(async (ctx) => {
-      const onTodo = pending.find((n) => n.text === "friday")!;
-      const todo = (await ctx.db.get(lease))!;
-      expect(onTodo.context).toEqual({
-        kind: "todo",
-        todo: {
-          _id: onTodo.todoId,
-          statement: todo.statement,
-          status: todo.status,
-          timingClass: todo.timingClass,
-          dueAt: todo.dueAt ?? null,
-          dateKind: todo.dateKind ?? null,
-          wakeAt: null,
-          dateOutcomes: [],
-        },
-      });
-      expect(onTodo.todoId).toBe(lease);
-      const onBlock = pending.find((n) => n.text === "an hour later")! as unknown as { context: { kind: string; block: Row; sameDayBlocks: Row[] } };
-      expect(onBlock.context.kind).toBe("block");
-      expect(onBlock.context.block).toMatchObject({ todoId: lease, note: "the hour" });
-    });
-  });
-
-  it("internalScheduleAt names the todo a live block is on", async () => {
-    const t = convexTest({ schema, modules });
-    await seed(t);
-    expect(await t.query(internal.tts.internalScheduleAt, { at: Date.now() })).toEqual([
-      expect.objectContaining({ note: "the hour", statement: "renew the lease" }),
-    ]);
   });
 
   it("listRulings, listRecentEvents and the box's rulings feeds hand out the plain todo id, whichever form a row stores", async () => {

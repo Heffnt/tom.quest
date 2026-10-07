@@ -228,7 +228,6 @@ describe("the todo row", () => {
         onToggle={() => {}}
         intent={null}
         onIntentCleared={() => {}}
-        timeNotes={[]}
       />,
     );
     expect(screen.getByText("the citations stay verbatim")).toBeTruthy();

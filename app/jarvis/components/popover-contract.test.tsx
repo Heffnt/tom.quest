@@ -75,16 +75,12 @@ vi.mock("@/app/lib/auth", () => ({
   useAuth: () => ({ isTom: true, canReadSurface: () => true }),
 }));
 
-import CalendarTab from "./calendar-tab";
 import CodeTodoRow from "./code-todo-row";
 import EverythingTab from "./everything-tab";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
-import RepeatDialog from "./repeat-dialog";
-import RepeatsStrip from "./repeats-strip";
 import RulingDialog from "./ruling-dialog";
 import SignoffBlock from "./signoff-block";
-import TimeNoteField from "./time-note-field";
 import TodoRow from "./todo-row";
 import VerdictButtons from "./verdict-buttons";
 import Composer from "@/app/agents/components/composer";
@@ -232,25 +228,6 @@ const BRIEF = {
   preparedAt: NOW,
 };
 
-const REPEAT = {
-  _id: "r1",
-  _creationTime: 0,
-  statement: "Practice",
-  daysOfWeek: ["mon"],
-  timeOfDay: "07:00",
-  active: true,
-  skipWhenCalendarHas: "standup",
-};
-
-const NOTE = {
-  _id: "n1",
-  _creationTime: 0,
-  todoId: "t2",
-  text: "before friday",
-  status: "pending",
-  createdAt: NOW,
-};
-
 // ── The sessions screens ────────────────────────────────────────────────────
 // One live session, mid-run and with a stale daemon, because that posture puts
 // every control on screen at once: send, interrupt, stop, and force close.
@@ -345,14 +322,6 @@ function load() {
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
     [getFunctionName(api.ttsCode.listCodeBriefs)]: [BRIEF],
     [getFunctionName(api.ttsRulings.listRulings)]: [],
-    [getFunctionName(api.tts.listTimeNotes)]: [NOTE],
-    [getFunctionName(api.tts.listBlocks)]: [],
-    // No tts.getToday: the calendar tab's today column is computed now, and
-    // the query went with the fallback queue (the lifeos update, phase 7
-    // jobs). An unanswered query reads as loading, which is what this fixture
-    // wants of it anyway.
-    [getFunctionName(api.ttsRepeats.listRepeats)]: [REPEAT],
-    [getFunctionName(api.ttsCalendar.listCalendarEvents)]: [],
     [getFunctionName(api.ttsSignoff.listProposals)]: [PROPOSAL],
   };
 }
@@ -361,7 +330,6 @@ const noop = () => {};
 
 /** One entry per component under either directory that renders controls. */
 const CASES: { file: string; render: () => void }[] = [
-  { file: "app/jarvis/components/calendar-tab.tsx", render: () => void render(<CalendarTab />) },
   {
     file: "app/jarvis/components/code-todo-row.tsx",
     render: () =>
@@ -391,11 +359,6 @@ const CASES: { file: string; render: () => void }[] = [
     file: "app/jarvis/components/options-row.tsx",
     render: () => void render(<OptionsRow todo={TODO as never} rulable />),
   },
-  {
-    file: "app/jarvis/components/repeat-dialog.tsx",
-    render: () => void render(<RepeatDialog rule={REPEAT as never} onClose={noop} />),
-  },
-  { file: "app/jarvis/components/repeats-strip.tsx", render: () => void render(<RepeatsStrip />) },
   { file: "app/jarvis/components/signoff-block.tsx", render: () => void render(<SignoffBlock now={NOW} />) },
   {
     file: "app/jarvis/components/ruling-dialog.tsx",
@@ -415,13 +378,6 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/jarvis/components/time-note-field.tsx",
-    render: () =>
-      void render(
-        <TimeNoteField todoId={TODO._id as never} notes={[NOTE as never]} />,
-      ),
-  },
-  {
     file: "app/jarvis/components/todo-row.tsx",
     render: () =>
       void render(
@@ -432,7 +388,6 @@ const CASES: { file: string; render: () => void }[] = [
           onToggle={noop}
           intent="done"
           onIntentCleared={noop}
-          timeNotes={[NOTE as never]}
         />,
       ),
   },

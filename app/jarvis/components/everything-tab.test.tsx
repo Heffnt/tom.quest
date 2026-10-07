@@ -81,7 +81,6 @@ function load(
     [getFunctionName(api.tts.listMirror)]: mirror,
     [getFunctionName(api.ttsCode.listCodeBriefs)]: [],
     [getFunctionName(api.ttsRulings.listRulings)]: rulings,
-    [getFunctionName(api.tts.listTimeNotes)]: [],
   };
 }
 

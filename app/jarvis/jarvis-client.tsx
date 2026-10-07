@@ -1,13 +1,12 @@
 "use client";
 
 // JARVIS (/jarvis, the page that was /tts until 2026-09-26; next.config.ts
-// sends /tts there) — the one todo page: two tabs (calendar · everything), the
-// active tab below. Batches are gone (Tom, 2026-09-24): the todos awaiting his
-// ruling and the rulings still applying open the everything tab, which is the
-// default. Tab state rides ?tab=; ?item= (produced by ttsItemLink) forces the
-// everything tab and is handed to it as the link prop. Each tab fetches its
-// own data with useQuery — Convex dedupes subscriptions, so the shell's
-// badge-count queries are free.
+// sends /tts there) — the one todo page: one tab, everything (the calendar tab
+// went with the Jarvis calendar, design section 13.2). Batches are gone (Tom,
+// 2026-09-24): the todos awaiting his ruling and the rulings still applying
+// open the everything tab. ?item= (produced by ttsItemLink) is handed to it as
+// the link prop. The tab fetches its own data with useQuery — Convex dedupes
+// subscriptions, so the shell's badge-count queries are free.
 //
 // The page has no capture control (ruling 2026-09-05, "no capture bar"):
 // todos are captured from Slack through the events route, and this page is
@@ -23,16 +22,14 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
-import CalendarTab from "./components/calendar-tab";
 import EverythingTab from "./components/everything-tab";
 import { selectNeedsMe, type LinkIntent } from "./lib";
 
-// The two tabs, in the page's own vocabulary. A Slack link may still name a
-// third (convex/ttsShared.ts TtsTab); the read-once effect below maps it.
-type Tab = "calendar" | "everything";
+// The tab, in the page's own vocabulary. A Slack link may still name a retired
+// one (calendar, batches, needs-me, by-individual); every name lands here.
+type Tab = "everything";
 
 const TABS: Array<{ value: Tab; label: string }> = [
-  { value: "calendar", label: "calendar" },
   { value: "everything", label: "everything" },
 ];
 
@@ -62,18 +59,11 @@ export default function JarvisClient() {
       const intent =
         raw === "done" || raw === "archive" || raw === "engage" ? raw : null;
       setLink({ item, intent });
-      setTab("everything"); // an item link always lands on the everything tab
-      return;
     }
-    // Only calendar is not the default. Every other name — everything, and
-    // the retired batches, needs-me and by-individual that old Slack posts
-    // carry — lands on the everything tab.
-    if (sp.get("tab") === "calendar") setTab("calendar");
   }, []);
 
   // Tab state stays local: user-facing quest URLs avoid query params
-  // (AGENTS.md routing). Incoming ?tab= links (e.g. the /focus redirect) are
-  // honored by the read-once effect above; clicks do not write the URL.
+  // (AGENTS.md routing); clicks do not write the URL.
   const selectTab = (next: Tab) => setTab(next);
 
   const clearLink = () => {
@@ -152,14 +142,6 @@ export default function JarvisClient() {
         </div>
 
         <div className="mt-4">
-          {tab === "calendar" && (
-            <CalendarTab
-              onOpenItem={(id) => {
-                setLink({ item: id, intent: null });
-                setTab("everything");
-              }}
-            />
-          )}
           {tab === "everything" && (
             <EverythingTab link={linkToRow} onLinkCleared={clearLink} />
           )}

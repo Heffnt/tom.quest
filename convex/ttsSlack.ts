@@ -165,7 +165,7 @@ export const internalRecordSlackFailed = internalMutation({
 // judges a captured item to need Tom TODAY calls POST /tts/needs-tom, which
 // lands here; the message goes out through the one door in convex/ttsSync.ts
 // with the todo as its subject, so his threaded reply already routes — "done"
-// completes it, a bare date is a time note, anything else is a fact on the row
+// completes it, anything else is a fact on the row
 // (todoReply below).
 //
 // DEDUPED ON THE PRODUCER'S OWN ID, not on the todo. A poller's key is the
@@ -323,50 +323,23 @@ export function sourceUrlOf(provenance: string | undefined): string | null {
   return hit === null ? null : hit[0];
 }
 
-// ── "done", a bare date, or a fact ───────────────────────────────────────────
+// ── "done", or a fact ────────────────────────────────────────────────────────
 // A reply on a todo thread that says ONLY "done" completes the todo through
 // applyStatusChange — the one status writer, so the kept-dates rule resolves
-// an open date the same way the page's button does. A reply that is ONLY a
-// date is a time note (dtsTimeNotes): worker/jobs/apply-time-notes.mjs reads
-// Tom's words and moves the date through the kept-dates rules. Anything
-// longer is a fact. The recognised shapes are deliberately finite — a sentence
-// that happens to contain a date is still a sentence.
-const MONTH =
-  "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
-const WEEKDAY =
-  "(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)";
-const DAY_NUM = "\\d{1,2}(?:st|nd|rd|th)?";
-const TIME = "(?:\\s+(?:at\\s+)?\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?";
-const DATE_ONLY = new RegExp(
-  "^(?:" +
-    [
-      "\\d{4}-\\d{2}-\\d{2}",
-      "\\d{1,2}[/.]\\d{1,2}(?:[/.]\\d{2,4})?",
-      "today|tonight|tomorrow|this weekend",
-      `(?:next\\s+|this\\s+)?${WEEKDAY}`,
-      "next\\s+(?:week|month|year)",
-      "in\\s+\\d+\\s+(?:days?|weeks?|months?)",
-      `(?:the\\s+)?${DAY_NUM}(?:\\s+of)?\\s+${MONTH}(?:\\s+\\d{4})?`,
-      `${MONTH}\\s+(?:the\\s+)?${DAY_NUM}(?:,?\\s+\\d{4})?`,
-    ].join("|") +
-    `)${TIME}$`,
-  "i",
-);
+// an open date the same way the page's button does. Anything else, a bare
+// date included, is a fact on the todo: the time notes that once read a bare
+// date went with the Jarvis calendar (design section 13.2).
+export type ReplyShape = "done" | "fact";
 
-export type ReplyShape = "done" | "date" | "fact";
-
-/** "done" when the whole reply is the word done; "date" when it is a bare
- * date (optionally "on"/"by" first, a time after); "fact" otherwise.
+/** "done" when the whole reply is the word done; "fact" otherwise.
  * Exported for its test. */
 export function replyShape(text: string): ReplyShape {
   const normalized = text
     .trim()
     .toLowerCase()
     .replace(/[.!]+$/, "")
-    .replace(/\s+/g, " ")
-    .replace(/^(?:on|by|for)\s+/, "");
-  if (normalized === "done") return "done";
-  return DATE_ONLY.test(normalized) ? "date" : "fact";
+    .replace(/\s+/g, " ");
+  return normalized === "done" ? "done" : "fact";
 }
 
 // ── A threaded reply from Tom ────────────────────────────────────────────────
@@ -464,7 +437,6 @@ export type ThreadReplyOutcome =
       sessionId: Id<"claudeSessions">;
     }
   | { outcome: "done"; todoId: Id<"todos"> }
-  | { outcome: "time-note"; timeNoteId: Id<"timeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }
@@ -474,7 +446,7 @@ export type ThreadReplyOutcome =
 
 type NeedsYouAnswerOutcome = Extract<
   ThreadReplyOutcome,
-  { outcome: "done" | "time-note" | "tom-note" }
+  { outcome: "done" | "tom-note" }
 >;
 
 /**
@@ -485,11 +457,11 @@ type NeedsYouAnswerOutcome = Extract<
  *              gets a NEW session of the same kind seeded with the thread,
  *              and the thread is told which one.
  *   todo     → "done" completes the todo (applyStatusChange, the reply as the
- *              note); a bare date is a time note on the todo; anything else
+ *              note); anything else
  *              is a "tom-note" event on the todo.
  *   digest   → a "tom-note" event with the day — a fact, per the brief;
  *              a reply that names a todo (link or id) and otherwise says only
- *              "done" or a date is that todo's reply, as above; a reply that
+ *              "done" is that todo's reply, as above; a reply that
  *              names a model-of-Tom line by the id the digest printed is a
  *              "learning-objection" to that line; "revert <n>" is an
  *              objection to the digest's line n; and a reply to a needs-you
@@ -603,9 +575,9 @@ async function routeReply(
     case "today":
     case "digest": {
       // A reply to the morning message is a fact (the brief's
-      // "captured as a fact") — the thread has no one todo for a date or a
-      // "done" to land on. The one exception: a reply that NAMES a todo (its
-      // link or id) and otherwise says only "done" or a date is that todo's
+      // "captured as a fact") — the thread has no one todo for a "done" to
+      // land on. The one exception: a reply that NAMES a todo (its link or
+      // id) and otherwise says only "done" is that todo's
       // reply, exactly as if it were in the todo's own thread. A reply that
       // names a model-of-Tom line by its id is an objection to that line —
       // the nightly job applies the inverse the next night. BOTH CAN BE
@@ -1028,7 +1000,7 @@ async function namedTodo(
 }
 
 /** A reply on a todo's thread, by its shape: "done" completes the todo, a
- * bare date is a time note on it, anything else is a fact on it. A todo that
+ * anything else is a fact on it. A todo that
  * is already done takes a second "done" as a fact — nothing to complete, and
  * the words are still kept. The shape is the reply's own unless the caller
  * read it off the reply with the todo's name taken out (namedTodo). */
@@ -1051,13 +1023,6 @@ async function todoReply(
         return { outcome: "done", todoId };
       }
       break;
-    case "date": {
-      const timeNoteId = await ctx.runMutation(
-        internal.tts.internalCreateTimeNote,
-        { text, todoId },
-      );
-      return { outcome: "time-note", timeNoteId };
-    }
     case "fact":
       break;
   }

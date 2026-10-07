@@ -6,8 +6,8 @@
 // record-tick job (Jarvis worker/jobs/record-tick.mjs, every minute) POSTs
 // /jarvis/tick, which starts each task whose cadence has come round. A task's
 // last outcome is its own job-ok or job-failed row (provenance.job and
-// subject `tick:<name>`), so "when did the calendar last refresh" is a read
-// of the record, a failing task is a failure line in the digest like any box
+// subject `tick:<name>`), so "when did the code mirror last refresh" is a
+// read of the record, a failing task is a failure line in the digest like any box
 // job's, and a failing task is retried at its cadence, not every minute.
 //
 // The tasks, and what each keeps alive:
@@ -15,19 +15,10 @@
 //                   serverHealth row, fresh for 90 s): every minute.
 //   pull-requests   the open pull requests mirror, and the landing of every
 //                   approved one whose gate turned green: every 5 minutes.
-//   calendar        the ICS feeds the digest and the planner read: hourly.
 //   code-mirror     tom.quest's vqc/todos.yaml beside the life todos: 6 h.
 //   evict           the agents' row eviction (a switch, OFF by default: the
 //                   run then only records that it did nothing), once a day
 //                   from 4:15 New York, until it has run clean that day.
-//   repeats         the repeating todos, minted ONCE A DAY at 4:30 New York
-//                   (the old cron's minute), before the 5 a.m. digest reads
-//                   them: due from 4:30, at any hour after, until it has run
-//                   clean that New York day, a
-//                   failed run retried at the next tick, and never while a
-//                   calendar refresh is started or in flight, since its
-//                   skipWhenCalendarHas reads the calendar's rows (it runs at
-//                   the first tick after the refresh has finished).
 
 import { v } from "convex/values";
 import { httpAction, internalAction, internalMutation, type QueryCtx } from "../_generated/server";
@@ -47,7 +38,7 @@ const TICK_STARTED = "tick-started";
 type Task = {
   /** The cadence; or, for a once-a-day task, the New York time it comes due
    *  (it is then due until a clean run that day). */
-  when: { everyMs: number } | { dailyAt: { hour: number; minute: number }; after?: string };
+  when: { everyMs: number } | { dailyAt: { hour: number; minute: number } };
   /** A queued run older than this cannot still be alive and may be retried. */
   timeoutMs: number;
   run:
@@ -60,20 +51,14 @@ type Task = {
 const TICK_TASKS: Record<string, Task> = {
   "turing-health": { when: { everyMs: MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.serverHealth.pollTuring } },
   "pull-requests": { when: { everyMs: 5 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.observeMerge.refreshOpenPulls } },
-  calendar: { when: { everyMs: 60 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.ttsCalendarFetch.refreshFeeds } },
   "code-mirror": { when: { everyMs: 6 * 60 * MINUTE }, timeoutMs: ACTION_LIMIT_MS, run: { action: internal.ttsSync.refreshMirror } },
   // The row eviction switch (convex/agents.ts internalEvictTick; OFF unless
   // AGENTS_EVICTION_ENABLED, and then it says so in its event), once a day
-  // from 4:15, before repeats and the digest.
+  // from 4:15, before the digest.
   evict: {
     when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 15 } },
     timeoutMs: MUTATION_LIMIT_MS,
     run: { mutation: internal.agents.internalEvictTick },
-  },
-  repeats: {
-    when: { dailyAt: { hour: TTS_PREP_NY_HOUR, minute: 30 }, after: "calendar" },
-    timeoutMs: MUTATION_LIMIT_MS,
-    run: { mutation: internal.ttsRepeats.internalGenerateRepeats },
   },
 };
 
@@ -84,7 +69,7 @@ const EARLY_MS = 15_000;
 const jobOf = (name: string) => `tick:${name}`;
 
 /** What a task that caught its own failures says about them. A task that
- *  keeps going past one bad source (a calendar feed, a mirrored repository)
+ *  keeps going past one bad source (a mirrored repository)
  *  returns `{ failures: [...] }` instead of throwing, so the other sources
  *  still land; a non-empty list makes its run a job-failed row all the same. */
 function failuresOf(result: unknown): string[] {
@@ -139,16 +124,12 @@ export const due = internalMutation({
       } else {
         // Once a day: from its New York time, at any hour after, until a
         // clean run that New York day (a box down past the hour still runs
-        // it when it comes back); a failed run is retried at the next tick;
-        // and not while the task it reads after is starting in this tick or
-        // still running from an earlier one.
+        // it when it comes back); a failed run is retried at the next tick.
         const { hour, minute } = task.when.dailyAt;
         const [nowHour, nowMinute] = nyHhmm(now).split(":").map(Number);
         if (nowHour * 60 + nowMinute < hour * 60 + minute) continue;
         if (ok !== null && nyCalendarDayKey(ok.at) === nyCalendarDayKey(now)) continue;
         if (failed !== null && now - failed.at < MINUTE - EARLY_MS) continue;
-        const after = task.when.after;
-        if (after !== undefined && (started.includes(after) || (await taskState(ctx, after, now)).inFlight)) continue;
       }
       const leaseId = await insertEvent(ctx, {
         kind: TICK_STARTED,

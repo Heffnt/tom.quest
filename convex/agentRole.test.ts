@@ -72,15 +72,7 @@ describe("TTS reads admit agent", () => {
     await expect(agent.query(api.tts.listTodos, {})).resolves.toEqual([]);
     await expect(agent.query(api.tts.listMirror, {})).resolves.toEqual([]);
     await expect(agent.query(api.tts.listRecentEvents, {})).resolves.toEqual([]);
-    await expect(
-      agent.query(api.tts.listBlocks, { start: 0, end: 1 }),
-    ).resolves.toEqual([]);
-    await expect(agent.query(api.tts.listTimeNotes, {})).resolves.toBeTruthy();
-    await expect(
-      agent.query(api.ttsCalendar.listCalendarEvents, { start: 0, end: 1 }),
-    ).resolves.toEqual([]);
     await expect(agent.query(api.ttsCode.listCodeBriefs, {})).resolves.toEqual([]);
-    await expect(agent.query(api.ttsRepeats.listRepeats, {})).resolves.toEqual([]);
     await expect(agent.query(api.ttsRulings.listRulings, {})).resolves.toEqual([]);
   });
 
@@ -119,18 +111,6 @@ describe("TTS writes refuse agent", () => {
     ).rejects.toThrow(denied);
     await expect(
       agent.mutation(api.tts.setStatus, { id: todoId, status: "archived" }),
-    ).rejects.toThrow(denied);
-    await expect(
-      agent.mutation(api.tts.createBlock, { start: 1, end: 2 }),
-    ).rejects.toThrow(denied);
-    await expect(
-      agent.mutation(api.tts.createTimeNote, { text: "no", todoId }),
-    ).rejects.toThrow(denied);
-    await expect(
-      agent.mutation(api.ttsRepeats.createRepeat, {
-        statement: "no",
-        daysOfWeek: ["monday"],
-      }),
     ).rejects.toThrow(denied);
     await expect(
       agent.mutation(api.ttsRulings.recordRuling, {
@@ -239,9 +219,7 @@ describe("users.setRoleByUsername", () => {
 describe("the read gate never guards a write", () => {
   const TTS_MODULES = [
     "tts.ts",
-    "ttsCalendar.ts",
     "ttsCode.ts",
-    "ttsRepeats.ts",
     "ttsRulings.ts",
     "ttsSkills.ts",
   ];
