@@ -1,10 +1,11 @@
 // The /secrets mailbox: Tom pastes a value on tom.quest/secrets, the
 // session-host daemon on the Jarvis Box takes it into /etc/tts/worker.env, and
 // the value is then deleted here. Convex holds a value only while a delivery
-// is waiting; afterwards the row keeps the name and the two dates.
+// is waiting; afterwards the row keeps the name, the two dates and the value's
+// length.
 //
-// WHO READS A VALUE. Nobody through a query: `list` returns names and dates
-// only, to Tom too. The one reader is `internalPending`, reached only through
+// WHO READS A VALUE. Nobody through a query: `list` returns names, dates and
+// lengths only, to Tom too. The one reader is `internalPending`, reached only through
 // GET /sessions/secrets in convex/http.ts, behind SESSIONS_WORKER_KEY — the
 // daemon's own key, which worker/session-host/env-scrub.mjs keeps out of every
 // agent's shell. It is deliberately NOT the TTS_WORKER_KEY door: that key is
@@ -54,9 +55,9 @@ export const set = mutation({
     if (row) {
       // A new value replaces a waiting one, and a taken date belongs to the
       // value that was taken, so it goes.
-      await ctx.db.replace(row._id, { name, value: trimmed, setAt: now });
+      await ctx.db.replace(row._id, { name, value: trimmed, valueLength: trimmed.length, setAt: now });
     } else {
-      await ctx.db.insert("secretMailbox", { name, value: trimmed, setAt: now });
+      await ctx.db.insert("secretMailbox", { name, value: trimmed, valueLength: trimmed.length, setAt: now });
     }
     return null;
   },
@@ -71,6 +72,9 @@ export const list = query({
       .map((row) => ({
         name: row.name,
         setAt: row.setAt,
+        // A row from before lengths were kept has none (schema.ts says why
+        // those rows stay).
+        ...(row.valueLength !== undefined ? { length: row.valueLength } : {}),
         ...(row.takenAt !== undefined ? { takenAt: row.takenAt } : {}),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -103,7 +107,14 @@ export const internalTaken = internalMutation({
     if (!row) return { ok: false as const, reason: "no such name" };
     if (row.setAt !== setAt) return { ok: false as const, reason: "replaced by a newer value" };
     if (row.value === undefined) return { ok: true as const };
-    await ctx.db.replace(row._id, { name: row.name, setAt: row.setAt, takenAt: Date.now() });
+    await ctx.db.replace(row._id, {
+      name: row.name,
+      // Kept when present; a row from before lengths were kept has none
+      // (schema.ts says why those rows stay).
+      ...(row.valueLength !== undefined ? { valueLength: row.valueLength } : {}),
+      setAt: row.setAt,
+      takenAt: Date.now(),
+    });
     return { ok: true as const };
   },
 });

@@ -2328,6 +2328,19 @@ export default defineSchema({
   secretMailbox: defineTable({
     name: v.string(),
     value: v.optional(v.string()),
+    // The value's length in characters, kept after the value is deleted so
+    // tom.quest/secrets can show what was delivered without showing it.
+    //
+    // WHY OPTIONAL, and why the rows without it stay. Every row written before
+    // this field existed lacks it, and for a taken row the value is already
+    // deleted, so its length cannot be recovered. Convex refuses a deploy
+    // whose schema requires a field that existing rows lack, so a required
+    // field would mean deleting those rows first. They cannot be deleted:
+    // each is the page's only record of which names the box holds and when
+    // each arrived, which is what the page shows; and a row still waiting
+    // holds a value the box has not yet taken. The whole table goes when
+    // Bitwarden replaces the secrets page, and this field with it.
+    valueLength: v.optional(v.number()),
     setAt: v.number(),
     takenAt: v.optional(v.number()),
   }).index("by_name", ["name"]),
