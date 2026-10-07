@@ -1,5 +1,6 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
@@ -114,6 +115,19 @@ describe("POST /jarvis/todo/done and GET /jarvis/todos/open", () => {
     const missing = await post(t, "/jarvis/todo/done", { todo: "nope" });
     expect(missing.status).toBe(400);
     expect((await missing.json()).error).toContain("no todo has the id nope");
+  });
+});
+
+describe("the way back, copyBack", () => {
+  it("copies a todo the box wrote, its writeId and reminder included, into the old table", async () => {
+    const t = harness();
+    const id = (await (await post(t, "/jarvis/todo", { statement: "put up hangboard", reminderAt: 1_791_000_000_000, writeId: "todo:w9" })).json()).id;
+    await t.run((ctx) => ctx.db.patch(id as Id<"todos">, { beforeArchive: { at: 1, status: "active" } }));
+    const page = await t.mutation(internal.jarvis.tables.copyBackPage, { table: "todos", cursor: null });
+    expect(page.inserted).toBe(1);
+    const old = await t.run((ctx) => ctx.db.query("dtsTodos").collect());
+    expect(old).toHaveLength(1);
+    expect(old[0]).toMatchObject({ statement: "put up hangboard", reminderAt: 1_791_000_000_000, writeId: "todo:w9", beforeArchive: { at: 1, status: "active" } });
   });
 });
 
