@@ -1,8 +1,7 @@
 import { redirect } from "next/navigation";
 
-// The Inventory surface merged into /jarvis (everything tab). Old links —
-// including ttsItemLink's ?item=&intent= deep links from Slack — land here,
-// so the params are carried across.
+// The removed Inventory surface now lands on sessions. Old links — including
+// ttsItemLink's ?item= deep links from Slack — retain their query.
 export default async function InventoryPage({
   searchParams,
 }: {
@@ -13,5 +12,5 @@ export default async function InventoryPage({
   if (typeof sp.item === "string") qs.set("item", sp.item);
   if (typeof sp.intent === "string") qs.set("intent", sp.intent);
   const q = qs.toString();
-  redirect(q ? `/jarvis?${q}` : "/jarvis");
+  redirect(q ? `/sessions?${q}` : "/sessions");
 }

@@ -26,8 +26,6 @@ import Info from "./info";
 import { VERDICTS_EXPLANATION } from "../explanations";
 import { errMessage } from "../lib";
 
-export type SentenceVerdict = "revise" | "archive";
-
 export default function RulingDialog({
   action,
   confirm,

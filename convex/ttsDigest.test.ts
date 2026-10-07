@@ -98,7 +98,7 @@ describe("the missed rollover", () => {
       statement: "submit form",
       dueAt: passed,
     });
-    await tom.mutation(api.tts.setStatus, { id: met, status: "done" });
+    await t.mutation(internal.tts.internalTriage, { id: met, status: "done" });
     // An undated row sorts before every date in the (status, dueAt) index; the
     // range the rollover reads must leave it out.
     const undated = await tom.mutation(api.tts.createTodo, { statement: "someday" });
@@ -122,7 +122,7 @@ describe("the missed rollover", () => {
     expect(todos.find((x) => x._id === met)!.dateOutcomes).toEqual([
       { dueAt: passed, outcome: "done", recordedAt: expect.any(Number) },
     ]);
-    const events = await tom.query(api.tts.listRecentEvents, {});
+    const events = await t.run((ctx) => ctx.db.query("dtsEvents").collect());
     const plainLate = await plainId(t, late);
     const outcomes = events.filter((e) => e.kind === "date-outcome" && e.todoId === plainLate);
     expect(outcomes).toHaveLength(1);

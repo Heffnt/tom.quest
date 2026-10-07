@@ -71,9 +71,6 @@ describe("an id in either form", () => {
       const before = await oldRows();
       const row = () => t.run(async (ctx) => (await ctx.db.get(plain.todo))!);
 
-      await tom.mutation(api.tts.updateTodo, { id: ids.todo, body: "the landlord's terms" });
-      expect((await row()).body).toBe("the landlord's terms");
-      await tom.mutation(api.tts.recordEvent, { kind: "opened", todoId: ids.todo });
       await t.mutation(internal.tts.internalPrepareTodo, { id: ids.todo, brief: "call the landlord", readiness: "prepared" });
       expect((await row()).brief).toBe("call the landlord");
       await t.mutation(internal.tts.internalBulkUpdate, { updates: [{ id: ids.todo, category: "home" }] });
@@ -82,7 +79,7 @@ describe("an id in either form", () => {
       // A ruling stores the plain id since step C.
       const rulingId = await tom.mutation(api.ttsRulings.recordRuling, { todoId: ids.todo, verdict: "approve" });
       expect(await t.run(async (ctx) => (await ctx.db.get(rulingId))!.todoId)).toBe(plain.todo);
-      await tom.mutation(api.tts.setStatus, { id: ids.todo, status: "done" });
+      await t.mutation(internal.tts.internalTriage, { id: ids.todo, status: "done" });
       expect((await row()).status).toBe("done");
       // Nothing wrote an old row.
       expect(await oldRows()).toEqual(before);
@@ -97,7 +94,13 @@ describe("a stored todo reference in either form", () => {
   it("a todo's events and rulings are read under both ids", async () => {
     const t = convexTest({ schema, modules });
     const { tom, old, plain } = await seed(t);
-    await tom.mutation(api.tts.recordEvent, { kind: "opened", todoId: old.todo });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "opened",
+        todoId: old.todo,
+      });
+    });
     // "session" stays pending until its session exists.
     const approve = await tom.mutation(api.ttsRulings.recordRuling, { todoId: plain.todo, verdict: "session" });
     const revise = await t.run(async (ctx) => {

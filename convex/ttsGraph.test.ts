@@ -11,8 +11,6 @@ import {
   isReady,
   isReadyForTom,
   normalizeReadiness,
-  waitingReason,
-  waitingReasonText,
 } from "./ttsShared";
 import { writePageRows } from "../scripts/context-fixture.mjs";
 
@@ -129,73 +127,6 @@ describe("ttsShared graph rules", () => {
     expect(ready).toEqual(["b", "g"]);
   });
 
-  // ── Waiting, computed with its reason ─────────────────────────────────────
-  // witness: reorder the checks in waitingReason so `unprepared` comes before
-  // `wake` — a raw capture asleep until March would say "unprepared", and the
-  // preparer would look like the thing holding it.
-  it("names the one reason an active todo waits, hard blocks first", () => {
-    const ctx = {
-      now: NOW,
-      doneSet: new Set(["a"]),
-      statementOf: (id: string) => (id === "b" ? "the need" : undefined),
-    };
-    const base = { _id: "x", status: "active" as const, readiness: "prepared" as const };
-    // wake: a future wakeAt, whatever else is true.
-    expect(
-      waitingReason({ ...base, readiness: "unprepared", wakeAt: NOW + 1, needs: ["b"] }, ctx),
-    ).toEqual({ kind: "wake", at: NOW + 1 });
-    // a stored "waiting" status still reads as a sleep — a timeless one, since
-    // the prose wake condition it used to carry is retired.
-    expect(waitingReason({ ...base, status: "waiting" }, ctx)).toEqual({
-      kind: "wake",
-      at: undefined,
-    });
-    // need: the first unmet need, named.
-    expect(waitingReason({ ...base, needs: ["a", "b"] }, ctx)).toEqual({
-      kind: "need",
-      id: "b",
-      statement: "the need",
-    });
-    // credential: the source is declined.
-    expect(
-      waitingReason(
-        { ...base, source: "email" },
-        { ...ctx, declinedSources: new Set(["email"]) },
-      ),
-    ).toEqual({ kind: "credential", source: "email" });
-    // unprepared: a raw capture with nothing else holding it.
-    expect(waitingReason({ ...base, readiness: "unprepared" }, ctx)).toEqual({
-      kind: "unprepared",
-    });
-    // tom: prepared, and his (an actor of "tom", or no actor at all).
-    expect(waitingReason({ ...base, actor: "tom" }, ctx)).toEqual({ kind: "tom" });
-    expect(waitingReason(base, ctx)).toEqual({ kind: "tom" });
-    // an agent task that is ready waits on nothing.
-    expect(waitingReason({ ...base, actor: "agent" }, ctx)).toBeNull();
-    // done and archived rows are not waiting.
-    expect(waitingReason({ ...base, status: "done" }, ctx)).toBeNull();
-    expect(waitingReason({ ...base, status: "archived" }, ctx)).toBeNull();
-  });
-
-  it("spells each reason one way", () => {
-    const date = (at: number) => `d${at}`;
-    expect(waitingReasonText({ kind: "wake", at: 5 }, date)).toBe("waiting until d5");
-    expect(waitingReasonText({ kind: "wake", at: 5, condition: "c" }, date)).toBe(
-      "waiting until d5 — c",
-    );
-    expect(waitingReasonText({ kind: "wake", condition: "c" }, date)).toBe("waiting until: c");
-    expect(waitingReasonText({ kind: "wake" }, date)).toBe("waiting");
-    expect(waitingReasonText({ kind: "need", id: "b", statement: "s" }, date)).toBe(
-      "waiting on: s",
-    );
-    expect(waitingReasonText({ kind: "need", id: "b" }, date)).toBe("waiting on: b");
-    expect(waitingReasonText({ kind: "credential", source: "email" }, date)).toBe(
-      "waiting on a credential: email declined",
-    );
-    expect(waitingReasonText({ kind: "unprepared" }, date)).toBe("waiting: unprepared");
-    expect(waitingReasonText({ kind: "tom" }, date)).toBe("waiting on you");
-  });
-
   it("bounds a todo's fan-in", () => {
     expect(MAX_NEEDS).toBe(10);
   });
@@ -287,30 +218,6 @@ describe("TTS worker pen: closing a todo", () => {
     expect(await statusOf(t, realGoal)).toBe("done");
   });
 
-  // witness: drop the kind check from updateTodo — a task could carry a
-  // must-not-break line, a constraint on nothing.
-  it("mustNotBreak is written by Tom's door on a goal only", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const goalId = await tom.mutation(api.tts.createTodo, { statement: "the lease is signed" });
-    const taskId = await tom.mutation(api.tts.createTodo, { statement: "call the landlord" });
-    await t.run(async (ctx) => {
-      await ctx.db.patch(goalId, { kind: "goal" });
-      await ctx.db.patch(taskId, { kind: "task" });
-    });
-    await tom.mutation(api.tts.updateTodo, {
-      id: goalId,
-      mustNotBreak: "the current tenancy must not lapse before the new one starts",
-    });
-    expect((await t.run(async (ctx) => ctx.db.get(goalId)))?.mustNotBreak).toBe(
-      "the current tenancy must not lapse before the new one starts",
-    );
-    await expect(
-      tom.mutation(api.tts.updateTodo, { id: taskId, mustNotBreak: "anything" }),
-    ).rejects.toThrow(/goal's field/);
-    await tom.mutation(api.tts.updateTodo, { id: goalId, mustNotBreak: null });
-    expect((await t.run(async (ctx) => ctx.db.get(goalId)))?.mustNotBreak).toBeUndefined();
-  });
 });
 
 // ── GET /tts/planner-context ─────────────────────────────────────────────────

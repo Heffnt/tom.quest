@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
-// The Focus surface merged into /jarvis. Any ?item=&intent= deep link is
-// carried across.
+// The Focus surface now lands on sessions. Its retired todo deep links remain
+// in the address for compatibility with old Slack posts.
 export default async function FocusPage({
   searchParams,
 }: {
@@ -12,5 +12,5 @@ export default async function FocusPage({
   if (typeof sp.item === "string") qs.set("item", sp.item);
   if (typeof sp.intent === "string") qs.set("intent", sp.intent);
   const query = qs.toString();
-  redirect(query === "" ? "/jarvis" : `/jarvis?${query}`);
+  redirect(query === "" ? "/sessions" : `/sessions?${query}`);
 }

@@ -3,12 +3,11 @@ import {
   internalMutation,
   internalQuery,
   mutation,
-  query,
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireTom, requireTomOrAgent } from "./authRoles";
+import { requireTom } from "./authRoles";
 import { applyStatusChange, logEvent } from "./tts";
 import { DAY_MS, SESSION_OUTCOME, buildDoneSet, isChangeSubject, isReadyForTom, rulingAnswers } from "./ttsShared";
 import { eitherId, resolveId, todoReader, todoRulings, withPlainTodoIds } from "./jarvis/tables";
@@ -68,16 +67,7 @@ const VERDICT = v.union(
   v.literal("archive"),
 );
 
-export type RulingVerdict = "approve" | "revise" | "session" | "archive";
-
-const VERDICTS: readonly RulingVerdict[] = [
-  "approve",
-  "revise",
-  "session",
-  "archive",
-];
-export const isRulingVerdict = (x: unknown): x is RulingVerdict =>
-  typeof x === "string" && (VERDICTS as readonly string[]).includes(x);
+type RulingVerdict = "approve" | "revise" | "session" | "archive";
 
 // Where a ruling came from when it was NOT a button (schema: rulings.provenance).
 export type TomWordsProvenance = {
@@ -89,7 +79,7 @@ export type TomWordsProvenance = {
 // The ONE definition of a ruling subject's identity (repo names carry no
 // spaces; the type prefix keeps life and code keys disjoint). Client code
 // derives live rulings with the same rule via
-// app/jarvis/lib.ts.
+// the server's internal pending-rulings reader.
 export const subjectKey = (row: {
   subjectType: "life" | "code";
   todoId?: string;
@@ -101,17 +91,6 @@ export const subjectKey = (row: {
 };
 
 // ── Tom-facing ───────────────────────────────────────────────────────────────
-
-// Everything, always: append-only at human pace — a full collect is fine and
-// lets the client find the live (newest ruledAt) ruling per subject. A row
-// names its todo in either form; the page is handed the plain one it joins on.
-export const listRulings = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTomOrAgent(ctx, "TTS");
-    return await withPlainTodoIds(ctx, await ctx.db.query("rulings").collect());
-  },
-});
 
 // The ONE implementation of recording a ruling — used by the Tom-gated
 // recordRuling below, by internalRecordRuling (a live session's pen, the

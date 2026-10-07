@@ -1180,7 +1180,7 @@ export function composeContinued(f: ContinuedFact): Message {
 // more trustworthy than prose about it"), so nothing checks a draft against
 // them.
 
-export type Fact = {
+type Fact = {
   /** A fact the digest prints on a line of its own: each item that needs
    *  Tom today, which no one else tells him (Tom, 2026-09-21), and each read
    *  that stopped with rows left (the cut run). */

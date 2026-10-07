@@ -10,7 +10,7 @@
 //
 // What this replaces: a hover-only tooltip showing nothing but the function
 // name. On a touch screen it could not be opened at all, and on a desktop it
-// answered the wrong question — `tts.setStatus({status})` tells a reader who
+// answered the wrong question — a function name tells a reader who
 // already knows the codebase what they already knew, and tells everyone else
 // nothing. So the call is still here, in small mono, but it is the FOOTNOTE:
 // the body is one or two plain sentences about what pressing the neighbouring

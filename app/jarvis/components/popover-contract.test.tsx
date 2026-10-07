@@ -39,7 +39,6 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, within } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import { api } from "@/convex/_generated/api";
-import { VERDICTS } from "../lib";
 
 // ── The Convex stand-in ─────────────────────────────────────────────────────
 // Queries read a table keyed by "module:function"; mutations record what they
@@ -75,12 +74,8 @@ vi.mock("@/app/lib/auth", () => ({
   useAuth: () => ({ isTom: true, canReadSurface: () => true }),
 }));
 
-import EverythingTab from "./everything-tab";
 import GroundUpView from "./ground-up-view";
-import OptionsRow from "./options-row";
 import RulingDialog from "./ruling-dialog";
-import TodoRow from "./todo-row";
-import VerdictButtons from "./verdict-buttons";
 import Composer from "@/app/agents/components/composer";
 import ForkDialog from "@/app/agents/components/fork-dialog";
 import ModelSelect from "@/app/agents/components/model-select";
@@ -116,16 +111,8 @@ const files = [...sources(JARVIS), ...sources(AGENTS)].map((f) => ({
 
 // ── Direction 1: every rendered control ─────────────────────────────────────
 
-/**
- * `tts.recordEvent` is the exception, and the only one. It is not a control's
- * effect — it is the page recording that a control was used (a row was
- * expanded, an item was opened), fired alongside whatever the press actually
- * does. No control exists to fire it, so no label can name it.
- */
-const TELEMETRY = getFunctionName(api.tts.recordEvent);
-
 function fired(): string[] {
-  return convex.calls.filter((c) => c !== TELEMETRY);
+  return convex.calls;
 }
 
 /** Every actionable control on screen — buttons and selects, minus the ⓘs. */
@@ -184,24 +171,6 @@ function callNamed(info: HTMLElement): string {
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
 const NOW = 1_756_000_000_000;
-
-const TODO = {
-  _id: "t2",
-  _creationTime: 0,
-  kind: "goal",
-  statement: "Ratify the amendment",
-  actor: "tom",
-  needs: [],
-  status: "active",
-  readiness: "prepared",
-  source: "tom",
-  timingClass: "whenever",
-  brief: "the brief",
-  groundUpExplanation: "<!DOCTYPE html><html><body><p>why</p></body></html>",
-  mustNotBreak: "the citations stay verbatim",
-  createdAt: NOW,
-  updatedAt: NOW,
-};
 
 // ── The sessions screens ────────────────────────────────────────────────────
 // One live session, mid-run and with a stale daemon, because that posture puts
@@ -278,8 +247,6 @@ function load() {
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
     [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
     [getFunctionName(api.agents.get)]: RUN,
-    [getFunctionName(api.tts.listTodos)]: [TODO],
-    [getFunctionName(api.ttsRulings.listRulings)]: [],
   };
 }
 
@@ -288,19 +255,11 @@ const noop = () => {};
 /** One entry per component under either directory that renders controls. */
 const CASES: { file: string; render: () => void }[] = [
   {
-    file: "app/jarvis/components/everything-tab.tsx",
-    render: () => void render(<EverythingTab link={null} onLinkCleared={noop} />),
-  },
-  {
     file: "app/jarvis/components/ground-up-view.tsx",
     render: () =>
       void render(
         <GroundUpView title="t" content="<!DOCTYPE html><html></html>" onClose={noop} />,
       ),
-  },
-  {
-    file: "app/jarvis/components/options-row.tsx",
-    render: () => void render(<OptionsRow todo={TODO as never} rulable />),
   },
   {
     file: "app/jarvis/components/ruling-dialog.tsx",
@@ -318,25 +277,6 @@ const CASES: { file: string; render: () => void }[] = [
           onClose={noop}
         />,
       ),
-  },
-  {
-    file: "app/jarvis/components/todo-row.tsx",
-    render: () =>
-      void render(
-        <TodoRow
-          todo={TODO as never}
-          now={NOW}
-          expanded
-          onToggle={noop}
-          intent="done"
-          onIntentCleared={noop}
-        />,
-      ),
-  },
-  {
-    file: "app/jarvis/components/verdict-buttons.tsx",
-    render: () =>
-      void render(<VerdictButtons subject="todo" statement="s" onRule={noop} />),
   },
   {
     file: "app/agents/components/composer.tsx",
@@ -556,23 +496,4 @@ describe("every mutation the screens fire is named by a popover", () => {
     expect([...named].filter((c) => !real.has(c)).sort()).toEqual([]);
   });
 
-  it("offers no verdict outside the closed set", () => {
-    // The closed set is lib.VERDICTS, which mirrors the union
-    // convex/ttsRulings.ts accepts. "edit" and "defer" were both once labels
-    // on this page; neither is a verdict.
-    const allowed = new Set<string>(VERDICTS);
-    const offered = new Set<string>();
-    for (const { src } of files) {
-      for (const m of src.matchAll(/verdict:\s*"([^"]+)"/g)) {
-        // The verdict row builds its call from a template — `verdict:
-        // "${verdict}"` — over lib.VERDICTS, so that form offers the four.
-        if (/^\$\{\w+\}$/.test(m[1])) for (const v of VERDICTS) offered.add(v);
-        else offered.add(m[1]);
-      }
-    }
-    // Four at least, or the scan matched nothing and asserts nothing — which
-    // is what the literal-only scan this replaced was doing.
-    expect(offered.size).toBeGreaterThanOrEqual(4);
-    expect([...offered].filter((v) => !allowed.has(v))).toEqual([]);
-  });
 });

@@ -45,7 +45,7 @@ async function seed(t: T) {
   const call = await tom.mutation(api.tts.createTodo, { statement: "call the landlord", category: "home" });
   const forms = await tom.mutation(api.tts.createTodo, { statement: "print the forms" });
   await t.mutation(internal.tts.internalPrepareTodo, { id: lease, brief: "the brief", readiness: "prepared" });
-  await tom.mutation(api.tts.setStatus, { id: forms, status: "done" });
+  await t.mutation(internal.tts.internalTriage, { id: forms, status: "done" });
   const before = await t.run(async (ctx) => {
     await ctx.db.patch(lease, { needs: [call] });
     const copied = await insertCopied(ctx, "todos", {
@@ -79,10 +79,10 @@ describe("the readers read the plain tables and hand out plain ids", () => {
     });
   });
 
-  it("listRulings, listRecentEvents and the box's rulings feeds hand out the plain todo id, whichever form a row stores", async () => {
+  it("the box's rulings feeds hand out the plain todo id, whichever form a row stores", async () => {
     const t = convexTest({ schema, modules });
     const { tom, call, before } = await seed(t);
-    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const rulings = await t.query(internal.ttsRulings.internalRecentRulings, { limit: 1000 });
     expect(rulings.map((r) => r.todoId).sort()).toEqual([call, before.plain].sort());
     const recent = await t.query(internal.ttsRulings.internalRecentRulings, {});
     expect(recent.map((r) => r.todoId)).toEqual([call, before.plain]);
@@ -91,9 +91,6 @@ describe("the readers read the plain tables and hand out plain ids", () => {
     await tom.mutation(api.ttsRulings.recordRuling, { todoId: call, verdict: "session" });
     const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
     expect(pending.map((r) => r.todoId).sort()).toEqual([call, before.plain].sort());
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    const rulingEvents = events.filter((e) => e.kind === "ruling");
-    expect(rulingEvents.map((e) => e.todoId)).toEqual([call, call, before.plain]);
     // The rows store the plain id since step C, the old one before it.
     await t.run(async (ctx) => {
       const stored = (await ctx.db.query("rulings").collect()).map((r) => r.todoId);

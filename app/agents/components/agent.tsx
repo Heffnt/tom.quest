@@ -646,18 +646,18 @@ function Lead({
       <div className="flex flex-wrap gap-x-3 text-text-faint">
         {run?.todoId !== undefined && (
           <Link
-            href={`/jarvis?item=${run.todoId}`}
+            href="/sessions"
             className="text-accent underline underline-offset-2 hover:text-text"
           >
-            linked item
+            sessions
           </Link>
         )}
         {session?.todoId !== undefined && run?.todoId === undefined && (
           <Link
-            href={`/jarvis?item=${session.todoId}`}
+            href="/sessions"
             className="text-accent underline underline-offset-2 hover:text-text"
           >
-            linked item
+            sessions
           </Link>
         )}
         {continues !== undefined && (

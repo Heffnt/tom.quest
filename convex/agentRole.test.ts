@@ -50,13 +50,13 @@ describe("roleAccess for agent", () => {
 });
 
 describe("agent-readable surfaces", () => {
-  it("names TTS, Turing and History and nothing else", () => {
-    expect([...AGENT_READABLE_SURFACES]).toEqual(["TTS", "Turing", "History"]);
+  it("names Turing and History and nothing else", () => {
+    expect([...AGENT_READABLE_SURFACES]).toEqual(["Turing", "History"]);
   });
 
   // These are labels requireTom already passes elsewhere in the codebase; the
   // point of naming them here is that they are NOT readable by `agent`.
-  it.each(["Sessions", "Forge", "TTS mockup", "User roles", ""])(
+  it.each(["TTS", "Sessions", "Forge", "TTS mockup", "User roles", ""])(
     "refuses %j",
     (label) => {
       expect(isAgentReadableSurface(label)).toBe(false);
@@ -64,32 +64,27 @@ describe("agent-readable surfaces", () => {
   );
 });
 
-describe("TTS reads admit agent", () => {
-  it("serves every query the /tts page renders from", async () => {
+describe("removed TTS surface", () => {
+  it("keeps the todo reader Tom-only", async () => {
     const t = convexTest(schema, modules);
     const { as: agent } = await withRole(t, "agent");
-
-    await expect(agent.query(api.tts.listTodos, {})).resolves.toEqual([]);
-    await expect(agent.query(api.tts.listRecentEvents, {})).resolves.toEqual([]);
-    await expect(agent.query(api.ttsRulings.listRulings, {})).resolves.toEqual([]);
+    await expect(agent.query(api.tts.listTodos, {})).rejects.toThrow(
+      /restricted to Tom/,
+    );
   });
 
-  // The read gate widened for `agent` ONLY. Signed-out, `user` and `admin`
-  // callers must be refused exactly as before — widening a gate one role too
-  // far is the easy version of this mistake.
   it("still refuses anonymous, user and admin callers", async () => {
     const t = convexTest(schema, modules);
     await expect(t.query(api.tts.listTodos, {})).rejects.toThrow();
     const { as: user } = await withRole(t, "user");
     await expect(user.query(api.tts.listTodos, {})).rejects.toThrow(/restricted to Tom/);
-    await expect(user.query(api.ttsRulings.listRulings, {})).rejects.toThrow(/restricted to Tom/);
     const { as: admin } = await withRole(t, "admin");
     await expect(admin.query(api.tts.listTodos, {})).rejects.toThrow(/restricted to Tom/);
   });
 });
 
 describe("TTS writes refuse agent", () => {
-  it("refuses every mutation the /tts page can fire", async () => {
+  it("refuses the retained Tom mutations", async () => {
     const t = convexTest(schema, modules);
     const { as: tom } = await withRole(t, "tom");
     const { as: agent } = await withRole(t, "agent");
@@ -104,12 +99,6 @@ describe("TTS writes refuse agent", () => {
       agent.mutation(api.tts.createTodo, { statement: "no" }),
     ).rejects.toThrow(denied);
     await expect(
-      agent.mutation(api.tts.updateTodo, { id: todoId, statement: "no" }),
-    ).rejects.toThrow(denied);
-    await expect(
-      agent.mutation(api.tts.setStatus, { id: todoId, status: "archived" }),
-    ).rejects.toThrow(denied);
-    await expect(
       agent.mutation(api.ttsRulings.recordRuling, {
         todoId,
         verdict: "approve",
@@ -117,20 +106,6 @@ describe("TTS writes refuse agent", () => {
     ).rejects.toThrow(denied);
   });
 
-  // The specific write that used to fire on ARRIVAL, before any click. It is
-  // refused here AND suppressed client-side (tts-client.tsx gates it on
-  // isTom), because a refused mutation prints a console error that tts-browse
-  // reports as page breakage — a false positive on every /tts screenshot.
-  it("refuses the instrumentation mutation /tts fires on load", async () => {
-    const t = convexTest(schema, modules);
-    const { as: agent } = await withRole(t, "agent");
-    await expect(
-      agent.mutation(api.tts.recordEvent, { kind: "tts-opened" }),
-    ).rejects.toThrow(/restricted to Tom/);
-    await expect(
-      agent.mutation(api.tts.recordEvent, { kind: "engaged" }),
-    ).rejects.toThrow(/restricted to Tom/);
-  });
 });
 
 describe("surfaces outside the list refuse agent entirely", () => {
