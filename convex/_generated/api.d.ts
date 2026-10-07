@@ -41,6 +41,7 @@ import type * as jarvis_routes from "../jarvis/routes.js";
 import type * as jarvis_rulings from "../jarvis/rulings.js";
 import type * as jarvis_tables from "../jarvis/tables.js";
 import type * as jarvis_tick from "../jarvis/tick.js";
+import type * as jarvis_todos from "../jarvis/todos.js";
 import type * as observe from "../observe.js";
 import type * as observeMerge from "../observeMerge.js";
 import type * as push from "../push.js";
@@ -123,6 +124,7 @@ declare const fullApi: ApiFromModules<{
   "jarvis/rulings": typeof jarvis_rulings;
   "jarvis/tables": typeof jarvis_tables;
   "jarvis/tick": typeof jarvis_tick;
+  "jarvis/todos": typeof jarvis_todos;
   observe: typeof observe;
   observeMerge: typeof observeMerge;
   push: typeof push;

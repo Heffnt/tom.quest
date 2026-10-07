@@ -852,6 +852,11 @@ export default defineSchema({
     // means no reminder. Every other field above stays declared because the
     // 2,655 rows written before the restart carry them.
     reminderAt: v.optional(v.number()),
+    // The id of the write that made the row, when a box session wrote it
+    // (convex/jarvis/todos.ts create, from Jarvis `jarvis write todo`): the
+    // same on every post of one todo, so a resend after a lost answer finds
+    // the row it already wrote instead of making a second.
+    writeId: v.optional(v.string()),
     // The state a row was in before the restart archived the whole table
     // (convex/ttsMigrations.ts internalArchiveTodosWhole): when it was
     // archived, its status then, and the archivedAt it had then, if any.
@@ -903,7 +908,8 @@ export default defineSchema({
     // read on the hot path of a route that must answer within 3 seconds.
     .index("by_slackTs", ["slackTs"])
     .index("by_threadMessageId", ["threadMessageId"])
-    .index("by_legacy", ["legacyId"]),
+    .index("by_legacy", ["legacyId"])
+    .index("by_writeId", ["writeId"]),
 
   // ── Calendar mirror (integrations round, 2026-08-29) ─────────────────────
   // Read-only mirror of Tom's external calendars, ingested from ICS feeds

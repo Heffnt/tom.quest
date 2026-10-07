@@ -11,6 +11,10 @@
 // GET /jarvis/build-state?todo=<id>[&todo=<id>...]: per todo, its newest
 // todo-state and handoff rows (build.ts).
 //
+// POST /jarvis/todo, POST /jarvis/todo/done, GET /jarvis/todos/open: a todo
+// written, marked done, and the open ones read, for the persistent sessions
+// that hold Tom's list (todos.ts).
+//
 // POST /jarvis/day-log: the box writes one pending day-log entry. Body
 // { text, threadMessageId }, both non-empty strings; the entry is idempotent
 // on threadMessageId, so a classifying job that acted but crashed before
@@ -36,6 +40,7 @@ import { checkEvent } from "./record";
 import { register as registerContext } from "./context";
 import { postNewInformation, postRuling, postStandingRuling } from "./rulings";
 import { getBuildState } from "./build";
+import { getOpenTodos, postTodo, postTodoDone } from "./todos";
 import { channelRoute, digestRoute, needsYouRoute } from "./digest";
 import { tickRoute } from "./tick";
 import { pushRoute } from "../push";
@@ -124,6 +129,9 @@ export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/events", method: "GET", handler: getEvents });
   http.route({ path: "/jarvis/day-log", method: "POST", handler: postDayLog });
   http.route({ path: "/jarvis/build-state", method: "GET", handler: getBuildState }); // build.ts
+  http.route({ path: "/jarvis/todo", method: "POST", handler: postTodo }); // todos.ts
+  http.route({ path: "/jarvis/todo/done", method: "POST", handler: postTodoDone }); // todos.ts
+  http.route({ path: "/jarvis/todos/open", method: "GET", handler: getOpenTodos }); // todos.ts
   registerContext(http); // GET /jarvis/context?for=<caller> (context.ts)
   http.route({ path: "/jarvis/ruling", method: "POST", handler: postRuling });
   http.route({ path: "/jarvis/standing-ruling", method: "POST", handler: postStandingRuling });
