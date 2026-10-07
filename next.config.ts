@@ -15,6 +15,11 @@ const nextConfig: NextConfig = {
     // /runs?run=<id> link opens the same agent. /sessions is the sessions page
     // again (design section 5.1, 2026-10-06); it reads ?session=<id> as
     // /agents does, so an old /sessions?session=<id> link opens that session.
+    // The /sessions redirect this replaced was permanent (308), but Vercel
+    // served it with `cache-control: public, max-age=0, must-revalidate`
+    // (curl -I https://www.tom.quest/sessions, 2026-10-06 23:35 Eastern), so a
+    // browser that followed it holds a redirect that is stale at once and asks
+    // the server again on the next visit, which now serves the page.
     // "tts" -> "jarvis" (2026-09-26, TTS dissolved into Jarvis): every
     // ?item=, ?tab= and ?intent= link already sent to Slack names /tts. The
     // observation page became the /agents window view the same night; its
