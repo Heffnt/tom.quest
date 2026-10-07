@@ -45,7 +45,7 @@ const nextConfig: NextConfig = {
     return [
       { source: "/" + "dts", destination: "/jarvis", permanent: true },
       { source: "/tts", destination: "/jarvis", permanent: true },
-      ...["/agents", "/runs/:path*", "/observe", "/thread"].flatMap((source) => [
+      ...["/agents", "/runs/:path*", "/observe", "/thread", "/mock/dump"].flatMap((source) => [
         {
           source,
           has: [{ type: "query" as const, key: "run", value: "(?<run>.+)" }],

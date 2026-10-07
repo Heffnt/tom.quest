@@ -22,10 +22,12 @@ test("an old /runs?run= link opens that agent on /sessions", async ({ page }) =>
   await expect(page).toHaveURL(/\/sessions\?(.*&)?agent=claude(%3A|:)box(%3A|:)abcdefgh/);
 });
 
-test("/observe and /thread land on /sessions", async ({ page }) => {
+test("/observe, /thread and /mock/dump land on /sessions", async ({ page }) => {
   await page.goto("/observe");
   await expect(page).toHaveURL(/\/sessions$/);
   await page.goto("/thread");
+  await expect(page).toHaveURL(/\/sessions$/);
+  await page.goto("/mock/dump");
   await expect(page).toHaveURL(/\/sessions$/);
 });
 
