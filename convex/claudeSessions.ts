@@ -1903,9 +1903,16 @@ export function workspaceParagraph(
   work: string,
 ): string {
   const branch = `session/${sessionId}`;
+  // WikiTom's clone leaves its session archive out (Jarvis
+  // worker/agents/left-out.mjs, the daemon's half): a partial clone with
+  // sessions/ outside the sparse checkout, so the agent is told the folder is
+  // missing on purpose and how to bring it back.
+  const leftOut = repos.includes("WikiTom")
+    ? " WikiTom's checkout leaves out its session archive, `sessions/` (old transcripts, 2.8 GB): it is not a deletion, and a transcript is usually found with `tts-search sessions`; if you need the files, run `git sparse-checkout disable` in that checkout, which downloads them."
+    : "";
   if (repos.length === 1) {
-    return `The workspace: your working directory is a fresh checkout of ${repos[0]} on branch ${branch}. ${work} Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
+    return `The workspace: your working directory is a fresh checkout of ${repos[0]} on branch ${branch}.${leftOut} ${work} Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
   }
   const list = repos.map((r) => `\`./${r}\``).join(" and ");
-  return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
+  return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}.${leftOut} ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
 }
