@@ -98,6 +98,21 @@ describe("a session registered by its Claude session id", () => {
     expect(listed.pendingInbound.map((r: any) => r.kind)).toEqual(["stop"]);
   });
 
+  it("is polled when the page reopens it after it ended", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const { id } = await t.mutation(internal.sessionRegistration.internalRegisterSession, {
+      sdkSessionId: "dddddddd-0000-0000-0000-000000000004", client: "desktop", cwd: "/home/jarvis", transcriptPath: "/a/d.jsonl",
+    });
+    await t.run((ctx) => ctx.db.patch(id, { status: "ended" }));
+    // Desktop opens it again: still ended, still Desktop's.
+    await t.mutation(internal.sessionRegistration.internalRegisterSession, { sdkSessionId: "dddddddd-0000-0000-0000-000000000004", client: "desktop" });
+    await tom.mutation(api.claudeSessions.reopenSession, { sessionId: id, text: "pick this up" });
+    const listed = (await poll(t)).sessions.find((s: any) => s.id === id) as any;
+    expect(listed).toMatchObject({ client: "host", status: "idle" });
+    expect(listed.pendingInbound.map((r: any) => r.text)).toEqual(["pick this up"]);
+  });
+
   it("leaves a row the host created held by the host", async () => {
     const t = convexTest(schema, modules);
     const id = await t.run((ctx) => ctx.db.insert("claudeSessions", {

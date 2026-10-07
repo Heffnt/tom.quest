@@ -1065,6 +1065,10 @@ async function reopenSessionFrom(
     // against (internalIngest drops stale STATE).
     reopenedAt: now,
     reopenEpoch: (session.reopenEpoch ?? 0) + 1,
+    // A Desktop session reopened from the page is the host's to answer, as a
+    // message to a live one makes it (sendMessageFrom): the poll leaves out
+    // an idle session Desktop holds.
+    ...(session.client === "desktop" ? { client: "host" as const } : {}),
     // endedReason / outcome / outcomeSummary are deliberately LEFT IN PLACE:
     // they are the honest history of the PREVIOUS ending, not claims about
     // the session's present state, and the transcript that follows keeps
@@ -1246,6 +1250,9 @@ async function forkSessionAsFrom(
       )
       .collect();
     if (!pending.some((p) => p.kind === "stop")) {
+      // A Desktop session's stop is the host's to carry out, as any control
+      // is (sendControlFrom).
+      if (session.client === "desktop") await ctx.db.patch(sessionId, { client: "host" });
       await ctx.db.insert("claudeInbound", {
         sessionId,
         kind: "stop",
