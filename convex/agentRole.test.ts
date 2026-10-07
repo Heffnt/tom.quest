@@ -50,8 +50,8 @@ describe("roleAccess for agent", () => {
 });
 
 describe("agent-readable surfaces", () => {
-  it("names TTS and Turing and nothing else", () => {
-    expect([...AGENT_READABLE_SURFACES]).toEqual(["TTS", "Turing"]);
+  it("names TTS, Turing and History and nothing else", () => {
+    expect([...AGENT_READABLE_SURFACES]).toEqual(["TTS", "Turing", "History"]);
   });
 
   // These are labels requireTom already passes elsewhere in the codebase; the
