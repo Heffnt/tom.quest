@@ -2231,3 +2231,64 @@ describe("fable availability and usage limits on the daemon heartbeat", () => {
     expect((await stored())?.usageLimit).toEqual(limit);
   });
 });
+
+// The sessions page's reads and its login selector (design section 5.1).
+describe("the sessions page's record", () => {
+  it("lists persistent sessions in the design's order, apart from the rest", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const ids: Id<"claudeSessions">[] = [];
+    for (let i = 0; i < 3; i++) ids.push(await createBasicSession(tom));
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids[0], { kind: "persistent", title: "todo", statusChangedAt: 9e12 });
+      await ctx.db.patch(ids[1], { kind: "persistent", title: "dump", statusChangedAt: 1 });
+    });
+    const persistent = await tom.query(api.claudeSessions.persistentSessions, {});
+    expect(persistent.map((s) => s.title)).toEqual(["dump", "todo"]);
+    const recent = await tom.query(api.claudeSessions.recentSessions, {
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(recent.page.map((s) => s._id)).toEqual([ids[2]]);
+  });
+
+  it("pages every other session newest activity first, persistent ones taking no slot", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const ids: Id<"claudeSessions">[] = [];
+    for (let i = 0; i < 5; i++) ids.push(await createBasicSession(tom));
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 5; i++) await ctx.db.patch(ids[i], { statusChangedAt: 1000 + i });
+      // The most recently active session is persistent: it must not use up a slot.
+      await ctx.db.patch(ids[4], { kind: "persistent", title: "dump" });
+    });
+    const first = await tom.query(api.claudeSessions.recentSessions, {
+      paginationOpts: { numItems: 2, cursor: null },
+    });
+    expect(first.page.map((s) => s._id)).toEqual([ids[3], ids[2]]);
+    const second = await tom.query(api.claudeSessions.recentSessions, {
+      paginationOpts: { numItems: 2, cursor: first.continueCursor },
+    });
+    expect(second.page.map((s) => s._id)).toEqual([ids[1], ids[0]]);
+  });
+
+  it("writes the login the selector chose, and the poll carries it to the session host", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await tom.mutation(api.claudeSessions.setSessionLogin, { sessionId, login: "gmail" });
+    const poll = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test-1",
+      daemonStartedAt: 1000,
+      activeAccount: "wpi",
+    });
+    expect((poll.sessions[0] as { login?: string }).login).toBe("gmail");
+  });
+
+  it("answers null for a link that names no session, rather than throwing", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    expect(await tom.query(api.claudeSessions.sessionByLink, { id: "not-an-id" })).toBeNull();
+    expect((await tom.query(api.claudeSessions.sessionByLink, { id: sessionId }))?._id).toBe(sessionId);
+  });
+});

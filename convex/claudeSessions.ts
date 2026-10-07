@@ -42,7 +42,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // opener's own subject by ttsContext.assembleContext, called once per opener in
 // insertSession below; ttsSkills keeps only the header parser it strips with.
 import { assembleContext, CONTEXT_END, joinContext, withoutPastedContext, type ContextSubject } from "./ttsContext";
-import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, USAGE_LIMIT_REPORT } from "./ttsShared";
+import { DAEMON_RESTART_SENTENCE, FABLE_AVAILABILITY, SESSION_LOGIN, USAGE_LIMIT_REPORT } from "./ttsShared";
 import {
   DAEMON_STALE_MS,
   DEFAULT_SESSION_MODEL,
@@ -89,6 +89,71 @@ export const getSession = query({
   handler: async (ctx, { id }) => {
     await requireTomId(ctx);
     return await ctx.db.get(id);
+  },
+});
+
+// The sessions page's list (design section 5.1), in two reads. The persistent
+// sessions (design section 4.1: five of them, so the cap below is never
+// reached) come by kind, in the design's order and then by last activity; every
+// other session comes newest activity first, a page at a time, so the page can
+// reach every session the table holds.
+const PERSISTENT_ORDER = ["dump", "briefer", "builder", "observer", "todo"];
+
+function persistentRank(title: string): number {
+  const rank = PERSISTENT_ORDER.indexOf(title.trim().toLowerCase());
+  return rank === -1 ? PERSISTENT_ORDER.length : rank;
+}
+
+export const persistentSessions = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTomId(ctx);
+    const rows = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "persistent"))
+      .take(50);
+    return rows.sort(
+      (a, b) =>
+        persistentRank(a.title) - persistentRank(b.title) ||
+        b.statusChangedAt - a.statusChangedAt,
+    );
+  },
+});
+
+export const recentSessions = query({
+  args: { paginationOpts: paginationOptsValidator },
+  handler: async (ctx, { paginationOpts }) => {
+    await requireTomId(ctx);
+    return await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_statusChangedAt")
+      .order("desc")
+      .filter((q) => q.neq(q.field("kind"), "persistent"))
+      .paginate(paginationOpts);
+  },
+});
+
+// One session for the sessions page, addressed by the id its link carries. A
+// string, not v.id: a malformed link answers null rather than throwing during
+// the page's render.
+export const sessionByLink = query({
+  args: { id: v.string() },
+  handler: async (ctx, { id }) => {
+    await requireTomId(ctx);
+    const sessionId = ctx.db.normalizeId("claudeSessions", id);
+    return sessionId === null ? null : await ctx.db.get(sessionId);
+  },
+});
+
+// The sessions page's login selector: which of the two Claude logins runs this
+// session's next reply. A patch and nothing else; the session host reads the
+// field when it starts a reply.
+export const setSessionLogin = mutation({
+  args: { sessionId: v.id("claudeSessions"), login: SESSION_LOGIN },
+  handler: async (ctx, { sessionId, login }) => {
+    await requireTomId(ctx);
+    await getSessionOrThrow(ctx, sessionId);
+    await ctx.db.patch(sessionId, { login });
   },
 });
 
@@ -378,6 +443,7 @@ const SESSION_KIND = v.union(
   v.literal("adhoc"),
   v.literal("block"),
   v.literal("therapy"),
+  v.literal("persistent"),
 );
 
 /**
@@ -1556,6 +1622,9 @@ export const internalPoll = internalMutation({
           // poll. Its family picks the runner (Agent SDK vs Codex CLI); absent
           // means a pre-2026-09-04 row, which ran Opus.
           model: s.model,
+          // Which Claude login runs the next reply (setSessionLogin, the
+          // sessions page's selector); absent means the login the box holds.
+          login: s.login,
           // The session this one continues on a different model. The daemon
           // writes that session's transcript to .tts-transcript.md in the
           // workspace before the first turn — the fork's prompt tells the agent

@@ -916,6 +916,21 @@ export const children = query({
   },
 });
 export const rows = query({ args: { agentId: v.string(), paginationOpts: paginationOptsValidator }, handler: async (ctx, args) => { await requireTom(ctx, "Agents"); assertAgentId(args.agentId); const page = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.agentId)).order("asc").paginate(args.paginationOpts); return { ...page, page: page.page.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength })) }; } });
+// The rows that say what a run was given when it started (kind "context"),
+// for the sessions page's collapsed "context as the agent sees it" row: read
+// by kind so they are there however far back the loaded window starts.
+export const contextRows = query({
+  args: { agentId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTom(ctx, "Agents");
+    assertAgentId(args.agentId);
+    const rows = await ctx.db
+      .query("claudeMessages")
+      .withIndex("by_run_kind", (q) => q.eq("runId", args.agentId).eq("kind", "context"))
+      .take(10);
+    return rows.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength }));
+  },
+});
 export const entry = query({ args: { agentId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTom(ctx, "Agents"); assertAgentId(args.agentId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.agentId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
 
 // ── Opening an old run from the store ────────────────────────────────────────

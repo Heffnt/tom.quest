@@ -7,6 +7,7 @@ import { v } from "convex/values";
 import {
   READINESS,
   RECOMMENDATION,
+  SESSION_LOGIN,
   SESSION_MODEL,
   FABLE_AVAILABILITY,
   USAGE_LIMIT_REPORT,
@@ -1666,6 +1667,10 @@ export default defineSchema({
       // area subject, and the nightly learning passes leave it alone: the
       // session owns the mental-health page itself.
       v.literal("therapy"),
+      // One of the five sessions that live for months (dump, briefer,
+      // builder, observer, todo; design section 4.1), named by its title. The
+      // sessions page draws them in their own group above the rest.
+      v.literal("persistent"),
     ),
     // Either id, as rulings.todoId: old before step C, plain since.
     todoId: v.optional(v.union(v.id("dtsTodos"), v.id("todos"))), // for gate / focus-item sessions
@@ -1772,6 +1777,10 @@ export default defineSchema({
     // DEFAULT_SESSION_MODEL), and modelFamily() reads absent as "opus" because
     // that is what the rows written before this field existed actually ran.
     model: v.optional(SESSION_MODEL),
+    // Which Claude login runs this session's replies (ttsShared SESSION_LOGINS),
+    // set from the sessions page's login selector. Absent: the login the box
+    // holds, as before the field existed.
+    login: v.optional(SESSION_LOGIN),
     // Provenance of a "reopen as" (forkSessionAs): the session this one
     // continues on a different model. The fork is a NEW row — a cross-family
     // change cannot resume an SDK session — and this is the only thread back
@@ -1826,6 +1835,8 @@ export default defineSchema({
   })
     .index("by_status", ["status", "statusChangedAt"])
     .index("by_createdAt", ["createdAt"])
+    // The sessions page's list: the most recently active sessions first.
+    .index("by_statusChangedAt", ["statusChangedAt"])
     .index("by_kind_agenda_day", ["kind", "agendaDay"])
     // Per-todo session history: powers the "does a live session already
     // reference this todo" exclusion and the scheduler's backoff walk.
