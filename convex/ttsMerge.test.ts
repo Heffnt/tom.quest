@@ -8,6 +8,7 @@ import {
   AUDIT_REMOVAL_NOTE_MAX_CHARS,
   AUDIT_TEXT_MAX_BYTES,
   AUDIT_VERDICT,
+  MEMORY_WARN_FRACTION,
   MERGE,
   SUITE_SLOW_KEY,
   SUITE_SLOW_SECONDS,
@@ -19,6 +20,7 @@ import {
   checkRowPassed,
   commitKey,
   compactCount,
+  memoryWarnKey,
   mergedOnMain,
   removalNotesOf,
   slowConditions,
@@ -739,6 +741,65 @@ describe("the timing warning — Tom's 2026-09-22 ruling", () => {
     expect(slowConditions({ mode: "related", durations: { tests: 200, suite: 700 } })).toEqual([
       { key: TESTS_JOB_SLOW_KEY, crossed: false, error: expect.stringContaining("200s") },
     ]);
+  });
+
+  // The box's run reports each step's peak beside its budget; a peak past 80
+  // percent is one keyed row per step, so a step that keeps running near its
+  // budget is one row and a step back under it recovers its own.
+  it("answers a memory condition per step, crossed past 80 percent of the budget, on the resident number where the row has it", () => {
+    expect(MEMORY_WARN_FRACTION).toBe(0.8);
+    const rows = slowConditions({
+      memory: {
+        suite: { peak: 2_100_000_000, budget: 2_500_000_000 },
+        // The peak counts files read; the resident number is what is held.
+        build: { peak: 2_400_000_000, resident: 1_000_000_000, budget: 2_500_000_000 },
+        e2e: { peak: 2_000_000_000, resident: 1_700_000_000, budget: 2_000_000_000 },
+      },
+    });
+    expect(rows.map((row) => [row.key, row.crossed])).toEqual([
+      [memoryWarnKey("suite"), true],
+      [memoryWarnKey("build"), false],
+      [memoryWarnKey("e2e"), true],
+    ]);
+    expect(rows[0].error).toBe("the suite step held 2003 MB (its peak, files read included), over 80 percent of its 2384 MB budget; raise the budget before the step is killed at it");
+    expect(rows[2].error).toBe("the e2e step held 1621 MB, over 80 percent of its 1907 MB budget; raise the budget before the step is killed at it");
+  });
+
+  it("files the memory warning as a job-failed row from the posted row, and recovers it", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    const over = { memory: { e2e: { peak: 1_900_000_000, resident: 1_900_000_000, budget: 2_000_000_000 } } };
+    const answer = await post(t, "/tts/tests", { repo: REPO, sha: SHA, ok: true, durations: { e2e: 20 }, ...over });
+    expect(answer.status).toBe(200);
+    const failures = await jobRows(t, "job-failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0].subject).toBe(memoryWarnKey("e2e"));
+    expect((failures[0].data as { error: string }).error).toContain("e2e step held 1812 MB");
+    const row = (await testsRows(t)).find((entry) => (entry.data as { sha?: string }).sha === SHA);
+    expect((row?.data as { memory?: unknown })?.memory).toEqual(over.memory);
+    // A malformed memory entry is refused with its reason, and no row is
+    // recorded: the field comes only from the box's own measurement, and a
+    // row recorded without it would hide a broken one.
+    const refused = [
+      [{ e2e: { peak: "x" } }, 'memory entry "e2e": peak must be a finite number of bytes'],
+      [{ e2e: { peak: 1, resident: "x", budget: 2 } }, 'memory entry "e2e": resident must be a finite number of bytes'],
+      [{ build: { peak: 5, budget: 0 } }, 'memory entry "build": budget must be positive'],
+      [{ build: { peak: 5, resident: -1, budget: 10 } }, 'memory entry "build": resident must not be negative'],
+      [{ suite: { peak: -5, budget: 10 } }, 'memory entry "suite": peak must not be negative'],
+      [[1], "memory must be an object of { peak, resident?, budget } per step"],
+    ] as const;
+    for (const [memory, error] of refused) {
+      const answer = await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}c`, ok: true, memory });
+      expect(answer.status).toBe(400);
+      expect(await answer.json()).toEqual({ error });
+    }
+    const recorded = await t.run(async (ctx) =>
+      ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", TESTS_RUN).eq("key", commitKey(REPO, `${SHA.slice(0, 39)}c`))).collect());
+    expect(recorded).toHaveLength(0);
+    const under = { memory: { e2e: { peak: 900_000_000, budget: 2_000_000_000 } } };
+    await post(t, "/tts/tests", { repo: REPO, sha: `${SHA.slice(0, 39)}d`, ok: true, ...under });
+    const oks = await jobRows(t, "job-ok");
+    expect(oks.some((entry) => entry.subject === memoryWarnKey("e2e"))).toBe(true);
   });
 
   it("posts one job-failed row when the tests job crosses five minutes, and never twice", async () => {

@@ -14,7 +14,10 @@
 // the whole suite (decideMode below says which three those are), so the worst
 // this can do is run more than it had to.
 //
-// Environment: none. Arguments: --base <sha>, --summary <path>, --mode <mode>.
+// Arguments: --base <sha>, --summary <path>, --mode <mode>; each falls back
+// to the environment (TESTS_BASE, TESTS_SUMMARY, TESTS_MODE) when absent, so
+// the box's checks job runs `pnpm test:affected` with the three set and no
+// argument crosses pnpm (optionsOf).
 
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
@@ -263,15 +266,29 @@ function argOf(argv, name) {
   return at === -1 || at + 1 >= argv.length ? null : argv[at + 1];
 }
 
+/**
+ * The three options, each from its argument, else from its environment
+ * variable, else null. `--base ""` is what a push event hands this, since a
+ * push has no merge base to name, and an empty TESTS_BASE is the box's way of
+ * saying the same: both are normalised to null HERE, before the diff is asked
+ * for, so `git diff ...HEAD` is never run with an empty left side. `--mode
+ * full` (TESTS_MODE=full) is how the main and nightly runs say so without a
+ * diff: they have no base to compare against and want everything regardless.
+ */
+export function optionsOf(argv, env = {}) {
+  const option = (name, variable) => {
+    const value = argOf(argv, name) ?? env[variable] ?? "";
+    return String(value).trim() || null;
+  };
+  return {
+    base: option("--base", "TESTS_BASE"),
+    summaryPath: option("--summary", "TESTS_SUMMARY"),
+    forced: option("--mode", "TESTS_MODE"),
+  };
+}
+
 async function main(argv) {
-  // `--base ""` is what a push event hands this, since a push has no merge
-  // base to name. Normalised to null HERE, before the diff is asked for, so
-  // `git diff ...HEAD` is never run with an empty left side.
-  const base = (argOf(argv, "--base") ?? "").trim() || null;
-  const summaryPath = argOf(argv, "--summary");
-  // `--mode full` is how the main and nightly runs say so without a diff: they
-  // have no base to compare against and want everything regardless.
-  const forced = argOf(argv, "--mode");
+  const { base, summaryPath, forced } = optionsOf(argv, process.env);
   const decision = forced === FULL
     ? { mode: FULL, why: "main and the nightly run every test", files: [] }
     : decideMode(base === null ? [] : changedFiles(base), { base });

@@ -136,6 +136,40 @@ that has already been recorded, and it is keyed on the condition rather than the
 run — so a suite that has been slow for a week is one row, not one per push, and
 a run back under the threshold writes the recovery that re-arms it.
 
+Memory is the third condition, from the box's own run (below): the row's
+`memory` field holds, per step, the scope's `memory.peak` (which counts the
+files the step read as well, since the kernel charges cached pages to the
+scope and reclaims them at the budget without killing anything), the resident
+maximum (the most memory the step's processes held at once, the number a
+kill is about), and the budget the scope was given. A resident number past 80
+percent of the budget is one `job-failed` row keyed `guardrails:memory-<step>`,
+recovered when the step's next run is back under it. It is the signal to raise
+a budget before a step is killed at it.
+
+## The same checks on the box
+
+The Jarvis repository's checks job (`worker/jobs/pull-request-checks.mjs`,
+its `tomquest` mode) runs the four workflow jobs' steps on the box, serially,
+one at a time under the box's shared lock, each inside a systemd user scope
+with a memory budget, and posts the `tests-run` row itself with every step's
+seconds and peak. The steps are this repository's scripts, so the repository
+says how it is checked and the box says how much memory that may take:
+
+| Step | Script | Budget |
+|---|---|---|
+| guardrails | `pnpm check:guardrails` | 1 GB |
+| secrets | `pnpm check:secrets --log-opts=<base>..<head>` | 1 GB |
+| typecheck | `pnpm typecheck` | 1.5 GB |
+| suite | `pnpm test:affected`, with `TESTS_BASE`, `TESTS_MODE` and `TESTS_SUMMARY` in the environment and two vitest workers | 2.5 GB |
+| build | `pnpm build` | 2.5 GB |
+| e2e | `pnpm test:e2e:built`: Playwright with one worker against `pnpm start`, the server the build step wrote | 2 GB |
+
+`scripts/tests-affected.mjs` reads `--base`, `--summary` and `--mode` from
+its arguments, else from `TESTS_BASE`, `TESTS_SUMMARY` and `TESTS_MODE`, so
+the box runs the package.json script with no argument crossing pnpm.
+Until the Guardrails workflow retires, the workflow posts the row and the
+box's mode stays off.
+
 The timing is read on every post, including a rerun whose row already exists.
 Write-once is a rule about the verdict on one commit, which must not move; how
 long today's run took is a fact about today's run, and the nightly full suite
