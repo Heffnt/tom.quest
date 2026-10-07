@@ -15,12 +15,6 @@
 // written, marked done, and the open ones read, for the persistent sessions
 // that hold Tom's list (todos.ts).
 //
-// POST /jarvis/day-log: the box writes one pending day-log entry. Body
-// { text, threadMessageId }, both non-empty strings; the entry is idempotent
-// on threadMessageId, so a classifying job that acted but crashed before
-// posting its reply cannot mint the entry twice on its next run. Answers
-// { ok: true, id }.
-//
 // POST /jarvis/change and GET /jarvis/changes: the changes table, one row per
 // branch headed for main of the box's own repositories (changes.ts).
 //
@@ -100,38 +94,10 @@ export const getEvents = httpAction(async (ctx, request) => {
   return jsonResponse(200, { ok: true, events });
 });
 
-export const postDayLog = httpAction(async (ctx, request) => {
-  const denied = jarvisAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.text !== "string" || b.text.trim() === "") {
-    return jsonResponse(400, { error: "text (non-empty string) required" });
-  }
-  if (typeof b.threadMessageId !== "string" || b.threadMessageId.trim() === "") {
-    return jsonResponse(400, { error: "threadMessageId (non-empty string) required" });
-  }
-  try {
-    const { id } = await ctx.runMutation(internal.dayLog.internalSubmitFromThread, {
-      text: b.text,
-      threadMessageId: b.threadMessageId,
-    });
-    return jsonResponse(200, { ok: true, id });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
 /** Every /jarvis/ route the record serves, one line each. */
 export function register(http: HttpRouter): void {
   http.route({ path: "/jarvis/event", method: "POST", handler: postEvent });
   http.route({ path: "/jarvis/events", method: "GET", handler: getEvents });
-  http.route({ path: "/jarvis/day-log", method: "POST", handler: postDayLog });
   http.route({ path: "/jarvis/build-state", method: "GET", handler: getBuildState }); // build.ts
   http.route({ path: "/jarvis/todo", method: "POST", handler: postTodo }); // todos.ts
   http.route({ path: "/jarvis/todo/done", method: "POST", handler: postTodoDone }); // todos.ts

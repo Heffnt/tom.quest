@@ -6,8 +6,9 @@
 //
 // The zone table does the conversion: Intl.DateTimeFormat with the zone named.
 // The Convex default runtime, Node and every browser the site supports carry
-// it; shared/day-log-trends.mjs has read New York hours through it in the
-// Convex runtime (convex/ttsWeekly.ts) since before this file. The box's
+// it; the day log's weekly trends (shared/day-log-trends.mjs, removed with
+// the day log) read New York hours through it in the Convex runtime before
+// this file existed. The box's
 // worker/jobs/clock.mjs in the Jarvis repository is the same contract for the
 // box's own Node.
 //

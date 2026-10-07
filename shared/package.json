@@ -9,8 +9,6 @@
     "./clip.mjs": "./clip.mjs",
     "./clock.mjs": "./clock.mjs",
     "./context-relevance.mjs": "./context-relevance.mjs",
-    "./day-log-entry.mjs": "./day-log-entry.mjs",
-    "./day-log-trends.mjs": "./day-log-trends.mjs",
     "./decided-by.mjs": "./decided-by.mjs",
     "./jarvis-events.mjs": "./jarvis-events.mjs",
     "./jarvis-todos.mjs": "./jarvis-todos.mjs",

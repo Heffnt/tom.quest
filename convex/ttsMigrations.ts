@@ -33,7 +33,6 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
-import { FACT_BODY_METRICS, validateEvent } from "../shared/jarvis-events.mjs";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
@@ -1334,7 +1333,6 @@ export const RESTART_TODOS = [
 
 export const ARCHIVE_WHOLE_MIGRATION = "archive-todos-whole";
 const RESTORE_ARCHIVED_MIGRATION = "restore-archived-todos";
-export const DAY_LOG_COPY_MIGRATION = "day-log-copy";
 
 function isRestartTodo(row: Doc<"todos">): boolean {
   return row.source === "manual" && row.provenance === RESTART_PROVENANCE;
@@ -1508,100 +1506,6 @@ export const internalRestartTodos = internalQuery({
     });
   },
 });
-
-// ── The day log's items into the events table ───────────────────────────────
-// One events row per dayLogItems row, its kind by what the item was:
-//   food                              → meal
-//   measurement of weight or waist    → weight
-//   measurement of a performance test → training (hang, added pull-up
-//                                       weight, sprint, quarter-mile loop)
-//   workout                           → training
-//   work, feeling, symptom            → did
-// data.dayLogType keeps the item's own type, so the mapping can be read back
-// and redone. `at` is when he said it (the entry's createdAt); data.day is
-// the day the fact belongs to. data.id ("day-log-item:<id>") is the
-// idempotence key on events.by_kind_data_id. Every row is checked by the
-// same validator POST /jarvis/event uses; a row it refuses is counted under
-// "refused-<kind>" and not written.
-type DayLogItem = Doc<"dayLogItems">;
-
-export function factKindOf(item: Pick<DayLogItem, "type" | "metric">): FactKind {
-  if (item.type === "food") return "meal";
-  if (item.type === "workout") return "training";
-  if (item.type === "measurement") {
-    return item.metric !== undefined && Object.hasOwn(FACT_BODY_METRICS, item.metric) ? "weight" : "training";
-  }
-  return "did";
-}
-
-type FactKind = "meal" | "weight" | "training" | "did";
-
-function factDataOf(item: DayLogItem): Record<string, unknown> {
-  const data: Record<string, unknown> = {
-    id: `day-log-item:${item._id}`,
-    day: item.day,
-    summary: item.summary,
-    quote: item.quote,
-    dayLogType: item.type,
-  };
-  for (const field of ["metric", "value", "unit", "partOfDay", "activity", "bodyParts", "distanceMi", "durationMin"] as const) {
-    if (item[field] !== undefined) data[field] = item[field];
-  }
-  return data;
-}
-
-export const internalCopyDayLogToEvents = internalMutation({
-  args: MIGRATION_ARGS,
-  handler: async (ctx, args): Promise<MigrationReport> => {
-    const dryRun = args.dryRun ?? false;
-    const pageSize = args.pageSize ?? PAGE_SIZE;
-    const page: Counts = { scanned: 0, "to-copy": 0, "already-copied": 0, refused: 0 };
-    const result = await ctx.db
-      .query("dayLogItems")
-      .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
-    const now = Date.now();
-    for (const item of result.page) {
-      page.scanned++;
-      const kind = factKindOf(item);
-      const data = factDataOf(item);
-      const prior = await ctx.db
-        .query("events")
-        .withIndex("by_kind_data_id", (q) => q.eq("kind", kind).eq("data.id", data.id))
-        .first();
-      if (prior !== null) {
-        page["already-copied"]++;
-        continue;
-      }
-      const entry = await ctx.db.get(item.entryId);
-      const checked = validateEvent(
-        { kind, at: entry?.createdAt ?? item.createdAt, provenance: { user: "tom" }, data },
-        { now },
-      );
-      const event = "event" in checked ? checked.event : undefined;
-      if (!checked.ok || event === undefined) {
-        page.refused++;
-        page[`refused-${kind}`] = (page[`refused-${kind}`] ?? 0) + 1;
-        continue;
-      }
-      page["to-copy"]++;
-      page[`to-copy-${kind}`] = (page[`to-copy-${kind}`] ?? 0) + 1;
-      if (!dryRun) await ctx.db.insert("events", event);
-    }
-    const totals = addCounts(args.totals ?? {}, page);
-    if (result.isDone) {
-      await logEvent(ctx, dryRun ? `${DAY_LOG_COPY_MIGRATION}-dry-run` : `${DAY_LOG_COPY_MIGRATION}-migrated`, undefined, totals);
-      return { done: true, dryRun, page, totals, continueCursor: null };
-    }
-    await ctx.scheduler.runAfter(0, internal.ttsMigrations.internalCopyDayLogToEvents, {
-      cursor: result.continueCursor,
-      dryRun,
-      pageSize,
-      totals,
-    });
-    return { done: false, dryRun, page, totals, continueCursor: result.continueCursor };
-  },
-});
-
 // ── The Jarvis calendar's tables emptied (design section 13.2, 2026-10-07) ────
 // The calendar mirror, its four feeds, blocks, repeats and time notes went
 // from the code and the schema in one change; their rows stay in the
