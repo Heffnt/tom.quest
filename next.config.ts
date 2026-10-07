@@ -1,7 +1,24 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
+import { execSync } from "node:child_process";
+
+// The build the error pages name (app/lib/error-diagnosis.ts): Vercel sets
+// VERCEL_GIT_COMMIT_SHA, VERCEL_GIT_COMMIT_REF and VERCEL_ENV at build time;
+// a local or box build falls back to its git checkout.
+function git(args: string): string {
+  try {
+    return execSync(`git ${args}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch {
+    return "";
+  }
+}
 
 const nextConfig: NextConfig = {
+  env: {
+    BUILD_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA || git("rev-parse HEAD"),
+    BUILD_BRANCH: process.env.VERCEL_GIT_COMMIT_REF || git("rev-parse --abbrev-ref HEAD"),
+    BUILD_DEPLOY_ENV: process.env.VERCEL_ENV || "",
+  },
   // pi-coding-agent ships native clipboard bindings (koffi) that Turbopack
   // cannot bundle into server chunks; load it at runtime instead.
   serverExternalPackages: ["@earendil-works/pi-coding-agent"],
