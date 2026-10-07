@@ -1078,6 +1078,12 @@ function outcomePenFooter(
 // Re-entry (spec §9: an ended session accepts a follow-up turn and continues
 // with context intact). Before this, an ending was a dead end — the only way
 // back to a finished conversation was a NEW session with none of its context.
+// Who wrote a turn: Tom, or an agent writing through a pen. Declared here,
+// above the two doors that take it (reopen and send-message), because a
+// mutation's args are read as the module loads.
+const TURN_AUTHOR = v.union(v.literal("tom"), v.literal("agent"));
+type TurnAuthor = Infer<typeof TURN_AUTHOR>;
+
 const REOPEN_SESSION_ARGS = {
   sessionId: v.id("claudeSessions"),
   text: v.string(),
@@ -1159,9 +1165,12 @@ export const reopenSession = mutation({
   },
 });
 
+// The author is "agent" unless the caller names Tom: ttsSlack's thread reply
+// does, because the events route verified the reply came from him, and only a
+// "tom" turn can become a ruling in his words.
 export const internalReopenSession = internalMutation({
-  args: REOPEN_SESSION_ARGS,
-  handler: async (ctx, args) => await reopenSessionFrom(ctx, args, "agent"),
+  args: { ...REOPEN_SESSION_ARGS, author: v.optional(TURN_AUTHOR) },
+  handler: async (ctx, { author, ...args }) => await reopenSessionFrom(ctx, args, author ?? "agent"),
 });
 
 // Retitling is pure labelling — the title is Tom's handle on a session in the
@@ -1354,8 +1363,8 @@ export const internalForkSessionAs = internalMutation({
 // events route verified came from TOM_SLACK_USER_ID and passes "tom". Only a
 // "tom" turn can become a ruling in his words (ruling 15,
 // ttsRulings.internalRecordRulingFromTomWords).
-const TURN_AUTHOR = v.union(v.literal("tom"), v.literal("agent"));
-type TurnAuthor = Infer<typeof TURN_AUTHOR>;
+// TURN_AUTHOR and TurnAuthor are declared with the reopen door above, which
+// takes an author too.
 
 const SEND_MESSAGE_ARGS = {
   sessionId: v.id("claudeSessions"),
