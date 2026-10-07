@@ -240,9 +240,7 @@ describe("worker context routes", () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     for (const [path, method] of [
-      ["/tts/capture-context", "GET"],
       ["/tts/planner-context", "GET"],
-      ["/tts/weekly-input", "GET"],
     ] as const) {
       const response = await t.fetch(path, { method, headers: { "X-TTS-Key": "s3cret" } });
       expect(response.status).toBe(503);

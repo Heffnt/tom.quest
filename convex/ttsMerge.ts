@@ -67,7 +67,7 @@ export const NIGHTLY_CHECK = "nightly";
  *  spelling it was written with. */
 export const MERGE = "merge";
 /** The one word the audit line must carry for the gate to open. */
-export const AUDIT_APPROVED = "APPROVED";
+const AUDIT_APPROVED = "APPROVED";
 /** The word the audit step posts when it could not run at all
  *  (worker/jobs/audit.mjs AUDIT_UNAVAILABLE). NOT A VERDICT: it is the
  *  ABSENCE of one, which is why a later real verdict replaces it below. */

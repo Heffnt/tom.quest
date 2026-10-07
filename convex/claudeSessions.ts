@@ -17,7 +17,6 @@ import {
 import { logEvent } from "./tts";
 import { eitherId, resolveId, todoReader } from "./jarvis/tables";
 import { appendNotes, inboundRowIdOf, NOTES, rowSource } from "./sessionRows";
-import { isIsoDay } from "../shared/markdown-sections.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
@@ -958,46 +957,6 @@ export const internalEnsurePersistentSessions = internalMutation({
       out.push({ name, id, created: true, status: "idle", login: login ?? null });
     }
     return out;
-  },
-});
-
-// The Friday job's pen (POST /tts/session; the lifeos update, phase 8). Kind
-// "weekly" and nothing else, and two facts the row must carry that no other
-// session has: the day the job ran for, and the todo ids the agenda's forks
-// name. A weekly session's turns rule on those ids only
-// (ttsRulings refuseUnlessSessionSubject) — the agenda, not the session's
-// kind, is what says what Tom was talking about. Any holder of
-// TTS_WORKER_KEY reaches this door, so it also refuses a second weekly
-// session for the same day: the one the job opened is the weekly session.
-export const internalCreateWeeklySession = internalMutation({
-  args: {
-    title: v.string(),
-    repos: v.optional(v.array(v.string())),
-    model: v.optional(SESSION_MODEL),
-    initialPrompt: v.string(),
-    day: v.string(),
-    agendaSubjects: v.array(v.string()),
-  },
-  handler: async (ctx, { title, repos, model, initialPrompt, day, agendaSubjects }) => {
-    if (!isIsoDay(day)) throw new Error(`day must be a YYYY-MM-DD date, got: ${day}`);
-    const existing = await ctx.db
-      .query("claudeSessions")
-      .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "weekly").eq("agendaDay", day))
-      .first();
-    if (existing !== null) {
-      throw new Error(
-        `refused: the weekly session for ${day} already exists (${existing._id})`,
-      );
-    }
-    return await createSessionFrom(ctx, {
-      title,
-      kind: "weekly",
-      repos,
-      model,
-      initialPrompt,
-      agendaDay: day,
-      agendaSubjects: [...new Set(agendaSubjects.map((s) => s.trim()).filter((s) => s !== ""))],
-    });
   },
 });
 

@@ -28,7 +28,9 @@ import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { DIGEST_SENT } from "./ttsDigest";
 import { EVALS_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, TESTS_RUN, checkRowPassed } from "./ttsMerge";
-import { WEEK_MS } from "./ttsWeekly";
+import { DAY_MS } from "./ttsShared";
+
+const WEEK_MS = 7 * DAY_MS;
 
 // ── Event kinds this pass owns ───────────────────────────────────────────────
 // One spelling per kind, shared with worker/jobs/simplify.mjs and the nightly
@@ -41,7 +43,7 @@ export const SIMPLIFY_PROPOSAL = "simplify-proposal";
 /** The proposal became a todo after its objection window closed. Same key as
  *  the proposal, so "was this admitted" is a point lookup. */
 export const SIMPLIFY_ADMITTED = "simplify-admitted";
-/** The weekly run's own summary row, the twin of "weekly-run". */
+/** The weekly run's own summary row. */
 const SIMPLIFY_RUN = "simplify-run";
 
 // ── Event kinds the removal loop owns ────────────────────────────────────────

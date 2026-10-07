@@ -1,10 +1,8 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { resolveId } from "./jarvis/tables";
 import { gatherTodayFacts } from "./ttsDigest";
-import { gatherWeeklyFacts, WEEK_MS } from "./ttsWeekly";
 import { nyCalendarDayKey } from "./ttsShared";
 import { insertCopied } from "../test/core-tables";
 
@@ -162,31 +160,5 @@ describe("a work-queue outcome on its todo", () => {
         expect.objectContaining({ todoId: plain.todo, finished: 1999 }),
       ]),
     );
-  });
-
-  it("is an evaluation of its goal in the weekly", async () => {
-    vi.stubEnv("JARVIS_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    const now = Date.now();
-    const goals = await t.run(async (ctx) => {
-      const make = async (statement: string) => {
-        const id = (await insertCopied(ctx, "todos", {
-          statement,
-          kind: "goal",
-          readiness: "unprepared",
-          status: "active",
-          timingClass: "whenever",
-          source: "test",
-          createdAt: now - 20 * DAY,
-          updatedAt: now - 20 * DAY,
-        })).old;
-        return { old: id, plain: (await resolveId(ctx, "todos", id)) as Id<"todos"> };
-      };
-      return { worked: await make("paper submitted"), idle: await make("lease signed") };
-    });
-    expect((await post(t, outcome(goals.worked.plain, now - 2 * DAY))).status).toBe(200);
-    const until = now + 1000;
-    const f = await t.run(async (ctx) => gatherWeeklyFacts(ctx, { since: until - WEEK_MS, until }));
-    expect(f.goalsNotEvaluated.map((g) => g.statement)).toEqual(["lease signed"]);
   });
 });

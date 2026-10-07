@@ -597,9 +597,6 @@ export const RESERVED_EVENT_KINDS = new Set([
   SEND_AS_TOM_FAILED,
   SEND_AS_TOM_UNKNOWN,
 ]);
-/** The nightly job's failure row (data { day, step, error }); the worker's
- * spelling is worker/jobs/nightly.mjs NIGHTLY_FAILURE, shared by name. */
-export const NIGHTLY_FAILURE = "nightly-failure";
 
 /** A line the nightly job wrote about Tom is a decision taken in his name, so
  *  it is a line on the digest's objection list (internalRecordWorkerEvent,

@@ -16,8 +16,6 @@ import {
 } from "./ttsAsk";
 import {
   NARROW_LIST,
-  SESSION_REPO_NAMES,
-  isSessionModel,
   ttsPrepDay,
   VOCABULARY_COUNT_NAMES,
 } from "./ttsShared";
@@ -418,31 +416,6 @@ const ttsCapture = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 
-// GET /tts/capture-context supplies the model-of-tom context a capture run
-// works from, and the declined integrations, before a poller captures anything.
-// The worker cannot import TypeScript or read the WikiTom checkout, so it
-// receives the assembled text instead.
-//
-// ITS BYTES SHRANK, ITS MEANING DID NOT (the dynamic-context round): this was
-// the write + know layers whole, 29.6 KB with the whole know layer inside it.
-// It is now the stable prefix, nothing expanded (a poller has no subject of its
-// own — rule 12), and the FETCHABLE index, which names every page, section and
-// search question it did not get and the exact command that gets it. Rule 7
-// gives this caller `priorities.md § What becomes a todo`, because capture is
-// the one thing it does on his behalf.
-
-const ttsCaptureContext = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return await serveContext(ctx, "capture", request);
-});
-
-http.route({
-  path: "/tts/capture-context",
-  method: "GET",
-  handler: ttsCaptureContext,
-});
-
 // POST /tts/needs-tom — one needs-you thread for a todo only Tom can settle.
 // NO CODE IN THIS REPOSITORY CALLS IT since Tom ruled on 2026-09-21 that
 // workers do not reach him directly: the mail pollers stopped. It stays
@@ -522,50 +495,6 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
-
-// POST /tts/canvas-assignments — the Canvas assignments worker/jobs/
-// poll-canvas.mjs read this run (the lifeos update, phase 6). Body:
-// { assignments: [{ externalId, courseCode, name, htmlUrl, dueAt, submitted }] }.
-//
-// The job owns the FETCH (one job and one CANVAS_TOKEN copy, in
-// /etc/tts/worker.env); convex/ttsCanvas.ts owns what a fetched assignment
-// DOES to a todo — insert, move the date, complete on submission — because
-// that is a mutation. The mutation's own validators are the gate on the array;
-// this route only carries the traffic and names a refusal.
-//
-// REPLAYING THE SAME ASSIGNMENTS CHANGES NOTHING: the sync keys every row by
-// its `canvas:assignment:<id>` provenance, so a re-run creates no second todo.
-const ttsCanvasAssignments = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (!Array.isArray(b.assignments)) {
-    return jsonResponse(400, { error: "assignments (array) required" });
-  }
-  try {
-    const result = await ctx.runMutation(
-      internal.ttsCanvas.internalSyncCanvasTodos,
-      { assignments: b.assignments as never },
-    );
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({
-  path: "/tts/canvas-assignments",
-  method: "POST",
-  handler: ttsCanvasAssignments,
-});
 
 // POST /tts/job-failed — a box job reporting its own failure in plain words
 // (the lifeos update, phase 6). Body: { job, error, key?, durationMs? }.
@@ -2132,18 +2061,6 @@ const ttsLearningInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInput });
 
-// GET /tts/weekly-input?until=<epoch ms> — the Friday job's one deterministic
-// gather (convex/ttsWeekly.ts): every fact of the seven days ending at
-// `until` (default: now), read on indexes, no model in the loop. The job adds
-// last week's agenda from the WikiTom checkout and makes the one model call.
-const ttsWeeklyInput = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  return await serveContext(ctx, "weekly", request);
-});
-
-http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
-
 // GET /tts/simplify-input?until=<epoch ms> — the weekly simplification pass's
 // one deterministic gather (convex/ttsSimplify.ts): the four weeks ending at
 // `until` (default: now) of runs, layers, skills, tools, hooks, working
@@ -2152,10 +2069,9 @@ http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput }
 // model in the loop; the job adds the rule files from the WikiTom checkout and
 // makes the one model call.
 //
-// The prelude rides along for the same reason it does on /tts/weekly-input:
-// the model's proposal sentences are written FOR TOM, so the run that writes
-// them carries the write pages. It asks as its OWN caller, "simplify-input",
-// so this door never changes silently on the day the weekly job's does.
+// The prelude rides along because the model's proposal sentences are written
+// FOR TOM, so the run that writes them carries the write pages. It asks as its
+// OWN caller, "simplify-input".
 const ttsSimplifyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -2238,61 +2154,6 @@ const ttsSearchEvals = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/search/evals", method: "GET", handler: ttsSearchEvals });
-
-// GET /tts/weekly-run?day=YYYY-MM-DD — whether the Friday job already ran for
-// that day: its "weekly-run" row, keyed on the day (convex/ttsWeekly.ts). The
-// job asks before it writes anything, and a rerun stops here unless it was
-// told --overwrite.
-const ttsWeeklyRun = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  const day = new URL(request.url).searchParams.get("day") ?? "";
-  if (day === "") return jsonResponse(400, { error: "day (YYYY-MM-DD) required" });
-  try {
-    const run = await ctx.runQuery(internal.ttsWeekly.internalWeeklyRun, { day });
-    return jsonResponse(200, { run });
-  } catch (e) {
-    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-http.route({ path: "/tts/weekly-run", method: "GET", handler: ttsWeeklyRun });
-
-// POST /tts/area-reviewed — the weekly session's record that Tom confirmed an
-// area page. Body: { path, reviewedOn }. One "area-reviewed" dtsEvents row
-// (convex/ttsWeekly.ts); the page's `reviewed:` line itself is edited in the
-// checkout by the session's pen (worker/jobs/weekly.mjs reviewed), which
-// calls this after the commit.
-const ttsAreaReviewed = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.path !== "string" || b.path === "") {
-    return jsonResponse(400, { error: "path (non-empty string) required" });
-  }
-  if (typeof b.reviewedOn !== "string" || b.reviewedOn === "") {
-    return jsonResponse(400, { error: "reviewedOn (YYYY-MM-DD) required" });
-  }
-  try {
-    const id = await ctx.runMutation(internal.ttsWeekly.internalRecordAreaReviewed, {
-      path: b.path,
-      reviewedOn: b.reviewedOn,
-    });
-    return jsonResponse(200, { ok: true, id });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/area-reviewed", method: "POST", handler: ttsAreaReviewed });
 
 // POST /tts/learning-objections-consumed — body { ids: [<dtsEvents id>] }.
 // The job stamps each objection it acted on (reverted, or could not revert
@@ -2488,79 +2349,6 @@ http.route({ path: "/tts/event", method: "POST", handler: ttsEvent });
 // call, and POST /tts/plan-repairs-consumed, which marked the workers'
 // wrong-edge reports read, went with batches: Tom's ruling of 2026-09-24. A box
 // still running the old plan pass gets a 404 from each, and forms no batch.)
-
-// POST /tts/session — the Friday weekly job's door (worker/jobs/weekly.mjs)
-// to open ITS session on the agents page. Body: { title, kind: "weekly",
-// day, agendaSubjects, repos?, model?, initialPrompt } →
-// claudeSessions.internalCreateWeeklySession, the same one row-builder
-// (insertSession) behind every session, so the opener begins with the
-// model-of-tom prelude and the outcome footer like every other.
-//
-// KIND "weekly" ONLY, ONE PER DAY. Every holder of TTS_WORKER_KEY — every
-// session on the box — reaches this route, so it opens nothing but the
-// weekly session and refuses a second one for the same `day`. `agendaSubjects`
-// is the list of todo ids the agenda's forks name; the session's
-// turns rule on those and nothing else (ttsRulings). The system's own kinds
-// (gate, focus-item, block) name a subject and are opened by the code that
-// holds it; an adhoc session is Tom's to open from the page.
-const ttsSession = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.title !== "string" || b.title.trim() === "") {
-    return jsonResponse(400, { error: "title (non-empty string) required" });
-  }
-  if (b.kind !== "weekly") {
-    return jsonResponse(400, { error: 'kind must be "weekly" — this door opens the weekly session only' });
-  }
-  if (typeof b.day !== "string" || b.day === "") {
-    return jsonResponse(400, { error: "day (YYYY-MM-DD) required" });
-  }
-  if (
-    !Array.isArray(b.agendaSubjects) ||
-    !b.agendaSubjects.every((s) => typeof s === "string")
-  ) {
-    return jsonResponse(400, { error: "agendaSubjects (array of todo ids) required" });
-  }
-  if (typeof b.initialPrompt !== "string" || b.initialPrompt.trim() === "") {
-    return jsonResponse(400, { error: "initialPrompt (non-empty string) required" });
-  }
-  if (
-    b.repos !== undefined &&
-    (!Array.isArray(b.repos) ||
-      !b.repos.every((r) => (SESSION_REPO_NAMES as readonly string[]).includes(r as string)))
-  ) {
-    return jsonResponse(400, {
-      error: `repos must be an array of ${SESSION_REPO_NAMES.join(", ")}`,
-    });
-  }
-  if (b.model !== undefined && !isSessionModel(b.model)) {
-    return jsonResponse(400, { error: "model is not a session model" });
-  }
-  try {
-    const sessionId = await ctx.runMutation(internal.claudeSessions.internalCreateWeeklySession, {
-      title: b.title,
-      repos: b.repos as string[] | undefined,
-      model: b.model,
-      initialPrompt: b.initialPrompt,
-      day: b.day,
-      agendaSubjects: b.agendaSubjects as string[],
-    });
-    return jsonResponse(200, { ok: true, sessionId });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/session", method: "POST", handler: ttsSession });
 
 // POST /tts/session-outcome — a worker's outcome pen. Body:
 // { sessionId, outcome: "completed"|"errored", summary? }. It lives under the

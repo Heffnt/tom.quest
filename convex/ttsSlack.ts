@@ -177,7 +177,7 @@ export const internalRecordSlackFailed = internalMutation({
 export { NEEDS_TOM };
 /** A reply Tom typed in a thread that could not be routed (the row records
  * what was tried; the reply is captured as a todo instead). */
-export const SLACK_REPLY_FAILED = "slack-reply-failed";
+const SLACK_REPLY_FAILED = "slack-reply-failed";
 
 // ── One appearance per item per day, across channels (§2.5) ──────────────────
 /** Claim an item for one ask for one TTS day. Returns false when another
