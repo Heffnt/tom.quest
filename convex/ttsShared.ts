@@ -776,11 +776,3 @@ export function outputChannel(): string | null {
   return null;
 }
 
-export const VOCABULARY_COUNTS = v.object({
-  entities: v.number(),
-  jobs: v.number(),
-  search: v.number(),
-  skills: v.number(),
-  repos: v.number(),
-  channels: v.number(),
-});
